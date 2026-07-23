@@ -148,7 +148,9 @@ exists; AI notes provider configured.
 **Expectation:** AI output is always a *draft* the human owns. Generation failure leaves
 the raw transcript intact and available for manual notes (see **F4**).
 
-## A8. TTS read a passage to a selected output
+## A8. TTS read a passage to a selected output — DE-SCOPED (DEC-001)
+
+> **DE-SCOPED — TTS is a non-goal (DEC-001).** Retained for history only; not a requirement.
 **Actor:** Production/Scripture Operator + Sound Engineer (output routing). **Precondition:**
 TTS provider/engine configured; an audio **output** device selected.
 
@@ -180,7 +182,7 @@ accident. TTS failure is non-fatal (see **F4**); it never blocks presentation.
   org policy; operator must always send to live manually.
 - **B7 (alt of A7):** Generate notes from an **imported/edited** transcript (e.g. the
   editor cleaned it first) or regenerate a section only.
-- **B8 (alt of A8):** TTS to a **file/asset** for later use (accessibility export) rather
+- **B8 (alt of A8) — DE-SCOPED (DEC-001):** TTS to a **file/asset** for later use (accessibility export) rather
   than live audio output.
 - **B9 (worship spontaneity):** Worship Leader triggers a chorus repeat/jump from stage
   mobile; the Media Operator sees the change reflected and can override from desktop.
@@ -230,7 +232,7 @@ data loss on the captured-so-far portion.
 **Recovery expectation:** The service is never dependent on the mobile; reconnection is clean
 and re-syncs to truth; no ghost/stale actions fire.
 
-## F4. AI / transcription / TTS provider failure
+## F4. AI / transcription provider failure (TTS portion DE-SCOPED, DEC-001)
 **Trigger:** a third-party provider errors, times out, or auth/quota fails (transcription,
 scripture-detection resolve, sermon notes, or TTS).
 1. The affected **assistive** feature degrades gracefully and shows an "unavailable" state;

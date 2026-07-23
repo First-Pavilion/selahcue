@@ -53,7 +53,7 @@ See §31 for METRIC-* definitions. Headline: zero unintended output blanks in li
 - **CON-1:** Desktop is the authoritative state owner; mobile/AI/providers are assistive and optional.
 - **CON-2:** Core live functions (slides, local scripture, media, blackout/clear, timers) must work with zero network/cloud/mobile/AI.
 - **CON-3:** MVP bundles only public-domain Bible translations; licensed translations are API-only/user-supplied (later).
-- **CON-4:** Media playback uses OS-native/HW decoders; SelahCue-encoded media prefers VP9/AV1+Opus (codec-patent safe harbor, OD-08a).
+- **CON-4:** Media playback uses OS-native/HW decoders for encumbered codecs (H.264/HEVC **and AAC** and other patented audio codecs); SelahCue-encoded media prefers VP9/AV1+Opus (codec-patent safe harbor, OD-08a); verified in the dependency audit (FR-073).
 - **CON-5:** Cloud transmission is opt-in, per-provider, with visible disclosure; no sermon audio/transcript leaves the host without explicit user action.
 - **CON-6:** Stage-gated build; requirements are testable and traceable.
 
@@ -63,6 +63,8 @@ See §31 for METRIC-* definitions. Headline: zero unintended output blanks in li
 - **AS-2:** Target church hardware ranges from CPU-only PCs to modest GPU / Apple Silicon; performance targets are per-tier (§26).
 - **AS-3:** Final technology stack is chosen in Stage 5 via ADRs; the Rust core + wgpu compositor + GStreamer + SQLite leaning is preliminary and spike-gated.
 - **AS-4:** Users hold their own CCLI / translation licences; SelahCue provides compliance affordances, not the licences.
+- **AS-5:** At-rest confidentiality (FR-154) defaults to app-managed SQLCipher; where OS full-disk encryption is relied upon instead, it is a documented deployment prerequisite the app verifies (§21).
+- **AS-6:** The bounded MVP presumes a small dedicated engineering team over a multi-month schedule, with the presentation-core desktop sub-release preceding the mobile control-plane slice (RISK-001, AS-1). This is the capacity assumption the MVP boundary rests on; revise the boundary if capacity differs.
 
 ## 10. Competitor research (summary)
 
@@ -114,7 +116,7 @@ Format: `ID | Requirement | Priority | Acceptance criteria (measurable) | Trace`
 | FR-010 | Reusable templates and themes (fonts, colours, safe areas, positions) | MVP | Applying a theme restyles a slide group without losing content; theme editable centrally | RP-01 |
 | FR-011 | Announcements and sermon-point slide types | MVP | Both types creatable from templates; display on selected outputs | brief §core |
 | FR-012 | Preview (staged) vs Live (program) separation | MVP | Editing/staging never changes live output until "go live" is invoked | RP-01; JTBD-1 |
-| FR-013 | Current-slide and next-slide operator views | MVP | Operator sees current + next thumbnails reflecting live state within 1 frame | RP-12 |
+| FR-013 | Current-slide and next-slide operator views | MVP | Operator sees current + next thumbnails reflecting live state within ≤100ms (about one frame) | RP-12 |
 | FR-014 | Keyboard shortcuts for core live actions (next/prev/clear/blackout/go-live) | MVP | All core actions have documented, remappable shortcuts; work without mouse | RP-12; a11y |
 | FR-015 | Command palette for quick action/item search | MVP | Palette opens via shortcut; fuzzy-search actions & plan items; execute selected | RP-01 |
 | FR-016 | Undo/redo for editing operations | MVP | ≥20-step undo/redo for edit actions; live triggering is not "undone" destructively | RP-01 |
@@ -136,7 +138,7 @@ Format: `ID | Requirement | Priority | Acceptance criteria (measurable) | Trace`
 
 | ID | Requirement | Priority | Acceptance criteria | Trace |
 |---|---|---|---|---|
-| FR-025 | Bundled public-domain translations (WEB, ASV, BSB, BBE, Darby, Webster; KJV subject to OD-24) | MVP | ≥4 PD translations available offline; no copyrighted translation bundled | LICENSING §1; OD-24 |
+| FR-025 | Bundled public-domain translations (WEB, ASV, BSB, BBE, Darby, Webster) | MVP | ≥4 PD translations available offline; no copyrighted translation bundled; **KJV excluded from the bundle** (OD-24 resolved — UK Crown-copyright exposure avoided; WEB/ASV/BSB cover the need) | LICENSING §1; OD-24 |
 | FR-026 | Book/chapter/verse navigation | MVP | Navigate to any valid reference; invalid references rejected with guidance | brief §scripture |
 | FR-027 | Reference parsing (typed): abbreviations, ranges, multi-selections | MVP | "Rom 8:28-30", "Ps 23", "Jn 3:16; 1 Cor 13:4" parse to correct verse sets | RP-04 (parser) |
 | FR-028 | Keyword and exact-phrase search across a translation | MVP | Keyword search returns ranked verse matches <500ms for a bundled translation | brief §scripture |
@@ -158,7 +160,7 @@ Format: `ID | Requirement | Priority | Acceptance criteria (measurable) | Trace`
 | FR-039 | Additional independent outputs (secondary, lobby, overflow, recording) | R2 | ≥3 independent outputs run concurrently with per-output content within perf targets | brief §multi-output |
 | FR-040 | Display identification and assignment | MVP | "Identify" shows a number on each physical display; outputs assignable to displays | brief §multi-output |
 | FR-041 | Display reconnection restores exact prior live content | MVP | Unplug/replug an output → no other output blanks; content auto-restores on reconnect | FLOW-009 |
-| FR-042 | Output health monitoring (connected, resolution, frame health) | R2 | Per-output status shows connected/resolution and flags dropped-frame conditions | RP-12 (livestream) |
+| FR-042 | Output health monitoring (connected, resolution, frame health) | R2 | Per-output status shows connected/resolution and flags a dropped-frame condition when >5% of frames drop over a 10s window | RP-12 (livestream) |
 | FR-043 | Test patterns per output | R2 | A test pattern can be sent to any output for projector calibration | brief §multi-output |
 | FR-044 | Per-output delay, mirroring, rotation, cropping, scaling | R2 | Each transform configurable per output and visibly applied | brief §multi-output |
 | FR-045 | Operator multiview (all outputs + preview/next at a glance) | R2 | One screen shows live thumbnails of every output plus preview/next | brief §core |
@@ -189,7 +191,7 @@ Format: `ID | Requirement | Priority | Acceptance criteria (measurable) | Trace`
 | FR-060 | TIME UP overrun into negative time with elapsed-over display | MVP | After 0, timer continues showing how far over the speaker is | brief §timer |
 | FR-061 | TIME UP dismissal (manual, auto), extend-time, reset, and mobile dismissal | MVP | Each dismissal path clears TIME UP from all outputs; extend adds time and resumes | brief §timer; FR-094 |
 | FR-062 | Prevent accidental TIME UP/timer display on audience outputs | MVP | Displaying TIME UP requires explicit output selection; default excludes audience unless chosen | brief §timer; safety |
-| FR-063 | Operator alert sound and optional selected-output sound at TIME UP | R2 | Operator hears a local alert at 0; audible cue to a selected output is optional and routed safely | brief §timer |
+| FR-063 | Operator alert sound and optional selected-output sound at TIME UP | R2 | Operator hears a local alert at 0; an audible cue to any output requires explicit per-output selection + confirmation and default-excludes audience/house outputs (mirrors FR-062) | brief §timer |
 | FR-064 | Timer completion actions / macro trigger + audit log of expiry | R6 | TIME UP can trigger a macro; every expiry is logged with timestamp | brief §timer; FR-144; FR-150 |
 | FR-065 | Timer accuracy uses an authoritative monotonic clock (not refresh-driven) | MVP | Timer drift ≤100ms/hour independent of render frame rate | METRIC-004 |
 
@@ -197,8 +199,8 @@ Format: `ID | Requirement | Priority | Acceptance criteria (measurable) | Trace`
 
 | ID | Requirement | Priority | Acceptance criteria | Trace |
 |---|---|---|---|---|
-| FR-066 | Image display with scaling/positioning | MVP | Common image formats display on output with configured scaling | brief §core |
-| FR-067 | Video playback via OS-native/HW decoders | MVP | H.264/HEVC play via platform decoder (no bundled encumbered encoder, OD-08a); play/pause/seek work | CON-4; OD-08a |
+| FR-066 | Image display with scaling/positioning | MVP | PNG, JPEG, WebP, static GIF, and BMP display on output with configured scaling | brief §core |
+| FR-067 | Video playback via OS-native/HW decoders | MVP | H.264/HEVC/AAC play via platform decoder (no bundled encumbered encoder/decoder, OD-08a); play/pause/seek work | CON-4; OD-08a |
 | FR-068 | Audio playback with output-device selection | MVP | Audio plays to a chosen device; never forced onto the transcription-capture path | RP-12 (sound) |
 | FR-069 | Motion backgrounds (looping video) behind text | R2 | A looping background composits under text at target frame rate (perf §26) | brief §core |
 | FR-070 | Missing-media placeholder (never a black audience screen) | MVP | A missing media item shows a safe placeholder on output, never an unintended black screen | RP-reliability; FLOW pre-service |
@@ -211,7 +213,7 @@ Format: `ID | Requirement | Priority | Acceptance criteria (measurable) | Trace`
 | ID | Requirement | Priority | Acceptance criteria | Trace |
 |---|---|---|---|---|
 | FR-074 | Continuous autosave of plan + live state | MVP | Edits and live-state changes checkpoint automatically; ≤5s of work lost on hard kill | FLOW-008; METRIC-005 |
-| FR-075 | Crash recovery restores exact prior live output + service position + timers | MVP | After forced shutdown, relaunch restores live content, plan position, and running timers | FLOW-008 |
+| FR-075 | Crash recovery + crash-loop breaker | MVP | After forced shutdown, relaunch restores live content, plan position, and running timers (countdowns re-anchored to wall-clock, count-up resumes accumulated). **Crash-loop breaker:** after N rapid crashes the app does not silently auto-resume — it offers "Resume last live state" vs "Start clean / skip last item" and disables the suspected offending item | FLOW-008; MAJOR-02 |
 | FR-076 | Emergency clear (per-layer and all-layer) without network | MVP | Clear removes chosen layer(s) from live output <200ms with no network dependency | CON-2; JTBD-6 |
 | FR-077 | Emergency blackout (instant) without network | MVP | Blackout blanks audience output(s) <200ms offline; un-blackout restores prior content | CON-2 |
 | FR-078 | Per-layer clearing (text/background/lower-third/media independently) | MVP | Each layer clears independently without affecting others | brief §core |
@@ -219,7 +221,7 @@ Format: `ID | Requirement | Priority | Acceptance criteria (measurable) | Trace`
 | FR-080 | Automatic backups on a schedule | R2 | Periodic backups created and retained per policy; restore verified | RP-reliability |
 | FR-081 | Storage-space warning and safe-mode | R2 | Low-disk warns before capture/record; safe-mode boots with minimal subsystems on repeated crash | RP-reliability |
 | FR-082 | Structured logs with rotation + diagnostic report export | R2 | Logs rotate under a size cap; a redacted diagnostic bundle exports on demand | threat T19; observability |
-| FR-083 | No AI/transcription/provider failure blocks slide/scripture/timer control | MVP | With AI/providers failing or disabled, all core live controls remain fully operable | G-3; CON-2; FLOW-010 |
+| FR-083 | No AI/transcription/provider failure blocks slide/scripture/timer control | MVP | Cross-cutting architectural invariant; MVP failure-isolation is carried by NFR-024. With AI/providers failing or disabled, all core live controls remain fully operable — meaningful acceptance begins at R3 when AI subsystems land, verified by fault-injection | G-3; CON-2; FLOW-010 |
 | FR-084 | Bounded queues/caches and cancellable background tasks | MVP | Background work (indexing, media scan) is cancellable and memory-bounded; no unbounded growth | METRIC-003; perf |
 
 ### EPIC-J — Mobile control & pairing (MVP + later)
@@ -229,10 +231,10 @@ Format: `ID | Requirement | Priority | Acceptance criteria (measurable) | Trace`
 | FR-085 | Discover desktop hosts on the LAN | MVP | Mobile app lists reachable hosts via mDNS; QR-only fallback works when multicast is blocked | RP-08 §6; C14 |
 | FR-086 | QR-code pairing with host-side confirmation | MVP | Scanning a host QR (fingerprint + single-use short-TTL secret) prompts host approval; pairing completes only on approval | threat T1/T18 |
 | FR-087 | Remember authorised hosts + secure reconnection (no fresh QR) | MVP | Paired device reconnects via pinned host fingerprint + device proof-of-possession; re-auth each session | threat T8 §3.3 |
-| FR-088 | Encrypted, authenticated LAN control transport | MVP | All control traffic is TLS 1.3 with pinned host cert; plaintext rejected | threat T2/T3 |
+| FR-088 | Encrypted, authenticated LAN transport | MVP | All LAN traffic to/from controllers — control, previews, transcript/caption, and media — is TLS 1.3 with a pinned host cert; plaintext rejected; no plaintext preview/transcript egress | threat T2/T3 |
 | FR-089 | Per-device revocable tokens bound to a device keypair | MVP | Admin can revoke a device; revocation drops it mid-session immediately | threat T8 |
 | FR-090 | Server-side role enforcement for all seven roles (deny-by-default) | MVP | Every command validated against the device's granted role on the host; client-asserted role never trusted | threat T5; §16 |
-| FR-091 | Command replay protection + rate limiting | MVP | Duplicate/stale/out-of-window commands rejected; per-device+global rate caps enforced; output path isolated | threat T4/T6 |
+| FR-091 | Command replay protection + rate limiting | MVP | Duplicate/stale/out-of-window commands rejected (replay window: ±30s clock-skew tolerance + monotonic sequence); per-device+global rate caps enforced; output path isolated | threat T4/T6 |
 | FR-092 | Current + next slide preview and service-plan navigation on mobile | MVP | Paired device (role-permitting) sees live current/next and can navigate the plan | RP-12; FLOW-004 |
 | FR-093 | Mobile slide/clear/blackout control (role-scoped) | MVP | Role-permitted device advances slides / clears / blacks out; desktop acts <200ms on LAN | METRIC-007; FLOW-004 |
 | FR-094 | Mobile timer + TIME UP control (role-scoped) | MVP | Timer Operator role starts/stops/adjusts timers and dismisses TIME UP from mobile | FR-061; §16 |
@@ -248,13 +250,13 @@ Format: `ID | Requirement | Priority | Acceptance criteria (measurable) | Trace`
 | FR-099 | Select audio input device/interface and monitor input level | R3 | Operator picks an input; a live level meter reflects signal; selection persists | RP-12 (sound) |
 | FR-100 | Start/pause/resume/stop transcription | R3 | Each control takes effect and is reflected in transcript state within 1s | brief §transcription |
 | FR-101 | Offline transcription default (Whisper family) with hardware-based model auto-select | R3 | On first run a hardware probe selects a model that sustains real-time; a warning shows if it cannot | RP-03; C13 |
-| FR-102 | Mandatory VAD gating to suppress silence/music hallucination | R3 | On the standard non-speech test set, ≤1% of non-speech seconds produce displayed text (provisional cap, ratified after Stage-10 measurement) | RP-03/04; capability |
+| FR-102 | Mandatory VAD gating to suppress silence/music hallucination | R3 | On the FR-171 non-speech evaluation set, ≤1% of non-speech seconds produce **committed** transcript text (the surface detection/notes consume; verbatim display is OFF by default per FR-166) — provisional cap, ratified after Stage-10 | RP-03/04; capability |
 | FR-103 | Interim (provisional) vs confirmed transcript segments with timestamps | R3 | Interim text shown in a distinct provisional style; confirmed segments carry timestamps and persist | RP-03; FLOW-005 |
 | FR-104 | Transcription degrades gracefully on insufficient hardware (pause/smaller model/"degraded" status) | R3 | When real-time cannot be sustained, status shows "degraded/paused"; slide control unaffected | C13; capability §4 |
 | FR-105 | Transcript persistence, autosave, and session recovery | R3 | A transcription session survives app restart with no committed-segment loss | brief §transcription |
 | FR-106 | Transcript correction editing (non-destructive over an immutable raw stream) | R3 | Corrections edit a display layer without altering the stored raw token stream | RP-adjacent C1; C6 |
 | FR-107 | Transcript search, bookmarks, and sermon markers | R3 | Operator searches the transcript and sets/jumps bookmarks and markers | brief §transcription |
-| FR-108 | Per-church custom vocabulary / keyword boosting | R3 | A glossary of names/places biases recognition; added terms measurably reduce their error in a test | RP-adjacent C1 |
+| FR-108 | Per-church custom vocabulary / keyword boosting | R3 | A glossary biases recognition; on the FR-171 evaluation set, added terms reduce their per-term word-error rate by ≥20% relative in an A/B test vs no glossary | RP-adjacent C1; MAJOR-06 |
 | FR-109 | Editable, non-authoritative speaker labels (best-effort diarization) | R3 | Speaker labels are editable and clearly marked non-authoritative | capability §2.8; m5 |
 | FR-110 | Transcript export (TXT, Markdown, JSON token-level, SRT, WebVTT, PDF) | R3 | Each format exports and re-imports/opens correctly with timestamps where applicable | brief §transcription; C1 |
 
@@ -265,14 +267,14 @@ Format: `ID | Requirement | Priority | Acceptance criteria (measurable) | Trace`
 | FR-111 | Staged detection pipeline: deterministic reference parse → exact → fuzzy → semantic → confidence | R4 | Pipeline runs on the live transcript; deterministic parser results outrank semantic guesses | RP-04 |
 | FR-112 | Deterministic spoken-reference parsing (spoken numbers, book aliases) | R4 | "John three sixteen", "first Corinthians thirteen", "Psalm twenty-three one to six" parse correctly on clean audio | RP-04 |
 | FR-113 | Quote/paraphrase matching (fuzzy + semantic) surfaced as suggestions only | R4 | Verbatim quotes match; paraphrase surfaces candidates; semantic-only never auto-displays | RP-04; capability |
-| FR-114 | Confidence scoring + duplicate suppression + cooldown | R4 | Each suggestion carries a confidence; repeats within a window and the on-screen passage are suppressed | RP-04 |
+| FR-114 | Confidence scoring + duplicate suppression + cooldown | R4 | Each suggestion carries a confidence; repeats within a cooldown window (default 60s, configurable) and the on-screen passage are suppressed | RP-04 |
 | FR-115 | Three operating modes: suggest-only, operator-confirmation (default), auto-display (high-confidence explicit only) | R4 | Default mode requires confirmation; auto-display available only for explicit refs above a threshold | RP-04; capability §2.7 |
 | FR-116 | Auto-display corroboration gate + strong-discouragement warning | R4 | Enabling auto-display shows the wrong-verse risk; a corroboration check is required before unattended display; semantic-only barred | C7; capability §2.7 |
 | FR-117 | Suggestion card: reference, passage, translation, confidence, alternatives, reason, approve/reject/edit/display/ignore/undo | R4 | Every suggestion exposes all listed actions; quick-undo reverts a display within 5s | brief §detection |
 | FR-118 | Detection history and correction/feedback | R4 | A history log records detections + operator decisions; corrections are recordable | brief §detection |
 | FR-119 | Detection never blocks or overrides manual scripture control | R4 | Manual search/display remains available and authoritative regardless of detector state | CON-2; capability |
 | FR-120 | Documented accuracy limits surfaced to operator (no perfect-accuracy claim) | R4 | Product UI/docs state detection is reliable for explicit refs, fallible for quotes, unreliable for paraphrase | brief §detection; capability |
-| FR-121 | Accent/noise handling posture: precision-over-recall defaults | R4 | Default thresholds favour precision; false-positive rate ≤5% on the explicit-reference test set (provisional ceiling, ratified after Stage-10 measurement) | RP-04; METRIC-009 |
+| FR-121 | Accent/noise handling posture: precision-over-recall defaults | R4 | Default thresholds favour precision; false-positive rate ≤5% on the FR-171 explicit-reference evaluation set (provisional ceiling, ratified after Stage-10) | RP-04; METRIC-009 |
 
 ### EPIC-M — Sermon intelligence (R5)
 
@@ -293,10 +295,10 @@ Format: `ID | Requirement | Priority | Acceptance criteria (measurable) | Trace`
 | ID | Requirement | Priority | Acceptance criteria | Trace |
 |---|---|---|---|---|
 | FR-131 | Provider abstraction for STT and note-generation (local default + pluggable cloud) | R3 | Switching provider requires no core-flow change; local default always present | RP-03/05 §4 |
-| FR-132 | Cloud providers OFF by default; opt-in per provider with visible disclosure | R3 | No audio/transcript/notes leave the host until a per-provider opt-in is accepted | CON-5; threat T10 |
+| FR-132 | Cloud providers OFF by default; opt-in per provider with visible disclosure | R3 | No audio/transcript/notes leave the host until a per-provider opt-in is accepted; the disclosure names the provider, what data is sent, and that data leaves the local network/jurisdiction (see FR-177) | CON-5; threat T10 |
 | FR-133 | Live "cloud active" indicator whenever data is sent off-device | R3 | An unmistakable indicator shows while any cloud provider is transmitting | threat T10 §5 |
 | FR-134 | User-supplied API keys stored only in the OS secret store | R3 | Keys never in plaintext config/logs; stored in Keychain/DPAPI/Secret Service; "remove key" purges | threat T9 §4 |
-| FR-135 | Graceful fallback to local provider on cloud error/network loss (never interrupts live output) | R3 | A cloud failure mid-service falls back to local without blanking output; transcription may degrade | RP §4; CON-2 |
+| FR-135 | Graceful fallback to local provider on cloud error/network loss (never interrupts live output) | R3 | Bounded retry-with-backoff before dropping to local; a defined failover order for multi-provider configs; falls back without blanking output; transcription may degrade | RP §4; CON-2 |
 | FR-136 | Usage visibility + estimated cost + data-retention disclosure per provider | R3 | Operator sees usage/cost estimate and the provider's retention disclosure link before/while using it | brief §AI |
 | FR-137 | Consent + retention state persisted and Administrator-gated | R3 | Consent/retention settings persist, are auditable, and only Administrator can change them | threat §5.3; §16 |
 
@@ -324,8 +326,8 @@ Format: `ID | Requirement | Priority | Acceptance criteria (measurable) | Trace`
 | FR-150 | Append-only audit log (who changed live output / sent command / changed consent) | MVP | Every live-control and consent change logs device, role, action, timestamp, result; log is append-only | threat T7 |
 | FR-151 | Output/display configuration management | MVP | Admin configures outputs/displays and persists profiles per venue | brief §multi-output |
 | FR-152 | Provider & key configuration (secure) | R3 | Admin configures providers and keys via the secret store; keys never shown in plaintext after entry | FR-134 |
-| FR-153 | Configurable data retention + reliable deletion of recordings/transcripts/notes | R3 | Retention policy configurable; delete removes all copies incl. derived artifacts; cloud-copy limits disclosed | threat T17 §5.2 |
-| FR-154 | At-rest confidentiality for the primary datastore + captured audio | R3 | Primary store/audio encrypted at rest (SQLCipher) OR OS full-disk-encryption verified as a documented prerequisite | C9; OD-21 |
+| FR-153 | Configurable data retention + reliable deletion of recordings/transcripts/notes | R3 | Retention policy configurable with a conservative provisional default (raw audio purged after 7 days unless explicitly kept; transcripts/notes retained), revisable post-measurement (OD-09); delete removes all copies incl. derived artifacts; cloud-copy limits disclosed | threat T17 §5.2 |
+| FR-154 | At-rest confidentiality for the primary datastore + captured audio | R3 | App-managed encryption (SQLCipher) is the default acceptance path; if relying on OS full-disk encryption instead, the app verifies FDE is enabled and warns/blocks sensitive capture when FDE is unconfirmed (assumption recorded §9/§21) | C9; OD-21 |
 | FR-155 | Signed application updates with signature verification + anti-rollback | MVP | Updates apply only if signature verifies; downgrade below min-version rejected; heeds Sparkle CVE-2025-0509 class | threat T14 |
 | FR-156 | Local AI-model integrity verification before load | R3 | Model files verified by pinned hash/signature before load; mismatch refuses to load | threat T13 |
 | FR-157 | Backup encryption + untrusted-location warning | R2 | Backups use authenticated encryption; exporting to a user-chosen location warns about sensitivity | threat T15 |
@@ -338,7 +340,7 @@ Added to close Stage-3 pre-audit review gaps ([PRD-REVIEW-stage3.md](../audits/P
 
 | ID | Requirement | Priority | Acceptance criteria | Trace |
 |---|---|---|---|---|
-| FR-160 | GPU/renderer device-loss & media-decoder failure recovery | MVP | On GPU device-loss/reset or a decoder failure, the affected output recovers (renderer re-init / software-decode fallback) without full app restart and without blanking other outputs | C-1; NFR-024 |
+| FR-160 | GPU/renderer device-loss & media-decoder failure recovery | MVP | An isolated per-output decoder failure recovers (software-decode fallback) without affecting other outputs. A whole-device GPU loss (TDR/driver reset) — which drops all shared-GPU outputs at once — causes no content loss or operator rebuild and recovers affected outputs within a bounded time (≤3s target), holding the last presented frame where possible; no full app restart | C-1; MAJOR-04; NFR-024 |
 | FR-161 | Audio-output-device disconnection/reconnection handling | MVP | Audio-device loss is detected and surfaced; on reconnect, playback resumes to the selected device; audio is never forced onto an unintended device | C-2; FR-068; NFR-024 |
 | FR-162 | Desktop stage-message authoring & sending | MVP | Operator composes and sends a stage message to the stage/confidence output; it displays and clears on command | C-10; RP-12 |
 | FR-163 | Per-output frame-rate configuration | R2 | Each output's target frame rate is configurable and applied | C-10; brief §multi-output |
@@ -347,6 +349,22 @@ Added to close Stage-3 pre-audit review gaps ([PRD-REVIEW-stage3.md](../audits/P
 | FR-166 | Verbatim ASR on-screen caption display (OFF by default) | R3 | Verbatim transcript captioning to an output is an advanced opt-in, OFF by default; interim text uses provisional styling | C-10; capability §1.6 |
 | FR-167 | Transcription language & accent/locale selection | R3 | Operator selects transcription language/locale; selection persists and is applied to the recognizer | C-10; RP-03 |
 | FR-168 | Mobile macro triggering (role-scoped) | R6 | Production Operator/Administrator trigger permitted macros from mobile | RP-12; §16; FR-144 |
+
+### EPIC-R — Audit-discharge requirements (Stage-4 audit)
+
+Added to close the 17 majors from the Stage-4 audit ([PRD-AUDIT-stage4.md](../audits/PRD-AUDIT-stage4.md)).
+
+| ID | Requirement | Priority | Acceptance criteria | Trace |
+|---|---|---|---|---|
+| FR-169 | Storage-exhaustion detection & graceful degradation | MVP | Pre-write low-disk detection warns the operator before autosave/checkpoint/backup writes can fail; a reserved checkpoint headroom protects crash recovery; on a write failure the app degrades gracefully and always surfaces it (never silent) | MAJOR-01; NFR-024 |
+| FR-170 | Transcription capture-device disconnect handling | R3 | On audio-input-device loss, transcription pauses (does not crash), captured segments are preserved, a visible gap marker is inserted on reconnect/new-input selection, transcription resumes, and slide control is unaffected | MAJOR-03; WORKFLOWS F2 |
+| FR-171 | AI evaluation-set definition (benchmark corpora) | R3 | A defined evaluation-set artefact specifies the composition, source, size, and scoring protocol of the non-speech and explicit-reference test sets; FR-102/FR-108/FR-121/METRIC-009 reference it by name; delivered before Stage-10 measurement (spike S11) | MAJOR-05/06 |
+| FR-172 | Audio-feedback / self-re-transcription guard | R3 | While app-emitted media/alert audio (FR-063/068/069) is routed to a shared/house output, transcription ingestion is suppressed/paused and scripture-detection firing is gated; the operator is warned and mic-source guidance is documented | MAJOR-08; capability §1.2/1.3 |
+| FR-173 | Untrusted-media/font decode hardening | MVP | Imported media/fonts decode via memory-safe or actively-maintained decoders with header/type/size validation before full decode; decode is isolated/sandboxed where platform-feasible; a documented patch cadence applies (deep fuzzing → Stage-13) | MAJOR-09; threat T12 |
+| FR-174 | Control-message schema/input validation | MVP | Every LAN control message passes strict schema/type/size/range validation; unknown/oversized fields are rejected; malformed input fails safe (reject + keep last-good output rendered); a fuzz/fault-injection AC covers the parser | MAJOR-10; threat T20 |
+| FR-175 | Seizure-safety / reduced-motion | MVP | Any flashing/animated output is bounded to ≤3 flashes per second (WCAG 2.3.1) and a reduced-motion option disables non-essential animation on audience/livestream outputs | MAJOR-12; WCAG 2.3.1 |
+| FR-176 | Privacy policy & app-store data disclosures | MVP | A privacy policy is shipped/linked in-product and in each store listing; Apple App Privacy and Google Play Data Safety disclosures are completed for the MVP mobile app | MAJOR-14; LICENSING §5 |
+| FR-177 | DPA & cross-border transfer handling (cloud) | R3 | Enabling any cloud provider requires a DPA + cross-border-transfer disclosure; the FR-132 disclosure names the provider, what data is sent, and that data leaves the local network/jurisdiction | MAJOR-14; LICENSING §4 |
 
 ## 14. Non-functional requirements
 
@@ -363,25 +381,26 @@ Performance targets are **proposals to be ratified in Stage 5** against a benchm
 | NFR-005 | 1080p60 render (1 output) | R2 | Sustained 60fps, <5% dropped frames on Tier-B hardware (spike-gated: S1/S2) | RP-09 #7 |
 | NFR-006 | Multiple independent outputs | R2 | 2–3 independent 1080p60 outputs ≥55fps each (spike-gated S1/S2) | RP-09 #8; OD-23 |
 | NFR-007 | Transcription latency | R3 | ≤2s behind live speech (goal ≤1s) on the selected model/hardware (spike-gated: S8) | RP-09 #9 |
-| NFR-008 | Scripture-detection latency | R4 | ≤1.5s incremental after transcript segment | RP-09 #10 |
+| NFR-008 | Scripture-detection latency | R4 | ≤1.5s incremental after transcript segment (INFERRED-Low; spike-gated S8; provisional pending Stage-5/10 measurement) | RP-09 #10 |
 | NFR-009 | Mobile-command latency | MVP | Tap→desktop acts ≤200ms on same LAN | METRIC-007; RP-09 #11 |
 | NFR-010 | Long-run (8–12h) memory stability | MVP | <5% memory growth over 12h; no unbounded leak | METRIC-003; RP-09 #13 |
-| NFR-011 | Background CPU/GPU when idle | R2 | CPU <3%; no needless GPU wake | RP-09 #14 |
+| NFR-011 | Background CPU/GPU when idle | R2 | CPU <3% over a 5-min idle sample; GPU stays in low-power state (no periodic wake) when no presentation is active | RP-09 #14 |
 | NFR-012 | Transcription model resident memory | R3 | ≤2GB for the selected model (model-dependent; spike-gated: S8) | RP-09 #4 |
 | NFR-013 | Media-cache memory | R2 | Bounded ≤1GB, LRU-evictable | RP-09 #5; FR-071 |
 | NFR-014 | Cross-platform parity | MVP | Core presentation behaviour identical on Windows, macOS, Linux (test matrix passes on all three) | G-2; CON-1 |
 | NFR-015 | Offline operation | MVP | All core live functions operate with the network disabled | CON-2; G-1 |
-| NFR-016 | LAN transport security | MVP | TLS 1.3 with pinned host cert; plaintext control rejected | threat §3.1 |
+| NFR-016 | LAN transport security | MVP | All LAN traffic to/from controllers — control, previews, transcript/caption streams, and media — uses TLS 1.3 with a pinned host cert (or authenticated app-layer crypto); no plaintext egress of any control/preview/transcript/media data | threat §3.1; T3 |
 | NFR-017 | Secret storage | MVP | All secrets/tokens only in OS secret store; none in plaintext/logs | threat §4 |
 | NFR-018 | Cloud data-egress control | R3 | No sermon audio/transcript/notes leave the host without explicit per-provider opt-in | CON-5; threat T10 |
 | NFR-019 | Keyboard accessibility | MVP | Every core live action operable by keyboard alone | a11y; FR-014 |
-| NFR-020 | Display legibility/accessibility | MVP | Operator UI meets WCAG 2.1 AA contrast (≥4.5:1 normal text, ≥3:1 large text/UI); stage/confidence text supports configurable large size (≥48px-equivalent) + high-contrast themes for stage-lighting readability | a11y; RP-12 |
-| NFR-021 | Screen-reader support (desktop) | R2 | Operator controls expose accessible names/roles to platform screen readers (explicit MVP decision: full screen-reader support is R2; MVP ships keyboard operability NFR-019 + contrast NFR-020) | a11y |
-| NFR-026 | Mobile-controller accessibility | R2 | Mobile controls expose accessible labels and meet minimum touch-target size (≥44×44pt) | a11y; RP-12 |
+| NFR-020 | Display legibility/accessibility | MVP | Operator UI meets WCAG 2.1 AA **contrast** (≥4.5:1 normal text, ≥3:1 large text/UI); stage/confidence text supports configurable large size (≥48px-equivalent) + high-contrast themes for stage-lighting readability. (AA claim scoped to contrast; photosensitivity/flash safety is FR-175) | a11y; RP-12 |
+| NFR-021 | Screen-reader support (desktop) | MVP | MVP: core live desktop controls (next/prev/clear/blackout/go-live, timer/TIME-UP, scripture-stage) expose accessible names/roles to platform screen readers; full screen-reader coverage of all UI is R2 | a11y; MAJOR-13 |
 | NFR-022 | Timer accuracy | MVP | ≤100ms/hour drift, independent of render frame rate (monotonic clock) | FR-065; METRIC-004 |
 | NFR-023 | Autosave work-loss bound | MVP | ≤5s of work lost on forced shutdown | FR-074; METRIC-005 |
-| NFR-024 | Output-failure isolation | MVP | No AI / media-decoder / GPU-renderer / audio-device / network / display / mobile failure blanks or clears live output as a side effect (verified via fault-injection) | CON-2; G-1; METRIC-001; FR-160/161 |
+| NFR-024 | Output-failure isolation | MVP | No AI / media-decoder / audio-device / network / display / mobile / storage-exhaustion failure blanks or clears live output as a side effect; an isolated per-output decoder failure never affects other outputs; a whole-device GPU loss (TDR/driver reset) causes no content loss or operator rebuild and recovers affected outputs within a bounded time, holding the last presented frame where possible. Verified via fault-injection incl. storage exhaustion and GPU device-loss | CON-2; G-1; METRIC-001; FR-160/161/169 |
 | NFR-025 | Localisation readiness | R2 | UI strings externalised for translation; no hard-coded user-facing strings in core flows | brief §core |
+| NFR-026 | Mobile-controller accessibility | MVP | MVP mobile controls expose accessible labels and meet minimum touch-target size (≥44×44pt); full AT coverage is R2 | a11y; MAJOR-13 |
+| NFR-027 | Dependency security / supply chain | MVP | CI generates an SBOM and runs automated dependency/CVE + license (GPL/AGPL-exclusion) scanning on every build; a defined patch cadence applies | m10; threat T16 |
 
 ## 15. Feature-to-release note
 
@@ -389,7 +408,7 @@ MVP delivers presentation foundation + core mobile control + reliability. R2–R
 
 ## 16. Permissions
 
-Seven scoped mobile-control roles enforced **server-side on the authoritative desktop** (deny-by-default; client-asserted role never trusted — FR-090). Full matrix (7 roles × 15 capabilities) in `docs/business/PERSONAS.md` §2. Highlights: Observer view-only; Presenter advances current content; Worship Leader = lyric advance/repeat + stage messages; Scripture Operator is the human gate that approves detected scripture; Timer Operator owns timers/TIME UP; Production Operator near-full minus admin; Administrator alone manages pairing/roles/consent and full live-transcript control. All `⚠️` cells are Administrator-configurable defaults. Enforcement invariant: role downgrade/unpair takes effect immediately; unvalidatable actions are rejected, not queued (FR-097). Open permission decisions (Blackout for lower roles, per-output permissions, event-scoped grants, macro granularity) tracked in OPEN-DECISIONS OD-12…OD-17.
+Seven scoped mobile-control roles enforced **server-side on the authoritative desktop** (deny-by-default; client-asserted role never trusted — FR-090). Full matrix (7 roles × **14 capabilities** — the TTS-control capability was removed per DEC-001) in `docs/business/PERSONAS.md` §2. Highlights: Observer view-only; Presenter advances current content; Worship Leader = lyric advance/repeat + stage messages; Scripture Operator is the human gate that approves detected scripture; Timer Operator owns timers/TIME UP; Production Operator near-full minus admin; Administrator alone manages pairing/roles/consent and full live-transcript control. All `⚠️` cells are Administrator-configurable defaults. Enforcement invariant: role downgrade/unpair takes effect immediately; unvalidatable actions are rejected, not queued (FR-097). Open permission decisions (Blackout for lower roles, per-output permissions, event-scoped grants, macro granularity) tracked in OPEN-DECISIONS OD-12…OD-17.
 
 ## 17. Data lifecycle
 
@@ -413,7 +432,7 @@ Sermon audio/transcripts/notes are sensitive (NDPA 2023 + GDPR). Cloud OFF by de
 
 ## 22. Accessibility
 
-Full keyboard operation of core live actions (NFR-019; FR-014); WCAG 2.1 AA contrast (≥4.5:1 normal, ≥3:1 large/UI) with configurable large-text (≥48px-equiv) and high-contrast stage/confidence legibility under stage lighting (NFR-020); localisation-ready UI (NFR-025). **Explicit MVP scope decision:** MVP guarantees keyboard operability + AA contrast; **full desktop screen-reader support (NFR-021) and mobile-controller accessibility (NFR-026) are R2** — this is a deliberate, recorded scope decision, not an omission. TTS is a non-goal (NG-1); accessibility needs it might have served are addressed via keyboard/contrast/legibility here.
+Full keyboard operation of core live actions (NFR-019; FR-014); WCAG 2.1 AA **contrast** (≥4.5:1 normal, ≥3:1 large/UI) with configurable large-text (≥48px-equiv) and high-contrast stage/confidence legibility (NFR-020); **seizure-safety / reduced-motion** — flashing/animated output bounded to ≤3/sec (WCAG 2.3.1, FR-175); localisation-ready UI (NFR-025). **MVP assistive-technology baseline (per Stage-4 audit MAJOR-13):** MVP ships accessible names/roles on **core live desktop controls** (NFR-021) and accessible labels + ≥44×44pt touch targets on the **mobile controller** (NFR-026); full screen-reader coverage of all UI is R2. This makes the DEC-001 TTS-removal rationale consistent — the compensating accessibility path (keyboard + contrast + AT-labelled core controls) is present in MVP, not deferred. TTS remains a non-goal (NG-1).
 
 ## 23. Reliability
 
@@ -433,7 +452,7 @@ Full register + scoring: `docs/delivery/RISK-REGISTER.md`.
 
 | ID | Risk | Mitigation (in PRD) |
 |---|---|---|
-| RISK-001 | Scope breadth vs one release | MVP bounded to presentation foundation (§30); phased R2–R6; validator + audit check MVP coherence |
+| RISK-001 | Scope breadth vs one release (two-product MVP surface: cross-platform GPU-compositing suite + hardened LAN control plane) | MVP bounded (§30); phased R2–R6; **intra-MVP sequencing** — ship a presentation-core desktop sub-release *before* the mobile control-plane slice (AS-1/AS-6, Stage 7); capacity assumption recorded (AS-6); validator + audit check MVP coherence |
 | RISK-002 | Bible-translation licensing | PD-only bundle (FR-025); licensed = API/user-supplied (FR-033/034); CON-3 |
 | RISK-003 | Scripture-detection accuracy | Operator-confirmation default (FR-115), precision-over-recall (FR-121), disclosed limits (FR-120) |
 | RISK-004 | Offline transcription performance | Hardware model auto-select (FR-101), graceful degradation (FR-104), spike S8 |
@@ -443,12 +462,14 @@ Full register + scoring: `docs/delivery/RISK-REGISTER.md`.
 | RISK-011 | Version control (resolved: git initialised) | n/a |
 | RISK-012 | Tauri-WebView-as-compositor tension | Architecture leans Rust core + wgpu + native output; Stage-5 ADR + spikes S1/S2 (OD-23) |
 | RISK-013 | Multi-output 1080p60 feasibility | NFR-006 spike-gated; fallback architecture required before committing (OD-23) |
+| RISK-014 | MVP dual-output (main + stage/confidence) independent fullscreen + hot-plug robustness depends on unproven spike S4 | Run spike S4 (FEASIBILITY §10) before committing FR-040/041; borderless-per-monitor + manual placement fallback; MVP dual-output is best-effort until S4 passes |
 
 ## 27. Dependencies
 
 - **External:** OS-native media decoders (per platform); NDI SDK (attribution/License-ID); Whisper (MIT) + local LLM runtime; public-domain Bible data (eBible.org/open.bible, USFM/USX); code-signing certificates per OS; (later) licensed-translation APIs, cloud AI/STT providers; ClickUp MCP (delivery).
 - **Internal:** Stage 5 ADRs (stack, UI shell, windowing, media engine, LAN protocol, NDI, at-rest encryption) and feasibility spikes S1–S10 gate committing NFR-005/006 and the render/media architecture; PM artifact validator (this stage).
 - **Legal (gate later features only):** ESV/API.Bible commercial terms, cloud-AI data terms, NDI 6.x EULA, codec-patent path, unfoldingWord share-alike (OD-06/08).
+- **Compliance accepting authority:** a legal/compliance reviewer **outside the engineering roster** is the accepting authority for licensing/privacy requirements (FR-021/022/034/140/146/153/158/176/177); recorded per-requirement in ClickUp ownership at Stage 6.
 
 ## 28. Open questions
 
@@ -460,7 +481,7 @@ Every FR/NFR row's **Acceptance criteria** column is its normative, testable pas
 
 ## 30. MVP
 
-**MVP = Presentation foundation (desktop Win/macOS/Linux + thin mobile controller).** Scope: service plans & library (EPIC-A), slides & editing incl. Latin/diacritic Unicode (EPIC-B), songs/lyrics user-supplied + PD hymns (EPIC-C), scripture search/display with bundled PD translations (EPIC-D MVP rows), main + stage/confidence outputs with display identification/reconnection (EPIC-E MVP rows), lower-third content types (FR-049), timers + TIME UP (EPIC-G MVP rows), media playback via OS/platform-only HW decoders (FR-067 + FR-073, promoted per C-6) + missing-media placeholder (EPIC-H MVP rows), autosave/crash-recovery/emergency clear/blackout/per-layer + GPU/decoder/audio-device recovery (EPIC-I MVP rows + FR-160/161/162), mobile pairing + slide/timer control with full LAN security + RBAC (EPIC-J MVP rows), safe import/export (FR-138/139), user/role/pairing management + audit + signed updates (EPIC-P MVP rows). Reliability, offline, keyboard accessibility, and core Tier-A performance NFRs apply. **Render/media bound (C-5):** the MVP single main output targets 1080p60 best-effort under the NFR-003 memory bound and the METRIC-003 12h soak; the *guaranteed* 1080p60/<5%-dropped bar (NFR-005) and multi-output (NFR-006) are R2 and spike-gated. **MVP is realistically bounded** (RISK-001): no transcription/detection/sermon-notes, no multi-output expansion, no integrations, **no TTS** (NG-1).
+**MVP = Presentation foundation (desktop Win/macOS/Linux + thin mobile controller).** Scope: service plans & library (EPIC-A), slides & editing incl. Latin/diacritic Unicode (EPIC-B), songs/lyrics user-supplied + PD hymns (EPIC-C), scripture search/display with bundled PD translations (EPIC-D MVP rows), main + stage/confidence outputs with display identification/reconnection (EPIC-E MVP rows), lower-third content types (FR-049), timers + TIME UP (EPIC-G MVP rows), media playback via OS/platform-only HW decoders (FR-067 + FR-073, promoted per C-6) + missing-media placeholder (EPIC-H MVP rows), autosave/crash-recovery/emergency clear/blackout/per-layer + GPU/decoder/audio-device recovery (EPIC-I MVP rows + FR-160/161/162), mobile pairing + slide/timer control with full LAN security + RBAC (EPIC-J MVP rows), safe import/export (FR-138/139), user/role/pairing management + audit + signed updates (EPIC-P MVP rows). Also in MVP (Stage-4 audit discharge): storage-exhaustion handling + crash-loop breaker (FR-169, FR-075), untrusted-media/font decode hardening + control-message validation (FR-173, FR-174), seizure-safety/reduced-motion (FR-175), privacy policy + app-store data disclosures (FR-176), MVP assistive-tech minimums (NFR-021/026), and dependency/SBOM scanning (NFR-027). Reliability, offline, keyboard accessibility, and core Tier-A performance NFRs apply. **Render/media bound (C-5, MAJOR-16):** MVP drives **two concurrent independent outputs** (main audience + stage/confidence), not a single output — dependent on robust independent multi-monitor windowing (spike S4, RISK-014; borderless-per-monitor fallback). MVP video has a testable floor on Tier-A (single-output 1080p30 or 720p60, ≤5% dropped frames) under the NFR-003 memory bound and the METRIC-003 12h soak; the *guaranteed* 1080p60/<5%-dropped bar (NFR-005) and 3+ independent outputs (NFR-006) are R2 and spike-gated. **MVP is realistically bounded** (RISK-001): no transcription/detection/sermon-notes, no multi-output expansion, no integrations, **no TTS** (NG-1).
 
 ## 31. Later releases
 
@@ -487,17 +508,17 @@ Every FR/NFR row's **Acceptance criteria** column is its normative, testable pas
 
 ## 32. Launch criteria (MVP)
 
-MVP is launch-ready when: all MVP-priority FR/NFR acceptance criteria pass with evidence; METRIC-001/002/004/005/007/008/010 meet targets; independent code/QA/security reviews pass; no unresolved critical/high security finding; packaging validated on Windows/macOS/Linux; crash-recovery + display/audio/mobile/network-loss recovery tests pass; documentation + runbooks complete; PRD audit PASS and Goal Contract validator exits 0.
+MVP is launch-ready when: all MVP-priority FR/NFR acceptance criteria pass with evidence; METRIC-001/002/003/004/005/006/007/008/010 meet targets (incl. the 12h soak METRIC-003 and time-to-first-slide METRIC-006); independent code/QA/security reviews pass; no unresolved critical/high security finding; packaging validated on Windows/macOS/Linux; crash-recovery + crash-loop-breaker + storage-exhaustion + display/audio/mobile/network-loss recovery tests pass; seizure-safety (≤3 flashes/sec) verified; a published privacy policy + completed App Store/Play data disclosures ship with the MVP mobile app (FR-176); documentation + runbooks complete; PRD audit PASS and Goal Contract validator exits 0.
 
 ## 33. Traceability
 
 Every FR maps to exactly one release below; NFRs and METRICs apply cross-cutting. Requirement→ticket mapping is created in Stage 6 (ClickUp). Requirement→test mapping is created with tickets and verified in Stage 8+.
 
-**MVP:** FR-001, FR-002, FR-003, FR-004, FR-005, FR-006, FR-007, FR-008, FR-009, FR-010, FR-011, FR-012, FR-013, FR-014, FR-015, FR-016, FR-017, FR-019, FR-020, FR-021, FR-024, FR-025, FR-026, FR-027, FR-028, FR-029, FR-031, FR-035, FR-036, FR-037, FR-040, FR-041, FR-046, FR-049, FR-054, FR-055, FR-056, FR-057, FR-058, FR-059, FR-060, FR-061, FR-062, FR-065, FR-066, FR-067, FR-068, FR-070, FR-074, FR-075, FR-076, FR-077, FR-078, FR-079, FR-083, FR-084, FR-085, FR-086, FR-087, FR-088, FR-089, FR-090, FR-091, FR-092, FR-093, FR-094, FR-097, FR-098, FR-138, FR-139, FR-147, FR-148, FR-150, FR-151, FR-155, FR-073, FR-160, FR-161, FR-162
+**MVP:** FR-001, FR-002, FR-003, FR-004, FR-005, FR-006, FR-007, FR-008, FR-009, FR-010, FR-011, FR-012, FR-013, FR-014, FR-015, FR-016, FR-017, FR-019, FR-020, FR-021, FR-024, FR-025, FR-026, FR-027, FR-028, FR-029, FR-031, FR-035, FR-036, FR-037, FR-040, FR-041, FR-046, FR-049, FR-054, FR-055, FR-056, FR-057, FR-058, FR-059, FR-060, FR-061, FR-062, FR-065, FR-066, FR-067, FR-068, FR-070, FR-074, FR-075, FR-076, FR-077, FR-078, FR-079, FR-083, FR-084, FR-085, FR-086, FR-087, FR-088, FR-089, FR-090, FR-091, FR-092, FR-093, FR-094, FR-097, FR-098, FR-138, FR-139, FR-147, FR-148, FR-150, FR-151, FR-155, FR-073, FR-160, FR-161, FR-162, FR-169, FR-173, FR-174, FR-175, FR-176
 
 **R2 (media & output expansion):** FR-022, FR-030, FR-032, FR-038, FR-039, FR-042, FR-043, FR-044, FR-045, FR-047, FR-048, FR-050, FR-051, FR-052, FR-053, FR-063, FR-069, FR-071, FR-072, FR-080, FR-081, FR-082, FR-096, FR-140, FR-141, FR-149, FR-157, FR-163, FR-164
 
-**R3 (transcription):** FR-099, FR-100, FR-101, FR-102, FR-103, FR-104, FR-105, FR-106, FR-107, FR-108, FR-109, FR-110, FR-131, FR-132, FR-133, FR-134, FR-135, FR-136, FR-137, FR-152, FR-153, FR-154, FR-156, FR-158, FR-159, FR-166, FR-167
+**R3 (transcription):** FR-099, FR-100, FR-101, FR-102, FR-103, FR-104, FR-105, FR-106, FR-107, FR-108, FR-109, FR-110, FR-131, FR-132, FR-133, FR-134, FR-135, FR-136, FR-137, FR-152, FR-153, FR-154, FR-156, FR-158, FR-159, FR-166, FR-167, FR-170, FR-171, FR-172, FR-177
 
 **R4 (scripture intelligence):** FR-033, FR-034, FR-095, FR-111, FR-112, FR-113, FR-114, FR-115, FR-116, FR-117, FR-118, FR-119, FR-120, FR-121, FR-146, FR-165
 
@@ -505,7 +526,7 @@ Every FR maps to exactly one release below; NFRs and METRICs apply cross-cutting
 
 **R6 (integrations & hardening):** FR-018, FR-023, FR-064, FR-142, FR-143, FR-144, FR-145, FR-168
 
-**NFRs (cross-cutting):** NFR-001…NFR-025 apply across releases per their listed priority. **METRICs:** METRIC-001…METRIC-010. **FLOWs:** FLOW-001…FLOW-010. **RISKs:** RISK-001…RISK-013.
+**NFRs (cross-cutting):** NFR-001…NFR-027 apply across releases per their listed priority. **METRICs:** METRIC-001…METRIC-010. **FLOWs:** FLOW-001…FLOW-010. **RISKs:** RISK-001…RISK-014.
 
 ## 34. Stage-3 pre-audit review discharge
 
@@ -517,17 +538,41 @@ An independent fresh-context 4-lens pre-audit review ([PRD-REVIEW-stage3.md](../
 - **C-4** thin-controller reconciliation → AS-1 note (two hardened subsystems).
 - **C-5** MVP render/media bound → §30 render/media clause.
 - **C-6** platform-only decode to MVP → FR-073 promoted to MVP.
-- **C-7** spike-gate parity → NFR-005/007/012 annotated.
+- **C-7** spike-gate parity → NFR-005/007/008/012 annotated (NFR-008 added per Stage-4 MAJOR-17).
 - **C-8** reference-hardware tiers → §14 Tier-A/B definition.
 - **C-9** measurable accessibility → NFR-020 (WCAG AA), NFR-021/026, §22 MVP screen-reader decision.
 - **C-10** coverage gaps → FR-162…FR-167 (stage-message authoring, per-output fps, mobile lower-third/transcript/note-status, manual fuzzy/semantic search, verbatim-caption default-OFF, language/accent selection).
 - **C-11** citation typos fixed (FR-061→FR-094, FR-064→FR-144/FR-150); §28 backlog mapping added.
 
-FR count is now **168** (159 + EPIC-Q 9); NFR **26**. The §33 FR→release mapping was updated accordingly.
+FR count after Stage-3 discharge: 168 (159 + EPIC-Q 9); NFR 26.
+
+## 35. Stage-4 formal-audit discharge
+
+The formal Stage-4 independent audit ([PRD-AUDIT-stage4.md](../audits/PRD-AUDIT-stage4.md)) returned **PASS WITH CONDITIONS** (0 blockers, 17 majors, 16 minors). All 17 majors were discharged in this revision (material minors folded in):
+
+- **MAJOR-01** storage exhaustion → FR-169 (MVP) + NFR-024.
+- **MAJOR-02** crash-loop breaker → FR-075 (MVP).
+- **MAJOR-03** transcription capture-device disconnect → FR-170 (R3).
+- **MAJOR-04** GPU device-loss reframed (bounded recovery; per-output vs whole-device) → FR-160, NFR-024.
+- **MAJOR-05** undefined AI benchmark corpora → FR-171 (eval-set definition); FR-102/108/121/METRIC-009 reference it.
+- **MAJOR-06** FR-108 untestable → metric + ≥20% relative threshold + A/B on FR-171 set.
+- **MAJOR-07** TTS de-scope in companion docs → PERSONAS §2 (14 caps), §16 count 14, WORKFLOWS A8/B8/F4 de-scoped.
+- **MAJOR-08** audio-feedback / self-re-transcription → FR-172 (R3).
+- **MAJOR-09** malicious-media decode hardening → FR-173 (MVP).
+- **MAJOR-10** control-message schema validation → FR-174 (MVP).
+- **MAJOR-11** transport scope → FR-088, NFR-016 broadened to all LAN traffic.
+- **MAJOR-12** seizure-safety / reduced-motion → FR-175 (MVP); NFR-020 framing corrected.
+- **MAJOR-13** MVP AT minimums → NFR-021/026 pulled to MVP; §22 reconciles DEC-001.
+- **MAJOR-14** compliance deliverables → FR-176 (MVP), FR-177 (R3), FR-132, §32 launch.
+- **MAJOR-15** RISK-001 sequencing + capacity → RISK-001, AS-6.
+- **MAJOR-16** MVP dual-output correction → §30, RISK-014.
+- **MAJOR-17** NFR-008 spike-gate → NFR-008, §34 C-7.
+
+Minors folded in: FR-013/025/042/063/066/067/091/102/114/135/153/154 refinements, NFR-011/027, CON-4 (AAC), §27 legal accepting-authority, §32 metrics, KJV dropped (OD-24 resolved). **FR count now 177 (168 + EPIC-R 9); NFR 27.**
 
 ---
 
-*End of PRD v1.0 (Stage 3, review-discharged). Next: Stage 4 independent PRD audit (must return exactly PASS).*
+*End of PRD v1.1 (Stage 4 audit-discharged). Re-audit run to confirm exactly PASS before Stage 5.*
 
 
 

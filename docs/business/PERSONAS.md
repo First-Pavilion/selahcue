@@ -123,15 +123,15 @@ mobile, and AI dependency fails.
 
 ### 1.7 Sound Engineer
 - **Goals:** Clean audio for room and broadcast; and, for SelahCue specifically, feed a
-  reliable audio source into live transcription and provide audio for TTS output routing.
+  reliable audio source into live transcription.
 - **Responsibilities:** Select/route the mic/audio-device source SelahCue captures for
-  transcription; manage audio-output device for TTS; monitor audio device connection.
+  transcription; monitor audio device connection.
 - **Primary JTBD:** "When I bring up the pulpit mic, I want SelahCue transcribing from that
   same feed so captions and scripture detection track the preacher."
 - **Needs:** Explicit audio-input-device selection, level/signal indication, graceful
-  handling when a device disconnects, control over which output TTS speaks to.
+  handling when a device disconnects.
 - **Pain points:** SelahCue grabbing the wrong input; USB/interface disconnects killing
-  transcription; TTS speaking to the wrong (or live house) output; latency.
+  transcription; latency.
 - **Device:** **Desktop** (at/near the audio console) primary.
 
 ### 1.8 Service Coordinator (Producer / Planner)
@@ -151,7 +151,7 @@ mobile, and AI dependency fails.
 - **Goals:** Keep SelahCue installed, licensed, secure, and configured across machines and
   the whole team; manage who can do what.
 - **Responsibilities:** Install/update software; configure outputs/displays; manage users,
-  roles, and permissions; manage mobile pairing/PINs; configure AI/transcription/TTS
+  roles, and permissions; manage mobile pairing/PINs; configure AI/transcription
   providers and keys; backups; bibles/translations licensing.
 - **Primary JTBD:** "When a new volunteer joins, I want to grant them a scoped mobile role
   and revoke it after the event."
@@ -197,6 +197,10 @@ These roles are the **scoped remote-control roles** assigned to a paired mobile 
 (and enforced by the authoritative desktop). They are distinct from the 11 personas above:
 a person's persona informs which mobile role they should be granted.
 
+> **TTS removed (DEC-001, Stage-4 MAJOR-07):** TTS is a non-goal. The former "TTS control"
+> capability has been struck from the matrix below (now **7 roles × 14 capabilities**) and
+> TTS output-routing pruned from the Sound Engineer/Production Operator personas.
+
 **Legend:** ✅ = full capability · 👁 = view/read-only · ⚠️ = limited / with-approval /
 suggest-only · ❌ = not permitted
 
@@ -212,7 +216,6 @@ suggest-only · ❌ = not permitted
 | Scripture search / display         |    ❌     |     ⚠️     |       ❌        |         ✅          |       ❌        |          ✅          |       ✅       |
 | Approve scripture suggestions      |    ❌     |     ❌     |       ❌        |         ✅          |       ❌        |          ✅          |       ✅       |
 | View transcript (live)             |    👁     |     👁     |       👁        |         👁          |       👁        |          👁          |       ✅       |
-| TTS control                        |    ❌     |     ❌     |       ❌        |         ⚠️          |       ❌        |          ✅          |       ✅       |
 | Send stage messages                |    ❌     |     ⚠️     |       ✅        |         ❌          |       ✅        |          ✅          |       ✅       |
 | Output-health monitoring           |    👁     |     👁     |       👁        |         👁          |       👁        |          ✅          |       ✅       |
 | Macro triggering                   |    ❌     |     ⚠️     |       ⚠️        |         ❌          |       ❌        |          ✅          |       ✅       |
@@ -231,7 +234,7 @@ suggest-only · ❌ = not permitted
   human-in-the-loop gate so no detection auto-displays.
 - **Timer Operator** owns countdowns and the **TIME UP** escalation but cannot touch
   content — matching the Stage Manager persona roaming the floor.
-- **Production Operator** is a near-full remote (lower thirds, TTS, macros, output health)
+- **Production Operator** is a near-full remote (lower thirds, macros, output health)
   for a trusted second operator — everything except administration.
 - **Administrator** is the only role that can manage pairing, provisioning, and roles, and
   is the only role with full live transcript control. Grant sparingly.
