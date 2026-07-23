@@ -6,9 +6,9 @@ Lightweight pointer only. ClickUp is the delivery source of truth. Do not duplic
 - Build Control task: https://app.clickup.com/t/86ajnx548 (`86ajnx548`)
 - ClickUp delivery list: `SelahCue — Delivery` (`901327960792`) in folder `SelahCue` (`901318653689`), space `First Pavilion (Engineering)` (`90136583508`)
 - Build Goal Contract: `docs/delivery/goals/BUILD-selahcue.md`
-- Current stage: **Stage 5 — Architecture & UX design** (complete, at gate)
-- Stage state: `GATE_REVIEW` (awaiting user gate decision)
-- Last approved gate: Gate 4 (Stage 4) — user replied `continue`, authorising Stage 5 (then `refine`: add Figma designs)
+- Current stage: **Stage 6 — ClickUp delivery planning** (complete, at gate)
+- Stage state: `GATE_REVIEW` (awaiting user gate decision — this gate authorises production implementation)
+- Last approved gate: Gate 5 (Stage 5) — user replied `continue`, authorising Stage 6 (after Figma refines)
 - Execution engine: `goal`
 - Execution model: **Opus 4.8 (1M context)** — Stage 2+ runs under the current session model.
 
@@ -43,3 +43,7 @@ Architecture spine (`docs/architecture/ARCHITECTURE.md`) + **16 ADRs** (`docs/ar
 ## Recovery note
 
 Greenfield build; not yet under git version control (RISK-011). To resume, read the Build Control task and this file, validate the BUILD + active STAGE contracts, then resume at the last unapproved gate (currently the Stage 1 gate).
+
+## Stage 6 outcome (2026-07-23)
+
+ClickUp delivery plan created in list SelahCue — Delivery (901327960792): **16 epics** (11 MVP + 5 later-release) + **14 foundation vertical-slice stories** + **3 milestones**. Requirement traceability (`docs/delivery/REQUIREMENTS-TRACEABILITY.md`): all 204 FR+NFR mapped. `docs/delivery/IMPLEMENTATION-READINESS.md`: **READY** with a 37-edge acyclic dependency graph + critical path. New validator `scripts/validate_delivery_plan.py` (coverage + acyclicity + READY) passes. Independent review (`DELIVERY-PLAN-REVIEW.md`): PASS WITH CONDITIONS, 0 blockers; medium/low traceability nits fixed. Awaiting Stage 6 gate — **this gate authorises Stage 7 (production implementation)**.
