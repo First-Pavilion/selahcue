@@ -266,6 +266,35 @@ fatal), and a bounded WebSocket message size (64 KiB, stops large pre-auth buffe
 
 - Target: S7h-001..S7h-008. Change: added `stage` (TimerView, compose_stage, compose_identify, StageDisplay) + Presenter::identify; refactored compose.rs to share layout_lines (compose_slide pixel-identical). Multi-lens adversarial review → **0 findings** (regression lens confirmed no compose_slide drift). Verifier: `cargo test` 26 crate / 138 workspace; clippy clean. Result: PASS. Decision: gate-review.
 
+## Batch 7i — walking skeleton: wgpu compositor + native output window (`selahcue-gpu`, `selahcue-desktop`)
+
+- Goal ID: STAGE7-foundation-7i · Status: GATE_REVIEW · Engine: goal · Independent verification: yes (multi-lens adversarial workflow)
+- Requirements: ADR-0002 (wgpu compositor), ADR-0015 (cross-GPU SSIM parity). ClickUp story 86ajp09c2.
+- Objective: bring up the GPU compositor — render the engine's scene on wgpu — with an offscreen path verified against the CPU rasterizer (SSIM ≥ 0.99), plus a native output window presenting the live output.
+
+### Completion predicate — batch 7i
+
+| ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
+|---|---|---|---|---|---|---|
+| S7i-001 | yes | wgpu compositor renders engine scenes offscreen + reads back | `cargo test -p selahcue-gpu` | GPU render succeeds | test_parity.rs | PASS |
+| S7i-002 | yes | Cross-backend parity: wgpu ≈ CPU rasterizer, SSIM ≥ 0.99 (ADR-0015) | `cargo test` (GPU present) | opaque/translucent/overlap/blackout/non-aligned all ≥0.99 | test_parity.rs | PASS |
+| S7i-003 | yes | Parity oracle is meaningful (alpha, row-padding, per-channel chroma) | review + test | oracle catches blend/stride/chroma regressions | CODE-REVIEW | PASS |
+| S7i-004 | yes | `ssim` per-channel + `FrameBuffer::from_rgba` correct | `cargo test -p selahcue-engine` | 30/30 | test_analysis.rs | PASS |
+| S7i-005 | yes | Native output window builds (winit + wgpu surface) | `cargo build -p selahcue-desktop` | compiles; surface-loss + keys handled | main.rs | PASS (compile-only) |
+| S7i-006 | yes | Full suite + clippy clean | `cargo test` + clippy | 141 workspace; 0 warnings (ex-transitive advisory) | test output | PASS |
+| S7i-007 | yes | Independent multi-lens review; confirmed findings fixed | fresh-context workflow | 11 raised → 6 confirmed (oracle gaps + desktop) → fixed + regression scenes | CODE-REVIEW-batch7i-gpu.md | PASS |
+| S7i-008 | no | On-screen window runtime verification; Tauri operator shell | — | Deferred: needs a display (their Mac) / Tauri batch | ADR-0002 | NOT_APPLICABLE (display/UI batch) |
+
+### Environment note
+
+GPU is present here (Metal, Apple M5), so the **offscreen compositor + SSIM parity is
+runtime-verified**. The on-screen `selahcue-desktop` window is **compile-verified only**
+(no display in this environment) and runs on a Mac via `cargo run -p selahcue-desktop`.
+
+### Iteration ledger — batch 7i
+
+- Target: S7i-001..S7i-007. Change: created `selahcue-gpu` (wgpu compositor: instanced rects, offscreen render + readback) + engine `ssim`/`from_rgba` + `selahcue-desktop` (winit+wgpu window). Multi-lens adversarial review → 6 confirmed: parity oracle never exercised alpha/row-padding and was luminance-only (would pass a broken compositor); desktop surface-loss freeze + case-sensitive blackout key → all fixed (per-channel SSIM, translucent + non-aligned parity scenes, surface-error redraw, case-insensitive key). Verifier: GPU parity ≥0.99; `cargo test` 141 workspace; clippy clean. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

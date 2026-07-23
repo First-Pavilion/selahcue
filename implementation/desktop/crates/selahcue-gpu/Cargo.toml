@@ -1,0 +1,16 @@
+[package]
+name = "selahcue-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SelahCue wgpu compositor: renders the selahcue-engine scene model on the GPU (ADR-0002), with an offscreen path for cross-backend parity verification (ADR-0015)."
+
+[dependencies]
+selahcue-engine = { path = "../selahcue-engine" }
+wgpu = "22"
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

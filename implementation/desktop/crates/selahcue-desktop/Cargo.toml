@@ -1,0 +1,21 @@
+[package]
+name = "selahcue-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SelahCue desktop walking skeleton: a native borderless output window (winit + wgpu) that presents the presenter's live output. The Tauri operator shell is a subsequent batch."
+
+[[bin]]
+name = "selahcue-output"
+path = "src/main.rs"
+
+[dependencies]
+selahcue-engine = { path = "../selahcue-engine" }
+selahcue-present = { path = "../selahcue-present" }
+wgpu = "22"
+winit = "0.30"
+pollster = "0.3"
+
+[lints]
+workspace = true

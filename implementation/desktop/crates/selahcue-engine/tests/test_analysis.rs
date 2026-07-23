@@ -68,6 +68,27 @@ fn no_content_returns_none() {
 }
 
 #[test]
+fn ssim_of_identical_is_one_and_diverges_for_different() {
+    use selahcue_engine::analysis::ssim;
+    let black = solid(Rgba::BLACK);
+    let white = solid(Rgba::WHITE);
+    assert!((ssim(&black, &black) - 1.0).abs() < 1e-9, "identical → 1.0");
+    assert!(ssim(&black, &white) < 0.1, "black vs white → very low");
+    // Mismatched dimensions → 0.0.
+    let small = render(&Frame::new(4, 4));
+    assert_eq!(ssim(&black, &small), 0.0);
+}
+
+#[test]
+fn framebuffer_from_rgba_round_trips_and_validates() {
+    let fb = solid(Rgba::rgb(10, 20, 30));
+    let copy = FrameBuffer::from_rgba(fb.width(), fb.height(), fb.bytes().to_vec()).unwrap();
+    assert_eq!(copy.bytes(), fb.bytes());
+    // Wrong length is rejected.
+    assert!(FrameBuffer::from_rgba(16, 16, vec![0u8; 10]).is_none());
+}
+
+#[test]
 fn strobe_burst_then_long_static_still_fails() {
     // A short strobe followed by 9s of static black, at 60 fps. A whole-capture
     // average would dilute this to a pass; the worst-1-second-window rule fails it.

@@ -125,3 +125,51 @@ pub fn frames_to_secs(frames: usize, fps: f64) -> f64 {
         0.0
     }
 }
+
+/// Structural similarity (SSIM) of two same-sized readbacks — the cross-backend
+/// parity oracle (ADR-0015): the CPU rasterizer and the wgpu backend render the same
+/// scene and must agree to **SSIM ≥ 0.99**, since byte-equality is infeasible across
+/// GPU vendors.
+///
+/// Computed **per colour channel** (R, G, B) and reduced by the minimum, so a
+/// chroma-only divergence (e.g. a swapped or luminance-preserving-but-wrong hue)
+/// cannot pass — a luminance-only score would miss it. Returns `1.0` for identical
+/// images, lower as they diverge, and `0.0` for mismatched dimensions.
+pub fn ssim(a: &FrameBuffer, b: &FrameBuffer) -> f64 {
+    if a.width() != b.width() || a.height() != b.height() {
+        return 0.0;
+    }
+    if a.bytes().is_empty() {
+        return 1.0;
+    }
+    channel_ssim(a, b, 0)
+        .min(channel_ssim(a, b, 1))
+        .min(channel_ssim(a, b, 2))
+}
+
+/// Global SSIM over one channel (`ch`: 0=R, 1=G, 2=B), values normalised to 0..1.
+fn channel_ssim(a: &FrameBuffer, b: &FrameBuffer, ch: usize) -> f64 {
+    let va: Vec<f64> = a.bytes().chunks_exact(4).map(|p| p[ch] as f64 / 255.0).collect();
+    let vb: Vec<f64> = b.bytes().chunks_exact(4).map(|p| p[ch] as f64 / 255.0).collect();
+    let n = va.len() as f64;
+    if n == 0.0 {
+        return 1.0;
+    }
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / n;
+    let mu_a = mean(&va);
+    let mu_b = mean(&vb);
+    let var = |v: &[f64], m: f64| v.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / n;
+    let var_a = var(&va, mu_a);
+    let var_b = var(&vb, mu_b);
+    let cov = va
+        .iter()
+        .zip(&vb)
+        .map(|(x, y)| (x - mu_a) * (y - mu_b))
+        .sum::<f64>()
+        / n;
+    // Stabilisation constants (values are 0..1, so L = 1).
+    let c1 = 0.01f64 * 0.01;
+    let c2 = 0.03f64 * 0.03;
+    ((2.0 * mu_a * mu_b + c1) * (2.0 * cov + c2))
+        / ((mu_a * mu_a + mu_b * mu_b + c1) * (var_a + var_b + c2))
+}

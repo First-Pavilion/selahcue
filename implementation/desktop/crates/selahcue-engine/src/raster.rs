@@ -52,6 +52,22 @@ impl FrameBuffer {
         }
     }
 
+    /// Wrap raw RGBA8 bytes (row-major, 4 bytes/px) as a framebuffer — e.g. a GPU
+    /// readback for cross-backend comparison. Returns `None` if the length or the
+    /// dimensions are invalid.
+    pub fn from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Option<Self> {
+        let expected = (width as usize).checked_mul(height as usize)?.checked_mul(4)?;
+        if is_renderable(width, height) && pixels.len() == expected {
+            Some(FrameBuffer {
+                width,
+                height,
+                pixels,
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }

@@ -23,9 +23,14 @@ desktop/
     ├── selahcue-engine/           # render-engine test seam (ADR-0015) — GPU-free
     │   ├── src/                    # scene.rs, raster.rs, analysis.rs, fault.rs, engine.rs
     │   └── tests/                  # test_scene/raster/analysis/fault/engine
-    └── selahcue-present/          # presentation — Preview→Live + stage/confidence output
-        ├── src/                    # slide.rs, compose.rs, present.rs, stage.rs
-        └── tests/                  # test_slide/compose/present/stage
+    ├── selahcue-present/          # presentation — Preview→Live + stage/confidence output
+    │   ├── src/                    # slide.rs, compose.rs, present.rs, stage.rs
+    │   └── tests/                  # test_slide/compose/present/stage
+    ├── selahcue-gpu/              # wgpu compositor (ADR-0002) + offscreen SSIM parity
+    │   ├── src/                    # compositor.rs, rect.wgsl, lib.rs
+    │   └── tests/                  # test_parity.rs (GPU ≈ CPU, SSIM ≥ 0.99)
+    └── selahcue-desktop/          # native output window (winit + wgpu) — bin: selahcue-output
+        └── src/                    # main.rs, blit.wgsl
 ```
 
 Tests live in each crate's `tests/` folder (one file per module, public-API
@@ -130,9 +135,22 @@ progress bar), and a clock — plus the **display-identify** overlay (a number p
 display). It composes the timer core + presenter, so main and stage show different content
 from one live state.
 
+## `selahcue-gpu` / `selahcue-desktop`
+
+The walking skeleton's render half. **`selahcue-gpu`** is the wgpu compositor (ADR-0002):
+it renders the engine's `scene::Frame` on the GPU, with an offscreen path whose pixel
+readback is checked against the CPU rasterizer at **SSIM ≥ 0.99** (the ADR-0015 cross-GPU
+parity oracle — runtime-verified on Metal). **`selahcue-desktop`** is a native output
+window (winit + wgpu surface) that presents the presenter's live output:
+
+```bash
+cargo test  -p selahcue-gpu       # GPU↔CPU parity (skips if no GPU)
+cargo run   -p selahcue-desktop   # opens the native output window (needs a display)
+```
+
 Status: **Stage 7 — foundation batches 7a (domain core) + 7b (persistence) + 7c
 (at-rest encryption) + 7d (LAN control core) + 7e (TLS transport) + 7f (render-engine
-seam) + 7g (presentation rendering) + 7h (stage/confidence output). Verified: `cargo test`
-138/138 (plain) + 16/16 (encryption) + 39/39 (server feature), `cargo clippy` clean.** The
-wgpu/Tauri walking skeleton, the QR/Flutter mobile client, CI, and app-shell key
-acquisition are subsequent batches.
+seam) + 7g (presentation rendering) + 7h (stage/confidence output) + 7i (wgpu compositor +
+native window). Verified: `cargo test` 141/141 (plain, incl. GPU parity) + 16/16
+(encryption) + 39/39 (server feature), `cargo clippy` clean.** The Tauri operator shell,
+the QR/Flutter mobile client, CI, and app-shell key acquisition are subsequent batches.
