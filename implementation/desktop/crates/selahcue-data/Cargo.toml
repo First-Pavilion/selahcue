@@ -6,12 +6,22 @@ license.workspace = true
 authors.workspace = true
 description = "SelahCue persistence: SQLite (WAL) storage, versioned migrations, integrity checks, crash-safe backups, and repositories for the domain model (FR-079, FR-001/002; ADR-0007)."
 
+[features]
+default = []
+# At-rest encryption (FR-154): compiles SQLCipher with a vendored OpenSSL
+# (self-contained — needs only a C toolchain + perl at build time, no system
+# libs) and enables the keyed-open API + key zeroing. Off by default so the
+# plain-SQLite test/dev build stays fast; CI/release builds enable it.
+encryption = ["rusqlite/bundled-sqlcipher-vendored-openssl", "dep:zeroize"]
+
 [dependencies]
 selahcue-core = { path = "../selahcue-core" }
-# Bundled SQLite (compiled from source — no system libs required). The at-rest
-# encryption story (FR-154) swaps this feature set for `bundled-sqlcipher-*`
-# and adds the key pragma; the repository/migration code is unchanged.
+# Bundled SQLite (compiled from source — no system libs required). Enabling the
+# `encryption` feature layers SQLCipher on top via `bundled-sqlcipher-*`; the
+# repository/migration code is unchanged, only the key pragma is added.
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+# Wipes key material (and the key-bearing PRAGMA string) from memory on drop.
+zeroize = { version = "1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

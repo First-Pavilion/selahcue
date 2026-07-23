@@ -6,7 +6,7 @@ Lightweight pointer only. ClickUp is the delivery source of truth. Do not duplic
 - Build Control task: https://app.clickup.com/t/86ajnx548 (`86ajnx548`)
 - ClickUp delivery list: `SelahCue — Delivery` (`901327960792`) in folder `SelahCue` (`901318653689`), space `First Pavilion (Engineering)` (`90136583508`)
 - Build Goal Contract: `docs/delivery/goals/BUILD-selahcue.md`
-- Current stage: **Stage 7 — Implementation foundation** (batches 7a + 7b done, at gate)
+- Current stage: **Stage 7 — Implementation foundation** (batches 7a + 7b + 7c done, at gate)
 - Stage state: `GATE_REVIEW` (awaiting user gate decision — this gate authorises production implementation)
 - Last approved gate: Gate 6 (Stage 6) — user replied `continue`, authorising Stage 7 (production implementation)
 - Execution engine: `goal`
@@ -54,4 +54,8 @@ First production code: `implementation/crates/selahcue-core` (scripture parser F
 
 ## Stage 7 outcome — batch 7b (2026-07-23)
 
-Persistence layer: `implementation/desktop/crates/selahcue-data` — WAL SQLite (rusqlite bundled), versioned append-only migrations + forward-compat guard, integrity checks, crash-safe online backup (FR-079), transactional `ServicePlan` repository. **Verified: cargo test 50/50, clippy clean.** Independent review (`implementation/desktop/CODE-REVIEW-batch7b.md`) PASS WITH CONDITIONS (0 high, 1 med, 3 low) → M1/L1/L2 fixed with regression tests. Story 86ajp09he **in progress** (SQLCipher at-rest FR-154 is the deferred follow-up). **Repo restructured** by platform: `implementation/{desktop,web,mobile}/` (user refine — separation of concerns). Git 4e6612a. Next batches: walking skeleton (wgpu+Tauri, needs display), CI/GPU matrix, presentation/outputs/mobile → foundation demo.
+Persistence layer: `implementation/desktop/crates/selahcue-data` — WAL SQLite (rusqlite bundled), versioned append-only migrations + forward-compat guard, integrity checks, crash-safe online backup (FR-079), transactional `ServicePlan` repository. **Verified: cargo test 50/50, clippy clean.** Independent review (`implementation/desktop/CODE-REVIEW-batch7b.md`) PASS WITH CONDITIONS (0 high, 1 med, 3 low) → M1/L1/L2 fixed with regression tests. **Repo restructured** by platform: `implementation/{desktop,web,mobile}/` (user refine — separation of concerns). Git 4e6612a.
+
+## Stage 7 outcome — batch 7c (2026-07-23)
+
+At-rest encryption (FR-154): `selahcue-data` `encryption` feature (SQLCipher + vendored OpenSSL, self-contained); `EncryptionKey` (256-bit raw key, zeroize), `open_encrypted`/`open_in_memory_encrypted`, and crash-safe `backup_to_encrypted`. Keyed-open API is feature-gated so a keyless "encrypted" open is impossible. **Verified: cargo test 50 default + 16 data-encryption, clippy clean both; no plaintext on disk (header + WAL encrypted).** Independent **multi-lens adversarial review** (workflow, 4 lenses find→verify): 8 raised → **2 confirmed** (H1 encrypted-backup-broken, L1 key-lingers) → fixed + regression-tested; 6 dismissed (`CODE-REVIEW-batch7c-encryption.md`). **Tests reorganised** into per-crate `tests/` folders (user refine; one white-box scripture test stays inline). Story 86ajp09he → **QA** (data-layer scope); OS secret-store key acquisition (app-shell, ADR-0007) deferred to a follow-up. Batch-7a stories (scripture/plan/timer) → QA. Next batches: walking skeleton (wgpu+Tauri, needs display), CI/GPU matrix, presentation/outputs/mobile → foundation demo.

@@ -11,11 +11,11 @@ pub struct Database {
 }
 
 impl Database {
-    /// Open (creating if needed) a file-backed database, applying production
-    /// pragmas and any pending migrations.
+    /// Open (creating if needed) an **unencrypted** file-backed database, applying
+    /// production pragmas and any pending migrations.
     ///
-    /// At-rest encryption (FR-154) is the `bundled-sqlcipher` feature swap plus a
-    /// `PRAGMA key` here; the schema and repositories are unchanged by it.
+    /// For at-rest encryption (FR-154) use [`open_encrypted`](Self::open_encrypted),
+    /// available with the `encryption` feature.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path)?;
         Self::init(conn)
@@ -24,6 +24,32 @@ impl Database {
     /// Open a private in-memory database (used for tests and ephemeral work).
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
+        Self::init(conn)
+    }
+
+    /// Open (creating if needed) an **encrypted** file-backed database, keyed with
+    /// `key` before any other access, then applying production pragmas and
+    /// migrations (FR-154; ADR-0007).
+    ///
+    /// Only compiled with the `encryption` feature. This is deliberate: on a build
+    /// without SQLCipher, `PRAGMA key` is silently ignored by plain SQLite, which
+    /// would produce an *unencrypted* database while appearing keyed — a dangerous
+    /// footgun. Gating the API makes an unencrypted "encrypted open" impossible.
+    ///
+    /// A wrong key surfaces as an error when the first page is read during
+    /// migration (SQLCipher cannot decrypt the header).
+    #[cfg(feature = "encryption")]
+    pub fn open_encrypted(path: impl AsRef<Path>, key: &crate::EncryptionKey) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        key.apply(&conn)?;
+        Self::init(conn)
+    }
+
+    /// Encrypted in-memory database, for tests and ephemeral work.
+    #[cfg(feature = "encryption")]
+    pub fn open_in_memory_encrypted(key: &crate::EncryptionKey) -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        key.apply(&conn)?;
         Self::init(conn)
     }
 
@@ -71,55 +97,37 @@ impl Database {
         Ok(())
     }
 
-    /// Crash-safe backup via SQLite's online backup API (not a raw file copy), so
-    /// it is consistent even while the source is in use (FR-079).
+    /// Crash-safe backup of an **unencrypted** database via SQLite's online backup
+    /// API (not a raw file copy), so it is consistent even while the source is in
+    /// use (FR-079).
+    ///
+    /// This routes through `Connection::backup`, which opens the destination
+    /// *unkeyed* — so it does **not** work for an encrypted database (SQLCipher
+    /// rejects an unkeyed backup destination). For an encrypted source use
+    /// [`backup_to_encrypted`](Self::backup_to_encrypted).
     pub fn backup_to(&self, dst: impl AsRef<Path>) -> Result<()> {
         self.conn
             .backup(DatabaseName::Main, dst, None)?;
         Ok(())
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn opens_migrated_and_integrity_ok() {
-        let db = Database::open_in_memory().unwrap();
-        assert_eq!(db.schema_version().unwrap(), migrations::target_version());
-        db.integrity_check().unwrap();
-    }
-
-    #[test]
-    fn reopen_is_idempotent() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let path = file.path().to_path_buf();
-        {
-            let db = Database::open(&path).unwrap();
-            assert_eq!(db.schema_version().unwrap(), migrations::target_version());
-        }
-        // Reopening an already-migrated database must not re-run migrations.
-        let db2 = Database::open(&path).unwrap();
-        assert_eq!(db2.schema_version().unwrap(), migrations::target_version());
-        db2.integrity_check().unwrap();
-    }
-
-    #[test]
-    fn refuses_database_from_a_newer_build() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let path = file.path().to_path_buf();
-        Database::open(&path).unwrap();
-        // Simulate a database written by a future build with a higher schema.
-        let future = migrations::target_version() + 5;
-        let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch(&format!("PRAGMA user_version = {future};"))
-            .unwrap();
-        drop(conn);
-        // Opening it must refuse rather than silently write with the old schema.
-        assert!(matches!(
-            Database::open(&path),
-            Err(DataError::SchemaTooNew { .. })
-        ));
+    /// Crash-safe backup of an **encrypted** database (FR-079 + FR-154).
+    ///
+    /// `Connection::backup` opens the destination unkeyed, which SQLCipher refuses;
+    /// so this keys the destination with `key` *before* running the online backup,
+    /// producing a backup encrypted with the same key (never plaintext on disk).
+    /// The key must be supplied here because [`Database`] deliberately does not
+    /// retain it (minimising the key's lifetime in memory).
+    #[cfg(feature = "encryption")]
+    pub fn backup_to_encrypted(
+        &self,
+        dst: impl AsRef<Path>,
+        key: &crate::EncryptionKey,
+    ) -> Result<()> {
+        let mut dst_conn = Connection::open(dst)?;
+        key.apply(&dst_conn)?;
+        let backup = rusqlite::backup::Backup::new(&self.conn, &mut dst_conn)?;
+        backup.run_to_completion(64, std::time::Duration::from_millis(0), None)?;
+        Ok(())
     }
 }

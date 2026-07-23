@@ -9,14 +9,20 @@
 //! - [`db`] — open/configure, integrity, checkpoint, backup.
 //! - [`migrations`] — versioned, append-only schema migrations.
 //! - [`plan_repo`] — [`selahcue_core::plan::ServicePlan`] persistence (FR-001/002).
+//!
+//! At-rest encryption (FR-154) is behind the `encryption` feature: it compiles
+//! SQLCipher and exposes [`EncryptionKey`] plus [`Database::open_encrypted`].
 
 #![forbid(unsafe_code)]
-#![cfg_attr(test, allow(clippy::unwrap_used))]
 
 mod db;
 mod error;
+#[cfg(feature = "encryption")]
+mod key;
 pub mod migrations;
 pub mod plan_repo;
 
 pub use db::Database;
 pub use error::{DataError, Result};
+#[cfg(feature = "encryption")]
+pub use key::EncryptionKey;

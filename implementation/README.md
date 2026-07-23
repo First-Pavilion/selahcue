@@ -31,6 +31,10 @@ today; if `web` (via WASM) or `mobile` (via FFI/uniffi) later need to share it, 
 hoisted into a top-level `shared/` workspace at that point — an explicit, traceable
 decision rather than a premature abstraction.
 
+At-rest encryption (FR-154) is implemented in `desktop/`'s `selahcue-data` behind an
+`encryption` feature (SQLCipher); key acquisition from the OS secret store is app-shell
+work for a later batch.
+
 ## Getting started
 
 See each platform's own README:

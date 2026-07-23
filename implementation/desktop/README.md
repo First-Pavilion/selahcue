@@ -11,32 +11,32 @@ desktop/
 ├── Cargo.toml                     # Rust workspace
 └── crates/
     ├── selahcue-core/             # domain core — pure, deterministic, no I/O
-    │   └── src/
-    │       ├── lib.rs
-    │       ├── scripture.rs        # Bible reference parser (FR-027)
-    │       ├── plan.rs             # service-plan domain model (FR-001/002)
-    │       └── timer.rs            # monotonic timers + TIME UP (FR-054/065, NFR-022)
+    │   ├── src/                    # lib.rs, scripture.rs, plan.rs, timer.rs
+    │   └── tests/                  # test_scripture.rs, test_plan.rs, test_timer.rs
     └── selahcue-data/             # persistence — SQLite (WAL), migrations, backups
-        └── src/
-            ├── lib.rs
-            ├── db.rs               # open/configure, integrity, checkpoint, backup (FR-079)
-            ├── migrations.rs       # versioned, append-only schema migrations
-            ├── plan_repo.rs        # ServicePlan persistence (FR-001/002)
-            └── error.rs
+        ├── src/                    # lib.rs, db.rs, migrations.rs, plan_repo.rs, key.rs, error.rs
+        └── tests/                  # test_db.rs, test_plan_repo.rs, test_encryption.rs
 ```
+
+Tests live in each crate's `tests/` folder (one file per module, public-API
+integration tests). The single exception is one white-box test that reads the private
+scripture `BOOKS` table — it stays inline in `src/scripture.rs`, because integration
+tests cannot reach crate-private items.
 
 Future crates (subsequent Stage-7 batches, per `../../docs/architecture/ARCHITECTURE.md`):
 `selahcue-engine` (wgpu compositor), `selahcue-lan` (WebSocket/TLS control server),
-and the Tauri operator shell. At-rest encryption (FR-154) swaps `selahcue-data`'s
-`rusqlite` feature to `bundled-sqlcipher` + a key pragma.
+and the Tauri operator shell.
 
 ## Build & test
 
 ```bash
 cd implementation/desktop
 cargo build
-cargo test          # 50 unit tests, all passing
-cargo clippy --all-targets   # clean
+cargo test                                    # 50 tests (plain build), all passing
+cargo clippy --all-targets                    # clean
+# At-rest encryption (FR-154) — compiles SQLCipher + vendored OpenSSL:
+cargo test  -p selahcue-data --features encryption   # 16 tests, all passing
+cargo clippy -p selahcue-data --all-targets --features encryption   # clean
 ```
 
 ## `selahcue-core`
@@ -70,6 +70,14 @@ pure `selahcue-core` types to tables and back.
 - **`plan_repo`** — transactional insert/load/list/delete of `ServicePlan`,
   preserving item order (unique `ord` + tie-breaker) and the id counter; unknown
   enum tags and out-of-range stored integers surface as `Corrupt`, never a panic.
+- **`key`** *(`encryption` feature)* — at-rest encryption (FR-154): the feature
+  compiles SQLCipher (vendored OpenSSL), and `EncryptionKey` applies a 256-bit raw key
+  via `PRAGMA key`. `Database::open_encrypted` / `open_in_memory_encrypted` and
+  `backup_to_encrypted` are compiled **only** with the feature, so a keyless
+  "encrypted" open is impossible. Key derivation/storage (OS secret store; Argon2id on
+  Linux) is the app shell's responsibility (ADR-0007).
 
-Status: **Stage 7 — foundation batches 7a (domain core) + 7b (persistence). Verified:
-`cargo test` 50/50, `cargo clippy` clean.** GPU/UI/LAN crates are subsequent batches.
+Status: **Stage 7 — foundation batches 7a (domain core) + 7b (persistence) + 7c
+(at-rest encryption). Verified: `cargo test` 50/50 (plain) + 16/16 (encryption),
+`cargo clippy` clean.** GPU/UI/LAN crates and app-shell key acquisition are subsequent
+batches.
