@@ -1,6 +1,7 @@
 .DS_Store
 **/.DS_Store
 .claude/
+.hotplate/
 node_modules/
 dist/
 target/
