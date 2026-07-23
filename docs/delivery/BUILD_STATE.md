@@ -6,16 +6,17 @@ Lightweight pointer only. ClickUp is the delivery source of truth. Do not duplic
 - Build Control task: https://app.clickup.com/t/86ajnx548 (`86ajnx548`)
 - ClickUp delivery list: `SelahCue — Delivery` (`901327960792`) in folder `SelahCue` (`901318653689`), space `First Pavilion (Engineering)` (`90136583508`)
 - Build Goal Contract: `docs/delivery/goals/BUILD-selahcue.md`
-- Current stage: **Stage 2 — Product discovery and research** (just started, then PAUSED)
-- Stage state: `PAUSED` (user paused 2026-07-23 at the very start of Stage 2)
+- Current stage: **Stage 2 — Product discovery and research** (complete, at gate)
+- Stage state: `GATE_REVIEW` (awaiting user gate decision)
 - Last approved gate: Gate 1 (Stage 1) — user replied `continue`, authorising Stage 2
 - Execution engine: `goal`
+- Execution model: **Opus 4.8 (1M context)** — Stage 2+ runs under the current session model.
 
-## Paused position (2026-07-23)
+## Stage 2 outcome (2026-07-23)
 
-Stage 1 passed its gate; user approved Stage 2 with `continue`, then immediately sent `pause`.
-No Stage 2 research has been executed. The only Stage 2 action completed was `git init` + a baseline commit (`d38f6d3`) so the Stage 1 artefacts are version-controlled.
-Nothing is in-flight; no subagents were dispatched. Resume by re-entering Stage 2: write the Stage 2 Goal Contract and dispatch the research specialists per `docs/research/RESEARCH-PLAN.md`.
+Discovery complete. 6 parallel research specialists + a 4-lens independent review workflow (PASS WITH CONDITIONS, 0 blockers) + a follow-up adjacent-product study (condition C1). Integrity conditions resolved; architecture conditions formally deferred with recorded recommendations. Artefacts in docs/research/, docs/business/, docs/security/reviews/. Awaiting Stage 2 gate decision.
+
+Key Stage 2 artefacts: DISCOVERY-REPORT.md, EVIDENCE-REGISTER.md, OPEN-DECISIONS.md, DISCOVERY-REVIEW.md, CONDITION-DISPOSITIONS.md (all under docs/research/); Stage 2 contract docs/delivery/goals/STAGE2-discovery.md.
 
 ## Key artefacts
 
