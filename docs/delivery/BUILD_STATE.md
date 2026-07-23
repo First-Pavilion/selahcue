@@ -6,9 +6,9 @@ Lightweight pointer only. ClickUp is the delivery source of truth. Do not duplic
 - Build Control task: https://app.clickup.com/t/86ajnx548 (`86ajnx548`)
 - ClickUp delivery list: `SelahCue — Delivery` (`901327960792`) in folder `SelahCue` (`901318653689`), space `First Pavilion (Engineering)` (`90136583508`)
 - Build Goal Contract: `docs/delivery/goals/BUILD-selahcue.md`
-- Current stage: **Stage 6 — ClickUp delivery planning** (complete, at gate)
+- Current stage: **Stage 7 — Implementation foundation** (batch 7a done, at gate)
 - Stage state: `GATE_REVIEW` (awaiting user gate decision — this gate authorises production implementation)
-- Last approved gate: Gate 5 (Stage 5) — user replied `continue`, authorising Stage 6 (after Figma refines)
+- Last approved gate: Gate 6 (Stage 6) — user replied `continue`, authorising Stage 7 (production implementation)
 - Execution engine: `goal`
 - Execution model: **Opus 4.8 (1M context)** — Stage 2+ runs under the current session model.
 
@@ -47,3 +47,7 @@ Greenfield build; not yet under git version control (RISK-011). To resume, read 
 ## Stage 6 outcome (2026-07-23)
 
 ClickUp delivery plan created in list SelahCue — Delivery (901327960792): **16 epics** (11 MVP + 5 later-release) + **14 foundation vertical-slice stories** + **3 milestones**. Requirement traceability (`docs/delivery/REQUIREMENTS-TRACEABILITY.md`): all 204 FR+NFR mapped. `docs/delivery/IMPLEMENTATION-READINESS.md`: **READY** with a 37-edge acyclic dependency graph + critical path. New validator `scripts/validate_delivery_plan.py` (coverage + acyclicity + READY) passes. Independent review (`DELIVERY-PLAN-REVIEW.md`): PASS WITH CONDITIONS, 0 blockers; medium/low traceability nits fixed. Awaiting Stage 6 gate — **this gate authorises Stage 7 (production implementation)**.
+
+## Stage 7 outcome — batch 7a (2026-07-23)
+
+First production code: `implementation/crates/selahcue-core` (scripture parser FR-027, service-plan model FR-001/002, monotonic timer FR-054/065). **Verified: cargo test 37/37, clippy clean.** Independent review PASS WITH CONDITIONS → all findings fixed. Stories 86ajp0afa/86ajp0a4z/86ajp0ac9 in progress. Git e794a7e. Next batches: walking skeleton (wgpu+Tauri, needs display), persistence (SQLite/SQLCipher), CI/GPU matrix, presentation/outputs/mobile → foundation demo.
