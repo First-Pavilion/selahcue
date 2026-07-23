@@ -337,13 +337,15 @@ runtime-verified**. The on-screen `selahcue-desktop` window is **compile-verifie
 | S7k-007 | yes | Full suite + clippy clean | `cargo test` + clippy | 155 workspace; 0 warnings | test output | PASS |
 | S7k-008 | yes | Independent multi-lens review; code findings fixed | fresh-context workflow | 4 confirmed → 3 fixed; 1 RBAC policy routed to owner | CODE-REVIEW-batch7k-app.md | PASS |
 
-### Decision routed to the owner (Stage-7 gate)
+### RBAC decision — RESOLVED (tightened per user refine, 2026-07-24)
 
-The review confirmed a **HIGH** RBAC consequence: `Clear` maps to `Navigate`, so an
-**Assistant can wipe the Live output + lift blackout** over the LAN path. This is the
-policy the user kept in [DEC-002](../decisions/DECISION-LOG.md); the concrete consequence
-is now surfaced for the user to revise (give `Clear` its own Producer+ permission) or
-re-affirm the accepted risk. Not changed unilaterally.
+The review confirmed a **HIGH** RBAC consequence: `Clear` mapped to `Navigate`, so an
+**Assistant could wipe the Live output + lift blackout** over the LAN path. Routed to the
+owner at the gate; the user chose **"refine: tighten it."** `Clear` now requires a
+dedicated `Permission::ClearLive` (Operator + Producer only); Assistant keeps preview
+navigation but cannot wipe Live. [DEC-002](../decisions/DECISION-LOG.md) updated to
+REVISED. Verified: unit rbac denials + an **E2E Assistant-`Clear`-denied** assertion; a
+focused adversarial re-verification found 0 defects.
 
 ### Iteration ledger — batch 7k
 

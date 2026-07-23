@@ -6,10 +6,10 @@ use selahcue_lan::protocol::Command;
 use selahcue_lan::rbac::{authorize, Permission, Role};
 
 fn navigate_cmds() -> Vec<Command> {
+    // Preview navigation only — `Clear` is a live-output change, not navigation.
     vec![
         Command::Next,
         Command::Previous,
-        Command::Clear,
         Command::SelectItem { item_id: 3 },
     ]
 }
@@ -47,11 +47,14 @@ fn only_privileged_roles_can_go_live() {
 }
 
 #[test]
-fn blackout_and_timer_are_producer_and_up() {
+fn blackout_timer_and_clear_are_producer_and_up() {
+    // Clear wipes the live output — an Assistant (who cannot push live) must not
+    // be able to clear it (DEC-002 revised).
     for cmd in [
         Command::Blackout { on: true },
         Command::StartTimer { seconds: 60 },
         Command::StopTimer,
+        Command::Clear,
     ] {
         assert!(authorize(Role::Operator, &cmd), "operator {cmd:?}");
         assert!(authorize(Role::Producer, &cmd), "producer {cmd:?}");
@@ -75,6 +78,8 @@ fn assistant_can_navigate_and_search_but_not_go_live() {
     ));
     assert!(!authorize(Role::Assistant, &Command::GoLive));
     assert!(!authorize(Role::Assistant, &Command::Blackout { on: true }));
+    // An Assistant navigates/stages Preview but cannot wipe the live output.
+    assert!(!authorize(Role::Assistant, &Command::Clear));
 }
 
 #[test]
@@ -85,6 +90,7 @@ fn viewer_can_only_monitor() {
         assert!(!authorize(Role::Viewer, &cmd), "viewer nav {cmd:?}");
     }
     assert!(!authorize(Role::Viewer, &Command::GoLive));
+    assert!(!authorize(Role::Viewer, &Command::Clear));
     assert!(!authorize(
         Role::Viewer,
         &Command::ScriptureSearch { query: "x".into() }

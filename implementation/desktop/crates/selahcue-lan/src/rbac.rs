@@ -30,8 +30,12 @@ pub enum Role {
 pub enum Permission {
     /// Push the current selection to the live output.
     GoLive,
-    /// Move through the plan / slides (next, previous, select, clear).
+    /// Move through the plan / slides (next, previous, select) — stages Preview, does
+    /// not itself change the live output.
     Navigate,
+    /// Wipe all live output layers to empty (a disruptive live-output change, so it
+    /// is gated separately from Preview navigation).
+    ClearLive,
     /// Toggle blackout of the live output.
     Blackout,
     /// Drive timers on the live output.
@@ -52,13 +56,22 @@ impl Role {
             Role::Operator => &[
                 GoLive,
                 Navigate,
+                ClearLive,
                 Blackout,
                 Timer,
                 SearchScripture,
                 Monitor,
                 ManageDevices,
             ],
-            Role::Producer => &[GoLive, Navigate, Blackout, Timer, SearchScripture, Monitor],
+            Role::Producer => &[
+                GoLive,
+                Navigate,
+                ClearLive,
+                Blackout,
+                Timer,
+                SearchScripture,
+                Monitor,
+            ],
             Role::Assistant => &[SearchScripture, Navigate, Monitor],
             Role::Viewer => &[Monitor],
         }
@@ -75,7 +88,8 @@ pub fn required_permission(cmd: &Command) -> Permission {
     use Permission::*;
     match cmd {
         Command::GoLive => GoLive,
-        Command::Next | Command::Previous | Command::SelectItem { .. } | Command::Clear => Navigate,
+        Command::Next | Command::Previous | Command::SelectItem { .. } => Navigate,
+        Command::Clear => ClearLive,
         Command::Blackout { .. } => Blackout,
         Command::StartTimer { .. } | Command::StopTimer => Timer,
         Command::ScriptureSearch { .. } | Command::StageScripture { .. } => SearchScripture,

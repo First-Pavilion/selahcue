@@ -4,23 +4,23 @@ Durable record of material product/scope/architecture decisions, with traceabili
 
 ---
 
-## DEC-002 — RBAC: the Assistant role may navigate/clear the live output (kept as-is)
+## DEC-002 — RBAC: `Clear` (wipe live output) tightened to Producer+ (revised)
 
-- **Date:** 2026-07-23
-- **Stage:** Stage 7 gate (batch 7d)
+- **Date:** 2026-07-23 (original) · **Revised:** 2026-07-24
+- **Stage:** Stage 7 gate (batch 7d original; batch 7k revision)
 - **Decided by:** User (product owner)
-- **Type:** RBAC policy confirmation
-- **Status:** DECIDED (revisit-later)
+- **Type:** RBAC policy
+- **Status:** REVISED — `Clear` is now Producer+ (superseding the 7d "keep as-is")
 
-**Context.** The batch-7d independent review flagged that `Command::Clear` maps to the `Navigate` permission, which the **Assistant** role holds — so an Assistant can blank the live output, whereas `Blackout` is gated to Producer+. The reviewer verified this is deliberate and test-locked (not an accidental mis-mapping), but noted it sits in tension with the Assistant docstring ("cannot push to the live output") and raised it as a product policy question.
+**Revision (2026-07-24, batch 7k).** When the LAN control was wired to the presenter (7k), `Clear` gained teeth: the batch-7k independent review confirmed a **HIGH** consequence — an **Assistant** (a role that "cannot push to the live output") could `Clear` the live audience output *and* lift an operator-set blackout over the wire. Presented at the 7k gate, the user chose to **tighten it** ("refine: tighten it").
 
-**Decision.** Keep the current policy: **Assistant retains `Navigate` (Next/Previous/SelectItem/Clear)**; `GoLive`, `Blackout`, and `Timer` remain Producer+. No code change.
+**Decision (revised).** `Command::Clear` now requires a dedicated **`Permission::ClearLive`**, held only by **Operator** and **Producer**. Assistant retains `Navigate` (Next/Previous/SelectItem — which stage *Preview* and do not change Live) plus SearchScripture and Monitor, but **cannot wipe the live output**. `GoLive`, `Blackout`, `Timer` remain Producer+ as before.
 
-**User rationale.** "Let's keep as is. We can revisit later if there's a need to."
+**User rationale.** Original (7d): "keep as is; revisit later if there's a need." Revision (7k): "tighten it" — an emergency wipe of the congregation screen must not be available to the lowest control role, especially once it can also lift a blackout.
 
-**Affected items.** `selahcue-lan::rbac` (unchanged); the RBAC matrix in `crates/selahcue-lan/src/rbac.rs` and its tests remain authoritative.
+**Affected items.** `selahcue-lan::rbac` — added `Permission::ClearLive`; `required_permission(Clear)` now maps to it; granted to Operator + Producer. `test_rbac.rs` updated (Clear removed from the navigate set; Assistant/Viewer `Clear` denials asserted; `Clear` added to the Producer+ matrix). The `LiveController` is unchanged — RBAC is enforced by the server before the handler.
 
-**Reversibility.** Trivially reversible — move `Clear` (and/or the `Navigate` grant for Assistant) to a higher permission tier and update the `test_rbac` matrix. Revisit if operators report Assistants disrupting live output.
+**Reversibility.** Trivially reversible by re-mapping `Clear` to `Navigate`.
 
 ---
 

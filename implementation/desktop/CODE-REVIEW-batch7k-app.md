@@ -31,22 +31,26 @@ position), so `Next` after a scripture snapped back to item 0.
 scripture staging; `Next`/`Previous` resume from it. `staged_idx` still honestly reports
 `None` for a scripture. **Regression test:** `staging_a_scripture_preserves_plan_navigation`.
 
-## Confirmed — routed to the product owner (RBAC policy, not a code defect to auto-fix)
+## Confirmed → routed to the owner → RESOLVED (tightened per user refine)
 
-### H1 — an Assistant can wipe the Live output via `Clear`
-`Command::Clear` maps to the `Navigate` permission, which the **Assistant** role holds, so
-an Assistant can wipe the live audience output to idle **and** lift an operator-set
-blackout — a role that per its own description "cannot push to the live output." Now that
-`Clear` is wired to `clear_live()`, the consequence is concrete over the LAN control path.
+### H1 — an Assistant could wipe the Live output via `Clear`
+`Command::Clear` mapped to the `Navigate` permission, which the **Assistant** role holds, so
+an Assistant could wipe the live audience output to idle **and** lift an operator-set
+blackout — a role that per its own description "cannot push to the live output." Wired to
+`clear_live()`, the consequence was concrete over the LAN control path.
 
-**Disposition:** this is exactly the RBAC policy the user **decided to keep in
-[DEC-002](../../docs/decisions/DECISION-LOG.md)** ("Assistant retains Navigate incl. Clear;
-revisit later if there's a need"). The review has now supplied a concrete need to revisit.
-Per the workflow, an RBAC/design decision is routed to its owner rather than changed
-unilaterally — **flagged at the Stage-7 gate for the user to revise DEC-002** (e.g. give
-`Clear` its own Producer+ permission) or re-affirm the accepted risk. The `LiveController`
-correctly enforces whatever the RBAC matrix decides (RBAC is applied by the server before
-the handler); only the policy is in question.
+**Disposition:** this was the RBAC policy the user had kept in DEC-002; the review supplied
+a concrete need to revisit, so it was routed to the owner at the Stage-7 gate. The user
+chose **"refine: tighten it."**
+
+**Resolution (2026-07-24):** `Command::Clear` now requires a dedicated
+**`Permission::ClearLive`** held only by **Operator** and **Producer**. Assistant keeps
+`Navigate` (Next/Previous/SelectItem — which stage *Preview*, not Live) plus SearchScripture
+and Monitor, but can no longer wipe the live output. DEC-002 updated to REVISED.
+Verified: unit `test_rbac` asserts Assistant/Viewer `Clear` denials and the Producer+ grant;
+the app E2E asserts an Assistant `Clear` is **denied over the wire**
+(`rbac_and_application_denials_over_the_wire`). lan 34+39, app 10+2 E2E, workspace 155,
+clippy clean. A focused adversarial re-verification of the change found **0 defects**.
 
 ## Notes
 

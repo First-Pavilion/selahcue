@@ -107,10 +107,18 @@ async fn rbac_and_application_denials_over_the_wire() {
             ..
         }
     ));
-    // ...but Assistant may navigate.
+    // ...but Assistant may navigate (stages Preview).
     assert!(matches!(
         asst.command(Command::Next).await.unwrap(),
         ServerMessage::Ack { .. }
+    ));
+    // ...and cannot wipe the live output (DEC-002 revised — Clear is Producer+).
+    assert!(matches!(
+        asst.command(Command::Clear).await.unwrap(),
+        ServerMessage::Denied {
+            reason: DenyReason::Forbidden,
+            ..
+        }
     ));
 
     // Producer: an unknown item is an application-level denial (BadRequest).
