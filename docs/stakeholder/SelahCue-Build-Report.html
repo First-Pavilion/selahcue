@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SelahCue — Product Build Report</title>
+<style>
+  :root{
+    --ink:#1f2430; --muted:#5b6472; --line:#e2e6ee; --soft:#f5f7fb;
+    --brand:#3a4db3; --brand-2:#5b6bd6; --accent:#0f7b6c; --warn:#9a5b00; --danger:#a3283a;
+    --band:#eef1fb;
+  }
+  *{box-sizing:border-box;}
+  @page{ size:A4; margin:18mm 16mm 20mm 16mm; }
+  html{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  body{
+    font-family:"Helvetica Neue",Arial,system-ui,sans-serif;
+    color:var(--ink); font-size:10.4pt; line-height:1.5; margin:0;
+  }
+  h1,h2,h3,h4{ font-weight:700; color:var(--ink); line-height:1.25; }
+  h2{ font-size:16.5pt; margin:0 0 4px; border-bottom:2.5px solid var(--brand); padding-bottom:6px; }
+  h3{ font-size:12.2pt; margin:18px 0 4px; color:var(--brand); }
+  h4{ font-size:10.6pt; margin:12px 0 3px; }
+  p{ margin:6px 0; }
+  a{ color:var(--brand); text-decoration:none; }
+  small{ color:var(--muted); }
+  ul,ol{ margin:6px 0 6px 0; padding-left:18px; }
+  li{ margin:3px 0; }
+  code{ font-family:"SF Mono",Menlo,Consolas,monospace; font-size:8.8pt; background:var(--soft); padding:1px 4px; border-radius:3px; color:#33405e; }
+  .section{ page-break-before:always; padding-top:2px; }
+  .kicker{ text-transform:uppercase; letter-spacing:.14em; font-size:8pt; color:var(--brand-2); font-weight:700; }
+  /* ---- cover ---- */
+  .cover{ height:257mm; display:flex; flex-direction:column; justify-content:space-between; }
+  .cover-top{ padding-top:20mm; }
+  .brandmark{ display:inline-flex; align-items:center; gap:10px; }
+  .brand-dot{ width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,var(--brand),var(--brand-2)); display:inline-block; }
+  .brand-name{ font-size:20pt; font-weight:800; letter-spacing:-.02em; }
+  .cover h1{ font-size:34pt; letter-spacing:-.02em; margin:26mm 0 8px; line-height:1.08; }
+  .cover .sub{ font-size:13pt; color:var(--muted); max-width:150mm; }
+  .cover-meta{ border-top:1px solid var(--line); padding-top:12px; display:flex; gap:40px; flex-wrap:wrap; font-size:9.5pt; }
+  .cover-meta b{ display:block; color:var(--muted); font-weight:600; font-size:8pt; text-transform:uppercase; letter-spacing:.1em; margin-bottom:2px; }
+  .status-pill{ display:inline-block; background:var(--band); color:var(--brand); font-weight:700; border-radius:999px; padding:4px 12px; font-size:9pt; }
+  /* ---- boxes ---- */
+  .why{ background:var(--soft); border-left:4px solid var(--brand); border-radius:0 8px 8px 0; padding:10px 14px; margin:12px 0; }
+  .why .t{ font-weight:700; color:var(--brand); font-size:9.2pt; text-transform:uppercase; letter-spacing:.08em; margin-bottom:2px; }
+  .decision{ background:#f3faf7; border:1px solid #cde9e0; border-left:4px solid var(--accent); border-radius:0 8px 8px 0; padding:10px 14px; margin:12px 0; }
+  .decision .t{ font-weight:700; color:var(--accent); font-size:9.2pt; }
+  .callout-warn{ background:#fff8ee; border-left:4px solid var(--warn); border-radius:0 8px 8px 0; padding:10px 14px; margin:12px 0; }
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .card{ border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:#fff; }
+  .card .n{ font-size:20pt; font-weight:800; color:var(--brand); line-height:1; }
+  .card .l{ font-size:8.6pt; color:var(--muted); margin-top:3px; }
+  .stat-row{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:12px 0; }
+  table{ border-collapse:collapse; width:100%; margin:10px 0; font-size:9pt; }
+  th,td{ border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
+  th{ background:var(--band); font-size:8.4pt; text-transform:uppercase; letter-spacing:.05em; color:#38406a; }
+  tr:nth-child(even) td{ background:#fbfcfe; }
+  .tag{ display:inline-block; border-radius:4px; padding:1px 6px; font-size:7.6pt; font-weight:700; }
+  .tag-pass{ background:#e5f4ef; color:var(--accent); }
+  .tag-mvp{ background:#e9ecfb; color:var(--brand); }
+  .tag-later{ background:#f0f1f4; color:var(--muted); }
+  .tag-no{ background:#fbe9ec; color:var(--danger); }
+  .timeline{ border-left:2px solid var(--line); margin:8px 0 8px 6px; padding-left:16px; }
+  .tl{ margin-bottom:12px; position:relative; }
+  .tl::before{ content:""; position:absolute; left:-22px; top:3px; width:10px;height:10px;border-radius:50%; background:var(--brand); }
+  .tl.done::before{ background:var(--accent); }
+  .tl .h{ font-weight:700; }
+  .toc{ font-size:10pt; }
+  .toc li{ margin:4px 0; }
+  .foot{ color:var(--muted); font-size:8pt; border-top:1px solid var(--line); margin-top:16px; padding-top:6px; }
+  .lead{ font-size:11.5pt; color:#2c3444; }
+  .two-col{ column-count:2; column-gap:20px; }
+</style>
+</head>
+<body>
+
+<!-- ============ COVER ============ -->
+<section class="cover">
+  <div class="cover-top">
+    <div class="brandmark"><span class="brand-dot"></span><span class="brand-name">SelahCue</span></div>
+    <h1>Product Build Report</h1>
+    <p class="sub">How we researched, defined, and independently validated a production-ready church presentation &amp; ministry-assistance platform — and the reasoning behind every major decision.</p>
+    <p style="margin-top:14px"><span class="status-pill">Status: Product definition complete · Independent audit PASSED · Awaiting go-ahead to build</span></p>
+  </div>
+  <div class="cover-meta">
+    <div><b>Prepared for</b>Project stakeholders &amp; sponsors</div>
+    <div><b>Prepared by</b>SelahCue AI product &amp; engineering team</div>
+    <div><b>Date</b>23 July 2026</div>
+    <div><b>Phase covered</b>Stages 1–4 (Discovery → Audit)</div>
+    <div><b>Classification</b>Internal</div>
+  </div>
+</section>
+
+<!-- ============ TOC ============ -->
+<section class="section">
+  <span class="kicker">Contents</span>
+  <h2>What's in this report</h2>
+  <p class="toc" style="margin:0 0 8px"><b>About SelahCue</b> — what it is and how it works <small>(product overview)</small></p>
+  <ol class="toc">
+    <li><b>Executive summary</b> — where we are and why it matters</li>
+    <li><b>How we work</b> — the disciplined method behind the work</li>
+    <li><b>The product</b> — what SelahCue is and the gap it fills</li>
+    <li><b>Stage 1</b> — Establishing a verified baseline</li>
+    <li><b>Stage 2</b> — Discovery &amp; research (the evidence)</li>
+    <li><b>A key decision</b> — why we removed Text-to-Speech</li>
+    <li><b>Stage 3</b> — The Product Requirements Document</li>
+    <li><b>Stage 4</b> — Independent audit &amp; how we passed it</li>
+    <li><b>The MVP</b> — what ships first, and what waits</li>
+    <li><b>Risks</b> — the honest picture and our mitigations</li>
+    <li><b>What happens next</b> — the road to a shippable product</li>
+    <li><b>Evidence index</b> — everything produced so far</li>
+  </ol>
+  <div class="why">
+    <div class="t">Why read this</div>
+    No code has been written yet — and that is deliberate. This report explains the substantial, evidence-based groundwork that de-risks the build before a single line of production code is committed. It is written for decision-makers, not engineers.
+  </div>
+</section>
+
+<!-- ============ ABOUT SELAHCUE ============ -->
+<section class="section">
+  <span class="kicker">Product overview</span>
+  <h2>About SelahCue — what it is and how it works</h2>
+  <p class="lead">SelahCue is a desktop application that runs the visual side of a church service — everything the congregation, the stage team and an online stream see on screen — with a companion phone/tablet app to control it, and optional AI assistance that helps but never takes over.</p>
+
+  <h3>What it is</h3>
+  <p>A cross-platform application for <b>Windows, macOS and Linux</b>, with a mobile controller for <b>Android and iPhone/iPad</b>. It is built for churches, conferences, worship events, livestream productions and sermon recording. One person — the media operator — drives the whole visual service from a single desktop, and the software keeps every screen showing exactly the right thing at the right moment.</p>
+
+  <h3>The core idea: one live service, many screens</h3>
+  <p>A service isn't shown on a single screen — it appears on several at once, and each needs something different at the same instant. SelahCue drives them all from one source of truth. At one moment in a single song, for example:</p>
+  <table>
+    <tr><th>Screen</th><th>What it shows at that moment</th></tr>
+    <tr><td>Main auditorium projector</td><td>Four lines of lyrics over a moving background</td></tr>
+    <tr><td>Stage / confidence monitor</td><td>The current line, the next line, a clock and the service timer — for the worship leader</td></tr>
+    <tr><td>Livestream output</td><td>Two lines of lyrics as a lower-third caption for the online audience</td></tr>
+    <tr><td>Lobby display</td><td>Announcements, continuing independently</td></tr>
+  </table>
+
+  <h3>How a service runs, step by step</h3>
+  <ol>
+    <li><b>Before the service</b>, a coordinator builds a <em>service plan</em> — the ordered run-sheet of songs, scriptures, media and announcements — and SelahCue checks that every media file is present and ready.</li>
+    <li><b>During the service</b>, the operator stages the next item in a <em>preview</em>, then sends it <em>live</em> with a click or keypress. What is being prepared is never accidentally shown to the congregation.</li>
+    <li><b>Scripture</b> is found by reference or keyword and placed on screen in the chosen translation and layout.</li>
+    <li><b>Timers</b> keep segments on schedule, with a configurable "TIME UP" signal that can be shown discreetly to the stage without ever appearing on the audience screen.</li>
+    <li><b>Emergencies</b> — an instant blackout or a screen clear — are always one action away, and work with no network at all.</li>
+  </ol>
+
+  <h3>Control from a phone or tablet</h3>
+  <p>Team members can control the service from a mobile device over the church's local Wi-Fi — advancing lyrics from the stage, running timers from the floor, or approving scripture from a tablet. Pairing is by QR code, connections are encrypted, and each person gets only the controls their role allows. Crucially, <b>the desktop is always in charge</b>: if a phone loses connection, the live service is completely unaffected.</p>
+
+  <h3>Optional, responsible AI assistance</h3>
+  <p>When enabled (in a later release), SelahCue can listen to the sermon and transcribe it, <em>suggest</em> the scripture the preacher is referencing for the operator to approve, and afterwards draft editable sermon notes. This assistance is always <b>operator-in-the-loop</b> — the software proposes, a human confirms — so an AI mistake can never reach the screen on its own.</p>
+
+  <div class="decision"><div class="t">The promise that underpins everything</div>SelahCue is built <b>offline-first</b> and <b>reliability-first</b>. The core of a service — slides, scripture, media, timers, blackout — keeps working with no internet, no cloud and no phone connected, and no failure of any single part (a lost screen, a failed AI service, a dropped network) can ever blank or clear what the congregation is seeing. It also saves continuously and restores its exact live state after a crash.</div>
+</section>
+
+<!-- ============ 1. EXEC SUMMARY ============ -->
+<section class="section">
+  <span class="kicker">Section 1</span>
+  <h2>1 · Executive summary</h2>
+  <p class="lead">SelahCue is a cross-platform church presentation and ministry-assistance application. Over four disciplined, independently-verified stages, we have taken it from an idea to a fully specified, audit-passed product definition that is ready to build.</p>
+
+  <div class="stat-row">
+    <div class="card"><div class="n">4</div><div class="l">Stages completed &amp; approved</div></div>
+    <div class="card"><div class="n">238</div><div class="l">Traceable requirements (177 functional + 27 non-functional + flows, risks, metrics)</div></div>
+    <div class="card"><div class="n">0</div><div class="l">Blocking defects at the independent audit</div></div>
+    <div class="card"><div class="n">PASS</div><div class="l">Final verdict of the fresh-context PRD audit</div></div>
+  </div>
+
+  <h3>Where we are</h3>
+  <p>We have finished the <b>product-definition half</b> of the project. Specifically, we have: inspected the environment and established a verified baseline; conducted broad, evidence-classified research into competitors, users, technology, licensing, privacy and the realistic limits of AI; written a complete Product Requirements Document (PRD) with stable IDs and testable acceptance criteria; and subjected that PRD to an <b>independent adversarial audit by fresh reviewers who did not write it</b>. The audit initially raised 17 significant issues; we resolved every one and the re-audit returned a clean <b>PASS</b>.</p>
+
+  <h3>The most important decisions</h3>
+  <ul>
+    <li><b>A deliberately bounded first release.</b> The brief describes an enormous product. We scoped a realistic Minimum Viable Product — the reliable presentation core plus a secure mobile controller — and phased the ambitious AI features into later releases.</li>
+    <li><b>Honesty about AI.</b> Live transcription and "automatic scripture detection" are genuinely useful but imperfect. We designed them as an <b>operator-assisted</b> tool, never an autopilot, so a wrong AI guess can never embarrass a congregation.</li>
+    <li><b>Text-to-Speech removed.</b> On your instruction, and supported by our research, TTS was cut from the roadmap entirely (see Section 6).</li>
+    <li><b>Licensing safety first.</b> Only public-domain Bible translations are bundled; copyrighted translations and song lyrics remain the church's own licensed responsibility.</li>
+  </ul>
+
+  <h3>What's next</h3>
+  <p>The next gate asks for your approval of the technical architecture and user-experience design (Stage 5), after which delivery is planned in the project tracker (Stage 6) and implementation begins in small, tested, independently-reviewed slices. <b>Nothing is deployed to production without your explicit, separate authorisation.</b></p>
+</section>
+
+<!-- ============ 2. METHOD ============ -->
+<section class="section">
+  <span class="kicker">Section 2</span>
+  <h2>2 · How we work — and why it's built this way</h2>
+  <p>SelahCue will run during live church services, conferences and livestreams — moments where software failure is highly visible and cannot be undone. That reality shapes our entire method. We optimise for <b>correctness and reliability</b>, not speed of typing.</p>
+
+  <h3>Stage gates with human approval</h3>
+  <p>Work advances through numbered stages. At the end of each, we stop, present evidence, and wait for your explicit decision to continue. Approval authorises <em>only</em> the next stage — never a blank cheque for the whole project.</p>
+  <div class="why"><div class="t">Why</div>It keeps you in control of scope, cost and direction at every step, and guarantees that expensive work (like writing code) never begins on an unapproved foundation.</div>
+
+  <h3>Goal Contracts &amp; measurable completion</h3>
+  <p>Every stage and task runs against a written "Goal Contract" with Boolean, verifiable pass/fail criteria. Work is only "done" when those criteria pass <em>with evidence</em> — never because someone believes it looks finished. A small validation program checks each contract's structure automatically.</p>
+  <div class="why"><div class="t">Why</div>"It looks correct" is how defects reach production. Objective, checkable criteria remove wishful thinking from the definition of done.</div>
+
+  <h3>Evidence, classified for honesty</h3>
+  <p>Every research finding is tagged as <b>Observed</b> (we saw or measured it), <b>Documented</b> (a credible source states it), <b>Inferred</b> (reasoned, not proven), or <b>Unknown</b> (needs investigation). We deliberately record what we <em>don't</em> yet know.</p>
+  <div class="why"><div class="t">Why</div>It prevents marketing claims and guesses from masquerading as facts. When we say a number is unproven, you know exactly how much to trust it.</div>
+
+  <h3>Independent verification</h3>
+  <p>High-stakes claims — the requirements audit, security, quality — are checked by <b>fresh reviewers who did not do the original work</b>. No one signs off on their own homework.</p>
+  <div class="why"><div class="t">Why</div>Authors are blind to their own gaps. An independent adversarial reviewer catches what the writer cannot see — as proven in Stage 4, where 17 real issues were found and fixed.</div>
+
+  <h3>One source of truth for delivery</h3>
+  <p>Delivery work lives in your ClickUp workspace (the <code>BUILD CONTROL — SelahCue</code> task and its dedicated list). Durable product knowledge — this report, the PRD, research, decisions — lives in version-controlled documents. Progress is always recoverable without relying on chat history.</p>
+</section>
+
+<!-- ============ 3. PRODUCT ============ -->
+<section class="section">
+  <span class="kicker">Section 3</span>
+  <h2>3 · The product &amp; the gap it fills</h2>
+  <p>SelahCue helps churches run the visual side of a service: presentation slides, song lyrics, Bible scripture, multiple screens, stage/confidence displays, lower-third graphics, and timers — with optional, responsible AI assistance layered on top, and a mobile phone/tablet that can control the desktop over the local network.</p>
+
+  <h3>Why a new product is justified</h3>
+  <p>Our competitor research (six products studied plus the wider production-tools ecosystem) found a real, unmet gap:</p>
+  <table>
+    <tr><th>Today's options</th><th>The trade-off churches are forced to accept</th></tr>
+    <tr><td><b>ProPresenter</b></td><td>The most powerful, but Mac-first, ~US$399/seat, a steep learning curve, and no Linux.</td></tr>
+    <tr><td><b>EasyWorship</b></td><td>Volunteer-friendly, but subscription-only and no Linux.</td></tr>
+    <tr><td><b>OpenLP / FreeShow / Quelea</b></td><td>Free and cross-platform, but utilitarian and light on professional AV routing and team roles.</td></tr>
+    <tr><td><b>PewBeam</b></td><td>Exciting AI-native newcomer, but appears focused on verse projection rather than a full production suite.</td></tr>
+  </table>
+  <div class="decision"><div class="t">SelahCue's opportunity</div>Be genuinely cross-platform (Windows, macOS <b>and</b> Linux) with real mobile control, a volunteer-friendly experience with professional depth available underneath, native team roles and permissions, first-class integration with the broadcast ecosystem, and <b>responsible operator-controlled AI inside a complete production suite</b> — with offline-first reliability as an explicit promise.</div>
+</section>
+
+<!-- ============ 4. STAGE 1 ============ -->
+<section class="section">
+  <span class="kicker">Section 4</span>
+  <h2>4 · Stage 1 — Establishing a verified baseline</h2>
+  <p><b>What we did.</b> Inspected the repository and tools, confirmed access to the ClickUp workspace, created the central <code>BUILD CONTROL — SelahCue</code> tracking task, wrote the top-level Goal Contract, documented a verified baseline, produced the research plan, and created the initial risk register.</p>
+  <p><b>What we found.</b> A "greenfield" start — no existing code to reconcile, with the product brief as the single source of intent. We also discovered that two validation tools the process assumed did not yet exist, and flagged them openly as risks rather than quietly ignoring them (both have since been built).</p>
+  <div class="why"><div class="t">Why this stage exists</div>Building on unverified assumptions is the most common cause of wasted effort. Establishing exactly what is (and isn't) true first means every later decision rests on ground truth, not guesswork.</div>
+  <p><b>Product naming.</b> With your confirmation, the product is named <b>SelahCue</b> — "Selah" (a biblical term for a reflective pause) combined with "Cue" (a presentation cue).</p>
+</section>
+
+<!-- ============ 5. STAGE 2 ============ -->
+<section class="section">
+  <span class="kicker">Section 5</span>
+  <h2>5 · Stage 2 — Discovery &amp; research</h2>
+  <p><b>What we did.</b> Six specialist researchers worked in parallel — competitor analysis, AI/transcription capabilities, licensing &amp; compliance, cross-platform feasibility, security &amp; privacy, and user roles &amp; workflows — producing evidence-classified findings. A panel of four independent reviewers then audited the whole package (verdict: sound, with conditions we resolved). Where the brief demanded it, we did a follow-up study of dedicated transcription products.</p>
+
+  <h3>The findings that shaped the product</h3>
+
+  <h4>Being honest about AI</h4>
+  <p>This is where church-AI products most often over-promise. Our research is deliberately candid:</p>
+  <ul>
+    <li><b>Live transcription</b> works well for clear, close-microphone speech but is materially less accurate in a real room (echo, PA bleed, accents, biblical names). Critically, the underlying technology can <b>invent plausible-sounding text during silence or music</b> — a serious risk in worship.</li>
+    <li><b>Automatic scripture detection</b> is <b>reliable when the preacher plainly states a reference</b> ("John 3:16"), <b>fallible for exact quotations</b>, and <b>unreliable for paraphrase</b>. We refuse to claim a single accuracy figure we cannot prove.</li>
+  </ul>
+  <div class="decision"><div class="t">Design consequence</div>AI is an <b>operator assistant, not an autopilot.</b> By default, a human confirms every AI suggestion before it appears on screen, the deterministic parser is trusted over guesswork, and the system is tuned to avoid false positives. Every AI error is recoverable before the congregation ever sees it.</div>
+
+  <h4>Licensing is a hard boundary</h4>
+  <p>We can freely bundle only <b>public-domain</b> Bible translations (e.g. the World English Bible, ASV, Berean). Copyrighted translations (NIV, ESV, etc.) and copyrighted song lyrics <b>may not be bundled</b> — they remain the church's own licensed responsibility, which SelahCue supports rather than supplies. We also mapped video-codec patent and data-protection (NDPA/GDPR) obligations.</p>
+
+  <h4>A technology reality check</h4>
+  <p>The brief suggested a specific technology stack. Our feasibility work confirmed most of it is sound but surfaced one important correction — the lightweight app framework cannot double as the high-performance screen "compositor," which needs a dedicated graphics engine. We captured ten precise technical questions ("spikes") to answer before committing the architecture in Stage 5, rather than guessing now.</p>
+
+  <h4>Reliability as a promise, not a feature</h4>
+  <div class="callout-warn"><b>The non-negotiable rule.</b> The desktop application is always in charge. Core presentation — slides, local scripture, media, blackout, timers — must keep working with <b>zero</b> network, internet, mobile or AI availability, and <b>no failure of any component may blank or clear what's on screen as a side effect</b>. A dropped phone connection, a failed AI provider, or an unplugged screen must never take down the service.</div>
+
+  <p>An early security threat-model mapped the biggest risk — the local-network link between phone and desktop on shared church Wi-Fi — and the protections needed (encrypted, paired, permission-checked, replay-protected connections). We also modelled 11 user roles and a 7-role mobile permission matrix.</p>
+</section>
+
+<!-- ============ 6. DECISION: TTS ============ -->
+<section class="section">
+  <span class="kicker">Section 6</span>
+  <h2>6 · A key decision — removing Text-to-Speech</h2>
+  <p>The original brief included a Text-to-Speech (TTS) feature — the app reading text aloud. Partway through, you decided to hold off on it: <em>"I don't see it as a major requirement in the long run."</em></p>
+  <div class="decision"><div class="t">Decision DEC-001 — TTS removed from the roadmap</div>TTS is reclassified from a "later release" feature to an explicit <b>non-goal</b>, revisited only if you request it in future. This is fully recorded and traceable.</div>
+  <h3>Why this was the right call</h3>
+  <p>Our own research had already rated TTS the <b>lowest-value</b> of the four AI features (a congregation reads the screen; it rarely needs the app to speak) and the <b>highest-risk</b> in a live room — audio feedback loops, microphone bleed, and the danger of speech accidentally playing through the main sound system. Removing it <b>reduces cost and risk</b> and simplifies the audio design, with no downside to the core product. The accessibility needs it might have served are met through other means (keyboard operation, high-contrast large text, screen-reader support).</p>
+  <p>Nothing was lost: the TTS research remains on file, so the decision is fully reversible if priorities change.</p>
+</section>
+
+<!-- ============ 7. STAGE 3 ============ -->
+<section class="section">
+  <span class="kicker">Section 7</span>
+  <h2>7 · Stage 3 — The Product Requirements Document</h2>
+  <p><b>What we did.</b> Turned the research into a complete, formal PRD: every capability written as a numbered requirement with a stable identifier, a release priority, and a <b>measurable, testable pass condition</b>. We built a validation program (the "PM artifact validator") that automatically checks the document is complete and internally consistent, and ran an independent review before the formal audit.</p>
+
+  <div class="stat-row">
+    <div class="card"><div class="n">177</div><div class="l">Functional requirements (FR)</div></div>
+    <div class="card"><div class="n">27</div><div class="l">Non-functional requirements (NFR)</div></div>
+    <div class="card"><div class="n">10</div><div class="l">Critical user journeys (FLOW)</div></div>
+    <div class="card"><div class="n">14</div><div class="l">Tracked risks (RISK)</div></div>
+  </div>
+
+  <div class="why"><div class="t">Why every requirement is measurable</div>A vague requirement ("the app should be fast") cannot be tested, so it cannot be trusted. Each SelahCue requirement states a number or an observable behaviour — for example, <em>"a slide appears on the main screen within 150 milliseconds of the operator's command."</em> That is something quality engineers can objectively verify later.</div>
+
+  <h3>What the PRD covers</h3>
+  <p class="two-col">Service planning · slide and lyric editing · the full Bible scripture system · multiple independent screen outputs · stage and confidence displays · lower-third graphics · timers and a configurable "TIME UP" state · media playback · autosave and crash recovery · emergency clear and blackout · mobile discovery, pairing and secure control · live transcription · automatic scripture detection · AI sermon notes · production integrations · plus complete sections on permissions, data lifecycle, offline behaviour, security, privacy, accessibility, reliability, performance and licensing.</p>
+</section>
+
+<!-- ============ 8. STAGE 4 ============ -->
+<section class="section">
+  <span class="kicker">Section 8</span>
+  <h2>8 · Stage 4 — The independent audit</h2>
+  <p><b>What we did.</b> A panel of five fresh reviewers — none of whom wrote the PRD — audited it against a strict checklist: missing workflows, untestable criteria, unrealistic AI expectations, privacy/licensing/security/accessibility gaps, and over-sized scope. A lead reviewer then adjudicated a single verdict.</p>
+
+  <table>
+    <tr><th>Audit round</th><th>Verdict</th><th>Blocking issues</th><th>Major issues</th></tr>
+    <tr><td>First audit</td><td><span class="tag tag-later">Pass with conditions</span></td><td>0</td><td>17</td></tr>
+    <tr><td>After remediation (re-audit)</td><td><span class="tag tag-pass">PASS</span></td><td>0</td><td>0 — all 17 discharged</td></tr>
+  </table>
+
+  <div class="why"><div class="t">Why this is the most valuable stage in the report</div>The audit did its job: it found <b>17 genuine issues the authors had missed</b> — and it found them on paper, where a fix costs minutes, instead of in shipped code, where it could cost weeks or cause a live-service failure. This is exactly the return the disciplined method is designed to produce.</div>
+
+  <h3>Examples of what the audit caught — and how we fixed it</h3>
+  <table>
+    <tr><th>The gap the auditors found</th><th>How we resolved it</th></tr>
+    <tr><td>What happens if the disk fills up during a long service? Autosave could silently fail.</td><td>Added a requirement for early low-disk warnings and protected space reserved for crash recovery.</td></tr>
+    <tr><td>If a crash is caused by the very content being restored, the app could crash-loop endlessly.</td><td>Added a "crash-loop breaker": after repeated crashes the app offers to start clean and disables the suspected item.</td></tr>
+    <tr><td>Removing TTS was clean in the main document but stale references lingered in supporting files.</td><td>Completed the removal everywhere, so no one builds a permission or workflow for a cancelled feature.</td></tr>
+    <tr><td>Even without TTS, the app's own media/alert audio could be re-recorded by the transcription microphone and trigger false detections.</td><td>Added a guard that pauses transcription while the app plays audio into the room.</td></tr>
+    <tr><td>Encrypted connections were specified for control commands but not for the live transcript sent to phones.</td><td>Broadened encryption to <b>all</b> data sent to mobile devices, including previews and transcripts.</td></tr>
+    <tr><td>Flashing "TIME UP" graphics posed a photosensitive-seizure risk on public screens.</td><td>Added a seizure-safety limit (no more than three flashes per second) and a reduced-motion option.</td></tr>
+  </table>
+  <p>All 17 fixes were re-verified by fresh reviewers, confirming a clean PASS with no new problems introduced. The PRD is now cleared for the architecture and design stage.</p>
+</section>
+
+<!-- ============ 9. MVP ============ -->
+<section class="section">
+  <span class="kicker">Section 9</span>
+  <h2>9 · The first release (MVP) — what ships first, and why</h2>
+  <p>The complete vision is large. Trying to build all of it at once is the single biggest risk to the project, so we defined a focused, genuinely useful <b>first release</b> and phased the rest.</p>
+
+  <h3>In the first release</h3>
+  <p><span class="tag tag-mvp">MVP</span> The reliable presentation core on Windows, macOS and Linux, plus a secure mobile controller: service plans; slide, lyric and scripture presentation (public-domain Bibles); a main audience screen and a stage/confidence display; lower-third graphics; timers with "TIME UP"; media playback; autosave, crash recovery, emergency clear and blackout; mobile pairing with encrypted, permission-checked control of slides and timers; plus the security, privacy, accessibility and reliability foundations.</p>
+
+  <h3>Deliberately held for later releases</h3>
+  <table>
+    <tr><th>Release</th><th>Adds</th><th>Why later</th></tr>
+    <tr><td><span class="tag tag-later">R2</span></td><td>Extra screens, transparent lower-thirds, broadcast (NDI) output, diagnostics</td><td>Valuable but not essential to a working service; depends on performance proven by the Stage-5 spikes.</td></tr>
+    <tr><td><span class="tag tag-later">R3</span></td><td>Live transcription &amp; transcript export</td><td>Needs the reliable core in place first; carries the most AI/privacy complexity.</td></tr>
+    <tr><td><span class="tag tag-later">R4</span></td><td>Automatic scripture detection</td><td>Builds directly on transcription (R3).</td></tr>
+    <tr><td><span class="tag tag-later">R5</span></td><td>AI sermon notes</td><td>Builds on the transcript; post-service, not live-critical.</td></tr>
+    <tr><td><span class="tag tag-later">R6</span></td><td>Production integrations, macros, right-to-left languages</td><td>Advanced/ecosystem features for power users.</td></tr>
+  </table>
+
+  <h3>Explicitly excluded</h3>
+  <p><span class="tag tag-no">Non-goal</span> Text-to-Speech (removed, DEC-001) · voice cloning · bundling any copyrighted Bible translation or song lyrics · copying any competitor's code or interface.</p>
+  <div class="why"><div class="t">Why bound the MVP so tightly</div>A smaller, excellent, reliable first release that churches can trust on a Sunday morning is worth far more than a sprawling, fragile one. Each later release adds value on a proven foundation.</div>
+</section>
+
+<!-- ============ 10. RISKS ============ -->
+<section class="section">
+  <span class="kicker">Section 10</span>
+  <h2>10 · Risks — the honest picture</h2>
+  <p>We track risks openly rather than discovering them late. The most significant:</p>
+  <table>
+    <tr><th>Risk</th><th>Why it matters</th><th>How we're managing it</th></tr>
+    <tr><td><b>Scope breadth</b></td><td>The full product is effectively two products (a graphics suite and a secure control system) across five platforms.</td><td>Bounded MVP; phased releases; the desktop core ships before the mobile control plane.</td></tr>
+    <tr><td><b>Live reliability</b></td><td>A failure during a service is highly visible.</td><td>Offline-first core; strict rule that no component failure can blank the screen; fault-injection testing planned.</td></tr>
+    <tr><td><b>AI accuracy</b></td><td>Over-promising erodes trust.</td><td>Operator-confirmation by default; honest, documented limits; tuned to avoid false positives.</td></tr>
+    <tr><td><b>Performance on modest hardware</b></td><td>Some churches run older PCs.</td><td>Ten targeted technical spikes in Stage 5 to prove the graphics/performance approach before committing.</td></tr>
+    <tr><td><b>Licensing &amp; privacy</b></td><td>Copyright and data-protection exposure.</td><td>Public-domain-only bundle; opt-in cloud with clear disclosure; sensitive legal items flagged for confirmation before the features that need them.</td></tr>
+  </table>
+</section>
+
+<!-- ============ 11. NEXT ============ -->
+<section class="section">
+  <span class="kicker">Section 11</span>
+  <h2>11 · What happens next</h2>
+  <div class="timeline">
+    <div class="tl done"><div class="h">Stages 1–4 — Complete &amp; passed</div>Baseline, research, PRD, and independent audit (final verdict: PASS).</div>
+    <div class="tl"><div class="h">Stage 5 — Architecture &amp; UX design <small>(next, needs your go-ahead)</small></div>Choose the technology with documented trade-offs, resolve the ten spikes, design the user experience and its failure/recovery states, and have architecture and design independently reviewed.</div>
+    <div class="tl"><div class="h">Stage 6 — Delivery planning</div>Break the approved work into tracked, owned, dependency-ordered tickets in ClickUp; confirm the plan is ready before any code.</div>
+    <div class="tl"><div class="h">Stages 7–12 — Implementation</div>Build in small, tested, independently-reviewed slices: the presentation foundation, then core presentation, mobile control, transcription, scripture intelligence, sermon notes, and hardening.</div>
+    <div class="tl"><div class="h">Stage 13 — Final verification</div>Fresh-context code, quality, security and release-readiness checks before a "ready for release" recommendation.</div>
+  </div>
+  <div class="callout-warn"><b>Your control is preserved throughout.</b> Each stage stops for your approval, and <b>production deployment requires its own separate, explicit instruction</b> — it never happens automatically.</div>
+</section>
+
+<!-- ============ 12. EVIDENCE ============ -->
+<section class="section">
+  <span class="kicker">Section 12</span>
+  <h2>12 · Evidence index — everything produced so far</h2>
+  <p>All artefacts are version-controlled and traceable. This is the durable record behind the summaries above.</p>
+  <table>
+    <tr><th>Area</th><th>Artefacts</th></tr>
+    <tr><td>Product definition</td><td>The complete PRD; the PM validation tool; the Stage-3 review and Stage-4 audit &amp; re-audit reports.</td></tr>
+    <tr><td>Research evidence</td><td>Competitor matrix; AI/transcription capability assessment; provider trade-offs; licensing register; cross-platform feasibility study; adjacent-product study; consolidated evidence register; open-decisions log.</td></tr>
+    <tr><td>Users &amp; security</td><td>Eleven personas with a role-permission matrix; normal, alternate and failure-recovery workflows; an early security threat model.</td></tr>
+    <tr><td>Governance</td><td>Goal Contracts for the build and each stage; the decision log (including the TTS decision); the living risk register; the ClickUp <code>BUILD CONTROL — SelahCue</code> task recording every gate.</td></tr>
+  </table>
+  <p class="foot">SelahCue Product Build Report · Stages 1–4 · 23 July 2026 · Prepared by the SelahCue AI product &amp; engineering team · Internal. This report summarises work completed to date; no production software has been deployed. Figures reflect the product definition as audited; performance targets are provisional pending the Stage-5 technical spikes.</p>
+</section>
+
+</body>
+</html>

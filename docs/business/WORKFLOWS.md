@@ -19,7 +19,7 @@ Normal, alternate, and failure-recovery workflows for SelahCue.
    must remain fully operable from the desktop with **no network, no mobile, and every AI
    or third-party provider offline.**
 3. **AI is assistive and human-gated.** Transcription, scripture auto-detection, sermon
-   notes, and TTS never change live output on their own. A person (usually a scripture or
+   notes never change live output on their own. A person (usually a scripture or
    production operator) approves anything that goes to screen.
 4. **Fail safe, not surprising.** On any component failure, the current live output is
    *held* (never auto-cleared or blacked out as a side effect), and the operator is
@@ -299,5 +299,5 @@ and an optional redundant-desktop failover path so the service can continue.
 
 **Bottom line:** SelahCue's presentation core is a self-sufficient, offline-capable,
 crash-recoverable desktop application. Mobile control, transcription, scripture detection,
-sermon notes, and TTS are layered assistance that can each fail independently without ever
+sermon notes are layered assistance that can each fail independently without ever
 stopping the service, clearing the screen, or displaying unapproved content.

@@ -3,7 +3,7 @@
 **Product:** SelahCue — cross-platform church presentation & ministry-assistance app
 (presentation slides, song lyrics, Bible scripture, multiple outputs, stage/confidence
 displays, lower thirds, timers with "TIME UP", live transcription, automatic scripture
-detection, AI sermon notes, text-to-speech, mobile remote control, media playback,
+detection, AI sermon notes, mobile remote control, media playback,
 service planning).
 
 **Contexts of use:** churches, conferences, concerts, worship events, livestream
@@ -19,7 +19,7 @@ productions, sermon recording.
 > default: **INFERRED / Med.**
 
 **Design principle referenced throughout:** the **desktop application is authoritative**.
-Mobile devices, AI features, and third-party providers (transcription, TTS) are
+Mobile devices, AI features, and third-party providers (transcription) are
 *assistive and optional*. Core presentation (slides, scripture, lyrics, outputs,
 blackout, timers) must remain fully operable from the desktop even when every network,
 mobile, and AI dependency fails.

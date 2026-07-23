@@ -1,0 +1,91 @@
+{"ts":"2026-07-23T11:17:03.109Z","session":"20260723-111703","kind":"server_start","data":{"port":5500,"host":"0.0.0.0","root":"/Users/m.oluwole/Documents/code/scph","https":false,"live_reload":true}}
+{"ts":"2026-07-23T11:17:03.486Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:17:04.213Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c0","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:17:05.340Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/favicon.ico","status":404,"duration_ms":16}}
+{"ts":"2026-07-23T11:17:34.710Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/docs/stakeholder/SelahCue-Build-Report.html","status":200,"duration_ms":47}}
+{"ts":"2026-07-23T11:17:35.278Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c1","url":"http://localhost:5500/docs/stakeholder/SelahCue-Build-Report.html","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:17:55.312Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/docs/stakeholder/SelahCue-Build-Report.pdf","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:21:03.645Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/stakeholder/SelahCue-Build-Report.html","ext":"html","change":"modify"}}
+{"ts":"2026-07-23T11:21:03.645Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/stakeholder/SelahCue-Build-Report.html","reload_type":"full"}}
+{"ts":"2026-07-23T11:21:03.645Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/stakeholder/SelahCue-Build-Report.html","reload_type":"full"}}
+{"ts":"2026-07-23T11:21:03.714Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:21:03.731Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c0"}}
+{"ts":"2026-07-23T11:21:04.270Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c2","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:21:30.473Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/stakeholder/SelahCue-Build-Report.html","ext":"html","change":"modify"}}
+{"ts":"2026-07-23T11:21:30.473Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/stakeholder/SelahCue-Build-Report.html","reload_type":"full"}}
+{"ts":"2026-07-23T11:21:30.473Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/stakeholder/SelahCue-Build-Report.html","reload_type":"full"}}
+{"ts":"2026-07-23T11:21:30.502Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:21:30.515Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c2"}}
+{"ts":"2026-07-23T11:21:30.824Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c3","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:23:53.790Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c1"}}
+{"ts":"2026-07-23T11:25:25.470Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/docs/stakeholder/SelahCue-Build-Report.pdf","status":200,"duration_ms":2}}
+{"ts":"2026-07-23T11:32:14.978Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/product/prds/SelahCue-PRD.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:32:14.979Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/product/prds/SelahCue-PRD.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:32:15.033Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":1}}
+{"ts":"2026-07-23T11:32:15.047Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c3"}}
+{"ts":"2026-07-23T11:32:15.583Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c4","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:32:16.029Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/product/prds/SelahCue-PRD.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:32:16.029Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/product/prds/SelahCue-PRD.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:32:16.038Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:32:16.042Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c4"}}
+{"ts":"2026-07-23T11:32:16.284Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c5","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:32:19.284Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/product/prds/SelahCue-PRD.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:32:19.285Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/product/prds/SelahCue-PRD.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:32:19.313Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:32:19.316Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c5"}}
+{"ts":"2026-07-23T11:32:19.579Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c6","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:32:21.427Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/product/prds/SelahCue-PRD.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:32:21.427Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/product/prds/SelahCue-PRD.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:32:21.438Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:32:21.442Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c6"}}
+{"ts":"2026-07-23T11:32:21.773Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c7","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:32:40.735Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/research/FEASIBILITY.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:32:40.735Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/research/FEASIBILITY.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:32:40.778Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:32:40.798Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c7"}}
+{"ts":"2026-07-23T11:32:41.084Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c8","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:32:42.180Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/business/PERSONAS.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:32:42.180Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/business/PERSONAS.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:32:42.194Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:32:42.208Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c8"}}
+{"ts":"2026-07-23T11:32:42.455Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c9","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:32:44.131Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/business/PERSONAS.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:32:44.131Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/business/PERSONAS.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:32:44.146Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:32:44.157Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c9"}}
+{"ts":"2026-07-23T11:32:44.402Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c10","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:32:45.461Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/business/WORKFLOWS.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:32:45.461Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/business/WORKFLOWS.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:32:45.471Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:32:45.475Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c10"}}
+{"ts":"2026-07-23T11:32:45.721Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c11","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:32:59.935Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/business/WORKFLOWS.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:32:59.935Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/business/WORKFLOWS.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:32:59.972Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:32:59.977Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c11"}}
+{"ts":"2026-07-23T11:33:00.302Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c12","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:33:28.687Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/delivery/goals/STAGE4-audit.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:33:28.687Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/delivery/goals/STAGE4-audit.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:33:28.739Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:33:28.745Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c12"}}
+{"ts":"2026-07-23T11:33:29.056Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c13","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:33:42.226Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/delivery/goals/STAGE4-audit.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:33:42.226Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/delivery/goals/STAGE4-audit.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:33:42.256Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:33:42.270Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c13"}}
+{"ts":"2026-07-23T11:33:42.502Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c14","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:33:54.300Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/delivery/goals/STAGE4-audit.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:33:54.300Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/delivery/goals/STAGE4-audit.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:33:54.320Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:33:54.334Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c14"}}
+{"ts":"2026-07-23T11:33:54.651Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c15","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:34:26.333Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/delivery/BUILD_STATE.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:34:26.333Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/delivery/BUILD_STATE.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:34:26.353Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:34:26.359Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c15"}}
+{"ts":"2026-07-23T11:34:26.608Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c16","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}
+{"ts":"2026-07-23T11:34:40.226Z","session":"20260723-111703","kind":"file_change","data":{"path":"docs/delivery/BUILD_STATE.md","ext":"md","change":"modify"}}
+{"ts":"2026-07-23T11:34:40.227Z","session":"20260723-111703","kind":"reload_trigger","data":{"path":"docs/delivery/BUILD_STATE.md","reload_type":"full"}}
+{"ts":"2026-07-23T11:34:40.256Z","session":"20260723-111703","kind":"http_request","data":{"method":"GET","path":"/","status":200,"duration_ms":0}}
+{"ts":"2026-07-23T11:34:40.261Z","session":"20260723-111703","kind":"ws_disconnect","data":{"client_id":"c16"}}
+{"ts":"2026-07-23T11:34:40.551Z","session":"20260723-111703","kind":"ws_connect","data":{"client_id":"c17","url":"http://localhost:5500/","user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36","viewport":[1512,767]}}

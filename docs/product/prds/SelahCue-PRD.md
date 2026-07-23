@@ -424,11 +424,11 @@ Core live presentation (slides, local scripture from bundled PD translations, me
 
 ## 20. Security
 
-LAN control plane is the primary attack surface. Controls: TLS 1.3 + QR-pinned host fingerprint (NFR-016), single-use short-TTL QR pairing + host confirmation (FR-086), per-device revocable keypair-bound tokens (FR-089), server-side RBAC (FR-090), per-command nonce+timestamp replay protection + rate limiting with output isolation (FR-091), OS-secret-store-only secrets (NFR-017), signed updates + anti-rollback (FR-155), local-model integrity (FR-156), safe file import/path-traversal protection (FR-138), backup encryption (FR-157), append-only audit log (FR-150). Full early threat model: `docs/security/reviews/threat-model-draft.md`; a Stage-13 review revisits all deferred items.
+LAN control plane is the primary attack surface. Controls: TLS 1.3 + QR-pinned host fingerprint (NFR-016), single-use short-TTL QR pairing + host confirmation (FR-086), per-device revocable keypair-bound tokens (FR-089), server-side RBAC (FR-090), per-command nonce+timestamp replay protection + rate limiting with output isolation (FR-091), control-message schema/input validation (FR-174), OS-secret-store-only secrets (NFR-017), signed updates + anti-rollback (FR-155), local-model integrity (FR-156), safe file import/path-traversal protection (FR-138), untrusted-media/font decode hardening (FR-173), backup encryption (FR-157), append-only audit log (FR-150), dependency/SBOM scanning (NFR-027). Full early threat model: `docs/security/reviews/threat-model-draft.md`; a Stage-13 review revisits all deferred items.
 
 ## 21. Privacy
 
-Sermon audio/transcripts/notes are sensitive (NDPA 2023 + GDPR). Cloud OFF by default, opt-in per provider with visible disclosure (NFR-018; FR-132), live cloud indicator (FR-133), configurable retention + reliable deletion (FR-153), congregation-recording consent affordance (FR-158), at-rest encryption (FR-154), no secrets/transcripts in logs (FR-082). No transcript/audio leaves the host without explicit user action.
+Sermon audio/transcripts/notes are sensitive (NDPA 2023 + GDPR). Cloud OFF by default, opt-in per provider with visible disclosure (NFR-018; FR-132), live cloud indicator (FR-133), configurable retention + reliable deletion (FR-153), congregation-recording consent affordance (FR-158), at-rest encryption (FR-154), no secrets/transcripts in logs (FR-082), published privacy policy + app-store data disclosures (FR-176), DPA + cross-border transfer handling for cloud (FR-177). No transcript/audio leaves the host without explicit user action.
 
 ## 22. Accessibility
 
@@ -436,7 +436,7 @@ Full keyboard operation of core live actions (NFR-019; FR-014); WCAG 2.1 AA **co
 
 ## 23. Reliability
 
-8–12h continuous operation (NFR-010); continuous autosave (FR-074; NFR-023); crash/forced-shutdown recovery restoring exact live state (FR-075); output-failure isolation — no failure blanks/clears output (NFR-024; FR-083); display/audio/mobile/network/provider disconnection handled gracefully (FR-041/068/097/135); database integrity + crash-safe backups (FR-079); missing-media placeholder (FR-070); storage warnings + safe mode (FR-081); bounded queues/caches + cancellable tasks (FR-084); structured logs + diagnostics (FR-082).
+8–12h continuous operation (NFR-010); continuous autosave (FR-074; NFR-023); crash/forced-shutdown recovery restoring exact live state + **crash-loop breaker** (FR-075); **storage-exhaustion detection + graceful degradation** (FR-169); output-failure isolation — no failure blanks/clears output (NFR-024; FR-083); display/audio/mobile/network/provider disconnection handled gracefully (FR-041/068/097/135/170); GPU/renderer + decoder recovery (FR-160); database integrity + crash-safe backups (FR-079); missing-media placeholder (FR-070); storage warnings + safe mode (FR-081); bounded queues/caches + cancellable tasks (FR-084); structured logs + diagnostics (FR-082).
 
 ## 24. Performance
 
@@ -503,7 +503,7 @@ Every FR/NFR row's **Acceptance criteria** column is its normative, testable pas
 | METRIC-006 | New-operator time-to-first-slide | ≤10 minutes (usability test) |
 | METRIC-007 | Mobile command latency (p95) | ≤200ms on LAN |
 | METRIC-008 | Crash-recovery success | 100% of forced-shutdown tests restore live state |
-| METRIC-009 | Scripture-detection false-positive rate (explicit refs) | ≤5% on the explicit-reference test set (provisional; ratified after Stage-10 measurement) |
+| METRIC-009 | Scripture-detection false-positive rate (explicit refs) | ≤5% on the **FR-171** explicit-reference evaluation set (provisional; ratified after Stage-10 measurement) |
 | METRIC-010 | Cross-platform core test-matrix pass | 100% on Windows/macOS/Linux |
 
 ## 32. Launch criteria (MVP)

@@ -6,7 +6,7 @@
 - Parent goal ID: BUILD-selahcue
 - Title: Obtain an exactly-PASS verdict from a fresh-context independent PRD audit; resolve all blocker/major findings and re-audit
 - Role: product-manager (remediation) + independent auditor (verification)
-- Status: IN_PROGRESS
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajnx548
 - Created: 2026-07-23
@@ -56,10 +56,10 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| S4-001 | yes | Fresh-context independent audit executed against the brief checklist | Audit workflow | Audit report produced with a verdict | docs/product/audits/PRD-AUDIT-stage4.md | PENDING |
-| S4-002 | yes | Every blocker and major finding resolved and re-audited | Remediation + re-audit | No open blocker/major findings | audit report (final round) | PENDING |
-| S4-003 | yes | Final audit verdict is exactly PASS | Audit adjudication | Verdict == PASS | audit report | PENDING |
-| S4-004 | yes | PRD still passes the PM artifact validator after remediation | validate_prd.py | Exit 0 | validator output | PENDING |
+| S4-001 | yes | Fresh-context independent audit executed against the brief checklist | Audit workflow (5-auditor panel) | Audit report produced with a verdict | docs/product/audits/PRD-AUDIT-stage4.md | PASS |
+| S4-002 | yes | Every blocker and major finding resolved and re-audited | Remediation + re-audit | 0 blockers; all 17 majors discharged; 0 regressions | PRD §35; docs/product/audits/PRD-AUDIT-stage4-reaudit.md | PASS |
+| S4-003 | yes | Final audit verdict is exactly PASS | Re-audit adjudication | Verdict == PASS | docs/product/audits/PRD-AUDIT-stage4-reaudit.md | PASS |
+| S4-004 | yes | PRD still passes the PM artifact validator after remediation | validate_prd.py | Exit 0 (204 rows) | validator output | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -91,8 +91,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/STAGE4-audit.md` + `python3 scripts/validate_prd.py docs/product/prds/SelahCue-PRD.md`
-- Validator result: PENDING
-- Independent verification result: PENDING
-- Terminal state: IN_PROGRESS → GATE_REVIEW
-- Remaining failed or blocked criteria: all PENDING
-- ClickUp final evidence comment: PENDING
+- Validator result: PASS (contract structural PASS; PRD validator exit 0, 204 rows)
+- Independent verification result: **PASS** — 5-auditor panel found 0 blockers / 17 majors; all 17 discharged; fresh-context re-audit verdict PASS, 0 regressions (5 advisory minors also folded in)
+- Terminal state: GATE_REVIEW
+- Remaining failed or blocked criteria: none
+- ClickUp final evidence comment: posted on 86ajnx548

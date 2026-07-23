@@ -6,9 +6,9 @@ Lightweight pointer only. ClickUp is the delivery source of truth. Do not duplic
 - Build Control task: https://app.clickup.com/t/86ajnx548 (`86ajnx548`)
 - ClickUp delivery list: `SelahCue — Delivery` (`901327960792`) in folder `SelahCue` (`901318653689`), space `First Pavilion (Engineering)` (`90136583508`)
 - Build Goal Contract: `docs/delivery/goals/BUILD-selahcue.md`
-- Current stage: **Stage 3 — PRD & product definition** (complete, at gate)
+- Current stage: **Stage 4 — Independent PRD audit** (complete, at gate)
 - Stage state: `GATE_REVIEW` (awaiting user gate decision)
-- Last approved gate: Gate 2 (Stage 2) — user replied `refine: hold off on TTS` (DEC-001), then `continue`, authorising Stage 3
+- Last approved gate: Gate 3 (Stage 3) — user replied `continue`, authorising Stage 4
 - Execution engine: `goal`
 - Execution model: **Opus 4.8 (1M context)** — Stage 2+ runs under the current session model.
 
@@ -22,7 +22,11 @@ Key Stage 2 artefacts: DISCOVERY-REPORT.md, EVIDENCE-REGISTER.md, OPEN-DECISIONS
 
 ## Stage 3 outcome (2026-07-23)
 
-PRD authored: `docs/product/prds/SelahCue-PRD.md` — 168 FR + 26 NFR + 10 FLOW + 13 RISK + 10 METRIC, all sections, testable acceptance criteria, MVP/R2-R6/non-goal boundary, full traceability. PM artifact validator `scripts/validate_prd.py` built (closes RISK-006) and passes. Independent 4-lens pre-audit review (`docs/product/audits/PRD-REVIEW-stage3.md`): PASS WITH CONDITIONS, 0 blockers; all 10 majors + 12 minors discharged (PRD §34). Awaiting Stage 3 gate. Next: **Stage 4 — formal independent PRD audit (must return exactly PASS)**.
+PRD authored: `docs/product/prds/SelahCue-PRD.md` — 168 FR + 26 NFR + 10 FLOW + 13 RISK + 10 METRIC, all sections, testable acceptance criteria, MVP/R2-R6/non-goal boundary, full traceability. PM artifact validator `scripts/validate_prd.py` built (closes RISK-006) and passes. Independent 4-lens pre-audit review (`docs/product/audits/PRD-REVIEW-stage3.md`): PASS WITH CONDITIONS, 0 blockers; all 10 majors + 12 minors discharged (PRD §34).
+
+## Stage 4 outcome (2026-07-23)
+
+Formal 5-auditor independent PRD audit (`docs/product/audits/PRD-AUDIT-stage4.md`): PASS WITH CONDITIONS, **0 blockers**, 17 majors, 16 minors. All 17 majors discharged (PRD §35, adding FR-169…FR-177, NFR-026/027, RISK-014, AS-6) + material minors. Fresh-context re-audit (`docs/product/audits/PRD-AUDIT-stage4-reaudit.md`): **verdict PASS**, 17/17 discharged, 0 regressions; 5 advisory doc-hygiene minors also folded in. PRD now 177 FR + 27 NFR; validator passes. **PRD has cleared its mandatory independent audit.** Stakeholder report added: `docs/stakeholder/SelahCue-Build-Report.pdf`. Awaiting Stage 4 gate. Next: **Stage 5 — Architecture & UX design**.
 
 ## Key artefacts
 
