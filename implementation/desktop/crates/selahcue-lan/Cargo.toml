@@ -38,5 +38,16 @@ rcgen = { version = "0.13", optional = true, default-features = false, features 
 sha2 = { version = "0.10", optional = true }
 futures-util = { version = "0.3", optional = true }
 
+[dev-dependencies]
+# For the end-to-end `demo` example (persistence). Dev-only — not part of the
+# normal build or of downstream consumers.
+selahcue-data = { path = "../selahcue-data" }
+
+# Runnable foundation demo:
+#   cargo run -p selahcue-lan --example demo --features server
+[[example]]
+name = "demo"
+required-features = ["server"]
+
 [lints]
 workspace = true
