@@ -529,6 +529,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "selahcue-engine"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "selahcue-lan"
 version = "0.1.0"
 dependencies = [

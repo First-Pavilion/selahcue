@@ -194,6 +194,30 @@ fatal), and a bounded WebSocket message size (64 KiB, stops large pre-auth buffe
 
 - Target: S7e-001..S7e-007. Change: added the `server` feature — `pinning` (rustls pinned verifier), `tls` (rcgen self-signed + configs), `server`/`client`/`wire`; loopback E2E. Multi-lens adversarial review → TLS-security clean; 4 confirmed DoS/resource findings (accept-loop-dies, no handshake timeout/cap ×2, 64 MiB frame) → all fixed with a slowloris-reaping regression test. Verifier: `cargo test` 84 default + 39 server; clippy clean both. Result: PASS. Decision: gate-review.
 
+## Batch 7f — testable render-engine seam (`selahcue-engine`)
+
+- Goal ID: STAGE7-foundation-7f · Status: GATE_REVIEW · Engine: goal · Independent verification: yes (multi-lens adversarial workflow)
+- Requirements: ADR-0015; NFR-024, FR-160, FR-175, NFR-004, METRIC-002. ClickUp story 86ajp09m9.
+- Objective: the day-one test-harness contract — GPU-free deterministic render + pixel readback, fault-injection proving output-failure isolation, the FR-175 flash analyzer, the NFR-004 latency proxy, and the render↔control IPC contract — so the reliability guarantees are verifiable before the wgpu backend exists.
+
+### Completion predicate — batch 7f
+
+| ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
+|---|---|---|---|---|---|---|
+| S7f-001 | yes | Crate builds; deterministic headless render + pixel readback | `cargo test` (raster) | golden-image parity; determinism | test_raster.rs | PASS |
+| S7f-002 | yes | Fault injection proves output-failure isolation (never-blank NFR-024) | `cargo test` (fault) | all 4 faults hold last good frame; cross-output isolation; recovery | test_fault.rs | PASS |
+| S7f-003 | yes | FR-175 flash analyzer operates (worst 1s-window, per-tile, fractional) | `cargo test` (analysis) | strobe/burst/localized/boundary all fail; calm passes | test_analysis.rs | PASS |
+| S7f-004 | yes | NFR-004 latency proxy operates | `cargo test` (analysis) | first-content-frame + seconds | test_analysis.rs | PASS |
+| S7f-005 | yes | Render↔control IPC contract (serde round-trip, versioned) | `cargo test` (engine) | commands/events round-trip | test_engine.rs | PASS |
+| S7f-006 | yes | Bad/oversized frames rejected (held), no panic/abort (no-leak/robustness) | `cargo test` (engine) | Rejected + output held; extreme dims clamp | test_engine.rs | PASS |
+| S7f-007 | yes | Full suite + clippy clean | `cargo test` + clippy | 28 engine / 112 workspace; 0 warnings | test output | PASS |
+| S7f-008 | yes | Independent multi-lens review; confirmed findings fixed | fresh-context workflow | 7 raised → 4 confirmed (2 flash false-pass, 1 crash, 1 boundary) → fixed + regression tests | CODE-REVIEW-batch7f-engine.md | PASS |
+| S7f-009 | no | wgpu-shared on-screen path + cross-GPU SSIM parity + GPU CI matrix | — | Deferred: needs the wgpu backend + CI (walking skeleton / CI batches) | ADR-0015 | NOT_APPLICABLE (later batches) |
+
+### Iteration ledger — batch 7f
+
+- Target: S7f-001..S7f-008. Change: created `selahcue-engine` (scene/raster/analysis/fault/engine). Multi-lens adversarial review → 4 confirmed: flash whole-capture-average (H) and whole-frame-mean (M) false-passes, /2-truncation boundary (M), and unvalidated-dimension crash (H, defeats never-blank). Reworked the flash analyzer to worst-1s-window + per-tile + fractional; added frame-dimension validation (reject+hold, clamp, usize/checked math). Verifier: `cargo test` 28 engine / 112 workspace; clippy clean. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

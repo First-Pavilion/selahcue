@@ -1,0 +1,16 @@
+[package]
+name = "selahcue-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SelahCue render-engine test seam (ADR-0015): scene model, GPU-free deterministic rasterizer + pixel readback, fault injection for output-failure isolation, seizure-safe flash analysis (FR-175), latency proxy (NFR-004), and the render↔control IPC contract. The wgpu backend implements the same scene later."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

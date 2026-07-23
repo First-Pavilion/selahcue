@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/selahcue-core", "crates/selahcue-data", "crates/selahcue-lan"]
+members = ["crates/selahcue-core", "crates/selahcue-data", "crates/selahcue-lan", "crates/selahcue-engine"]
 
 [workspace.package]
 version = "0.1.0"

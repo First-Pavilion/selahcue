@@ -16,11 +16,13 @@ desktop/
     ├── selahcue-data/             # persistence — SQLite (WAL), migrations, backups
     │   ├── src/                    # lib.rs, db.rs, migrations.rs, plan_repo.rs, key.rs, error.rs
     │   └── tests/                  # test_db.rs, test_plan_repo.rs, test_encryption.rs
-    └── selahcue-lan/              # LAN control — protocol, RBAC, pairing + TLS transport
-        ├── src/                    # protocol.rs, rbac.rs, session.rs; (server feature:)
-        │                          #   pinning.rs, tls.rs, server.rs, client.rs, wire.rs
-        └── tests/                  # test_protocol.rs, test_rbac.rs, test_session.rs,
-                                    #   test_server.rs (server feature — loopback E2E)
+    ├── selahcue-lan/              # LAN control — protocol, RBAC, pairing + TLS transport
+    │   ├── src/                    # protocol.rs, rbac.rs, session.rs; (server feature:)
+    │   │                          #   pinning.rs, tls.rs, server.rs, client.rs, wire.rs
+    │   └── tests/                  # test_protocol/rbac/session/server (server → loopback E2E)
+    └── selahcue-engine/           # render-engine test seam (ADR-0015) — GPU-free
+        ├── src/                    # scene.rs, raster.rs, analysis.rs, fault.rs, engine.rs
+        └── tests/                  # test_scene/raster/analysis/fault/engine
 ```
 
 Tests live in each crate's `tests/` folder (one file per module, public-API
@@ -99,8 +101,18 @@ capped (semaphore), and frame-size bounded — so hostile LAN peers cannot exhau
 cargo test -p selahcue-lan --features server   # + loopback TLS E2E (pinning, auth, RBAC)
 ```
 
+## `selahcue-engine`
+
+The render engine's **test-harness contract** (ADR-0015), built GPU-free so the
+reliability guarantees are verifiable before the wgpu backend exists: a deterministic
+CPU **rasterizer + pixel readback**, **fault injection** proving the never-blank output
+guarantee (NFR-024 — a fault holds the last good frame), the **FR-175 flash-rate
+analyzer** (worst 1-second window, per spatial tile), the **NFR-004 latency proxy**, and
+the versioned **render↔control IPC contract**. The wgpu backend renders the same
+`scene::Frame` later, with SSIM ≥ 0.99 cross-GPU parity.
+
 Status: **Stage 7 — foundation batches 7a (domain core) + 7b (persistence) + 7c
-(at-rest encryption) + 7d (LAN control core) + 7e (TLS transport). Verified: `cargo test`
-84/84 (plain) + 16/16 (encryption) + 39/39 (server feature), `cargo clippy` clean.**
-GPU/UI crates, the QR/Flutter mobile client, and app-shell key acquisition are
-subsequent batches.
+(at-rest encryption) + 7d (LAN control core) + 7e (TLS transport) + 7f (render-engine
+seam). Verified: `cargo test` 112/112 (plain) + 16/16 (encryption) + 39/39 (server
+feature), `cargo clippy` clean.** The wgpu/Tauri walking skeleton, the QR/Flutter mobile
+client, CI, and app-shell key acquisition are subsequent batches.
