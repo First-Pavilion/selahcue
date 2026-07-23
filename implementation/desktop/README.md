@@ -23,9 +23,9 @@ desktop/
     ├── selahcue-engine/           # render-engine test seam (ADR-0015) — GPU-free
     │   ├── src/                    # scene.rs, raster.rs, analysis.rs, fault.rs, engine.rs
     │   └── tests/                  # test_scene/raster/analysis/fault/engine
-    └── selahcue-present/          # presentation rendering — Preview→Live loop
-        ├── src/                    # slide.rs, compose.rs, present.rs
-        └── tests/                  # test_slide/compose/present
+    └── selahcue-present/          # presentation — Preview→Live + stage/confidence output
+        ├── src/                    # slide.rs, compose.rs, present.rs, stage.rs
+        └── tests/                  # test_slide/compose/present/stage
 ```
 
 Tests live in each crate's `tests/` folder (one file per module, public-API
@@ -124,9 +124,15 @@ preview readback, are all verified headlessly (preview/live isolation, ≤150 ms
 latency, flash-safety). The operator's green/red preview/live chrome and the borderless
 fullscreen output window are the operator-console/walking-skeleton UI batch.
 
+The **`stage`** module adds the **stage/confidence monitor** — a second independent output
+showing the current + next line, the active timer (colour-coded ok/warn/TIME-UP with a
+progress bar), and a clock — plus the **display-identify** overlay (a number per physical
+display). It composes the timer core + presenter, so main and stage show different content
+from one live state.
+
 Status: **Stage 7 — foundation batches 7a (domain core) + 7b (persistence) + 7c
 (at-rest encryption) + 7d (LAN control core) + 7e (TLS transport) + 7f (render-engine
-seam) + 7g (presentation rendering). Verified: `cargo test` 130/130 (plain) + 16/16
-(encryption) + 39/39 (server feature), `cargo clippy` clean.** The wgpu/Tauri walking
-skeleton, the QR/Flutter mobile client, CI, and app-shell key acquisition are subsequent
-batches.
+seam) + 7g (presentation rendering) + 7h (stage/confidence output). Verified: `cargo test`
+138/138 (plain) + 16/16 (encryption) + 39/39 (server feature), `cargo clippy` clean.** The
+wgpu/Tauri walking skeleton, the QR/Flutter mobile client, CI, and app-shell key
+acquisition are subsequent batches.

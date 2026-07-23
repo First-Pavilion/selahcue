@@ -10,8 +10,14 @@
 
 use crate::compose::compose_slide;
 use crate::slide::{Slide, Theme};
+use crate::stage::compose_identify;
 use selahcue_engine::engine::{Engine, EngineCommand, EngineEvent};
 use selahcue_engine::raster::{FrameBuffer, MAX_DIMENSION};
+use selahcue_engine::scene::Rgba;
+
+/// Identify-overlay colours for the main output (FR-040).
+const IDENTIFY_BG: Rgba = Rgba::rgb(20, 60, 140);
+const IDENTIFY_MARKER: Rgba = Rgba::WHITE;
 
 /// Drives the preview and live outputs for basic slide presentation.
 pub struct Presenter {
@@ -89,6 +95,14 @@ impl Presenter {
     /// the prior live content (the slide is retained, only hidden).
     pub fn blackout(&mut self, on: bool) {
         self.live.apply(EngineCommand::Blackout { on });
+    }
+
+    /// Overlay the display-identify number on the Live output (FR-040). This
+    /// replaces the live content; the operator re-stages/go-lives to resume.
+    pub fn identify(&mut self, number: u32) {
+        let frame = compose_identify(number, IDENTIFY_BG, IDENTIFY_MARKER, self.width, self.height);
+        self.live.apply(EngineCommand::SetScene { frame });
+        self.live_slide = None;
     }
 
     /// The Preview readback (offscreen, FR-013).

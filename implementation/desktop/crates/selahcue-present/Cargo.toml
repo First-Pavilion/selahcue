@@ -7,6 +7,7 @@ authors.workspace = true
 description = "SelahCue presentation rendering: compose slides into engine frames and drive the Preview→Live loop (FR-009/012/013/036/046). Built on the selahcue-engine test seam, so preview/live isolation and slide-trigger latency are verifiable headlessly."
 
 [dependencies]
+selahcue-core = { path = "../selahcue-core" }
 selahcue-engine = { path = "../selahcue-engine" }
 serde = { version = "1", features = ["derive"] }
 

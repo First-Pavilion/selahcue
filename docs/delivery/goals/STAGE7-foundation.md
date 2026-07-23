@@ -242,6 +242,30 @@ fatal), and a bounded WebSocket message size (64 KiB, stops large pre-auth buffe
 
 - Target: S7g-001..S7g-008. Change: created `selahcue-present` (slide/compose/present) on the engine seam. Multi-lens adversarial review → 4 confirmed (dimension clamp/tracked-state truthfulness, bottom safe margin, tautological latency test) → fixed + regression tests; blackout-vs-go-live dismissed (matches UX-STATE-MATRIX/FR-077). Verifier: `cargo test` 18 crate / 130 workspace; clippy clean. Result: PASS. Decision: gate-review.
 
+## Batch 7h — stage/confidence display output (`selahcue-present::stage`)
+
+- Goal ID: STAGE7-foundation-7h · Status: GATE_REVIEW · Engine: goal · Independent verification: yes (multi-lens adversarial workflow — 0 findings)
+- Requirements: FR-037 (stage monitor: current/next/clock/timer), FR-040 (display identify). ClickUp story 86ajp0aa4.
+- Objective: a second independent output — the stage/confidence monitor — showing current + next line, the active timer, and a clock, from the same live state as the main output; plus display identification.
+
+### Completion predicate — batch 7h
+
+| ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
+|---|---|---|---|---|---|---|
+| S7h-001 | yes | Timer view derived from Timer (ok/warn/TIME UP + progress) | `cargo test` (stage) | state + progress correct at boundaries | test_stage.rs | PASS |
+| S7h-002 | yes | Timer bar colour reflects state; TIME UP fills the bar | `cargo test` (stage) | ok/warn/alert pixels | test_stage.rs | PASS |
+| S7h-003 | yes | Current + next line regions render content; empty shows none | `cargo test` (stage) | text present/absent | test_stage.rs | PASS |
+| S7h-004 | yes | Main + stage show DIFFERENT content from one live state (acceptance) | `cargo test` (stage) | main ≠ stage bytes | test_stage.rs | PASS |
+| S7h-005 | yes | Display identify — distinct number per display (FR-040) | `cargo test` (stage) | identify(1) ≠ identify(3); markers | test_stage.rs | PASS |
+| S7h-006 | yes | compose_slide unchanged by the layout refactor (no regression) | `cargo test` (compose) | prior pixel tests pass | test_compose.rs | PASS |
+| S7h-007 | yes | Full suite + clippy clean; bounded state (no-leak) | `cargo test` + clippy | 26 crate / 138 workspace; 0 warnings | test output | PASS |
+| S7h-008 | yes | Independent multi-lens review | fresh-context workflow | 0 findings (clean); regression lens confirmed no pixel drift | CODE-REVIEW-batch7h-stage.md | PASS |
+| S7h-009 | no | Second native output window + physical-display enumeration/identify | — | Deferred: native windows (walking skeleton batch) | FR-040 | NOT_APPLICABLE (UI batch) |
+
+### Iteration ledger — batch 7h
+
+- Target: S7h-001..S7h-008. Change: added `stage` (TimerView, compose_stage, compose_identify, StageDisplay) + Presenter::identify; refactored compose.rs to share layout_lines (compose_slide pixel-identical). Multi-lens adversarial review → **0 findings** (regression lens confirmed no compose_slide drift). Verifier: `cargo test` 26 crate / 138 workspace; clippy clean. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.
