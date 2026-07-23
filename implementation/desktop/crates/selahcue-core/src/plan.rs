@@ -18,6 +18,35 @@ pub enum ItemKind {
     Section,
 }
 
+impl ItemKind {
+    /// Stable string tag for persistence/serialization (not the display label).
+    pub fn as_tag(&self) -> &'static str {
+        match self {
+            ItemKind::SlideGroup => "slide_group",
+            ItemKind::Song => "song",
+            ItemKind::Scripture => "scripture",
+            ItemKind::Media => "media",
+            ItemKind::Announcement => "announcement",
+            ItemKind::Timer => "timer",
+            ItemKind::Section => "section",
+        }
+    }
+
+    /// Inverse of [`ItemKind::as_tag`]. Returns `None` for an unknown tag.
+    pub fn from_tag(tag: &str) -> Option<ItemKind> {
+        Some(match tag {
+            "slide_group" => ItemKind::SlideGroup,
+            "song" => ItemKind::Song,
+            "scripture" => ItemKind::Scripture,
+            "media" => ItemKind::Media,
+            "announcement" => ItemKind::Announcement,
+            "timer" => ItemKind::Timer,
+            "section" => ItemKind::Section,
+            _ => return None,
+        })
+    }
+}
+
 /// A stable identifier for an item within a plan (unique for the plan's lifetime,
 /// never reused after removal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -150,6 +179,24 @@ impl ServicePlan {
             .fold(0u32, u32::saturating_add)
     }
 
+    /// The next id the plan will assign — needed to persist and faithfully
+    /// rehydrate the no-reuse invariant.
+    pub fn next_id(&self) -> u64 {
+        self.next_id
+    }
+
+    /// Rehydrate a plan from persisted parts (used by the persistence layer).
+    /// `next_id` must exceed every item id to preserve the no-reuse invariant;
+    /// it is clamped up to `max(item id) + 1` if a smaller value is passed.
+    pub fn from_parts(name: impl Into<String>, items: Vec<PlanItem>, next_id: u64) -> Self {
+        let min_next = items.iter().map(|i| i.id.0).max().map_or(1, |m| m + 1);
+        ServicePlan {
+            name: name.into(),
+            items,
+            next_id: next_id.max(min_next),
+        }
+    }
+
     /// A deep, independent copy with a new name (FR-005). Ids are preserved but
     /// the copy has its own id counter, so future additions never collide.
     pub fn duplicate(&self, new_name: impl Into<String>) -> ServicePlan {
@@ -243,6 +290,38 @@ mod tests {
         assert_eq!(copy.name, "Sunday (copy)");
         // The copy's new item gets a fresh, non-colliding id.
         assert_eq!(copy.items()[1].id, ItemId(2));
+    }
+
+    #[test]
+    fn item_kind_tag_round_trips() {
+        for k in [
+            ItemKind::SlideGroup,
+            ItemKind::Song,
+            ItemKind::Scripture,
+            ItemKind::Media,
+            ItemKind::Announcement,
+            ItemKind::Timer,
+            ItemKind::Section,
+        ] {
+            assert_eq!(ItemKind::from_tag(k.as_tag()), Some(k));
+        }
+        assert_eq!(ItemKind::from_tag("nonsense"), None);
+    }
+
+    #[test]
+    fn from_parts_preserves_no_reuse_invariant() {
+        let items = vec![PlanItem {
+            id: ItemId(7),
+            kind: ItemKind::Song,
+            title: "A".into(),
+            planned_secs: None,
+            owner: None,
+        }];
+        // Even if a too-small next_id is supplied, the next add must not collide.
+        let mut p = ServicePlan::from_parts("Rehydrated", items, 1);
+        let new = p.add_item(ItemKind::Song, "B");
+        assert_eq!(new, ItemId(8)); // clamped to max(id)+1
+        assert_eq!(p.next_id(), 9);
     }
 
     #[test]

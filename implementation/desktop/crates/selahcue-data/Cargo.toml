@@ -1,0 +1,20 @@
+[package]
+name = "selahcue-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SelahCue persistence: SQLite (WAL) storage, versioned migrations, integrity checks, crash-safe backups, and repositories for the domain model (FR-079, FR-001/002; ADR-0007)."
+
+[dependencies]
+selahcue-core = { path = "../selahcue-core" }
+# Bundled SQLite (compiled from source — no system libs required). The at-rest
+# encryption story (FR-154) swaps this feature set for `bundled-sqlcipher-*`
+# and adds the key pragma; the repository/migration code is unchanged.
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

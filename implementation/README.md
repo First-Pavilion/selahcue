@@ -1,49 +1,40 @@
 # SelahCue — Implementation
 
-Production code for SelahCue. Planning/product artefacts live in [`../docs/`](../docs/); ClickUp is the delivery source of truth.
+Production code for SelahCue, split by delivery platform for separation of concerns.
+Planning/product artefacts live in [`../docs/`](../docs/); ClickUp is the delivery
+source of truth.
 
-## Layout
+## Platform layout
 
 ```
 implementation/
-├── Cargo.toml                     # Rust workspace
-└── crates/
-    └── selahcue-core/             # domain core — pure, deterministic, no I/O
-        └── src/
-            ├── lib.rs
-            ├── scripture.rs        # Bible reference parser (FR-027)
-            ├── plan.rs             # service-plan domain model (FR-001/002)
-            └── timer.rs            # monotonic timers + TIME UP (FR-054/065, NFR-022)
+├── desktop/     # Windows/macOS/Linux operator app — Rust core + wgpu engine + Tauri shell
+├── web/         # browser-based control surface (planned)
+└── mobile/      # Android/iOS controller — Flutter (planned)
 ```
 
-Future crates (subsequent Stage-7 batches, per `docs/architecture/ARCHITECTURE.md`):
-`selahcue-engine` (wgpu compositor), `selahcue-data` (SQLite/SQLCipher), `selahcue-lan`
-(WebSocket/TLS control server), the Tauri operator shell, and the Flutter mobile app.
+Each platform folder is self-contained and owns its own toolchain and build:
 
-## Build & test
+| Folder      | Stack                                             | Status                          |
+|-------------|---------------------------------------------------|---------------------------------|
+| `desktop/`  | Rust workspace (`selahcue-core`, `selahcue-data`, …) | **Active** — Stage 7 foundation |
+| `web/`      | TBD (see `web/README.md`)                          | Placeholder — later release     |
+| `mobile/`   | Flutter/Dart (see `mobile/README.md`)              | Placeholder — later release     |
 
-```bash
-cd implementation
-cargo build
-cargo test          # 33 unit tests, all passing
-cargo clippy --all-targets   # clean
-```
+### Why this split
 
-## `selahcue-core`
+The three targets have different toolchains (Cargo vs. Flutter vs. a web bundler),
+release cadences, and CI matrices, so keeping them in separate roots stops one
+platform's build config from leaking into another. The pure domain logic
+(`selahcue-core`) currently lives under `desktop/` because that is its only consumer
+today; if `web` (via WASM) or `mobile` (via FFI/uniffi) later need to share it, it is
+hoisted into a top-level `shared/` workspace at that point — an explicit, traceable
+decision rather than a premature abstraction.
 
-The side-effect-free domain foundation the rest of the app builds on. Kept pure so
-it is exhaustively unit-testable and safe on untrusted input (the parser never
-panics — it returns `Result`/`Option`).
+## Getting started
 
-- **`scripture`** — parses typed references (`"Romans 8:28"`, `"Rom 8:28-30"`,
-  `"Ps 23"`, `"1 Cor 13:4"`, `"Jn 3:16"`, `"John 3:16; 1 Cor 13:4"`) across all 66
-  books with abbreviations and numbered/roman/word forms; malformed input errors
-  cleanly.
-- **`plan`** — `ServicePlan` with add/insert/remove/reorder/duplicate, stable
-  never-reused item ids, and planned-time roll-up.
-- **`timer`** — monotonic `Timer` (count-up / count-down) driven by an **injected
-  clock** so it is frame-rate-independent (NFR-022) and deterministic to test;
-  supports pause/resume/reset/add/subtract, TIME UP, and overrun.
+See each platform's own README:
 
-Status: **Stage 7 — foundation batch 7a (domain core). Verified: `cargo test` 33/33,
-`cargo clippy` clean.** GPU/UI/persistence/mobile crates are subsequent batches.
+- [`desktop/README.md`](desktop/README.md) — the only buildable code today.
+- [`web/README.md`](web/README.md)
+- [`mobile/README.md`](mobile/README.md)
