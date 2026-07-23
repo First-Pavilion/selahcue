@@ -29,8 +29,11 @@ desktop/
     ├── selahcue-gpu/              # wgpu compositor (ADR-0002) + offscreen SSIM parity
     │   ├── src/                    # compositor.rs, rect.wgsl, lib.rs
     │   └── tests/                  # test_parity.rs (GPU ≈ CPU, SSIM ≥ 0.99)
-    └── selahcue-desktop/          # native output window (winit + wgpu) — bin: selahcue-output
-        └── src/                    # main.rs, blit.wgsl
+    ├── selahcue-desktop/          # native output window (winit + wgpu) — bin: selahcue-output
+    │   └── src/                    # main.rs, blit.wgsl
+    └── selahcue-app/              # LiveController — wires LAN control onto the presenter
+        ├── src/                    # controller.rs, lib.rs
+        └── tests/                  # test_controller.rs, test_remote.rs (server → E2E)
 ```
 
 Tests live in each crate's `tests/` folder (one file per module, public-API
@@ -152,10 +155,17 @@ Slide text renders as **real glyphs** (a bundled public-domain 8×8 bitmap font 
 rasterizer via `Layer::Text`), so the output window shows legible text; GPU-native glyphs
 are a later optimization.
 
+## `selahcue-app`
+
+The application wiring: **`LiveController`** maps RBAC-checked LAN control commands onto the
+presenter + service plan, so a remote/mobile controller drives the audience output — the
+complete loop (client → TLS → server RBAC → handler → controller → presenter). With the
+`server` feature, `handler_for` plugs it into the `ControlServer`, verified end-to-end.
+
 Status: **Stage 7 — foundation batches 7a (domain core) + 7b (persistence) + 7c
 (at-rest encryption) + 7d (LAN control core) + 7e (TLS transport) + 7f (render-engine
 seam) + 7g (presentation rendering) + 7h (stage/confidence output) + 7i (wgpu compositor +
-native window) + 7j (glyph text). Verified: `cargo test` 145/145 (plain, incl. GPU parity)
-+ 16/16 (encryption) + 39/39 (server feature), `cargo clippy` clean.** The Tauri operator
-shell, the QR/Flutter mobile client, CI, and app-shell key acquisition are subsequent
-batches.
+native window) + 7j (glyph text) + 7k (LAN control → presenter). Verified: `cargo test`
+155/155 (plain, incl. GPU parity) + 16/16 (encryption) + 39/39 (LAN server) + 2 remote E2E,
+`cargo clippy` clean.** The Tauri operator shell, the QR/Flutter mobile client, CI, and
+app-shell key acquisition are subsequent batches.

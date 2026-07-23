@@ -42,6 +42,9 @@ const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 pub enum Reply {
     /// Accept and perform — the server returns `Ack{request_id}`.
     Ack,
+    /// Refuse at the application level (e.g. an unknown item) — the server returns
+    /// `Denied{request_id, reason}`. (RBAC denials are handled before the handler.)
+    Deny(DenyReason),
     /// Return this specific message (e.g. `State`, `ScriptureResults`).
     Message(ServerMessage),
 }
@@ -238,6 +241,10 @@ impl ControlServer {
                     let reply = if authorize(role, &req.command) {
                         match (self.handler)(role, &req.command) {
                             Reply::Ack => ServerMessage::Ack { request_id: req.request_id },
+                            Reply::Deny(reason) => ServerMessage::Denied {
+                                request_id: req.request_id,
+                                reason,
+                            },
                             Reply::Message(msg) => msg,
                         }
                     } else {

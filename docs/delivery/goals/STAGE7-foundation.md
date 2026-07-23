@@ -318,6 +318,37 @@ runtime-verified**. The on-screen `selahcue-desktop` window is **compile-verifie
 
 - Target: S7j-001..S7j-007. Change: added `Layer::Text` + font8x8 CPU glyph rasterizer (LSB-first, verified non-mirrored, clipped); compose emits Text; wgpu compositor skips Text (CPU-composite+blit for on-screen). Multi-lens adversarial review → 2 confirmed: draw_text unbounded work for oversized px/rect (fixed: scale cap + framebuffer-clipped block loop + regression test); stale compositor doc (fixed). Verifier: `cargo test` 145 workspace; clippy clean. Result: PASS. Decision: gate-review.
 
+## Batch 7k — LAN control → presenter (`selahcue-app::LiveController`)
+
+- Goal ID: STAGE7-foundation-7k · Status: GATE_REVIEW · Engine: goal · Independent verification: yes (multi-lens adversarial workflow)
+- Requirements: FR-012 (preview/live), FR-118/119 (control + RBAC over the wire). ClickUp story 86ajp0b0t (partial).
+- Objective: a remote/mobile controller's commands drive the live output — the complete control loop (client → TLS → server RBAC → handler → controller → presenter), verified end-to-end.
+
+### Completion predicate — batch 7k
+
+| ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
+|---|---|---|---|---|---|---|
+| S7k-001 | yes | Navigation stages Preview; Live untouched until Go Live (FR-012) | `cargo test -p selahcue-app` | Next→preview, live unchanged | test_controller.rs | PASS |
+| S7k-002 | yes | Go Live commits staged (plan item OR scripture) to Live | `cargo test` | live shows content; scripture too | test_controller.rs | PASS |
+| S7k-003 | yes | Clear/Blackout act on Live; GetState/ScriptureSearch correct | `cargo test` | state + scripture parse | test_controller.rs | PASS |
+| S7k-004 | yes | Plan navigation persists across scripture staging | `cargo test` | Next resumes from cursor | test_controller.rs | PASS |
+| S7k-005 | yes | E2E: remote Producer drives live over pinned TLS; RBAC + app denials | `cargo test --features server` | 2 E2E pass | test_remote.rs | PASS |
+| S7k-006 | yes | RBAC enforced by server before handler (no unauthorized reach) | review + E2E | Assistant GoLive denied | test_remote.rs; review | PASS |
+| S7k-007 | yes | Full suite + clippy clean | `cargo test` + clippy | 155 workspace; 0 warnings | test output | PASS |
+| S7k-008 | yes | Independent multi-lens review; code findings fixed | fresh-context workflow | 4 confirmed → 3 fixed; 1 RBAC policy routed to owner | CODE-REVIEW-batch7k-app.md | PASS |
+
+### Decision routed to the owner (Stage-7 gate)
+
+The review confirmed a **HIGH** RBAC consequence: `Clear` maps to `Navigate`, so an
+**Assistant can wipe the Live output + lift blackout** over the LAN path. This is the
+policy the user kept in [DEC-002](../decisions/DECISION-LOG.md); the concrete consequence
+is now surfaced for the user to revise (give `Clear` its own Producer+ permission) or
+re-affirm the accepted risk. Not changed unilaterally.
+
+### Iteration ledger — batch 7k
+
+- Target: S7k-001..S7k-008. Change: created `selahcue-app` (`LiveController` + `handler_for`); added `Reply::Deny` to lan. Multi-lens adversarial review → 4 confirmed: staged-scripture-can't-go-live (×2) + scripture-resets-navigation → fixed (`GoLive` off presenter state; `plan_cursor`) + regression tests; Assistant-can-Clear-Live (HIGH RBAC) routed to owner per DEC-002. Verifier: `cargo test` 155 workspace + 2 E2E; clippy clean. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

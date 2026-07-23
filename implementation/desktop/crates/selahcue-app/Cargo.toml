@@ -1,0 +1,23 @@
+[package]
+name = "selahcue-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SelahCue application wiring: a LiveController that maps LAN control commands (RBAC-checked by the server) onto the presenter/service-plan, so a remote controller drives the live output. The `server` feature adds the ControlServer handler + end-to-end tests."
+
+[features]
+default = []
+# Wire the controller into the pinned-TLS control server (end-to-end).
+server = ["selahcue-lan/server"]
+
+[dependencies]
+selahcue-core = { path = "../selahcue-core" }
+selahcue-present = { path = "../selahcue-present" }
+selahcue-lan = { path = "../selahcue-lan" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+
+[lints]
+workspace = true

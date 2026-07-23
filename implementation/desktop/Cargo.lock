@@ -1778,6 +1778,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "selahcue-app"
+version = "0.1.0"
+dependencies = [
+ "selahcue-core",
+ "selahcue-lan",
+ "selahcue-present",
+ "tokio",
+]
+
+[[package]]
 name = "selahcue-core"
 version = "0.1.0"
 
