@@ -46,8 +46,8 @@ These are unresolved **product** decisions surfaced by discovery. Engineering-on
 | ID | Decision | Recommendation | Owner |
 |---|---|---|---|
 | OD-18 | LAN transport: TLS 1.3 + pinned self-signed cert vs Noise-style app-layer crypto | Lean **TLS 1.3 + QR-pinned fingerprint**; final call = Stage 5 ADR + Stage 13 security review. | Architect + Security |
-| OD-19 | Linux secret-storage fallback when no Secret Service present | Must **not** silently store plaintext; decide passphrase-derived encryption vs refuse-to-persist in Stage 5. | Architect + Security |
-| OD-20 | Multi-controller conflict resolution (two operators, conflicting live commands) | Define authoritative-desktop last-writer + role precedence in Stage 5; flag for UX. | Architect + UX |
+| OD-19 | Linux secret-storage fallback when no Secret Service present | ✅ **DECIDED (Stage 5, ARCHITECTURE §11):** encrypt secrets in a local vault with an Argon2id passphrase-derived key — **never plaintext**; MVP on Linux. | Architect + Security |
+| OD-20 | Multi-controller conflict resolution (two operators, conflicting live commands) | ✅ **DECIDED (Stage 5, ARCHITECTURE §9):** host totally orders commands; deterministic last-writer-wins; losing device gets a "contested" response; a "contested" UX state is added (UX-STATE-MATRIX). | Architect + UX |
 
 ## F. Carried from Stage 2 independent review (resolve in Stage 3–5)
 

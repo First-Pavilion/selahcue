@@ -6,9 +6,9 @@ Lightweight pointer only. ClickUp is the delivery source of truth. Do not duplic
 - Build Control task: https://app.clickup.com/t/86ajnx548 (`86ajnx548`)
 - ClickUp delivery list: `SelahCue — Delivery` (`901327960792`) in folder `SelahCue` (`901318653689`), space `First Pavilion (Engineering)` (`90136583508`)
 - Build Goal Contract: `docs/delivery/goals/BUILD-selahcue.md`
-- Current stage: **Stage 4 — Independent PRD audit** (complete, at gate)
+- Current stage: **Stage 5 — Architecture & UX design** (complete, at gate)
 - Stage state: `GATE_REVIEW` (awaiting user gate decision)
-- Last approved gate: Gate 3 (Stage 3) — user replied `continue`, authorising Stage 4
+- Last approved gate: Gate 4 (Stage 4) — user replied `continue`, authorising Stage 5 (then `refine`: add Figma designs)
 - Execution engine: `goal`
 - Execution model: **Opus 4.8 (1M context)** — Stage 2+ runs under the current session model.
 
@@ -26,7 +26,11 @@ PRD authored: `docs/product/prds/SelahCue-PRD.md` — 168 FR + 26 NFR + 10 FLOW 
 
 ## Stage 4 outcome (2026-07-23)
 
-Formal 5-auditor independent PRD audit (`docs/product/audits/PRD-AUDIT-stage4.md`): PASS WITH CONDITIONS, **0 blockers**, 17 majors, 16 minors. All 17 majors discharged (PRD §35, adding FR-169…FR-177, NFR-026/027, RISK-014, AS-6) + material minors. Fresh-context re-audit (`docs/product/audits/PRD-AUDIT-stage4-reaudit.md`): **verdict PASS**, 17/17 discharged, 0 regressions; 5 advisory doc-hygiene minors also folded in. PRD now 177 FR + 27 NFR; validator passes. **PRD has cleared its mandatory independent audit.** Stakeholder report added: `docs/stakeholder/SelahCue-Build-Report.pdf`. Awaiting Stage 4 gate. Next: **Stage 5 — Architecture & UX design**.
+Formal 5-auditor independent PRD audit (`docs/product/audits/PRD-AUDIT-stage4.md`): PASS WITH CONDITIONS, **0 blockers**, 17 majors, 16 minors. All 17 majors discharged (PRD §35, adding FR-169…FR-177, NFR-026/027, RISK-014, AS-6) + material minors. Fresh-context re-audit (`docs/product/audits/PRD-AUDIT-stage4-reaudit.md`): **verdict PASS**, 17/17 discharged, 0 regressions; 5 advisory doc-hygiene minors also folded in. PRD now 177 FR + 27 NFR; validator passes. **PRD has cleared its mandatory independent audit.** Stakeholder report added: `docs/stakeholder/SelahCue-Build-Report.pdf`.
+
+## Stage 5 outcome (2026-07-23)
+
+Architecture spine (`docs/architecture/ARCHITECTURE.md`) + **16 ADRs** (`docs/architecture/adr/`) + UX (`docs/design/`: UX-FLOWS 12 flows, UX-STATE-MATRIX, COMPONENT-SPECS, UX-CANONICAL). Independent 5-lens review: **FAIL** (2 blockers, 12 majors) → remediated (added ADR-0015 testable engine, ADR-0016 decode sandbox, UX-CANONICAL) → re-review **PASS WITH CONDITIONS** (both blockers cleared, 12/14 majors) → remaining M2/M11/NM-1/NM-3 closed. **Figma designs** added to file `SYQn5hFY8YVQKm3c6rw0eJ` (user refine): Operator Console, Mobile Controller, Stage/Confidence output, TIME UP output, Design Tokens. PRD validator passes. Awaiting Stage 5 gate. Next: **Stage 6 — ClickUp delivery planning** (gate to begin implementation).
 
 ## Key artefacts
 
