@@ -13,9 +13,12 @@ desktop/
     ├── selahcue-core/             # domain core — pure, deterministic, no I/O
     │   ├── src/                    # lib.rs, scripture.rs, plan.rs, timer.rs
     │   └── tests/                  # test_scripture.rs, test_plan.rs, test_timer.rs
-    └── selahcue-data/             # persistence — SQLite (WAL), migrations, backups
-        ├── src/                    # lib.rs, db.rs, migrations.rs, plan_repo.rs, key.rs, error.rs
-        └── tests/                  # test_db.rs, test_plan_repo.rs, test_encryption.rs
+    ├── selahcue-data/             # persistence — SQLite (WAL), migrations, backups
+    │   ├── src/                    # lib.rs, db.rs, migrations.rs, plan_repo.rs, key.rs, error.rs
+    │   └── tests/                  # test_db.rs, test_plan_repo.rs, test_encryption.rs
+    └── selahcue-lan/              # LAN control core — protocol, RBAC, pairing/sessions
+        ├── src/                    # lib.rs, protocol.rs, rbac.rs, session.rs
+        └── tests/                  # test_protocol.rs, test_rbac.rs, test_session.rs
 ```
 
 Tests live in each crate's `tests/` folder (one file per module, public-API
@@ -24,8 +27,8 @@ scripture `BOOKS` table — it stays inline in `src/scripture.rs`, because integ
 tests cannot reach crate-private items.
 
 Future crates (subsequent Stage-7 batches, per `../../docs/architecture/ARCHITECTURE.md`):
-`selahcue-engine` (wgpu compositor), `selahcue-lan` (WebSocket/TLS control server),
-and the Tauri operator shell.
+`selahcue-engine` (wgpu compositor), the TLS-pinned WebSocket transport that carries the
+`selahcue-lan` messages, and the Tauri operator shell.
 
 ## Build & test
 
@@ -77,7 +80,16 @@ pure `selahcue-core` types to tables and back.
   "encrypted" open is impossible. Key derivation/storage (OS secret store; Argon2id on
   Linux) is the app shell's responsibility (ADR-0007).
 
+## `selahcue-lan`
+
+The transport-independent core of the operator↔controller link (FR-118/119/120;
+ADR-0009): the wire **protocol** (versioned JSON messages), **RBAC** (roles →
+permissions with a single `authorize()` choke point), and **session** management
+(single-use, TTL-bounded device pairing → constant-time-authenticated bearer tokens).
+Pure and exhaustively testable; the TLS-pinned WebSocket transport that carries these
+messages is a subsequent batch.
+
 Status: **Stage 7 — foundation batches 7a (domain core) + 7b (persistence) + 7c
-(at-rest encryption). Verified: `cargo test` 50/50 (plain) + 16/16 (encryption),
-`cargo clippy` clean.** GPU/UI/LAN crates and app-shell key acquisition are subsequent
-batches.
+(at-rest encryption) + 7d (LAN control core). Verified: `cargo test` 80/80 (plain) +
+16/16 (encryption), `cargo clippy` clean.** GPU/UI crates, the LAN TLS transport, and
+app-shell key acquisition are subsequent batches.

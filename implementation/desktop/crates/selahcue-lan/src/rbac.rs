@@ -1,0 +1,89 @@
+//! Role-based access control for the LAN control link (FR-119; ADR-0009).
+//!
+//! Every controller device is granted a [`Role`] at pairing time. Each inbound
+//! [`Command`](crate::protocol::Command) maps to exactly one required
+//! [`Permission`]; [`authorize`] is the single choke point the server calls before
+//! acting on a command. The mapping is data, not scattered `if role == …` checks,
+//! so the policy is auditable in one place.
+
+use crate::protocol::Command;
+use serde::{Deserialize, Serialize};
+
+/// What a paired device is allowed to do. Ordered most-privileged first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    /// Full control, including going live, editing, and managing other devices.
+    Operator,
+    /// Drives live output (go-live / navigate / blackout / timers) but cannot
+    /// manage devices or edit the underlying plan.
+    Producer,
+    /// Prepares content — searches and queues scripture, stages items — but cannot
+    /// push to the live output.
+    Assistant,
+    /// Read-only monitoring (confidence/state), no control.
+    Viewer,
+}
+
+/// A discrete capability a [`Role`] may or may not hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Permission {
+    /// Push the current selection to the live output.
+    GoLive,
+    /// Move through the plan / slides (next, previous, select, clear).
+    Navigate,
+    /// Toggle blackout of the live output.
+    Blackout,
+    /// Drive timers on the live output.
+    Timer,
+    /// Search and stage scripture (does not itself push live).
+    SearchScripture,
+    /// Observe live/preview state.
+    Monitor,
+    /// Pair, revoke, or re-role other devices.
+    ManageDevices,
+}
+
+impl Role {
+    /// The capabilities this role holds. Higher roles are supersets of lower ones.
+    pub fn permissions(self) -> &'static [Permission] {
+        use Permission::*;
+        match self {
+            Role::Operator => &[
+                GoLive,
+                Navigate,
+                Blackout,
+                Timer,
+                SearchScripture,
+                Monitor,
+                ManageDevices,
+            ],
+            Role::Producer => &[GoLive, Navigate, Blackout, Timer, SearchScripture, Monitor],
+            Role::Assistant => &[SearchScripture, Navigate, Monitor],
+            Role::Viewer => &[Monitor],
+        }
+    }
+
+    /// Whether this role holds `permission`.
+    pub fn can(self, permission: Permission) -> bool {
+        self.permissions().contains(&permission)
+    }
+}
+
+/// The single permission a command requires to be accepted.
+pub fn required_permission(cmd: &Command) -> Permission {
+    use Permission::*;
+    match cmd {
+        Command::GoLive => GoLive,
+        Command::Next | Command::Previous | Command::SelectItem { .. } | Command::Clear => Navigate,
+        Command::Blackout { .. } => Blackout,
+        Command::StartTimer { .. } | Command::StopTimer => Timer,
+        Command::ScriptureSearch { .. } | Command::StageScripture { .. } => SearchScripture,
+        Command::GetState => Monitor,
+    }
+}
+
+/// The authorization choke point: may `role` perform `cmd`?
+pub fn authorize(role: Role, cmd: &Command) -> bool {
+    role.can(required_permission(cmd))
+}

@@ -1,0 +1,17 @@
+[package]
+name = "selahcue-lan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SelahCue LAN control core: wire protocol, role-based access control, and device pairing/sessions for the operator↔controller link (FR-118/119/120; ADR-0009). The TLS-pinned WebSocket transport is layered on top separately."
+
+[dependencies]
+selahcue-core = { path = "../selahcue-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Constant-time comparison of bearer tokens (defends against timing side channels).
+subtle = "2"
+
+[lints]
+workspace = true
