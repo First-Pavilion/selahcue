@@ -6,7 +6,7 @@ Lightweight pointer only. ClickUp is the delivery source of truth. Do not duplic
 - Build Control task: https://app.clickup.com/t/86ajnx548 (`86ajnx548`)
 - ClickUp delivery list: `SelahCue — Delivery` (`901327960792`) in folder `SelahCue` (`901318653689`), space `First Pavilion (Engineering)` (`90136583508`)
 - Build Goal Contract: `docs/delivery/goals/BUILD-selahcue.md`
-- Current stage: **Stage 7 — Implementation foundation** (batch 7a done, at gate)
+- Current stage: **Stage 7 — Implementation foundation** (batches 7a + 7b done, at gate)
 - Stage state: `GATE_REVIEW` (awaiting user gate decision — this gate authorises production implementation)
 - Last approved gate: Gate 6 (Stage 6) — user replied `continue`, authorising Stage 7 (production implementation)
 - Execution engine: `goal`
@@ -51,3 +51,7 @@ ClickUp delivery plan created in list SelahCue — Delivery (901327960792): **16
 ## Stage 7 outcome — batch 7a (2026-07-23)
 
 First production code: `implementation/crates/selahcue-core` (scripture parser FR-027, service-plan model FR-001/002, monotonic timer FR-054/065). **Verified: cargo test 37/37, clippy clean.** Independent review PASS WITH CONDITIONS → all findings fixed. Stories 86ajp0afa/86ajp0a4z/86ajp0ac9 in progress. Git e794a7e. Next batches: walking skeleton (wgpu+Tauri, needs display), persistence (SQLite/SQLCipher), CI/GPU matrix, presentation/outputs/mobile → foundation demo.
+
+## Stage 7 outcome — batch 7b (2026-07-23)
+
+Persistence layer: `implementation/desktop/crates/selahcue-data` — WAL SQLite (rusqlite bundled), versioned append-only migrations + forward-compat guard, integrity checks, crash-safe online backup (FR-079), transactional `ServicePlan` repository. **Verified: cargo test 50/50, clippy clean.** Independent review (`implementation/desktop/CODE-REVIEW-batch7b.md`) PASS WITH CONDITIONS (0 high, 1 med, 3 low) → M1/L1/L2 fixed with regression tests. Story 86ajp09he **in progress** (SQLCipher at-rest FR-154 is the deferred follow-up). **Repo restructured** by platform: `implementation/{desktop,web,mobile}/` (user refine — separation of concerns). Git 4e6612a. Next batches: walking skeleton (wgpu+Tauri, needs display), CI/GPU matrix, presentation/outputs/mobile → foundation demo.
