@@ -20,9 +20,12 @@ desktop/
     │   ├── src/                    # protocol.rs, rbac.rs, session.rs; (server feature:)
     │   │                          #   pinning.rs, tls.rs, server.rs, client.rs, wire.rs
     │   └── tests/                  # test_protocol/rbac/session/server (server → loopback E2E)
-    └── selahcue-engine/           # render-engine test seam (ADR-0015) — GPU-free
-        ├── src/                    # scene.rs, raster.rs, analysis.rs, fault.rs, engine.rs
-        └── tests/                  # test_scene/raster/analysis/fault/engine
+    ├── selahcue-engine/           # render-engine test seam (ADR-0015) — GPU-free
+    │   ├── src/                    # scene.rs, raster.rs, analysis.rs, fault.rs, engine.rs
+    │   └── tests/                  # test_scene/raster/analysis/fault/engine
+    └── selahcue-present/          # presentation rendering — Preview→Live loop
+        ├── src/                    # slide.rs, compose.rs, present.rs
+        └── tests/                  # test_slide/compose/present
 ```
 
 Tests live in each crate's `tests/` folder (one file per module, public-API
@@ -111,8 +114,19 @@ analyzer** (worst 1-second window, per spatial tile), the **NFR-004 latency prox
 the versioned **render↔control IPC contract**. The wgpu backend renders the same
 `scene::Frame` later, with SSIM ≥ 0.99 cross-GPU parity.
 
+## `selahcue-present`
+
+Basic presentation rendering on the engine seam (FR-009/012/013/046): compose static
+**slides** (`Slide` + audience `Theme`) into engine frames, and drive the **Preview→Live**
+loop via `Presenter`. Its core invariant — **staging never changes Live; only Go Live
+(`Enter`) does** — plus clear (`Esc Esc`), blackout toggle+restore (`B`), and the offscreen
+preview readback, are all verified headlessly (preview/live isolation, ≤150 ms slide-trigger
+latency, flash-safety). The operator's green/red preview/live chrome and the borderless
+fullscreen output window are the operator-console/walking-skeleton UI batch.
+
 Status: **Stage 7 — foundation batches 7a (domain core) + 7b (persistence) + 7c
 (at-rest encryption) + 7d (LAN control core) + 7e (TLS transport) + 7f (render-engine
-seam). Verified: `cargo test` 112/112 (plain) + 16/16 (encryption) + 39/39 (server
-feature), `cargo clippy` clean.** The wgpu/Tauri walking skeleton, the QR/Flutter mobile
-client, CI, and app-shell key acquisition are subsequent batches.
+seam) + 7g (presentation rendering). Verified: `cargo test` 130/130 (plain) + 16/16
+(encryption) + 39/39 (server feature), `cargo clippy` clean.** The wgpu/Tauri walking
+skeleton, the QR/Flutter mobile client, CI, and app-shell key acquisition are subsequent
+batches.

@@ -218,6 +218,30 @@ fatal), and a bounded WebSocket message size (64 KiB, stops large pre-auth buffe
 
 - Target: S7f-001..S7f-008. Change: created `selahcue-engine` (scene/raster/analysis/fault/engine). Multi-lens adversarial review → 4 confirmed: flash whole-capture-average (H) and whole-frame-mean (M) false-passes, /2-truncation boundary (M), and unvalidated-dimension crash (H, defeats never-blank). Reworked the flash analyzer to worst-1s-window + per-tile + fractional; added frame-dimension validation (reject+hold, clamp, usize/checked math). Verifier: `cargo test` 28 engine / 112 workspace; clippy clean. Result: PASS. Decision: gate-review.
 
+## Batch 7g — basic presentation rendering (`selahcue-present`)
+
+- Goal ID: STAGE7-foundation-7g · Status: GATE_REVIEW · Engine: goal · Independent verification: yes (multi-lens adversarial workflow)
+- Requirements: FR-009, FR-012, FR-013, FR-036, FR-046; canonical keybindings. ClickUp story 86ajp0a6q.
+- Objective: the core live loop — compose static slides into engine frames and drive Preview→Live, with the invariant that staging never changes Live until Go Live, ≤150ms slide-trigger latency, and clear/blackout on live. Built on the 7f engine seam so it is verifiable headlessly.
+
+### Completion predicate — batch 7g
+
+| ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
+|---|---|---|---|---|---|---|
+| S7g-001 | yes | Slide + theme compose deterministically into a frame; text within safe area | `cargo test` (compose) | pixel checks; top+bottom margins honored | test_compose.rs | PASS |
+| S7g-002 | yes | Preview/Live isolation: staging never changes Live (FR-012) | `cargo test` (present) | live unchanged on stage; only go_live pushes | test_present.rs | PASS |
+| S7g-003 | yes | Go Live pushes preview→live; Next/stage distinct | `cargo test` (present) | live == staged after go_live | test_present.rs | PASS |
+| S7g-004 | yes | Clear blanks live only; blackout toggles + restores (FR-077) | `cargo test` (present) | clear/blackout correct | test_present.rs | PASS |
+| S7g-005 | yes | Slide-trigger latency ≤150ms (real wall-clock at 1080p) | `cargo test` (present) | go_live under budget | test_present.rs | PASS |
+| S7g-006 | yes | Tracked state truthful (no "LIVE" while rejected); dims clamped | `cargo test` (present) | consistent under degenerate dims | test_present.rs | PASS |
+| S7g-007 | yes | Full suite + clippy clean; bounded state (no-leak) | `cargo test` + clippy | 18 crate / 130 workspace; 0 warnings | test output | PASS |
+| S7g-008 | yes | Independent multi-lens review; confirmed findings fixed | fresh-context workflow | 6 raised → 4 confirmed → fixed + regression tests | CODE-REVIEW-batch7g-present.md | PASS |
+| S7g-009 | no | Operator green/red preview/live chrome + labels + borderless fullscreen main output | — | Deferred: operator-console UI (walking skeleton batch) | UX-CANONICAL | NOT_APPLICABLE (UI batch) |
+
+### Iteration ledger — batch 7g
+
+- Target: S7g-001..S7g-008. Change: created `selahcue-present` (slide/compose/present) on the engine seam. Multi-lens adversarial review → 4 confirmed (dimension clamp/tracked-state truthfulness, bottom safe margin, tautological latency test) → fixed + regression tests; blackout-vs-go-live dismissed (matches UX-STATE-MATRIX/FR-077). Verifier: `cargo test` 18 crate / 130 workspace; clippy clean. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.
