@@ -46,6 +46,7 @@ Verified 2026-07-23:
 ### Non-goals
 
 - Production deployment (requires separate explicit user instruction; Stage 13 stops at the release gate).
+- **Text-to-speech (TTS)** — removed from the roadmap by user decision [DEC-001](../../decisions/DECISION-LOG.md) (2026-07-23). Not MVP, not a planned release; revisit only on explicit future request. TTS-specific sub-clauses of completion predicates C-013/C-018/C-019/C-021 are NOT_APPLICABLE; those predicates otherwise remain in force for transcription/AI. Stage 11 becomes "Sermon intelligence" only.
 - Voice cloning (excluded unless separately approved with consent + safeguards).
 - Bundling copyrighted Bible translations, song lyrics, fonts, codecs, voices, or AI models without verified permission.
 - Copying proprietary product code, interfaces pixel-for-pixel, branding, or protected assets (PewBeam, ProPresenter, etc.).

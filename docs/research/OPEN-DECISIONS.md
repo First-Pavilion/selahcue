@@ -9,7 +9,7 @@ These are unresolved **product** decisions surfaced by discovery. Engineering-on
 | ID | Decision | Options | Recommendation | Owner |
 |---|---|---|---|---|
 | OD-01 | MVP platform breadth | (a) All 5 platforms at once; (b) Desktop-first (Win/macOS/Linux) with mobile controller in a fast-follow; (c) Windows+macOS desktop first, Linux + mobile later | **(b)** Desktop tri-platform + a thin mobile controller — but bound MVP feature scope hard (RISK-001). Full 5-platform parity is a later release. | User + PM |
-| OD-02 | Is TTS in MVP? | (a) MVP; (b) Defer to later release | **(b) Defer** — lowest value for a read-the-screen product, highest live-room risk (feedback/routing). Research-backed. | User + PM |
+| OD-02 | Is TTS in the product? | (a) MVP; (b) Defer to later release; (c) Remove from roadmap | ✅ **DECIDED (c) — removed from roadmap** (user, 2026-07-23, [DEC-001](../decisions/DECISION-LOG.md)). TTS is a **non-goal / on-hold**; revisit only on explicit future request. Discovery had recommended deferral; the user de-scoped it entirely. | User (decided) |
 | OD-03 | MVP AI scope | (a) Full (transcription + detection + sermon notes) in MVP; (b) Presentation-only MVP, AI in later phases per brief's phased plan | **(b)** Ship presentation foundation first (Phase 1), layer transcription → scripture intelligence → sermon notes as later releases. Keeps first release implementable. | User + PM |
 | OD-04 | Product positioning/pricing model | Free/OSS · freemium · subscription · perpetual+support | Defer to Stage 3; discovery suggests a **free tier + fair/regional paid tiers** lane (vs ProPresenter price, PewBeam Global-South). Not needed to start building. | User |
 

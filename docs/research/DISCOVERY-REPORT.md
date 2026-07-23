@@ -43,9 +43,11 @@ Grounded in RISK-001 (scope breadth) and the brief's phased plan. **Recommendati
 
 **MVP = Presentation foundation (desktop tri-platform + thin mobile controller):** service plans; slide creation/editing; song lyrics (user-supplied + PD hymns); scripture search & display (PD translations); templates/themes; preview & live; main output + stage/confidence display; lower thirds; timers + "TIME UP"; media playback (OS-native decode); emergency clear/blackout; autosave + crash recovery; basic mobile pairing + slide/timer control; pre-service checks + missing-media detection.
 
-**Later releases (phased):** media/output expansion (multi-output, transparent lower thirds, NDI, livestream layouts, diagnostics) → transcription → scripture intelligence → sermon intelligence → **TTS** → production integrations (MIDI/OSC/Companion/Stream Deck) + hardening.
+**Later releases (phased):** media/output expansion (multi-output, transparent lower thirds, NDI, livestream layouts, diagnostics) → transcription → scripture intelligence → sermon intelligence → production integrations (MIDI/OSC/Companion/Stream Deck) + hardening.
 
-**Explicitly deferred from MVP:** TTS (OD-02), cloud AI (OD-11), licensed-translation integration (OD-06), per-output permissions (OD-14), advanced macros (OD-17).
+**Non-goal / removed from roadmap:** **TTS** — de-scoped by user decision [DEC-001](../decisions/DECISION-LOG.md) (2026-07-23); it was discovery's lowest-value/highest-live-room-risk feature. Retained as evidence only; not on the roadmap. Stage 11 accordingly becomes "Sermon intelligence" only.
+
+**Explicitly deferred from MVP (but on roadmap):** cloud AI (OD-11), licensed-translation integration (OD-06), per-output permissions (OD-14), advanced macros (OD-17).
 
 ## 7. Top risks (register updated)
 

@@ -18,6 +18,8 @@ Discovery complete. 6 parallel research specialists + a 4-lens independent revie
 
 Key Stage 2 artefacts: DISCOVERY-REPORT.md, EVIDENCE-REGISTER.md, OPEN-DECISIONS.md, DISCOVERY-REVIEW.md, CONDITION-DISPOSITIONS.md (all under docs/research/); Stage 2 contract docs/delivery/goals/STAGE2-discovery.md.
 
+**Refine (2026-07-23):** user de-scoped **TTS** entirely — removed from roadmap ([DEC-001](../decisions/DECISION-LOG.md)). Discovery artefacts, OPEN-DECISIONS OD-02, risk register RISK-008, and Build Goal Contract non-goals updated. Stage 2 remains at GATE_REVIEW.
+
 ## Key artefacts
 
 - Baseline audit: `docs/product/audits/BASELINE.md`
