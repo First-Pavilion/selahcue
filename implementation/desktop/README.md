@@ -148,9 +148,14 @@ cargo test  -p selahcue-gpu       # GPU↔CPU parity (skips if no GPU)
 cargo run   -p selahcue-desktop   # opens the native output window (needs a display)
 ```
 
+Slide text renders as **real glyphs** (a bundled public-domain 8×8 bitmap font in the CPU
+rasterizer via `Layer::Text`), so the output window shows legible text; GPU-native glyphs
+are a later optimization.
+
 Status: **Stage 7 — foundation batches 7a (domain core) + 7b (persistence) + 7c
 (at-rest encryption) + 7d (LAN control core) + 7e (TLS transport) + 7f (render-engine
 seam) + 7g (presentation rendering) + 7h (stage/confidence output) + 7i (wgpu compositor +
-native window). Verified: `cargo test` 141/141 (plain, incl. GPU parity) + 16/16
-(encryption) + 39/39 (server feature), `cargo clippy` clean.** The Tauri operator shell,
-the QR/Flutter mobile client, CI, and app-shell key acquisition are subsequent batches.
+native window) + 7j (glyph text). Verified: `cargo test` 145/145 (plain, incl. GPU parity)
++ 16/16 (encryption) + 39/39 (server feature), `cargo clippy` clean.** The Tauri operator
+shell, the QR/Flutter mobile client, CI, and app-shell key acquisition are subsequent
+batches.

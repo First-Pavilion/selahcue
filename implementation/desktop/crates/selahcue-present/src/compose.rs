@@ -10,30 +10,26 @@ use selahcue_engine::scene::{Frame, Layer, Rect, Rgba};
 /// Fraction of the reference height used per text line, and the gap between lines.
 const LINE_HEIGHT_FRAC: f64 = 0.10;
 const LINE_GAP_FRAC: f64 = 0.03;
-/// Approximate glyph advance as a fraction of the line height (for bar width).
-const GLYPH_ADVANCE: f64 = 0.5;
 
 /// Line sizing derived from a reference height.
 pub(crate) struct LineMetrics {
     pub line_h: u32,
     pub gap: u32,
-    pub advance: u32,
 }
 
 impl LineMetrics {
     /// Metrics scaled to a reference height (a frame or a sub-region).
     pub(crate) fn for_height(reference: u32) -> Self {
-        let line_h = ((reference as f64 * LINE_HEIGHT_FRAC) as u32).max(1);
         LineMetrics {
-            line_h,
+            line_h: ((reference as f64 * LINE_HEIGHT_FRAC) as u32).max(1),
             gap: (reference as f64 * LINE_GAP_FRAC) as u32,
-            advance: ((line_h as f64 * GLYPH_ADVANCE).max(1.0)) as u32,
         }
     }
 }
 
-/// Lay out text `lines` as bars within `region` (top-anchored), never crossing the
-/// region's bottom edge. Shared by full-slide and confidence-region composition.
+/// Lay out text `lines` as [`Layer::Text`] within `region` (top-anchored), never
+/// crossing the region's bottom edge. Shared by full-slide and confidence-region
+/// composition; the rasterizer draws real glyphs, clipped to each line's rect.
 pub(crate) fn layout_lines<'a>(
     lines: impl Iterator<Item = &'a str>,
     text: Rgba,
@@ -53,10 +49,10 @@ pub(crate) fn layout_lines<'a>(
         }
         let trimmed = line.trim();
         if !trimmed.is_empty() {
-            let chars = trimmed.chars().count() as u32;
-            let bar_w = chars.saturating_mul(metrics.advance).clamp(1, region.w);
-            layers.push(Layer::Fill {
-                rect: Rect::new(region.x, y, bar_w, metrics.line_h),
+            layers.push(Layer::Text {
+                rect: Rect::new(region.x, y, region.w, metrics.line_h),
+                text: trimmed.to_string(),
+                px: metrics.line_h,
                 color: text,
             });
         }

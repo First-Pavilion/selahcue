@@ -295,6 +295,29 @@ runtime-verified**. The on-screen `selahcue-desktop` window is **compile-verifie
 
 - Target: S7i-001..S7i-007. Change: created `selahcue-gpu` (wgpu compositor: instanced rects, offscreen render + readback) + engine `ssim`/`from_rgba` + `selahcue-desktop` (winit+wgpu window). Multi-lens adversarial review → 6 confirmed: parity oracle never exercised alpha/row-padding and was luminance-only (would pass a broken compositor); desktop surface-loss freeze + case-sensitive blackout key → all fixed (per-channel SSIM, translucent + non-aligned parity scenes, surface-error redraw, case-insensitive key). Verifier: GPU parity ≥0.99; `cargo test` 141 workspace; clippy clean. Result: PASS. Decision: gate-review.
 
+## Batch 7j — glyph text rendering (`Layer::Text` + font8x8)
+
+- Goal ID: STAGE7-foundation-7j · Status: GATE_REVIEW · Engine: goal · Independent verification: yes (multi-lens adversarial workflow)
+- Requirements: FR-009 (basic slide render — real text over background). ClickUp story 86ajp0a6q.
+- Objective: replace the placeholder text bars with real, legible glyphs on the output window, using a bundled public-domain 8×8 bitmap font in the CPU rasterizer.
+
+### Completion predicate — batch 7j
+
+| ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
+|---|---|---|---|---|---|---|
+| S7j-001 | yes | `Layer::Text` renders real glyphs (font8x8), clipped to its rect | `cargo test -p selahcue-engine` | glyph coverage in rect; none outside | test_raster.rs | PASS |
+| S7j-002 | yes | Glyphs not mirrored (correct bit order) | `cargo test` | 'L' bar on the left | test_raster.rs | PASS |
+| S7j-003 | yes | Text work bounded by the framebuffer (no oversized-px hang) | `cargo test` | 100000-px text renders promptly | test_raster.rs | PASS |
+| S7j-004 | yes | compose emits Text; layout + bottom-margin preserved | `cargo test -p selahcue-present` | 26/26 | test_compose.rs | PASS |
+| S7j-005 | yes | Desktop output window shows real text (compile + user-run) | build + user | text visible on Mac | main.rs | PASS (user-verified visual) |
+| S7j-006 | yes | Full suite + clippy clean; GPU parity intact (Fill-only) | `cargo test` + clippy | 145 workspace; 0 warnings | test output | PASS |
+| S7j-007 | yes | Independent multi-lens review; confirmed findings fixed | fresh-context workflow | 4 raised → 2 confirmed (unbounded draw_text, stale doc) → fixed | CODE-REVIEW-batch7j-text.md | PASS |
+| S7j-008 | no | GPU-native glyph rendering (glyph atlas) so the compositor can drive a surface | — | Deferred: future ADR-0002 path | ADR-0002 | NOT_APPLICABLE (later batch) |
+
+### Iteration ledger — batch 7j
+
+- Target: S7j-001..S7j-007. Change: added `Layer::Text` + font8x8 CPU glyph rasterizer (LSB-first, verified non-mirrored, clipped); compose emits Text; wgpu compositor skips Text (CPU-composite+blit for on-screen). Multi-lens adversarial review → 2 confirmed: draw_text unbounded work for oversized px/rect (fixed: scale cap + framebuffer-clipped block loop + regression test); stale compositor doc (fixed). Verifier: `cargo test` 145 workspace; clippy clean. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

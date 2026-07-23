@@ -8,6 +8,9 @@ description = "SelahCue render-engine test seam (ADR-0015): scene model, GPU-fre
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+# Bundled public-domain 8×8 bitmap font — self-contained, deterministic glyph data
+# for the CPU text rasterizer (no runtime font files). GPU-native glyphs are later.
+font8x8 = "0.3"
 
 [dev-dependencies]
 serde_json = "1"

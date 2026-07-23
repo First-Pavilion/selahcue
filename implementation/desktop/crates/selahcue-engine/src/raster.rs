@@ -235,7 +235,63 @@ pub fn render(frame: &Frame) -> FrameBuffer {
     for layer in &frame.layers {
         match layer {
             Layer::Fill { rect, color } => fill_rect(&mut fb, *rect, *color),
+            Layer::Text {
+                rect,
+                text,
+                px,
+                color,
+            } => draw_text(&mut fb, *rect, text, *px, *color),
         }
     }
     fb
+}
+
+/// Draw monospaced text with the bundled 8×8 bitmap font, integer-scaled to about
+/// `px` tall, from `rect`'s top-left, clipped to `rect`. Non-ASCII characters and
+/// glyphs that would overflow the rect are skipped.
+fn draw_text(fb: &mut FrameBuffer, rect: Rect, text: &str, px: u32, color: Rgba) {
+    if px == 0 || rect.w == 0 || rect.h == 0 {
+        return;
+    }
+    // Cap the glyph scale at the framebuffer height so a pathological `px` can never
+    // produce an unbounded (or i32-overflowing) block-fill — total work stays bounded
+    // by the framebuffer, mirroring `fill_rect`.
+    let scale = (px / 8).max(1).min(fb.height.max(1));
+    let advance = 8 * scale; // monospace cell width
+    // Clip everything to the on-screen intersection of the layer rect and the frame.
+    let clip_right = rect.x.saturating_add(rect.w as i32).min(fb.width as i32);
+    let clip_bottom = rect.y.saturating_add(rect.h as i32).min(fb.height as i32);
+
+    let mut cursor_x = rect.x;
+    for ch in text.chars() {
+        // Stop once the glyph cell would start at/after the clipped right edge.
+        if cursor_x >= clip_right {
+            break;
+        }
+        let code = ch as u32;
+        if ch != ' ' && code < 128 {
+            let glyph = font8x8::legacy::BASIC_LEGACY[code as usize];
+            for (row, bits) in glyph.iter().enumerate() {
+                for col in 0..8u32 {
+                    // font8x8 packs bit 0 (LSB) as the leftmost column.
+                    if (bits >> col) & 1 == 1 {
+                        let x0 = cursor_x + (col * scale) as i32;
+                        let y0 = rect.y + (row as u32 * scale) as i32;
+                        // Iterate only the visible span of this scale×scale block, so
+                        // an off-screen or oversized block does no wasted work.
+                        let bx0 = x0.max(rect.x).max(0);
+                        let by0 = y0.max(rect.y).max(0);
+                        let bx1 = (x0 + scale as i32).min(clip_right);
+                        let by1 = (y0 + scale as i32).min(clip_bottom);
+                        for y in by0..by1 {
+                            for x in bx0..bx1 {
+                                fb.blend(x as u32, y as u32, color);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cursor_x = cursor_x.saturating_add(advance as i32);
+    }
 }

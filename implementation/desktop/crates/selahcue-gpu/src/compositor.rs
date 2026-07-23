@@ -1,7 +1,14 @@
 //! The wgpu compositor (ADR-0002): renders the [`selahcue_engine`] scene model on
 //! the GPU. The offscreen path here renders to a texture and reads pixels back, so
 //! it can be compared against the CPU rasterizer for cross-backend parity
-//! (ADR-0015). The same pipeline drives an on-screen surface in the desktop shell.
+//! (ADR-0015).
+//!
+//! This pipeline renders only [`Layer::Fill`] and **silently skips
+//! [`Layer::Text`]** (GPU-native glyphs are a later batch). The desktop shell today
+//! does **not** use this compositor for the screen — it CPU-composites via
+//! `selahcue-present` and blits the resulting framebuffer to its own surface, so
+//! text renders. This pipeline must gain glyph rendering before it can drive an
+//! on-screen surface (ADR-0002's intended future path).
 
 use bytemuck::{Pod, Zeroable};
 use selahcue_engine::raster::MAX_DIMENSION;
@@ -125,11 +132,14 @@ impl Compositor {
         } else {
             let mut v = Vec::with_capacity(frame.layers.len());
             for layer in &frame.layers {
-                let Layer::Fill { rect, color } = layer;
-                v.push(Instance {
-                    rect: [rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32],
-                    color: to_linear(*color),
-                });
+                // This GPU pipeline renders filled rectangles; text is CPU-rasterized
+                // and presented via blit today (GPU-native glyphs are a later batch).
+                if let Layer::Fill { rect, color } = layer {
+                    v.push(Instance {
+                        rect: [rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32],
+                        color: to_linear(*color),
+                    });
+                }
             }
             (frame.background, v)
         };

@@ -2,8 +2,15 @@
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_engine::raster::render;
+use selahcue_engine::raster::{render, FrameBuffer};
+use selahcue_engine::scene::Rgba;
 use selahcue_present::{compose_slide, Slide, Theme};
+
+/// Whether any pixel of `color` appears in the `[x0,x1) × [y0,y1)` region — glyph
+/// coverage is sparse, so we scan a band rather than asserting an exact pixel.
+fn has_color_in(fb: &FrameBuffer, x0: u32, y0: u32, x1: u32, y1: u32, color: Rgba) -> bool {
+    (y0..y1).any(|y| (x0..x1).any(|x| fb.pixel(x, y) == Some(color)))
+}
 
 #[test]
 fn blank_slide_is_background_only() {
@@ -22,8 +29,11 @@ fn slide_draws_text_in_the_safe_area_with_theme_colors() {
     let fb = render(&compose_slide(&Slide::title("HELLO"), &theme, 200, 100));
     // Background shows in the margin / corner.
     assert_eq!(fb.pixel(2, 2).unwrap(), theme.background);
-    // The title bar (top-left of the safe area, margin ~10px) is the text colour.
-    assert_eq!(fb.pixel(12, 8).unwrap(), theme.text);
+    // The title renders glyph pixels in the top-left of the safe area (margin ~10px).
+    assert!(
+        has_color_in(&fb, 10, 5, 90, 16, theme.text),
+        "title glyphs should render in the safe area"
+    );
 }
 
 #[test]
@@ -48,21 +58,14 @@ fn text_never_paints_into_the_bottom_safe_margin() {
     let slide = Slide::new("Title", (0..10).map(|i| format!("Body line number {i}")));
     let fb = render(&compose_slide(&slide, &theme, 200, 50));
     // Text renders in the top safe area...
-    assert_eq!(
-        fb.pixel(12, 4).unwrap(),
-        theme.text,
+    assert!(
+        has_color_in(&fb, 10, 2, 60, 8, theme.text),
         "text should render in the top safe area"
     );
-    // ...but never in the bottom safe margin or at the bottom edge.
-    assert_eq!(
-        fb.pixel(12, 48).unwrap(),
-        theme.background,
-        "no text in the bottom safe margin"
-    );
-    assert_eq!(
-        fb.pixel(12, 49).unwrap(),
-        theme.background,
-        "no text at the bottom edge"
+    // ...but never in the bottom safe margin band (rows >= height - margin_y = 48).
+    assert!(
+        !has_color_in(&fb, 0, 48, 200, 50, theme.text),
+        "no text in the bottom safe margin / at the bottom edge"
     );
 }
 

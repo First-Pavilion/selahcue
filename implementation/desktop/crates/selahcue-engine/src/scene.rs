@@ -66,6 +66,16 @@ impl Rect {
 pub enum Layer {
     /// A solid-colour rectangle (alpha-composited over what is beneath it).
     Fill { rect: Rect, color: Rgba },
+    /// A line of monospaced text drawn left-to-right from the rect's top-left,
+    /// `px` tall, clipped to `rect`. Rendered with a bundled 8×8 bitmap font by the
+    /// CPU rasterizer; the wgpu compositor's GPU-native glyphs are a later batch, so
+    /// today the on-screen path composites text on the CPU and presents via blit.
+    Text {
+        rect: Rect,
+        text: String,
+        px: u32,
+        color: Rgba,
+    },
 }
 
 /// A single frame's scene: resolution, background, ordered layers, and the

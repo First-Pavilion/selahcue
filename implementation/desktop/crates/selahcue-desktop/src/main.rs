@@ -252,7 +252,7 @@ struct App {
 impl App {
     fn new() -> Self {
         let mut presenter = Presenter::new(OUTPUT_W, OUTPUT_H, Theme::dark());
-        presenter.stage(Slide::new("SelahCue", ["Walking skeleton", "Preview → Live"]));
+        presenter.stage(Slide::new("SelahCue", ["Walking skeleton", "Preview to Live"]));
         presenter.go_live();
         App {
             renderer: None,
