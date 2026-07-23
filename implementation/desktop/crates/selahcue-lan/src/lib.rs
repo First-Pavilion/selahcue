@@ -16,3 +16,24 @@ pub mod session;
 
 pub use rbac::{authorize, Permission, Role};
 pub use session::{DeviceId, PairingError, Session, SessionRegistry, SessionToken};
+
+// The TLS-pinned WebSocket transport (async) — only with the `server` feature.
+#[cfg(feature = "server")]
+pub mod client;
+#[cfg(feature = "server")]
+pub mod pinning;
+#[cfg(feature = "server")]
+pub mod server;
+#[cfg(feature = "server")]
+pub mod tls;
+#[cfg(feature = "server")]
+mod wire;
+
+#[cfg(feature = "server")]
+pub use client::ControlClient;
+#[cfg(feature = "server")]
+pub use pinning::{CertPin, PinnedServerVerifier};
+#[cfg(feature = "server")]
+pub use server::{ControlServer, Handler, Reply};
+#[cfg(feature = "server")]
+pub use tls::{client_config, server_config, SelfSigned, TransportError};

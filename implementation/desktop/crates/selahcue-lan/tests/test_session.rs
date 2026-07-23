@@ -187,6 +187,68 @@ fn expiry_is_inclusive_at_the_exact_boundary() {
         .is_ok());
 }
 
+// --- bounded-memory / no-unbounded-growth guards (no-memory-leaks requirement) ---
+
+#[test]
+fn redeeming_consumes_the_offer_so_pending_does_not_grow() {
+    let mut reg = SessionRegistry::new();
+    let now = Instant::now();
+    // Pair 100 devices; each redeem must consume its offer.
+    for i in 0..100u32 {
+        let code = format!("code-{i}");
+        reg.offer_pairing(code.clone(), Role::Viewer, now, Duration::from_secs(300));
+        reg.redeem(&code, dev(&format!("d{i}")), SessionToken::new(format!("t{i}")), now)
+            .unwrap();
+    }
+    // Every offer was consumed — pending is empty, active is exactly the 100 devices.
+    assert_eq!(reg.pending_count(), 0, "pending offers leaked");
+    assert_eq!(reg.active_count(), 100);
+}
+
+#[test]
+fn expired_offers_are_reclaimed_by_prune() {
+    let mut reg = SessionRegistry::new();
+    let t0 = Instant::now();
+    for i in 0..500u32 {
+        reg.offer_pairing(format!("c{i}"), Role::Viewer, t0, Duration::from_secs(10));
+    }
+    assert_eq!(reg.pending_count(), 500);
+    // After they all expire, pruning returns pending to zero — no unbounded growth.
+    reg.prune_expired(t0 + Duration::from_secs(11));
+    assert_eq!(reg.pending_count(), 0, "expired offers were not reclaimed");
+}
+
+#[test]
+fn repeated_failed_redeems_do_not_accumulate_state() {
+    let mut reg = SessionRegistry::new();
+    let now = Instant::now();
+    // Thousands of wrong-code attempts must not grow either map.
+    for i in 0..2000u32 {
+        let _ = reg.redeem(&format!("nope-{i}"), dev("x"), SessionToken::new("t"), now);
+    }
+    assert_eq!(reg.pending_count(), 0);
+    assert_eq!(reg.active_count(), 0);
+}
+
+#[test]
+fn revoking_returns_active_sessions_to_baseline() {
+    let mut reg = SessionRegistry::new();
+    let now = Instant::now();
+    let devices: Vec<_> = (0..50u32).map(|i| dev(&format!("dev{i}"))).collect();
+    for (i, d) in devices.iter().enumerate() {
+        let code = format!("k{i}");
+        reg.offer_pairing(code.clone(), Role::Producer, now, Duration::from_secs(300));
+        reg.redeem(&code, d.clone(), SessionToken::new(format!("t{i}")), now).unwrap();
+    }
+    assert_eq!(reg.active_count(), 50);
+    for d in &devices {
+        assert!(reg.revoke(d));
+    }
+    // All sessions released — back to an empty registry.
+    assert_eq!(reg.active_count(), 0, "revoked sessions leaked");
+    assert_eq!(reg.pending_count(), 0);
+}
+
 #[test]
 fn token_debug_is_redacted() {
     // A leaked token in logs/panics would be a credential disclosure.

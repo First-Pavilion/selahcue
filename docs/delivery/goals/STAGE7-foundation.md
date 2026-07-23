@@ -166,6 +166,34 @@ RBAC policy: `Clear` maps to `Navigate`, so an **Assistant** can blank the live 
 
 - Target: S7d-001..S7d-007. Change: created `selahcue-lan` (protocol/rbac/session), pure + injected token/clock. Multi-lens adversarial review → M1 (AuthRequest Debug leaked token) fixed + regression test; added empty-token/empty-code guards, version-check helpers, and cross-device/boundary regression tests. Verifier: `cargo test` 80 workspace (30 in lan); clippy clean. Result: PASS. Decision: gate-review.
 
+## Batch 7e — TLS-pinned WebSocket transport (`selahcue-lan` `server` feature)
+
+- Goal ID: STAGE7-foundation-7e · Status: GATE_REVIEW · Engine: goal · Independent verification: yes (multi-lens adversarial workflow)
+- Requirements: FR-118 (transport), FR-119 (RBAC over the wire); ADR-0009. Pure-Rust crypto (rustls + ring — no OpenSSL/C).
+- Objective: carry the LAN control protocol over a certificate-pinned TLS WebSocket, authenticate devices, and enforce RBAC on every command — proven end-to-end over a real loopback socket.
+
+### Completion predicate — batch 7e
+
+| ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
+|---|---|---|---|---|---|---|
+| S7e-001 | yes | `server` feature builds (pure-Rust TLS, no system libs) | `cargo build --features server` | compiles | build output | PASS |
+| S7e-002 | yes | Certificate pinning: correct pin accepted, wrong pin rejected; handshake signature verified | `cargo test --features server` | E2E + wrong-pin tests pass; TLS-security review found no bypass | test_server.rs; review | PASS |
+| S7e-003 | yes | Device auth over the wire; wrong/unknown token rejected | `cargo test --features server` | wrong-token test passes | test_server.rs | PASS |
+| S7e-004 | yes | RBAC enforced over the wire (Assistant GoLive → Denied; Next → Ack) | `cargo test --features server` | E2E asserts denial + allow | test_server.rs | PASS |
+| S7e-005 | yes | No resource leak: half-open connections reaped; connection count bounded; registry bounded | `cargo test --features server` | reaping + leak-guard tests pass | test_server.rs | PASS |
+| S7e-006 | yes | Full suites + clippy clean (default + server) | `cargo test` / `--features server` + clippy | 84 default / 39 server; 0 warnings | test output | PASS |
+| S7e-007 | yes | Independent multi-lens review; confirmed findings fixed | fresh-context workflow | 8 raised → 4 confirmed (DoS/resource) → fixed + regression tests; TLS lens clean | CODE-REVIEW-batch7e-transport.md | PASS |
+
+### DoS-hardening applied (from review; serves the no-leak requirement)
+
+Handshake/auth timeout (reaps slowloris half-open connections), `Semaphore` connection
+cap (bounds fds/tasks/memory), resilient accept loop (transient accept errors no longer
+fatal), and a bounded WebSocket message size (64 KiB, stops large pre-auth buffering).
+
+### Iteration ledger — batch 7e
+
+- Target: S7e-001..S7e-007. Change: added the `server` feature — `pinning` (rustls pinned verifier), `tls` (rcgen self-signed + configs), `server`/`client`/`wire`; loopback E2E. Multi-lens adversarial review → TLS-security clean; 4 confirmed DoS/resource findings (accept-loop-dies, no handshake timeout/cap ×2, 64 MiB frame) → all fixed with a slowloris-reaping regression test. Verifier: `cargo test` 84 default + 39 server; clippy clean both. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

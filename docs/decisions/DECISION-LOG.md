@@ -4,6 +4,26 @@ Durable record of material product/scope/architecture decisions, with traceabili
 
 ---
 
+## DEC-002 — RBAC: the Assistant role may navigate/clear the live output (kept as-is)
+
+- **Date:** 2026-07-23
+- **Stage:** Stage 7 gate (batch 7d)
+- **Decided by:** User (product owner)
+- **Type:** RBAC policy confirmation
+- **Status:** DECIDED (revisit-later)
+
+**Context.** The batch-7d independent review flagged that `Command::Clear` maps to the `Navigate` permission, which the **Assistant** role holds — so an Assistant can blank the live output, whereas `Blackout` is gated to Producer+. The reviewer verified this is deliberate and test-locked (not an accidental mis-mapping), but noted it sits in tension with the Assistant docstring ("cannot push to the live output") and raised it as a product policy question.
+
+**Decision.** Keep the current policy: **Assistant retains `Navigate` (Next/Previous/SelectItem/Clear)**; `GoLive`, `Blackout`, and `Timer` remain Producer+. No code change.
+
+**User rationale.** "Let's keep as is. We can revisit later if there's a need to."
+
+**Affected items.** `selahcue-lan::rbac` (unchanged); the RBAC matrix in `crates/selahcue-lan/src/rbac.rs` and its tests remain authoritative.
+
+**Reversibility.** Trivially reversible — move `Clear` (and/or the `Navigate` grant for Assistant) to a higher permission tier and update the `test_rbac` matrix. Revisit if operators report Assistants disrupting live output.
+
+---
+
 ## DEC-001 — Text-to-Speech (TTS) removed from the product roadmap (de-scoped)
 
 - **Date:** 2026-07-23

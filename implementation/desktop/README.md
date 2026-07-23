@@ -16,9 +16,11 @@ desktop/
     ├── selahcue-data/             # persistence — SQLite (WAL), migrations, backups
     │   ├── src/                    # lib.rs, db.rs, migrations.rs, plan_repo.rs, key.rs, error.rs
     │   └── tests/                  # test_db.rs, test_plan_repo.rs, test_encryption.rs
-    └── selahcue-lan/              # LAN control core — protocol, RBAC, pairing/sessions
-        ├── src/                    # lib.rs, protocol.rs, rbac.rs, session.rs
-        └── tests/                  # test_protocol.rs, test_rbac.rs, test_session.rs
+    └── selahcue-lan/              # LAN control — protocol, RBAC, pairing + TLS transport
+        ├── src/                    # protocol.rs, rbac.rs, session.rs; (server feature:)
+        │                          #   pinning.rs, tls.rs, server.rs, client.rs, wire.rs
+        └── tests/                  # test_protocol.rs, test_rbac.rs, test_session.rs,
+                                    #   test_server.rs (server feature — loopback E2E)
 ```
 
 Tests live in each crate's `tests/` folder (one file per module, public-API
@@ -82,14 +84,23 @@ pure `selahcue-core` types to tables and back.
 
 ## `selahcue-lan`
 
-The transport-independent core of the operator↔controller link (FR-118/119/120;
-ADR-0009): the wire **protocol** (versioned JSON messages), **RBAC** (roles →
-permissions with a single `authorize()` choke point), and **session** management
+The operator↔controller link (FR-118/119/120; ADR-0009). The default build is the pure,
+transport-independent **core**: the wire **protocol** (versioned JSON messages), **RBAC**
+(roles → permissions with a single `authorize()` choke point), and **session** management
 (single-use, TTL-bounded device pairing → constant-time-authenticated bearer tokens).
-Pure and exhaustively testable; the TLS-pinned WebSocket transport that carries these
-messages is a subsequent batch.
+
+The **`server` feature** adds the TLS-pinned WebSocket **transport** (pure-Rust rustls +
+`ring`): `pinning` (a rustls verifier trusting the operator's self-signed cert by SHA-256
+pin, while still verifying the handshake signature), `tls` (rcgen self-signed cert +
+configs), and `server`/`client`. It is time-boxed (handshake/auth timeout), connection-
+capped (semaphore), and frame-size bounded — so hostile LAN peers cannot exhaust it.
+
+```bash
+cargo test -p selahcue-lan --features server   # + loopback TLS E2E (pinning, auth, RBAC)
+```
 
 Status: **Stage 7 — foundation batches 7a (domain core) + 7b (persistence) + 7c
-(at-rest encryption) + 7d (LAN control core). Verified: `cargo test` 80/80 (plain) +
-16/16 (encryption), `cargo clippy` clean.** GPU/UI crates, the LAN TLS transport, and
-app-shell key acquisition are subsequent batches.
+(at-rest encryption) + 7d (LAN control core) + 7e (TLS transport). Verified: `cargo test`
+84/84 (plain) + 16/16 (encryption) + 39/39 (server feature), `cargo clippy` clean.**
+GPU/UI crates, the QR/Flutter mobile client, and app-shell key acquisition are
+subsequent batches.

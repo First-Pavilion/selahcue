@@ -6,12 +6,37 @@ license.workspace = true
 authors.workspace = true
 description = "SelahCue LAN control core: wire protocol, role-based access control, and device pairing/sessions for the operator↔controller link (FR-118/119/120; ADR-0009). The TLS-pinned WebSocket transport is layered on top separately."
 
+[features]
+default = []
+# The TLS-pinned WebSocket transport (async). Pure-Rust crypto (rustls + ring —
+# no OpenSSL/C toolchain). Off by default so the control core stays dependency-light
+# and synchronous; enable to build the operator server and Rust client.
+server = [
+    "dep:tokio",
+    "dep:tokio-rustls",
+    "dep:tokio-tungstenite",
+    "dep:rustls",
+    "dep:rcgen",
+    "dep:sha2",
+    "dep:futures-util",
+]
+
 [dependencies]
 selahcue-core = { path = "../selahcue-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Constant-time comparison of bearer tokens (defends against timing side channels).
 subtle = "2"
+
+# --- `server` feature: async TLS-pinned WebSocket transport ---
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "net", "macros", "io-util", "sync", "time"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-tungstenite = { version = "0.24", optional = true, default-features = false, features = ["handshake"] }
+rustls-pki-types = { version = "1", optional = true }
+rcgen = { version = "0.13", optional = true, default-features = false, features = ["ring", "pem"] }
+sha2 = { version = "0.10", optional = true }
+futures-util = { version = "0.3", optional = true }
 
 [lints]
 workspace = true

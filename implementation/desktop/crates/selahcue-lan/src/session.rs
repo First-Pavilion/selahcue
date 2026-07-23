@@ -169,6 +169,13 @@ impl SessionRegistry {
         self.active.len()
     }
 
+    /// Number of outstanding (unredeemed) pairing offers. Exposed so callers can
+    /// assert the registry does not grow without bound (offers are consumed on
+    /// redeem and reclaimed by [`prune_expired`](Self::prune_expired)).
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
     /// Drop pairing offers whose window has closed (housekeeping).
     pub fn prune_expired(&mut self, now: Instant) {
         self.pending.retain(|_, p| now < p.expires_at);
