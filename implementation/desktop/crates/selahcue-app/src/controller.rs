@@ -10,11 +10,28 @@ use selahcue_core::plan::ServicePlan;
 use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{Command, DenyReason, ServerMessage, TimerSnapshot};
-use selahcue_present::{Presenter, Slide, Theme, TimerView};
+use selahcue_present::{FrameBuffer, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView};
 use std::time::{Duration, Instant};
 
 /// Seconds-remaining threshold at which the countdown enters its amber "warning" state.
 const TIMER_WARN_SECS: u32 = 30;
+
+/// The neutral timer view for the confidence monitor when no timer is running (a full,
+/// idle bar — the monitor always shows a timer/clock strip).
+const IDLE_TIMER_VIEW: TimerView = TimerView {
+    elapsed_secs: 0,
+    remaining_secs: None,
+    time_up: false,
+    warn: false,
+    progress: 1.0,
+};
+
+/// The displayed value of a timer view (whole-second granularity + state) — used to gate
+/// confidence-monitor recomposition to ~1/sec rather than every frame.
+type TimerKey = Option<(Option<u32>, u32, bool, bool)>;
+fn timer_key(view: Option<TimerView>) -> TimerKey {
+    view.map(|v| (v.remaining_secs, v.elapsed_secs, v.time_up, v.warn))
+}
 
 /// The controller's decision for a command. The transport frames `Ack`/`Deny` with
 /// the request id; `Message` is returned as-is.
@@ -46,6 +63,13 @@ pub struct LiveController {
     timer_pending_start: bool,
     /// The last timer view computed by `tick`, surfaced in the operator view.
     last_timer_view: Option<TimerView>,
+    /// The stage/confidence monitor (a second output surface, FR-037): current + next
+    /// line + the timer, composed from the same live state.
+    stage: StageDisplay,
+    /// Set by any state-changing command so the confidence monitor recomposes next tick.
+    stage_dirty: bool,
+    /// The timer key the monitor was last composed with (recompose on change).
+    last_stage_key: TimerKey,
 }
 
 impl LiveController {
@@ -63,7 +87,16 @@ impl LiveController {
             timer_total: None,
             timer_pending_start: false,
             last_timer_view: None,
+            stage: StageDisplay::new(width, height, StageTheme::dark()),
+            stage_dirty: true,
+            last_stage_key: None,
         }
+    }
+
+    /// The stage/confidence monitor output (a second display surface). Updated by
+    /// [`tick`](Self::tick) from the same live state as the main output.
+    pub fn stage_output(&self) -> &FrameBuffer {
+        self.stage.output()
     }
 
     /// Advance the active timer to `now` and overlay it on the Live output. Call once per
@@ -86,7 +119,21 @@ impl LiveController {
             None => None,
         };
         self.last_timer_view = view;
-        self.presenter.show_timer(view);
+        // The countdown is a speaker aid: it appears on the stage/confidence monitor
+        // (below), NOT on the audience/program output.
+
+        // Refresh the confidence monitor when the timer's displayed value changed or a
+        // command marked it dirty — not every frame.
+        let key = timer_key(view);
+        if self.stage_dirty || key != self.last_stage_key {
+            self.stage_dirty = false;
+            self.last_stage_key = key;
+            let timer_for_stage = view.unwrap_or(IDLE_TIMER_VIEW);
+            let current = self.presenter.live_slide().cloned();
+            let next = self.presenter.staged().cloned();
+            self.stage
+                .update(current.as_ref(), next.as_ref(), &timer_for_stage);
+        }
     }
 
     /// The presenter (for the output window / stage display to render).
@@ -164,6 +211,9 @@ impl LiveController {
 
     /// Apply one (already RBAC-authorized) command, returning the reply.
     pub fn apply(&mut self, command: &Command) -> ControllerReply {
+        // Any command may change what the confidence monitor should show; refresh it on
+        // the next tick (gated there, so a read just costs one recompose).
+        self.stage_dirty = true;
         let len = self.plan.len();
         match command {
             Command::Next => {
@@ -229,7 +279,8 @@ impl LiveController {
                 self.timer_total = None;
                 self.timer_pending_start = false;
                 self.last_timer_view = None;
-                self.presenter.show_timer(None);
+                // `apply` marked the stage dirty; the next tick recomposes the monitor
+                // without the timer. The audience output is untouched (no timer there).
                 ControllerReply::Ack
             }
             Command::ScriptureSearch { query } => {

@@ -25,13 +25,17 @@ use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex as AsyncMutex;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 const OUTPUT_W: u32 = 1920;
 const OUTPUT_H: u32 = 1080;
+/// Target frame interval for the paced redraw loop (~60 Hz). Pacing with a deadline —
+/// not only the Fifo present block — keeps the loop from busy-spinning when a window
+/// cannot present (minimized / occluded / surface lost).
+const FRAME: Duration = Duration::from_millis(16);
 
 struct Renderer {
     window: Arc<Window>,
@@ -213,16 +217,15 @@ impl Renderer {
             Ok(frame) => frame,
             Err(err) => {
                 // A stale/lost swapchain (sleep, display re-negotiation) needs
-                // reconfiguring; either way, reschedule a paint so the recovered
-                // surface repaints under ControlFlow::Wait rather than freezing on
-                // black until the next input event.
+                // reconfiguring. The paced frame loop (`new_events`) re-requests a paint
+                // next frame, so we do NOT request one here — doing so would busy-spin
+                // while the surface can't present.
                 if matches!(
                     err,
                     wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost
                 ) {
                     self.surface.configure(&self.device, &self.config);
                 }
-                self.window.request_redraw();
                 return;
             }
         };
@@ -257,10 +260,17 @@ impl Renderer {
 }
 
 struct App {
-    renderer: Option<Renderer>,
+    /// The main audience/program output window.
+    main: Option<Renderer>,
+    /// The stage/confidence monitor window — the same live state composed as a speaker
+    /// view (current + next line + timer + clock), FR-037.
+    stage: Option<Renderer>,
     /// Shared with the control-server thread: the remote controller and the local
-    /// keyboard drive the *same* live output.
+    /// keyboard drive the *same* live state, shown on both windows.
     controller: Arc<Mutex<LiveController>>,
+    /// The next frame deadline (a *fixed* schedule, advanced only when a frame fires), so
+    /// continuous input can't keep pushing it forward and starve the redraw/tick loop.
+    next_frame: Option<Instant>,
 }
 
 /// Apply one command to the shared controller (a poisoned lock just drops the input
@@ -296,41 +306,59 @@ impl App {
         start_remote_control(controller.clone());
 
         App {
-            renderer: None,
+            main: None,
+            stage: None,
             controller,
+            next_frame: None,
+        }
+    }
+
+    /// The renderer whose window matches `id`, if any.
+    fn renderer_for(&mut self, id: WindowId) -> Option<&mut Renderer> {
+        if self.main.as_ref().is_some_and(|r| r.window.id() == id) {
+            self.main.as_mut()
+        } else if self.stage.as_ref().is_some_and(|r| r.window.id() == id) {
+            self.stage.as_mut()
+        } else {
+            None
         }
     }
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.renderer.is_none() {
+        if self.main.is_none() {
             let attrs = Window::default_attributes().with_title("SelahCue Output");
-            let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
-            self.renderer = Some(Renderer::new(window));
+            let window = Arc::new(event_loop.create_window(attrs).expect("create output window"));
+            self.main = Some(Renderer::new(window));
+        }
+        if self.stage.is_none() {
+            let attrs = Window::default_attributes().with_title("SelahCue Stage / Confidence");
+            let window = Arc::new(event_loop.create_window(attrs).expect("create stage window"));
+            self.stage = Some(Renderer::new(window));
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let App {
-            renderer,
-            controller,
-        } = self;
-        let Some(renderer) = renderer.as_mut() else {
-            return;
-        };
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                renderer.resize(size.width, size.height);
-                renderer.window.request_redraw();
+                if let Some(renderer) = self.renderer_for(id) {
+                    renderer.resize(size.width, size.height);
+                    renderer.window.request_redraw();
+                }
             }
             WindowEvent::RedrawRequested => {
-                if let Ok(mut c) = controller.lock() {
-                    // Advance any active countdown to the current instant so the timer
-                    // ticks on the audience output, then render the live frame.
-                    c.tick(Instant::now());
-                    renderer.render(c.presenter().live_output());
+                let Ok(c) = self.controller.lock() else {
+                    return;
+                };
+                // Each window presents its own surface from the same shared live state.
+                if self.main.as_ref().is_some_and(|r| r.window.id() == id) {
+                    if let Some(r) = self.main.as_mut() {
+                        r.render(c.presenter().live_output());
+                    }
+                } else if let Some(r) = self.stage.as_mut() {
+                    r.render(c.stage_output());
                 }
             }
             WindowEvent::KeyboardInput {
@@ -341,33 +369,59 @@ impl ApplicationHandler for App {
                         ..
                     },
                 ..
-            } => {
-                match logical_key {
-                    Key::Named(NamedKey::Escape) => event_loop.exit(),
-                    Key::Named(NamedKey::Space) => drive(controller, &Command::Next),
-                    Key::Named(NamedKey::Enter) => drive(controller, &Command::GoLive),
-                    Key::Character(c) if c.eq_ignore_ascii_case("b") => {
-                        let on = controller.lock().map(|g| !g.is_blackout()).unwrap_or(true);
-                        drive(controller, &Command::Blackout { on });
-                    }
-                    Key::Character(c) if c.eq_ignore_ascii_case("c") => {
-                        drive(controller, &Command::Clear)
-                    }
-                    _ => {}
+            } => match logical_key {
+                Key::Named(NamedKey::Escape) => event_loop.exit(),
+                Key::Named(NamedKey::Space) => drive(&self.controller, &Command::Next),
+                Key::Named(NamedKey::Enter) => drive(&self.controller, &Command::GoLive),
+                Key::Character(c) if c.eq_ignore_ascii_case("b") => {
+                    let on = self
+                        .controller
+                        .lock()
+                        .map(|g| !g.is_blackout())
+                        .unwrap_or(true);
+                    drive(&self.controller, &Command::Blackout { on });
                 }
-                renderer.window.request_redraw();
-            }
+                Key::Character(c) if c.eq_ignore_ascii_case("c") => {
+                    drive(&self.controller, &Command::Clear)
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Repaint continuously (vsync-paced by the Fifo present mode) so a change made
-        // by the *remote* controller — which is not a winit event — appears on screen
-        // within a frame rather than waiting for the next local input.
-        if let Some(renderer) = self.renderer.as_ref() {
-            renderer.window.request_redraw();
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+        // Fire a frame when the fixed deadline is reached (or at startup): advance the
+        // shared state (the countdown + confidence monitor) and repaint BOTH windows — so
+        // a change made by the remote controller, which is not a winit event, appears
+        // within a frame. Checking a *fixed* deadline (not now+FRAME) means continuous
+        // input (repeated `WaitCancelled`) can't push it forward and starve the loop.
+        let now = Instant::now();
+        let due = match cause {
+            StartCause::Init | StartCause::ResumeTimeReached { .. } => true,
+            _ => self.next_frame.is_none_or(|deadline| now >= deadline),
+        };
+        if due {
+            self.next_frame = Some(now + FRAME);
+            if let Ok(mut c) = self.controller.lock() {
+                c.tick(now);
+            }
+            if let Some(r) = self.main.as_ref() {
+                r.window.request_redraw();
+            }
+            if let Some(r) = self.stage.as_ref() {
+                r.window.request_redraw();
+            }
         }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Wake at the *fixed* next-frame deadline. The repaint is requested in
+        // `new_events` (not here), so the loop idles until the deadline instead of
+        // spinning on a self-posted redraw — a window that can't present never pegs a CPU
+        // core, and the fixed deadline still fires under a stream of input events.
+        let deadline = self.next_frame.unwrap_or_else(|| Instant::now() + FRAME);
+        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 }
 

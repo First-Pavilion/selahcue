@@ -440,6 +440,29 @@ on-screen rendering are compile-verified/prior-verified. Runnable on a Mac via `
 
 - Target: S7o-001..S7o-008. Change: wired `StartTimer`/`StopTimer` to a `LiveController` timer + injected-clock `tick`; the presenter overlays it on Live with a blackout-preserving recompose (`show_timer`/`recompose_live`, `timer_display_key`); `compose_live`/`timer_bar_layers`; `TimerSnapshot` in the operator view; CLI + Tauri Start/Stop + poll; desktop ticks each frame; Makefile `remote CMD=timer SECS=`. Multi-lens adversarial review (timer-correctness · **blackout-invariant** · integration-staleness · safety-memory) → 3 raised → **2 confirmed** (floor→ceil display; stale snapshot on restart) → **fixed** + regression tests; 1 dismissed (overrun re-rasterize) → improved anyway; blackout lens clean. Verifier: workspace 181; present overlay + blackout; app timer lifecycle/ceil/restart + remote E2E; operator check + clippy clean. Result: PASS. Decision: gate-review.
 
+## Batch 7p predicate — stage/confidence second window (+ refine: timer → stage)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7p-001 | yes | `LiveController` owns a `StageDisplay`; `tick` refreshes it (gated) from the same live state; `stage_output()` accessor | `cargo test -p selahcue-app` | stage-surface test | controller.rs; test_controller.rs | PASS |
+| S7p-002 | yes | The stage/confidence monitor is a **distinct, non-blank** surface (current + next + timer + clock) vs the audience output | `cargo test` | distinct-surface test | test_controller.rs | PASS |
+| S7p-003 | yes | Desktop opens **two windows** (audience + stage), each rendering its own surface from one shared controller | `cargo build` + review | two-window App | selahcue-desktop/main.rs | PASS (compile) |
+| S7p-004 | yes | **Refine:** the timer renders **only** on the stage/confidence monitor, never on the audience output | `cargo test` | audience-has-no-timer + stage-shows-timer tests | present.rs; test_present.rs; test_controller.rs | PASS |
+| S7p-005 | yes | The operator view + CLI + Tauri still trigger/show the timer (moved off Live, not lost) | `cargo test --features server` | remote timer E2E | operator.rs; test_operator_remote.rs | PASS |
+| S7p-006 | yes | The two-window loop is deadline-paced: no CPU busy-spin when a window can't present; no starvation under continuous input | review + build | fixed-schedule `new_events`/`about_to_wait` | selahcue-desktop/main.rs | PASS (compile) |
+| S7p-007 | yes | Full suite + clippy clean (present/app/desktop/operator) | `cargo test` + clippy | 181 workspace; 0 warnings | test output | PASS |
+| S7p-008 | yes | Independent adversarial review (×2 passes); confirmed findings fixed | workflows `we7hbankn`, `wt28silw6` | 2 raised → 2 confirmed → fixed | CODE-REVIEW-batch7p-stage.md | PASS |
+
+**Refine (2026-07-24):** the user directed that the timer belongs on the stage/confidence
+output. Removed the entire live-timer overlay (`show_timer`/`recompose_live`/`compose_live`/
+`timer_bar_layers`) and reverted the audience `go_live`/`clear`/`blackout` behavior; the timer
+now flows only to the `StageDisplay` + the operator view. Tests assert the audience output has
+no timer and the monitor shows it.
+
+### Iteration ledger — batch 7p
+
+- Target: S7p-001..S7p-008. Change: `LiveController` owns a `StageDisplay` refreshed (gated) in `tick`; `stage_output()`; `FrameBuffer` re-exported from present; the desktop opens two windows dispatched by `WindowId`. **Refine:** moved the timer to the stage/confidence monitor only. Review pass 1 (`we7hbankn`) → 1 confirmed (continuous-redraw CPU spin) → fixed (deadline-paced loop); pass 2 (`wt28silw6`, post-refine) → 1 confirmed (continuous-input starvation of the paced loop) → fixed (**fixed-schedule** deadline); timer-placement lens clean. Verifier: workspace 181; clippy clean (present/app/desktop/operator); both binaries build. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

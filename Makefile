@@ -21,7 +21,7 @@ CMD      ?= next
 SECS     ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run output operator remote demo build build-operator test check clippy fmt clean
+.PHONY: help launch run output operator remote timer stop-timer demo build build-operator test check clippy fmt clean
 
 help: ## Show this help
 	@echo "SelahCue — make targets:"
@@ -56,6 +56,12 @@ remote: ## Send one command to a running output window (e.g. make remote CMD=go-
 	  while read A P D T; do \
 	    $(CARGO) run -q $(WS) -p selahcue-lan --example remote --features server -- $$A $$P $$D $$T $(CMD) $(SECS); \
 	  done
+
+timer: ## Start a countdown on a running output window (make timer SECS=300)
+	@$(MAKE) --no-print-directory remote CMD=timer SECS=$(or $(SECS),300)
+
+stop-timer: ## Stop the countdown on a running output window
+	@$(MAKE) --no-print-directory remote CMD=stop-timer
 
 demo: ## Run the headless LAN foundation demo
 	$(CARGO) run $(WS) -p selahcue-lan --example demo --features server

@@ -135,6 +135,27 @@ fn staging_a_scripture_preserves_plan_navigation() {
 }
 
 #[test]
+fn stage_output_is_a_distinct_confidence_surface() {
+    use std::time::Instant;
+    let (mut c, _) = controller();
+    c.tick(Instant::now());
+    // The confidence monitor is never blank — it always shows a timer/clock strip.
+    assert!(
+        c.stage_output().average_luminance() > 1e-6,
+        "stage always shows a monitor scene"
+    );
+    // Go live — the stage composes current/next lines, distinct from the main output.
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    c.tick(Instant::now());
+    assert_ne!(
+        c.stage_output().bytes(),
+        c.presenter().live_output().bytes(),
+        "stage composes a different scene than the main audience output (FR-037)"
+    );
+}
+
+#[test]
 fn go_live_with_nothing_staged_is_denied() {
     let (mut c, _) = controller();
     assert_eq!(
@@ -224,18 +245,31 @@ fn restarting_a_running_timer_does_not_report_stale_state() {
 }
 
 #[test]
-fn timer_overlays_live_and_survives_blackout() {
+fn timer_shows_on_the_confidence_monitor_not_the_audience_output() {
     use std::time::{Duration, Instant};
     let (mut c, _) = controller();
     c.apply(&Command::Next);
     c.apply(&Command::GoLive);
     let t0 = Instant::now();
-    c.apply(&Command::StartTimer { seconds: 300 });
     c.tick(t0);
-    assert!(!live_is_black(&c), "slide + timer overlay on live");
+    let audience_before = c.presenter().live_output().bytes().to_vec();
+    let stage_before = c.stage_output().bytes().to_vec();
 
-    // Blackout, then a timer tick must NOT reveal the content (recompose preserves it).
-    c.apply(&Command::Blackout { on: true });
-    c.tick(t0 + Duration::from_secs(1));
-    assert!(live_is_black(&c), "blackout preserved across a timer tick");
+    // Run a short countdown to TIME UP.
+    c.apply(&Command::StartTimer { seconds: 1 });
+    c.tick(t0);
+    c.tick(t0 + Duration::from_secs(2)); // past the target → TIME UP
+
+    // The audience/program output is UNCHANGED — the countdown is a speaker aid.
+    assert_eq!(
+        c.presenter().live_output().bytes(),
+        audience_before.as_slice(),
+        "the timer must NOT appear on the audience output"
+    );
+    // The confidence monitor DID change — it carries the timer (now TIME UP).
+    assert_ne!(
+        c.stage_output().bytes(),
+        stage_before.as_slice(),
+        "the timer appears on the stage/confidence output (FR-037)"
+    );
 }

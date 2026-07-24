@@ -20,3 +20,7 @@ pub use compose::compose_slide;
 pub use present::Presenter;
 pub use slide::{Slide, Theme};
 pub use stage::{compose_identify, compose_stage, StageDisplay, StageTheme, TimerView};
+
+/// Re-exported so consumers can name the output pixel buffer without depending on
+/// `selahcue-engine` directly.
+pub use selahcue_engine::raster::FrameBuffer;
