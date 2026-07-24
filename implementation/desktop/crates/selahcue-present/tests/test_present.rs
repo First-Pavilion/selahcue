@@ -191,11 +191,11 @@ fn stage_monitor_shows_the_timer_state() {
     s.update(
         Some(&Slide::title("Sermon")),
         None,
-        &timer_view(120, 300, false, false),
+        Some(&timer_view(120, 300, false, false)),
     );
     assert!(has_color(s.output(), TIMER_OK), "ok-green timer on the stage monitor");
     // TIME UP → the bar goes alert red.
-    s.update(None, None, &timer_view(0, 300, true, false));
+    s.update(None, None, Some(&timer_view(0, 300, true, false)));
     assert!(has_color(s.output(), TIMER_ALERT), "TIME UP red on the stage monitor");
 }
 

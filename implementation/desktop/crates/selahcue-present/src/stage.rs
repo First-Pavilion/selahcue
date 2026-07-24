@@ -114,11 +114,18 @@ fn region_metrics(region: Rect) -> LineMetrics {
     LineMetrics::for_height((region.h as f64 * 2.0) as u32)
 }
 
-/// Compose the stage/confidence scene from the current live state.
+/// Format a whole-second count as `M:SS` for the timer readout.
+fn format_clock(secs: u32) -> String {
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+/// Compose the stage/confidence scene from the current live state. `timer` is the
+/// active timer (`None` when none is running — the strip then shows an empty track,
+/// so an idle monitor can never be mistaken for a full countdown).
 pub fn compose_stage(
     current: Option<&Slide>,
     next: Option<&Slide>,
-    timer: &TimerView,
+    timer: Option<&TimerView>,
     theme: &StageTheme,
     width: u32,
     height: u32,
@@ -128,23 +135,40 @@ pub fn compose_stage(
         return frame;
     }
 
-    // --- Timer bar (top strip): dim track + a state-coloured progress fill. ---
+    // --- Timer strip (top): dim track + a state-coloured progress fill + a large
+    // numeric readout the speaker can read at a distance. ---
     let bar_h = ((height as f64 * 0.15) as u32).max(1);
     frame.push(Layer::Fill {
         rect: Rect::new(0, 0, width, bar_h),
         color: theme.track,
     });
-    // Countdown drains the fill as time runs out; TIME UP fills the whole bar in the
-    // alert colour so it is unmissable (overrun).
-    let fill_w = if timer.time_up {
-        width
-    } else {
-        ((width as f64 * timer.progress).round() as u32).min(width)
-    };
-    if fill_w > 0 {
-        frame.push(Layer::Fill {
-            rect: Rect::new(0, 0, fill_w, bar_h),
-            color: timer.color(theme),
+    if let Some(timer) = timer {
+        // Countdown drains the fill as time runs out; TIME UP fills the whole bar in
+        // the alert colour so it is unmissable (overrun).
+        let fill_w = if timer.time_up {
+            width
+        } else {
+            ((width as f64 * timer.progress).round() as u32).min(width)
+        };
+        if fill_w > 0 {
+            frame.push(Layer::Fill {
+                rect: Rect::new(0, 0, fill_w, bar_h),
+                color: timer.color(theme),
+            });
+        }
+        // The readout: remaining time (countdown), elapsed (count-up), or TIME UP.
+        let label = if timer.time_up {
+            "TIME UP".to_string()
+        } else {
+            format_clock(timer.remaining_secs.unwrap_or(timer.elapsed_secs))
+        };
+        let px = ((bar_h as f64 * 0.6) as u32).max(1).min(bar_h);
+        let ty = ((bar_h.saturating_sub(px)) / 2) as i32;
+        frame.push(Layer::Text {
+            rect: Rect::new((width as f64 * 0.03) as i32, ty, width, px),
+            text: label,
+            px,
+            color: theme.text,
         });
     }
 
@@ -246,8 +270,9 @@ impl StageDisplay {
         }
     }
 
-    /// Update the monitor from the current live state.
-    pub fn update(&mut self, current: Option<&Slide>, next: Option<&Slide>, timer: &TimerView) {
+    /// Update the monitor from the current live state (`timer` = `None` when no timer
+    /// is running — the strip shows an empty track).
+    pub fn update(&mut self, current: Option<&Slide>, next: Option<&Slide>, timer: Option<&TimerView>) {
         let frame = compose_stage(current, next, timer, &self.theme, self.width, self.height);
         self.engine.apply(EngineCommand::SetScene { frame });
     }

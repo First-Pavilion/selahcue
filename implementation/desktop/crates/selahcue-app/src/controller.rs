@@ -16,16 +16,6 @@ use std::time::{Duration, Instant};
 /// Seconds-remaining threshold at which the countdown enters its amber "warning" state.
 const TIMER_WARN_SECS: u32 = 30;
 
-/// The neutral timer view for the confidence monitor when no timer is running (a full,
-/// idle bar — the monitor always shows a timer/clock strip).
-const IDLE_TIMER_VIEW: TimerView = TimerView {
-    elapsed_secs: 0,
-    remaining_secs: None,
-    time_up: false,
-    warn: false,
-    progress: 1.0,
-};
-
 /// The displayed value of a timer view (whole-second granularity + state) — used to gate
 /// confidence-monitor recomposition to ~1/sec rather than every frame.
 type TimerKey = Option<(Option<u32>, u32, bool, bool)>;
@@ -128,11 +118,10 @@ impl LiveController {
         if self.stage_dirty || key != self.last_stage_key {
             self.stage_dirty = false;
             self.last_stage_key = key;
-            let timer_for_stage = view.unwrap_or(IDLE_TIMER_VIEW);
             let current = self.presenter.live_slide().cloned();
             let next = self.presenter.staged().cloned();
             self.stage
-                .update(current.as_ref(), next.as_ref(), &timer_for_stage);
+                .update(current.as_ref(), next.as_ref(), view.as_ref());
         }
     }
 
