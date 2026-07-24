@@ -548,6 +548,21 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7u-001..S7u-006. Change: migration v2 (`session_state`) + v3 (scripture refs); `session_repo`; `Timer::with_elapsed`; `ControllerSnapshot`/`snapshot`/`restore` + dirty tracking; `Presenter::clear_preview`; desktop `SessionStore` + throttled autosave + clean-exit save. Review (13 agents, resumed across a session restart): 9 confirmed → **6 unique defects → all fixed** (phantom staged preview — empirically reproduced by a verifier; scripture-on-live blank recovery → schema v3; autosave retry; corrupt-load diagnostics; silent degradation; XDG spec) + regression tests. Verifier: workspace 212; live kill -9 recovery; real-store v2→v3 migration. Demo step 9: FAIL → **PASS**. Result: PASS. Decision: gate-review.
 
+## Batch 7v predicate — plan authoring + persistence wiring + library
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7v-001 | yes | Plan editing over the wire: Add/Remove/Move/Rename commands, **Operator-only** RBAC (`Permission::EditPlan`; Producer denied) | `cargo test -p selahcue-app --features selahcue-lan/server` | `plan_editing_is_operator_only_over_the_wire` (edit lands on the host; Producer edit denied) | protocol.rs; rbac.rs; operator.rs | PASS |
+| S7v-002 | yes | Edit arms keep live/staged/cursor indices coherent; removing the LIVE item never blanks the audience output **and survives crash recovery** | `cargo test -p selahcue-app` | index-fixup + never-blanks + `removing_the_live_item_survives_crash_recovery` | controller.rs; test_controller.rs | PASS |
+| S7v-003 | yes | Edited plans persist: `plan_repo::update` (transactional re-write) wired to the desktop autosave; plan+session written **jointly** (no stale-index crash window); failed writes retried; clean exit flushes pending edits | `cargo test -p selahcue-data` + review fixes B/C/E | update round-trip; joint-write + retry re-arm in `autosave()` | plan_repo.rs; selahcue-desktop/main.rs | PASS |
+| S7v-004 | yes | Library: search (wildcards literal, <300ms at 5k plans) + duplicate-as-template | `cargo test -p selahcue-data` | perf guard 111 hits <300ms; literal-wildcard regression | plan_repo.rs; test_plan_repo.rs | PASS |
+| S7v-005 | yes | Operator shell edits the plan in-page (WKWebView has no native dialogs); poll never clobbers an open editor | operator crate check + review fixes A/I | inline rename + two-click delete + render guards | selahcue-operator/dist/index.html | PASS |
+| S7v-006 | yes | Independent adversarial review; confirmed findings fixed | run `wcdpt578m` | 14 raised → 14 confirmed → 9 unique (A–I) → **all fixed** | CODE-REVIEW-batch7v.md | PASS |
+
+### Iteration ledger — batch 7v
+
+- Target: S7v-001..S7v-006. Change: 4 plan-edit wire commands + `Permission::EditPlan` (Operator-only; Producer denied over the wire); controller edit arms with index fixup + `plan_dirty`; `plan_repo::update/search/duplicate`; desktop `save_plan` wiring; operator-shell editing UI + add-item row; 5k-plan perf guard. Review (run `wcdpt578m`): 14 confirmed → **9 unique defects (A–I) → all fixed** — dead native dialogs → in-page editing; poll-vs-editor races; **plan/session joint autosave** (stale-index crash window); clean-exit plan flush; failed-plan-write retry; raw token off stdout; removed-LIVE-item recovery; first-run orphan rows; LIKE-wildcard escaping. Verifier: workspace **220** (+2 regressions), clippy clean, operator crate clean, perf guard green. Demo step 2: PARTIAL → **PASS(scoped)** (authoring UI + persistence + library delivered; verse-text and mobile editing remain elsewhere). Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

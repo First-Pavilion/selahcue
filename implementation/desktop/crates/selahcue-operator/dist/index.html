@@ -54,6 +54,11 @@
       button.blackout.on { background: #3a0d0f; border-color: var(--live); color: #ff9ea1; }
       .timer-row { display: flex; gap: 8px; }
       .timer-row button { flex: 1; padding: 10px; }
+      .timer-row select, .timer-row input {
+        font: inherit; color: var(--text); background: var(--panel);
+        border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+      }
+      .timer-row input { flex: 1; min-width: 0; }
       .status { margin-top: auto; color: var(--muted); font-size: 12px; }
       .status b { color: var(--text); }
     </style>
@@ -72,6 +77,16 @@
         <button id="blackout" class="blackout">Blackout</button>
         <button id="clear">Clear</button>
         <div class="timer-row">
+          <select id="add-kind">
+            <option value="song">Song</option>
+            <option value="scripture">Scripture</option>
+            <option value="announcement">Announcement</option>
+            <option value="section">Section</option>
+          </select>
+          <input id="add-title" placeholder="New item title" />
+          <button id="add-item">+ Add</button>
+        </div>
+        <div class="timer-row">
           <button id="timer-start">⏱ 5:00</button>
           <button id="timer-stop">Stop</button>
         </div>
@@ -85,14 +100,23 @@
     </main>
     <script>
       const invoke = window.__TAURI__.core.invoke;
+      let editing = null;       // item id with an open inline editor
+      let confirmDelete = null; // item id in the two-click delete confirm state
+      let lastRendered = "";    // skip DOM rebuilds when nothing changed
 
       function render(view) {
+        // Never clobber an open editor or a pending delete-confirm, and skip
+        // identical re-renders (the 1s poll must not eat in-flight clicks).
+        const key = JSON.stringify(view);
+        if (editing !== null || confirmDelete !== null) return;
+        if (key === lastRendered) return;
+        lastRendered = key;
         document.getElementById("plan-name").textContent = view.plan_name;
         document.getElementById("plan-sub").textContent = view.items.length + " items";
 
         const plan = document.getElementById("plan");
         plan.innerHTML = "";
-        view.items.forEach((it) => {
+        view.items.forEach((it, i) => {
           const row = document.createElement("div");
           row.className =
             "item" + (it.is_live ? " is-live" : "") + (it.is_staged ? " is-staged" : "");
@@ -106,8 +130,58 @@
           title.className = "title";
           title.textContent = it.title;
 
+          // In-page editing only: WKWebView implements neither prompt() nor
+          // confirm(), so native dialogs are silently dead in the shell.
+          const ren = miniBtn("✏", (e) => {
+            e.stopPropagation();
+            editing = it.id;
+            const input = document.createElement("input");
+            input.value = it.title;
+            input.style.cssText = "flex:1;font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--accent);border-radius:4px;padding:4px 6px";
+            input.onclick = (ev) => ev.stopPropagation();
+            input.onkeydown = (ev) => {
+              if (ev.key === "Enter") {
+                const t = input.value.trim();
+                editing = null;
+                if (t && t !== it.title) act(() => invoke("rename_item", { itemId: it.id, title: t }));
+                else act(() => invoke("view"));
+              } else if (ev.key === "Escape") {
+                editing = null;
+                act(() => invoke("view"));
+              }
+            };
+            input.onblur = () => { if (editing === it.id) { editing = null; act(() => invoke("view")); } };
+            title.replaceWith(input);
+            input.focus();
+            input.select();
+          });
+          const up = miniBtn("↑", (e) => {
+            e.stopPropagation();
+            if (i > 0) act(() => invoke("move_item", { itemId: it.id, to: i - 1 }));
+          });
+          const down = miniBtn("↓", (e) => {
+            e.stopPropagation();
+            act(() => invoke("move_item", { itemId: it.id, to: i + 1 }));
+          });
+          const del = miniBtn("✕", (e) => {
+            e.stopPropagation();
+            if (confirmDelete === it.id) {
+              confirmDelete = null;
+              act(() => invoke("remove_item", { itemId: it.id }));
+            } else {
+              confirmDelete = it.id;
+              del.textContent = "sure?";
+              del.style.color = "var(--live)";
+              setTimeout(() => { if (confirmDelete === it.id) { confirmDelete = null; act(() => invoke("view")); } }, 3000);
+            }
+          });
+
           row.appendChild(kind);
           row.appendChild(title);
+          row.appendChild(ren);
+          row.appendChild(up);
+          row.appendChild(down);
+          row.appendChild(del);
           if (it.is_live) row.appendChild(badge("live", "LIVE"));
           else if (it.is_staged) row.appendChild(badge("preview", "PREVIEW"));
           plan.appendChild(row);
@@ -135,6 +209,14 @@
         b.dataset.on = view.blackout ? "1" : "0";
       }
 
+      function miniBtn(label, onclick) {
+        const b = document.createElement("button");
+        b.textContent = label;
+        b.style.cssText = "padding:2px 8px;margin-left:4px;font-size:11px";
+        b.onclick = onclick;
+        return b;
+      }
+
       function badge(cls, text) {
         const el = document.createElement("span");
         el.className = "badge " + cls;
@@ -148,6 +230,9 @@
 
       async function act(fn) {
         try {
+          // Any explicit action invalidates the render cache (e.g. a cancelled
+          // inline edit must restore the normal row even if the view is unchanged).
+          lastRendered = "";
           render(await fn());
         } catch (e) {
           console.error(e);
@@ -165,6 +250,14 @@
       document.getElementById("timer-start").onclick = () =>
         act(() => invoke("start_timer", { seconds: 300 }));
       document.getElementById("timer-stop").onclick = () => act(() => invoke("stop_timer"));
+      document.getElementById("add-item").onclick = () => {
+        const title = document.getElementById("add-title").value.trim();
+        const kind = document.getElementById("add-kind").value;
+        if (title) {
+          act(() => invoke("add_item", { kind, title }));
+          document.getElementById("add-title").value = "";
+        }
+      };
 
       act(() => invoke("view"));
       // Poll so a running countdown ticks in the UI (the host advances it each frame).

@@ -118,6 +118,32 @@ impl OperatorShell {
     pub fn stop_timer(&self) -> OperatorView {
         self.act(&Command::StopTimer)
     }
+
+    /// Append a plan item (Operator-only via RBAC on the remote path).
+    pub fn add_item(&self, kind: &str, title: &str) -> OperatorView {
+        self.act(&Command::AddItem {
+            kind: kind.into(),
+            title: title.into(),
+        })
+    }
+
+    /// Remove a plan item by id.
+    pub fn remove_item(&self, item_id: u64) -> OperatorView {
+        self.act(&Command::RemoveItem { item_id })
+    }
+
+    /// Move a plan item to a new position.
+    pub fn move_item(&self, item_id: u64, to: u32) -> OperatorView {
+        self.act(&Command::MoveItem { item_id, to })
+    }
+
+    /// Rename a plan item.
+    pub fn rename_item(&self, item_id: u64, title: &str) -> OperatorView {
+        self.act(&Command::RenameItem {
+            item_id,
+            title: title.into(),
+        })
+    }
 }
 
 // --- Wire conversions: the local view-model <-> the protocol DTO carried over the LAN
@@ -252,6 +278,49 @@ impl RemoteOperator {
     /// Stop and clear the host's active timer.
     pub async fn stop_timer(&mut self) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::StopTimer).await
+    }
+
+    /// Append a plan item on the host (requires the Operator role).
+    pub async fn add_item(
+        &mut self,
+        kind: &str,
+        title: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::AddItem {
+            kind: kind.into(),
+            title: title.into(),
+        })
+        .await
+    }
+
+    /// Remove a plan item on the host.
+    pub async fn remove_item(
+        &mut self,
+        item_id: u64,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::RemoveItem { item_id }).await
+    }
+
+    /// Move a plan item on the host.
+    pub async fn move_item(
+        &mut self,
+        item_id: u64,
+        to: u32,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::MoveItem { item_id, to }).await
+    }
+
+    /// Rename a plan item on the host.
+    pub async fn rename_item(
+        &mut self,
+        item_id: u64,
+        title: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::RenameItem {
+            item_id,
+            title: title.into(),
+        })
+        .await
     }
 
     /// Send a mutating command, then read back the fresh authoritative view. A command

@@ -41,6 +41,67 @@ pub fn insert(db: &Database, plan: &ServicePlan) -> Result<i64> {
     Ok(plan_id)
 }
 
+/// Replace a persisted plan's name + items atomically (the plan-edit save path).
+pub fn update(db: &Database, plan_id: i64, plan: &ServicePlan) -> Result<()> {
+    let tx = db.conn().unchecked_transaction()?;
+    let n = tx.execute(
+        "UPDATE service_plan SET name = ?2, next_id = ?3 WHERE id = ?1",
+        params![plan_id, plan.name, plan.next_id() as i64],
+    )?;
+    if n == 0 {
+        return Err(DataError::NotFound);
+    }
+    tx.execute("DELETE FROM plan_item WHERE plan_id = ?1", params![plan_id])?;
+    for (ord, item) in plan.items().iter().enumerate() {
+        tx.execute(
+            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title, planned_secs, owner)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                plan_id,
+                item.id.0 as i64,
+                ord as i64,
+                item.kind.as_tag(),
+                item.title,
+                item.planned_secs.map(|s| s as i64),
+                item.owner,
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Substring search over plan names (the library view; ASCII-case-insensitive per
+/// SQLite LIKE semantics). `%`/`_` in the query are treated as LITERALS (escaped),
+/// not wildcards. <300ms at 5k plans (perf-tested).
+pub fn search(db: &Database, query: &str) -> Result<Vec<PlanSummary>> {
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let conn = db.conn();
+    let mut stmt = conn.prepare(
+        "SELECT id, name FROM service_plan WHERE name LIKE '%' || ?1 || '%' ESCAPE '\\' ORDER BY id",
+    )?;
+    let rows = stmt.query_map(params![escaped], |r| {
+        Ok(PlanSummary {
+            id: r.get(0)?,
+            name: r.get(1)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Duplicate a stored plan under a new name (FR-005); returns the new row id.
+pub fn duplicate(db: &Database, plan_id: i64, new_name: &str) -> Result<i64> {
+    let plan = load(db, plan_id)?;
+    insert(db, &plan.duplicate(new_name))
+}
+
 /// Load a plan (with ordered items) by row id.
 pub fn load(db: &Database, plan_id: i64) -> Result<ServicePlan> {
     let conn = db.conn();

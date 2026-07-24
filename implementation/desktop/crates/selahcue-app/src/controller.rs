@@ -83,9 +83,13 @@ pub struct LiveController {
     /// Set by any state-changing command; the host's autosave loop consumes it via
     /// [`take_state_dirty`](Self::take_state_dirty).
     state_dirty: bool,
+    /// Set by plan-edit commands; the host persists the plan when it sees this.
+    plan_dirty: bool,
     /// The scripture reference staged in Preview, if Preview holds one (non-plan slide).
     staged_scripture: Option<String>,
-    /// The scripture reference on the Live output, if Live shows one.
+    /// The text of a NON-PLAN slide on the Live output (a scripture reference, or a
+    /// removed plan item whose slide deliberately stays on screen), if any — persisted
+    /// so crash recovery restores what the audience actually sees.
     live_scripture: Option<String>,
 }
 
@@ -109,6 +113,7 @@ impl LiveController {
             last_stage_key: None,
             pairing_qr: None,
             state_dirty: false,
+            plan_dirty: false,
             staged_scripture: None,
             live_scripture: None,
         }
@@ -202,6 +207,21 @@ impl LiveController {
     /// write to respect its throttle).
     pub fn mark_state_dirty(&mut self) {
         self.state_dirty = true;
+    }
+
+    /// Whether the plan itself changed since the last check (persist signal).
+    pub fn take_plan_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.plan_dirty)
+    }
+
+    /// Re-arm the plan persist signal (a failed write must be retried).
+    pub fn mark_plan_dirty(&mut self) {
+        self.plan_dirty = true;
+    }
+
+    /// The current service plan (for persistence).
+    pub fn plan(&self) -> &ServicePlan {
+        &self.plan
     }
 
     /// Whether a countdown is active (the autosave loop refreshes the persisted
@@ -478,7 +498,113 @@ impl LiveController {
             Command::GetOperatorState => ControllerReply::Message(ServerMessage::OperatorState {
                 view: self.operator_view().into(),
             }),
+            // --- Plan editing (Operator-only via RBAC). Edits NEVER change the Live
+            // output (FR-012 spirit): removing the live item keeps its slide on
+            // screen; only the index bookkeeping adjusts. ---
+            Command::AddItem { kind, title } => {
+                let Some(kind) = selahcue_core::plan::ItemKind::from_tag(kind) else {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                };
+                let title = title.trim();
+                if title.is_empty() {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
+                self.plan.add_item(kind, title);
+                self.plan_dirty = true;
+                ControllerReply::Ack
+            }
+            Command::RemoveItem { item_id } => {
+                let Some(idx) = self.index_of(*item_id) else {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                };
+                if self
+                    .plan
+                    .remove(selahcue_core::plan::ItemId(*item_id))
+                    .is_err()
+                {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
+                self.plan_dirty = true;
+                // Index fixup: shift anything after the removed slot; the removed
+                // item's own references clear (Live keeps its rendered slide).
+                let fix = |v: Option<usize>| match v {
+                    Some(i) if i == idx => None,
+                    Some(i) if i > idx => Some(i - 1),
+                    other => other,
+                };
+                // The removed item's slide stays on the audience output (edits never
+                // change Live). It is no longer a plan item, so track it as a free
+                // live slide by its text — crash recovery then restores what is
+                // actually on screen instead of a blank surface.
+                if self.live_idx == Some(idx) {
+                    if let Some(slide) = self.presenter.live_slide() {
+                        self.live_scripture = Some(slide.title.clone());
+                    }
+                }
+                self.live_idx = fix(self.live_idx);
+                self.staged_idx = fix(self.staged_idx);
+                self.plan_cursor = match self.plan_cursor {
+                    Some(i) if i >= idx => i.checked_sub(1),
+                    other => other,
+                };
+                if self.staged_idx.is_none() && self.staged_scripture.is_none() {
+                    self.presenter.clear_preview();
+                }
+                ControllerReply::Ack
+            }
+            Command::MoveItem { item_id, to } => {
+                let Some(from) = self.index_of(*item_id) else {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                };
+                let to = (*to as usize).min(self.plan.len().saturating_sub(1));
+                if self.plan.reorder(from, to).is_err() {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
+                self.plan_dirty = true;
+                // Index fixup: a move renumbers everything between `from` and `to`.
+                let fix = |v: Option<usize>| {
+                    v.map(|i| {
+                        if i == from {
+                            to
+                        } else if from < to && i > from && i <= to {
+                            i - 1
+                        } else if to < from && i >= to && i < from {
+                            i + 1
+                        } else {
+                            i
+                        }
+                    })
+                };
+                self.live_idx = fix(self.live_idx);
+                self.staged_idx = fix(self.staged_idx);
+                self.plan_cursor = fix(self.plan_cursor);
+                ControllerReply::Ack
+            }
+            Command::RenameItem { item_id, title } => {
+                let title = title.trim();
+                if title.is_empty() {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
+                let Some(item) = self.plan.get_mut(selahcue_core::plan::ItemId(*item_id)) else {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                };
+                item.title = title.to_string();
+                self.plan_dirty = true;
+                // A renamed item that is staged re-renders in Preview (Live is never
+                // changed by an edit — the operator re-commits when ready).
+                if self.staged_idx == self.index_of(*item_id) {
+                    if let Some(idx) = self.staged_idx {
+                        self.stage_index(idx);
+                    }
+                }
+                ControllerReply::Ack
+            }
         }
+    }
+
+    /// The current index of a plan item id, if present.
+    fn index_of(&self, item_id: u64) -> Option<usize> {
+        self.plan.items().iter().position(|it| it.id.0 == item_id)
     }
 }
 

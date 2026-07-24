@@ -164,6 +164,27 @@ impl SessionStore {
         }
     }
 
+    /// Persist the (edited) plan: update in place, or insert on the first save.
+    /// Returns whether the write succeeded (the caller re-arms the retry).
+    fn save_plan(&mut self, plan: &ServicePlan) -> bool {
+        let Some(db) = self.db.as_ref() else {
+            return true;
+        };
+        let result = match self.plan_id {
+            Some(id) => plan_repo::update(db, id, plan),
+            None => plan_repo::insert(db, plan).map(|id| {
+                self.plan_id = Some(id);
+            }),
+        };
+        match result {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("SelahCue: could not persist the plan edit ({e}).");
+                false
+            }
+        }
+    }
+
     /// Persist the live-state snapshot. Returns whether the write succeeded (an
     /// error is reported, never fatal mid-service; the caller re-arms the retry).
     fn save_session(&mut self, snap: &ControllerSnapshot) -> bool {
@@ -467,6 +488,7 @@ impl App {
         };
         // Make sure the plan rows exist before the first snapshot references them.
         store.ensure_plan(&plan);
+        let first_run = restored.is_none();
 
         let controller = Arc::new(Mutex::new(LiveController::new(
             plan,
@@ -487,6 +509,14 @@ impl App {
                     let _ = c.apply(&Command::Next);
                     let _ = c.apply(&Command::GoLive);
                 }
+            }
+        }
+
+        // First run: write the initial session row NOW so the seeded plan is
+        // referenced immediately (a run that dies early must not orphan plan rows).
+        if first_run {
+            if let Ok(c) = controller.lock() {
+                store.save_session(&c.snapshot(Instant::now()));
             }
         }
 
@@ -516,6 +546,21 @@ impl App {
         let Ok(mut c) = self.controller.lock() else {
             return;
         };
+        // Plan edits persist immediately (rare, operator-driven actions) — and the
+        // session snapshot goes with them, bypassing the throttle: the on-disk pair
+        // (plan, indices) must never be split across a crash window.
+        if c.take_plan_dirty() {
+            if !self.store.save_plan(c.plan()) {
+                c.mark_plan_dirty(); // failed write: retry next frame
+            }
+            c.take_state_dirty(); // superseded by the immediate joint save below
+            if self.store.save_session(&c.snapshot(now)) {
+                self.last_autosave = now;
+            } else {
+                c.mark_state_dirty();
+            }
+            return;
+        }
         let dirty = c.take_state_dirty();
         let periodic =
             c.timer_active() && now.duration_since(self.last_autosave) >= TIMER_AUTOSAVE_INTERVAL;
@@ -792,7 +837,7 @@ async fn run_server(
     {
         let now = Instant::now();
         let mut reg = remote.registry.lock().await;
-        reg.offer_pairing("host-local", Role::Producer, now, Duration::from_secs(60));
+        reg.offer_pairing("host-local", Role::Operator, now, Duration::from_secs(60));
         reg.redeem(
             "host-local",
             DeviceId(device.to_string()),
@@ -949,7 +994,9 @@ fn print_connect_banner(
     println!("  The output window is driven by the LAN control server.");
     println!("  address : {addr}");
     println!("  pin     : {pin_hex}");
-    println!("  device  : {device}   token : {token}   role : Producer");
+    println!(
+        "  device  : {device}   role : Operator (host shell); token: in the endpoint file (0600)"
+    );
     if let Some(path) = endpoint {
         println!(
             "  endpoint: {}  (the operator shell auto-discovers this)",
@@ -978,8 +1025,12 @@ fn main() {
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App::new();
     event_loop.run_app(&mut app).expect("run app");
-    // Final save on clean exit (the autosave loop already covered crash paths).
-    if let Ok(c) = app.controller.lock() {
+    // Final save on clean exit (the autosave loop already covered crash paths) —
+    // including a plan edit acked in the last instants before the loop exited.
+    if let Ok(mut c) = app.controller.lock() {
+        if c.take_plan_dirty() {
+            app.store.save_plan(c.plan());
+        }
         app.store.save_session(&c.snapshot(Instant::now()));
     }
     // Best-effort: don't leave a stale endpoint (with a now-dead token/port) behind on a

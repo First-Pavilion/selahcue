@@ -5,8 +5,12 @@
 
 use rusqlite::params;
 use selahcue_core::plan::{ItemId, ItemKind, ServicePlan};
-use selahcue_data::plan_repo::{delete, insert, list, load};
+use selahcue_data::plan_repo::{self, delete, insert, list, load};
 use selahcue_data::{DataError, Database};
+
+fn db() -> Database {
+    Database::open_in_memory().unwrap()
+}
 
 fn sample_plan() -> ServicePlan {
     let mut p = ServicePlan::new("Sunday Service");
@@ -108,4 +112,83 @@ fn out_of_range_planned_secs_is_reported_not_truncated() {
         )
         .unwrap();
     assert!(matches!(load(&db, id), Err(DataError::Corrupt(_))));
+}
+
+#[test]
+fn update_replaces_items_atomically_and_survives_reload() {
+    let db = db();
+    let mut plan = ServicePlan::new("Sunday");
+    plan.add_item(ItemKind::Song, "A");
+    plan.add_item(ItemKind::Section, "B");
+    let id = plan_repo::insert(&db, &plan).unwrap();
+
+    // Edit: rename, remove one, add two, reorder — then persist via update.
+    plan.add_item(ItemKind::Scripture, "C");
+    let first = plan.items()[0].id;
+    plan.remove(first).unwrap();
+    plan.add_item(ItemKind::Song, "D");
+    plan.reorder(0, 1).unwrap();
+    plan_repo::update(&db, id, &plan).unwrap();
+
+    let loaded = plan_repo::load(&db, id).unwrap();
+    assert_eq!(loaded, plan, "update round-trips the edited plan exactly");
+    assert!(
+        plan_repo::update(&db, 9999, &plan).is_err(),
+        "unknown plan errors"
+    );
+}
+
+#[test]
+fn library_search_and_duplicate() {
+    let db = db();
+    for name in ["Sunday AM", "Sunday PM", "Christmas Eve"] {
+        plan_repo::insert(&db, &ServicePlan::new(name)).unwrap();
+    }
+    let hits = plan_repo::search(&db, "Sunday").unwrap();
+    assert_eq!(hits.len(), 2);
+    let all = plan_repo::search(&db, "").unwrap();
+    assert_eq!(all.len(), 3);
+
+    let dup = plan_repo::duplicate(&db, hits[0].id, "Sunday AM (copy)").unwrap();
+    let copy = plan_repo::load(&db, dup).unwrap();
+    assert_eq!(copy.name, "Sunday AM (copy)");
+}
+
+#[test]
+fn library_search_is_fast_at_5k_plans() {
+    // Story acceptance: library search <300ms at 5k plans.
+    let db = db();
+    for i in 0..5000u32 {
+        plan_repo::insert(&db, &ServicePlan::new(format!("Plan {i}"))).unwrap();
+    }
+    let start = std::time::Instant::now();
+    let hits = plan_repo::search(&db, "Plan 49").unwrap();
+    let elapsed = start.elapsed();
+    assert_eq!(
+        hits.len(),
+        111,
+        "matches 'Plan 49' + 'Plan 490'..'499' + 'Plan 4900'..'4999'"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(300),
+        "library search exceeded 300ms: {elapsed:?}"
+    );
+}
+
+#[test]
+fn library_search_treats_like_wildcards_as_literals() {
+    let db = db();
+    plan_repo::insert(&db, &ServicePlan::new("100% Praise")).unwrap();
+    plan_repo::insert(&db, &ServicePlan::new("Christmas Eve")).unwrap();
+    plan_repo::insert(&db, &ServicePlan::new("youth_night")).unwrap();
+
+    // `%` and `_` in the query are literal characters, not LIKE wildcards: a `%`
+    // query must not match everything, and `_` must not match any-one-char.
+    let hits = plan_repo::search(&db, "100%").unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].name, "100% Praise");
+    let hits = plan_repo::search(&db, "h_n").unwrap();
+    assert_eq!(hits.len(), 1, "'_' is literal — must not match 'has' etc.");
+    assert_eq!(hits[0].name, "youth_night");
+    assert!(plan_repo::search(&db, "\\").unwrap().is_empty());
 }

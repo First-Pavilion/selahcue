@@ -99,6 +99,50 @@ impl Backend {
             Backend::Local(s) => Ok(s.stop_timer()),
         }
     }
+    async fn add_item(&self, kind: String, title: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .add_item(&kind, &title)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.add_item(&kind, &title)),
+        }
+    }
+    async fn remove_item(&self, item_id: u64) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .remove_item(item_id)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.remove_item(item_id)),
+        }
+    }
+    async fn move_item(&self, item_id: u64, to: u32) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .move_item(item_id, to)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.move_item(item_id, to)),
+        }
+    }
+    async fn rename_item(&self, item_id: u64, title: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .rename_item(item_id, &title)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.rename_item(item_id, &title)),
+        }
+    }
 }
 
 struct AppState {
@@ -140,6 +184,34 @@ async fn start_timer(seconds: u32, state: State<'_, AppState>) -> Result<Operato
 #[tauri::command]
 async fn stop_timer(state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.stop_timer().await
+}
+#[tauri::command]
+async fn add_item(
+    kind: String,
+    title: String,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.add_item(kind, title).await
+}
+#[tauri::command]
+async fn remove_item(item_id: u64, state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.remove_item(item_id).await
+}
+#[tauri::command]
+async fn move_item(
+    item_id: u64,
+    to: u32,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.move_item(item_id, to).await
+}
+#[tauri::command]
+async fn rename_item(
+    item_id: u64,
+    title: String,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.rename_item(item_id, title).await
 }
 
 /// The local endpoint descriptor an output window writes so its operator shell can
@@ -226,7 +298,11 @@ fn main() {
             blackout,
             select,
             start_timer,
-            stop_timer
+            stop_timer,
+            add_item,
+            remove_item,
+            move_item,
+            rename_item
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");

@@ -494,3 +494,116 @@ fn a_staged_scripture_survives_crash_recovery() {
     assert_eq!(b.apply(&Command::GoLive), ControllerReply::Ack);
     assert_eq!(b.live_index(), None);
 }
+
+#[test]
+fn plan_edits_add_remove_move_rename_with_index_fixup() {
+    let (mut c, ids) = controller(); // 3 items
+                                     // Live = item 1 (idx 1), staged = item 2 (idx 2).
+    c.apply(&Command::Next);
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    c.apply(&Command::Next);
+    assert_eq!((c.live_index(), c.staged_index()), (Some(1), Some(2)));
+
+    // Add appends.
+    assert_eq!(
+        c.apply(&Command::AddItem {
+            kind: "song".into(),
+            title: "New Song".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(c.plan().len(), 4);
+    assert!(c.take_plan_dirty());
+
+    // Remove item 0: everything shifts down; Live/staged indices follow their items.
+    assert_eq!(
+        c.apply(&Command::RemoveItem { item_id: ids[0] }),
+        ControllerReply::Ack
+    );
+    assert_eq!((c.live_index(), c.staged_index()), (Some(0), Some(1)));
+
+    // Move the staged item (now idx 1) to the end: indices follow.
+    let staged_id = c.plan().items()[1].id.0;
+    assert_eq!(
+        c.apply(&Command::MoveItem {
+            item_id: staged_id,
+            to: 2
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(c.staged_index(), Some(2));
+    assert_eq!(c.live_index(), Some(0), "live item did not move");
+
+    // Rename a staged item re-renders Preview; bad edits are denied.
+    assert_eq!(
+        c.apply(&Command::RenameItem {
+            item_id: staged_id,
+            title: "Renamed".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.apply(&Command::AddItem {
+            kind: "nonsense".into(),
+            title: "x".into()
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        c.apply(&Command::RemoveItem { item_id: 9999 }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+}
+
+#[test]
+fn removing_the_live_item_never_blanks_the_audience_output() {
+    let (mut c, ids) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    assert!(!live_is_black(&c));
+    let before = c.presenter().live_output().bytes().to_vec();
+
+    // Removing the item that is LIVE keeps its rendered slide on screen (an edit
+    // never changes the audience output); only the bookkeeping clears.
+    assert_eq!(
+        c.apply(&Command::RemoveItem { item_id: ids[0] }),
+        ControllerReply::Ack
+    );
+    assert_eq!(c.live_index(), None);
+    assert_eq!(
+        c.presenter().live_output().bytes(),
+        before.as_slice(),
+        "audience output unchanged by the edit"
+    );
+}
+
+#[test]
+fn removing_the_live_item_survives_crash_recovery() {
+    use std::time::Instant;
+    // Go live on the first item, then remove it: the slide stays on screen. A crash
+    // right after must recover THAT screen — the snapshot tracks the removed item's
+    // text as a free live slide (it is no longer a plan index).
+    let (mut c, ids) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    c.apply(&Command::RemoveItem { item_id: ids[0] });
+    assert!(!live_is_black(&c));
+
+    let snap = c.snapshot(Instant::now());
+    assert_eq!(snap.live_idx, None, "removed item is not a plan index");
+    assert_eq!(
+        snap.live_scripture.as_deref(),
+        Some("Opening Song"),
+        "the on-screen slide is persisted by its text"
+    );
+
+    // A fresh controller over the post-edit plan restores a non-blank live output.
+    let (mut fresh, _) = controller();
+    fresh.apply(&Command::RemoveItem { item_id: ids[0] });
+    fresh.restore(&snap);
+    assert!(
+        !live_is_black(&fresh),
+        "recovery shows the removed item's slide, not a blank surface"
+    );
+}

@@ -44,6 +44,15 @@ pub enum Command {
     /// Request the full operator view (plan + per-item live/preview flags + blackout),
     /// so a remote operator UI can render authoritative state from the host.
     GetOperatorState,
+    /// Append a plan item (plan editing — Operator only). `kind` is the stable
+    /// item-kind tag (e.g. `"song"`); unknown tags are rejected.
+    AddItem { kind: String, title: String },
+    /// Remove a plan item by id (Operator only). Never changes the Live output.
+    RemoveItem { item_id: u64 },
+    /// Move a plan item to a new position (Operator only).
+    MoveItem { item_id: u64, to: u32 },
+    /// Rename a plan item (Operator only).
+    RenameItem { item_id: u64, title: String },
 }
 
 /// A controller → operator request frame.

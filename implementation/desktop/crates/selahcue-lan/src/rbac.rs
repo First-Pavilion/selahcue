@@ -44,6 +44,8 @@ pub enum Permission {
     SearchScripture,
     /// Observe live/preview state.
     Monitor,
+    /// Edit the service plan (add/remove/move/rename items) — never the live output.
+    EditPlan,
     /// Pair, revoke, or re-role other devices.
     ManageDevices,
 }
@@ -62,6 +64,7 @@ impl Role {
                 SearchScripture,
                 Monitor,
                 ManageDevices,
+                EditPlan,
             ],
             Role::Producer => &[
                 GoLive,
@@ -94,6 +97,10 @@ pub fn required_permission(cmd: &Command) -> Permission {
         Command::StartTimer { .. } | Command::StopTimer => Timer,
         Command::ScriptureSearch { .. } | Command::StageScripture { .. } => SearchScripture,
         Command::GetState | Command::GetOperatorState => Monitor,
+        Command::AddItem { .. }
+        | Command::RemoveItem { .. }
+        | Command::MoveItem { .. }
+        | Command::RenameItem { .. } => EditPlan,
     }
 }
 

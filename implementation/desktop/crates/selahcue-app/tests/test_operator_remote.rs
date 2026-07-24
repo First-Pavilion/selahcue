@@ -225,3 +225,72 @@ async fn wire_paired_device_advances_the_live_output() {
     );
     client.close().await.ok();
 }
+
+/// Plan editing over the wire is Operator-only: the host shell's Operator session
+/// edits (and the host plan changes); a Producer's edit is RBAC-denied.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plan_editing_is_operator_only_over_the_wire() {
+    let identity = SelfSigned::generate(vec!["localhost".into()]).unwrap();
+    let pin = identity.pin;
+    let mut plan = ServicePlan::new("Sunday");
+    plan.add_item(ItemKind::Song, "Opening Song");
+    let controller = Arc::new(Mutex::new(LiveController::new(
+        plan,
+        320,
+        180,
+        Theme::dark(),
+    )));
+
+    let registry = Arc::new(AsyncMutex::new(SessionRegistry::new()));
+    {
+        let now = Instant::now();
+        let mut reg = registry.lock().await;
+        reg.offer_pairing("o", Role::Operator, now, Duration::from_secs(300));
+        reg.redeem("o", DeviceId("op".into()), SessionToken::new("tok-op"), now)
+            .unwrap();
+        reg.offer_pairing("p", Role::Producer, now, Duration::from_secs(300));
+        reg.redeem(
+            "p",
+            DeviceId("prod".into()),
+            SessionToken::new("tok-prod"),
+            now,
+        )
+        .unwrap();
+    }
+    let server =
+        Arc::new(ControlServer::new(&identity, registry, handler_for(controller.clone())).unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let running = server.clone();
+    tokio::spawn(async move {
+        let _ = running.run(listener).await;
+    });
+
+    // The Operator adds + renames + moves over the wire; the host plan reflects it.
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "op", "tok-op")
+        .await
+        .unwrap();
+    let view = op.add_item("song", "Closing Song").await.unwrap();
+    assert_eq!(view.items.len(), 2);
+    let new_id = view.items[1].id;
+    let view = op.rename_item(new_id, "Benediction").await.unwrap();
+    assert_eq!(view.items[1].title, "Benediction");
+    let view = op.move_item(new_id, 0).await.unwrap();
+    assert_eq!(view.items[0].title, "Benediction");
+    assert_eq!(
+        controller.lock().unwrap().plan().len(),
+        2,
+        "host plan edited"
+    );
+    assert!(
+        controller.lock().unwrap().take_plan_dirty(),
+        "persist signal raised"
+    );
+
+    // A Producer's edit is DENIED and changes nothing (view shows unchanged plan).
+    let mut prod = RemoteOperator::connect(addr, "localhost", pin, "prod", "tok-prod")
+        .await
+        .unwrap();
+    let view = prod.add_item("song", "Sneaky").await.unwrap();
+    assert_eq!(view.items.len(), 2, "Producer edit denied — plan unchanged");
+}
