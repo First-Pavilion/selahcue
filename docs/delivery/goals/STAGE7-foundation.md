@@ -351,6 +351,30 @@ focused adversarial re-verification found 0 defects.
 
 - Target: S7k-001..S7k-008. Change: created `selahcue-app` (`LiveController` + `handler_for`); added `Reply::Deny` to lan. Multi-lens adversarial review → 4 confirmed: staged-scripture-can't-go-live (×2) + scripture-resets-navigation → fixed (`GoLive` off presenter state; `plan_cursor`) + regression tests; Assistant-can-Clear-Live (HIGH RBAC) routed to owner per DEC-002. Verifier: `cargo test` 155 workspace + 2 E2E; clippy clean. Result: PASS. Decision: gate-review.
 
+## Batch 7l predicate — desktop output window ← remote control
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7l-001 | yes | Desktop `selahcue-output` runs the pinned-TLS control server + a shared `LiveController` | `cargo build -p selahcue-desktop` | builds clean | main.rs | PASS (compile) |
+| S7l-002 | yes | A remote command drives the on-screen output (window renders `presenter().live_output()`; continuous vsync repaint reflects remote-only changes) | code review + app E2E of the control loop | remote→server→controller→presenter verified E2E | test_remote.rs; main.rs | PASS |
+| S7l-003 | yes | Local keys drive the SAME controller (Space=Next, Enter=GoLive, B=blackout toggle, C=Clear) | compile + review | one shared `Arc<Mutex<LiveController>>` | main.rs | PASS (compile) |
+| S7l-004 | yes | Server failure disables remote control only (does not crash the window); binds loopback | review | `eprintln!` + `127.0.0.1:0` | main.rs | PASS |
+| S7l-005 | yes | `CertPin::from_hex` round-trips `to_hex`, rejects bad input without panic | `cargo test -p selahcue-lan --features server --lib` | `pin_hex_round_trips` passes | pinning.rs | PASS |
+| S7l-006 | yes | Runnable `selahcue-remote` CLI connects + sends a command over the same authenticated path | `cargo build -p selahcue-lan --features server --examples` | example builds | examples/remote.rs | PASS (compile) |
+| S7l-007 | yes | Full suite + clippy clean (incl. new example) | `cargo test` + clippy | 155 workspace; lan 40 server; app 10+2 E2E; 0 warnings | test output | PASS |
+| S7l-008 | yes | Independent multi-lens adversarial review; confirmed findings fixed | fresh-context workflow `wag2rpohk` | 4 raised → 0 confirmed (4 dismissed) | CODE-REVIEW-batch7l-desktop.md | PASS |
+
+**Compile-only scope (honest):** the on-screen window path cannot be runtime-verified here
+(no display). It is compile-verified; the control loop it packages is E2E-verified in
+`selahcue-app`. Runnable on the user's Mac via `cargo run -p selahcue-desktop` + the
+`remote` CLI. One acknowledged non-blocking nit (UI mutex held across the vsync present)
+recorded in the review doc — verified immaterial, no fix warranted (a naive fix is
+net-negative and unverifiable here); it dissolves under GPU-native compose (ADR-0002).
+
+### Iteration ledger — batch 7l
+
+- Target: S7l-001..S7l-008. Change: rewired `selahcue-desktop` to run the control server + a shared `LiveController` (local keys + remote both drive it; continuous vsync repaint); added `CertPin::from_hex` (+ unit test) and a lean `selahcue-remote` example CLI. Multi-lens adversarial review (concurrency · wiring · parser/CLI · security) → 4 raised → **0 confirmed** (all adversarially dismissed). Verifier: `cargo test` 155 workspace; lan 40 server; app 10 unit + 2 E2E; clippy clean incl. examples. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

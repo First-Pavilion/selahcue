@@ -49,5 +49,12 @@ selahcue-data = { path = "../selahcue-data" }
 name = "demo"
 required-features = ["server"]
 
+# A minimal remote controller CLI — connects to a running SelahCue output window and
+# sends one command, so you can watch a remote command drive the on-screen output:
+#   cargo run -p selahcue-lan --example remote --features server -- <addr> <pin> <device> <token> <command>
+[[example]]
+name = "remote"
+required-features = ["server"]
+
 [lints]
 workspace = true

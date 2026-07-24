@@ -1806,8 +1806,12 @@ name = "selahcue-desktop"
 version = "0.1.0"
 dependencies = [
  "pollster",
+ "selahcue-app",
+ "selahcue-core",
  "selahcue-engine",
+ "selahcue-lan",
  "selahcue-present",
+ "tokio",
  "wgpu",
  "winit",
 ]

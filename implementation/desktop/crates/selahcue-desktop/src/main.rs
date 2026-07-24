@@ -1,17 +1,29 @@
 //! SelahCue desktop walking skeleton: a native output window that presents the
-//! presenter's Live output on the GPU.
+//! **live** output on the GPU, driven by a LAN control server.
 //!
-//! This is the render half of the walking skeleton (native window + Rust core). It
-//! composites slides on the CPU (via `selahcue-present`) and blits the frame to a
-//! wgpu surface. The Tauri operator shell is a subsequent batch.
+//! This is the render half of the walking skeleton (native window + Rust core) with
+//! the control loop wired in: a shared [`LiveController`] is driven by **both** the
+//! local keyboard **and** a remote controller connected over the pinned-TLS control
+//! link, so a remote command (Next / Go Live / Blackout) changes what is on screen.
+//! Slides are composited on the CPU (via `selahcue-present`) and blitted to a wgpu
+//! surface. The Tauri operator shell is a subsequent batch.
 //!
-//! Keys: `Space` stage next · `Enter` Go Live · `B` blackout · `Esc` quit.
+//! Local keys: `Space` stage next · `Enter` Go Live · `B` blackout · `C` clear · `Esc` quit.
 
 #![forbid(unsafe_code)]
 
+use selahcue_app::{handler_for, LiveController};
+use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_engine::raster::FrameBuffer;
-use selahcue_present::{Presenter, Slide, Theme};
-use std::sync::Arc;
+use selahcue_lan::protocol::Command;
+use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
+use selahcue_lan::{ControlServer, Role, SelfSigned};
+use selahcue_present::Theme;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::net::TcpListener;
+use tokio::sync::Mutex as AsyncMutex;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -246,17 +258,46 @@ impl Renderer {
 
 struct App {
     renderer: Option<Renderer>,
-    presenter: Presenter,
+    /// Shared with the control-server thread: the remote controller and the local
+    /// keyboard drive the *same* live output.
+    controller: Arc<Mutex<LiveController>>,
+}
+
+/// Apply one command to the shared controller (a poisoned lock just drops the input
+/// rather than panicking the UI thread).
+fn drive(controller: &Mutex<LiveController>, command: &Command) {
+    if let Ok(mut c) = controller.lock() {
+        let _ = c.apply(command);
+    }
 }
 
 impl App {
     fn new() -> Self {
-        let mut presenter = Presenter::new(OUTPUT_W, OUTPUT_H, Theme::dark());
-        presenter.stage(Slide::new("SelahCue", ["Walking skeleton", "Preview to Live"]));
-        presenter.go_live();
+        let mut plan = ServicePlan::new("Sunday Service");
+        plan.add_item(ItemKind::Song, "Opening Song");
+        plan.add_item(ItemKind::Scripture, "Romans 8:28");
+        plan.add_item(ItemKind::Section, "Sermon");
+        plan.add_item(ItemKind::Song, "Closing Song");
+
+        let controller = Arc::new(Mutex::new(LiveController::new(
+            plan,
+            OUTPUT_W,
+            OUTPUT_H,
+            Theme::dark(),
+        )));
+
+        // Show the first item immediately so the window isn't blank at launch.
+        if let Ok(mut c) = controller.lock() {
+            let _ = c.apply(&Command::Next); // stage item 0 in Preview
+            let _ = c.apply(&Command::GoLive); // commit it to Live
+        }
+
+        // Start the LAN control server so a remote controller can drive this window.
+        start_remote_control(controller.clone());
+
         App {
             renderer: None,
-            presenter,
+            controller,
         }
     }
 }
@@ -273,7 +314,7 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let App {
             renderer,
-            presenter,
+            controller,
         } = self;
         let Some(renderer) = renderer.as_mut() else {
             return;
@@ -284,7 +325,11 @@ impl ApplicationHandler for App {
                 renderer.resize(size.width, size.height);
                 renderer.window.request_redraw();
             }
-            WindowEvent::RedrawRequested => renderer.render(presenter.live_output()),
+            WindowEvent::RedrawRequested => {
+                if let Ok(c) = controller.lock() {
+                    renderer.render(c.presenter().live_output());
+                }
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -296,11 +341,15 @@ impl ApplicationHandler for App {
             } => {
                 match logical_key {
                     Key::Named(NamedKey::Escape) => event_loop.exit(),
-                    Key::Named(NamedKey::Space) => presenter.stage(Slide::title("Next slide")),
-                    Key::Named(NamedKey::Enter) => {
-                        presenter.go_live();
+                    Key::Named(NamedKey::Space) => drive(controller, &Command::Next),
+                    Key::Named(NamedKey::Enter) => drive(controller, &Command::GoLive),
+                    Key::Character(c) if c.eq_ignore_ascii_case("b") => {
+                        let on = controller.lock().map(|g| !g.is_blackout()).unwrap_or(true);
+                        drive(controller, &Command::Blackout { on });
                     }
-                    Key::Character(c) if c.eq_ignore_ascii_case("b") => presenter.blackout(true),
+                    Key::Character(c) if c.eq_ignore_ascii_case("c") => {
+                        drive(controller, &Command::Clear)
+                    }
                     _ => {}
                 }
                 renderer.window.request_redraw();
@@ -308,6 +357,90 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // Repaint continuously (vsync-paced by the Fifo present mode) so a change made
+        // by the *remote* controller — which is not a winit event — appears on screen
+        // within a frame rather than waiting for the next local input.
+        if let Some(renderer) = self.renderer.as_ref() {
+            renderer.window.request_redraw();
+        }
+    }
+}
+
+/// Spawn the pinned-TLS control server on a background thread with its own Tokio
+/// runtime, driving the shared `controller`. If it can't start, the window still runs
+/// under local keyboard control.
+fn start_remote_control(controller: Arc<Mutex<LiveController>>) {
+    std::thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                eprintln!("SelahCue: remote control disabled (runtime: {e})");
+                return;
+            }
+        };
+        if let Err(e) = runtime.block_on(run_server(controller)) {
+            eprintln!("SelahCue: remote control stopped: {e}");
+        }
+    });
+}
+
+async fn run_server(controller: Arc<Mutex<LiveController>>) -> Result<(), Box<dyn std::error::Error>> {
+    let identity =
+        SelfSigned::generate(vec!["localhost".into()]).map_err(|e| format!("tls identity: {e:?}"))?;
+    let pin = identity.pin;
+
+    // Demo shortcut: pre-pair one Producer device with a fixed token. Real pairing —
+    // a single-use QR code confirmed on the host — is the mobile-client batch.
+    let device = "producer";
+    let token = "demo-producer-token";
+    let registry = Arc::new(AsyncMutex::new(SessionRegistry::new()));
+    {
+        let now = Instant::now();
+        let mut reg = registry.lock().await;
+        reg.offer_pairing("demo", Role::Producer, now, Duration::from_secs(3600));
+        reg.redeem(
+            "demo",
+            DeviceId(device.to_string()),
+            SessionToken::new(token),
+            now,
+        )
+        .map_err(|e| format!("pairing: {e:?}"))?;
+    }
+
+    let server = Arc::new(
+        ControlServer::new(&identity, registry, handler_for(controller))
+            .map_err(|e| format!("server: {e:?}"))?,
+    );
+    // Loopback only: the remote CLI runs on this machine. LAN binding travels with the
+    // mobile client + QR pairing batch (so we don't expose an unpaired port by default).
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    print_connect_banner(addr, &pin.to_hex(), device, token);
+    server.run(listener).await.map_err(|e| format!("server run: {e:?}"))?;
+    Ok(())
+}
+
+fn print_connect_banner(addr: SocketAddr, pin_hex: &str, device: &str, token: &str) {
+    println!();
+    println!("  SelahCue — remote control ready");
+    println!("  ------------------------------------------------------------");
+    println!("  The output window is driven by the LAN control server.");
+    println!("  address : {addr}");
+    println!("  pin     : {pin_hex}");
+    println!("  device  : {device}   token : {token}   role : Producer");
+    println!();
+    println!("  Drive the window from another terminal on this machine:");
+    println!("    cargo run -p selahcue-lan --example remote --features server -- \\");
+    println!("      {addr} {pin_hex} {device} {token} next");
+    println!("    (commands: next · previous · go-live · blackout-on · blackout-off · clear · state)");
+    println!();
+    println!("  Local keys also work: Space=next  Enter=Go Live  B=blackout  C=clear  Esc=quit");
+    println!();
 }
 
 fn main() {

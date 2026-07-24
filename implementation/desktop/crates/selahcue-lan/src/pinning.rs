@@ -43,6 +43,22 @@ impl CertPin {
         }
         s
     }
+
+    /// Parse a 64-char hex pin (the inverse of [`to_hex`](Self::to_hex)). Returns
+    /// `None` for the wrong length or non-hex input.
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        let bytes = hex.as_bytes();
+        if bytes.len() != 64 {
+            return None;
+        }
+        let mut out = [0u8; 32];
+        for (i, slot) in out.iter_mut().enumerate() {
+            let hi = (bytes[i * 2] as char).to_digit(16)?;
+            let lo = (bytes[i * 2 + 1] as char).to_digit(16)?;
+            *slot = (hi * 16 + lo) as u8;
+        }
+        Some(CertPin(out))
+    }
 }
 
 impl std::fmt::Debug for CertPin {
@@ -117,5 +133,20 @@ impl ServerCertVerifier for PinnedServerVerifier {
         self.provider
             .signature_verification_algorithms
             .supported_schemes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CertPin;
+
+    #[test]
+    fn pin_hex_round_trips() {
+        let pin = CertPin::of_cert_der(b"a certificate's DER bytes for the test");
+        let hex = pin.to_hex();
+        assert_eq!(hex.len(), 64);
+        assert_eq!(CertPin::from_hex(&hex), Some(pin));
+        assert_eq!(CertPin::from_hex("too short"), None);
+        assert_eq!(CertPin::from_hex(&"z".repeat(64)), None); // non-hex
     }
 }

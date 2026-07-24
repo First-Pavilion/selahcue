@@ -4,18 +4,23 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "SelahCue desktop walking skeleton: a native borderless output window (winit + wgpu) that presents the presenter's live output. The Tauri operator shell is a subsequent batch."
+description = "SelahCue desktop walking skeleton: a native borderless output window (winit + wgpu) presenting the live output, driven by a LAN control server so a remote controller changes what's on screen. The Tauri operator shell is a subsequent batch."
 
 [[bin]]
 name = "selahcue-output"
 path = "src/main.rs"
 
 [dependencies]
+selahcue-core = { path = "../selahcue-core" }
 selahcue-engine = { path = "../selahcue-engine" }
 selahcue-present = { path = "../selahcue-present" }
+# The controller + pinned-TLS control server (so a remote controller drives the window).
+selahcue-app = { path = "../selahcue-app", features = ["server"] }
+selahcue-lan = { path = "../selahcue-lan", features = ["server"] }
 wgpu = "22"
 winit = "0.30"
 pollster = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
 
 [lints]
 workspace = true
