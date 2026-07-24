@@ -578,6 +578,20 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7w-001..S7w-006. Change: `selahcue-present::tokens` (canonical fills + Figma inks + WCAG math) grounded in the live Figma variables (file SYQn5hFY8YVQKm3c6rw0eJ); `selahcue_app::keymap` state machine (double-Esc, disarm, bounded); desktop key rewiring (Esc-quit removed); operator webview retokenized + JS key mirror + `#emergency` footer (Figma console design) + reduced-motion; stage display on semantic inks; Flutter tokens + retokenized views + reduced-motion. Review (40 agents, 5 lenses + adversarial verify): **14 unique defects → all fixed** — headline catches: the `Ctrl/Cmd+Shift+.` emergency chord was dead code (Shift makes `e.key` `">"`), key auto-repeat defeated the double-Esc gate, focused buttons hijacked Enter/Space, stale blackout state while editing could re-assert blackout. Verifier: workspace **232** + Flutter **16**, clippy/analyze clean. Result: PASS. Decision: gate-review.
 
+## Batch 7x predicate — operator console build-out per Figma (86ajpgz4t)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7x-001 | yes | Console structure per Figma node 4:2 within story scope: top bar (name, LIVE chip, clock), plan panel, labeled PREVIEW·STAGED / LIVE·ON AIR panels + GO LIVE, SERVICE TIMER panel | pin test needles | `PREVIEW · STAGED` / `LIVE · ON AIR` / panel ids / blackout overlay pinned | index.html; test_tokens.rs | PASS |
+| S7x-002 | yes | On-air truth never stale: panels + LIVE chip + blackout overlay sync on EVERY view (emergency actions land while editing) | review fix A | `setPanel` in `syncChrome` | index.html | PASS |
+| S7x-003 | yes | All 14 batch-7w invariants preserved (chords, repeat filter, disarm, blur, aria, AA hints) | regression lens (run `wf_f9323e54-033`) | walked A–N against the new file; all present | CODE-REVIEW-batch7x.md | PASS |
+| S7x-004 | yes | A11y on the new chrome: accessible names, aria-live on-air announcements, responsive floor, AA pairings | review fixes B/C/D | aria-labels; aria-live=polite; minmax grid | index.html | PASS |
+| S7x-005 | yes | Independent adversarial review; confirmed findings fixed | run `wf_f9323e54-033` (11 agents) | 8 confirmed → 4 unique → **all fixed**; 0 refuted | CODE-REVIEW-batch7x.md | PASS |
+
+### Iteration ledger — batch 7x
+
+- Target: S7x-001..S7x-005. Change: operator webview restructured to the Figma console (story 86ajpgz4t, created this batch under the Accessibility & Design System epic): grid console layout, output panels with canonical fill headers, LIVE chip + clock top bar, timer panel with 5:00/10:00 presets, blackout overlay on the live panel; all 7w systems (tokens/keymap/emergency footer) preserved. Review (11 agents, 3 lenses): 4 unique defects → all fixed — headline: the on-air panel could show stale truth while an editor was open (same class as 7w's blackout fix; panels moved into the every-view chrome sync). Verifier: workspace 232 + Flutter 16, clippy clean. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

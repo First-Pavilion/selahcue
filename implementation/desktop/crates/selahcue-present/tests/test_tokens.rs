@@ -100,6 +100,13 @@ fn operator_webview_is_pinned_to_the_canonical_tokens() {
         "aria-pressed",
         // Key hints stay AA on token-filled buttons.
         "#clear-all.armed .key",
+        // Console structure (batch 7x, Figma node 4:2): labelled output panels
+        // (non-colour redundancy on the panel headers) + blackout overlay.
+        "PREVIEW · STAGED",
+        "LIVE · ON AIR",
+        "id=\"preview-panel\"",
+        "id=\"live-panel\"",
+        "BLACKOUT — OUTPUT DARK",
     ] {
         assert!(html.contains(needle), "webview missing {needle:?}");
     }

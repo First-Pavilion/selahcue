@@ -21,37 +21,93 @@
         BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex;
         flex-direction: column;
       }
+      /* --- Top bar (Figma console: name + LIVE chip + clock) --- */
       header {
-        padding: 12px 16px; border-bottom: 1px solid var(--line);
-        display: flex; align-items: baseline; gap: 12px;
+        padding: 10px 16px; border-bottom: 1px solid var(--line);
+        display: flex; align-items: center; gap: 12px;
       }
       header h1 { font-size: 15px; margin: 0; font-weight: 600; }
       header .sub { color: var(--muted); font-size: 12px; }
-      main { flex: 1; display: flex; min-height: 0; }
-      #plan { flex: 1; overflow-y: auto; padding: 8px; }
+      #live-chip {
+        margin-left: auto; background: var(--live); color: #fff; font-size: 11px;
+        font-weight: 800; letter-spacing: .06em; border-radius: 4px; padding: 3px 8px;
+        visibility: hidden;
+      }
+      #live-chip.on { visibility: visible; }
+      #clock { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+      /* --- Console body: plan | preview/live | timer --- */
+      main {
+        flex: 1; display: grid;
+        grid-template-columns: minmax(220px, 300px) minmax(0, 1fr) minmax(180px, 250px);
+        gap: 12px; min-height: 0; padding: 12px; min-width: 0;
+      }
+      main > * { min-width: 0; }
+      body { min-width: 720px; overflow-x: auto; }
+      #plan-wrap {
+        display: flex; flex-direction: column; min-height: 0;
+        border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+      }
+      #plan-wrap h2 {
+        margin: 0; padding: 10px 12px 6px; font-size: 11px; letter-spacing: .06em;
+        color: var(--muted); text-transform: uppercase;
+      }
+      #plan { flex: 1; overflow-y: auto; padding: 6px 8px; }
       .item {
-        display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+        display: flex; align-items: center; gap: 8px; padding: 8px 10px;
         border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px;
-        cursor: pointer; background: var(--panel);
+        cursor: pointer; background: var(--bg);
       }
       .item:hover { border-color: #35404f; background: #1d2430; }
       .item .kind {
-        font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+        font-size: 9px; text-transform: uppercase; letter-spacing: .04em;
         color: var(--muted); border: 1px solid var(--line); border-radius: 4px;
-        padding: 2px 6px; min-width: 74px; text-align: center;
+        padding: 2px 5px; min-width: 64px; text-align: center;
       }
-      .item .title { flex: 1; font-weight: 500; }
+      .item .title { flex: 1; font-weight: 500; font-size: 13px; }
       /* Non-colour redundancy (WCAG 1.4.1): live/preview are label + border,
          never colour alone. */
-      .badge { font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 4px; letter-spacing: .04em; color: #fff; }
+      .badge { font-size: 9px; font-weight: 700; padding: 3px 6px; border-radius: 4px; letter-spacing: .04em; color: #fff; }
       .badge.live { background: var(--live); }
       .badge.preview { background: var(--preview); }
       .item.is-live { border-color: var(--live-ink); }
       .item.is-staged { border-color: var(--preview-ink); }
-      aside {
-        width: 240px; border-left: 1px solid var(--line); padding: 16px;
-        display: flex; flex-direction: column; gap: 10px;
+      .add-row { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
+      .add-row select, .add-row input {
+        font: inherit; font-size: 12px; color: var(--text); background: var(--bg);
+        border: 1px solid var(--line); border-radius: 8px; padding: 7px;
       }
+      .add-row input { flex: 1; min-width: 0; }
+      /* --- Center: PREVIEW · STAGED and LIVE · ON AIR panels (Figma) --- */
+      #stagearea { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+      .outpanel {
+        flex: 1; display: flex; flex-direction: column; min-height: 0;
+        border-radius: 10px; overflow: hidden; border: 1px solid var(--line);
+      }
+      .outpanel .head {
+        color: #fff; font-size: 11px; font-weight: 800; letter-spacing: .06em;
+        padding: 6px 12px;
+      }
+      #preview-panel { border-color: var(--preview-ink); }
+      #preview-panel .head { background: var(--preview); }
+      #live-panel { border-color: var(--live-ink); }
+      #live-panel .head { background: var(--live); }
+      .outpanel .surface {
+        flex: 1; background: #000; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 8px; padding: 16px;
+        text-align: center;
+      }
+      .outpanel .surface .big { font-size: 24px; font-weight: 700; }
+      .outpanel .surface .cap { color: var(--muted); font-size: 11px; }
+      .outpanel .surface.idle .big { color: var(--muted); font-weight: 500; font-size: 15px; }
+      #live-black {
+        display: none; color: #fff; font-size: 12px; font-weight: 800;
+        letter-spacing: .08em; border: 1px solid var(--live-ink);
+        border-radius: 4px; padding: 3px 8px;
+      }
+      #live-panel.blackout #live-black { display: inline-block; }
+      #live-panel.blackout .surface .big, #live-panel.blackout .surface .cap { opacity: 0.25; }
+      .golive-row { display: flex; gap: 8px; align-items: stretch; }
+      .golive-row button { flex: 1; padding: 10px; }
       button {
         font: inherit; font-weight: 600; color: var(--text); background: var(--panel);
         border: 1px solid var(--line); border-radius: 8px; padding: 12px; cursor: pointer;
@@ -61,20 +117,31 @@
         font-size: 10px; font-weight: 600; color: var(--muted);
         border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; margin-left: 6px;
       }
-      button.golive { background: var(--preview); border-color: var(--preview-ink); color: #fff; }
+      button.golive { background: var(--preview); border-color: var(--preview-ink); color: #fff; flex: 2; }
       /* Key hints on token-filled buttons: white for AA (muted grey is 2-3:1 there). */
       button.golive .key, #blackout.on .key, #clear-all.armed .key {
         color: #fff; border-color: rgba(255, 255, 255, 0.55);
       }
-      .timer-row { display: flex; gap: 8px; }
-      .timer-row button { flex: 1; padding: 10px; }
-      .timer-row select, .timer-row input {
-        font: inherit; color: var(--text); background: var(--panel);
-        border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+      /* --- Right: SERVICE TIMER panel (Figma) --- */
+      aside {
+        display: flex; flex-direction: column; gap: 10px; min-height: 0;
+        border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+        padding: 12px;
       }
-      .timer-row input { flex: 1; min-width: 0; }
-      .status { margin-top: auto; color: var(--muted); font-size: 12px; }
-      .status b { color: var(--text); }
+      aside h2 {
+        margin: 0; font-size: 11px; letter-spacing: .06em; color: var(--muted);
+        text-transform: uppercase;
+      }
+      #timer-big {
+        font-size: 44px; font-weight: 800; font-variant-numeric: tabular-nums;
+        text-align: center; color: var(--muted); padding: 8px 0;
+      }
+      #timer-big.up {
+        background: var(--live); color: #fff; border-radius: 8px; font-size: 30px;
+      }
+      .timer-row { display: flex; gap: 8px; }
+      .timer-row button { flex: 1; padding: 9px; font-size: 13px; }
+      .timer-note { color: var(--muted); font-size: 11px; text-align: center; }
       /* Always-on emergency chrome (UX-CANONICAL §3): never occluded, never
          removed, operable in every state — including while a row is being edited. */
       #emergency {
@@ -98,14 +165,14 @@
     <header>
       <h1 id="plan-name">SelahCue Operator</h1>
       <span class="sub" id="plan-sub"></span>
+      <span id="live-chip">● LIVE</span>
+      <span id="clock"></span>
     </header>
     <main>
-      <section id="plan" aria-label="Service plan"></section>
-      <aside>
-        <button id="prev">◀ Previous<span class="key">←</span></button>
-        <button id="next">Next ▶<span class="key">Space</span></button>
-        <button id="golive" class="golive">GO LIVE<span class="key">⏎ Enter</span></button>
-        <div class="timer-row">
+      <section id="plan-wrap" aria-label="Service plan">
+        <h2>Service plan</h2>
+        <div id="plan"></div>
+        <div class="add-row">
           <select id="add-kind">
             <option value="song">Song</option>
             <option value="scripture">Scripture</option>
@@ -115,16 +182,40 @@
           <input id="add-title" placeholder="New item title" />
           <button id="add-item">+ Add</button>
         </div>
+      </section>
+      <section id="stagearea" aria-label="Preview and live output">
+        <div class="outpanel" id="preview-panel">
+          <div class="head">PREVIEW · STAGED</div>
+          <div class="surface idle">
+            <span class="big" id="preview-title">Nothing staged</span>
+            <span class="cap" id="preview-cap"></span>
+          </div>
+        </div>
+        <div class="golive-row">
+          <button id="prev" aria-label="Previous — stage the previous plan item">◀<span class="key">←</span></button>
+          <button id="golive" class="golive">GO LIVE<span class="key">⏎ Enter</span></button>
+          <button id="next" aria-label="Next — stage the next plan item">▶<span class="key">Space</span></button>
+        </div>
+        <div class="outpanel" id="live-panel">
+          <div class="head">● LIVE · ON AIR</div>
+          <div class="surface idle" aria-live="polite">
+            <span id="live-black">BLACKOUT — OUTPUT DARK</span>
+            <span class="big" id="live-title">Output idle</span>
+            <span class="cap" id="live-cap"></span>
+          </div>
+        </div>
+      </section>
+      <aside aria-label="Service timer">
+        <h2>Service timer</h2>
+        <div id="timer-big">–:––</div>
         <div class="timer-row">
-          <button id="timer-start">⏱ 5:00</button>
+          <button id="timer-5">⏱ 5:00</button>
+          <button id="timer-10">⏱ 10:00</button>
+        </div>
+        <div class="timer-row">
           <button id="timer-stop">Stop</button>
         </div>
-        <div class="status">
-          Live: <b id="s-live">—</b><br />
-          Preview: <b id="s-preview">—</b><br />
-          Blackout: <b id="s-black">off</b><br />
-          Timer: <b id="s-timer">—</b>
-        </div>
+        <span class="timer-note">Shown on the stage output only</span>
       </aside>
     </main>
     <footer id="emergency" role="toolbar" aria-label="Emergency controls">
@@ -140,8 +231,9 @@
       let lastRendered = "";    // skip DOM rebuilds when nothing changed
 
       function render(view) {
-        // Chrome (emergency footer, status, timer) syncs on EVERY view — the
-        // blackout toggle must read true state even while an editor is open.
+        // Chrome (emergency footer, LIVE chip, timer, blackout) syncs on EVERY
+        // view — the blackout toggle must read true state even while an editor
+        // is open.
         syncChrome(view);
         // Never clobber an open editor or a pending delete-confirm, and skip
         // identical re-renders (the 1s poll must not eat in-flight clicks).
@@ -225,31 +317,60 @@
           plan.appendChild(row);
         });
 
-        const nameAt = (i) => (i == null ? "—" : view.items[i] ? view.items[i].title : "—");
-        document.getElementById("s-live").textContent = nameAt(view.live_index);
-        document.getElementById("s-preview").textContent = nameAt(view.staged_index);
+      }
+
+      function setPanel(which, item, capText, idleText) {
+        const surface = document.querySelector("#" + which + "-panel .surface");
+        const title = document.getElementById(which + "-title");
+        const cap = document.getElementById(which + "-cap");
+        if (item) {
+          surface.classList.remove("idle");
+          title.textContent = item.title;
+          cap.textContent = item.kind + " · " + capText;
+        } else {
+          surface.classList.add("idle");
+          title.textContent = idleText;
+          cap.textContent = "";
+        }
       }
 
       function syncChrome(view) {
-        document.getElementById("s-black").textContent = view.blackout ? "ON" : "off";
+        // Top-bar LIVE chip: on air only when something is actually live.
+        document.getElementById("live-chip").classList.toggle("on", view.live_index != null);
+
+        // Preview / Live panels (Figma console): the on-air truth must never go
+        // stale — an emergency clear/Go-Live can land while an inline editor or
+        // delete-confirm is open, so the panels sync on EVERY view (they touch
+        // only static DOM, never the guarded plan rows).
+        const itemAt = (i) => (i == null ? null : view.items[i] || null);
+        setPanel("preview", itemAt(view.staged_index), "staged", "Nothing staged");
+        setPanel("live", itemAt(view.live_index), "main output", "Output idle");
 
         const t = view.timer;
-        const tEl = document.getElementById("s-timer");
+        const big = document.getElementById("timer-big");
         if (!t) {
-          tEl.textContent = "—";
-          tEl.style.color = "";
+          big.textContent = "–:––";
+          big.classList.remove("up");
+          big.style.color = "";
+        } else if (t.time_up) {
+          big.textContent = "TIME UP";
+          big.classList.add("up");
+          big.style.color = "";
         } else {
           const secs = t.remaining_secs != null ? t.remaining_secs : t.elapsed_secs;
-          tEl.textContent = t.time_up ? "TIME UP" : fmtClock(secs);
-          tEl.style.color = t.time_up ? "var(--live-ink)" : t.warn ? "var(--warn-ink)" : "var(--preview-ink)";
+          big.textContent = fmtClock(secs);
+          big.classList.remove("up");
+          big.style.color = t.warn ? "var(--warn-ink)" : "var(--preview-ink)";
         }
 
-        // Non-colour blackout state: label + aria-pressed, not just the red fill.
+        // Non-colour blackout state: label + aria-pressed + the live-panel
+        // overlay, not just the red fill.
         const b = document.getElementById("blackout");
         b.classList.toggle("on", view.blackout);
         b.dataset.on = view.blackout ? "1" : "0";
         b.setAttribute("aria-pressed", view.blackout ? "true" : "false");
         document.getElementById("blackout-state").textContent = view.blackout ? "ON" : "";
+        document.getElementById("live-panel").classList.toggle("blackout", view.blackout);
       }
 
       function miniBtn(label, onclick) {
@@ -293,8 +414,10 @@
       document.getElementById("golive").onclick = () => act(() => invoke("go_live"));
       document.getElementById("blackout").onclick = toggleBlackout;
       document.getElementById("clear-all").onclick = clearAll;
-      document.getElementById("timer-start").onclick = () =>
+      document.getElementById("timer-5").onclick = () =>
         act(() => invoke("start_timer", { seconds: 300 }));
+      document.getElementById("timer-10").onclick = () =>
+        act(() => invoke("start_timer", { seconds: 600 }));
       document.getElementById("timer-stop").onclick = () => act(() => invoke("stop_timer"));
       document.getElementById("add-item").onclick = () => {
         const title = document.getElementById("add-title").value.trim();
@@ -304,6 +427,17 @@
           document.getElementById("add-title").value = "";
         }
       };
+
+      // Top-bar clock (Figma console) — local time, ticks independently.
+      const tickClock = () => {
+        const d = new Date();
+        document.getElementById("clock").textContent =
+          String(d.getHours()).padStart(2, "0") + ":" +
+          String(d.getMinutes()).padStart(2, "0") + ":" +
+          String(d.getSeconds()).padStart(2, "0");
+      };
+      tickClock();
+      setInterval(tickClock, 1000);
 
       // Mouse-clicked buttons blur so Enter/Space stay global afterwards.
       // Keyboard activation keeps focus (a keyboard-synthesized click has
