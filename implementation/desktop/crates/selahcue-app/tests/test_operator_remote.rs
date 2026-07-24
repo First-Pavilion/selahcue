@@ -432,3 +432,24 @@ async fn output_configuration_is_operator_only_and_status_travels_the_wire() {
         "Producer assignment denied"
     );
 }
+
+/// Timer live-adjust over the wire (owner story 86ajphu98): +1:00 on a running
+/// countdown extends the host's readout; RBAC = the Timer permission.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_adjust_timer_extends_the_running_countdown() {
+    let (addr, pin, controller) = setup().await;
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "producer", "tok-prod")
+        .await
+        .unwrap();
+    op.start_timer(300).await.unwrap();
+    controller.lock().unwrap().tick(Instant::now());
+
+    op.adjust_timer(60).await.unwrap();
+    controller.lock().unwrap().tick(Instant::now());
+    let t = op.view().await.unwrap().timer.expect("timer");
+    assert!(
+        t.remaining_secs.is_some_and(|r| r > 300 && r <= 360),
+        "extended past the original 5:00: {:?}",
+        t.remaining_secs
+    );
+}

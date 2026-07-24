@@ -239,6 +239,10 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
     );
     // The output-config commands, pinned like every other command.
     assert_eq!(
+        to_json(&Command::AdjustTimer { delta_secs: -60 }).unwrap(),
+        r#"{"cmd":"adjust_timer","delta_secs":-60}"#
+    );
+    assert_eq!(
         to_json(&Command::IdentifyOutputs).unwrap(),
         r#"{"cmd":"identify_outputs"}"#
     );

@@ -99,6 +99,17 @@ impl Backend {
             Backend::Local(s) => Ok(s.stop_timer()),
         }
     }
+    async fn adjust_timer(&self, delta_secs: i64) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .adjust_timer(delta_secs)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.adjust_timer(delta_secs)),
+        }
+    }
     async fn add_item(&self, kind: String, title: String) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
@@ -240,6 +251,10 @@ async fn start_timer(seconds: u32, state: State<'_, AppState>) -> Result<Operato
 #[tauri::command]
 async fn stop_timer(state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.stop_timer().await
+}
+#[tauri::command]
+async fn adjust_timer(delta_secs: i64, state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.adjust_timer(delta_secs).await
 }
 #[tauri::command]
 async fn add_item(
@@ -423,6 +438,7 @@ fn main() {
             select,
             start_timer,
             stop_timer,
+            adjust_timer,
             add_item,
             remove_item,
             move_item,

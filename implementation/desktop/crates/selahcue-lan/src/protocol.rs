@@ -35,6 +35,9 @@ pub enum Command {
     StartTimer { seconds: u32 },
     /// Stop the running timer.
     StopTimer,
+    /// Adjust the RUNNING countdown's target by `delta_secs` (e.g. +60 / -60).
+    /// Clamps at zero (landing in TIME UP); denied when no timer is active.
+    AdjustTimer { delta_secs: i64 },
     /// Search scripture (does not push live). `translation` is a bundled code
     /// (`"KJV"`/`"WEB"`); omitted = the KJV default. Skip-if-none keeps fixtures.
     ScriptureSearch {

@@ -86,6 +86,11 @@ void main() {
     expect(m, isA<UnknownMessage>());
   });
 
+  test('adjust_timer command matches the Rust wire shape', () {
+    expect(cmdAdjustTimer(60), {'cmd': 'adjust_timer', 'delta_secs': 60});
+    expect(cmdAdjustTimer(-60), {'cmd': 'adjust_timer', 'delta_secs': -60});
+  });
+
   test('stage_scripture command matches the Rust wire shape', () {
     expect(cmdStageScripture('Romans 8:28'),
         {'cmd': 'stage_scripture', 'reference': 'Romans 8:28'});

@@ -25,6 +25,7 @@ class ControllerView extends StatefulWidget {
 class _ControllerViewState extends State<ControllerView> {
   late final LiveController _live;
   final _scriptureCtrl = TextEditingController();
+  final _minutesCtrl = TextEditingController();
 
   @override
   void initState() {
@@ -34,6 +35,7 @@ class _ControllerViewState extends State<ControllerView> {
 
   @override
   void dispose() {
+    _minutesCtrl.dispose();
     _scriptureCtrl.dispose();
     _live.dispose();
     super.dispose();
@@ -232,6 +234,27 @@ class _ControllerViewState extends State<ControllerView> {
                             ),
                           ),
                           const SizedBox(width: 8),
+                          SizedBox(
+                            width: 72,
+                            child: TextField(
+                              controller: _minutesCtrl,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                border: OutlineInputBorder(),
+                                hintText: 'min',
+                              ),
+                              onSubmitted: (v) {
+                                var mins = int.tryParse(v.trim());
+                                if (mins != null && mins >= 1) {
+                                  if (mins > 999) mins = 999;
+                                  _live.act(cmdStartTimer(mins * 60));
+                                  _minutesCtrl.clear();
+                                }
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 8),
                           Expanded(
                             child: OutlinedButton(
                               onPressed: () => _live.act(cmdStopTimer()),
@@ -240,6 +263,26 @@ class _ControllerViewState extends State<ControllerView> {
                           ),
                         ],
                       ),
+                      if (view?.timer != null) ...[
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: () => _live.act(cmdAdjustTimer(-60)),
+                                child: const Text('−1:00'),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: () => _live.act(cmdAdjustTimer(60)),
+                                child: const Text('+1:00'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ],
                   ),
                 ),

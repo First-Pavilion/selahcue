@@ -80,13 +80,20 @@ impl OperatorShell {
     fn act(&self, command: &Command) -> OperatorView {
         self.with(|c| {
             let _ = c.apply(command);
+            // The stand-alone shell has no output window driving frames: tick
+            // here so timers advance in Local/demo mode (the remote path's host
+            // ticks every frame; an extra tick is harmless there).
+            c.tick(std::time::Instant::now());
             c.operator_view()
         })
     }
 
     /// The current snapshot without changing anything (for initial render / refresh).
     pub fn view(&self) -> OperatorView {
-        self.with(|c| c.operator_view())
+        self.with(|c| {
+            c.tick(std::time::Instant::now());
+            c.operator_view()
+        })
     }
 
     /// Stage the next plan item in Preview.
@@ -127,6 +134,11 @@ impl OperatorShell {
     /// Stop and clear the active timer.
     pub fn stop_timer(&self) -> OperatorView {
         self.act(&Command::StopTimer)
+    }
+
+    /// Adjust the running countdown by `delta_secs` (e.g. +60 / -60).
+    pub fn adjust_timer(&self, delta_secs: i64) -> OperatorView {
+        self.act(&Command::AdjustTimer { delta_secs })
     }
 
     /// Append a plan item (Operator-only via RBAC on the remote path).
@@ -336,6 +348,14 @@ impl RemoteOperator {
     /// Stop and clear the host's active timer.
     pub async fn stop_timer(&mut self) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::StopTimer).await
+    }
+
+    /// Adjust the host's running countdown by `delta_secs`.
+    pub async fn adjust_timer(
+        &mut self,
+        delta_secs: i64,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::AdjustTimer { delta_secs }).await
     }
 
     /// Append a plan item on the host (requires the Operator role).

@@ -200,6 +200,12 @@
       }
       .timer-row { display: flex; gap: 8px; }
       .timer-row button { flex: 1; padding: 9px; font-size: 13px; }
+      .timer-row button:disabled { opacity: 0.4; cursor: default; }
+      .timer-row input[type="number"] {
+        flex: 1; min-width: 0; font: inherit; font-size: 13px; color: var(--text);
+        background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+        padding: 7px;
+      }
       .timer-note { color: var(--muted); font-size: 11px; text-align: center; }
       #outputs { display: flex; flex-direction: column; gap: 8px; }
       .output-row { font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
@@ -296,6 +302,15 @@
         <div class="timer-row">
           <button id="timer-5">⏱ 5:00</button>
           <button id="timer-10">⏱ 10:00</button>
+        </div>
+        <div class="timer-row">
+          <input id="timer-mins" type="number" min="1" max="999" placeholder="min"
+                 aria-label="Countdown length in minutes" />
+          <button id="timer-start-custom">Start</button>
+        </div>
+        <div class="timer-row">
+          <button id="timer-minus" disabled aria-label="Subtract one minute from the running timer">−1:00</button>
+          <button id="timer-plus" disabled aria-label="Add one minute to the running timer">+1:00</button>
         </div>
         <div class="timer-row">
           <button id="timer-stop">Stop</button>
@@ -476,6 +491,11 @@
 
         renderOutputs(view);
 
+        // The live-adjust buttons act on a RUNNING (or pending) timer only.
+        const hasTimer = !!view.timer;
+        document.getElementById("timer-plus").disabled = !hasTimer;
+        document.getElementById("timer-minus").disabled = !hasTimer;
+
         // Non-colour blackout state: label + aria-pressed + the live-panel
         // overlay, not just the red fill.
         const b = document.getElementById("blackout");
@@ -612,6 +632,24 @@
       document.getElementById("timer-10").onclick = () =>
         act(() => invoke("start_timer", { seconds: 600 }));
       document.getElementById("timer-stop").onclick = () => act(() => invoke("stop_timer"));
+      document.getElementById("timer-start-custom").onclick = () => {
+        // Sanitize + bound (the input's max attribute does not block typing):
+        // whole minutes, 1..=999 — the same cap the field declares.
+        const raw = Number(document.getElementById("timer-mins").value);
+        if (!Number.isFinite(raw)) return;
+        const mins = Math.min(999, Math.floor(raw));
+        if (mins >= 1) act(() => invoke("start_timer", { seconds: mins * 60 }));
+      };
+      document.getElementById("timer-mins").onkeydown = (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          document.getElementById("timer-start-custom").click();
+        }
+      };
+      document.getElementById("timer-plus").onclick = () =>
+        act(() => invoke("adjust_timer", { deltaSecs: 60 }));
+      document.getElementById("timer-minus").onclick = () =>
+        act(() => invoke("adjust_timer", { deltaSecs: -60 }));
       document.getElementById("identify").onclick = () => act(() => invoke("identify_outputs"));
       // ── Scriptures chapter browser (86ajpkfcd, Pewbeam-style; KJV default).
       // Type a reference -> the chapter opens as a numbered verse list; ↑/↓

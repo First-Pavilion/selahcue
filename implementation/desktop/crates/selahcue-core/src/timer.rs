@@ -42,6 +42,27 @@ impl Timer {
         }
     }
 
+    /// Adjust a countdown's target duration by `delta` seconds (positive extends,
+    /// negative reduces). The target clamps to `0..=u32::MAX` seconds — the
+    /// domain `StartTimer` and the persisted recovery snapshot use, so a
+    /// wire-legal absurd delta can never make the live total diverge from what
+    /// crash recovery restores. Reducing below the elapsed lands the timer in
+    /// TIME UP on the next read. Elapsed time is untouched,
+    /// so the monotonic-clock accuracy guarantee is unaffected. No-op for a
+    /// count-up timer. Returns the new target.
+    pub fn adjust(&mut self, delta_secs: i64) -> Option<Duration> {
+        match &mut self.mode {
+            TimerMode::CountDown { duration } => {
+                let new_secs = (duration.as_secs() as i64)
+                    .saturating_add(delta_secs)
+                    .clamp(0, i64::from(u32::MAX));
+                *duration = Duration::from_secs(new_secs as u64);
+                Some(*duration)
+            }
+            TimerMode::CountUp => None,
+        }
+    }
+
     /// A stopped count-down timer of `duration`.
     pub fn count_down(duration: Duration) -> Self {
         Timer {
@@ -129,19 +150,17 @@ impl Timer {
     }
 
     /// Add time to a count-down timer (the "+1:00" control, FR-055). No-op for
-    /// count-up.
+    /// count-up. Delegates to [`adjust`](Self::adjust) — same clamped domain.
     pub fn add_time(&mut self, extra: Duration) {
-        if let TimerMode::CountDown { duration } = &mut self.mode {
-            *duration = duration.saturating_add(extra);
-        }
+        let secs = i64::try_from(extra.as_secs()).unwrap_or(i64::MAX);
+        self.adjust(secs);
     }
 
     /// Subtract time from a count-down timer (saturating at zero). No-op for
-    /// count-up.
+    /// count-up. Delegates to [`adjust`](Self::adjust) — same clamped domain.
     pub fn subtract_time(&mut self, less: Duration) {
-        if let TimerMode::CountDown { duration } = &mut self.mode {
-            *duration = duration.saturating_sub(less);
-        }
+        let secs = i64::try_from(less.as_secs()).unwrap_or(i64::MAX);
+        self.adjust(secs.saturating_neg());
     }
 }
 

@@ -838,3 +838,45 @@ fn assignment_keys_are_validated_against_the_advertised_displays() {
         ControllerReply::Ack
     );
 }
+
+#[test]
+fn adjust_timer_extends_reduces_and_survives_recovery() {
+    use std::time::{Duration, Instant};
+    let (mut c, _) = controller();
+    // No timer -> nothing to adjust.
+    assert_eq!(
+        c.apply(&Command::AdjustTimer { delta_secs: 60 }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+
+    let t0 = Instant::now();
+    c.apply(&Command::StartTimer { seconds: 300 });
+    c.tick(t0);
+    // At 1:20 elapsed, +1:00 -> remaining grows from 3:00 to 4:00.
+    let at = t0 + Duration::from_secs(80);
+    assert_eq!(
+        c.apply(&Command::AdjustTimer { delta_secs: 60 }),
+        ControllerReply::Ack
+    );
+    c.tick(at);
+    let t = c.operator_view().timer.expect("timer");
+    assert_eq!(t.remaining_secs, Some(280), "300 - 80 + 60");
+    assert!(!t.time_up);
+
+    // The adjusted total persists through crash recovery.
+    let snap = c.snapshot(at);
+    assert_eq!(snap.timer_total_secs, Some(360));
+    let (mut fresh, _) = controller();
+    fresh.restore(&snap);
+    fresh.tick(at);
+    let t = fresh.operator_view().timer.expect("restored timer");
+    assert_eq!(t.remaining_secs, Some(280), "adjustment survived recovery");
+
+    // Subtracting past the elapsed lands in TIME UP (never underflows).
+    assert_eq!(
+        c.apply(&Command::AdjustTimer { delta_secs: -9_999 }),
+        ControllerReply::Ack
+    );
+    c.tick(at + Duration::from_secs(1));
+    assert!(c.operator_view().timer.expect("timer").time_up);
+}

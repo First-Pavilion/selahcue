@@ -613,6 +613,21 @@ impl LiveController {
                 // The overlay appears on the next tick (which supplies the start instant).
                 ControllerReply::Ack
             }
+            Command::AdjustTimer { delta_secs } => {
+                let Some(timer) = self.timer.as_mut() else {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                };
+                match timer.adjust(*delta_secs) {
+                    Some(new_total) => {
+                        self.timer_total = Some(new_total);
+                        // The adjusted readout appears on the next tick; recovery
+                        // persists the new total via the normal snapshot path.
+                        self.state_dirty = true;
+                        ControllerReply::Ack
+                    }
+                    None => ControllerReply::Deny(DenyReason::BadRequest),
+                }
+            }
             Command::StopTimer => {
                 self.timer = None;
                 self.timer_total = None;

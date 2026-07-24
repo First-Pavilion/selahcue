@@ -139,3 +139,35 @@ fn with_elapsed_resumes_a_recovered_countdown() {
     assert!(up.is_time_up(base));
     assert_eq!(up.overrun(base), Duration::from_secs(30));
 }
+
+#[test]
+fn adjust_extends_reduces_and_clamps_a_countdown() {
+    use std::time::{Duration, Instant};
+    let t0 = Instant::now();
+    let mut timer = Timer::count_down(Duration::from_secs(300));
+    timer.start(t0);
+
+    // +60 extends the target; elapsed is untouched (monotonic accuracy holds).
+    assert_eq!(timer.adjust(60), Some(Duration::from_secs(360)));
+    let at = t0 + Duration::from_secs(100);
+    assert_eq!(timer.elapsed(at), Duration::from_secs(100));
+    assert_eq!(timer.remaining(at), Some(Duration::from_secs(260)));
+
+    // -200 below the elapsed lands in TIME UP on the next read.
+    assert_eq!(timer.adjust(-300), Some(Duration::from_secs(60)));
+    assert!(timer.is_time_up(at), "target 60 < elapsed 100");
+
+    // The target clamps at zero, never underflows.
+    assert_eq!(timer.adjust(-9_999), Some(Duration::ZERO));
+
+    // ...and at u32::MAX seconds — the persisted-snapshot domain — so a
+    // wire-legal absurd delta can never diverge from what recovery restores.
+    assert_eq!(
+        timer.adjust(i64::MAX),
+        Some(Duration::from_secs(u64::from(u32::MAX)))
+    );
+
+    // A count-up timer has no target to adjust.
+    let mut up = Timer::count_up();
+    assert_eq!(up.adjust(60), None);
+}

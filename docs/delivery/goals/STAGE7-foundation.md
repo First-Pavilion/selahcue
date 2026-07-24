@@ -637,6 +637,20 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7ab-001..S7ab-005. Change: KJV bundle (ebible eng-kjv, brackets/pilcrows stripped) + Translation enum (Kjv default per owner) + per-translation APIs + Chapter/adjacent_chapter paging; optional `translation` on StageScripture AND ScriptureSearch (skip-if-none, fixtures byte-identical); operator get_chapter command (local bundle); console restructure (SCRIPTURES center panel with picker/search/verse list; 16:9 thumbnails right); owner ticket 86ajpqfyj created for further translations (PD bundles vs licensed spike). Review (13 agents): 9 confirmed → **6 unique (A–F) → all fixed** — headline: Enter-on-keywords was a silent dead-end that destroyed the pending search; ranges collapsed to single verses; translation switches could silently stage a different verse where KJV/WEB numbering diverges (asset-verified). Verifier: workspace **253** + Flutter **19**, clippy clean. Translation persistence across recovery = documented gap. Result: PASS. Decision: gate-review.
 
+## Batch 7ac predicate — timer manual entry + live add/subtract (86ajphu98)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7ac-001 | yes | Core: adjust a running countdown monotonic-safely; clamps 0..=u32::MAX s (the persisted domain); reduce-below-elapsed lands in TIME UP | `cargo test -p selahcue-core` | adjust semantics + clamp tests; legacy helpers delegate | timer.rs | PASS |
+| S7ac-002 | yes | Wire `AdjustTimer{delta_secs}` (fixture-pinned), Timer permission; denied when idle | fixture + controller tests | pinned JSON; idle denial | protocol.rs; rbac.rs | PASS |
+| S7ac-003 | yes | **Acceptance:** +1:00 at 1:20 into a 5:00 → 4:40 remaining; adjustment survives crash/restore; −overshoot → TIME UP | controller + E2E tests | `adjust_timer_extends_reduces_and_survives_recovery`; remote E2E | test_controller.rs; test_operator_remote.rs | PASS |
+| S7ac-004 | yes | Both clients: bounded minutes entry (1..=999, sanitized) + ±1:00 enabled only with an active timer; demo mode ticks; state-race denials silent on mobile | review fixes B/C/D | webview + mobile controls | index.html; controller_view.dart | PASS |
+| S7ac-005 | yes | Independent adversarial review; confirmed findings fixed | run `wf_e358648f-a84` (8 agents) | 6 confirmed → 4 unique (A–D) → **all fixed** | CODE-REVIEW-batch7ac.md | PASS |
+
+### Iteration ledger — batch 7ac
+
+- Target: S7ac-001..S7ac-005. Change: `Timer::adjust` (clamped to the persistable domain; legacy add/subtract delegate), wire `AdjustTimer` + Timer-permission mapping, controller arm with snapshot persistence, console minutes-entry + ±1:00 (disabled without a timer), mobile equivalents, demo-shell ticking. Review (8 agents): 6 confirmed → **4 unique (A–D) → all fixed** — headline: a wire-legal delta could make the recovery snapshot wrap modulo 2³², restoring a different timer than the pre-crash session. Verifier: workspace **256** + Flutter **20**, clippy clean. Owner request ticketed: search-snippet highlighting (86ajpv0ub). Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

@@ -43,6 +43,8 @@ Map<String, dynamic> cmdSelectItem(int itemId) =>
 Map<String, dynamic> cmdStartTimer(int seconds) =>
     {'cmd': 'start_timer', 'seconds': seconds};
 Map<String, dynamic> cmdStopTimer() => {'cmd': 'stop_timer'};
+Map<String, dynamic> cmdAdjustTimer(int deltaSecs) =>
+    {'cmd': 'adjust_timer', 'delta_secs': deltaSecs};
 Map<String, dynamic> cmdStageScripture(String reference) =>
     {'cmd': 'stage_scripture', 'reference': reference};
 Map<String, dynamic> cmdGetOperatorState() => {'cmd': 'get_operator_state'};
