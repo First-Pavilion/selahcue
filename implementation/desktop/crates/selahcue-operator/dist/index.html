@@ -291,7 +291,7 @@
         </div>
         <div id="verse-list" role="listbox" aria-label="Chapter verses"></div>
         <span id="scrip-status" role="status" aria-live="polite"></span>
-        <span class="scrip-note">↑ ↓ move &amp; stage the highlighted verse · ⏎ Enter sends it live</span>
+        <span class="scrip-note">↑ ↓ move &amp; stage · ⏎ Enter sends it live · double-click a verse for instant live</span>
       </section>
       <section id="rightcol" aria-label="Outputs and timer">
         <div class="outpanel" id="preview-panel">
@@ -812,6 +812,7 @@
       // Staging trails the cursor by 120ms so held-arrow traversal lands ONE
       // stage on the final verse instead of a wire burst per repeat.
       let stageTimer = null;
+      let dblclickBusy = false; // no debounced stage may land mid double-click
       function setCursor(i, stage) {
         if (!currentChapter || !currentChapter.verses.length) return;
         verseCursor = Math.max(0, Math.min(i, currentChapter.verses.length - 1));
@@ -822,6 +823,7 @@
         const el = list.children[verseCursor];
         if (el) el.scrollIntoView({ block: "nearest" });
         if (stage) {
+          if (dblclickBusy) return; // the dblclick flow owns staging right now
           setStatus("");
           clearTimeout(stageTimer);
           const ref = verseRef(verseCursor);
@@ -855,6 +857,41 @@
           row.appendChild(n);
           row.appendChild(t);
           row.onclick = () => setCursor(i, true);
+          // Double-click = straight to live (owner request 86ajpwcxc): the
+          // explicit double gesture is the confirmation, bypassing Preview.
+          // VERIFIED at each step — a denied stage must never commit whatever
+          // was in Preview before, and "→ LIVE" is only claimed when the view
+          // confirms THIS verse is on air (review 7af A/B/C/D).
+          row.ondblclick = async () => {
+            const ref = verseRef(i); // captured before any await
+            clearTimeout(stageTimer);
+            dblclickBusy = true;
+            setCursor(i, false);
+            try {
+              const staged = await invoke("stage_scripture", {
+                reference: ref,
+                translation: currentTranslation,
+              });
+              render(staged);
+              if (staged.staged_scripture !== ref) {
+                setStatus("Could not stage " + ref + " — nothing was sent live");
+                return;
+              }
+              clearTimeout(stageTimer); // anything armed during the round trip
+              const after = await invoke("go_live");
+              render(after);
+              if (after.live_scripture === ref) {
+                setStatus(ref + " → LIVE");
+              } else {
+                setStatus("Go Live did not commit " + ref);
+              }
+            } catch (err) {
+              console.error(err);
+              setStatus("Could not send " + ref + " live");
+            } finally {
+              dblclickBusy = false;
+            }
+          };
           list.appendChild(row);
         });
       }
