@@ -24,8 +24,12 @@ pub struct SessionState {
     pub timer_elapsed_secs: Option<u32>,
     /// Whether the countdown was running (restore resumes it).
     pub timer_running: bool,
-    /// A scripture reference on the LIVE output (a non-plan slide), if any.
+    /// A scripture reference on the LIVE output, if any (verse text recomposes
+    /// from the bundled translation on restore).
     pub live_scripture: Option<String>,
+    /// The title of a removed-but-still-on-screen plan item (a free slide) —
+    /// restored verbatim as a title-only slide.
+    pub live_free_text: Option<String>,
     /// A scripture reference staged in Preview, if any.
     pub staged_scripture: Option<String>,
 }
@@ -36,12 +40,13 @@ pub fn save(db: &Database, s: &SessionState) -> Result<()> {
         "INSERT INTO session_state
             (id, plan_id, live_idx, staged_idx, plan_cursor, blackout,
              timer_total_secs, timer_elapsed_secs, timer_running,
-             live_scripture, staged_scripture)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             live_scripture, staged_scripture, live_free_text)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(id) DO UPDATE SET
             plan_id = ?1, live_idx = ?2, staged_idx = ?3, plan_cursor = ?4,
             blackout = ?5, timer_total_secs = ?6, timer_elapsed_secs = ?7,
-            timer_running = ?8, live_scripture = ?9, staged_scripture = ?10",
+            timer_running = ?8, live_scripture = ?9, staged_scripture = ?10,
+            live_free_text = ?11",
         params![
             s.plan_id,
             s.live_idx.map(i64::from),
@@ -53,6 +58,7 @@ pub fn save(db: &Database, s: &SessionState) -> Result<()> {
             if s.timer_running { 1i64 } else { 0 },
             s.live_scripture,
             s.staged_scripture,
+            s.live_free_text,
         ],
     )?;
     Ok(())
@@ -66,7 +72,7 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
         .query_row(
             "SELECT plan_id, live_idx, staged_idx, plan_cursor, blackout,
                     timer_total_secs, timer_elapsed_secs, timer_running,
-                    live_scripture, staged_scripture
+                    live_scripture, staged_scripture, live_free_text
              FROM session_state WHERE id = 1",
             [],
             |r| {
@@ -81,6 +87,7 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
                     r.get::<_, Option<i64>>(7)?,
                     r.get::<_, Option<String>>(8)?,
                     r.get::<_, Option<String>>(9)?,
+                    r.get::<_, Option<String>>(10)?,
                 ))
             },
         )
@@ -101,6 +108,7 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
         t_running,
         live_scr,
         staged_scr,
+        free_text,
     )) = row
     else {
         return Ok(None);
@@ -122,6 +130,7 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
         timer_running: t_running.unwrap_or(0) != 0,
         live_scripture: live_scr,
         staged_scripture: staged_scr,
+        live_free_text: free_text,
     }))
 }
 

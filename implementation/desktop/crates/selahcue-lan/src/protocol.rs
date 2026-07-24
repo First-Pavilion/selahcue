@@ -149,6 +149,18 @@ pub struct OperatorStateView {
     pub blackout: bool,
     /// The active timer, if one is running.
     pub timer: Option<TimerSnapshot>,
+    /// The scripture reference staged in Preview (when `staged_index` is None
+    /// because Preview holds a scripture slide). Omitted when absent, so the
+    /// v2 byte-pinned fixtures are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_scripture: Option<String>,
+    /// The scripture reference on the Live output, if Live shows one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_scripture: Option<String>,
+    /// A removed-but-still-on-screen plan item's title on Live (a free slide —
+    /// NOT a scripture). Omitted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_free_text: Option<String>,
 }
 
 /// Why a request was denied. A closed set so clients can react programmatically.

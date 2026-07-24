@@ -77,6 +77,13 @@
         border: 1px solid var(--line); border-radius: 8px; padding: 7px;
       }
       .add-row input { flex: 1; min-width: 0; }
+      #scripture-row { border-top: none; padding-bottom: 0; }
+      #scripture-hits { padding: 0 8px; }
+      #scripture-hits .hit {
+        padding: 5px 8px; font-size: 12px; color: var(--muted); cursor: pointer;
+        border: 1px solid transparent; border-radius: 6px;
+      }
+      #scripture-hits .hit:hover { color: var(--text); border-color: var(--line); background: #1d2430; }
       /* --- Center: PREVIEW · STAGED and LIVE · ON AIR panels (Figma) --- */
       #stagearea { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
       .outpanel {
@@ -172,6 +179,11 @@
       <section id="plan-wrap" aria-label="Service plan">
         <h2>Service plan</h2>
         <div id="plan"></div>
+        <div class="add-row" id="scripture-row">
+          <input id="scripture-q" placeholder="Scripture — reference or keywords" aria-label="Search scripture" />
+          <button id="scripture-stage" aria-label="Stage the scripture search result">Stage</button>
+        </div>
+        <div id="scripture-hits" role="listbox" aria-label="Scripture results"></div>
         <div class="add-row">
           <select id="add-kind">
             <option value="song">Song</option>
@@ -343,8 +355,22 @@
         // delete-confirm is open, so the panels sync on EVERY view (they touch
         // only static DOM, never the guarded plan rows).
         const itemAt = (i) => (i == null ? null : view.items[i] || null);
-        setPanel("preview", itemAt(view.staged_index), "staged", "Nothing staged");
-        setPanel("live", itemAt(view.live_index), "main output", "Output idle");
+        const scriptureAs = (ref) => (ref ? { title: ref, kind: "scripture" } : null);
+        const freeAs = (t) => (t ? { title: t, kind: "slide" } : null);
+        setPanel(
+          "preview",
+          itemAt(view.staged_index) || scriptureAs(view.staged_scripture),
+          "staged",
+          "Nothing staged"
+        );
+        setPanel(
+          "live",
+          itemAt(view.live_index) ||
+            scriptureAs(view.live_scripture) ||
+            freeAs(view.live_free_text),
+          "main output",
+          "Output idle"
+        );
 
         const t = view.timer;
         const big = document.getElementById("timer-big");
@@ -419,6 +445,70 @@
       document.getElementById("timer-10").onclick = () =>
         act(() => invoke("start_timer", { seconds: 600 }));
       document.getElementById("timer-stop").onclick = () => act(() => invoke("stop_timer"));
+      // Scripture: search (reference or keywords) -> click a hit (or Stage) to
+      // put its verse text in Preview. Results are display references.
+      let scriptureTimer = null;
+      let scriptureHits = [];
+      let scriptureGen = 0; // stale async results must never render or stage
+      const renderHits = () => {
+        const box = document.getElementById("scripture-hits");
+        box.innerHTML = "";
+        scriptureHits.slice(0, 6).forEach((ref) => {
+          const el = document.createElement("div");
+          el.className = "hit";
+          el.setAttribute("role", "option");
+          el.textContent = ref;
+          el.onclick = () => {
+            document.getElementById("scripture-q").value = ref;
+            clearTimeout(scriptureTimer);
+            scriptureGen++;
+            scriptureHits = [];
+            renderHits();
+            act(() => invoke("stage_scripture", { reference: ref }));
+          };
+          box.appendChild(el);
+        });
+      };
+      document.getElementById("scripture-q").oninput = (e) => {
+        clearTimeout(scriptureTimer);
+        // The old hits are for the OLD query: drop them immediately so Enter or
+        // Stage can never commit a stale first hit while the debounce is pending.
+        const gen = ++scriptureGen;
+        scriptureHits = [];
+        renderHits();
+        const q = e.target.value.trim();
+        if (!q) return;
+        scriptureTimer = setTimeout(async () => {
+          try {
+            const hits = await invoke("scripture_search", { query: q });
+            if (gen !== scriptureGen) return; // superseded while in flight
+            scriptureHits = hits;
+            renderHits();
+          } catch (err) {
+            console.error(err);
+          }
+        }, 250);
+      };
+      const stageScripture = () => {
+        const q = document.getElementById("scripture-q").value.trim();
+        if (!q) return;
+        // Fresh hits (same generation) may refine the query; otherwise stage the
+        // typed text and let the host resolve it.
+        const ref = scriptureHits.length ? scriptureHits[0] : q;
+        clearTimeout(scriptureTimer);
+        scriptureGen++;
+        scriptureHits = [];
+        renderHits();
+        act(() => invoke("stage_scripture", { reference: ref }));
+      };
+      document.getElementById("scripture-stage").onclick = stageScripture;
+      document.getElementById("scripture-q").onkeydown = (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          stageScripture();
+        }
+      };
+
       document.getElementById("add-item").onclick = () => {
         const title = document.getElementById("add-title").value.trim();
         const kind = document.getElementById("add-kind").value;

@@ -152,6 +152,7 @@ impl SessionStore {
                 timer_elapsed_secs: state.timer_elapsed_secs,
                 timer_running: state.timer_running,
                 live_scripture: state.live_scripture,
+                live_free_text: state.live_free_text,
                 staged_scripture: state.staged_scripture,
             },
         ))
@@ -207,6 +208,7 @@ impl SessionStore {
             timer_elapsed_secs: snap.timer_elapsed_secs,
             timer_running: snap.timer_running,
             live_scripture: snap.live_scripture.clone(),
+            live_free_text: snap.live_free_text.clone(),
             staged_scripture: snap.staged_scripture.clone(),
         };
         match session_repo::save(db, &state) {

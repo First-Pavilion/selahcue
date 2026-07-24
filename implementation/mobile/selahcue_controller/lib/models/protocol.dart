@@ -43,6 +43,8 @@ Map<String, dynamic> cmdSelectItem(int itemId) =>
 Map<String, dynamic> cmdStartTimer(int seconds) =>
     {'cmd': 'start_timer', 'seconds': seconds};
 Map<String, dynamic> cmdStopTimer() => {'cmd': 'stop_timer'};
+Map<String, dynamic> cmdStageScripture(String reference) =>
+    {'cmd': 'stage_scripture', 'reference': reference};
 Map<String, dynamic> cmdGetOperatorState() => {'cmd': 'get_operator_state'};
 
 /// One plan item as the operator/host reports it.
@@ -104,6 +106,15 @@ class OperatorStateView {
   final bool blackout;
   final TimerSnapshot? timer;
 
+  /// Scripture reference staged in Preview (when no plan item is staged).
+  final String? stagedScripture;
+
+  /// Scripture reference on the Live output, if any.
+  final String? liveScripture;
+
+  /// A removed-but-still-on-screen plan item's title on Live (a free slide).
+  final String? liveFreeText;
+
   const OperatorStateView({
     required this.planName,
     required this.items,
@@ -111,6 +122,9 @@ class OperatorStateView {
     required this.stagedIndex,
     required this.blackout,
     required this.timer,
+    this.stagedScripture,
+    this.liveScripture,
+    this.liveFreeText,
   });
 
   static OperatorStateView fromJson(Map<String, dynamic> j) => OperatorStateView(
@@ -125,6 +139,9 @@ class OperatorStateView {
         timer: j['timer'] == null
             ? null
             : TimerSnapshot.fromJson(j['timer'] as Map<String, dynamic>),
+        stagedScripture: j['staged_scripture'] as String?,
+        liveScripture: j['live_scripture'] as String?,
+        liveFreeText: j['live_free_text'] as String?,
       );
 }
 

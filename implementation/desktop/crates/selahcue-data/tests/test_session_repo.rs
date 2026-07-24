@@ -33,6 +33,7 @@ fn snapshot_round_trips_all_fields() {
         timer_elapsed_secs: Some(117),
         timer_running: true,
         live_scripture: Some("Romans 8:28".into()),
+        live_free_text: Some("Removed Song".into()),
         staged_scripture: Some("John 3:16".into()),
     };
     session_repo::save(&db, &s).unwrap();

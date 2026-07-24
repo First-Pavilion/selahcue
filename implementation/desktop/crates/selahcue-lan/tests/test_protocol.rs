@@ -182,6 +182,25 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         r#"{"hello":"pair","v":2,"code":"ABCD2345","device_name":"Phone"}"#
     );
 
+    // The operator_state frame WITH the batch-7y scripture fields, pinned on the
+    // serialize side (the skip-if-none fields must keep these exact names — the
+    // Dart test parses THIS string; review 7y-D).
+    let view = selahcue_lan::protocol::OperatorStateView {
+        plan_name: "Sunday".into(),
+        items: vec![],
+        live_index: None,
+        staged_index: None,
+        blackout: false,
+        timer: None,
+        staged_scripture: Some("Romans 8:28".into()),
+        live_scripture: Some("John 3:16".into()),
+        live_free_text: Some("Removed Song".into()),
+    };
+    assert_eq!(
+        to_json(&ServerMessage::OperatorState { view }).unwrap(),
+        r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"staged_scripture":"Romans 8:28","live_scripture":"John 3:16","live_free_text":"Removed Song"}}"#
+    );
+
     let req = Request::new(7, Command::SelectItem { item_id: 3 });
     assert_eq!(
         to_json(&req).unwrap(),

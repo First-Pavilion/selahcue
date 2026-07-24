@@ -592,6 +592,22 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7x-001..S7x-005. Change: operator webview restructured to the Figma console (story 86ajpgz4t, created this batch under the Accessibility & Design System epic): grid console layout, output panels with canonical fill headers, LIVE chip + clock top bar, timer panel with 5:00/10:00 presets, blackout overlay on the live panel; all 7w systems (tokens/keymap/emergency footer) preserved. Review (11 agents, 3 lenses): 4 unique defects → all fixed — headline: the on-air panel could show stale truth while an editor was open (same class as 7w's blackout fix; panels moved into the every-view chrome sync). Verifier: workspace 232 + Flutter 16, clippy clean. Result: PASS. Decision: gate-review.
 
+## Batch 7y predicate — bundled scripture verse text end to end (86ajpew05)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7y-001 | yes | ≥1 PD translation bundled and audited (WEB, 31,098 verses, offline) | `cargo test -p selahcue-scripture` + review data lens | canon counts + verbatim spot-checks against WEB; bounded one-time index | selahcue-scripture crate | PASS |
+| S7y-002 | yes | Verse lookup + keyword search <500ms | perf test (init warmed) | full-scan rare-phrase search under budget | test_scripture_data.rs | PASS |
+| S7y-003 | yes | Verse TEXT composes on the audience output within the compositor's real capacity (title + 6 body lines; truncation marker always visible) | capacity pin + cap tests | `compose_slide_renders_title_plus_six_body_lines`; Psalm 119 truncates with "…" | compose.rs test; controller.rs | PASS |
+| S7y-004 | yes | **Acceptance:** "Romans 8:28" verse text on the audience output, triggered from a remote client, E2E-tested | `wire_scripture_search_stage_golive_shows_verse_text` | search → stage → GoLive over real TLS; host slide body contains the WEB text | test_operator_remote.rs | PASS |
+| S7y-005 | yes | Scripture UI in both clients (operator search-as-you-type + stage; mobile stage command + PREVIEW/LIVE display); recovery fidelity (free slides verbatim — schema v4) | suites + review fixes B/C/F | race-free staging; verbatim-restore regression; v4 round-trip | index.html; controller_view.dart; migrations.rs | PASS |
+| S7y-006 | yes | Wire compatibility: v2 fixtures unchanged; NEW fields pinned cross-language | fixture tests both sides | serialize-side Rust fixture == Dart-parsed literal | test_protocol.rs; protocol_test.dart | PASS |
+| S7y-007 | yes | Independent adversarial review; confirmed findings fixed | run `wf_516d2959-967` (15 agents) | 10 confirmed → 7 unique (A–G) → **all fixed** | CODE-REVIEW-batch7y.md | PASS |
+
+### Iteration ledger — batch 7y
+
+- Target: S7y-001..S7y-007. Change: new `selahcue-scripture` crate (WEB bundled as gzipped TSV, canonical books 1–66, OnceLock index, lookup/passage/keyword search); `scripture_slide` verse-text composition at StageScripture + both restore paths; keyword fallback in ScriptureSearch; scripture fields on the operator views (skip-if-none — v2 fixtures byte-identical); operator + mobile scripture UI; wire E2E. Review (15 agents, 4 lenses incl. an audit of the decompressed asset and a wire-contract mutation test): **7 unique defects → all fixed** — headline: scripture slides overflowed the compositor's real 7-line capacity (tail + ellipsis silently clipped); recovery could recompose a removed item's title into verse text (→ `live_free_text`, schema **v4**); stale-hit staging races in the operator search. Verifier: workspace **244** + Flutter **18**, clippy/analyze clean. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

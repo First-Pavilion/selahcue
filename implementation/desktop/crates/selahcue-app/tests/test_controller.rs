@@ -593,9 +593,9 @@ fn removing_the_live_item_survives_crash_recovery() {
     let snap = c.snapshot(Instant::now());
     assert_eq!(snap.live_idx, None, "removed item is not a plan index");
     assert_eq!(
-        snap.live_scripture.as_deref(),
+        snap.live_free_text.as_deref(),
         Some("Opening Song"),
-        "the on-screen slide is persisted by its text"
+        "the on-screen slide is persisted as FREE text (not a scripture)"
     );
 
     // A fresh controller over the post-edit plan restores a non-blank live output.
@@ -606,4 +606,126 @@ fn removing_the_live_item_survives_crash_recovery() {
         !live_is_black(&fresh),
         "recovery shows the removed item's slide, not a blank surface"
     );
+}
+
+#[test]
+fn staged_scripture_composes_verse_text_and_survives_recovery() {
+    use std::time::Instant;
+    let (mut c, _) = controller();
+    // Staging a reference composes the bundled translation's verse text.
+    assert_eq!(
+        c.apply(&Command::StageScripture {
+            reference: "Romans 8:28".into()
+        }),
+        ControllerReply::Ack
+    );
+    c.apply(&Command::GoLive);
+    let body = c.presenter().live_slide().expect("live").body.join(" ");
+    assert!(
+        body.contains("all things work together for good"),
+        "verse text on the live output: {body}"
+    );
+
+    // Crash recovery re-composes the same verse text from the reference.
+    let snap = c.snapshot(Instant::now());
+    let (mut fresh, _) = controller();
+    fresh.restore(&snap);
+    let restored = fresh
+        .presenter()
+        .live_slide()
+        .expect("restored")
+        .body
+        .join(" ");
+    assert!(restored.contains("all things work together for good"));
+
+    // A free-slide text (not a reference) still falls back to a title slide —
+    // the 7v removed-live-item recovery path is unchanged.
+    let (mut other, _) = controller();
+    other.apply(&Command::StageScripture {
+        reference: "Announcements".into(),
+    });
+    let staged = other.presenter().staged().expect("staged");
+    assert_eq!(staged.title, "Announcements");
+    assert!(staged.body.is_empty());
+}
+
+#[test]
+fn scripture_search_falls_back_to_keyword_hits() {
+    let (mut c, _) = controller();
+    // A reference query parses (and is confirmed against the bundle).
+    let r = c.apply(&Command::ScriptureSearch {
+        query: "Rom 8:28".into(),
+    });
+    let refs = match r {
+        ControllerReply::Message(ServerMessage::ScriptureResults { references, .. }) => references,
+        other => panic!("expected results, got {other:?}"),
+    };
+    assert_eq!(refs, vec!["Romans 8:28".to_string()]);
+
+    // A keyword query scans the verse text.
+    let r = c.apply(&Command::ScriptureSearch {
+        query: "shepherd I shall lack nothing".into(),
+    });
+    let refs = match r {
+        ControllerReply::Message(ServerMessage::ScriptureResults { references, .. }) => references,
+        other => panic!("expected results, got {other:?}"),
+    };
+    assert!(
+        refs.contains(&"Psalms 23:1".to_string()) || refs.iter().any(|r| r.contains("23:1")),
+        "keyword hits: {refs:?}"
+    );
+}
+
+#[test]
+fn removed_live_item_with_a_reference_title_recovers_verbatim() {
+    use std::time::Instant;
+    // A plan item whose TITLE parses as a reference ("Romans 8:28") renders as a
+    // title-only slide. Removing it while live keeps that slide; recovery must
+    // restore it VERBATIM — never recompose it into verse text (review 7y-B).
+    let (mut c, ids) = controller();
+    c.apply(&Command::SelectItem { item_id: ids[1] }); // "Romans 8:28" item
+    c.apply(&Command::GoLive);
+    let before = c.presenter().live_output().bytes().to_vec();
+    c.apply(&Command::RemoveItem { item_id: ids[1] });
+
+    let snap = c.snapshot(Instant::now());
+    assert_eq!(
+        snap.live_scripture, None,
+        "a removed ITEM is not a scripture"
+    );
+    assert_eq!(snap.live_free_text.as_deref(), Some("Romans 8:28"));
+
+    let (mut fresh, _) = controller();
+    fresh.apply(&Command::RemoveItem { item_id: ids[1] });
+    fresh.restore(&snap);
+    assert_eq!(
+        fresh.presenter().live_output().bytes(),
+        before.as_slice(),
+        "recovery re-renders the exact pre-crash surface (no verse recompose)"
+    );
+    // ...while a REAL scripture recomposes its verse text (distinct field).
+    let live = fresh.presenter().live_slide().expect("live");
+    assert!(live.body.is_empty(), "title-only slide restored");
+}
+
+#[test]
+fn scripture_slides_never_exceed_the_compositor_line_capacity() {
+    // Psalm 119 (176 verses) truncates INSIDE the renderable region: at most 6
+    // body lines, the last being the ellipsis marker — pinned against the
+    // compositor capacity test in selahcue-present (title + 6 body lines).
+    let (mut c, _) = controller();
+    c.apply(&Command::StageScripture {
+        reference: "Psalm 119".into(),
+    });
+    let slide = c.presenter().staged().expect("staged");
+    assert!(slide.body.len() <= 6, "body lines: {}", slide.body.len());
+    assert_eq!(slide.body.last().map(String::as_str), Some("\u{2026}"));
+
+    // A short verse is untouched (no marker).
+    c.apply(&Command::StageScripture {
+        reference: "John 11:35".into(),
+    });
+    let slide = c.presenter().staged().expect("staged");
+    assert!(slide.body.len() <= 6);
+    assert_ne!(slide.body.last().map(String::as_str), Some("\u{2026}"));
 }

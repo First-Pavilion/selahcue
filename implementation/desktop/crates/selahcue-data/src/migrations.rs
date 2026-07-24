@@ -52,6 +52,12 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE session_state ADD COLUMN live_scripture TEXT;
     ALTER TABLE session_state ADD COLUMN staged_scripture TEXT;
     "#,
+    // v3 -> v4: a removed-but-still-on-screen plan item is a FREE SLIDE, not a
+    // scripture — recovery must re-render its title-only slide verbatim, never
+    // recompose verse text for a title that happens to parse (review 7y-B).
+    r#"
+    ALTER TABLE session_state ADD COLUMN live_free_text TEXT;
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

@@ -2619,6 +2619,7 @@ dependencies = [
  "selahcue-core",
  "selahcue-lan",
  "selahcue-present",
+ "selahcue-scripture",
  "serde",
 ]
 
@@ -2675,6 +2676,14 @@ dependencies = [
  "selahcue-core",
  "selahcue-engine",
  "serde",
+]
+
+[[package]]
+name = "selahcue-scripture"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "selahcue-core",
 ]
 
 [[package]]

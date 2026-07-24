@@ -13,6 +13,7 @@ server = ["selahcue-lan/server"]
 
 [dependencies]
 selahcue-core = { path = "../selahcue-core" }
+selahcue-scripture = { path = "../selahcue-scripture" }
 selahcue-present = { path = "../selahcue-present" }
 selahcue-lan = { path = "../selahcue-lan" }
 # Serializes the operator view-model for the UI (Tauri commands return it as JSON).

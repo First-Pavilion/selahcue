@@ -24,6 +24,7 @@ class ControllerView extends StatefulWidget {
 
 class _ControllerViewState extends State<ControllerView> {
   late final LiveController _live;
+  final _scriptureCtrl = TextEditingController();
 
   @override
   void initState() {
@@ -33,8 +34,17 @@ class _ControllerViewState extends State<ControllerView> {
 
   @override
   void dispose() {
+    _scriptureCtrl.dispose();
     _live.dispose();
     super.dispose();
+  }
+
+  void _stageScripture() {
+    final ref = _scriptureCtrl.text.trim();
+    if (ref.isEmpty) return;
+    _live.act(cmdStageScripture(ref));
+    _scriptureCtrl.clear();
+    FocusScope.of(context).unfocus();
   }
 
   Future<void> _unpair() async {
@@ -109,6 +119,57 @@ class _ControllerViewState extends State<ControllerView> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      if (view?.stagedScripture != null ||
+                          view?.liveScripture != null ||
+                          view?.liveFreeText != null)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Row(
+                            children: [
+                              if (view?.stagedScripture != null) ...[
+                                const _Badge(
+                                    text: 'PREVIEW',
+                                    color: DesignTokens.previewFill),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                    child: Text(view!.stagedScripture!,
+                                        overflow: TextOverflow.ellipsis)),
+                              ],
+                              if (view?.liveScripture != null ||
+                                  view?.liveFreeText != null) ...[
+                                const _Badge(
+                                    text: 'LIVE', color: DesignTokens.liveFill),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                    child: Text(
+                                        view!.liveScripture ??
+                                            view.liveFreeText!,
+                                        overflow: TextOverflow.ellipsis)),
+                              ],
+                            ],
+                          ),
+                        ),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _scriptureCtrl,
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                border: OutlineInputBorder(),
+                                hintText: 'Scripture — e.g. Romans 8:28',
+                              ),
+                              onSubmitted: (_) => _stageScripture(),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          OutlinedButton(
+                            onPressed: _stageScripture,
+                            child: const Text('Stage'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
                       Row(
                         children: [
                           Expanded(

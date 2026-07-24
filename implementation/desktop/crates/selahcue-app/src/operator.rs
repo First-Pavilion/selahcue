@@ -39,6 +39,12 @@ pub struct OperatorView {
     pub blackout: bool,
     /// The active timer, if one is running (updated by [`LiveController::tick`]).
     pub timer: Option<TimerSnapshot>,
+    /// The scripture reference staged in Preview, when Preview holds one.
+    pub staged_scripture: Option<String>,
+    /// The scripture reference on the Live output, when Live shows one.
+    pub live_scripture: Option<String>,
+    /// A removed-but-still-on-screen plan item's title on Live (a free slide).
+    pub live_free_text: Option<String>,
 }
 
 /// An ergonomic, UI-facing wrapper over the shared [`LiveController`]. Each action
@@ -144,6 +150,29 @@ impl OperatorShell {
             title: title.into(),
         })
     }
+
+    /// Stage a scripture reference in Preview (its verse text composes from the
+    /// bundled translation).
+    pub fn stage_scripture(&self, reference: &str) -> OperatorView {
+        self.act(&Command::StageScripture {
+            reference: reference.into(),
+        })
+    }
+
+    /// Search scripture: reference parse first, then keyword search over the
+    /// bundled translation. Returns display references (stageable directly).
+    pub fn scripture_search(&self, query: &str) -> Vec<String> {
+        self.with(|c| {
+            match c.apply(&Command::ScriptureSearch {
+                query: query.into(),
+            }) {
+                crate::ControllerReply::Message(
+                    selahcue_lan::protocol::ServerMessage::ScriptureResults { references, .. },
+                ) => references,
+                _ => Vec::new(),
+            }
+        })
+    }
 }
 
 // --- Wire conversions: the local view-model <-> the protocol DTO carried over the LAN
@@ -183,6 +212,9 @@ impl From<OperatorView> for OperatorStateView {
             staged_index: v.staged_index,
             blackout: v.blackout,
             timer: v.timer,
+            staged_scripture: v.staged_scripture,
+            live_scripture: v.live_scripture,
+            live_free_text: v.live_free_text,
         }
     }
 }
@@ -196,6 +228,9 @@ impl From<OperatorStateView> for OperatorView {
             staged_index: v.staged_index,
             blackout: v.blackout,
             timer: v.timer,
+            staged_scripture: v.staged_scripture,
+            live_scripture: v.live_scripture,
+            live_free_text: v.live_free_text,
         }
     }
 }
@@ -321,6 +356,37 @@ impl RemoteOperator {
             title: title.into(),
         })
         .await
+    }
+
+    /// Stage a scripture reference on the host (verse text from its bundle).
+    pub async fn stage_scripture(
+        &mut self,
+        reference: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::StageScripture {
+            reference: reference.into(),
+        })
+        .await
+    }
+
+    /// Search scripture on the host; returns stageable display references.
+    pub async fn scripture_search(
+        &mut self,
+        query: &str,
+    ) -> Result<Vec<String>, selahcue_lan::TransportError> {
+        use selahcue_lan::protocol::ServerMessage;
+        match self
+            .client
+            .command(Command::ScriptureSearch {
+                query: query.into(),
+            })
+            .await?
+        {
+            ServerMessage::ScriptureResults { references, .. } => Ok(references),
+            other => Err(selahcue_lan::TransportError::Protocol(format!(
+                "expected scripture_results, got: {other:?}"
+            ))),
+        }
     }
 
     /// Send a mutating command, then read back the fresh authoritative view. A command

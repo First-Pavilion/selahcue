@@ -143,6 +143,28 @@ impl Backend {
             Backend::Local(s) => Ok(s.rename_item(item_id, &title)),
         }
     }
+    async fn stage_scripture(&self, reference: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .stage_scripture(&reference)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.stage_scripture(&reference)),
+        }
+    }
+    async fn scripture_search(&self, query: String) -> Result<Vec<String>, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .scripture_search(&query)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.scripture_search(&query)),
+        }
+    }
 }
 
 struct AppState {
@@ -212,6 +234,20 @@ async fn rename_item(
     state: State<'_, AppState>,
 ) -> Result<OperatorView, String> {
     state.backend.rename_item(item_id, title).await
+}
+#[tauri::command]
+async fn stage_scripture(
+    reference: String,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.stage_scripture(reference).await
+}
+#[tauri::command]
+async fn scripture_search(
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    state.backend.scripture_search(query).await
 }
 
 /// The local endpoint descriptor an output window writes so its operator shell can
@@ -302,7 +338,9 @@ fn main() {
             add_item,
             remove_item,
             move_item,
-            rename_item
+            rename_item,
+            stage_scripture,
+            scripture_search
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");

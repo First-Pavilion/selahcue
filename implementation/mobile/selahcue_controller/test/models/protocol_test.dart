@@ -85,4 +85,37 @@ void main() {
         jsonDecode('{"event":"something_new","x":1}') as Map<String, dynamic>);
     expect(m, isA<UnknownMessage>());
   });
+
+  test('stage_scripture command matches the Rust wire shape', () {
+    expect(cmdStageScripture('Romans 8:28'),
+        {'cmd': 'stage_scripture', 'reference': 'Romans 8:28'});
+  });
+
+  test('operator_state parses scripture fields (and their absence)', () {
+    // The EXACT string the Rust serializer pins in
+    // selahcue-lan/tests/test_protocol.rs (wire_fixtures...) — change together.
+    const fixture =
+        '{"event":"operator_state","view":{"plan_name":"Sunday","items":[],'
+        '"live_index":null,"staged_index":null,"blackout":false,"timer":null,'
+        '"staged_scripture":"Romans 8:28","live_scripture":"John 3:16",'
+        '"live_free_text":"Removed Song"}}';
+    final frame = jsonDecode(fixture) as Map<String, dynamic>;
+    final withScripture =
+        OperatorStateView.fromJson(frame['view'] as Map<String, dynamic>);
+    expect(withScripture.stagedScripture, 'Romans 8:28');
+    expect(withScripture.liveScripture, 'John 3:16');
+    expect(withScripture.liveFreeText, 'Removed Song');
+    // Absent fields (the wire omits them when None) parse as null.
+    final without = OperatorStateView.fromJson({
+      'plan_name': 'Sunday',
+      'items': [],
+      'live_index': 0,
+      'staged_index': null,
+      'blackout': false,
+      'timer': null,
+    });
+    expect(without.stagedScripture, isNull);
+    expect(without.liveScripture, isNull);
+  });
+
 }

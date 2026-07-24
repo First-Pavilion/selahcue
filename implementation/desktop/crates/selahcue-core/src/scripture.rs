@@ -171,6 +171,11 @@ fn normalize(s: &str) -> String {
         .collect()
 }
 
+/// Canonical book name for a book number, 1 (Genesis) … 66 (Revelation).
+pub fn book_name(number: u8) -> Option<&'static str> {
+    BOOKS.iter().find(|b| b.number == number).map(|b| b.name)
+}
+
 /// Resolve a normalised book string to `(number, canonical name)`.
 fn lookup_book(norm: &str) -> Option<(u8, &'static str)> {
     if norm.is_empty() {

@@ -77,3 +77,26 @@ fn compose_is_deterministic() {
     let b = render(&compose_slide(&slide, &theme, 320, 180));
     assert_eq!(a.bytes(), b.bytes());
 }
+
+#[test]
+fn compose_slide_renders_title_plus_six_body_lines() {
+    // The physical line capacity the scripture slide cap relies on
+    // (selahcue-app::SCRIPTURE_MAX_LINES = 6 body lines): at 10% line height +
+    // 3% gap inside the 5% safe margin, exactly 7 text lines fit — a 7th body
+    // line must be dropped by the bottom-edge break, so content past the cap
+    // would silently vanish. If these metrics change, retune the cap.
+    use selahcue_engine::scene::Layer;
+    let count_text = |body: usize| {
+        let slide = Slide::new(
+            "Title",
+            (0..body).map(|i| format!("line {i}")).collect::<Vec<_>>(),
+        );
+        compose_slide(&slide, &Theme::dark(), 1920, 1080)
+            .layers
+            .iter()
+            .filter(|l| matches!(l, Layer::Text { .. }))
+            .count()
+    };
+    assert_eq!(count_text(6), 7, "title + 6 body lines all render");
+    assert_eq!(count_text(7), 7, "a 7th body line is clipped");
+}

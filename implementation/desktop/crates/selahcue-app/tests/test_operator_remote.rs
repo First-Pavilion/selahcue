@@ -294,3 +294,39 @@ async fn plan_editing_is_operator_only_over_the_wire() {
     let view = prod.add_item("song", "Sneaky").await.unwrap();
     assert_eq!(view.items.len(), 2, "Producer edit denied — plan unchanged");
 }
+
+/// Story 86ajpew05 acceptance, over the wire: a remote client searches
+/// scripture, stages the hit, goes live — and the HOST's audience output shows
+/// the verse text from the bundled translation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wire_scripture_search_stage_golive_shows_verse_text() {
+    let (addr, pin, controller) = setup().await;
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "producer", "tok-prod")
+        .await
+        .unwrap();
+
+    // Keyword search (not a reference) finds the verse in the bundled WEB text.
+    let hits = op.scripture_search("work together for good").await.unwrap();
+    assert!(
+        hits.contains(&"Romans 8:28".to_string()),
+        "keyword search over the wire: {hits:?}"
+    );
+
+    // Stage the hit: Preview holds the scripture (not a plan index) and the
+    // operator view says so.
+    let view = op.stage_scripture(&hits[0]).await.unwrap();
+    assert_eq!(view.staged_index, None);
+    assert_eq!(view.staged_scripture.as_deref(), Some("Romans 8:28"));
+
+    // Go Live: the host's audience output now carries the VERSE TEXT.
+    let view = op.go_live().await.unwrap();
+    assert_eq!(view.live_scripture.as_deref(), Some("Romans 8:28"));
+    let c = controller.lock().unwrap();
+    let live = c.presenter().live_slide().expect("live slide");
+    assert!(live.title.contains("Romans 8:28 (WEB)"));
+    let body = live.body.join(" ");
+    assert!(
+        body.contains("all things work together for good"),
+        "audience output shows the WEB verse text, got: {body}"
+    );
+}

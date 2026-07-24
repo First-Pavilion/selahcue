@@ -47,6 +47,9 @@ pub struct ControllerSnapshot {
     pub live_scripture: Option<String>,
     /// A scripture reference staged in Preview, if any.
     pub staged_scripture: Option<String>,
+    /// A removed-but-still-on-screen plan item's title (a free slide) — restored
+    /// verbatim, never recomposed as scripture.
+    pub live_free_text: Option<String>,
 }
 
 /// Drives the live/preview presentation from a [`ServicePlan`].
@@ -87,10 +90,77 @@ pub struct LiveController {
     plan_dirty: bool,
     /// The scripture reference staged in Preview, if Preview holds one (non-plan slide).
     staged_scripture: Option<String>,
-    /// The text of a NON-PLAN slide on the Live output (a scripture reference, or a
-    /// removed plan item whose slide deliberately stays on screen), if any — persisted
-    /// so crash recovery restores what the audience actually sees.
+    /// The scripture reference on the Live output, if Live shows one (verse text
+    /// recomposes from the bundled translation on restore).
     live_scripture: Option<String>,
+    /// The title of a removed-but-still-on-screen plan item (a free slide) —
+    /// restored VERBATIM as a title-only slide, never recomposed as scripture
+    /// even when the title happens to parse as a reference (review 7y-B).
+    live_free_text: Option<String>,
+}
+
+/// Maximum verse-text lines on a scripture slide INCLUDING the ellipsis marker.
+/// The compositor renders at most 7 text lines per frame (title + 6 body:
+/// line height 10% + gap 3% inside the 5% safe margin — pinned by the
+/// `compose_slide_renders_title_plus_six_body_lines` test in selahcue-present),
+/// so longer passages truncate to 5 verse lines + "…" (pagination is a later
+/// slice).
+const SCRIPTURE_MAX_LINES: usize = 6;
+/// Word-wrap budget per rendered line (the compositor does not wrap).
+const SCRIPTURE_WRAP_COLS: usize = 42;
+
+/// Compose the slide for a scripture reference: the parsed reference as the
+/// title and the bundled translation's verse text as wrapped body lines
+/// (FR-025/story 86ajpew05). Falls back to a title-only slide when the text is
+/// not a resolvable reference (e.g. the free-slide recovery path).
+fn scripture_slide(reference: &str) -> Slide {
+    let Ok(parsed) = selahcue_core::scripture::parse_one(reference) else {
+        return Slide::title(reference);
+    };
+    let verses = selahcue_scripture::verses(&parsed);
+    if verses.is_empty() {
+        return Slide::title(reference);
+    }
+    let multi = verses.len() > 1;
+    let mut lines: Vec<String> = Vec::new();
+    for v in &verses {
+        let text = if multi {
+            format!("{} {}", v.verse, v.text)
+        } else {
+            v.text.clone()
+        };
+        lines.extend(wrap_words(&text, SCRIPTURE_WRAP_COLS));
+        if lines.len() > SCRIPTURE_MAX_LINES {
+            break;
+        }
+    }
+    if lines.len() > SCRIPTURE_MAX_LINES {
+        lines.truncate(SCRIPTURE_MAX_LINES - 1);
+        lines.push("…".to_string());
+    }
+    Slide::new(
+        format!("{parsed} ({})", selahcue_scripture::TRANSLATION),
+        lines,
+    )
+}
+
+/// Greedy word wrap (the raster layer renders one text layer per line).
+fn wrap_words(text: &str, cols: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if !current.is_empty() && current.len() + 1 + word.len() > cols {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 impl LiveController {
@@ -116,6 +186,7 @@ impl LiveController {
             plan_dirty: false,
             staged_scripture: None,
             live_scripture: None,
+            live_free_text: None,
         }
     }
 
@@ -141,6 +212,7 @@ impl LiveController {
             timer_running,
             live_scripture: self.live_scripture.clone(),
             staged_scripture: self.staged_scripture.clone(),
+            live_free_text: self.live_free_text.clone(),
         }
     }
 
@@ -161,10 +233,18 @@ impl LiveController {
                 self.live_idx = Some(live);
             }
         } else if let Some(reference) = snap.live_scripture.as_ref() {
-            self.presenter.stage(Slide::title(reference.clone()));
+            self.presenter.stage(scripture_slide(reference));
             if self.presenter.go_live() {
                 self.live_idx = None;
                 self.live_scripture = Some(reference.clone());
+            }
+        } else if let Some(text) = snap.live_free_text.as_ref() {
+            // A removed item's slide: restore exactly what was on screen (a
+            // title-only slide) — even if the title parses as a reference.
+            self.presenter.stage(Slide::title(text.clone()));
+            if self.presenter.go_live() {
+                self.live_idx = None;
+                self.live_free_text = Some(text.clone());
             }
         }
         // Then PREVIEW: a plan item, a scripture, or — explicitly — nothing (go_live
@@ -173,7 +253,7 @@ impl LiveController {
         if let Some(staged) = ok(snap.staged_idx) {
             self.stage_index(staged);
         } else if let Some(reference) = snap.staged_scripture.as_ref() {
-            self.presenter.stage(Slide::title(reference.clone()));
+            self.presenter.stage(scripture_slide(reference));
             self.staged_idx = None;
             self.staged_scripture = Some(reference.clone());
         } else {
@@ -363,6 +443,9 @@ impl LiveController {
                 warn: v.warn,
                 running: self.timer.as_ref().is_some_and(Timer::is_running),
             }),
+            staged_scripture: self.staged_scripture.clone(),
+            live_scripture: self.live_scripture.clone(),
+            live_free_text: self.live_free_text.clone(),
         }
     }
 
@@ -430,6 +513,7 @@ impl LiveController {
                 if self.presenter.go_live() {
                     self.live_idx = self.staged_idx; // None for a non-plan scripture
                     self.live_scripture = self.staged_scripture.clone();
+                    self.live_free_text = None;
                     // Going live from blackout reveals the new content (UX-STATE-MATRIX).
                     self.blackout = false;
                     ControllerReply::Ack
@@ -441,6 +525,7 @@ impl LiveController {
                 self.presenter.clear_live();
                 self.live_idx = None;
                 self.live_scripture = None;
+                self.live_free_text = None;
                 self.blackout = false;
                 ControllerReply::Ack
             }
@@ -470,17 +555,27 @@ impl LiveController {
                 ControllerReply::Ack
             }
             Command::ScriptureSearch { query } => {
-                let references = scripture::parse(query)
+                // Reference queries ("Rom 8:28") parse directly; anything else
+                // keyword-searches the bundled translation's verse text. Both
+                // return display references, which stage directly.
+                let mut references: Vec<String> = scripture::parse(query)
                     .iter()
+                    .filter(|r| !selahcue_scripture::verses(r).is_empty())
                     .map(|r| r.to_string())
                     .collect();
+                if references.is_empty() {
+                    references = selahcue_scripture::search(query, 8)
+                        .into_iter()
+                        .map(|hit| hit.reference)
+                        .collect();
+                }
                 ControllerReply::Message(ServerMessage::ScriptureResults {
                     query: query.clone(),
                     references,
                 })
             }
             Command::StageScripture { reference } => {
-                self.presenter.stage(Slide::title(reference.clone()));
+                self.presenter.stage(scripture_slide(reference));
                 self.staged_idx = None; // a scripture slide is not a plan index
                 self.staged_scripture = Some(reference.clone());
                 ControllerReply::Ack
@@ -533,12 +628,12 @@ impl LiveController {
                     other => other,
                 };
                 // The removed item's slide stays on the audience output (edits never
-                // change Live). It is no longer a plan item, so track it as a free
-                // live slide by its text — crash recovery then restores what is
-                // actually on screen instead of a blank surface.
+                // change Live). It is no longer a plan item, so track it as a FREE
+                // live slide by its title — crash recovery restores that title slide
+                // verbatim (never as recomposed scripture, review 7y-B).
                 if self.live_idx == Some(idx) {
                     if let Some(slide) = self.presenter.live_slide() {
-                        self.live_scripture = Some(slide.title.clone());
+                        self.live_free_text = Some(slide.title.clone());
                     }
                 }
                 self.live_idx = fix(self.live_idx);
