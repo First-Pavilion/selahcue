@@ -563,6 +563,21 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7v-001..S7v-006. Change: 4 plan-edit wire commands + `Permission::EditPlan` (Operator-only; Producer denied over the wire); controller edit arms with index fixup + `plan_dirty`; `plan_repo::update/search/duplicate`; desktop `save_plan` wiring; operator-shell editing UI + add-item row; 5k-plan perf guard. Review (run `wcdpt578m`): 14 confirmed → **9 unique defects (A–I) → all fixed** — dead native dialogs → in-page editing; poll-vs-editor races; **plan/session joint autosave** (stale-index crash window); clean-exit plan flush; failed-plan-write retry; raw token off stdout; removed-LIVE-item recovery; first-run orphan rows; LIKE-wildcard escaping. Verifier: workspace **220** (+2 regressions), clippy clean, operator crate clean, perf guard green. Demo step 2: PARTIAL → **PASS(scoped)** (authoring UI + persistence + library delivered; verse-text and mobile editing remain elsewhere). Result: PASS. Decision: gate-review.
 
+## Batch 7w predicate — design system + canonical keybindings + emergency chrome (86ajp0b3d)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7w-001 | yes | Canonical tokens match UX-CANONICAL §4 **exactly**; one meaning per colour family; Figma design-system inks reconciled (fill/ink roles) | `cargo test -p selahcue-present --test test_tokens` | exactness + drift tests | tokens.rs; DESIGN-TOKENS.md | PASS |
+| S7w-002 | yes | Every rendered colour pairing meets **WCAG-AA** (white-on-fills, inks on all dark surfaces, key hints on filled buttons) | Rust + Dart contrast audits | computed ≥4.5:1 in tests on both stacks | test_tokens.rs; design_tokens_test.dart | PASS |
+| S7w-003 | yes | Canonical keybindings match §1: Space/→, ←, Enter, Esc Esc (1000ms double-tap), B, Backspace; auto-repeat filtered; any intervening key (incl. host P/Y/N + chords) disarms; emergency bindings non-unbindable | `cargo test -p selahcue-app --test test_keymap` | 7 contract tests incl. disarm + bounded state | keymap.rs; desktop main.rs; webview JS mirror | PASS |
+| S7w-004 | yes | Always-on emergency chrome: BLACKOUT (B) + CLEAR ALL (Esc Esc) footer, operable in every state incl. while editing; chords pierce text fields (physical-key matched); non-colour state cues (labels, aria-pressed) | webview pin test + review fixes A/C/D/G/J | `#emergency` needles pinned; blackout state synced outside the editor guard | index.html; test_tokens.rs | PASS |
+| S7w-005 | yes | Cross-surface consistency: webview + Flutter + stage display pinned to the same canonical values; no stale hexes; reduced-motion honoured on both UI surfaces | pin tests + residue sweep + `flutter test` | pinning needles (exact badge calls); accent/brand adopted on mobile; MediaQuery.disableAnimations handled | test_tokens.rs; design_tokens.dart; main.dart | PASS |
+| S7w-006 | yes | Independent adversarial review; confirmed findings fixed | run `wf_f4a4b8dc-747` (40 agents) | 33 confirmed → 14 unique (A–N) → **all fixed**; 2 refuted | CODE-REVIEW-batch7w.md | PASS |
+
+### Iteration ledger — batch 7w
+
+- Target: S7w-001..S7w-006. Change: `selahcue-present::tokens` (canonical fills + Figma inks + WCAG math) grounded in the live Figma variables (file SYQn5hFY8YVQKm3c6rw0eJ); `selahcue_app::keymap` state machine (double-Esc, disarm, bounded); desktop key rewiring (Esc-quit removed); operator webview retokenized + JS key mirror + `#emergency` footer (Figma console design) + reduced-motion; stage display on semantic inks; Flutter tokens + retokenized views + reduced-motion. Review (40 agents, 5 lenses + adversarial verify): **14 unique defects → all fixed** — headline catches: the `Ctrl/Cmd+Shift+.` emergency chord was dead code (Shift makes `e.key` `">"`), key auto-repeat defeated the double-Esc gate, focused buttons hijacked Enter/Space, stale blackout state while editing could re-assert blackout. Verifier: workspace **232** + Flutter **16**, clippy/analyze clean. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

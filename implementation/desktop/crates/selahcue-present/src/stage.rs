@@ -39,9 +39,11 @@ impl StageTheme {
             background: Rgba::rgb(6, 8, 14),
             text: Rgba::WHITE,
             track: Rgba::rgb(30, 34, 44),
-            timer_ok: Rgba::rgb(31, 176, 122),   // green
-            timer_warn: Rgba::rgb(224, 168, 0),  // amber
-            timer_alert: Rgba::rgb(224, 32, 32), // red
+            // Semantic inks from the canonical token set (one meaning per colour
+            // on every surface): green = on track, amber = warning, red = up.
+            timer_ok: crate::tokens::PREVIEW.ink,
+            timer_warn: crate::tokens::WARN.ink,
+            timer_alert: crate::tokens::LIVE.ink,
             identify_bg: Rgba::rgb(20, 60, 140),
             identify_marker: Rgba::WHITE,
         }

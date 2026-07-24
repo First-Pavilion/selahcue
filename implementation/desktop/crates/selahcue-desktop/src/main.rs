@@ -8,12 +8,16 @@
 //! Slides are composited on the CPU (via `selahcue-present`) and blitted to a wgpu
 //! surface. The Tauri operator shell is a subsequent batch.
 //!
-//! Local keys: `Space` stage next · `Enter` Go Live · `B` blackout · `C` clear ·
-//! `P` pairing QR (on the stage output) · `Y`/`N` allow/deny a pairing request · `Esc` quit.
+//! Local keys follow the canonical map (UX-CANONICAL §1, `selahcue_app::keymap`):
+//! `Space`/`→` stage next · `←` previous · `Enter` Go Live · `B` blackout ·
+//! `Esc Esc` clear all · `Backspace` clear staged — plus host-only `P` pairing QR
+//! and `Y`/`N` approve/deny. Quit via the window close button.
 
 #![forbid(unsafe_code)]
 
-use selahcue_app::{handler_for, ControllerSnapshot, LiveController};
+use selahcue_app::{
+    handler_for, CanonicalAction, ControllerSnapshot, KeyPress, Keymap, LiveController,
+};
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_data::session_repo::SessionState;
 use selahcue_data::{plan_repo, session_repo, Database};
@@ -465,6 +469,8 @@ struct App {
     /// The next frame deadline (a *fixed* schedule, advanced only when a frame fires), so
     /// continuous input can't keep pushing it forward and starve the redraw/tick loop.
     next_frame: Option<Instant>,
+    /// The canonical keybinding state machine (UX-CANONICAL §1).
+    keymap: Keymap,
     /// The session store (SQLite) for autosave + crash recovery.
     store: SessionStore,
     last_autosave: Instant,
@@ -537,6 +543,7 @@ impl App {
             controller,
             remote,
             next_frame: None,
+            keymap: Keymap::new(),
             store,
             last_autosave: Instant::now(),
         }
@@ -737,29 +744,71 @@ impl ApplicationHandler for App {
                     KeyEvent {
                         logical_key,
                         state: ElementState::Pressed,
+                        repeat,
                         ..
                     },
                 ..
-            } => match logical_key {
-                Key::Named(NamedKey::Escape) => event_loop.exit(),
-                Key::Named(NamedKey::Space) => drive(&self.controller, &Command::Next),
-                Key::Named(NamedKey::Enter) => drive(&self.controller, &Command::GoLive),
-                Key::Character(c) if c.eq_ignore_ascii_case("b") => {
-                    let on = self
-                        .controller
-                        .lock()
-                        .map(|g| !g.is_blackout())
-                        .unwrap_or(true);
-                    drive(&self.controller, &Command::Blackout { on });
+            } => {
+                // OS auto-repeat is never a deliberate action: a held Esc must
+                // not complete the double-tap, a held B must not strobe.
+                if repeat {
+                    return;
                 }
-                Key::Character(c) if c.eq_ignore_ascii_case("c") => {
-                    drive(&self.controller, &Command::Clear)
+                // Host-local pairing keys first (not canonical live actions).
+                // They still disarm a pending double-Esc — the keymap contract
+                // is that ANY intervening key does (Esc, Y, Esc must never clear).
+                match &logical_key {
+                    Key::Character(c) if c.eq_ignore_ascii_case("p") => {
+                        self.keymap.disarm();
+                        self.toggle_pairing();
+                        return;
+                    }
+                    Key::Character(c) if c.eq_ignore_ascii_case("y") => {
+                        self.keymap.disarm();
+                        self.resolve_approval(true);
+                        return;
+                    }
+                    Key::Character(c) if c.eq_ignore_ascii_case("n") => {
+                        self.keymap.disarm();
+                        self.resolve_approval(false);
+                        return;
+                    }
+                    _ => {}
                 }
-                Key::Character(c) if c.eq_ignore_ascii_case("p") => self.toggle_pairing(),
-                Key::Character(c) if c.eq_ignore_ascii_case("y") => self.resolve_approval(true),
-                Key::Character(c) if c.eq_ignore_ascii_case("n") => self.resolve_approval(false),
-                _ => {}
-            },
+                // Canonical map (UX-CANONICAL §1). NOTE: `Esc` no longer quits —
+                // double-`Esc` is Clear-all; quit via the window close button.
+                let key = match logical_key {
+                    Key::Named(NamedKey::Escape) => Some(KeyPress::Escape),
+                    Key::Named(NamedKey::Space) => Some(KeyPress::Space),
+                    Key::Named(NamedKey::Enter) => Some(KeyPress::Enter),
+                    Key::Named(NamedKey::Backspace) => Some(KeyPress::Backspace),
+                    Key::Named(NamedKey::ArrowLeft) => Some(KeyPress::ArrowLeft),
+                    Key::Named(NamedKey::ArrowRight) => Some(KeyPress::ArrowRight),
+                    Key::Character(c) => c.chars().next().map(KeyPress::Char),
+                    _ => None,
+                };
+                let action = key.and_then(|k| self.keymap.press(k, Instant::now()));
+                match action {
+                    Some(CanonicalAction::Next) => drive(&self.controller, &Command::Next),
+                    Some(CanonicalAction::Previous) => drive(&self.controller, &Command::Previous),
+                    Some(CanonicalAction::GoLive) => drive(&self.controller, &Command::GoLive),
+                    Some(CanonicalAction::ClearAll) => drive(&self.controller, &Command::Clear),
+                    Some(CanonicalAction::BlackoutToggle) => {
+                        let on = self
+                            .controller
+                            .lock()
+                            .map(|g| !g.is_blackout())
+                            .unwrap_or(true);
+                        drive(&self.controller, &Command::Blackout { on });
+                    }
+                    Some(CanonicalAction::ClearLayer) => {
+                        // Single-layer live output today: clearing the current
+                        // layer IS the full clear (per-layer arrives with 86ajp0awx).
+                        drive(&self.controller, &Command::Clear)
+                    }
+                    None => {}
+                }
+            }
             _ => {}
         }
     }
@@ -1015,7 +1064,7 @@ fn print_connect_banner(
         "    (commands: next · previous · go-live · blackout-on · blackout-off · clear · state)"
     );
     println!();
-    println!("  Local keys: Space=next  Enter=Go Live  B=blackout  C=clear  Esc=quit");
+    println!("  Local keys: Space/\u{2192}=next  \u{2190}=prev  Enter=Go Live  B=blackout  Esc Esc=clear all  Backspace=clear staged");
     println!(
         "  Pairing:    P=show a QR invite (stage window + terminal)  Y/N=allow/deny a request"
     );

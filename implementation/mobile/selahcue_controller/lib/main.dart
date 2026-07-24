@@ -8,6 +8,7 @@ library;
 
 import 'package:flutter/material.dart';
 
+import 'models/design_tokens.dart';
 import 'models/session.dart';
 import 'models/stored_session.dart';
 import 'views/controller_view.dart';
@@ -25,15 +26,48 @@ class SelahCueApp extends StatelessWidget {
       theme: ThemeData(
         brightness: Brightness.dark,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF3B82F6),
+          seedColor: DesignTokens.accentBrand,
           brightness: Brightness.dark,
         ),
-        scaffoldBackgroundColor: const Color(0xFF0E1116),
+        scaffoldBackgroundColor: DesignTokens.bgBase,
         useMaterial3: true,
       ),
+      // Reduced motion (story 86ajp0b3d): when the OS accessibility setting
+      // asks for it, page transitions are disabled app-wide.
+      builder: (context, child) {
+        if (MediaQuery.of(context).disableAnimations && child != null) {
+          return Theme(
+            data: Theme.of(context).copyWith(
+              pageTransitionsTheme: PageTransitionsTheme(
+                builders: {
+                  for (final platform in TargetPlatform.values)
+                    platform: const _NoTransitionsBuilder(),
+                },
+              ),
+            ),
+            child: child,
+          );
+        }
+        return child ?? const SizedBox.shrink();
+      },
       home: const Launcher(),
     );
   }
+}
+
+/// Route transitions render instantly under reduced motion.
+class _NoTransitionsBuilder extends PageTransitionsBuilder {
+  const _NoTransitionsBuilder();
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) =>
+      child;
 }
 
 /// Reconnect with stored credentials, or fall into pairing.

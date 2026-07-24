@@ -7,9 +7,11 @@
 #![forbid(unsafe_code)]
 
 mod controller;
+pub mod keymap;
 mod operator;
 
 pub use controller::{ControllerReply, ControllerSnapshot, LiveController};
+pub use keymap::{CanonicalAction, KeyPress, Keymap};
 pub use operator::{ItemView, OperatorShell, OperatorView};
 
 #[cfg(feature = "server")]

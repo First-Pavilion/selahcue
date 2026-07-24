@@ -205,8 +205,9 @@ fn has_color(fb: &FrameBuffer, target: (u8, u8, u8)) -> bool {
     })
 }
 
-const TIMER_OK: (u8, u8, u8) = (31, 176, 122);
-const TIMER_ALERT: (u8, u8, u8) = (224, 32, 32);
+// The semantic token inks (tokens::PREVIEW.ink / tokens::LIVE.ink).
+const TIMER_OK: (u8, u8, u8) = (0x2b, 0xb6, 0x73);
+const TIMER_ALERT: (u8, u8, u8) = (0xef, 0x44, 0x44);
 
 #[test]
 fn stage_monitor_shows_the_timer_state() {

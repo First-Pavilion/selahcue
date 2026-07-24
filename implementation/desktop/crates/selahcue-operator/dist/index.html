@@ -5,9 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SelahCue Operator</title>
     <style>
+      /* Canonical design tokens (UX-CANONICAL §4) + Figma design-system surfaces.
+         Pinned by selahcue-present/tests/test_tokens.rs — change both together.
+         Fills carry white text; inks are text/glyphs on the dark surfaces. */
       :root {
-        --bg: #0e1116; --panel: #171b22; --line: #262c36; --text: #e6e9ef;
-        --muted: #8b93a1; --live: #e5484d; --preview: #f5a524; --accent: #3b82f6;
+        --bg: #0e1116; --panel: #171b22; --line: #2b323d;
+        --text: #eef1f6; --muted: #9aa4b2; --accent: #5b6bd6;
+        --preview: #0f7b6c; --live: #a3283a; --warn: #9a5b00;
+        --preview-ink: #2bb673; --live-ink: #ef4444; --warn-ink: #f2b53c;
       }
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; }
@@ -36,11 +41,13 @@
         padding: 2px 6px; min-width: 74px; text-align: center;
       }
       .item .title { flex: 1; font-weight: 500; }
-      .badge { font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 4px; letter-spacing: .04em; }
-      .badge.live { background: var(--live); color: #fff; }
-      .badge.preview { background: var(--preview); color: #1a1300; }
-      .item.is-live { border-color: var(--live); }
-      .item.is-staged { border-color: var(--preview); }
+      /* Non-colour redundancy (WCAG 1.4.1): live/preview are label + border,
+         never colour alone. */
+      .badge { font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 4px; letter-spacing: .04em; color: #fff; }
+      .badge.live { background: var(--live); }
+      .badge.preview { background: var(--preview); }
+      .item.is-live { border-color: var(--live-ink); }
+      .item.is-staged { border-color: var(--preview-ink); }
       aside {
         width: 240px; border-left: 1px solid var(--line); padding: 16px;
         display: flex; flex-direction: column; gap: 10px;
@@ -50,8 +57,15 @@
         border: 1px solid var(--line); border-radius: 8px; padding: 12px; cursor: pointer;
       }
       button:hover { border-color: var(--accent); }
-      button.golive { background: #10331b; border-color: #1f7a3a; color: #7ee39b; }
-      button.blackout.on { background: #3a0d0f; border-color: var(--live); color: #ff9ea1; }
+      button .key {
+        font-size: 10px; font-weight: 600; color: var(--muted);
+        border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; margin-left: 6px;
+      }
+      button.golive { background: var(--preview); border-color: var(--preview-ink); color: #fff; }
+      /* Key hints on token-filled buttons: white for AA (muted grey is 2-3:1 there). */
+      button.golive .key, #blackout.on .key, #clear-all.armed .key {
+        color: #fff; border-color: rgba(255, 255, 255, 0.55);
+      }
       .timer-row { display: flex; gap: 8px; }
       .timer-row button { flex: 1; padding: 10px; }
       .timer-row select, .timer-row input {
@@ -61,6 +75,23 @@
       .timer-row input { flex: 1; min-width: 0; }
       .status { margin-top: auto; color: var(--muted); font-size: 12px; }
       .status b { color: var(--text); }
+      /* Always-on emergency chrome (UX-CANONICAL §3): never occluded, never
+         removed, operable in every state — including while a row is being edited. */
+      #emergency {
+        display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+        border-top: 1px solid var(--line); background: var(--panel);
+      }
+      #emergency .note { color: var(--muted); font-size: 11px; }
+      #emergency .hints { margin-left: auto; color: var(--muted); font-size: 11px; }
+      #blackout { border-color: var(--line); }
+      #blackout.on { background: var(--live); border-color: var(--live-ink); color: #fff; }
+      #blackout-state { margin-left: 6px; font-size: 10px; font-weight: 800; }
+      #clear-all { border-color: var(--live-ink); color: var(--live-ink); }
+      #clear-all.armed { background: var(--live); color: #fff; }
+      /* Reduced motion: honour the OS setting — no transitions or animations. */
+      @media (prefers-reduced-motion: reduce) {
+        * { transition: none !important; animation: none !important; }
+      }
     </style>
   </head>
   <body>
@@ -71,11 +102,9 @@
     <main>
       <section id="plan" aria-label="Service plan"></section>
       <aside>
-        <button id="prev">◀ Previous</button>
-        <button id="next">Next ▶</button>
-        <button id="golive" class="golive">GO LIVE</button>
-        <button id="blackout" class="blackout">Blackout</button>
-        <button id="clear">Clear</button>
+        <button id="prev">◀ Previous<span class="key">←</span></button>
+        <button id="next">Next ▶<span class="key">Space</span></button>
+        <button id="golive" class="golive">GO LIVE<span class="key">⏎ Enter</span></button>
         <div class="timer-row">
           <select id="add-kind">
             <option value="song">Song</option>
@@ -98,6 +127,12 @@
         </div>
       </aside>
     </main>
+    <footer id="emergency" role="toolbar" aria-label="Emergency controls">
+      <button id="blackout" aria-pressed="false" aria-label="Blackout the audience output">■ BLACKOUT<span id="blackout-state"></span><span class="key">B</span></button>
+      <button id="clear-all" aria-label="Clear all live layers">✕ CLEAR ALL<span class="key">Esc Esc</span></button>
+      <span class="note">Always reachable · pierces any dialog</span>
+      <span class="hints">Space Next · ⏎ Go Live · ← Prev</span>
+    </footer>
     <script>
       const invoke = window.__TAURI__.core.invoke;
       let editing = null;       // item id with an open inline editor
@@ -105,6 +140,9 @@
       let lastRendered = "";    // skip DOM rebuilds when nothing changed
 
       function render(view) {
+        // Chrome (emergency footer, status, timer) syncs on EVERY view — the
+        // blackout toggle must read true state even while an editor is open.
+        syncChrome(view);
         // Never clobber an open editor or a pending delete-confirm, and skip
         // identical re-renders (the 1s poll must not eat in-flight clicks).
         const key = JSON.stringify(view);
@@ -171,7 +209,7 @@
             } else {
               confirmDelete = it.id;
               del.textContent = "sure?";
-              del.style.color = "var(--live)";
+              del.style.color = "var(--live-ink)";
               setTimeout(() => { if (confirmDelete === it.id) { confirmDelete = null; act(() => invoke("view")); } }, 3000);
             }
           });
@@ -190,6 +228,9 @@
         const nameAt = (i) => (i == null ? "—" : view.items[i] ? view.items[i].title : "—");
         document.getElementById("s-live").textContent = nameAt(view.live_index);
         document.getElementById("s-preview").textContent = nameAt(view.staged_index);
+      }
+
+      function syncChrome(view) {
         document.getElementById("s-black").textContent = view.blackout ? "ON" : "off";
 
         const t = view.timer;
@@ -200,13 +241,15 @@
         } else {
           const secs = t.remaining_secs != null ? t.remaining_secs : t.elapsed_secs;
           tEl.textContent = t.time_up ? "TIME UP" : fmtClock(secs);
-          tEl.style.color = t.time_up ? "var(--live)" : t.warn ? "var(--preview)" : "#7ee39b";
+          tEl.style.color = t.time_up ? "var(--live-ink)" : t.warn ? "var(--warn-ink)" : "var(--preview-ink)";
         }
 
+        // Non-colour blackout state: label + aria-pressed, not just the red fill.
         const b = document.getElementById("blackout");
         b.classList.toggle("on", view.blackout);
-        b.textContent = view.blackout ? "Un-blackout" : "Blackout";
         b.dataset.on = view.blackout ? "1" : "0";
+        b.setAttribute("aria-pressed", view.blackout ? "true" : "false");
+        document.getElementById("blackout-state").textContent = view.blackout ? "ON" : "";
       }
 
       function miniBtn(label, onclick) {
@@ -239,14 +282,17 @@
         }
       }
 
-      document.getElementById("prev").onclick = () => act(() => invoke("previous"));
-      document.getElementById("next").onclick = () => act(() => invoke("next"));
-      document.getElementById("golive").onclick = () => act(() => invoke("go_live"));
-      document.getElementById("clear").onclick = () => act(() => invoke("clear"));
-      document.getElementById("blackout").onclick = () => {
+      const toggleBlackout = () => {
         const on = document.getElementById("blackout").dataset.on !== "1";
         act(() => invoke("blackout", { on }));
       };
+      const clearAll = () => act(() => invoke("clear"));
+
+      document.getElementById("prev").onclick = () => act(() => invoke("previous"));
+      document.getElementById("next").onclick = () => act(() => invoke("next"));
+      document.getElementById("golive").onclick = () => act(() => invoke("go_live"));
+      document.getElementById("blackout").onclick = toggleBlackout;
+      document.getElementById("clear-all").onclick = clearAll;
       document.getElementById("timer-start").onclick = () =>
         act(() => invoke("start_timer", { seconds: 300 }));
       document.getElementById("timer-stop").onclick = () => act(() => invoke("stop_timer"));
@@ -258,6 +304,108 @@
           document.getElementById("add-title").value = "";
         }
       };
+
+      // Mouse-clicked buttons blur so Enter/Space stay global afterwards.
+      // Keyboard activation keeps focus (a keyboard-synthesized click has
+      // e.detail === 0), so Tab users are not thrown back to the top.
+      document.addEventListener("click", (e) => {
+        const btn = e.target && e.target.closest && e.target.closest("button");
+        if (btn && e.detail > 0) btn.blur();
+      });
+
+      // Canonical keybindings (UX-CANONICAL §1) — the JS mirror of
+      // selahcue_app::keymap (contract-tested in Rust; hexes/keys pinned here).
+      // Double-Esc window matches keymap::DOUBLE_ESC_WINDOW (1000ms).
+      let lastEsc = 0;
+      let armTimer = null;
+      const armClearHint = (armed) => {
+        document.getElementById("clear-all").classList.toggle("armed", armed);
+        if (armTimer) {
+          clearTimeout(armTimer);
+          armTimer = null;
+        }
+        if (armed) {
+          // The armed state expires with the double-tap window — never stale.
+          armTimer = setTimeout(() => {
+            lastEsc = 0;
+            armClearHint(false);
+          }, 1000);
+        }
+      };
+      const disarm = () => {
+        lastEsc = 0;
+        armClearHint(false);
+      };
+      window.addEventListener("keydown", (e) => {
+        // OS auto-repeat is never a deliberate action: a held Esc must not
+        // complete the double-tap, a held B must not strobe the blackout.
+        if (e.repeat) return;
+        const mod = e.ctrlKey || e.metaKey;
+        // Emergency chords pierce everything, including text fields (§3):
+        // Ctrl/Cmd+Shift+B = blackout, Ctrl/Cmd+Shift+. = clear all. Matched by
+        // PHYSICAL key (e.code) — with Shift held, e.key is "B" but also ">"
+        // for Period on most layouts, so e.key would make the chord dead.
+        if (mod && e.shiftKey && e.code === "KeyB") {
+          e.preventDefault();
+          disarm();
+          toggleBlackout();
+          return;
+        }
+        if (mod && e.shiftKey && e.code === "Period") {
+          e.preventDefault();
+          disarm();
+          clearAll();
+          return;
+        }
+        // ANY intervening key disarms the double-tap — including keys typed in
+        // a field and host chords (mirrors keymap.rs: Esc-then-anything-then-Esc
+        // is never a clear).
+        if (e.key !== "Escape") disarm();
+        // Presentation-focus keys are inactive while typing in a field (the
+        // inline editor owns Enter/Escape there) and on a focused button
+        // (Enter/Space must activate THAT control, not fire Go Live/Next).
+        const tag = (e.target && e.target.tagName) || "";
+        if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+        if (tag === "BUTTON" && (e.key === "Enter" || e.key === " ")) return;
+        switch (e.key) {
+          case " ":
+          case "ArrowRight":
+            e.preventDefault();
+            act(() => invoke("next"));
+            break;
+          case "ArrowLeft":
+            e.preventDefault();
+            act(() => invoke("previous"));
+            break;
+          case "Enter":
+            e.preventDefault();
+            act(() => invoke("go_live"));
+            break;
+          case "b":
+          case "B":
+            e.preventDefault();
+            toggleBlackout();
+            break;
+          case "Backspace":
+            // Clear current layer (§1). The live output is single-layer until
+            // per-layer clearing (86ajp0awx) — today this equals Clear-all.
+            e.preventDefault();
+            clearAll();
+            break;
+          case "Escape": {
+            e.preventDefault();
+            const now = Date.now();
+            if (now - lastEsc <= 1000) {
+              disarm();
+              clearAll();
+            } else {
+              lastEsc = now;
+              armClearHint(true);
+            }
+            break;
+          }
+        }
+      });
 
       act(() => invoke("view"));
       // Poll so a running countdown ticks in the UI (the host advances it each frame).

@@ -6,6 +6,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../controllers/live_controller.dart';
+import '../models/design_tokens.dart';
 import '../models/protocol.dart';
 import '../models/session.dart';
 import '../models/stored_session.dart';
@@ -91,10 +92,12 @@ class _ControllerViewState extends State<ControllerView> {
                             title: Text(item.title),
                             trailing: item.isLive
                                 ? const _Badge(
-                                    text: 'LIVE', color: Color(0xFFE5484D))
+                                    text: 'LIVE',
+                                    color: DesignTokens.liveFill)
                                 : item.isStaged
                                     ? const _Badge(
-                                        text: 'PREVIEW', color: Color(0xFFF5A524))
+                                        text: 'PREVIEW',
+                                        color: DesignTokens.previewFill)
                                     : null,
                           );
                         },
@@ -129,7 +132,7 @@ class _ControllerViewState extends State<ControllerView> {
                         height: 52,
                         child: FilledButton(
                           style: FilledButton.styleFrom(
-                              backgroundColor: const Color(0xFF1F7A3A)),
+                              backgroundColor: DesignTokens.previewFill),
                           onPressed: () => _live.act(cmdGoLive()),
                           child: const Text('GO LIVE',
                               style: TextStyle(
@@ -143,7 +146,7 @@ class _ControllerViewState extends State<ControllerView> {
                             child: OutlinedButton(
                               style: blackout
                                   ? OutlinedButton.styleFrom(
-                                      backgroundColor: const Color(0xFF3A0D0F))
+                                      backgroundColor: DesignTokens.liveFill)
                                   : null,
                               onPressed: () => _live.act(cmdBlackout(!blackout)),
                               child: Text(blackout ? 'Un-blackout' : 'Blackout'),
@@ -197,11 +200,11 @@ class _KindChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        border: Border.all(color: const Color(0xFF262C36)),
+        border: Border.all(color: DesignTokens.border),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Text(kind.toUpperCase(),
-          style: const TextStyle(fontSize: 10, color: Color(0xFF8B93A1))),
+          style: const TextStyle(fontSize: 10, color: DesignTokens.textMuted)),
     );
   }
 }
@@ -236,11 +239,11 @@ class _TimerBadge extends StatelessWidget {
     final Color color;
     if (timer.timeUp) {
       label = 'TIME UP';
-      color = const Color(0xFFE5484D);
+      color = DesignTokens.liveInk;
     } else {
       final secs = timer.remainingSecs ?? timer.elapsedSecs;
       label = '${secs ~/ 60}:${(secs % 60).toString().padLeft(2, '0')}';
-      color = timer.warn ? const Color(0xFFF5A524) : const Color(0xFF7EE39B);
+      color = timer.warn ? DesignTokens.warnInk : DesignTokens.previewInk;
     }
     return Text(label,
         style: TextStyle(fontWeight: FontWeight.w700, color: color));
