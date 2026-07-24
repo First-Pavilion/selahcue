@@ -18,7 +18,8 @@ Org context: First Pavilion (appears Nigeria-based) → NDPA/NDPR + GDPR both in
 | **ASV** (American Standard Version, 1901) | Public domain (copyright expired) | ✅ | ✅ | n/a | No | DOCUMENTED / High | get.bible, blueletterbible |
 | **YLT** (Young's Literal Translation, 1862/1898) | Public domain | ✅ | ✅ | n/a | No | DOCUMENTED / High | Wikipedia (YLT), get.bible |
 | **BSB / Berean family** (Berean Standard Bible, Berean Literal, Majority) | Public domain via **CC0** since **2023-04-30** | ✅ | ✅ | n/a | Appreciated, **not required** | DOCUMENTED / High | bereanbible.com, archive.org, bsb.freely.giving |
-| **BBE** (Bible in Basic English), **Darby**, **Webster** | Public domain | ✅ | ✅ | n/a | No | DOCUMENTED / Med | get.bible |
+| **Darby**, **Webster** | Public domain (worldwide) | ✅ | ✅ | n/a | No | DOCUMENTED / Med | get.bible |
+| **BBE** (Bible in Basic English) | **US-only PD** (UCC non-notice); Cambridge UP copyright plausibly runs to 2038 in life+70 jurisdictions (UK/EU/Nigeria — translator S. H. Hooke d. 1968) | ⚠️ US-only | ❌ not bundled (batch 7ae review) | n/a | Owner decision needed for US-only distribution | VERIFIED / High | ebible.org engBBE copyright page (2026-07-24) |
 | **LEB** (Lexham English Bible) | Free use **with attribution** (Lexham/Logos terms; CC-style) | ⚠️ likely, verify | ✅ | ✅ | **Yes** | DOCUMENTED / Med | get.bible (confirm lexhampress terms) |
 | **NET Bible** | Free for **non-commercial**; commercial needs licence | ❌ (commercial app) | ✅ | ✅ (bible.org web service) | Yes | DOCUMENTED / Med | get.bible, bible.org |
 | **unfoldingWord / ULB / UST** | Open-licensed (**CC BY-SA 4.0**) | ✅ (with share-alike caveat) | ✅ | ✅ | **Yes (CC BY-SA)** | DOCUMENTED / Med | get.bible, unfoldingWord |
@@ -36,7 +37,7 @@ Org context: First Pavilion (appears Nigeria-based) → NDPA/NDPR + GDPR both in
 - **Free Use Bible API** (bible.helloao.org) — **MIT-licensed codebase**, 1250+ translations, no key/limits. ⚠️ MIT covers the *code*, **not** each translation's underlying copyright — verify per-translation status before bundling; treat non-PD entries as UNKNOWN. Class DOCUMENTED / Med (faith.tools, bible.helloao.org).
 - **Bible Gateway / YouVersion** — no general redistribution/bundling licence; display governed by their own terms; treat as reference only, not a bundling source. Class INFERRED / Med.
 
-**Bottom line:** Bundlable for MVP = **KJV, WEB, ASV, YLT, BSB/Berean, BBE, Darby, Webster** (all PD), plus **LEB/unfoldingWord with attribution/share-alike caveats**. Everything copyrighted (NIV/ESV/NLT/NKJV/NASB/CSB/MSG/AMP) must be **API-only or user-supplied**, never bundled.
+**Bottom line:** Bundlable for MVP = **KJV, WEB, WEBBE, ASV, YLT, BSB/Berean, Darby, Webster** (PD worldwide), plus **LEB/unfoldingWord with attribution/share-alike caveats**. **BBE is US-only PD — excluded from the bundle (batch 7ae) pending an owner decision.** Everything copyrighted (NIV/ESV/NLT/NKJV/NASB/CSB/MSG/AMP) must be **API-only or user-supplied**, never bundled. *(As bundled 2026-07-24: KJV, WEB, WEBBE, ASV, Darby — YLT has no usable ebible export.)*
 
 ---
 
@@ -138,7 +139,7 @@ Org context: First Pavilion (appears Nigeria-based) → NDPA/NDPR + GDPR both in
 ## 6. Recommended MVP licensing posture
 
 **Safe to ship / bundle now:**
-- **Bibles (bundle):** KJV, WEB, ASV, YLT, BSB/Berean, BBE, Darby, Webster — all public domain. Sourced as **USFM/USX/plain text** from eBible.org / open.bible / bereanbible.com. Include a courtesy attribution/copyright-metadata screen even where not required.
+- **Bibles (bundle):** KJV, WEB, WEBBE, ASV, Darby (shipped 2026-07-24) + YLT/BSB/Webster candidates — public domain worldwide. **BBE excluded (US-only PD).** Sourced as **VPL plain text** from eBible.org. Include a courtesy attribution/copyright-metadata screen even where not required.
 - **Bibles (user-supplied / API-only):** NIV, ESV, NLT, NKJV, NASB, CSB, MSG, AMP — never bundled. Offer **API.Bible** (licensed tier, commercial plan) and/or **user import** of the user's licensed module. If using ESV API, respect ≤500-verse limits + non-commercial boundary (needs a commercial licence for a paid app).
 - **STT:** Whisper (MIT), on-device.
 - **Fonts:** OFL/Apache families. **Icons:** Lucide/MIT sets. **NDI:** bundle redistributable + add ndi.video link, keep updated.

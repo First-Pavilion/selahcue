@@ -201,6 +201,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         live_free_text: Some("Removed Song".into()),
         outputs: vec![],
         displays: vec![],
+        translations: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -233,6 +234,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
             width: 1920,
             height: 1080,
         }],
+        translations: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),

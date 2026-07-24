@@ -15,22 +15,38 @@ fn both_protestant_canons_are_bundled_and_kjv_is_the_default() {
     assert_eq!(TRANSLATION, "KJV");
     assert_eq!(Translation::default(), Translation::Kjv);
     assert_eq!(Translation::ALL[0], Translation::Kjv);
-    // ebible.org VPL exports: KJV 31,102 / WEB 31,098 verses.
+    // ebible.org VPL exports.
     assert_eq!(verse_count_in(Translation::Kjv), 31_102);
     assert_eq!(verse_count_in(Translation::Web), 31_098);
+    assert_eq!(verse_count_in(Translation::Asv), 31_086);
+    assert_eq!(verse_count_in(Translation::Webbe), 31_098);
+    assert_eq!(verse_count_in(Translation::Dby), 31_099);
     assert_eq!(verse_count(), 31_102, "default count is the KJV's");
-    // First and last verses of the canon resolve in both.
+    // First and last verses of the canon resolve in EVERY translation (wording
+    // varies legitimately — BBE opens "At the first God made…").
     let gen = parse_one("Genesis 1:1").unwrap();
     let rev = parse_one("Revelation 22:21").unwrap();
     for t in Translation::ALL {
-        assert!(passage_text_in(t, &gen)
-            .unwrap()
-            .contains("In the beginning"));
-        assert!(passage_text_in(t, &rev).unwrap().contains("grace"));
+        assert!(
+            passage_text_in(t, &gen).unwrap().contains("God"),
+            "{} Genesis 1:1",
+            t.code()
+        );
+        assert!(
+            !passage_text_in(t, &rev).unwrap().is_empty(),
+            "{} Revelation 22:21",
+            t.code()
+        );
     }
-    // Codes round-trip (wire/UI selector), case-insensitively.
-    assert_eq!(Translation::from_code("kjv"), Some(Translation::Kjv));
-    assert_eq!(Translation::from_code("WEB"), Some(Translation::Web));
+    assert!(
+        passage_text(&gen).unwrap().contains("In the beginning"),
+        "KJV default wording"
+    );
+    // Codes round-trip (wire/UI selector), case-insensitively — for ALL.
+    for t in Translation::ALL {
+        assert_eq!(Translation::from_code(t.code()), Some(t));
+        assert_eq!(Translation::from_code(&t.code().to_lowercase()), Some(t));
+    }
     assert_eq!(Translation::from_code("NIV"), None);
 }
 
@@ -44,9 +60,15 @@ fn romans_8_28_reads_correctly_in_each_translation() {
         "unexpected KJV text: {kjv}"
     );
     assert!(!kjv.contains('[') && !kjv.contains('¶'), "markup stripped");
-    // WEB wording stays available explicitly.
+    // Each alternative translation keeps its own wording.
     let web = passage_text_in(Translation::Web, &r).unwrap();
     assert!(web.contains("work together for good for those who love God"));
+    let asv = passage_text_in(Translation::Asv, &r).unwrap();
+    assert!(asv.contains("to them that love God all things work together"));
+    let webbe = passage_text_in(Translation::Webbe, &r).unwrap();
+    assert!(webbe.contains("work together for good for those who love God"));
+    let dby = passage_text_in(Translation::Dby, &r).unwrap();
+    assert!(dby.contains("all things work together for good to those who love"));
 }
 
 #[test]
@@ -150,4 +172,44 @@ fn chapter_browser_returns_full_chapters_with_paging() {
 
     // Out-of-canon chapters are None, never a panic.
     assert!(chapter(&parse_one("Psalm 151").unwrap()).is_none());
+}
+
+#[test]
+fn no_markup_residue_in_any_bundled_translation() {
+    // Every marker class seen in ebible exports must be stripped everywhere:
+    // supplied-word brackets, pilcrows, and footnote-apparatus asterisks (the
+    // review found '*' residue in Darby's Psalm 119 and BBE placeholders).
+    use selahcue_scripture::verses_in;
+    let whole_bible = selahcue_core::scripture::parse_one("Genesis 1").unwrap();
+    let _ = whole_bible; // per-translation full scans below
+    for t in Translation::ALL {
+        let mut scanned = 0usize;
+        for book in 1..=66u8 {
+            for chapter in 1..=200u16 {
+                let r = selahcue_core::scripture::Reference {
+                    book,
+                    book_name: "",
+                    chapter,
+                    verses: None,
+                };
+                let vs = verses_in(t, &r);
+                if vs.is_empty() {
+                    break;
+                }
+                for v in vs {
+                    scanned += 1;
+                    assert!(
+                        !v.text.contains(['[', ']', '¶', '*']),
+                        "{} {}:{}:{} has residue: {}",
+                        t.code(),
+                        book,
+                        chapter,
+                        v.verse,
+                        v.text
+                    );
+                }
+            }
+        }
+        assert!(scanned > 30_000, "{} scanned {scanned}", t.code());
+    }
 }

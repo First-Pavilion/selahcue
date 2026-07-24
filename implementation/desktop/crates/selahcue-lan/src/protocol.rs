@@ -190,6 +190,10 @@ pub struct OperatorStateView {
     /// The attached physical displays (for the assignment picker) — desktop-only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub displays: Vec<DisplayView>,
+    /// Translation codes THIS host can stage/search (the picker must offer the
+    /// host's list, not the shell's — they can differ across versions).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub translations: Vec<String>,
 }
 
 /// One output role (main/stage) and where it currently renders.

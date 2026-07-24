@@ -467,6 +467,12 @@
         // Top-bar LIVE chip: on air only when something is actually live.
         document.getElementById("live-chip").classList.toggle("on", view.live_index != null);
 
+        // The HOST's translation list wins: a newer shell against an older host
+        // must not offer codes the host will deny (silent stage/search no-ops).
+        if (view.translations && view.translations.length) {
+          renderTranslations(view.translations);
+        }
+
         // Preview / Live panels (Figma console): the on-air truth must never go
         // stale — an emergency clear/Go-Live can land while an inline editor or
         // delete-confirm is open, so the panels sync on EVERY view (they touch
@@ -680,8 +686,16 @@
       let scriptureGen = 0;
 
       const translationSel = document.getElementById("translation");
+      let translationCodes = "";
       const renderTranslations = (codes) => {
-        if (translationSel.options.length === codes.length) return;
+        // Set-compare (not length): a changed SET with the same count must
+        // re-render, and the current selection survives when still offered.
+        const key = codes.join(",");
+        if (key === translationCodes) return;
+        translationCodes = key;
+        if (!codes.includes(currentTranslation)) {
+          currentTranslation = codes[0] || "KJV";
+        }
         translationSel.innerHTML = "";
         codes.forEach((c) => {
           const opt = document.createElement("option");
@@ -691,7 +705,7 @@
           translationSel.appendChild(opt);
         });
       };
-      renderTranslations(["KJV", "WEB"]);
+      renderTranslations(["KJV", "WEB", "ASV", "WEBBE", "DBY"]);
       translationSel.onchange = () => {
         currentTranslation = translationSel.value;
         if (currentChapter) {

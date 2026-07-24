@@ -49,6 +49,8 @@ pub struct OperatorView {
     pub outputs: Vec<selahcue_lan::protocol::OutputStatusView>,
     /// Attached physical displays for the assignment picker (desktop host only).
     pub displays: Vec<selahcue_lan::protocol::DisplayView>,
+    /// Translation codes the HOST can stage/search (drives the picker).
+    pub translations: Vec<String>,
 }
 
 /// An ergonomic, UI-facing wrapper over the shared [`LiveController`]. Each action
@@ -252,6 +254,7 @@ impl From<OperatorView> for OperatorStateView {
             live_free_text: v.live_free_text,
             outputs: v.outputs,
             displays: v.displays,
+            translations: v.translations,
         }
     }
 }
@@ -270,6 +273,7 @@ impl From<OperatorStateView> for OperatorView {
             live_free_text: v.live_free_text,
             outputs: v.outputs,
             displays: v.displays,
+            translations: v.translations,
         }
     }
 }

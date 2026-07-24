@@ -1,16 +1,21 @@
 //! Bundled public-domain scripture text with verse lookup and keyword search
 //! (story 86ajpew05; FR-025..FR-029 foundation).
 //!
-//! Two public-domain translations ship inside the binary as gzipped TSVs
+//! Five public-domain translations ship inside the binary as gzipped TSVs
 //! (`book\tchapter\tverse\ttext`, canonical book numbers 1–66 matching
 //! [`selahcue_core::scripture::Reference::book`]), each from ebible.org:
 //! the **King James Version** (31,102 verses — the product DEFAULT; supplied-word
-//! brackets and pilcrows stripped for display) and the **World English Bible**
-//! (31,098 verses). Each decompresses **once** into a process-wide index on
-//! first use (a few MB per translation, fixed size — bounded by design; the
-//! no-leak tests assert idempotent initialization). Further public-domain
-//! translations extend this crate as additional assets; licensed translations
-//! (NIV/NLT/…) are a separate licensing story (86ajpqfyj).
+//! brackets and pilcrows stripped for display), the **World English Bible**
+//! (31,098), the **American Standard Version** (31,086), the **World English
+//! English British Edition** (31,098), and the **Darby Translation** (31,099 —
+//! apparatus asterisks stripped). Each decompresses
+//! **lazily and exactly once** into a process-wide index on first use (a few MB
+//! per touched translation, fixed size — bounded by design; the no-leak tests
+//! assert idempotent initialization). Every bundled text is public domain
+//! WORLDWIDE (KJV: UK Crown letters-patent printing exception noted). BBE was
+//! deliberately NOT bundled — its PD status is US-only (Cambridge UP; life+70
+//! jurisdictions plausibly until 2038) — and YLT has no usable ebible export;
+//! both, plus licensed translations (NIV/NLT/…), live on story 86ajpqfyj.
 //!
 //! Everything works offline — a hard product requirement for live services.
 
@@ -39,25 +44,38 @@ pub struct SearchHit {
     pub text: String,
 }
 
-/// A bundled translation. KJV is the product default (owner decision,
-/// 2026-07-24); WEB remains available. Both are public domain (KJV: public
-/// domain worldwide except UK Crown letters patent for printing within the UK).
+/// A bundled translation (KJV is the product default — owner decision,
+/// 2026-07-24). All five are public domain worldwide (KJV: UK Crown letters
+/// patent covers printing within the UK; see the module doc for the BBE
+/// exclusion rationale).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Translation {
     #[default]
     Kjv,
     Web,
+    Asv,
+    Webbe,
+    Dby,
 }
 
 impl Translation {
     /// Every bundled translation, default first (drives the picker order).
-    pub const ALL: [Translation; 2] = [Translation::Kjv, Translation::Web];
+    pub const ALL: [Translation; 5] = [
+        Translation::Kjv,
+        Translation::Web,
+        Translation::Asv,
+        Translation::Webbe,
+        Translation::Dby,
+    ];
 
-    /// Short display/wire code (`"KJV"` / `"WEB"`).
+    /// Short display/wire code (`"KJV"`, `"WEB"`, …).
     pub fn code(self) -> &'static str {
         match self {
             Translation::Kjv => "KJV",
             Translation::Web => "WEB",
+            Translation::Asv => "ASV",
+            Translation::Webbe => "WEBBE",
+            Translation::Dby => "DBY",
         }
     }
 
@@ -66,6 +84,9 @@ impl Translation {
         match self {
             Translation::Kjv => "King James Version",
             Translation::Web => "World English Bible",
+            Translation::Asv => "American Standard Version",
+            Translation::Webbe => "World English Bible (British Edition)",
+            Translation::Dby => "Darby Translation",
         }
     }
 
@@ -74,6 +95,9 @@ impl Translation {
         match code.to_ascii_uppercase().as_str() {
             "KJV" => Some(Translation::Kjv),
             "WEB" => Some(Translation::Web),
+            "ASV" => Some(Translation::Asv),
+            "WEBBE" => Some(Translation::Webbe),
+            "DBY" => Some(Translation::Dby),
             _ => None,
         }
     }
@@ -84,12 +108,19 @@ pub const TRANSLATION: &str = "KJV";
 
 static KJV_INDEX: OnceLock<Vec<Verse>> = OnceLock::new();
 static WEB_INDEX: OnceLock<Vec<Verse>> = OnceLock::new();
+static ASV_INDEX: OnceLock<Vec<Verse>> = OnceLock::new();
+static WEBBE_INDEX: OnceLock<Vec<Verse>> = OnceLock::new();
+static DBY_INDEX: OnceLock<Vec<Verse>> = OnceLock::new();
 
-/// The verse index of `t` (each decoded once; sorted by book, chapter, verse).
+/// The verse index of `t` — each translation decodes lazily on FIRST use and
+/// exactly once (an unused translation costs only its compressed asset bytes).
 fn index_of(t: Translation) -> &'static [Verse] {
     let (lock, compressed): (&OnceLock<Vec<Verse>>, &[u8]) = match t {
         Translation::Kjv => (&KJV_INDEX, include_bytes!("../assets/kjv.tsv.gz")),
         Translation::Web => (&WEB_INDEX, include_bytes!("../assets/web.tsv.gz")),
+        Translation::Asv => (&ASV_INDEX, include_bytes!("../assets/asv.tsv.gz")),
+        Translation::Webbe => (&WEBBE_INDEX, include_bytes!("../assets/webbe.tsv.gz")),
+        Translation::Dby => (&DBY_INDEX, include_bytes!("../assets/dby.tsv.gz")),
     };
     lock.get_or_init(|| decode(compressed))
 }

@@ -665,6 +665,20 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7ad-001..S7ad-005. Change: ScriptureResults.hits (verse text on the wire, compat kept), highlighted windowed snippets + keyboard hit selection in the console; new guard.rs (pure breaker assess + disk thresholds + bounded launch journal) wired through App::new/autosave/exit. Review (12 agents): 10 confirmed → **8 unique (A–H) → all fixed** — headline: the breaker's start-clean would have CLOBBERED the preserved session via the singleton UPSERT (now a checkpointing-disabled clean mode); a critical startup disk wasn't actually halted for 60s; deep-verse highlights invisible past the ellipsis. Verifier: workspace **259** + Flutter **20**, clippy clean. Honest deltas on 86ajp09td for owner disposition: GUI Resume-choice dialog; per-item disable. Result: PASS. Decision: gate-review.
 
+## Batch 7ae predicate — PD translation bundles (86ajpqfyj Track 1)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7ae-001 | yes | ≥3 more PD translations selectable in the chapter browser | `cargo test -p selahcue-scripture` | ASV + WEBBE + Darby bundled (5 total, KJV default unchanged); picker offers all five | selahcue-scripture | PASS |
+| S7ae-002 | yes | Every bundled text is PD **worldwide**, register-documented | review data lens (live ebible copyright fetch) | BBE excluded (US-only PD — owner decision recorded); WEBBE substituted | LICENSING-REGISTER.md | PASS |
+| S7ae-003 | yes | No markup residue anywhere (brackets/pilcrows/apparatus asterisks) | full-corpus scan test (~155k verses) | DBY Ps119 asterisks stripped; pipeline hardened | test_scripture_data.rs | PASS |
+| S7ae-004 | yes | Version-safe picker: the HOST advertises its translation list on the wire; shells never offer codes a host denies | fixtures + review fix D | OperatorStateView.translations (skip-if-empty, fixtures byte-identical) | protocol.rs; index.html | PASS |
+| S7ae-005 | yes | Independent adversarial review; confirmed findings fixed | run `wf_aa9ffec5-e06` | 4 confirmed → 4 unique (A–D) → **all fixed** | CODE-REVIEW-batch7ae.md | PASS |
+
+### Iteration ledger — batch 7ae
+
+- Target: S7ae-001..S7ae-005. Change: ASV/WEBBE/Darby bundled (lazy per-translation decode, bounded), Translation enum ×5, host-advertised translation list on the wire, full-corpus residue test, licensing register corrected. Review (6 agents incl. a live copyright-page fetch): **4 unique (A–D) → all fixed** — headline: BBE's PD status is US-only (Cambridge UP, plausibly copyrighted to 2038 in life+70 jurisdictions) → dropped and substituted with the worldwide-safe WEB British Edition; BBE also carried literal `***` placeholder verses. Verifier: workspace **260** + Flutter **20**, clippy clean. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

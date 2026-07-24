@@ -514,6 +514,10 @@ impl LiveController {
             live_free_text: self.live_free_text.clone(),
             outputs: self.output_status.clone(),
             displays: self.display_status.clone(),
+            translations: selahcue_scripture::Translation::ALL
+                .iter()
+                .map(|t| t.code().to_string())
+                .collect(),
         }
     }
 
