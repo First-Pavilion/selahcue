@@ -519,6 +519,20 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7s-001..S7s-006. Change: profile-scaled latency budget (release 150ms / debug 1.5s tripwire) + release-budget enforcement in `make nfr`; multi-size Windows `icon.ico` + tauri.conf wiring; docs-only `paths-ignore`. Verified by the hosted 3-OS matrix itself: **8/8 jobs green, GPU parity executed on Vulkan/Metal/DX12** (confirmed via `gh`, run 30077797265). Story 86ajp09nk → QA. Result: PASS. Decision: gate-review.
 
+## Batch 7t predicate — foundation-demo milestone review
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7t-001 | yes | The Gate-6 demo script executed as far as it can run, on the release binary, with recorded state evidence | live demo walk over the real control link | 9-step verdict table incl. a recorded kill→no-recovery FAIL | FOUNDATION-DEMO-REVIEW.md | PASS |
+| S7t-002 | yes | Every verdict adversarially audited against code/tests/CI/live ClickUp | 2-agent claims-vs-evidence workflow | **17 findings → all corrected** (no verdict left overstated) | audit `wlzm38x0f` | PASS |
+| S7t-003 | yes | Gaps closed with code where cheap, not re-worded | new E2E | `wire_paired_device_advances_the_live_output` (pair→advance vs the real controller, one wire flow); workspace 199 | test_operator_remote.rs | PASS |
+| S7t-004 | yes | ClickUp closures reconciled against evidence (owner-facing) | live cross-check | 5 closed-complete stories with undelivered acceptance items tabled for owner disposition | review §reconciliation | PASS |
+| S7t-005 | yes | Milestone disposition honest | review | **Not met — stays open** (1 unscoped PASS · 3 scoped · 4 partial · 1 fail); gap list 1–8 | review §disposition | PASS |
+
+### Iteration ledger — batch 7t
+
+- Target: S7t-001..S7t-005. Change: live demo walk (launch→next→go-live→timer→blackout→clear→kill→relaunch, all state-recorded); FOUNDATION-DEMO-REVIEW.md authored → adversarially audited (17 findings: wrong-evidence ×5, overclaim ×7, omission ×5) → **all corrected** + 1 new E2E closing the pair→advance evidence gap. Milestone `86ajp0bpn` stays open; reconciliation table + gap list to the owner. Verifier: workspace 199; fmt+clippy clean. Result: PASS (review complete; milestone honestly NOT met). Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

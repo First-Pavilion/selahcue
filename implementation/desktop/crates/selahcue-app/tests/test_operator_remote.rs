@@ -6,8 +6,10 @@
 #![cfg(feature = "server")]
 #![allow(clippy::unwrap_used)]
 
+use futures_util::FutureExt;
 use selahcue_app::{handler_for, LiveController, RemoteOperator};
 use selahcue_core::plan::{ItemKind, ServicePlan};
+use selahcue_lan::protocol::{Command, ServerMessage};
 use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
 use selahcue_lan::{CertPin, ControlServer, Role, SelfSigned};
 use selahcue_present::Theme;
@@ -156,4 +158,70 @@ async fn a_denied_command_is_not_an_error_and_the_view_reflects_unchanged_state(
     let v = op.go_live().await.unwrap();
     assert_eq!(v.live_index, None, "denied GoLive left Live empty");
     assert_eq!(controller.lock().unwrap().live_index(), None);
+}
+
+/// The full demo-script chain as ONE wire flow: redeem a pairing code over the wire
+/// (as a QR-scanning phone would), then — on the same paired connection — advance and
+/// go live, asserting the HOST controller's state actually changed. (The pairing E2E
+/// in selahcue-lan runs against a stub handler; this closes the pair→advance gap.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wire_paired_device_advances_the_live_output() {
+    use selahcue_lan::PairingApproval;
+
+    let identity = SelfSigned::generate(vec!["localhost".into()]).unwrap();
+    let pin = identity.pin;
+    let mut plan = ServicePlan::new("Sunday");
+    plan.add_item(ItemKind::Song, "Opening Song");
+    plan.add_item(ItemKind::Scripture, "Romans 8:28");
+    let controller = Arc::new(Mutex::new(LiveController::new(
+        plan,
+        320,
+        180,
+        Theme::dark(),
+    )));
+
+    let registry = Arc::new(AsyncMutex::new(SessionRegistry::new()));
+    registry.lock().await.offer_pairing(
+        "QRCODE23",
+        selahcue_lan::Role::Producer,
+        Instant::now(),
+        Duration::from_secs(300),
+    );
+    let approve: PairingApproval = Arc::new(|_name| async { true }.boxed());
+    let server = Arc::new(
+        ControlServer::new(&identity, registry, handler_for(controller.clone()))
+            .unwrap()
+            .with_pairing_approval(approve),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let running = server.clone();
+    tokio::spawn(async move {
+        let _ = running.run(listener).await;
+    });
+
+    // Pair over the wire (the invite's code), then drive the REAL controller.
+    let (mut client, _creds) =
+        selahcue_lan::ControlClient::pair(addr, "localhost", pin, "QRCODE23", "Demo Phone")
+            .await
+            .unwrap();
+    assert!(matches!(
+        client.command(Command::Next).await.unwrap(),
+        ServerMessage::Ack { .. }
+    ));
+    assert_eq!(
+        controller.lock().unwrap().live_index(),
+        None,
+        "Next staged Preview only"
+    );
+    assert!(matches!(
+        client.command(Command::GoLive).await.unwrap(),
+        ServerMessage::Ack { .. }
+    ));
+    assert_eq!(
+        controller.lock().unwrap().live_index(),
+        Some(0),
+        "a wire-paired device changed the host's live output"
+    );
+    client.close().await.ok();
 }
