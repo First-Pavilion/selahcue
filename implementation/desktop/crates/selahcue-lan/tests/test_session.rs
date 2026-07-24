@@ -256,3 +256,21 @@ fn token_debug_is_redacted() {
     let shown = format!("{t:?}");
     assert!(!shown.contains("super-secret-value"), "token leaked via Debug: {shown}");
 }
+
+#[test]
+fn withdrawing_an_offer_kills_the_code_immediately() {
+    // Cancelling pairing mode must make the code un-redeemable at once — not leave
+    // it alive until TTL (e.g. the operator cancels because the QR was photographed).
+    let mut reg = SessionRegistry::new();
+    let now = Instant::now();
+    reg.offer_pairing("CODE1234", Role::Producer, now, Duration::from_secs(120));
+    assert!(reg.code_valid("CODE1234", now));
+    assert!(reg.withdraw("CODE1234"));
+    assert!(!reg.code_valid("CODE1234", now), "withdrawn code is dead");
+    assert!(
+        reg.redeem("CODE1234", DeviceId("d".into()), SessionToken::new("t"), now).is_err(),
+        "withdrawn code cannot be redeemed"
+    );
+    assert!(!reg.withdraw("CODE1234"), "second withdraw is a no-op");
+    assert_eq!(reg.pending_count(), 0);
+}

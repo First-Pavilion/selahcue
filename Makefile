@@ -66,6 +66,15 @@ stop-timer: ## Stop the countdown on a running output window
 demo: ## Run the headless LAN foundation demo
 	$(CARGO) run $(WS) -p selahcue-lan --example demo --features server
 
+MOBILE  := implementation/mobile/selahcue_controller
+FLUTTER ?= flutter
+
+mobile: ## Run the Flutter controller on this Mac (pair it with a running `make output` via P)
+	cd $(MOBILE) && $(FLUTTER) run -d macos
+
+mobile-test: ## Analyze + unit-test the Flutter controller
+	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
+
 build: ## Build the desktop workspace
 	$(CARGO) build $(WS)
 

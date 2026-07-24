@@ -3,7 +3,10 @@
 //! separate Flutter client speaking the same protocol.
 
 use crate::pinning::CertPin;
-use crate::protocol::{self, AuthRequest, AuthResponse, Command, Request, ServerMessage};
+use crate::protocol::{
+    self, AuthRequest, AuthResponse, Command, Hello, PairRequest, PairResponse, Request,
+    ServerMessage,
+};
 use crate::rbac::Role;
 use crate::tls::{client_config, TransportError};
 use crate::wire::{recv_json, send_json};
@@ -23,12 +26,49 @@ pub struct ControlClient {
     next_id: u64,
 }
 
+/// Credentials issued at pairing time — store these (securely) for reconnects.
+/// `Debug` redacts the token.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PairingCredentials {
+    pub device_id: String,
+    pub token: String,
+}
+
+impl std::fmt::Debug for PairingCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PairingCredentials")
+            .field("device_id", &self.device_id)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
 impl ControlClient {
     /// Total time budget for establishing a session (TCP + TLS + WebSocket + auth).
     /// Mirrors the server's handshake timeout so a peer that accepts TCP but then stalls
     /// the TLS/WebSocket handshake degrades to an error instead of hanging the caller
     /// forever (e.g. a stale endpoint pointing at a now-reused loopback port).
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// How long a pairing attempt waits for the grant — the transport phase plus the
+    /// server's 30s host-confirmation window (the operator pressing "allow").
+    const PAIR_TIMEOUT: Duration = Duration::from_secs(45);
+
+    /// Establish the pinned-TLS WebSocket transport (no authentication yet).
+    async fn establish(
+        addr: SocketAddr,
+        server_name: &str,
+        pin: CertPin,
+    ) -> Result<WebSocketStream<TlsStream<TcpStream>>, TransportError> {
+        let tcp = TcpStream::connect(addr).await?;
+        let connector = TlsConnector::from(Arc::new(client_config(pin)?));
+        let dns = ServerName::try_from(server_name.to_string())
+            .map_err(|_| TransportError::Protocol("invalid server name".into()))?;
+        let tls = connector.connect(dns, tcp).await?;
+        let (ws, _resp) =
+            tokio_tungstenite::client_async(format!("wss://{server_name}/"), tls).await?;
+        Ok(ws)
+    }
 
     /// Connect to `addr`, trusting the server **only** if its certificate matches
     /// `pin`, then authenticate as `device_id` with `token`. Returns the granted
@@ -41,21 +81,14 @@ impl ControlClient {
         token: &str,
     ) -> Result<Self, TransportError> {
         let attempt = async {
-            let tcp = TcpStream::connect(addr).await?;
-            let connector = TlsConnector::from(Arc::new(client_config(pin)?));
-            let dns = ServerName::try_from(server_name.to_string())
-                .map_err(|_| TransportError::Protocol("invalid server name".into()))?;
-            let tls = connector.connect(dns, tcp).await?;
-            let (mut ws, _resp) =
-                tokio_tungstenite::client_async(format!("wss://{server_name}/"), tls).await?;
-
+            let mut ws = Self::establish(addr, server_name, pin).await?;
             send_json(
                 &mut ws,
-                &AuthRequest {
+                &Hello::Auth(AuthRequest {
                     v: protocol::VERSION,
                     device_id: device_id.to_string(),
                     token: token.to_string(),
-                },
+                }),
             )
             .await?;
             let role = match recv_json::<_, AuthResponse>(&mut ws).await? {
@@ -76,6 +109,49 @@ impl ControlClient {
         match tokio::time::timeout(Self::CONNECT_TIMEOUT, attempt).await {
             Ok(result) => result,
             Err(_) => Err(TransportError::Protocol("connection timed out".into())),
+        }
+    }
+
+    /// Pair with the operator by redeeming the single-use `code` from a
+    /// [`PairingInvite`](crate::protocol::PairingInvite): connect pinned, send a
+    /// `Pair` hello, and await the grant (which includes the operator's confirmation
+    /// window). On success the connection is **already authenticated**; the returned
+    /// [`PairingCredentials`] are for storage + later reconnects.
+    pub async fn pair(
+        addr: SocketAddr,
+        server_name: &str,
+        pin: CertPin,
+        code: &str,
+        device_name: &str,
+    ) -> Result<(Self, PairingCredentials), TransportError> {
+        let attempt = async {
+            let mut ws = Self::establish(addr, server_name, pin).await?;
+            send_json(
+                &mut ws,
+                &Hello::Pair(PairRequest {
+                    v: protocol::VERSION,
+                    code: code.to_string(),
+                    device_name: device_name.to_string(),
+                }),
+            )
+            .await?;
+            match recv_json::<_, PairResponse>(&mut ws).await? {
+                PairResponse::Granted { device_id, token, role } => Ok((
+                    Self {
+                        ws,
+                        role,
+                        next_id: 1,
+                    },
+                    PairingCredentials { device_id, token },
+                )),
+                PairResponse::Rejected { reason } => Err(TransportError::Protocol(format!(
+                    "pairing rejected: {reason:?}"
+                ))),
+            }
+        };
+        match tokio::time::timeout(Self::PAIR_TIMEOUT, attempt).await {
+            Ok(result) => result,
+            Err(_) => Err(TransportError::Protocol("pairing timed out".into())),
         }
     }
 

@@ -13,11 +13,13 @@
 
 pub mod compose;
 pub mod present;
+pub mod qr;
 pub mod slide;
 pub mod stage;
 
 pub use compose::compose_slide;
 pub use present::Presenter;
+pub use qr::{compose_qr, qr_modules};
 pub use slide::{Slide, Theme};
 pub use stage::{compose_identify, compose_stage, StageDisplay, StageTheme, TimerView};
 

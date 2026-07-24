@@ -165,7 +165,12 @@ complete loop (client → TLS → server RBAC → handler → controller → pre
 Status: **Stage 7 — foundation batches 7a (domain core) + 7b (persistence) + 7c
 (at-rest encryption) + 7d (LAN control core) + 7e (TLS transport) + 7f (render-engine
 seam) + 7g (presentation rendering) + 7h (stage/confidence output) + 7i (wgpu compositor +
-native window) + 7j (glyph text) + 7k (LAN control → presenter). Verified: `cargo test`
-155/155 (plain, incl. GPU parity) + 16/16 (encryption) + 39/39 (LAN server) + 2 remote E2E,
-`cargo clippy` clean.** The Tauri operator shell, the QR/Flutter mobile client, CI, and
-app-shell key acquisition are subsequent batches.
+native window) + 7j (glyph text) + 7k (LAN control → presenter) + 7l (window ← remote
+control) + 7m (Tauri operator shell) + 7n (operator ↔ output wiring) + 7o/7p (timers on
+the stage/confidence second window) + 7q (QR pairing + the Flutter mobile client, in
+`../mobile/`). Verified: `cargo test` 198 workspace (incl. GPU parity) + 16 (encryption)
++ 50 (LAN server, incl. 6 pairing E2E) + operator/remote E2E, `cargo clippy` clean;
+`flutter analyze`/`test`/`build macos` clean.** CI and app-shell key acquisition are
+subsequent batches. Run everything: `make launch` (see the repo-root Makefile) — press
+`P` in the output window to pair a mobile controller (grants **Producer** control after
+the host confirms with `Y`).

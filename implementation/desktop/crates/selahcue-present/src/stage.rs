@@ -277,6 +277,18 @@ impl StageDisplay {
         self.engine.apply(EngineCommand::SetScene { frame });
     }
 
+    /// Show a pairing-invite QR on this output (FR-086). Returns `false` (output
+    /// unchanged) if the data cannot be encoded.
+    pub fn show_qr(&mut self, data: &str) -> bool {
+        match crate::qr::compose_qr(data, self.width, self.height) {
+            Some(frame) => {
+                self.engine.apply(EngineCommand::SetScene { frame });
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Show the display-identify overlay (FR-040).
     pub fn identify(&mut self, number: u32) {
         let frame = compose_identify(

@@ -12,15 +12,39 @@
 //! The real mobile controller is a Flutter client speaking this same protocol; this
 //! CLI exercises the identical server path (pinned TLS → device auth → RBAC → handler).
 
-use selahcue_lan::protocol::{Command, ServerMessage};
+use selahcue_lan::protocol::{Command, PairingInvite, ServerMessage};
 use selahcue_lan::{CertPin, ControlClient};
 use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+
+    // Pairing mode: redeem an invite URI (from the operator's QR / terminal) — the
+    // same flow the mobile app uses. Prints the issued credentials for reuse.
+    if args.len() >= 3 && args[1] == "pair" {
+        let invite = PairingInvite::parse_uri(&args[2])
+            .ok_or("bad invite (want the selahcue://pair?... URI)")?;
+        let pin = CertPin::from_hex(&invite.pin_hex).ok_or("bad pin in invite")?;
+        let addr: SocketAddr = format!("{}:{}", invite.host, invite.port)
+            .parse()
+            .map_err(|_| format!("bad host/port in invite: {}:{}", invite.host, invite.port))?;
+        let name = args.get(3).map(String::as_str).unwrap_or("selahcue-remote CLI");
+        println!("pairing with {addr} — waiting for the host to allow…");
+        let (client, creds) =
+            ControlClient::pair(addr, "localhost", pin, &invite.code, name).await?;
+        println!("paired! role {:?}", client.role());
+        println!("device : {}", creds.device_id);
+        println!("token  : {}", creds.token);
+        println!("reconnect later with:");
+        println!("  remote {addr} {} {} {} state", invite.pin_hex, creds.device_id, creds.token);
+        client.close().await.ok();
+        return Ok(());
+    }
+
     if args.len() < 6 || args.len() > 7 {
         eprintln!("usage: remote <addr> <pin-hex> <device> <token> <command> [arg]");
+        eprintln!("       remote pair <selahcue://pair?...uri> [device-name]");
         eprintln!(
             "commands: next  previous  go-live  blackout-on  blackout-off  clear  state  \
              timer <seconds>  stop-timer"

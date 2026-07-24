@@ -19,6 +19,7 @@ server = [
     "dep:rcgen",
     "dep:sha2",
     "dep:futures-util",
+    "dep:ring",
 ]
 
 [dependencies]
@@ -37,6 +38,8 @@ rustls-pki-types = { version = "1", optional = true }
 rcgen = { version = "0.13", optional = true, default-features = false, features = ["ring", "pem"] }
 sha2 = { version = "0.10", optional = true }
 futures-util = { version = "0.3", optional = true }
+# Server-side credential generation at pairing time (already in-tree via rustls/ring).
+ring = { version = "0.17", optional = true }
 
 [dev-dependencies]
 # For the end-to-end `demo` example (persistence). Dev-only — not part of the

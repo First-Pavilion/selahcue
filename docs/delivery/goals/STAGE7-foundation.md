@@ -463,6 +463,30 @@ no timer and the monitor shows it.
 
 - Target: S7p-001..S7p-008. Change: `LiveController` owns a `StageDisplay` refreshed (gated) in `tick`; `stage_output()`; `FrameBuffer` re-exported from present; the desktop opens two windows dispatched by `WindowId`. **Refine:** moved the timer to the stage/confidence monitor only. Review pass 1 (`we7hbankn`) → 1 confirmed (continuous-redraw CPU spin) → fixed (deadline-paced loop); pass 2 (`wt28silw6`, post-refine) → 1 confirmed (continuous-input starvation of the paced loop) → fixed (**fixed-schedule** deadline); timer-placement lens clean. Verifier: workspace 181; clippy clean (present/app/desktop/operator); both binaries build. Result: PASS. Decision: gate-review.
 
+## Batch 7q predicate — mobile pairing (QR + host confirmation) + Flutter client
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7q-001 | yes | Pairing redeemable **over the wire**: `Hello{auth\|pair}` v2; server validates the single-use TTL code, requires **host confirmation**, issues server-generated credentials; connection continues authenticated | `cargo test -p selahcue-lan --features server` | 6 pairing E2E over real TLS | protocol.rs; server.rs; test_pairing.rs | PASS |
+| S7q-002 | yes | Denial paths verified: host decline, unknown code (no prompt raised), disabled-by-default, single-use replay, expired code | `cargo test` | dedicated E2E per path | test_pairing.rs | PASS |
+| S7q-003 | yes | Issued credentials reconnect (graceful-reconnect path) | `cargo test` | pair→control→reconnect E2E | test_pairing.rs | PASS |
+| S7q-004 | yes | QR invite (`selahcue://pair?...`) round-trips; rendered on the **stage** output (audience never shows pairing) + ASCII terminal; TTL auto-expiry; cancel **withdraws** the code | `cargo test` | invite + QR + controller tests; withdraw regression | protocol.rs; qr.rs; test_qr.rs; test_controller.rs; test_session.rs | PASS |
+| S7q-005 | yes | Desktop pairing UX: P offers (prune + 2min TTL) with QR; Y/N confirms (role disclosed; dead-prompt safe; slot self-heals after a timed-out prompt); LAN bind with a per-run random operator token | build + review + re-verify pass | fixes 1/2/3/5/8/9 verified | selahcue-desktop/main.rs | PASS (compile) |
+| S7q-006 | yes | Cross-language wire contract **byte-pinned symmetrically** (every command the app sends) | `cargo test` + `flutter test` | Rust + Dart fixture tests | test_protocol.rs; test/models/protocol_test.dart | PASS |
+| S7q-007 | yes | Flutter controller (MVC: models/controllers/views): pinned-TLS session, scan/paste pairing, keystore credentials, plan+controls UI, 1s poll (in-flight-guarded), reconnect (closes the old socket — no-leak) | `flutter analyze` + `flutter test` + `flutter build macos` | analyze clean; 12 tests; macOS app builds | implementation/mobile/ | PASS |
+| S7q-008 | yes | Independent adversarial review; confirmed findings fixed + fixes re-verified | workflows `wvg07j8r0` + `w9g29ap5m` | 21 raised → 11 unique → all fixed | CODE-REVIEW-batch7q-pairing.md | PASS |
+
+**Honest scope:** pairing/denial/reconnect are E2E-verified over real TLS; the Flutter
+app is analyze/test/macOS-build-verified but **not run on a physical phone here** (user
+QA: `make output` → P → `make mobile` → scan → Y). mDNS deferred (QR carries the
+address). Pairing grants Producer (disclosed in the prompt); per-offer role choice is a
+follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
+(models/controllers/views) — review run against the final structure.
+
+### Iteration ledger — batch 7q
+
+- Target: S7q-001..S7q-008. Change: wire pairing (protocol v2 `Hello`, `complete_pairing` + `PairingApproval` seam + ring credentials), `PairingInvite` URI + `qr.rs` + stage overlay, desktop P/Y/N + 0.0.0.0 bind + random operator token, CLI `pair`, Flutter controller app (MVC) + cross-language fixtures + `make mobile`/`mobile-test`. Review (5 lenses, 26 agents): **21 raised → 21 confirmed → 11 unique defects → all fixed** (approval-slot wedge, withdraw-on-cancel, Dart socket leaks ×2, poll backlog, stale-reply correlation, prune wiring, loopback warning, Producer disclosure, symmetric fixtures, doc drift) + re-verification pass. Verifier: workspace 198; lan server 50; clippy clean; flutter analyze + 12 tests + macOS build. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

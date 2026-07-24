@@ -60,6 +60,9 @@ pub struct LiveController {
     stage_dirty: bool,
     /// The timer key the monitor was last composed with (recompose on change).
     last_stage_key: TimerKey,
+    /// While pairing mode is active: the invite URI shown as a QR on the stage
+    /// output, and when it stops being valid (auto-cleared by `tick`).
+    pairing_qr: Option<(String, Instant)>,
 }
 
 impl LiveController {
@@ -80,7 +83,28 @@ impl LiveController {
             stage: StageDisplay::new(width, height, StageTheme::dark()),
             stage_dirty: true,
             last_stage_key: None,
+            pairing_qr: None,
         }
+    }
+
+    /// Show the pairing invite as a QR on the stage/confidence output until
+    /// `expires_at` (auto-cleared by [`tick`](Self::tick)) — the audience output is
+    /// never used for pairing.
+    pub fn show_pairing_qr(&mut self, invite_uri: String, expires_at: Instant) {
+        self.pairing_qr = Some((invite_uri, expires_at));
+        self.stage_dirty = true;
+    }
+
+    /// Dismiss the pairing QR (e.g. pairing completed or the operator cancelled).
+    pub fn clear_pairing_qr(&mut self) {
+        if self.pairing_qr.take().is_some() {
+            self.stage_dirty = true;
+        }
+    }
+
+    /// Whether pairing mode (the QR overlay) is currently active.
+    pub fn pairing_qr_active(&self) -> bool {
+        self.pairing_qr.is_some()
     }
 
     /// The stage/confidence monitor output (a second display surface). Updated by
@@ -112,16 +136,38 @@ impl LiveController {
         // The countdown is a speaker aid: it appears on the stage/confidence monitor
         // (below), NOT on the audience/program output.
 
+        // Auto-dismiss an expired pairing QR (its code is TTL-bound anyway).
+        if self.pairing_qr.as_ref().is_some_and(|(_, exp)| now >= *exp) {
+            self.pairing_qr = None;
+            self.stage_dirty = true;
+        }
+
         // Refresh the confidence monitor when the timer's displayed value changed or a
-        // command marked it dirty — not every frame.
+        // command marked it dirty — not every frame. While pairing mode is active the
+        // stage output shows the invite QR instead of the speaker scene.
         let key = timer_key(view);
         if self.stage_dirty || key != self.last_stage_key {
             self.stage_dirty = false;
             self.last_stage_key = key;
-            let current = self.presenter.live_slide().cloned();
-            let next = self.presenter.staged().cloned();
-            self.stage
-                .update(current.as_ref(), next.as_ref(), view.as_ref());
+            match &self.pairing_qr {
+                Some((uri, _)) => {
+                    if !self.stage.show_qr(uri) {
+                        // Unencodable data: fall back to the normal scene rather than
+                        // freezing a stale frame.
+                        self.pairing_qr = None;
+                        let current = self.presenter.live_slide().cloned();
+                        let next = self.presenter.staged().cloned();
+                        self.stage
+                            .update(current.as_ref(), next.as_ref(), view.as_ref());
+                    }
+                }
+                None => {
+                    let current = self.presenter.live_slide().cloned();
+                    let next = self.presenter.staged().cloned();
+                    self.stage
+                        .update(current.as_ref(), next.as_ref(), view.as_ref());
+                }
+            }
         }
     }
 

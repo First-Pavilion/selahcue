@@ -8,3 +8,6 @@ target/
 *.log
 .env
 .env.*
+
+# Flutter/SwiftPM sometimes scaffolds an iOS SourcePackages dir at this level.
+implementation/build/

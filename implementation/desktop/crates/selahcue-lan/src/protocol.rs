@@ -10,7 +10,9 @@ use crate::rbac::Role;
 use serde::{Deserialize, Serialize};
 
 /// Wire protocol version. Bumped on any breaking change to the message shapes.
-pub const VERSION: u16 = 1;
+/// v2: the first client frame is a tagged [`Hello`] (auth **or** pair) instead of a
+/// bare [`AuthRequest`], so devices can redeem a pairing code over the wire.
+pub const VERSION: u16 = 2;
 
 /// A command from a controller to the operator. `request_id` (in [`Request`])
 /// correlates the eventual [`ServerMessage::Ack`] / [`ServerMessage::Denied`].
@@ -192,6 +194,145 @@ pub enum AuthResponse {
     Granted { role: Role },
     /// Authentication failed.
     Rejected { reason: DenyReason },
+}
+
+/// The first frame a client sends after the WebSocket handshake: authenticate an
+/// already-paired device, or redeem a pairing code to become one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "hello", rename_all = "snake_case")]
+pub enum Hello {
+    /// Authenticate with previously issued credentials.
+    Auth(AuthRequest),
+    /// Redeem a single-use pairing code (from the operator's QR) for credentials.
+    Pair(PairRequest),
+}
+
+/// A device's request to redeem a pairing code (FR-086/174). The code is short-lived
+/// and single-use; the server additionally requires **host confirmation** before
+/// granting. `Debug` redacts the code — it is a live (if brief) credential.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairRequest {
+    pub v: u16,
+    /// The pairing code shown/encoded by the operator.
+    pub code: String,
+    /// Human-readable device name shown to the operator for confirmation
+    /// (e.g. "Dami's iPhone"). Untrusted display text.
+    pub device_name: String,
+}
+
+impl PairRequest {
+    /// Whether the sender speaks a protocol version this build understands.
+    pub fn version_supported(&self) -> bool {
+        self.v == VERSION
+    }
+}
+
+impl std::fmt::Debug for PairRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PairRequest")
+            .field("v", &self.v)
+            .field("code", &"<redacted>")
+            .field("device_name", &self.device_name)
+            .finish()
+    }
+}
+
+/// The operator's reply to a [`PairRequest`]. On success the connection continues
+/// **already authenticated** with `role`; the device stores `device_id` + `token`
+/// for later reconnects. `Debug` redacts the token.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "pair", rename_all = "snake_case")]
+pub enum PairResponse {
+    Granted {
+        device_id: String,
+        token: String,
+        role: Role,
+    },
+    /// The code was invalid/expired, the host declined, or pairing is not enabled.
+    Rejected { reason: DenyReason },
+}
+
+impl std::fmt::Debug for PairResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PairResponse::Granted { device_id, role, .. } => f
+                .debug_struct("PairResponse::Granted")
+                .field("device_id", &device_id)
+                .field("token", &"<redacted>")
+                .field("role", &role)
+                .finish(),
+            PairResponse::Rejected { reason } => f
+                .debug_struct("PairResponse::Rejected")
+                .field("reason", &reason)
+                .finish(),
+        }
+    }
+}
+
+/// The out-of-band pairing invite the operator displays (as a QR / URI): where to
+/// connect, which certificate to trust (the pin), and the single-use code.
+///
+/// URI form: `selahcue://pair?host=<h>&port=<p>&pin=<hex64>&code=<c>`. Field values
+/// are restricted to URL-safe characters ([`PairingInvite::to_uri`] refuses others),
+/// so no percent-encoding is needed on either side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairingInvite {
+    pub host: String,
+    pub port: u16,
+    /// Lowercase hex SHA-256 pin of the operator's certificate.
+    pub pin_hex: String,
+    /// The single-use pairing code.
+    pub code: String,
+}
+
+impl PairingInvite {
+    /// Characters allowed in `host`/`pin_hex`/`code` values (URL-safe, no escaping).
+    fn value_ok(s: &str) -> bool {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_'))
+    }
+
+    /// Encode as the `selahcue://pair?...` URI (the QR payload). Returns `None` if a
+    /// field contains characters outside the URL-safe set.
+    pub fn to_uri(&self) -> Option<String> {
+        if !(Self::value_ok(&self.host) && Self::value_ok(&self.pin_hex) && Self::value_ok(&self.code)) {
+            return None;
+        }
+        Some(format!(
+            "selahcue://pair?host={}&port={}&pin={}&code={}",
+            self.host, self.port, self.pin_hex, self.code
+        ))
+    }
+
+    /// Parse a `selahcue://pair?...` URI. Returns `None` for anything malformed;
+    /// never panics on untrusted input.
+    pub fn parse_uri(uri: &str) -> Option<Self> {
+        let query = uri.strip_prefix("selahcue://pair?")?;
+        let mut host = None;
+        let mut port = None;
+        let mut pin = None;
+        let mut code = None;
+        for pair in query.split('&') {
+            let (k, v) = pair.split_once('=')?;
+            if !Self::value_ok(v) {
+                return None;
+            }
+            match k {
+                "host" => host = Some(v.to_string()),
+                "port" => port = Some(v.parse::<u16>().ok()?),
+                "pin" => pin = Some(v.to_string()),
+                "code" => code = Some(v.to_string()),
+                _ => {} // ignore unknown params (forward compatibility)
+            }
+        }
+        Some(PairingInvite {
+            host: host?,
+            port: port?,
+            pin_hex: pin?,
+            code: code?,
+        })
+    }
 }
 
 /// Serialize any protocol message to a JSON string for transport.

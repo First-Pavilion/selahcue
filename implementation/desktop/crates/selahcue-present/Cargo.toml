@@ -10,6 +10,8 @@ description = "SelahCue presentation rendering: compose slides into engine frame
 selahcue-core = { path = "../selahcue-core" }
 selahcue-engine = { path = "../selahcue-engine" }
 serde = { version = "1", features = ["derive"] }
+# QR encoding for the pairing invite shown on an output (pure Rust, no image deps).
+qrcode = { version = "0.14", default-features = false }
 
 [dev-dependencies]
 serde_json = "1"

@@ -141,6 +141,18 @@ impl SessionRegistry {
         }
     }
 
+    /// Whether `code` is an outstanding, unexpired pairing offer — **without**
+    /// consuming it. Used to reject a bad code cheaply (e.g. before prompting the
+    /// host for confirmation); redemption still happens only via [`redeem`](Self::redeem).
+    pub fn code_valid(&self, code: &str, now: Instant) -> bool {
+        if code.is_empty() {
+            return false;
+        }
+        self.pending
+            .get(code)
+            .is_some_and(|p| now < p.expires_at)
+    }
+
     /// Authenticate a request: the device's [`Role`] iff an active session exists
     /// and `token` matches it in constant time.
     pub fn authenticate(&self, device_id: &DeviceId, token: &str) -> Option<Role> {
@@ -174,6 +186,13 @@ impl SessionRegistry {
     /// redeem and reclaimed by [`prune_expired`](Self::prune_expired)).
     pub fn pending_count(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Withdraw a specific outstanding pairing offer (e.g. the operator cancels
+    /// pairing mode while the code is still within its TTL). Returns whether an
+    /// offer was actually removed.
+    pub fn withdraw(&mut self, code: &str) -> bool {
+        self.pending.remove(code).is_some()
     }
 
     /// Drop pairing offers whose window has closed (housekeeping).

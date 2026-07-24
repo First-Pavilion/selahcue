@@ -8,19 +8,21 @@
 //! Slides are composited on the CPU (via `selahcue-present`) and blitted to a wgpu
 //! surface. The Tauri operator shell is a subsequent batch.
 //!
-//! Local keys: `Space` stage next · `Enter` Go Live · `B` blackout · `C` clear · `Esc` quit.
+//! Local keys: `Space` stage next · `Enter` Go Live · `B` blackout · `C` clear ·
+//! `P` pairing QR (on the stage output) · `Y`/`N` allow/deny a pairing request · `Esc` quit.
 
 #![forbid(unsafe_code)]
 
 use selahcue_app::{handler_for, LiveController};
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_engine::raster::FrameBuffer;
-use selahcue_lan::protocol::Command;
+use selahcue_lan::protocol::{Command, PairingInvite};
 use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
-use selahcue_lan::{ControlServer, Role, SelfSigned};
+use selahcue_lan::{generate_pairing_code, generate_token, ControlServer, Role, SelfSigned};
+use selahcue_present::qr_modules;
 use selahcue_present::Theme;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex as AsyncMutex;
@@ -36,6 +38,8 @@ const OUTPUT_H: u32 = 1080;
 /// not only the Fifo present block — keeps the loop from busy-spinning when a window
 /// cannot present (minimized / occluded / surface lost).
 const FRAME: Duration = Duration::from_millis(16);
+/// Validity window of a pairing offer (code + QR). Short-lived by design (FR-086).
+const PAIRING_TTL: Duration = Duration::from_secs(120);
 
 struct Renderer {
     window: Arc<Window>,
@@ -259,6 +263,23 @@ impl Renderer {
     }
 }
 
+/// A pairing request awaiting the operator's Y/N (one at a time; extras auto-deny).
+struct PendingApproval {
+    name: String,
+    respond: tokio::sync::oneshot::Sender<bool>,
+}
+
+/// State shared between the winit thread and the control-server thread.
+struct RemoteShared {
+    registry: Arc<AsyncMutex<SessionRegistry>>,
+    /// `(bound port, certificate pin hex)` — filled once the server is listening.
+    lan: OnceLock<(u16, String)>,
+    approval: Mutex<Option<PendingApproval>>,
+    /// The currently offered pairing code, so cancelling pairing can withdraw it
+    /// from the registry (a cancelled code must actually die, not linger to TTL).
+    active_code: Mutex<Option<String>>,
+}
+
 struct App {
     /// The main audience/program output window.
     main: Option<Renderer>,
@@ -268,6 +289,8 @@ struct App {
     /// Shared with the control-server thread: the remote controller and the local
     /// keyboard drive the *same* live state, shown on both windows.
     controller: Arc<Mutex<LiveController>>,
+    /// Pairing/registry state shared with the control-server thread.
+    remote: Arc<RemoteShared>,
     /// The next frame deadline (a *fixed* schedule, advanced only when a frame fires), so
     /// continuous input can't keep pushing it forward and starve the redraw/tick loop.
     next_frame: Option<Instant>,
@@ -302,14 +325,111 @@ impl App {
             let _ = c.apply(&Command::GoLive); // commit it to Live
         }
 
-        // Start the LAN control server so a remote controller can drive this window.
-        start_remote_control(controller.clone());
+        // Start the LAN control server so remote controllers can drive this window.
+        let remote = Arc::new(RemoteShared {
+            registry: Arc::new(AsyncMutex::new(SessionRegistry::new())),
+            lan: OnceLock::new(),
+            approval: Mutex::new(None),
+            active_code: Mutex::new(None),
+        });
+        start_remote_control(controller.clone(), remote.clone());
 
         App {
             main: None,
             stage: None,
             controller,
+            remote,
             next_frame: None,
+        }
+    }
+
+    /// `P`: toggle pairing mode — offer a fresh single-use code (2-minute TTL) and
+    /// show the invite QR on the stage output + as ASCII in the terminal. Toggling
+    /// off **withdraws** the code from the registry (a cancelled code must die
+    /// immediately, e.g. when the operator suspects the QR was photographed).
+    fn toggle_pairing(&self) {
+        let Ok(mut c) = self.controller.lock() else { return };
+        if c.pairing_qr_active() {
+            c.clear_pairing_qr();
+            self.withdraw_active_code();
+            println!("  Pairing mode off — the code is no longer redeemable.");
+            return;
+        }
+        let Some((port, pin_hex)) = self.remote.lan.get().cloned() else {
+            eprintln!("  Pairing unavailable: the control server is not running.");
+            return;
+        };
+        let code = generate_pairing_code();
+        if code.is_empty() {
+            eprintln!("  Pairing unavailable: could not generate a code.");
+            return;
+        }
+        let now = Instant::now();
+        {
+            let mut reg = self.remote.registry.blocking_lock();
+            // Housekeeping: reclaim any expired offers so the map stays bounded.
+            reg.prune_expired(now);
+            reg.offer_pairing(code.clone(), Role::Producer, now, PAIRING_TTL);
+        }
+        if let Ok(mut slot) = self.remote.active_code.lock() {
+            *slot = Some(code.clone());
+        }
+        let host = lan_ip();
+        if host.is_loopback() {
+            eprintln!(
+                "  WARNING: no LAN-facing interface found — the invite uses 127.0.0.1, \
+                 so only clients on THIS machine can pair."
+            );
+        }
+        let invite = PairingInvite {
+            host: host.to_string(),
+            port,
+            pin_hex,
+            code: code.clone(),
+        };
+        match invite.to_uri() {
+            Some(uri) => {
+                print_pairing_block(&uri, &code);
+                c.show_pairing_qr(uri, now + PAIRING_TTL);
+            }
+            None => eprintln!("  Pairing unavailable: could not encode the invite."),
+        }
+    }
+
+    /// Remove the currently offered code (if any) from the registry.
+    fn withdraw_active_code(&self) {
+        let code = self.remote.active_code.lock().ok().and_then(|mut g| g.take());
+        if let Some(code) = code {
+            self.remote.registry.blocking_lock().withdraw(&code);
+        }
+    }
+
+    /// `Y`/`N`: resolve a pending pairing-approval prompt. A prompt whose server
+    /// side already timed out (30s) is announced as expired — it must not be
+    /// mistaken for a successful approval.
+    fn resolve_approval(&self, allow: bool) {
+        let pending = self.remote.approval.lock().ok().and_then(|mut g| g.take());
+        let Some(pending) = pending else { return };
+        if pending.respond.send(allow).is_err() {
+            println!(
+                "  (the pairing request from '{}' had already expired — nothing granted)",
+                pending.name
+            );
+            return;
+        }
+        println!(
+            "  Pairing request from '{}' {}.",
+            pending.name,
+            if allow { "ALLOWED" } else { "denied" }
+        );
+        if allow {
+            // The code is being consumed; dismiss the QR and forget the code.
+            if let Ok(mut c) = self.controller.lock() {
+                c.clear_pairing_qr();
+            }
+            if let Ok(mut slot) = self.remote.active_code.lock() {
+                *slot = None;
+            }
         }
     }
 
@@ -384,6 +504,9 @@ impl ApplicationHandler for App {
                 Key::Character(c) if c.eq_ignore_ascii_case("c") => {
                     drive(&self.controller, &Command::Clear)
                 }
+                Key::Character(c) if c.eq_ignore_ascii_case("p") => self.toggle_pairing(),
+                Key::Character(c) if c.eq_ignore_ascii_case("y") => self.resolve_approval(true),
+                Key::Character(c) if c.eq_ignore_ascii_case("n") => self.resolve_approval(false),
                 _ => {}
             },
             _ => {}
@@ -428,7 +551,7 @@ impl ApplicationHandler for App {
 /// Spawn the pinned-TLS control server on a background thread with its own Tokio
 /// runtime, driving the shared `controller`. If it can't start, the window still runs
 /// under local keyboard control.
-fn start_remote_control(controller: Arc<Mutex<LiveController>>) {
+fn start_remote_control(controller: Arc<Mutex<LiveController>>, remote: Arc<RemoteShared>) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -440,48 +563,132 @@ fn start_remote_control(controller: Arc<Mutex<LiveController>>) {
                 return;
             }
         };
-        if let Err(e) = runtime.block_on(run_server(controller)) {
+        if let Err(e) = runtime.block_on(run_server(controller, remote)) {
             eprintln!("SelahCue: remote control stopped: {e}");
         }
     });
 }
 
-async fn run_server(controller: Arc<Mutex<LiveController>>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_server(
+    controller: Arc<Mutex<LiveController>>,
+    remote: Arc<RemoteShared>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let identity =
         SelfSigned::generate(vec!["localhost".into()]).map_err(|e| format!("tls identity: {e:?}"))?;
     let pin = identity.pin;
 
-    // Demo shortcut: pre-pair one Producer device with a fixed token. Real pairing —
-    // a single-use QR code confirmed on the host — is the mobile-client batch.
-    let device = "producer";
-    let token = "demo-producer-token";
-    let registry = Arc::new(AsyncMutex::new(SessionRegistry::new()));
+    // A host-local operator session (for the operator shell on this machine): a fresh
+    // random token per run — never a fixed value, since we bind beyond loopback now.
+    let device = "operator-shell";
+    let token = generate_token();
+    if token.is_empty() {
+        return Err("could not generate an operator token".into());
+    }
     {
         let now = Instant::now();
-        let mut reg = registry.lock().await;
-        reg.offer_pairing("demo", Role::Producer, now, Duration::from_secs(3600));
+        let mut reg = remote.registry.lock().await;
+        reg.offer_pairing("host-local", Role::Producer, now, Duration::from_secs(60));
         reg.redeem(
-            "demo",
+            "host-local",
             DeviceId(device.to_string()),
-            SessionToken::new(token),
+            SessionToken::new(token.clone()),
             now,
         )
         .map_err(|e| format!("pairing: {e:?}"))?;
     }
 
+    // Host confirmation (FR-086): raise a Y/N prompt for the winit thread; one pending
+    // request at a time (extras auto-deny); an unanswered prompt times out as denied.
+    // A slot whose server side already timed out (its receiver is gone) is DEAD — it
+    // is reclaimed here so one ignored prompt can never wedge future pairing.
+    let approval_shared = remote.clone();
+    let approval: selahcue_lan::PairingApproval = Arc::new(move |name: String| {
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        let stored = match approval_shared.approval.lock() {
+            Ok(mut slot) => {
+                if slot.as_ref().is_some_and(|p| p.respond.is_closed()) {
+                    *slot = None; // stale prompt from a timed-out request
+                }
+                if slot.is_none() {
+                    *slot = Some(PendingApproval { name: name.clone(), respond: tx });
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(_) => false,
+        };
+        if stored {
+            println!();
+            println!(
+                "  PAIRING REQUEST from '{name}' — approving grants PRODUCER control \
+                 (go-live/blackout/timers). Press Y to allow, N to deny (30s)."
+            );
+        }
+        Box::pin(async move {
+            if stored {
+                rx.await.unwrap_or(false)
+            } else {
+                false // busy with another request
+            }
+        })
+    });
+
     let server = Arc::new(
-        ControlServer::new(&identity, registry, handler_for(controller))
-            .map_err(|e| format!("server: {e:?}"))?,
+        ControlServer::new(&identity, remote.registry.clone(), handler_for(controller))
+            .map_err(|e| format!("server: {e:?}"))?
+            .with_pairing_approval(approval),
     );
-    // Loopback only: the remote CLI / operator shell run on this machine. LAN binding
-    // travels with the mobile client + QR pairing batch (so we don't expose an unpaired
-    // port by default).
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    let endpoint = write_endpoint(addr, &pin.to_hex(), device, token);
-    print_connect_banner(addr, &pin.to_hex(), device, token, endpoint.as_deref());
+    // Bind the LAN so a phone can reach us: joining is gated by pairing (single-use
+    // TTL code + host confirmation) behind pinned TLS, so an open port grants nothing.
+    let listener = TcpListener::bind("0.0.0.0:0").await?;
+    let port = listener.local_addr()?.port();
+    let _ = remote.lan.set((port, pin.to_hex()));
+    // Local clients (operator shell / CLI) connect via loopback.
+    let local: SocketAddr = ([127, 0, 0, 1], port).into();
+    let endpoint = write_endpoint(local, &pin.to_hex(), device, &token);
+    print_connect_banner(local, &pin.to_hex(), device, &token, endpoint.as_deref());
     server.run(listener).await.map_err(|e| format!("server run: {e:?}"))?;
     Ok(())
+}
+
+/// This machine's LAN-facing IP (for the QR invite): a UDP "connect" selects the
+/// outbound interface without sending a packet. Falls back to loopback.
+fn lan_ip() -> std::net::IpAddr {
+    std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| {
+            s.connect("8.8.8.8:80")?;
+            s.local_addr()
+        })
+        .map(|a| a.ip())
+        .unwrap_or_else(|_| std::net::IpAddr::from([127, 0, 0, 1]))
+}
+
+/// Print the pairing invite: the URI, the hand-typable code, and an ASCII QR.
+fn print_pairing_block(uri: &str, code: &str) {
+    println!();
+    println!("  PAIRING MODE (2 minutes) — scan from the SelahCue mobile app:");
+    println!("  {uri}");
+    println!("  or enter code: {code}");
+    if let Some((side, modules)) = qr_modules(uri) {
+        println!();
+        let quiet = 2usize;
+        for y in 0..side + 2 * quiet {
+            let mut line = String::with_capacity((side + 2 * quiet) * 2 + 2);
+            line.push_str("  ");
+            for x in 0..side + 2 * quiet {
+                let dark = x >= quiet
+                    && y >= quiet
+                    && x < side + quiet
+                    && y < side + quiet
+                    && modules[(y - quiet) * side + (x - quiet)];
+                line.push_str(if dark { "██" } else { "  " });
+            }
+            println!("{line}");
+        }
+    }
+    println!("  (the QR is also on the stage/confidence window; press P again to cancel)");
+    println!();
 }
 
 /// Write a local endpoint descriptor so the operator shell on this machine can
@@ -538,7 +745,8 @@ fn print_connect_banner(
     println!("      {addr} {pin_hex} {device} {token} next");
     println!("    (commands: next · previous · go-live · blackout-on · blackout-off · clear · state)");
     println!();
-    println!("  Local keys also work: Space=next  Enter=Go Live  B=blackout  C=clear  Esc=quit");
+    println!("  Local keys: Space=next  Enter=Go Live  B=blackout  C=clear  Esc=quit");
+    println!("  Pairing:    P=show a QR invite (stage window + terminal)  Y/N=allow/deny a request");
     println!();
 }
 

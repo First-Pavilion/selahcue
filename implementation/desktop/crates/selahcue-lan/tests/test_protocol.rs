@@ -145,3 +145,74 @@ fn version_support_check() {
     };
     assert!(auth.version_supported());
 }
+
+#[test]
+fn wire_fixtures_are_stable_for_cross_language_clients() {
+    // These EXACT strings are mirrored by the Flutter client's protocol tests
+    // (implementation/mobile/selahcue_controller/test/models/protocol_test.dart). If this
+    // test needs changing, the Dart fixtures must change with it (and VERSION bump).
+    use selahcue_lan::protocol::{to_json, AuthRequest, Hello, PairRequest, PairResponse};
+
+    let auth = Hello::Auth(AuthRequest { v: 2, device_id: "dev-1".into(), token: "tok".into() });
+    assert_eq!(
+        to_json(&auth).unwrap(),
+        r#"{"hello":"auth","v":2,"device_id":"dev-1","token":"tok"}"#
+    );
+
+    let pair = Hello::Pair(PairRequest { v: 2, code: "ABCD2345".into(), device_name: "Phone".into() });
+    assert_eq!(
+        to_json(&pair).unwrap(),
+        r#"{"hello":"pair","v":2,"code":"ABCD2345","device_name":"Phone"}"#
+    );
+
+    let req = Request::new(7, Command::SelectItem { item_id: 3 });
+    assert_eq!(
+        to_json(&req).unwrap(),
+        r#"{"v":2,"request_id":7,"command":{"cmd":"select_item","item_id":3}}"#
+    );
+
+    // Every command the mobile app sends, pinned on THIS side too (symmetric with
+    // the Dart `command shapes are internally tagged` test).
+    assert_eq!(to_json(&Command::Next).unwrap(), r#"{"cmd":"next"}"#);
+    assert_eq!(to_json(&Command::Previous).unwrap(), r#"{"cmd":"previous"}"#);
+    assert_eq!(to_json(&Command::GoLive).unwrap(), r#"{"cmd":"go_live"}"#);
+    assert_eq!(to_json(&Command::Clear).unwrap(), r#"{"cmd":"clear"}"#);
+    assert_eq!(
+        to_json(&Command::Blackout { on: true }).unwrap(),
+        r#"{"cmd":"blackout","on":true}"#
+    );
+    assert_eq!(
+        to_json(&Command::StartTimer { seconds: 300 }).unwrap(),
+        r#"{"cmd":"start_timer","seconds":300}"#
+    );
+    assert_eq!(to_json(&Command::StopTimer).unwrap(), r#"{"cmd":"stop_timer"}"#);
+    assert_eq!(
+        to_json(&Command::GetOperatorState).unwrap(),
+        r#"{"cmd":"get_operator_state"}"#
+    );
+
+    let granted: PairResponse =
+        selahcue_lan::protocol::from_json(r#"{"pair":"granted","device_id":"dev-9","token":"t9","role":"producer"}"#)
+            .unwrap();
+    assert!(matches!(granted, PairResponse::Granted { .. }));
+
+    let denied: ServerMessage =
+        selahcue_lan::protocol::from_json(r#"{"event":"denied","request_id":7,"reason":"forbidden"}"#).unwrap();
+    assert!(matches!(
+        denied,
+        ServerMessage::Denied { request_id: 7, reason: DenyReason::Forbidden }
+    ));
+
+    let state: ServerMessage = selahcue_lan::protocol::from_json(
+        r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[{"id":1,"kind":"song","title":"Opening","is_live":true,"is_staged":false}],"live_index":0,"staged_index":null,"blackout":false,"timer":{"remaining_secs":90,"elapsed_secs":30,"time_up":false,"warn":false,"running":true}}}"#,
+    )
+    .unwrap();
+    match state {
+        ServerMessage::OperatorState { view } => {
+            assert_eq!(view.plan_name, "Sunday");
+            assert_eq!(view.items.len(), 1);
+            assert_eq!(view.timer.unwrap().remaining_secs, Some(90));
+        }
+        other => panic!("expected operator_state, got {other:?}"),
+    }
+}

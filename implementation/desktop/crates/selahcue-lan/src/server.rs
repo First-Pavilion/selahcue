@@ -7,12 +7,17 @@
 //! dropped when the task ends, so the server holds no growing per-connection state
 //! (see `active_connection_count`).
 
-use crate::protocol::{self, AuthRequest, AuthResponse, Command, DenyReason, Request, ServerMessage};
+use crate::protocol::{
+    self, AuthResponse, Command, DenyReason, Hello, PairRequest, PairResponse, Request,
+    ServerMessage,
+};
 use crate::rbac::{authorize, Role};
-use crate::session::{DeviceId, SessionRegistry};
+use crate::session::{DeviceId, SessionRegistry, SessionToken};
 use crate::tls::{server_config, SelfSigned, TransportError};
 use crate::wire::{recv_json, send_json};
+use futures_util::future::BoxFuture;
 use futures_util::StreamExt;
+use ring::rand::{SecureRandom, SystemRandom};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,6 +43,20 @@ const DEFAULT_MAX_CONNECTIONS: usize = 128;
 /// stops a peer from forcing large pre-auth buffering.
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
+/// How long the operator has to confirm/decline a pairing request. Applied *after*
+/// the network handshake completed (the pairing peer has already sent its full
+/// frame), so waiting on the human does not extend the slowloris window.
+const PAIRING_APPROVAL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Cap on the displayed device name (untrusted text shown to the operator).
+const MAX_DEVICE_NAME: usize = 48;
+
+/// Host-confirmation seam (FR-086): given the requesting device's (sanitized) display
+/// name, resolve to whether the operator approves. Implementations typically prompt
+/// the operator; tests inject closures. Approval is awaited with
+/// [`PAIRING_APPROVAL_TIMEOUT`]; a timeout counts as declined.
+pub type PairingApproval = Arc<dyn Fn(String) -> BoxFuture<'static, bool> + Send + Sync>;
+
 /// The operator's response to an authorized command.
 pub enum Reply {
     /// Accept and perform — the server returns `Ack{request_id}`.
@@ -62,6 +81,9 @@ pub struct ControlServer {
     active_connections: Arc<AtomicUsize>,
     handshake_timeout: Duration,
     limiter: Arc<Semaphore>,
+    /// Host-confirmation for over-the-wire pairing. `None` (the secure default)
+    /// rejects every `Pair` hello — a server must opt in to wire pairing.
+    pairing: Option<PairingApproval>,
 }
 
 /// Increments the live-connection counter on creation and decrements it on drop —
@@ -97,7 +119,15 @@ impl ControlServer {
             active_connections: Arc::new(AtomicUsize::new(0)),
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             limiter: Arc::new(Semaphore::new(DEFAULT_MAX_CONNECTIONS)),
+            pairing: None,
         })
+    }
+
+    /// Enable over-the-wire pairing, gated by this host-confirmation callback
+    /// (FR-086). Without this, `Pair` hellos are rejected.
+    pub fn with_pairing_approval(mut self, approval: PairingApproval) -> Self {
+        self.pairing = Some(approval);
+        self
     }
 
     /// Override the pre-auth handshake timeout (default 10s). Mainly for tests.
@@ -154,24 +184,29 @@ impl ControlServer {
         }
     }
 
-    /// Serve one connection to completion. The pre-auth phase (TLS + WS handshake +
-    /// first auth frame) is time-boxed so a stalled/half-open peer is dropped
-    /// promptly (releasing its task, socket, and connection slot) instead of
-    /// parking forever.
+    /// Serve one connection to completion. The pre-auth network phase (TLS + WS
+    /// handshake + the first `Hello` frame) is time-boxed so a stalled/half-open peer
+    /// is dropped promptly (slowloris defence). A pairing hello then gets its own
+    /// bounded **approval** window — by that point the peer has already sent its full
+    /// frame, so the human decision does not extend the network-attack surface.
     pub async fn serve_connection(&self, tcp: TcpStream) -> Result<(), TransportError> {
         let _guard = ConnGuard::new(Arc::clone(&self.active_connections));
-        let (mut ws, role) = tokio::time::timeout(self.handshake_timeout, self.handshake(tcp))
+        let (mut ws, hello) = tokio::time::timeout(self.handshake_timeout, self.handshake(tcp))
             .await
             .map_err(|_| TransportError::Protocol("handshake/auth timed out".into()))??;
+        let role = match hello {
+            Hello::Auth(auth) => self.authenticate(&mut ws, auth).await?,
+            Hello::Pair(pair) => self.complete_pairing(&mut ws, pair).await?,
+        };
         self.request_loop(&mut ws, role).await
     }
 
-    /// The pre-auth phase: TLS handshake, WebSocket handshake (with a bounded
-    /// message size), and authentication.
+    /// The pre-auth network phase: TLS handshake, WebSocket handshake (with a bounded
+    /// message size), and receipt of the first `Hello` frame.
     async fn handshake(
         &self,
         tcp: TcpStream,
-    ) -> Result<(WebSocketStream<TlsStream<TcpStream>>, Role), TransportError> {
+    ) -> Result<(WebSocketStream<TlsStream<TcpStream>>, Hello), TransportError> {
         let tls = self.acceptor.accept(tcp).await?;
         let ws_config = WebSocketConfig {
             max_message_size: Some(MAX_MESSAGE_BYTES),
@@ -179,15 +214,18 @@ impl ControlServer {
             ..Default::default()
         };
         let mut ws = tokio_tungstenite::accept_async_with_config(tls, Some(ws_config)).await?;
-        let role = self.authenticate(&mut ws).await?;
-        Ok((ws, role))
+        let hello: Hello = recv_json(&mut ws).await?;
+        Ok((ws, hello))
     }
 
-    async fn authenticate<S>(&self, ws: &mut WebSocketStream<S>) -> Result<Role, TransportError>
+    async fn authenticate<S>(
+        &self,
+        ws: &mut WebSocketStream<S>,
+        auth: protocol::AuthRequest,
+    ) -> Result<Role, TransportError>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
-        let auth: AuthRequest = recv_json(ws).await?;
         if !auth.version_supported() {
             send_json(ws, &AuthResponse::Rejected { reason: DenyReason::BadRequest }).await?;
             return Err(TransportError::Protocol("unsupported protocol version".into()));
@@ -206,6 +244,79 @@ impl ControlServer {
                     .await?;
                 Err(TransportError::Protocol("authentication rejected".into()))
             }
+        }
+    }
+
+    /// Redeem a pairing code over the wire: version + code validity (non-consuming)
+    /// → **host confirmation** → single-use redemption with server-generated
+    /// credentials → `Granted`, continuing the connection already authenticated.
+    async fn complete_pairing<S>(
+        &self,
+        ws: &mut WebSocketStream<S>,
+        pair: PairRequest,
+    ) -> Result<Role, TransportError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        async fn reject<S>(
+            ws: &mut WebSocketStream<S>,
+            reason: DenyReason,
+            why: &str,
+        ) -> Result<Role, TransportError>
+        where
+            S: AsyncRead + AsyncWrite + Unpin,
+        {
+            send_json(ws, &PairResponse::Rejected { reason }).await?;
+            Err(TransportError::Protocol(format!("pairing rejected: {why}")))
+        }
+
+        if !pair.version_supported() {
+            return reject(ws, DenyReason::BadRequest, "unsupported protocol version").await;
+        }
+        let Some(approval) = self.pairing.as_ref() else {
+            return reject(ws, DenyReason::Forbidden, "pairing not enabled").await;
+        };
+        // Cheap pre-check (non-consuming) so an invalid/expired code never bothers
+        // the operator with a confirmation prompt. Pruning here also keeps the
+        // pending-offer map from accumulating expired entries (bounded memory).
+        if !{
+            let mut reg = self.registry.lock().await;
+            let now = std::time::Instant::now();
+            reg.prune_expired(now);
+            reg.code_valid(&pair.code, now)
+        } {
+            return reject(ws, DenyReason::Unauthenticated, "unknown or expired code").await;
+        }
+
+        // Host confirmation (FR-086). The device name is untrusted display text —
+        // sanitize before showing. A timeout counts as declined.
+        let name = sanitize_device_name(&pair.device_name);
+        let approved = tokio::time::timeout(PAIRING_APPROVAL_TIMEOUT, approval(name))
+            .await
+            .unwrap_or(false);
+        if !approved {
+            return reject(ws, DenyReason::Forbidden, "host declined").await;
+        }
+
+        // Redeem (single-use; re-checks expiry, closing the confirm-window race) with
+        // server-generated credentials.
+        let device_id = format!("dev-{}", random_hex(8));
+        let token = random_hex(32);
+        let redeemed = {
+            let mut reg = self.registry.lock().await;
+            reg.redeem(
+                &pair.code,
+                DeviceId(device_id.clone()),
+                SessionToken::new(token.clone()),
+                std::time::Instant::now(),
+            )
+        };
+        match redeemed {
+            Ok(role) => {
+                send_json(ws, &PairResponse::Granted { device_id, token, role }).await?;
+                Ok(role)
+            }
+            Err(_) => reject(ws, DenyReason::Unauthenticated, "code expired").await,
         }
     }
 
@@ -260,5 +371,66 @@ impl ControlServer {
             }
         }
         Ok(())
+    }
+}
+
+/// `n` random bytes from the OS CSPRNG as lowercase hex (2n chars). Falls back to a
+/// second draw attempt; a CSPRNG that cannot produce bytes is unrecoverable, so the
+/// caller-facing contract stays simple (this is used for token/device-id issuance).
+fn random_hex(n: usize) -> String {
+    let rng = SystemRandom::new();
+    let mut bytes = vec![0u8; n];
+    if rng.fill(&mut bytes).is_err() {
+        // One retry; if the OS RNG is truly broken, fail closed with an empty string,
+        // which the registry rejects (empty tokens never authenticate).
+        if rng.fill(&mut bytes).is_err() {
+            return String::new();
+        }
+    }
+    let mut s = String::with_capacity(n * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// A fresh 256-bit random bearer token (lowercase hex) — for issuing credentials
+/// outside the wire-pairing path (e.g. a host-local session). Empty on CSPRNG
+/// failure, which the registry rejects (fail closed).
+pub fn generate_token() -> String {
+    random_hex(32)
+}
+
+/// A short random pairing code (uppercase alphanumeric, unambiguous alphabet) the
+/// operator offers via QR. 8 chars over a 32-symbol alphabet ≈ 40 bits — plenty for a
+/// single-use code with a 2-minute TTL and host confirmation behind it.
+pub fn generate_pairing_code() -> String {
+    // No 0/O/1/I — the code may be typed by hand as a QR fallback.
+    const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let rng = SystemRandom::new();
+    let mut bytes = [0u8; 8];
+    if rng.fill(&mut bytes).is_err() {
+        return String::new(); // registry refuses empty codes (fail closed)
+    }
+    bytes
+        .iter()
+        .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
+        .collect()
+}
+
+/// Sanitize an untrusted device name for operator display: keep printable
+/// non-control characters, cap the length, and never yield an empty string.
+fn sanitize_device_name(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_DEVICE_NAME)
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        "(unnamed device)".to_string()
+    } else {
+        trimmed.to_string()
     }
 }

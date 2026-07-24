@@ -156,6 +156,42 @@ fn stage_output_is_a_distinct_confidence_surface() {
 }
 
 #[test]
+fn pairing_qr_shows_on_stage_only_and_expires() {
+    use std::time::{Duration, Instant};
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    let t0 = Instant::now();
+    c.tick(t0);
+    let audience_before = c.presenter().live_output().bytes().to_vec();
+    let stage_before = c.stage_output().bytes().to_vec();
+
+    // Pairing mode: the STAGE output becomes the (white-background) QR; the audience
+    // output is untouched.
+    c.show_pairing_qr(
+        "selahcue://pair?host=10.0.0.5&port=1234&pin=ab&code=ABCD2345".into(),
+        t0 + Duration::from_secs(120),
+    );
+    c.tick(t0 + Duration::from_secs(1));
+    assert!(c.pairing_qr_active());
+    assert_ne!(c.stage_output().bytes(), stage_before.as_slice(), "stage shows the QR");
+    assert!(
+        c.stage_output().average_luminance() > 0.5,
+        "QR is white-backed (unmistakable vs the dark scene)"
+    );
+    assert_eq!(
+        c.presenter().live_output().bytes(),
+        audience_before.as_slice(),
+        "the audience output never shows pairing"
+    );
+
+    // The QR auto-expires with its code's TTL and the speaker scene returns.
+    c.tick(t0 + Duration::from_secs(121));
+    assert!(!c.pairing_qr_active());
+    assert_eq!(c.stage_output().bytes(), stage_before.as_slice(), "scene restored");
+}
+
+#[test]
 fn go_live_with_nothing_staged_is_denied() {
     let (mut c, _) = controller();
     assert_eq!(
