@@ -305,6 +305,11 @@ struct ChapterView {
     prev: Option<String>,
     next: Option<String>,
     translations: Vec<String>,
+    /// The verse selection parsed from the query ("gen 1 5" / "Gen 1:5" /
+    /// "Gen 1:1-3") — the browser lands/stages from THIS, never from regex
+    /// guessing on the raw string (owner bug: "2 cor 4 5" landed on v1).
+    verse_start: Option<u16>,
+    verse_end: Option<u16>,
 }
 
 #[tauri::command]
@@ -330,6 +335,8 @@ fn get_chapter(reference: String, translation: Option<String>) -> Result<Chapter
             .iter()
             .map(|t| t.code().to_string())
             .collect(),
+        verse_start: parsed.verses.map(|r| r.start),
+        verse_end: parsed.verses.map(|r| r.end),
     })
 }
 #[tauri::command]

@@ -117,14 +117,55 @@ pub fn parse_one(input: &str) -> Result<Reference, ParseError> {
     }
     let cv = tokens[tokens.len() - 1];
     let book_raw: String = tokens[..tokens.len() - 1].concat();
-    let (book, book_name) = lookup_book(&normalize(&book_raw)).ok_or(ParseError::UnknownBook)?;
-    let (chapter, verses) = parse_chapter_verse(cv)?;
-    Ok(Reference {
-        book,
-        book_name,
-        chapter,
-        verses,
-    })
+    let standard = lookup_book(&normalize(&book_raw))
+        .ok_or(ParseError::UnknownBook)
+        .and_then(|(book, book_name)| {
+            let (chapter, verses) = parse_chapter_verse(cv)?;
+            Ok(Reference {
+                book,
+                book_name,
+                chapter,
+                verses,
+            })
+        });
+    if standard.is_ok() {
+        return standard;
+    }
+    // Space-separated shorthand (owner request 86ajpwkte): "<book> <chapter>
+    // <verse[-verse]>" — e.g. "gen 1 1" → Genesis 1:1, "1 sam 13 1" →
+    // 1 Samuel 13:1, "gen 1 1-3" → Genesis 1:1-3. Only attempted when the
+    // punctuation form failed, so every existing spelling is unchanged.
+    if tokens.len() >= 3 {
+        let verse_tok = tokens[tokens.len() - 1];
+        let chapter_tok = tokens[tokens.len() - 2];
+        let versey = |t: &str| {
+            let mut parts = t.splitn(2, '-');
+            let first_ok = parts
+                .next()
+                .is_some_and(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()));
+            let second_ok = match parts.next() {
+                None => true,
+                Some(v) => !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()),
+            };
+            first_ok && second_ok
+        };
+        if chapter_tok.chars().all(|c| c.is_ascii_digit())
+            && !chapter_tok.is_empty()
+            && versey(verse_tok)
+        {
+            let book_raw: String = tokens[..tokens.len() - 2].concat();
+            if let Some((book, book_name)) = lookup_book(&normalize(&book_raw)) {
+                let (chapter, verses) = parse_chapter_verse(&format!("{chapter_tok}:{verse_tok}"))?;
+                return Ok(Reference {
+                    book,
+                    book_name,
+                    chapter,
+                    verses,
+                });
+            }
+        }
+    }
+    standard
 }
 
 /// Parse the trailing `<chapter>[:<verse>[-<verse>]]` token.

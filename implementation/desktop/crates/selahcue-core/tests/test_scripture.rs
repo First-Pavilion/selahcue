@@ -169,3 +169,33 @@ fn large_verse_numbers_do_not_overflow() {
         })
     );
 }
+
+#[test]
+fn space_separated_shorthand_resolves_chapter_and_verse() {
+    // Owner request (86ajpwkte): "gen 1 1" == "Genesis 1:1".
+    let r = parse_one("gen 1 1").unwrap();
+    assert_eq!((r.book_name, r.chapter), ("Genesis", 1));
+    assert_eq!(r.verses, Some(VerseRange { start: 1, end: 1 }));
+
+    // Numbered books keep their leading digit with the book.
+    let r = parse_one("1 cor 13 4").unwrap();
+    assert_eq!((r.book_name, r.chapter), ("1 Corinthians", 13));
+    assert_eq!(r.verses, Some(VerseRange { start: 4, end: 4 }));
+    let r = parse_one("1 sam 13 1").unwrap();
+    assert_eq!((r.book_name, r.chapter), ("1 Samuel", 13));
+
+    // Ranges work in the shorthand too.
+    let r = parse_one("gen 1 1-3").unwrap();
+    assert_eq!(r.verses, Some(VerseRange { start: 1, end: 3 }));
+
+    // Existing spellings are untouched, and chapter-only stays chapter-only.
+    assert_eq!(
+        parse_one("Genesis 1:1").unwrap(),
+        parse_one("gen 1 1").unwrap()
+    );
+    assert_eq!(parse_one("gen 1").unwrap().verses, None);
+
+    // Garbage stays rejected: no book resolves, numbers alone mean nothing.
+    assert!(parse_one("2 2 2").is_err());
+    assert!(parse_one("zzz 1 1").is_err());
+}

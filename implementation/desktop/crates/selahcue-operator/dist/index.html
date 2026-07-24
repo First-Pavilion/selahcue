@@ -908,14 +908,16 @@
           renderTranslations(ch.translations);
           renderChapter();
           setStatus("");
-          // A typed RANGE ("John 3:16-18") stages the whole passage; the
-          // cursor lands on its first verse without re-staging a single verse.
-          const range = reference.match(/:(\d+)-(\d+)\s*$/);
-          const single = reference.match(/:(\d+)\s*$/);
+          // The HOST parsed the query — land/stage from ITS verse selection
+          // ("gen 1 5", "Gen 1:5", "Gen 1:1-3" all resolve identically; no
+          // regex guessing on the raw string).
+          const isRange =
+            ch.verse_start != null &&
+            ch.verse_end != null &&
+            ch.verse_end > ch.verse_start;
           let wantNum = null;
           if (cursorVerseNum != null) wantNum = cursorVerseNum;
-          else if (range) wantNum = parseInt(range[1], 10);
-          else if (single) wantNum = parseInt(single[1], 10);
+          else if (ch.verse_start != null) wantNum = ch.verse_start;
           let idx = wantNum == null ? 0
             : ch.verses.findIndex(([n]) => n === wantNum);
           if (wantNum != null && idx < 0) {
@@ -929,11 +931,13 @@
             );
             return;
           }
-          if (range) {
+          if (isRange) {
+            // The whole passage stages; the cursor lands without re-staging.
             setCursor(Math.max(0, idx), false);
             act(() =>
               invoke("stage_scripture", {
-                reference,
+                reference:
+                  ch.reference + ":" + ch.verse_start + "-" + ch.verse_end,
                 translation: currentTranslation,
               })
             );
