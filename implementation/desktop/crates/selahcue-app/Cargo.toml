@@ -15,9 +15,12 @@ server = ["selahcue-lan/server"]
 selahcue-core = { path = "../selahcue-core" }
 selahcue-present = { path = "../selahcue-present" }
 selahcue-lan = { path = "../selahcue-lan" }
+# Serializes the operator view-model for the UI (Tauri commands return it as JSON).
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+serde_json = "1"
 
 [lints]
 workspace = true

@@ -1,0 +1,10 @@
+# Build output
+/target/
+
+# tauri-build regenerates these ACL/permission schemas on every build — not source.
+/gen/schemas/
+
+# The repo-root .gitignore excludes `dist/` (JS build output), but for this Tauri crate
+# the webview frontend under dist/ IS hand-written source and must be tracked.
+!/dist/
+!/dist/**

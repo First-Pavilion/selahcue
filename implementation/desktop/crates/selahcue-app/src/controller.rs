@@ -5,6 +5,7 @@
 //! `SelectItem`) stages the item in **Preview**; only `GoLive` commits it to the
 //! **Live** output. `Clear`/`Blackout` act on Live.
 
+use crate::operator::{ItemView, OperatorView};
 use selahcue_core::plan::ServicePlan;
 use selahcue_core::scripture;
 use selahcue_lan::protocol::{Command, DenyReason, ServerMessage};
@@ -65,6 +66,31 @@ impl LiveController {
     /// Whether the audience output is blacked out.
     pub fn is_blackout(&self) -> bool {
         self.blackout
+    }
+
+    /// A serializable snapshot for the operator UI: the plan with per-item Live/Preview
+    /// flags, plus the current live/staged indices and blackout state.
+    pub fn operator_view(&self) -> OperatorView {
+        let items = self
+            .plan
+            .items()
+            .iter()
+            .enumerate()
+            .map(|(i, item)| ItemView {
+                id: item.id.0,
+                kind: item.kind.as_tag().to_string(),
+                title: item.title.clone(),
+                is_live: self.live_idx == Some(i),
+                is_staged: self.staged_idx == Some(i),
+            })
+            .collect();
+        OperatorView {
+            plan_name: self.plan.name.clone(),
+            items,
+            live_index: self.live_idx,
+            staged_index: self.staged_idx,
+            blackout: self.blackout,
+        }
     }
 
     fn slide_for(&self, idx: usize) -> Option<Slide> {

@@ -375,6 +375,30 @@ net-negative and unverifiable here); it dissolves under GPU-native compose (ADR-
 
 - Target: S7l-001..S7l-008. Change: rewired `selahcue-desktop` to run the control server + a shared `LiveController` (local keys + remote both drive it; continuous vsync repaint); added `CertPin::from_hex` (+ unit test) and a lean `selahcue-remote` example CLI. Multi-lens adversarial review (concurrency · wiring · parser/CLI · security) → 4 raised → **0 confirmed** (all adversarially dismissed). Verifier: `cargo test` 155 workspace; lan 40 server; app 10 unit + 2 E2E; clippy clean incl. examples. Result: PASS. Decision: gate-review.
 
+## Batch 7m predicate — operator shell (view-model + shell + Tauri app)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7m-001 | yes | UI-agnostic operator view-model (`OperatorView`) faithfully snapshots controller state (plan + per-item live/preview flags + blackout) | `cargo test -p selahcue-app` | 8 operator tests | test_operator.rs; operator.rs | PASS |
+| S7m-002 | yes | `OperatorShell` actions apply-then-snapshot atomically under one lock; poison-safe; clone shares the controller | `cargo test` + review | tests + review | operator.rs | PASS |
+| S7m-003 | yes | View-model serializes to the exact JSON fields the UI reads | `cargo test` | `view_serializes_to_the_ui` | test_operator.rs | PASS |
+| S7m-004 | yes | Tauri operator app: `#[tauri::command]`s over the shell; commands ↔ frontend arg mapping correct; generate_handler complete | `cargo check` (operator) + review | compiles; review 0 wiring findings | selahcue-operator/src/main.rs | PASS (compile) |
+| S7m-005 | yes | Self-contained webview UI renders plan + LIVE/PREVIEW badges and drives the shell; local-desktop security config sound | review | 0 frontend/security findings | dist/index.html; tauri.conf.json | PASS (compile) |
+| S7m-006 | yes | Tauri app excluded from the default workspace (heavy/GUI-unrunnable) yet compile-checked | `cargo check` in-crate; workspace test unaffected | operator excluded; 171 workspace | Cargo.toml (exclude) | PASS |
+| S7m-007 | yes | Full suite + clippy clean | `cargo test` + clippy | 171 workspace; operator check+clippy clean | test output | PASS |
+| S7m-008 | yes | Independent multi-lens adversarial review; confirmed findings fixed | fresh-context workflow `w4d8xq56o` | 3 raised → 1 confirmed (docstring overclaim) → fixed; code logic 0 findings | CODE-REVIEW-batch7m-operator.md | PASS |
+
+**Compile-only + integration scope (honest):** the Tauri GUI cannot be runtime-tested
+headless (compile-verified via `cargo check`; operator *logic* verified by unit tests).
+The operator shell drives its **own** in-process controller and is **not yet connected**
+to the batch-7l on-screen output window — that operator↔output integration is the next
+slice. The review's one confirmed finding was a docstring that overclaimed this link;
+fixed to a qualified capability statement.
+
+### Iteration ledger — batch 7m
+
+- Target: S7m-001..S7m-008. Change: added the operator control surface (`OperatorView`/`OperatorShell` + `LiveController::operator_view`) to `selahcue-app` with 8 unit tests; built the `selahcue-operator` Tauri 2 app (commands + self-contained webview console), excluded from the workspace and compile-checked separately. Multi-lens adversarial review (view-model · shell-concurrency · tauri-frontend · integration-honesty) → 3 raised → **1 confirmed** (docstring overclaimed the operator↔output link) → **fixed** (qualified); code logic 0 findings. Verifier: `cargo test` 171 workspace; operator `cargo check` + clippy clean. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

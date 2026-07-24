@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Operator shell default capability: core defaults for the main window. The app's own invoke commands (view/next/previous/go_live/select/clear/blackout) are not ACL-gated.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

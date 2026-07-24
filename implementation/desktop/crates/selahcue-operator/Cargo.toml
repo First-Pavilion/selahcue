@@ -1,0 +1,30 @@
+[package]
+name = "selahcue-operator"
+version = "0.1.0"
+edition = "2021"
+license = "Proprietary"
+authors = ["SelahCue"]
+description = "SelahCue operator shell: a Tauri desktop UI (webview) that renders the service plan and drives the live output via the tested OperatorShell surface (ADR-0003). A GUI app — run on a desktop with the Tauri toolchain."
+
+# Standalone workspace root: this crate is EXCLUDED from the desktop workspace (it is a
+# GUI app that can't be runtime-verified headless and pulls a heavy toolchain-dependent
+# tree). Keeping an empty [workspace] here makes it its own root so cargo won't fold it
+# back into the parent.
+[workspace]
+
+[[bin]]
+name = "selahcue-operator"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+selahcue-app = { path = "../selahcue-app" }
+selahcue-core = { path = "../selahcue-core" }
+selahcue-present = { path = "../selahcue-present" }
+
+[lints.clippy]
+unwrap_used = "warn"

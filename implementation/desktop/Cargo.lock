@@ -1784,6 +1784,8 @@ dependencies = [
  "selahcue-core",
  "selahcue-lan",
  "selahcue-present",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

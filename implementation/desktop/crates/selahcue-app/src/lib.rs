@@ -7,8 +7,10 @@
 #![forbid(unsafe_code)]
 
 mod controller;
+mod operator;
 
 pub use controller::{ControllerReply, LiveController};
+pub use operator::{ItemView, OperatorShell, OperatorView};
 
 #[cfg(feature = "server")]
 pub use controller::handler_for;
