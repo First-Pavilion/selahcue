@@ -679,6 +679,20 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7ae-001..S7ae-005. Change: ASV/WEBBE/Darby bundled (lazy per-translation decode, bounded), Translation enum ×5, host-advertised translation list on the wire, full-corpus residue test, licensing register corrected. Review (6 agents incl. a live copyright-page fetch): **4 unique (A–D) → all fixed** — headline: BBE's PD status is US-only (Cambridge UP, plausibly copyrighted to 2038 in life+70 jurisdictions) → dropped and substituted with the worldwide-safe WEB British Edition; BBE also carried literal `***` placeholder verses. Verifier: workspace **260** + Flutter **20**, clippy clean. Result: PASS. Decision: gate-review.
 
+## Batch 7ai predicate — SQLCipher key acquisition (86ajp5vp6)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7ai-001 | yes | Key acquired from the OS secret store (random 256-bit, first-run generated) or an Argon2id passphrase (OWASP params, persisted salt); source reported, never silent | `cargo test -p selahcue-desktop --features encryption` | derivation determinism/sensitivity, salt round-trip, hex guards | keys.rs | PASS |
+| S7ai-002 | yes | The open path can NEVER wedge or lie: header-discriminated state machine (plaintext stays plain; encrypted+bad-key hard-stops with the true cause, file byte-untouched; unencrypted creation only for a nonexistent file) | state-machine tests | 3 scenario tests with byte-level assertions | main.rs open_store | PASS |
+| S7ai-003 | yes | Key hygiene: EncryptionKey + intermediates zeroized (passphrase, hex, buffers); accepted residuals documented | review fix F | zeroize throughout | keys.rs | PASS |
+| S7ai-004 | yes | CI exercises the encrypted desktop build (Linux/macOS lanes; Windows skip documented) | ci.yml + make ci | extended encryption lanes | ci.yml; Makefile | PASS |
+| S7ai-005 | yes | Independent security review; confirmed findings fixed | run `wf_e8603008-4db` (7 agents, empirical repro) | 6 confirmed (A–F) → **all fixed** | CODE-REVIEW-batch7ai.md | PASS |
+
+### Iteration ledger — batch 7ai
+
+- Target: S7ai-001..S7ai-005. Change: keys.rs (keychain + Argon2id + salt lifecycle + zeroization), header-discriminated open_store state machine, feature plumbing, CI/make lanes. Security review (empirical — the verifier built SQLCipher and reproduced the failure modes): **6 findings (A–F) → all fixed** — headline: a first-run keychain hiccup could mint a plaintext store that permanently wedged persistence behind corruption-looking errors, with a false "opening UNENCRYPTED" message inviting data deletion. Recorded remainder: a rekey/plaintext-migration tool. Verifier: 11 encryption-lane + 262 workspace + 20 Flutter tests, clippy clean both ways, deny green. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

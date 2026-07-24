@@ -16,13 +16,15 @@
 #![forbid(unsafe_code)]
 
 mod guard;
+#[cfg(feature = "encryption")]
+mod keys;
 
 use selahcue_app::{
     handler_for, CanonicalAction, ControllerSnapshot, KeyPress, Keymap, LiveController,
 };
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_data::session_repo::SessionState;
-use selahcue_data::{output_repo, plan_repo, session_repo, Database};
+use selahcue_data::{output_repo, plan_repo, session_repo, DataError, Database};
 use selahcue_engine::raster::FrameBuffer;
 use selahcue_lan::protocol::{Command, DisplayView, OutputStatusView, PairingInvite};
 use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
@@ -213,17 +215,103 @@ struct SessionStore {
 
 impl SessionStore {
     fn open() -> Self {
-        let db =
-            data_dir()
-                .map(|dir| dir.join("selahcue.db3"))
-                .and_then(|path| match Database::open(&path) {
-                    Ok(db) => Some(db),
-                    Err(e) => {
-                        eprintln!("SelahCue: session store unavailable ({e}); running in-memory.");
-                        None
-                    }
-                });
+        let db = data_dir()
+            .map(|dir| (dir.join("selahcue.db3"), dir))
+            .and_then(|(path, dir)| match Self::open_db(&path, &dir) {
+                Ok(db) => Some(db),
+                Err(e) => {
+                    eprintln!("SelahCue: session store unavailable ({e}); running in-memory.");
+                    None
+                }
+            });
         SessionStore { db, plan_id: None }
+    }
+
+    /// Open the store (FR-154/86ajp5vp6). The decision is keyed on what is
+    /// ACTUALLY on disk — the file header discriminates a plaintext store from
+    /// an encrypted one — so a key hiccup can never mint a plaintext store next
+    /// to real data, silently kill persistence, or masquerade as corruption:
+    ///
+    /// | on disk        | key acquired | action                                    |
+    /// |----------------|--------------|-------------------------------------------|
+    /// | nothing        | yes          | create ENCRYPTED                          |
+    /// | nothing        | no           | create plaintext + loud warning (documented best-effort) |
+    /// | plaintext      | either       | open PLAIN + warning (encryption pending a migration tool — never keyed-open a plain file) |
+    /// | encrypted      | yes          | open ENCRYPTED; a key mismatch HARD-STOPS persistence with an honest message (file untouched) |
+    /// | encrypted      | no           | HARD-STOP persistence: "fix the key source" (no unencrypted attempt) |
+    #[cfg(feature = "encryption")]
+    fn open_db(path: &std::path::Path, data_dir: &std::path::Path) -> Result<Database, DataError> {
+        let acquired = keys::acquire(data_dir);
+        Self::open_store(path, acquired)
+    }
+
+    /// The testable state machine behind [`open_db`] (encryption builds).
+    #[cfg(feature = "encryption")]
+    fn open_store(
+        path: &std::path::Path,
+        acquired: Option<(selahcue_data::EncryptionKey, keys::KeySource)>,
+    ) -> Result<Database, DataError> {
+        const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+        let on_disk: Option<bool /* plaintext */> = match std::fs::read(path) {
+            Ok(bytes) if bytes.len() >= 16 => Some(&bytes[..16] == SQLITE_MAGIC),
+            Ok(_) => None, // zero/short file: treat as absent
+            Err(_) => None,
+        };
+        match (on_disk, acquired) {
+            (None, Some((key, source))) => {
+                println!("  Store encryption: SQLCipher (key via {source:?}).");
+                Database::open_encrypted(path, &key)
+            }
+            (None, None) => {
+                eprintln!(
+                    "SelahCue: NO ENCRYPTION KEY available — creating the store \
+                     UNENCRYPTED (best-effort per FR-154; set SELAHCUE_PASSPHRASE \
+                     or fix the OS keychain, then migrate)."
+                );
+                Database::open(path)
+            }
+            (Some(true), key) => {
+                if key.is_some() {
+                    eprintln!(
+                        "SelahCue: the existing store is UNENCRYPTED; opening it as-is \
+                         (in-place encryption migration is a pending tool — the key was \
+                         acquired and will be used once migrated)."
+                    );
+                }
+                Database::open(path)
+            }
+            (Some(false), Some((key, source))) => match Database::open_encrypted(path, &key) {
+                Ok(db) => {
+                    println!("  Store encryption: SQLCipher (key via {source:?}).");
+                    Ok(db)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "SelahCue: the store is ENCRYPTED but the acquired key (via \
+                         {source:?}) does not open it — a changed passphrase, a missing \
+                         key.salt from a partial backup restore, or a switched key \
+                         source. The file is UNTOUCHED; persistence is off until the \
+                         right key is back. ({e})"
+                    );
+                    Err(e)
+                }
+            },
+            (Some(false), None) => {
+                eprintln!(
+                    "SelahCue: the store is ENCRYPTED and no key is available — \
+                     persistence is off until the keychain/passphrase is back. \
+                     The file is untouched; do NOT delete it."
+                );
+                Err(DataError::Corrupt(
+                    "encrypted store, key unavailable".into(),
+                ))
+            }
+        }
+    }
+
+    #[cfg(not(feature = "encryption"))]
+    fn open_db(path: &std::path::Path, _data_dir: &std::path::Path) -> Result<Database, DataError> {
+        Database::open(path)
     }
 
     /// Load the persisted session: the plan + the live-state snapshot. `None` on a
@@ -1573,5 +1661,103 @@ mod tests {
         assert_eq!(keys[1].1, "EPSON PJ|1920x1080");
         assert_eq!(keys[2].1, "Display 3|1024x768");
         assert_eq!(keys[2].0, "Display 3");
+    }
+}
+
+#[cfg(all(test, feature = "encryption"))]
+#[allow(clippy::unwrap_used)]
+mod encryption_tests {
+    use super::*;
+    use selahcue_data::EncryptionKey;
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "selahcue-openstore-{}-{}",
+            name,
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("selahcue.db3")
+    }
+
+    #[test]
+    fn fresh_store_with_a_key_is_encrypted_and_reopens() {
+        let path = tmp("fresh");
+        let key = EncryptionKey::from_raw([7u8; 32]);
+        let db = SessionStore::open_store(&path, Some((key, keys::KeySource::SecretStore)));
+        assert!(db.is_ok());
+        drop(db);
+        // On disk it must NOT carry the plaintext SQLite magic.
+        let head = std::fs::read(&path).unwrap();
+        assert_ne!(&head[..16], b"SQLite format 3\0", "file is encrypted");
+        // The right key reopens it; a wrong key hard-stops WITHOUT touching it.
+        let again = SessionStore::open_store(
+            &path,
+            Some((
+                EncryptionKey::from_raw([7u8; 32]),
+                keys::KeySource::SecretStore,
+            )),
+        );
+        assert!(again.is_ok());
+        drop(again);
+        let before = std::fs::read(&path).unwrap();
+        let wrong = SessionStore::open_store(
+            &path,
+            Some((
+                EncryptionKey::from_raw([9u8; 32]),
+                keys::KeySource::Passphrase,
+            )),
+        );
+        assert!(
+            wrong.is_err(),
+            "wrong key never opens (and never falls back)"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before, "file untouched");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn plaintext_store_is_opened_plain_never_keyed() {
+        let path = tmp("plain");
+        // Mint a plaintext store (the documented no-key first-run fallback).
+        let db = SessionStore::open_store(&path, None);
+        assert!(db.is_ok());
+        drop(db);
+        let head = std::fs::read(&path).unwrap();
+        assert_eq!(&head[..16], b"SQLite format 3\0", "plaintext store");
+        // A later run WITH a key must keep opening it plain (no keyed open of a
+        // plain file, no wedge) — the review's first-run-hiccup scenario.
+        let with_key = SessionStore::open_store(
+            &path,
+            Some((
+                EncryptionKey::from_raw([7u8; 32]),
+                keys::KeySource::SecretStore,
+            )),
+        );
+        assert!(
+            with_key.is_ok(),
+            "plaintext store keeps working with a key present"
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn encrypted_store_without_a_key_hard_stops() {
+        let path = tmp("nokey");
+        drop(SessionStore::open_store(
+            &path,
+            Some((
+                EncryptionKey::from_raw([7u8; 32]),
+                keys::KeySource::SecretStore,
+            )),
+        ));
+        let before = std::fs::read(&path).unwrap();
+        let none = SessionStore::open_store(&path, None);
+        assert!(
+            none.is_err(),
+            "no unencrypted attempt on an encrypted store"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before, "file untouched");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }

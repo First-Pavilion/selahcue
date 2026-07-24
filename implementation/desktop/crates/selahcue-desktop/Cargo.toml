@@ -11,8 +11,19 @@ description = "SelahCue desktop walking skeleton: a native borderless output win
 name = "selahcue-output"
 path = "src/main.rs"
 
+[features]
+# At-rest encryption (FR-154 + story 86ajp5vp6): SQLCipher via selahcue-data,
+# with the key acquired from the OS secret store (or an Argon2id-derived
+# passphrase key). Off by default — CI's Windows lane lacks the SQLCipher
+# toolchain, and unencrypted remains the dev default.
+encryption = ["selahcue-data/encryption", "dep:keyring", "dep:argon2", "dep:getrandom", "dep:zeroize"]
+
 [dependencies]
 fs4 = "0.13"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
+argon2 = { version = "0.5", optional = true }
+getrandom = { version = "0.2", optional = true }
+zeroize = { version = "1", optional = true }
 selahcue-core = { path = "../selahcue-core" }
 selahcue-data = { path = "../selahcue-data" }
 selahcue-engine = { path = "../selahcue-engine" }

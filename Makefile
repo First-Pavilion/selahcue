@@ -86,6 +86,7 @@ ci: ## Run the CI gate locally (same gates as .github/workflows/ci.yml, minus th
 	$(CARGO) test $(WS) -p selahcue-lan --features server
 	$(CARGO) test $(WS) -p selahcue-app --features server
 	$(CARGO) test $(WS) -p selahcue-data --features encryption
+	$(CARGO) test $(WS) -p selahcue-desktop --features encryption
 	$(CARGO) check $(OP)
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 	@echo ""

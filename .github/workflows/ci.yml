@@ -82,7 +82,9 @@ jobs:
         # The vendored OpenSSL build needs perl+nasm on Windows; covered on the
         # other two OSes (the feature is platform-independent Rust).
         if: runner.os != 'Windows'
-        run: cargo test -p selahcue-data --features encryption
+        run: |
+          cargo test -p selahcue-data --features encryption
+          cargo test -p selahcue-desktop --features encryption
 
   operator:
     name: operator shell (${{ matrix.os }})
