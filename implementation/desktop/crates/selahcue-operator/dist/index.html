@@ -58,12 +58,25 @@
         cursor: pointer; background: var(--bg);
       }
       .item:hover { border-color: #35404f; background: #1d2430; }
-      .item .kind {
-        font-size: 9px; text-transform: uppercase; letter-spacing: .04em;
-        color: var(--muted); border: 1px solid var(--line); border-radius: 4px;
-        padding: 2px 5px; min-width: 64px; text-align: center;
+      /* Two-line row (Figma): title above, kind below; title never wraps. */
+      .item .main {
+        flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
       }
-      .item .title { flex: 1; font-weight: 500; font-size: 13px; }
+      .item .title {
+        font-weight: 500; font-size: 13px; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis;
+      }
+      .item .kind {
+        font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+        color: var(--muted);
+      }
+      /* Edit tools appear on hover / keyboard focus — rows stay compact. Hidden
+         with opacity (NOT display:none) so the buttons keep their tab-order and
+         a keyboard Tab into a row reveals them via :focus-within. */
+      .item .tools { display: flex; gap: 0; flex: none; opacity: 0; pointer-events: none; }
+      .item:hover .tools, .item:focus-within .tools, .item .tools.confirming {
+        opacity: 1; pointer-events: auto;
+      }
       /* Non-colour redundancy (WCAG 1.4.1): live/preview are label + border,
          never colour alone. */
       .badge { font-size: 9px; font-weight: 700; padding: 3px 6px; border-radius: 4px; letter-spacing: .04em; color: #fff; }
@@ -264,13 +277,19 @@
             "item" + (it.is_live ? " is-live" : "") + (it.is_staged ? " is-staged" : "");
           row.onclick = () => act(() => invoke("select", { itemId: it.id }));
 
-          const kind = document.createElement("span");
-          kind.className = "kind";
-          kind.textContent = it.kind;
-
+          const main = document.createElement("span");
+          main.className = "main";
           const title = document.createElement("span");
           title.className = "title";
           title.textContent = it.title;
+          const kind = document.createElement("span");
+          kind.className = "kind";
+          kind.textContent = it.kind;
+          main.appendChild(title);
+          main.appendChild(kind);
+
+          const tools = document.createElement("span");
+          tools.className = "tools";
 
           // In-page editing only: WKWebView implements neither prompt() nor
           // confirm(), so native dialogs are silently dead in the shell.
@@ -279,7 +298,7 @@
             editing = it.id;
             const input = document.createElement("input");
             input.value = it.title;
-            input.style.cssText = "flex:1;font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--accent);border-radius:4px;padding:4px 6px";
+            input.style.cssText = "width:100%;font:inherit;font-size:13px;color:var(--text);background:var(--bg);border:1px solid var(--accent);border-radius:4px;padding:4px 6px";
             input.onclick = (ev) => ev.stopPropagation();
             input.onkeydown = (ev) => {
               if (ev.key === "Enter") {
@@ -312,18 +331,21 @@
               act(() => invoke("remove_item", { itemId: it.id }));
             } else {
               confirmDelete = it.id;
+              // An armed destructive control must never be invisible: pin the
+              // tools open for the confirm window even if the pointer leaves.
+              tools.classList.add("confirming");
               del.textContent = "sure?";
               del.style.color = "var(--live-ink)";
               setTimeout(() => { if (confirmDelete === it.id) { confirmDelete = null; act(() => invoke("view")); } }, 3000);
             }
           });
 
-          row.appendChild(kind);
-          row.appendChild(title);
-          row.appendChild(ren);
-          row.appendChild(up);
-          row.appendChild(down);
-          row.appendChild(del);
+          row.appendChild(main);
+          tools.appendChild(ren);
+          tools.appendChild(up);
+          tools.appendChild(down);
+          tools.appendChild(del);
+          row.appendChild(tools);
           if (it.is_live) row.appendChild(badge("live", "LIVE"));
           else if (it.is_staged) row.appendChild(badge("preview", "PREVIEW"));
           plan.appendChild(row);
@@ -560,7 +582,9 @@
         lastEsc = 0;
         armClearHint(false);
       };
-      window.addEventListener("keydown", (e) => {
+      window.addEventListener(
+        "keydown",
+        (e) => {
         // OS auto-repeat is never a deliberate action: a held Esc must not
         // complete the double-tap, a held B must not strobe the blackout.
         if (e.repeat) return;
@@ -629,7 +653,24 @@
             break;
           }
         }
-      });
+        },
+        true // capture: first in line, nothing can swallow the canonical keys
+      );
+
+      // WKWebView (86ajphu2h): key events reach the page only when an element
+      // inside the document has focus — before the first click, nothing does,
+      // and every canonical key is dead. Keep the body focusable and focused
+      // whenever nothing else claims focus.
+      document.body.tabIndex = -1;
+      const grabFocus = () => {
+        const a = document.activeElement;
+        if (!a || a === document.body || a === document.documentElement) {
+          document.body.focus();
+        }
+      };
+      grabFocus();
+      window.addEventListener("focus", grabFocus);
+      document.addEventListener("focusout", () => setTimeout(grabFocus, 0));
 
       act(() => invoke("view"));
       // Poll so a running countdown ticks in the UI (the host advances it each frame).
