@@ -25,6 +25,11 @@ BIN="$DESKTOP/target/release/selahcue-output"
 echo ">> building release binary…"
 cargo build --release -q --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-desktop
 
+echo ">> enforcing the release-build slide-trigger budget (150 ms)…"
+cargo test --release -q --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-present \
+  --test test_present go_live_slide_trigger_latency_is_within_budget >/dev/null
+echo "   slide-trigger latency: within 150 ms (release) PASS"
+
 if pgrep -f selahcue-output >/dev/null 2>&1; then
   echo "WARNING: a selahcue-output instance is already running; results would be"
   echo "         polluted and its endpoint file will be replaced. Close it first."
