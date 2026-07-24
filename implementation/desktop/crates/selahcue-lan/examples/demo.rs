@@ -64,7 +64,12 @@ async fn main() {
     plan.get_mut(song).unwrap().planned_secs = Some(300);
     ok(format!("plan '{}' — {} items:", plan.name, plan.len()));
     for (i, item) in plan.items().iter().enumerate() {
-        println!("      {}. [{:<12}] {}", i + 1, item.kind.as_tag(), item.title);
+        println!(
+            "      {}. [{:<12}] {}",
+            i + 1,
+            item.kind.as_tag(),
+            item.title
+        );
     }
     ok(format!("planned total: {}s", plan.planned_total_secs()));
 
@@ -93,7 +98,11 @@ async fn main() {
         "saved plan #{id} → reloaded '{}' ({} items) — round-trip {}",
         reloaded.name,
         reloaded.len(),
-        if reloaded == plan { "OK ✓" } else { "MISMATCH ✗" }
+        if reloaded == plan {
+            "OK ✓"
+        } else {
+            "MISMATCH ✗"
+        }
     ));
     ok("integrity_check → ok");
 
@@ -109,11 +118,21 @@ async fn main() {
         let now = Instant::now();
         let mut reg = registry.lock().await;
         reg.offer_pairing("111", Role::Producer, now, Duration::from_secs(300));
-        reg.redeem("111", DeviceId("ipad-producer".into()), SessionToken::new("tok-prod"), now)
-            .unwrap();
+        reg.redeem(
+            "111",
+            DeviceId("ipad-producer".into()),
+            SessionToken::new("tok-prod"),
+            now,
+        )
+        .unwrap();
         reg.offer_pairing("222", Role::Assistant, now, Duration::from_secs(300));
-        reg.redeem("222", DeviceId("phone-assistant".into()), SessionToken::new("tok-asst"), now)
-            .unwrap();
+        reg.redeem(
+            "222",
+            DeviceId("phone-assistant".into()),
+            SessionToken::new("tok-asst"),
+            now,
+        )
+        .unwrap();
     }
     ok("paired 2 devices: ipad-producer (Producer), phone-assistant (Assistant)");
 
@@ -139,7 +158,9 @@ async fn main() {
         ControlClient::connect(addr, "localhost", attacker_pin, "ipad-producer", "tok-prod")
             .await
             .is_err();
-    ok(format!("wrong-pin client blocked at TLS handshake: {blocked}"));
+    ok(format!(
+        "wrong-pin client blocked at TLS handshake: {blocked}"
+    ));
 
     // Producer: full live control.
     let mut producer = ControlClient::connect(addr, "localhost", pin, "ipad-producer", "tok-prod")
@@ -154,7 +175,10 @@ async fn main() {
             .await
             .unwrap();
     let r = assistant.command(Command::GoLive).await.unwrap();
-    ok(format!("Assistant GoLive → {}   ← RBAC blocks live control", pretty(&r)));
+    ok(format!(
+        "Assistant GoLive → {}   ← RBAC blocks live control",
+        pretty(&r)
+    ));
     let r = assistant.command(Command::Next).await.unwrap();
     ok(format!("Assistant Next   → {}", pretty(&r)));
 

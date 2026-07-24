@@ -71,7 +71,12 @@ pub struct TimerView {
 impl TimerView {
     /// Derive a view from a [`Timer`] at `now`. `total` is the countdown target
     /// (used only for the progress fraction); pass `None` for a count-up timer.
-    pub fn from_timer(timer: &Timer, now: Instant, total: Option<Duration>, warn_secs: u32) -> Self {
+    pub fn from_timer(
+        timer: &Timer,
+        now: Instant,
+        total: Option<Duration>,
+        warn_secs: u32,
+    ) -> Self {
         let elapsed = timer.elapsed(now);
         let remaining = timer.remaining(now);
         let time_up = timer.is_time_up(now);
@@ -80,7 +85,11 @@ impl TimerView {
         // display reading one second ahead and showing "0:00" for the whole final second.
         let remaining_secs = remaining.map(|d| {
             let whole = d.as_secs();
-            (if d.subsec_nanos() > 0 { whole + 1 } else { whole }) as u32
+            (if d.subsec_nanos() > 0 {
+                whole + 1
+            } else {
+                whole
+            }) as u32
         });
         let warn = !time_up && remaining_secs.is_some_and(|r| r <= warn_secs);
         let progress = match (total, remaining) {
@@ -272,7 +281,12 @@ impl StageDisplay {
 
     /// Update the monitor from the current live state (`timer` = `None` when no timer
     /// is running — the strip shows an empty track).
-    pub fn update(&mut self, current: Option<&Slide>, next: Option<&Slide>, timer: Option<&TimerView>) {
+    pub fn update(
+        &mut self,
+        current: Option<&Slide>,
+        next: Option<&Slide>,
+        timer: Option<&TimerView>,
+    ) {
         let frame = compose_stage(current, next, timer, &self.theme, self.width, self.height);
         self.engine.apply(EngineCommand::SetScene { frame });
     }

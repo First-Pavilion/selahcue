@@ -100,7 +100,13 @@ impl Presenter {
     /// Overlay the display-identify number on the Live output (FR-040). This
     /// replaces the live content; the operator re-stages/go-lives to resume.
     pub fn identify(&mut self, number: u32) {
-        let frame = compose_identify(number, IDENTIFY_BG, IDENTIFY_MARKER, self.width, self.height);
+        let frame = compose_identify(
+            number,
+            IDENTIFY_BG,
+            IDENTIFY_MARKER,
+            self.width,
+            self.height,
+        );
         self.live.apply(EngineCommand::SetScene { frame });
         self.live_slide = None;
     }

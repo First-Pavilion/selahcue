@@ -255,7 +255,9 @@ pub enum PairResponse {
 impl std::fmt::Debug for PairResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PairResponse::Granted { device_id, role, .. } => f
+            PairResponse::Granted {
+                device_id, role, ..
+            } => f
                 .debug_struct("PairResponse::Granted")
                 .field("device_id", &device_id)
                 .field("token", &"<redacted>")
@@ -296,7 +298,10 @@ impl PairingInvite {
     /// Encode as the `selahcue://pair?...` URI (the QR payload). Returns `None` if a
     /// field contains characters outside the URL-safe set.
     pub fn to_uri(&self) -> Option<String> {
-        if !(Self::value_ok(&self.host) && Self::value_ok(&self.pin_hex) && Self::value_ok(&self.code)) {
+        if !(Self::value_ok(&self.host)
+            && Self::value_ok(&self.pin_hex)
+            && Self::value_ok(&self.code))
+        {
             return None;
         }
         Some(format!(

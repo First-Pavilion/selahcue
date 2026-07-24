@@ -487,6 +487,23 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7q-001..S7q-008. Change: wire pairing (protocol v2 `Hello`, `complete_pairing` + `PairingApproval` seam + ring credentials), `PairingInvite` URI + `qr.rs` + stage overlay, desktop P/Y/N + 0.0.0.0 bind + random operator token, CLI `pair`, Flutter controller app (MVC) + cross-language fixtures + `make mobile`/`mobile-test`. Review (5 lenses, 26 agents): **21 raised → 21 confirmed → 11 unique defects → all fixed** (approval-slot wedge, withdraw-on-cancel, Dart socket leaks ×2, poll backlog, stale-reply correlation, prune wiring, loopback warning, Producer disclosure, symmetric fixtures, doc drift) + re-verification pass. Verifier: workspace 198; lan server 50; clippy clean; flutter analyze + 12 tests + macOS build. Result: PASS. Decision: gate-review.
 
+## Batch 7r predicate — CI + test infrastructure (per-OS + GPU matrix, NFR evidence)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7r-001 | yes | A per-OS CI pipeline exists: Linux/macOS/Windows matrix — fmt, clippy `-D warnings` (all feature combos), full tests, feature-gated E2E, encryption, operator (Tauri) check, Flutter analyze/test, RustSec audit | YAML structural validation + review | 4 jobs, 3-OS matrices | .github/workflows/ci.yml | PASS (authored) |
+| S7r-002 | yes | GPU parity runs in the matrix where an adapter exists and cannot false-fail without one | code check + CI mesa install | test_parity.rs skips gracefully; ubuntu gets lavapipe | ci.yml; test_parity.rs | PASS |
+| S7r-003 | yes | A local gate runs the same steps (`make ci`) | **executed here** | ALL GREEN (fmt/clippy/198 tests/E2E/encryption/operator/Flutter) | Makefile | PASS (run) |
+| S7r-004 | yes | Both Rust workspaces are fmt-clean so the fmt gate is enforceable | `cargo fmt --check` ×2 | 0 diffs; tests+clippy green after the one-time churn | commit | PASS (run) |
+| S7r-005 | yes | Walking-skeleton NFRs measured on a release build with a crash-safe harness | **executed here** (`make nfr`) | cold start **1.13s** ≤3s; idle **121.5MB** ≤300MB (Darwin arm64) | scripts/measure_nfr.sh | PASS (run) |
+| S7r-006 | yes | Hosting decided with eyes open (Free-tier runner realities compared) | user decision | **GitHub** (full 3-OS free matrix); GitLab variant authored then removed (in git history) | review doc | PASS |
+| S7r-007 | yes | Independent adversarial review; confirmed findings fixed | workflow `wdbqc81qc` | 5 raised → 4 confirmed → fixed (incl. a fabricated-PASS hole in the NFR harness) | CODE-REVIEW-batch7r-ci.md | PASS |
+| S7r-008 | yes | Honest activation boundary: hosted execution requires the user-approved repo push | disclosed | no remote/credentials in this env; exact activation steps at the gate | gate report | PASS |
+
+### Iteration ledger — batch 7r
+
+- Target: S7r-001..S7r-008. Change: authored `.github/workflows/ci.yml` (rust 3-OS + operator 3-OS + flutter + audit; PR-only cancel); one-time `cargo fmt` normalization; `make ci` (run: ALL GREEN) + `make nfr` (run: 1.13s / 121.5MB PASS with liveness-checked sampling + endpoint cleanup); a GitLab Free-tier variant authored for comparison and removed after the user chose GitHub. Review (3 lenses, 8 agents): 5 raised → **4 confirmed** (NFR fabricated-PASS ×2 lenses, main-push cancel, stale endpoint) → **fixed** + re-measured; 1 dismissed. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

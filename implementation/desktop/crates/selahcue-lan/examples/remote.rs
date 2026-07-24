@@ -29,7 +29,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let addr: SocketAddr = format!("{}:{}", invite.host, invite.port)
             .parse()
             .map_err(|_| format!("bad host/port in invite: {}:{}", invite.host, invite.port))?;
-        let name = args.get(3).map(String::as_str).unwrap_or("selahcue-remote CLI");
+        let name = args
+            .get(3)
+            .map(String::as_str)
+            .unwrap_or("selahcue-remote CLI");
         println!("pairing with {addr} — waiting for the host to allow…");
         let (client, creds) =
             ControlClient::pair(addr, "localhost", pin, &invite.code, name).await?;
@@ -37,7 +40,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("device : {}", creds.device_id);
         println!("token  : {}", creds.token);
         println!("reconnect later with:");
-        println!("  remote {addr} {} {} {} state", invite.pin_hex, creds.device_id, creds.token);
+        println!(
+            "  remote {addr} {} {} {} state",
+            invite.pin_hex, creds.device_id, creds.token
+        );
         client.close().await.ok();
         return Ok(());
     }

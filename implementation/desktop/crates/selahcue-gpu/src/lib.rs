@@ -25,5 +25,8 @@ pub fn adapter_info() -> Option<String> {
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
     let info = adapter.get_info();
-    Some(format!("{:?} {} ({:?})", info.backend, info.name, info.device_type))
+    Some(format!(
+        "{:?} {} ({:?})",
+        info.backend, info.name, info.device_type
+    ))
 }

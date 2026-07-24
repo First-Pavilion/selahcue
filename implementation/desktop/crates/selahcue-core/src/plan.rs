@@ -106,7 +106,12 @@ impl ServicePlan {
     }
 
     /// Insert an item at `index` (clamped to the end), returning its new id.
-    pub fn insert_item(&mut self, index: usize, kind: ItemKind, title: impl Into<String>) -> ItemId {
+    pub fn insert_item(
+        &mut self,
+        index: usize,
+        kind: ItemKind,
+        title: impl Into<String>,
+    ) -> ItemId {
         let id = ItemId(self.next_id);
         self.next_id += 1;
         let idx = index.min(self.items.len());

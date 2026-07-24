@@ -17,14 +17,24 @@ use tokio::sync::Mutex;
 
 /// Start a server with a Producer and an Assistant pre-paired. Returns the bound
 /// address, the cert pin to trust, and a handle to the running server.
-async fn start_server() -> (SocketAddr, CertPin, Arc<ControlServer>, Arc<Mutex<SessionRegistry>>) {
+async fn start_server() -> (
+    SocketAddr,
+    CertPin,
+    Arc<ControlServer>,
+    Arc<Mutex<SessionRegistry>>,
+) {
     start_server_cfg(Duration::from_secs(10)).await
 }
 
 /// As [`start_server`] but with a configurable pre-auth handshake timeout.
 async fn start_server_cfg(
     handshake_timeout: Duration,
-) -> (SocketAddr, CertPin, Arc<ControlServer>, Arc<Mutex<SessionRegistry>>) {
+) -> (
+    SocketAddr,
+    CertPin,
+    Arc<ControlServer>,
+    Arc<Mutex<SessionRegistry>>,
+) {
     let identity = SelfSigned::generate(vec!["localhost".into()]).unwrap();
     let pin = identity.pin;
     let registry = Arc::new(Mutex::new(SessionRegistry::new()));
@@ -32,11 +42,21 @@ async fn start_server_cfg(
         let now = Instant::now();
         let mut reg = registry.lock().await;
         reg.offer_pairing("prod-code", Role::Producer, now, Duration::from_secs(300));
-        reg.redeem("prod-code", DeviceId("producer".into()), SessionToken::new("tok-prod"), now)
-            .unwrap();
+        reg.redeem(
+            "prod-code",
+            DeviceId("producer".into()),
+            SessionToken::new("tok-prod"),
+            now,
+        )
+        .unwrap();
         reg.offer_pairing("asst-code", Role::Assistant, now, Duration::from_secs(300));
-        reg.redeem("asst-code", DeviceId("assistant".into()), SessionToken::new("tok-asst"), now)
-            .unwrap();
+        reg.redeem(
+            "asst-code",
+            DeviceId("assistant".into()),
+            SessionToken::new("tok-asst"),
+            now,
+        )
+        .unwrap();
     }
 
     // Handler: GetState returns a State snapshot; everything else is Ack.
@@ -89,7 +109,10 @@ async fn pinned_authenticated_and_rbac_enforced_end_to_end() {
     // GetState returns a State snapshot via the handler.
     assert!(matches!(
         producer.command(Command::GetState).await.unwrap(),
-        ServerMessage::State { blackout: false, .. }
+        ServerMessage::State {
+            blackout: false,
+            ..
+        }
     ));
 
     // Assistant: GoLive is denied (RBAC), Next is allowed.
@@ -99,7 +122,10 @@ async fn pinned_authenticated_and_rbac_enforced_end_to_end() {
     assert_eq!(assistant.role(), Role::Assistant);
     assert!(matches!(
         assistant.command(Command::GoLive).await.unwrap(),
-        ServerMessage::Denied { reason: DenyReason::Forbidden, .. }
+        ServerMessage::Denied {
+            reason: DenyReason::Forbidden,
+            ..
+        }
     ));
     assert!(matches!(
         assistant.command(Command::Next).await.unwrap(),
@@ -192,6 +218,10 @@ async fn connections_do_not_leak_server_state() {
     // And the shared registry never grew: still exactly the 2 pre-paired sessions,
     // no leftover pairing offers — connecting does not accumulate session state.
     let reg = registry.lock().await;
-    assert_eq!(reg.active_count(), 2, "session registry grew across connections");
+    assert_eq!(
+        reg.active_count(),
+        2,
+        "session registry grew across connections"
+    );
     assert_eq!(reg.pending_count(), 0);
 }

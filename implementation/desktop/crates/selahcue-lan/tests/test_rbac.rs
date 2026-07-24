@@ -15,7 +15,12 @@ fn navigate_cmds() -> Vec<Command> {
 }
 
 fn all_roles() -> [Role; 4] {
-    [Role::Operator, Role::Producer, Role::Assistant, Role::Viewer]
+    [
+        Role::Operator,
+        Role::Producer,
+        Role::Assistant,
+        Role::Viewer,
+    ]
 }
 
 #[test]
@@ -29,8 +34,12 @@ fn operator_can_do_every_command() {
         Command::Blackout { on: true },
         Command::StartTimer { seconds: 300 },
         Command::StopTimer,
-        Command::ScriptureSearch { query: "love".into() },
-        Command::StageScripture { reference: "John 3:16".into() },
+        Command::ScriptureSearch {
+            query: "love".into(),
+        },
+        Command::StageScripture {
+            reference: "John 3:16".into(),
+        },
         Command::GetState,
     ];
     for c in &cmds {
@@ -70,11 +79,15 @@ fn assistant_can_navigate_and_search_but_not_go_live() {
     }
     assert!(authorize(
         Role::Assistant,
-        &Command::ScriptureSearch { query: "grace".into() }
+        &Command::ScriptureSearch {
+            query: "grace".into()
+        }
     ));
     assert!(authorize(
         Role::Assistant,
-        &Command::StageScripture { reference: "Ps 23".into() }
+        &Command::StageScripture {
+            reference: "Ps 23".into()
+        }
     ));
     assert!(!authorize(Role::Assistant, &Command::GoLive));
     assert!(!authorize(Role::Assistant, &Command::Blackout { on: true }));
@@ -100,7 +113,10 @@ fn viewer_can_only_monitor() {
 #[test]
 fn every_role_can_get_state() {
     for role in all_roles() {
-        assert!(authorize(role, &Command::GetState), "{role:?} cannot monitor");
+        assert!(
+            authorize(role, &Command::GetState),
+            "{role:?} cannot monitor"
+        );
     }
 }
 
@@ -117,8 +133,12 @@ fn navigate_is_denied_only_to_viewer() {
 #[test]
 fn scripture_commands_allowed_for_assistant_and_up_denied_for_viewer() {
     for cmd in [
-        Command::ScriptureSearch { query: "hope".into() },
-        Command::StageScripture { reference: "Jer 29:11".into() },
+        Command::ScriptureSearch {
+            query: "hope".into(),
+        },
+        Command::StageScripture {
+            reference: "Jer 29:11".into(),
+        },
     ] {
         assert!(authorize(Role::Operator, &cmd), "operator {cmd:?}");
         assert!(authorize(Role::Producer, &cmd), "producer {cmd:?}");
@@ -130,7 +150,12 @@ fn scripture_commands_allowed_for_assistant_and_up_denied_for_viewer() {
 #[test]
 fn permission_sets_are_strictly_ordered_supersets() {
     // Each lower role's permissions must be a subset of the next higher role's.
-    let chain = [Role::Viewer, Role::Assistant, Role::Producer, Role::Operator];
+    let chain = [
+        Role::Viewer,
+        Role::Assistant,
+        Role::Producer,
+        Role::Operator,
+    ];
     for pair in chain.windows(2) {
         let (lower, higher) = (pair[0], pair[1]);
         for p in lower.permissions() {

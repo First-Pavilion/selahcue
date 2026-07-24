@@ -21,8 +21,14 @@ fn staging_never_changes_live() {
     assert!(is_black(p.live_output()), "live starts black");
     p.stage(Slide::title("Song 1"));
     // Preview shows the staged slide; LIVE stays black — staging must not touch it.
-    assert!(!is_black(p.preview_output()), "preview should show the staged slide");
-    assert!(is_black(p.live_output()), "staging must not change live (FR-012)");
+    assert!(
+        !is_black(p.preview_output()),
+        "preview should show the staged slide"
+    );
+    assert!(
+        is_black(p.live_output()),
+        "staging must not change live (FR-012)"
+    );
     assert!(p.live_slide().is_none());
 }
 
@@ -75,7 +81,10 @@ fn clear_blanks_live_but_not_preview() {
     assert!(!is_black(p.live_output()));
     p.clear_live();
     assert!(is_black(p.live_output()), "clear must blank live");
-    assert!(!is_black(p.preview_output()), "clear must not touch preview");
+    assert!(
+        !is_black(p.preview_output()),
+        "clear must not touch preview"
+    );
     assert!(p.live_slide().is_none());
 }
 
@@ -86,7 +95,10 @@ fn blackout_hides_then_restores_live() {
     p.go_live();
     let live_content = p.live_output().bytes().to_vec();
     p.blackout(true);
-    assert!(is_black(p.live_output()), "blackout must black the audience output");
+    assert!(
+        is_black(p.live_output()),
+        "blackout must black the audience output"
+    );
     p.blackout(false);
     assert_eq!(
         p.live_output().bytes(),
@@ -101,7 +113,10 @@ fn go_live_slide_trigger_latency_is_within_budget() {
     // complete within the 150 ms slide-trigger budget (a real measurement that a
     // genuine latency regression in go_live would fail).
     let mut p = Presenter::new(1920, 1080, Theme::dark());
-    p.stage(Slide::new("Verse 1", ["Amazing grace, how sweet the sound"]));
+    p.stage(Slide::new(
+        "Verse 1",
+        ["Amazing grace, how sweet the sound"],
+    ));
     let start = Instant::now();
     let went_live = p.go_live();
     let elapsed = start.elapsed();
@@ -193,10 +208,16 @@ fn stage_monitor_shows_the_timer_state() {
         None,
         Some(&timer_view(120, 300, false, false)),
     );
-    assert!(has_color(s.output(), TIMER_OK), "ok-green timer on the stage monitor");
+    assert!(
+        has_color(s.output(), TIMER_OK),
+        "ok-green timer on the stage monitor"
+    );
     // TIME UP → the bar goes alert red.
     s.update(None, None, Some(&timer_view(0, 300, true, false)));
-    assert!(has_color(s.output(), TIMER_ALERT), "TIME UP red on the stage monitor");
+    assert!(
+        has_color(s.output(), TIMER_ALERT),
+        "TIME UP red on the stage monitor"
+    );
 }
 
 #[test]
@@ -205,7 +226,10 @@ fn the_audience_output_never_shows_a_timer() {
     let mut p = presenter();
     p.stage(Slide::title("Sermon"));
     p.go_live();
-    assert!(!has_color(p.live_output(), TIMER_OK), "no timer bar on the audience output");
+    assert!(
+        !has_color(p.live_output(), TIMER_OK),
+        "no timer bar on the audience output"
+    );
     assert!(
         !has_color(p.live_output(), TIMER_ALERT),
         "no TIME UP bar on the audience output"

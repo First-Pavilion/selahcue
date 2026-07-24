@@ -224,10 +224,7 @@ impl Renderer {
                 // reconfiguring. The paced frame loop (`new_events`) re-requests a paint
                 // next frame, so we do NOT request one here — doing so would busy-spin
                 // while the surface can't present.
-                if matches!(
-                    err,
-                    wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost
-                ) {
+                if matches!(err, wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) {
                     self.surface.configure(&self.device, &self.config);
                 }
                 return;
@@ -348,7 +345,9 @@ impl App {
     /// off **withdraws** the code from the registry (a cancelled code must die
     /// immediately, e.g. when the operator suspects the QR was photographed).
     fn toggle_pairing(&self) {
-        let Ok(mut c) = self.controller.lock() else { return };
+        let Ok(mut c) = self.controller.lock() else {
+            return;
+        };
         if c.pairing_qr_active() {
             c.clear_pairing_qr();
             self.withdraw_active_code();
@@ -398,7 +397,12 @@ impl App {
 
     /// Remove the currently offered code (if any) from the registry.
     fn withdraw_active_code(&self) {
-        let code = self.remote.active_code.lock().ok().and_then(|mut g| g.take());
+        let code = self
+            .remote
+            .active_code
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take());
         if let Some(code) = code {
             self.remote.registry.blocking_lock().withdraw(&code);
         }
@@ -449,12 +453,20 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.main.is_none() {
             let attrs = Window::default_attributes().with_title("SelahCue Output");
-            let window = Arc::new(event_loop.create_window(attrs).expect("create output window"));
+            let window = Arc::new(
+                event_loop
+                    .create_window(attrs)
+                    .expect("create output window"),
+            );
             self.main = Some(Renderer::new(window));
         }
         if self.stage.is_none() {
             let attrs = Window::default_attributes().with_title("SelahCue Stage / Confidence");
-            let window = Arc::new(event_loop.create_window(attrs).expect("create stage window"));
+            let window = Arc::new(
+                event_loop
+                    .create_window(attrs)
+                    .expect("create stage window"),
+            );
             self.stage = Some(Renderer::new(window));
         }
     }
@@ -573,8 +585,8 @@ async fn run_server(
     controller: Arc<Mutex<LiveController>>,
     remote: Arc<RemoteShared>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let identity =
-        SelfSigned::generate(vec!["localhost".into()]).map_err(|e| format!("tls identity: {e:?}"))?;
+    let identity = SelfSigned::generate(vec!["localhost".into()])
+        .map_err(|e| format!("tls identity: {e:?}"))?;
     let pin = identity.pin;
 
     // A host-local operator session (for the operator shell on this machine): a fresh
@@ -610,7 +622,10 @@ async fn run_server(
                     *slot = None; // stale prompt from a timed-out request
                 }
                 if slot.is_none() {
-                    *slot = Some(PendingApproval { name: name.clone(), respond: tx });
+                    *slot = Some(PendingApproval {
+                        name: name.clone(),
+                        respond: tx,
+                    });
                     true
                 } else {
                     false
@@ -648,7 +663,10 @@ async fn run_server(
     let local: SocketAddr = ([127, 0, 0, 1], port).into();
     let endpoint = write_endpoint(local, &pin.to_hex(), device, &token);
     print_connect_banner(local, &pin.to_hex(), device, &token, endpoint.as_deref());
-    server.run(listener).await.map_err(|e| format!("server run: {e:?}"))?;
+    server
+        .run(listener)
+        .await
+        .map_err(|e| format!("server run: {e:?}"))?;
     Ok(())
 }
 
@@ -699,7 +717,12 @@ fn endpoint_path() -> std::path::PathBuf {
     std::env::temp_dir().join("selahcue-operator-endpoint.json")
 }
 
-fn write_endpoint(addr: SocketAddr, pin_hex: &str, device: &str, token: &str) -> Option<std::path::PathBuf> {
+fn write_endpoint(
+    addr: SocketAddr,
+    pin_hex: &str,
+    device: &str,
+    token: &str,
+) -> Option<std::path::PathBuf> {
     let json = format!(
         "{{\"addr\":\"{addr}\",\"pin\":\"{pin_hex}\",\"device\":\"{device}\",\"token\":\"{token}\"}}"
     );
@@ -735,7 +758,10 @@ fn print_connect_banner(
     println!("  pin     : {pin_hex}");
     println!("  device  : {device}   token : {token}   role : Producer");
     if let Some(path) = endpoint {
-        println!("  endpoint: {}  (the operator shell auto-discovers this)", path.display());
+        println!(
+            "  endpoint: {}  (the operator shell auto-discovers this)",
+            path.display()
+        );
     }
     println!();
     println!("  Drive the window with the operator shell (auto-connects on this machine):");
@@ -743,10 +769,14 @@ fn print_connect_banner(
     println!("  or from another terminal with the remote CLI:");
     println!("    cargo run -p selahcue-lan --example remote --features server -- \\");
     println!("      {addr} {pin_hex} {device} {token} next");
-    println!("    (commands: next · previous · go-live · blackout-on · blackout-off · clear · state)");
+    println!(
+        "    (commands: next · previous · go-live · blackout-on · blackout-off · clear · state)"
+    );
     println!();
     println!("  Local keys: Space=next  Enter=Go Live  B=blackout  C=clear  Esc=quit");
-    println!("  Pairing:    P=show a QR invite (stage window + terminal)  Y/N=allow/deny a request");
+    println!(
+        "  Pairing:    P=show a QR invite (stage window + terminal)  Y/N=allow/deny a request"
+    );
     println!();
 }
 

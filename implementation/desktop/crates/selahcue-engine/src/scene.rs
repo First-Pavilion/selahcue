@@ -17,8 +17,18 @@ pub struct Rgba {
 }
 
 impl Rgba {
-    pub const BLACK: Rgba = Rgba { r: 0, g: 0, b: 0, a: 255 };
-    pub const WHITE: Rgba = Rgba { r: 255, g: 255, b: 255, a: 255 };
+    pub const BLACK: Rgba = Rgba {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 255,
+    };
+    pub const WHITE: Rgba = Rgba {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+    };
 
     /// Opaque colour from RGB.
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {

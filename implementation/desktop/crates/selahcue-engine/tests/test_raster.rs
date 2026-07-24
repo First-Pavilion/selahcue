@@ -96,7 +96,10 @@ fn text_layer_renders_glyphs_within_its_rect() {
             }
         }
     }
-    assert!(white > 20, "expected glyph coverage, got {white} white pixels");
+    assert!(
+        white > 20,
+        "expected glyph coverage, got {white} white pixels"
+    );
     // Nothing painted outside the rect.
     assert_eq!(fb.pixel(0, 0).unwrap(), Rgba::BLACK);
     assert_eq!(fb.pixel(199, 39).unwrap(), Rgba::BLACK);
@@ -136,7 +139,10 @@ fn glyphs_are_not_mirrored() {
     // The left vertical bar is lit in an upper-middle row; the upper-right is not.
     // (A flipped bit-order would reverse both.)
     assert!(lit(1, 2), "'L' left vertical bar should be lit");
-    assert!(!lit(6, 1), "'L' upper-right should be empty (glyph not mirrored)");
+    assert!(
+        !lit(6, 1),
+        "'L' upper-right should be empty (glyph not mirrored)"
+    );
 }
 
 #[test]
@@ -153,7 +159,11 @@ fn text_is_clipped_to_its_rect() {
     // No glyph pixels beyond the 32px-wide rect.
     for y in 0..20 {
         for x in 33..200 {
-            assert_eq!(fb.pixel(x, y).unwrap(), Rgba::BLACK, "text leaked past its rect at {x},{y}");
+            assert_eq!(
+                fb.pixel(x, y).unwrap(),
+                Rgba::BLACK,
+                "text leaked past its rect at {x},{y}"
+            );
         }
     }
 }

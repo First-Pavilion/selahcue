@@ -24,23 +24,37 @@ async fn setup() -> (SocketAddr, CertPin, Arc<Mutex<LiveController>>) {
     plan.add_item(ItemKind::Song, "Opening Song");
     plan.add_item(ItemKind::Scripture, "Romans 8:28");
     plan.add_item(ItemKind::Section, "Sermon");
-    let controller = Arc::new(Mutex::new(LiveController::new(plan, 320, 180, Theme::dark())));
+    let controller = Arc::new(Mutex::new(LiveController::new(
+        plan,
+        320,
+        180,
+        Theme::dark(),
+    )));
 
     let registry = Arc::new(AsyncMutex::new(SessionRegistry::new()));
     {
         let now = Instant::now();
         let mut reg = registry.lock().await;
         reg.offer_pairing("p", Role::Producer, now, Duration::from_secs(300));
-        reg.redeem("p", DeviceId("producer".into()), SessionToken::new("tok-prod"), now)
-            .unwrap();
+        reg.redeem(
+            "p",
+            DeviceId("producer".into()),
+            SessionToken::new("tok-prod"),
+            now,
+        )
+        .unwrap();
         reg.offer_pairing("a", Role::Assistant, now, Duration::from_secs(300));
-        reg.redeem("a", DeviceId("assistant".into()), SessionToken::new("tok-asst"), now)
-            .unwrap();
+        reg.redeem(
+            "a",
+            DeviceId("assistant".into()),
+            SessionToken::new("tok-asst"),
+            now,
+        )
+        .unwrap();
     }
 
-    let server = Arc::new(
-        ControlServer::new(&identity, registry, handler_for(controller.clone())).unwrap(),
-    );
+    let server =
+        Arc::new(ControlServer::new(&identity, registry, handler_for(controller.clone())).unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let running = server.clone();
@@ -87,7 +101,15 @@ async fn producer_drives_the_live_output() {
         prod.command(Command::Blackout { on: true }).await.unwrap(),
         ServerMessage::Ack { .. }
     ));
-    assert!(controller.lock().unwrap().presenter().live_output().average_luminance() < 1e-6);
+    assert!(
+        controller
+            .lock()
+            .unwrap()
+            .presenter()
+            .live_output()
+            .average_luminance()
+            < 1e-6
+    );
 
     prod.close().await.ok();
 }
@@ -126,7 +148,9 @@ async fn rbac_and_application_denials_over_the_wire() {
         .await
         .unwrap();
     assert!(matches!(
-        prod.command(Command::SelectItem { item_id: 9999 }).await.unwrap(),
+        prod.command(Command::SelectItem { item_id: 9999 })
+            .await
+            .unwrap(),
         ServerMessage::Denied {
             reason: DenyReason::BadRequest,
             ..

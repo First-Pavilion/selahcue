@@ -24,7 +24,12 @@ fn command_tag_encoding_is_stable() {
 
 #[test]
 fn request_round_trips_and_stamps_version() {
-    let req = Request::new(42, Command::ScriptureSearch { query: "love".into() });
+    let req = Request::new(
+        42,
+        Command::ScriptureSearch {
+            query: "love".into(),
+        },
+    );
     assert_eq!(req.v, VERSION);
     let json = to_json(&req).unwrap();
     let back: Request = from_json(&json).unwrap();
@@ -43,8 +48,12 @@ fn every_command_round_trips() {
         Command::Blackout { on: false },
         Command::StartTimer { seconds: 300 },
         Command::StopTimer,
-        Command::ScriptureSearch { query: "grace".into() },
-        Command::StageScripture { reference: "Rom 8:28".into() },
+        Command::ScriptureSearch {
+            query: "grace".into(),
+        },
+        Command::StageScripture {
+            reference: "Rom 8:28".into(),
+        },
         Command::GetState,
     ];
     for c in cmds {
@@ -153,13 +162,21 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
     // test needs changing, the Dart fixtures must change with it (and VERSION bump).
     use selahcue_lan::protocol::{to_json, AuthRequest, Hello, PairRequest, PairResponse};
 
-    let auth = Hello::Auth(AuthRequest { v: 2, device_id: "dev-1".into(), token: "tok".into() });
+    let auth = Hello::Auth(AuthRequest {
+        v: 2,
+        device_id: "dev-1".into(),
+        token: "tok".into(),
+    });
     assert_eq!(
         to_json(&auth).unwrap(),
         r#"{"hello":"auth","v":2,"device_id":"dev-1","token":"tok"}"#
     );
 
-    let pair = Hello::Pair(PairRequest { v: 2, code: "ABCD2345".into(), device_name: "Phone".into() });
+    let pair = Hello::Pair(PairRequest {
+        v: 2,
+        code: "ABCD2345".into(),
+        device_name: "Phone".into(),
+    });
     assert_eq!(
         to_json(&pair).unwrap(),
         r#"{"hello":"pair","v":2,"code":"ABCD2345","device_name":"Phone"}"#
@@ -174,7 +191,10 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
     // Every command the mobile app sends, pinned on THIS side too (symmetric with
     // the Dart `command shapes are internally tagged` test).
     assert_eq!(to_json(&Command::Next).unwrap(), r#"{"cmd":"next"}"#);
-    assert_eq!(to_json(&Command::Previous).unwrap(), r#"{"cmd":"previous"}"#);
+    assert_eq!(
+        to_json(&Command::Previous).unwrap(),
+        r#"{"cmd":"previous"}"#
+    );
     assert_eq!(to_json(&Command::GoLive).unwrap(), r#"{"cmd":"go_live"}"#);
     assert_eq!(to_json(&Command::Clear).unwrap(), r#"{"cmd":"clear"}"#);
     assert_eq!(
@@ -185,22 +205,31 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         to_json(&Command::StartTimer { seconds: 300 }).unwrap(),
         r#"{"cmd":"start_timer","seconds":300}"#
     );
-    assert_eq!(to_json(&Command::StopTimer).unwrap(), r#"{"cmd":"stop_timer"}"#);
+    assert_eq!(
+        to_json(&Command::StopTimer).unwrap(),
+        r#"{"cmd":"stop_timer"}"#
+    );
     assert_eq!(
         to_json(&Command::GetOperatorState).unwrap(),
         r#"{"cmd":"get_operator_state"}"#
     );
 
-    let granted: PairResponse =
-        selahcue_lan::protocol::from_json(r#"{"pair":"granted","device_id":"dev-9","token":"t9","role":"producer"}"#)
-            .unwrap();
+    let granted: PairResponse = selahcue_lan::protocol::from_json(
+        r#"{"pair":"granted","device_id":"dev-9","token":"t9","role":"producer"}"#,
+    )
+    .unwrap();
     assert!(matches!(granted, PairResponse::Granted { .. }));
 
-    let denied: ServerMessage =
-        selahcue_lan::protocol::from_json(r#"{"event":"denied","request_id":7,"reason":"forbidden"}"#).unwrap();
+    let denied: ServerMessage = selahcue_lan::protocol::from_json(
+        r#"{"event":"denied","request_id":7,"reason":"forbidden"}"#,
+    )
+    .unwrap();
     assert!(matches!(
         denied,
-        ServerMessage::Denied { request_id: 7, reason: DenyReason::Forbidden }
+        ServerMessage::Denied {
+            request_id: 7,
+            reason: DenyReason::Forbidden
+        }
     ));
 
     let state: ServerMessage = selahcue_lan::protocol::from_json(

@@ -56,7 +56,9 @@ impl FrameBuffer {
     /// readback for cross-backend comparison. Returns `None` if the length or the
     /// dimensions are invalid.
     pub fn from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Option<Self> {
-        let expected = (width as usize).checked_mul(height as usize)?.checked_mul(4)?;
+        let expected = (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)?;
         if is_renderable(width, height) && pixels.len() == expected {
             Some(FrameBuffer {
                 width,
@@ -258,7 +260,7 @@ fn draw_text(fb: &mut FrameBuffer, rect: Rect, text: &str, px: u32, color: Rgba)
     // by the framebuffer, mirroring `fill_rect`.
     let scale = (px / 8).max(1).min(fb.height.max(1));
     let advance = 8 * scale; // monospace cell width
-    // Clip everything to the on-screen intersection of the layer rect and the frame.
+                             // Clip everything to the on-screen intersection of the layer rect and the frame.
     let clip_right = rect.x.saturating_add(rect.w as i32).min(fb.width as i32);
     let clip_bottom = rect.y.saturating_add(rect.h as i32).min(fb.height as i32);
 

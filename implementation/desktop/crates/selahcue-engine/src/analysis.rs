@@ -149,8 +149,16 @@ pub fn ssim(a: &FrameBuffer, b: &FrameBuffer) -> f64 {
 
 /// Global SSIM over one channel (`ch`: 0=R, 1=G, 2=B), values normalised to 0..1.
 fn channel_ssim(a: &FrameBuffer, b: &FrameBuffer, ch: usize) -> f64 {
-    let va: Vec<f64> = a.bytes().chunks_exact(4).map(|p| p[ch] as f64 / 255.0).collect();
-    let vb: Vec<f64> = b.bytes().chunks_exact(4).map(|p| p[ch] as f64 / 255.0).collect();
+    let va: Vec<f64> = a
+        .bytes()
+        .chunks_exact(4)
+        .map(|p| p[ch] as f64 / 255.0)
+        .collect();
+    let vb: Vec<f64> = b
+        .bytes()
+        .chunks_exact(4)
+        .map(|p| p[ch] as f64 / 255.0)
+        .collect();
     let n = va.len() as f64;
     if n == 0.0 {
         return 1.0;

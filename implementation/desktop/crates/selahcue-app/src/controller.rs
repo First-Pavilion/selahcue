@@ -280,7 +280,7 @@ impl LiveController {
                 // presenter reports whether anything was staged.
                 if self.presenter.go_live() {
                     self.live_idx = self.staged_idx; // None for a non-plan scripture
-                    // Going live from blackout reveals the new content (UX-STATE-MATRIX).
+                                                     // Going live from blackout reveals the new content (UX-STATE-MATRIX).
                     self.blackout = false;
                     ControllerReply::Ack
                 } else {

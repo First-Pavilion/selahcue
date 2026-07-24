@@ -1,0 +1,137 @@
+# SelahCue CI — per-OS matrix + GPU parity + Flutter + dependency audit.
+#
+# Hosting: GitHub (user decision, 2026-07-24) — the free tier runs the full
+# Linux/macOS/Windows matrix this project's acceptance requires (GitLab Free has
+# no macOS runners; a .gitlab-ci.yml variant lives in git history if ever needed).
+#
+# Local parity: `make ci` runs the same gates on a developer machine.
+#
+# GPU matrix note: the ADR-0015 parity tests (CPU rasterizer vs wgpu compositor,
+# SSIM >= 0.99) run wherever a GPU adapter exists and SKIP gracefully otherwise:
+#   - macOS runners: Metal
+#   - Ubuntu runners: Mesa software Vulkan (lavapipe, installed below)
+#   - Windows runners: DX12/WARP where available
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Cancel superseded PR runs, but never a main run — every main commit keeps a
+  # real pass/fail verdict (revert/bisect/audit trails need it).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: implementation/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: implementation/desktop
+      - name: Linux system deps (winit/wgpu + software Vulkan for GPU parity)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxkbcommon-dev libwayland-dev \
+            libvulkan1 mesa-vulkan-drivers
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy (default features)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (server features)
+        run: |
+          cargo clippy -p selahcue-lan --features server --all-targets -- -D warnings
+          cargo clippy -p selahcue-app --features server --all-targets -- -D warnings
+      - name: Test (workspace, incl. GPU parity where an adapter exists)
+        run: cargo test --workspace
+      - name: Test (LAN server + app server features — E2E over real TLS)
+        run: |
+          cargo test -p selahcue-lan --features server
+          cargo test -p selahcue-app --features server
+      - name: Test (at-rest encryption — SQLCipher + vendored OpenSSL)
+        # The vendored OpenSSL build needs perl+nasm on Windows; covered on the
+        # other two OSes (the feature is platform-independent Rust).
+        if: runner.os != 'Windows'
+        run: cargo test -p selahcue-data --features encryption
+
+  operator:
+    name: operator shell (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: implementation/desktop/crates/selahcue-operator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: implementation/desktop/crates/selahcue-operator
+      - name: Linux system deps (Tauri v2 webview)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libx11-dev libxkbcommon-dev
+      - name: Format
+        run: cargo fmt --check
+      - name: Check + Clippy
+        run: |
+          cargo check
+          cargo clippy -- -D warnings
+
+  flutter:
+    name: flutter controller
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: implementation/mobile/selahcue_controller
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+  audit:
+    name: dependency audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Audit desktop workspace
+        working-directory: implementation/desktop
+        run: cargo audit
+      - name: Audit operator shell
+        working-directory: implementation/desktop/crates/selahcue-operator
+        run: cargo audit

@@ -13,7 +13,12 @@ fn shell() -> OperatorShell {
     plan.add_item(ItemKind::Song, "Opening Song");
     plan.add_item(ItemKind::Scripture, "Romans 8:28");
     plan.add_item(ItemKind::Section, "Sermon");
-    let controller = Arc::new(Mutex::new(LiveController::new(plan, 320, 180, Theme::dark())));
+    let controller = Arc::new(Mutex::new(LiveController::new(
+        plan,
+        320,
+        180,
+        Theme::dark(),
+    )));
     OperatorShell::new(controller)
 }
 
@@ -56,7 +61,11 @@ fn advancing_after_go_live_keeps_live_while_preview_moves() {
     s.next(); // stage 0
     s.go_live(); // live 0
     let view = s.next(); // stage 1
-    assert_eq!(view.live_index, Some(0), "Live stays until the next Go Live");
+    assert_eq!(
+        view.live_index,
+        Some(0),
+        "Live stays until the next Go Live"
+    );
     assert_eq!(view.staged_index, Some(1));
     assert!(view.items[0].is_live && !view.items[0].is_staged);
     assert!(view.items[1].is_staged && !view.items[1].is_live);

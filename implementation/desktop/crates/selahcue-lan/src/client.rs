@@ -136,7 +136,11 @@ impl ControlClient {
             )
             .await?;
             match recv_json::<_, PairResponse>(&mut ws).await? {
-                PairResponse::Granted { device_id, token, role } => Ok((
+                PairResponse::Granted {
+                    device_id,
+                    token,
+                    role,
+                } => Ok((
                     Self {
                         ws,
                         role,

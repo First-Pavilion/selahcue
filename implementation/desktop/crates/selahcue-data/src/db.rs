@@ -74,7 +74,9 @@ impl Database {
 
     /// The applied schema version (`PRAGMA user_version`).
     pub fn schema_version(&self) -> Result<i64> {
-        Ok(self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?)
     }
 
     /// Run `PRAGMA integrity_check`; `Ok(())` iff the store reports `ok`.
@@ -106,8 +108,7 @@ impl Database {
     /// rejects an unkeyed backup destination). For an encrypted source use
     /// [`backup_to_encrypted`](Self::backup_to_encrypted).
     pub fn backup_to(&self, dst: impl AsRef<Path>) -> Result<()> {
-        self.conn
-            .backup(DatabaseName::Main, dst, None)?;
+        self.conn.backup(DatabaseName::Main, dst, None)?;
         Ok(())
     }
 

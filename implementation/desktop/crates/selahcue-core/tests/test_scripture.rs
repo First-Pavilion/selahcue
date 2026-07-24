@@ -18,12 +18,18 @@ fn r(book: u8, name: &'static str, chapter: u16, verses: Option<(u16, u16)>) -> 
 
 #[test]
 fn single_verse_full_name() {
-    assert_eq!(parse_one("Romans 8:28").unwrap(), r(45, "Romans", 8, Some((28, 28))));
+    assert_eq!(
+        parse_one("Romans 8:28").unwrap(),
+        r(45, "Romans", 8, Some((28, 28)))
+    );
 }
 
 #[test]
 fn abbreviation_and_range() {
-    assert_eq!(parse_one("Rom 8:28-30").unwrap(), r(45, "Romans", 8, Some((28, 30))));
+    assert_eq!(
+        parse_one("Rom 8:28-30").unwrap(),
+        r(45, "Romans", 8, Some((28, 30)))
+    );
 }
 
 #[test]
@@ -34,7 +40,10 @@ fn whole_chapter() {
 
 #[test]
 fn chapter_verse_range() {
-    assert_eq!(parse_one("Psalm 23:1-6").unwrap(), r(19, "Psalms", 23, Some((1, 6))));
+    assert_eq!(
+        parse_one("Psalm 23:1-6").unwrap(),
+        r(19, "Psalms", 23, Some((1, 6)))
+    );
 }
 
 #[test]
@@ -47,7 +56,10 @@ fn numbered_book_full_and_abbrev() {
 
 #[test]
 fn short_gospel_abbrev() {
-    assert_eq!(parse_one("Jn 3:16").unwrap(), r(43, "John", 3, Some((16, 16))));
+    assert_eq!(
+        parse_one("Jn 3:16").unwrap(),
+        r(43, "John", 3, Some((16, 16)))
+    );
 }
 
 #[test]
@@ -69,7 +81,10 @@ fn case_insensitive_and_periods() {
 
 #[test]
 fn roman_and_word_numbered_books() {
-    assert_eq!(parse_one("I John 1:9").unwrap(), r(62, "1 John", 1, Some((9, 9))));
+    assert_eq!(
+        parse_one("I John 1:9").unwrap(),
+        r(62, "1 John", 1, Some((9, 9)))
+    );
     assert_eq!(parse_one("First John 1:9").unwrap().book, 62);
     assert_eq!(parse_one("III John 4").unwrap(), r(64, "3 John", 4, None));
 }
@@ -98,7 +113,10 @@ fn verse_count_saturates_on_reversed_range() {
 
 #[test]
 fn multiword_book() {
-    assert_eq!(parse_one("Song of Solomon 2:1").unwrap(), r(22, "Song of Solomon", 2, Some((1, 1))));
+    assert_eq!(
+        parse_one("Song of Solomon 2:1").unwrap(),
+        r(22, "Song of Solomon", 2, Some((1, 1)))
+    );
 }
 
 #[test]
@@ -110,7 +128,10 @@ fn verse_count() {
 
 #[test]
 fn display_round_trips() {
-    assert_eq!(parse_one("Rom 8:28-30").unwrap().to_string(), "Romans 8:28-30");
+    assert_eq!(
+        parse_one("Rom 8:28-30").unwrap().to_string(),
+        "Romans 8:28-30"
+    );
     assert_eq!(parse_one("Jn 3:16").unwrap().to_string(), "John 3:16");
     assert_eq!(parse_one("Ps 23").unwrap().to_string(), "Psalms 23");
 }
@@ -140,5 +161,11 @@ fn parse_skips_bad_segments_but_strict_fails() {
 #[test]
 fn large_verse_numbers_do_not_overflow() {
     // Psalm 119 has 176 verses — well within u16.
-    assert_eq!(parse_one("Psalm 119:176").unwrap().verses, Some(VerseRange { start: 176, end: 176 }));
+    assert_eq!(
+        parse_one("Psalm 119:176").unwrap().verses,
+        Some(VerseRange {
+            start: 176,
+            end: 176
+        })
+    );
 }

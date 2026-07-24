@@ -21,7 +21,7 @@ CMD      ?= next
 SECS     ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run output operator remote timer stop-timer demo build build-operator test check clippy fmt clean
+.PHONY: help launch run output operator remote timer stop-timer demo mobile mobile-test ci nfr build build-operator test check clippy fmt clean
 
 help: ## Show this help
 	@echo "SelahCue — make targets:"
@@ -74,6 +74,25 @@ mobile: ## Run the Flutter controller on this Mac (pair it with a running `make 
 
 mobile-test: ## Analyze + unit-test the Flutter controller
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
+
+ci: ## Run the CI gate locally (same gates as .github/workflows/ci.yml, minus the CI-only audit)
+	cd $(DESKTOP) && $(CARGO) fmt --check
+	cd $(OPERATOR) && $(CARGO) fmt --check
+	$(CARGO) clippy $(WS) --workspace --all-targets -- -D warnings
+	$(CARGO) clippy $(WS) -p selahcue-lan --features server --all-targets -- -D warnings
+	$(CARGO) clippy $(WS) -p selahcue-app --features server --all-targets -- -D warnings
+	$(CARGO) clippy $(OP) -- -D warnings
+	$(CARGO) test $(WS) --workspace
+	$(CARGO) test $(WS) -p selahcue-lan --features server
+	$(CARGO) test $(WS) -p selahcue-app --features server
+	$(CARGO) test $(WS) -p selahcue-data --features encryption
+	$(CARGO) check $(OP)
+	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
+	@echo ""
+	@echo "== local CI gate: ALL GREEN =="
+
+nfr: ## Measure the walking-skeleton NFRs (idle memory / cold start) on a release build
+	sh scripts/measure_nfr.sh
 
 build: ## Build the desktop workspace
 	$(CARGO) build $(WS)

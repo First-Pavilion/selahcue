@@ -221,7 +221,10 @@ impl RemoteOperator {
     }
 
     /// Stage a specific plan item (by id) in the host's Preview.
-    pub async fn select(&mut self, item_id: u64) -> Result<OperatorView, selahcue_lan::TransportError> {
+    pub async fn select(
+        &mut self,
+        item_id: u64,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::SelectItem { item_id }).await
     }
 
@@ -231,12 +234,18 @@ impl RemoteOperator {
     }
 
     /// Set the host's blackout state.
-    pub async fn blackout(&mut self, on: bool) -> Result<OperatorView, selahcue_lan::TransportError> {
+    pub async fn blackout(
+        &mut self,
+        on: bool,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::Blackout { on }).await
     }
 
     /// Start a countdown timer of `seconds` on the host's Live output.
-    pub async fn start_timer(&mut self, seconds: u32) -> Result<OperatorView, selahcue_lan::TransportError> {
+    pub async fn start_timer(
+        &mut self,
+        seconds: u32,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::StartTimer { seconds }).await
     }
 
@@ -248,7 +257,10 @@ impl RemoteOperator {
     /// Send a mutating command, then read back the fresh authoritative view. A command
     /// the host denies (RBAC/app) is **not** an error — the returned view simply shows
     /// the unchanged state, which the UI reflects.
-    async fn act(&mut self, command: Command) -> Result<OperatorView, selahcue_lan::TransportError> {
+    async fn act(
+        &mut self,
+        command: Command,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
         use selahcue_lan::protocol::ServerMessage;
         match self.client.command(command).await? {
             ServerMessage::Ack { .. } | ServerMessage::Denied { .. } => {}

@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 pub enum TimerMode {
     CountUp,
     /// Count down from `duration` toward zero, then into overrun.
-    CountDown { duration: Duration },
+    CountDown {
+        duration: Duration,
+    },
 }
 
 /// A pausable monotonic timer.

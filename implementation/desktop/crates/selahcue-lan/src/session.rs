@@ -88,7 +88,13 @@ impl SessionRegistry {
     /// Offer a single-use pairing `code` that grants `role`, valid until
     /// `now + ttl`. The caller generates `code` randomly (kept out of this layer
     /// for testability). Re-offering an existing code replaces it.
-    pub fn offer_pairing(&mut self, code: impl Into<String>, role: Role, now: Instant, ttl: Duration) {
+    pub fn offer_pairing(
+        &mut self,
+        code: impl Into<String>,
+        role: Role,
+        now: Instant,
+        ttl: Duration,
+    ) {
         let code = code.into();
         // Defence in depth: an empty code carries no entropy and must never be a
         // valid offer, even if a caller bug produced one.
@@ -148,9 +154,7 @@ impl SessionRegistry {
         if code.is_empty() {
             return false;
         }
-        self.pending
-            .get(code)
-            .is_some_and(|p| now < p.expires_at)
+        self.pending.get(code).is_some_and(|p| now < p.expires_at)
     }
 
     /// Authenticate a request: the device's [`Role`] iff an active session exists

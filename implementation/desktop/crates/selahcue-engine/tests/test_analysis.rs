@@ -40,7 +40,13 @@ fn calm_sequence_passes() {
 #[test]
 fn red_flashes_are_detected() {
     let frames: Vec<_> = (0..10)
-        .map(|i| solid(if i % 2 == 0 { Rgba::BLACK } else { Rgba::rgb(255, 0, 0) }))
+        .map(|i| {
+            solid(if i % 2 == 0 {
+                Rgba::BLACK
+            } else {
+                Rgba::rgb(255, 0, 0)
+            })
+        })
         .collect();
     let report = analyze_flashes(&frames, 10.0);
     assert!(

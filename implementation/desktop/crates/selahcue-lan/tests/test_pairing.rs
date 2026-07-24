@@ -141,7 +141,8 @@ async fn a_code_is_single_use() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_expired_code_is_rejected() {
-    let (addr, pin) = start_server(Some(approve_all()), "CODE1234", Duration::from_millis(50)).await;
+    let (addr, pin) =
+        start_server(Some(approve_all()), "CODE1234", Duration::from_millis(50)).await;
     tokio::time::sleep(Duration::from_millis(120)).await;
     let err = pair_err(addr, pin, "CODE1234", "late").await;
     assert!(err.contains("Unauthenticated"), "{err}");
@@ -180,7 +181,10 @@ fn pairing_invite_uri_round_trips_and_rejects_garbage() {
         "http://evil/pair?host=h&port=1&pin=ab&code=C",
         "selahcue://pair?host=h&port=1&pin=ab&code=has space",
     ] {
-        assert!(PairingInvite::parse_uri(bad).is_none(), "should reject: {bad}");
+        assert!(
+            PairingInvite::parse_uri(bad).is_none(),
+            "should reject: {bad}"
+        );
     }
 
     // A field with URI-breaking characters refuses to encode.

@@ -227,8 +227,16 @@ impl ControlServer {
         S: AsyncRead + AsyncWrite + Unpin,
     {
         if !auth.version_supported() {
-            send_json(ws, &AuthResponse::Rejected { reason: DenyReason::BadRequest }).await?;
-            return Err(TransportError::Protocol("unsupported protocol version".into()));
+            send_json(
+                ws,
+                &AuthResponse::Rejected {
+                    reason: DenyReason::BadRequest,
+                },
+            )
+            .await?;
+            return Err(TransportError::Protocol(
+                "unsupported protocol version".into(),
+            ));
         }
         let role = {
             let reg = self.registry.lock().await;
@@ -240,8 +248,13 @@ impl ControlServer {
                 Ok(role)
             }
             None => {
-                send_json(ws, &AuthResponse::Rejected { reason: DenyReason::Unauthenticated })
-                    .await?;
+                send_json(
+                    ws,
+                    &AuthResponse::Rejected {
+                        reason: DenyReason::Unauthenticated,
+                    },
+                )
+                .await?;
                 Err(TransportError::Protocol("authentication rejected".into()))
             }
         }
@@ -313,7 +326,15 @@ impl ControlServer {
         };
         match redeemed {
             Ok(role) => {
-                send_json(ws, &PairResponse::Granted { device_id, token, role }).await?;
+                send_json(
+                    ws,
+                    &PairResponse::Granted {
+                        device_id,
+                        token,
+                        role,
+                    },
+                )
+                .await?;
                 Ok(role)
             }
             Err(_) => reject(ws, DenyReason::Unauthenticated, "code expired").await,
@@ -334,8 +355,13 @@ impl ControlServer {
                     let req: Request = match protocol::from_json(text.as_str()) {
                         Ok(req) => req,
                         Err(_) => {
-                            send_json(ws, &ServerMessage::Error { message: "malformed request".into() })
-                                .await?;
+                            send_json(
+                                ws,
+                                &ServerMessage::Error {
+                                    message: "malformed request".into(),
+                                },
+                            )
+                            .await?;
                             continue;
                         }
                     };
@@ -351,7 +377,9 @@ impl ControlServer {
                     }
                     let reply = if authorize(role, &req.command) {
                         match (self.handler)(role, &req.command) {
-                            Reply::Ack => ServerMessage::Ack { request_id: req.request_id },
+                            Reply::Ack => ServerMessage::Ack {
+                                request_id: req.request_id,
+                            },
                             Reply::Deny(reason) => ServerMessage::Denied {
                                 request_id: req.request_id,
                                 reason,

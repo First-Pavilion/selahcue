@@ -30,7 +30,9 @@ where
 {
     loop {
         match ws.next().await.ok_or(TransportError::Closed)?? {
-            Message::Text(t) => return protocol::from_json(t.as_str()).map_err(TransportError::from),
+            Message::Text(t) => {
+                return protocol::from_json(t.as_str()).map_err(TransportError::from)
+            }
             Message::Close(_) => return Err(TransportError::Closed),
             _ => continue,
         }

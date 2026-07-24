@@ -3,7 +3,7 @@
 //! Maps the pure domain model to the `service_plan` / `plan_item` tables and back,
 //! preserving item order and the id counter. Writes are transactional.
 
-use crate::{Database, DataError, Result};
+use crate::{DataError, Database, Result};
 use rusqlite::params;
 use selahcue_core::plan::{ItemId, ItemKind, PlanItem, ServicePlan};
 
@@ -118,10 +118,9 @@ pub fn list(db: &Database) -> Result<Vec<PlanSummary>> {
 
 /// Delete a plan (items cascade). Errors `NotFound` if no such plan.
 pub fn delete(db: &Database, plan_id: i64) -> Result<()> {
-    let n = db.conn().execute(
-        "DELETE FROM service_plan WHERE id = ?1",
-        params![plan_id],
-    )?;
+    let n = db
+        .conn()
+        .execute("DELETE FROM service_plan WHERE id = ?1", params![plan_id])?;
     if n == 0 {
         Err(DataError::NotFound)
     } else {

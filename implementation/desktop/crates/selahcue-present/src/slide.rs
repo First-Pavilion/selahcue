@@ -21,7 +21,10 @@ impl Slide {
     }
 
     /// A slide with a title and body lines.
-    pub fn new(title: impl Into<String>, body: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn new(
+        title: impl Into<String>,
+        body: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         Slide {
             title: title.into(),
             body: body.into_iter().map(Into::into).collect(),

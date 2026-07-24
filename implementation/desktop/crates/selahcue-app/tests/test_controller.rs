@@ -70,7 +70,10 @@ fn clear_and_blackout_act_on_live() {
     c.apply(&Command::GoLive);
     assert!(!live_is_black(&c));
 
-    assert_eq!(c.apply(&Command::Blackout { on: true }), ControllerReply::Ack);
+    assert_eq!(
+        c.apply(&Command::Blackout { on: true }),
+        ControllerReply::Ack
+    );
     assert!(c.is_blackout() && live_is_black(&c));
 
     assert_eq!(c.apply(&Command::Clear), ControllerReply::Ack);
@@ -85,7 +88,10 @@ fn get_state_reports_live_item_and_blackout() {
     c.apply(&Command::Next);
     c.apply(&Command::GoLive);
     match c.apply(&Command::GetState) {
-        ControllerReply::Message(ServerMessage::State { live_item, blackout }) => {
+        ControllerReply::Message(ServerMessage::State {
+            live_item,
+            blackout,
+        }) => {
             assert_eq!(live_item, Some(ids[0]));
             assert!(!blackout);
         }
@@ -111,7 +117,9 @@ fn staged_scripture_can_go_live() {
     // A staged scripture (not a plan item) must be committable to Live.
     let (mut c, _) = controller();
     assert_eq!(
-        c.apply(&Command::StageScripture { reference: "John 3:16".into() }),
+        c.apply(&Command::StageScripture {
+            reference: "John 3:16".into()
+        }),
         ControllerReply::Ack
     );
     assert!(live_is_black(&c), "still preview-only before Go Live");
@@ -128,10 +136,16 @@ fn staging_a_scripture_preserves_plan_navigation() {
     c.apply(&Command::Next); // -> 0
     c.apply(&Command::Next); // -> 1
     assert_eq!(c.staged_index(), Some(1));
-    c.apply(&Command::StageScripture { reference: "Ps 23".into() });
+    c.apply(&Command::StageScripture {
+        reference: "Ps 23".into(),
+    });
     assert_eq!(c.staged_index(), None, "preview now holds a scripture");
     c.apply(&Command::Next);
-    assert_eq!(c.staged_index(), Some(2), "Next resumes from the plan cursor, not 0");
+    assert_eq!(
+        c.staged_index(),
+        Some(2),
+        "Next resumes from the plan cursor, not 0"
+    );
 }
 
 #[test]
@@ -174,7 +188,11 @@ fn pairing_qr_shows_on_stage_only_and_expires() {
     );
     c.tick(t0 + Duration::from_secs(1));
     assert!(c.pairing_qr_active());
-    assert_ne!(c.stage_output().bytes(), stage_before.as_slice(), "stage shows the QR");
+    assert_ne!(
+        c.stage_output().bytes(),
+        stage_before.as_slice(),
+        "stage shows the QR"
+    );
     assert!(
         c.stage_output().average_luminance() > 0.5,
         "QR is white-backed (unmistakable vs the dark scene)"
@@ -188,7 +206,11 @@ fn pairing_qr_shows_on_stage_only_and_expires() {
     // The QR auto-expires with its code's TTL and the speaker scene returns.
     c.tick(t0 + Duration::from_secs(121));
     assert!(!c.pairing_qr_active());
-    assert_eq!(c.stage_output().bytes(), stage_before.as_slice(), "scene restored");
+    assert_eq!(
+        c.stage_output().bytes(),
+        stage_before.as_slice(),
+        "scene restored"
+    );
 }
 
 #[test]
@@ -216,7 +238,10 @@ fn timer_counts_down_reaches_time_up_and_stops() {
         ControllerReply::Ack
     );
     c.tick(t0);
-    let snap = c.operator_view().timer.expect("timer running after start + tick");
+    let snap = c
+        .operator_view()
+        .timer
+        .expect("timer running after start + tick");
     assert_eq!(snap.remaining_secs, Some(60));
     assert!(snap.running && !snap.time_up && !snap.warn);
 

@@ -73,13 +73,23 @@ impl Backend {
     }
     async fn select(&self, item_id: u64) -> Result<OperatorView, String> {
         match self {
-            Backend::Remote(m) => m.lock().await.select(item_id).await.map_err(|e| e.to_string()),
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .select(item_id)
+                .await
+                .map_err(|e| e.to_string()),
             Backend::Local(s) => Ok(s.select(item_id)),
         }
     }
     async fn start_timer(&self, seconds: u32) -> Result<OperatorView, String> {
         match self {
-            Backend::Remote(m) => m.lock().await.start_timer(seconds).await.map_err(|e| e.to_string()),
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .start_timer(seconds)
+                .await
+                .map_err(|e| e.to_string()),
             Backend::Local(s) => Ok(s.start_timer(seconds)),
         }
     }
@@ -149,7 +159,10 @@ fn read_endpoint() -> Option<Endpoint> {
 }
 
 async fn connect_remote(ep: &Endpoint) -> Result<RemoteOperator, String> {
-    let addr: SocketAddr = ep.addr.parse().map_err(|_| format!("bad addr: {}", ep.addr))?;
+    let addr: SocketAddr = ep
+        .addr
+        .parse()
+        .map_err(|_| format!("bad addr: {}", ep.addr))?;
     let pin = CertPin::from_hex(&ep.pin).ok_or_else(|| "bad pin".to_string())?;
     RemoteOperator::connect(addr, "localhost", pin, &ep.device, &ep.token)
         .await
@@ -161,7 +174,10 @@ async fn build_backend() -> Backend {
     match read_endpoint() {
         Some(ep) => match connect_remote(&ep).await {
             Ok(remote) => {
-                eprintln!("SelahCue operator: connected to output window at {}", ep.addr);
+                eprintln!(
+                    "SelahCue operator: connected to output window at {}",
+                    ep.addr
+                );
                 Backend::Remote(Box::new(tokio::sync::Mutex::new(remote)))
             }
             Err(e) => {
@@ -183,7 +199,12 @@ fn demo_shell() -> OperatorShell {
     plan.add_item(ItemKind::Scripture, "Romans 8:28");
     plan.add_item(ItemKind::Section, "Sermon");
     plan.add_item(ItemKind::Song, "Closing Song");
-    let controller = Arc::new(Mutex::new(LiveController::new(plan, 1920, 1080, Theme::dark())));
+    let controller = Arc::new(Mutex::new(LiveController::new(
+        plan,
+        1920,
+        1080,
+        Theme::dark(),
+    )));
     OperatorShell::new(controller)
 }
 
@@ -197,7 +218,15 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            view, next, previous, go_live, clear, blackout, select, start_timer, stop_timer
+            view,
+            next,
+            previous,
+            go_live,
+            clear,
+            blackout,
+            select,
+            start_timer,
+            stop_timer
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");

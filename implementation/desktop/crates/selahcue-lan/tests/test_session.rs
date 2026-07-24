@@ -104,11 +104,21 @@ fn prune_expired_drops_only_stale_offers() {
     reg.prune_expired(t0 + Duration::from_secs(20));
     // The short-lived offer is gone; the long-lived one still redeems.
     assert_eq!(
-        reg.redeem("aaaaaa", dev("a"), SessionToken::new("t"), t0 + Duration::from_secs(20)),
+        reg.redeem(
+            "aaaaaa",
+            dev("a"),
+            SessionToken::new("t"),
+            t0 + Duration::from_secs(20)
+        ),
         Err(PairingError::UnknownCode)
     );
     assert!(reg
-        .redeem("bbbbbb", dev("b"), SessionToken::new("t"), t0 + Duration::from_secs(20))
+        .redeem(
+            "bbbbbb",
+            dev("b"),
+            SessionToken::new("t"),
+            t0 + Duration::from_secs(20)
+        )
         .is_ok());
 }
 
@@ -118,7 +128,8 @@ fn empty_token_never_authenticates() {
     let mut reg = SessionRegistry::new();
     let now = Instant::now();
     reg.offer_pairing("555555", Role::Operator, now, Duration::from_secs(60));
-    reg.redeem("555555", dev("d"), SessionToken::new(""), now).unwrap();
+    reg.redeem("555555", dev("d"), SessionToken::new(""), now)
+        .unwrap();
     assert_eq!(reg.authenticate(&dev("d"), ""), None);
     // A real non-empty token still authenticates normally elsewhere (sanity).
     assert_eq!(reg.authenticate(&dev("d"), "anything"), None);
@@ -142,8 +153,10 @@ fn a_device_cannot_use_another_devices_token() {
     let now = Instant::now();
     reg.offer_pairing("aaa", Role::Operator, now, Duration::from_secs(60));
     reg.offer_pairing("bbb", Role::Viewer, now, Duration::from_secs(60));
-    reg.redeem("aaa", dev("A"), SessionToken::new("tokA"), now).unwrap();
-    reg.redeem("bbb", dev("B"), SessionToken::new("tokB"), now).unwrap();
+    reg.redeem("aaa", dev("A"), SessionToken::new("tokA"), now)
+        .unwrap();
+    reg.redeem("bbb", dev("B"), SessionToken::new("tokB"), now)
+        .unwrap();
     // B presenting A's valid token must fail — no cross-device confusion.
     assert_eq!(reg.authenticate(&dev("B"), "tokA"), None);
     assert_eq!(reg.authenticate(&dev("A"), "tokB"), None);
@@ -157,11 +170,15 @@ fn prefix_and_length_mismatched_tokens_are_rejected() {
     let mut reg = SessionRegistry::new();
     let now = Instant::now();
     reg.offer_pairing("ccc", Role::Producer, now, Duration::from_secs(60));
-    reg.redeem("ccc", dev("d"), SessionToken::new("s3cr3t-value"), now).unwrap();
+    reg.redeem("ccc", dev("d"), SessionToken::new("s3cr3t-value"), now)
+        .unwrap();
     assert_eq!(reg.authenticate(&dev("d"), "s3cr3t"), None); // prefix
     assert_eq!(reg.authenticate(&dev("d"), "s3cr3t-value-extra"), None); // longer
     assert_eq!(reg.authenticate(&dev("d"), "s3cr3t-valuE"), None); // one char differs
-    assert_eq!(reg.authenticate(&dev("d"), "s3cr3t-value"), Some(Role::Producer));
+    assert_eq!(
+        reg.authenticate(&dev("d"), "s3cr3t-value"),
+        Some(Role::Producer)
+    );
 }
 
 #[test]
@@ -197,8 +214,13 @@ fn redeeming_consumes_the_offer_so_pending_does_not_grow() {
     for i in 0..100u32 {
         let code = format!("code-{i}");
         reg.offer_pairing(code.clone(), Role::Viewer, now, Duration::from_secs(300));
-        reg.redeem(&code, dev(&format!("d{i}")), SessionToken::new(format!("t{i}")), now)
-            .unwrap();
+        reg.redeem(
+            &code,
+            dev(&format!("d{i}")),
+            SessionToken::new(format!("t{i}")),
+            now,
+        )
+        .unwrap();
     }
     // Every offer was consumed — pending is empty, active is exactly the 100 devices.
     assert_eq!(reg.pending_count(), 0, "pending offers leaked");
@@ -238,7 +260,8 @@ fn revoking_returns_active_sessions_to_baseline() {
     for (i, d) in devices.iter().enumerate() {
         let code = format!("k{i}");
         reg.offer_pairing(code.clone(), Role::Producer, now, Duration::from_secs(300));
-        reg.redeem(&code, d.clone(), SessionToken::new(format!("t{i}")), now).unwrap();
+        reg.redeem(&code, d.clone(), SessionToken::new(format!("t{i}")), now)
+            .unwrap();
     }
     assert_eq!(reg.active_count(), 50);
     for d in &devices {
@@ -254,7 +277,10 @@ fn token_debug_is_redacted() {
     // A leaked token in logs/panics would be a credential disclosure.
     let t = SessionToken::new("super-secret-value");
     let shown = format!("{t:?}");
-    assert!(!shown.contains("super-secret-value"), "token leaked via Debug: {shown}");
+    assert!(
+        !shown.contains("super-secret-value"),
+        "token leaked via Debug: {shown}"
+    );
 }
 
 #[test]
@@ -268,7 +294,13 @@ fn withdrawing_an_offer_kills_the_code_immediately() {
     assert!(reg.withdraw("CODE1234"));
     assert!(!reg.code_valid("CODE1234", now), "withdrawn code is dead");
     assert!(
-        reg.redeem("CODE1234", DeviceId("d".into()), SessionToken::new("t"), now).is_err(),
+        reg.redeem(
+            "CODE1234",
+            DeviceId("d".into()),
+            SessionToken::new("t"),
+            now
+        )
+        .is_err(),
         "withdrawn code cannot be redeemed"
     );
     assert!(!reg.withdraw("CODE1234"), "second withdraw is a no-op");

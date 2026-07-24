@@ -38,7 +38,10 @@ fn composed_qr_renders_black_on_white_with_quiet_zone() {
 #[test]
 fn degenerate_dimensions_do_not_panic() {
     assert!(compose_qr(INVITE, 0, 0).is_some());
-    assert!(compose_qr(INVITE, 10, 10).is_some(), "tiny frame clips, never panics");
+    assert!(
+        compose_qr(INVITE, 10, 10).is_some(),
+        "tiny frame clips, never panics"
+    );
 }
 
 #[test]
