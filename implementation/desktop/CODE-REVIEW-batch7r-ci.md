@@ -46,12 +46,44 @@ this project's acceptance requires (GitLab Free has no macOS runners; Windows is
 bare-beta). A complete `.gitlab-ci.yml` variant was authored, adversarially scoped to
 Free-tier reality, and removed after the decision — it lives in git history.
 
-## Honest scope
-The workflow is **authored + structurally validated + local-parity-verified** (`make ci`
-green); it has **not executed on hosted runners** — the repo has no remote yet, and no
-GitHub credentials exist in this environment. Activation is a one-time user action
-(create the private repo + push), after which every push runs the matrix. The NFR
-figures are from one macOS/arm64 machine; per-OS CI figures come once CI is live.
+## Honest scope (as of batch 7r)
+The workflow was **authored + structurally validated + local-parity-verified** (`make ci`
+green) but had not yet executed on hosted runners (no remote at the time). See the
+batch-7s addendum below — activation + stabilization closed this gap.
+
+---
+
+# Addendum — batch 7s: hosted-run stabilization (2026-07-24)
+
+The user created and pushed **github.com/First-Pavilion/selahcue** (private), activating
+the pipeline. First run: **4/7 jobs green on the first try** (rust macos, operator
+ubuntu, flutter, audit). The 3 red jobs reduced to **2 root causes**, both fixed
+(`6ef8d9e`):
+
+1. **Latency-NFR-in-debug (rust ubuntu+windows).** The slide-trigger test enforced the
+   150 ms *release* NFR on debug builds riding shared runners (observed 184/207 ms) —
+   measuring the runner, not the product. Fix: debug builds carry a 1.5 s regression
+   tripwire; **release builds enforce 150 ms**, and `make nfr` runs the release-budget
+   test on real hardware (passed in 0.01 s — confirming the diagnosis).
+2. **Missing Windows icon (operator windows).** `tauri-build` requires `icons/icon.ico`
+   for the Windows resource file. Generated a multi-size BMP-format ICO + wired into
+   `tauri.conf.json`.
+
+## Verified outcome (independently confirmed via `gh` against run 30077797265)
+
+- **All 8 jobs green**: rust ×3 OS, operator ×3 OS, flutter, audit (8m52s).
+- **The ADR-0015 GPU-parity test EXECUTED (not skipped) and passed on all three
+  backends** — from the runner logs: ubuntu **Vulkan/lavapipe** (3.43 s), macOS
+  **Metal** (0.65 s), Windows **DX12/WARP** (2.02 s). The cross-GPU parity matrix is
+  now real, continuous, three-backend evidence.
+- Independent Linux-leg container reproduction (ubuntu:24.04, exact workflow apt list):
+  full workspace + feature + encryption suites passed — validating the dep list and the
+  vendored-OpenSSL Linux build separately from the runner image.
+
+**Verification note:** batch 7s's fixes were verified by the strongest available
+instrument — the hosted 3-OS matrix itself (an independent execution environment),
+green on all 8 jobs — plus the local suites; a further agent-review pass of the two
+empirically-validated fixes was judged redundant.
 
 ## Independence statement
 Reviewed by fresh-context agents that did not author the files; findings adversarially

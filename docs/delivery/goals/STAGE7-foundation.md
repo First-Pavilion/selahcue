@@ -504,6 +504,21 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7r-001..S7r-008. Change: authored `.github/workflows/ci.yml` (rust 3-OS + operator 3-OS + flutter + audit; PR-only cancel); one-time `cargo fmt` normalization; `make ci` (run: ALL GREEN) + `make nfr` (run: 1.13s / 121.5MB PASS with liveness-checked sampling + endpoint cleanup); a GitLab Free-tier variant authored for comparison and removed after the user chose GitHub. Review (3 lenses, 8 agents): 5 raised → **4 confirmed** (NFR fabricated-PASS ×2 lenses, main-push cancel, stale endpoint) → **fixed** + re-measured; 1 dismissed. Result: PASS. Decision: gate-review.
 
+## Batch 7s predicate — CI-run stabilization (hosted matrix green)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7s-001 | yes | CI activated on a remote (user-created private repo) | `git ls-remote` + `gh run list` | github.com/First-Pavilion/selahcue; runs executing | — | PASS |
+| S7s-002 | yes | First-run failures root-caused and fixed (not suppressed) | run logs | 3 red jobs → 2 causes: debug-build latency NFR; missing Windows ICO | 6ef8d9e | PASS |
+| S7s-003 | yes | The 150ms latency NFR stays enforced where meaningful | release test via `make nfr` | release run passes in 0.01s; debug keeps a 1.5s tripwire | test_present.rs; measure_nfr.sh | PASS |
+| S7s-004 | yes | **The full hosted matrix is green** | `gh run view 30077797265` (independently confirmed) | **8/8 jobs success** (rust ×3, operator ×3, flutter, audit) | Actions run | PASS |
+| S7s-005 | yes | GPU parity **executes** on all three backends in CI | runner logs | Vulkan/lavapipe 3.43s · Metal 0.65s · DX12/WARP 2.02s — all ok | run logs | PASS |
+| S7s-006 | yes | Independent Linux-leg evidence beyond the runner image | ubuntu:24.04 container repro | all workspace/feature/encryption suites passed | task log | PASS |
+
+### Iteration ledger — batch 7s
+
+- Target: S7s-001..S7s-006. Change: profile-scaled latency budget (release 150ms / debug 1.5s tripwire) + release-budget enforcement in `make nfr`; multi-size Windows `icon.ico` + tauri.conf wiring; docs-only `paths-ignore`. Verified by the hosted 3-OS matrix itself: **8/8 jobs green, GPU parity executed on Vulkan/Metal/DX12** (confirmed via `gh`, run 30077797265). Story 86ajp09nk → QA. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.
