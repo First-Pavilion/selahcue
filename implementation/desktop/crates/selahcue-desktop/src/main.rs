@@ -1467,6 +1467,11 @@ async fn run_server(
     let listener = TcpListener::bind("0.0.0.0:0").await?;
     let port = listener.local_addr()?.port();
     let _ = remote.lan.set((port, pin.to_hex()));
+    // Advertise on mDNS so the phone can FIND us without typing an address
+    // (86ajp0b0t). The TXT carries the cert pin — public data (it is printed in
+    // every QR invite); joining still requires the TTL pairing code + host
+    // approval, so discovery discloses presence, never access.
+    let _mdns = advertise_mdns(port, device, &pin.to_hex());
     // Local clients (operator shell / CLI) connect via loopback.
     let local: SocketAddr = ([127, 0, 0, 1], port).into();
     let endpoint = write_endpoint(local, &pin.to_hex(), device, &token);
@@ -1476,6 +1481,47 @@ async fn run_server(
         .await
         .map_err(|e| format!("server run: {e:?}"))?;
     Ok(())
+}
+
+/// Advertise the control endpoint as `_selahcue._tcp.local.` while the server
+/// runs (the returned daemon unregisters on drop). Best-effort: an mDNS-hostile
+/// network only loses discovery — the QR/manual paths are unaffected.
+fn advertise_mdns(port: u16, device: &str, pin_hex: &str) -> Option<mdns_sd::ServiceDaemon> {
+    let daemon = match mdns_sd::ServiceDaemon::new() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("SelahCue: mDNS advertising unavailable ({e}).");
+            return None;
+        }
+    };
+    // A per-run unique instance name so two hosts never collide in the phone's
+    // list; the friendly name (with the pin fingerprint) rides in TXT so the
+    // operator recognises the right host at a glance.
+    let instance = format!("{device}-{port}");
+    let friendly = format!("SelahCue {}", pin_fingerprint(pin_hex));
+    let props = [("pin", pin_hex), ("name", friendly.as_str())];
+    let info = mdns_sd::ServiceInfo::new(
+        "_selahcue._tcp.local.",
+        &instance,
+        &format!("{instance}.local."),
+        // Empty IP + auto-detect: mdns-sd fills in every up interface address,
+        // so a multi-NIC host advertises the right one (not a single guess).
+        "",
+        port,
+        &props[..],
+    )
+    .ok()?
+    .enable_addr_auto();
+    match daemon.register(info) {
+        Ok(()) => {
+            println!("  Discovery: advertising _selahcue._tcp on mDNS.");
+            Some(daemon)
+        }
+        Err(e) => {
+            eprintln!("SelahCue: mDNS registration failed ({e}).");
+            None
+        }
+    }
 }
 
 /// This machine's LAN-facing IP (for the QR invite): a UDP "connect" selects the
@@ -1490,12 +1536,30 @@ fn lan_ip() -> std::net::IpAddr {
         .unwrap_or_else(|_| std::net::IpAddr::from([127, 0, 0, 1]))
 }
 
+/// A short, human-comparable fingerprint of the certificate pin — the first 12
+/// hex chars grouped in 4s (e.g. `AB12-CD34-EF56`). Shown on BOTH the host and
+/// the phone so the operator can confirm a discovered host is the real one
+/// before disclosing the pairing code (defeats a rogue-mDNS phish; the phone
+/// mirrors this exact format). Not a secret — it derives from the public pin.
+pub fn pin_fingerprint(pin_hex: &str) -> String {
+    let head: String = pin_hex.chars().take(12).collect::<String>().to_uppercase();
+    head.as_bytes()
+        .chunks(4)
+        .map(|c| std::str::from_utf8(c).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 /// Print the pairing invite: the URI, the hand-typable code, and an ASCII QR.
 fn print_pairing_block(uri: &str, code: &str) {
     println!();
     println!("  PAIRING MODE (2 minutes) — scan from the SelahCue mobile app:");
     println!("  {uri}");
     println!("  or enter code: {code}");
+    if let Some(pin) = uri.split("pin=").nth(1).and_then(|s| s.split('&').next()) {
+        println!("  host fingerprint: {}", pin_fingerprint(pin));
+        println!("  (if pairing from 'Nearby hosts', confirm the phone shows THIS fingerprint)");
+    }
     if let Some((side, modules)) = qr_modules(uri) {
         println!();
         let quiet = 2usize;
@@ -1759,5 +1823,24 @@ mod encryption_tests {
         );
         assert_eq!(std::fs::read(&path).unwrap(), before, "file untouched");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod fingerprint_tests {
+    use super::pin_fingerprint;
+
+    #[test]
+    fn fingerprint_is_the_grouped_uppercase_pin_head() {
+        // Mirrored byte-for-byte by the Dart pinFingerprint (see
+        // mobile test/models/discovery_test.dart) — change together.
+        assert_eq!(
+            pin_fingerprint("ab12cd34ef56aa99bbccddee"),
+            "AB12-CD34-EF56"
+        );
+        // Short pins group what they have without panicking.
+        assert_eq!(pin_fingerprint("abcd"), "ABCD");
+        assert_eq!(pin_fingerprint(""), "");
     }
 }

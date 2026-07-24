@@ -693,6 +693,19 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7ai-001..S7ai-005. Change: keys.rs (keychain + Argon2id + salt lifecycle + zeroization), header-discriminated open_store state machine, feature plumbing, CI/make lanes. Security review (empirical — the verifier built SQLCipher and reproduced the failure modes): **6 findings (A–F) → all fixed** — headline: a first-run keychain hiccup could mint a plaintext store that permanently wedged persistence behind corruption-looking errors, with a false "opening UNENCRYPTED" message inviting data deletion. Recorded remainder: a rekey/plaintext-migration tool. Verifier: 11 encryption-lane + 262 workspace + 20 Flutter tests, clippy clean both ways, deny green. Result: PASS. Decision: gate-review.
 
+## Batch 7aj predicate — mDNS host discovery (86ajp0b0t remainder)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7aj-001 | yes | Host advertises `_selahcue._tcp` while running (auto-detected addresses, unique instance); phone browses + lists nearby hosts on demand | `flutter test` + build | advertise_mdns + DiscoveryController | main.rs; discovery_controller.dart | PASS |
+| S7aj-002 | yes | Discovery does NOT downgrade the pairing trust model: a short-authentication-string (pin fingerprint) must be confirmed before the code is disclosed (defeats rogue-mDNS phishing) | fingerprint tests (Rust+Dart) + SAS gate | `pin_fingerprint` pinned both sides; confirm-before-code dialog | main.rs; discovery.dart; pairing_view.dart | PASS |
+| S7aj-003 | yes | Platform declarations so discovery actually works: iOS local-network + Bonjour; Android multicast permission | manifest inspection | Info.plist + AndroidManifest | ios/android manifests | PASS |
+| S7aj-004 | yes | Independent adversarial review; confirmed findings fixed | run `wf_bd3f4a1c-0b4` (6 agents) | 5 confirmed (A–E) → **all fixed** | CODE-REVIEW-batch7aj.md | PASS |
+
+### Iteration ledger — batch 7aj
+
+- Target: S7aj-001..S7aj-004. Change: host mDNS advertising (mdns-sd, auto-addr, fingerprint-bearing name), mobile DiscoveryController + Nearby-hosts UI, pin-fingerprint SAS gate (Rust+Dart, pinned), iOS/Android manifest declarations. Security review (6 agents, manifest-aware): **5 findings (A–E) → all fixed** — headline: mDNS supplied the cert pin, enabling a rogue host to phish the pairing code and pivot to Producer control; closed with a confirm-the-fingerprint gate that restores the QR-model's atomic trust. Verifier: workspace **263** + Flutter **23**, clippy/deny/analyze clean. Recorded remainders on 86ajp0b0t: Android MulticastLock (native), on-device phone QA. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

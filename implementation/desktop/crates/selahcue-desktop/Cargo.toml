@@ -20,6 +20,7 @@ encryption = ["selahcue-data/encryption", "dep:keyring", "dep:argon2", "dep:getr
 
 [dependencies]
 fs4 = "0.13"
+mdns-sd = "0.13"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
 argon2 = { version = "0.5", optional = true }
 getrandom = { version = "0.2", optional = true }

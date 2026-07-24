@@ -1,4 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- mDNS discovery of nearby hosts (story 86ajp0b0t) needs to receive
+         Wi-Fi multicast; the controller also holds a MulticastLock while
+         browsing. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:label="selahcue_controller"
         android:name="${applicationName}"

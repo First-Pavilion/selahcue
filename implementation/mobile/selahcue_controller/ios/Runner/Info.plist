@@ -49,6 +49,12 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>SelahCue finds nearby presentation hosts on your local network so you can pair without typing an address.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_selahcue._tcp</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>SelahCue scans the operator&#8217;s pairing QR code to connect securely.</string>
 	<key>UILaunchStoryboardName</key>
