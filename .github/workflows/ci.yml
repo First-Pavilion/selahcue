@@ -146,3 +146,33 @@ jobs:
       - name: Audit operator shell
         working-directory: implementation/desktop/crates/selahcue-operator
         run: cargo audit
+
+  supply-chain:
+    # Story 86ajpew0j: license allowlist (no copyleft in the shipped tree,
+    # deny.toml) + a CycloneDX SBOM artifact per build. Advisories live in the
+    # RustSec job above.
+    name: supply chain (licenses + SBOM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-cyclonedx
+      - name: License / source / bans policy (desktop workspace)
+        working-directory: implementation/desktop
+        run: cargo deny check licenses sources bans
+      - name: License / source / bans policy (operator shell)
+        working-directory: implementation/desktop/crates/selahcue-operator
+        run: cargo deny check licenses sources bans
+      - name: Generate CycloneDX SBOM (desktop workspace)
+        working-directory: implementation/desktop
+        run: cargo cyclonedx --format json
+      - name: Generate CycloneDX SBOM (operator shell)
+        working-directory: implementation/desktop/crates/selahcue-operator
+        run: cargo cyclonedx --format json
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: implementation/desktop/**/*.cdx.json
+          if-no-files-found: error

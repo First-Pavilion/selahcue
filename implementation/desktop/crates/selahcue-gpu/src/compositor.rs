@@ -120,6 +120,28 @@ impl Compositor {
         })
     }
 
+    /// Register a callback fired when the device is lost (NFR-024 seam: the
+    /// desktop shell recreates the compositor when this fires; the CI
+    /// device-loss test asserts the signal path works).
+    pub fn on_device_lost(&self, callback: impl FnOnce(String) + Send + 'static) {
+        // wgpu wants a reusable Fn; the loss event fires at most once per
+        // device, so a take-once wrapper adapts the ergonomic FnOnce.
+        let once = std::sync::Mutex::new(Some(callback));
+        self.device
+            .set_device_lost_callback(move |_reason, message| {
+                if let Some(cb) = once.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                    cb(message);
+                }
+            });
+    }
+
+    /// Simulate a whole-device GPU loss (NFR-024 fault injection): destroys the
+    /// underlying device, which fires the lost callback. Test seam — production
+    /// losses come from the driver.
+    pub fn simulate_device_loss(&self) {
+        self.device.destroy();
+    }
+
     /// Render a frame to an offscreen texture and read the RGBA8 pixels back (the
     /// same readback ADR-0015 uses for parity/latency/flash analysis).
     pub fn render_to_pixels(&self, frame: &Frame) -> Vec<u8> {

@@ -929,7 +929,10 @@
             setStatus(
               ch.reference + ":" + wantNum + " is not present in " + ch.translation
             );
-            return;
+            // The chapter DID render — report success so the caller neither
+            // clobbers this status with a keyword search nor keeps focus in
+            // the box (review 7ag).
+            return true;
           }
           if (isRange) {
             // The whole passage stages; the cursor lands without re-staging.

@@ -8,6 +8,7 @@ members = ["crates/selahcue-core", "crates/selahcue-data", "crates/selahcue-lan"
 exclude = ["crates/selahcue-operator"]
 
 [workspace.package]
+publish = false
 version = "0.1.0"
 edition = "2021"
 license = "Proprietary"

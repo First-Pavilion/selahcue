@@ -1,0 +1,34 @@
+# Supply-chain policy (story 86ajpew0j): license allowlist + duplicate/source
+# hygiene. Advisories are covered by the separate RustSec `cargo audit` CI job.
+
+[graph]
+all-features = true
+
+[licenses]
+# Our own unpublished (proprietary) crates are exempt from the allowlist.
+private = { ignore = true }
+# Permissive licenses only in the shipped tree. Copyleft (GPL/AGPL/LGPL) is
+# NOT allowed — anything outside this list fails CI loudly.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "BSL-1.0",
+  "Unicode-3.0",
+  "CC0-1.0",
+  "MPL-2.0", # file-level copyleft only; carried by wgpu's DX shader stack
+  "OFL-1.1", # font data
+  "Ubuntu-font-1.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

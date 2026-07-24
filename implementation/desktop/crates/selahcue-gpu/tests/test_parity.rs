@@ -87,3 +87,38 @@ fn wgpu_matches_cpu_rasterizer_to_ssim_0_99() {
         );
     }
 }
+
+/// NFR-024 (story 86ajpew0j): whole-device GPU loss is survivable — the lost
+/// signal fires, nothing panics, and a recreated compositor renders the exact
+/// same pixels (recreation IS the production recovery path).
+#[test]
+fn device_loss_signals_and_recovery_renders_identically() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let Some(first) = Compositor::new() else {
+        eprintln!("no GPU available — skipping (headless env without a software driver)");
+        return;
+    };
+    let frame = scenes().remove(0);
+    let before = first.render_to_pixels(&frame);
+    assert!(!before.is_empty());
+
+    // Inject the loss: the lost callback must fire (the desktop shell's cue to
+    // recreate) and the destroy path must not panic.
+    let lost = Arc::new(AtomicBool::new(false));
+    let flag = lost.clone();
+    first.on_device_lost(move |_| flag.store(true, Ordering::SeqCst));
+    first.simulate_device_loss();
+    // Give the backend a moment to deliver the callback (poll via drop below).
+    drop(first);
+    assert!(
+        lost.load(Ordering::SeqCst),
+        "the device-lost signal must fire on destruction"
+    );
+
+    // Recovery: a fresh compositor renders byte-identically.
+    let second = Compositor::new().expect("recreate after device loss");
+    let after = second.render_to_pixels(&frame);
+    assert_eq!(before, after, "recovered output is pixel-identical");
+}
