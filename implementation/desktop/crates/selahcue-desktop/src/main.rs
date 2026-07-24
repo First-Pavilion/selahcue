@@ -61,6 +61,8 @@ fn demo_plan() -> ServicePlan {
 /// Platform data directory for the session store (created if missing). Every
 /// failure path reports itself — storage degradation must never be silent.
 fn data_dir() -> Option<std::path::PathBuf> {
+    // Windows resolves via APPDATA below and never reads HOME.
+    #[cfg(not(target_os = "windows"))]
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     #[cfg(target_os = "macos")]
     let dir = home.map(|h| h.join("Library/Application Support/SelahCue"));
