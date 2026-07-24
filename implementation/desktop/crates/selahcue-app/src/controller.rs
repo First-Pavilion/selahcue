@@ -9,7 +9,9 @@ use crate::operator::{ItemView, OperatorView};
 use selahcue_core::plan::ServicePlan;
 use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
-use selahcue_lan::protocol::{Command, DenyReason, ServerMessage, TimerSnapshot};
+use selahcue_lan::protocol::{
+    Command, DenyReason, DisplayView, OutputStatusView, ServerMessage, TimerSnapshot,
+};
 use selahcue_present::{FrameBuffer, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView};
 use std::time::{Duration, Instant};
 
@@ -26,6 +28,10 @@ fn timer_key(view: Option<TimerView>) -> TimerKey {
 /// The controller's decision for a command. The transport frames `Ack`/`Deny` with
 /// the request id; `Message` is returned as-is.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// One short-lived value per command application (never stored in collections),
+// so the size skew from the operator view inside `Message` is harmless — boxing
+// here would only push the cost into every test's pattern match.
+#[allow(clippy::large_enum_variant)]
 pub enum ControllerReply {
     Ack,
     Deny(DenyReason),
@@ -83,6 +89,16 @@ pub struct LiveController {
     /// While pairing mode is active: the invite URI shown as a QR on the stage
     /// output, and when it stops being valid (auto-cleared by `tick`).
     pairing_qr: Option<(String, Instant)>,
+    /// Identify-overlay request (armed by the command, started on the next tick).
+    identify_pending: bool,
+    /// While set (and in the future), every output shows its identify number.
+    identify_until: Option<Instant>,
+    /// Latest requested display assignment per role (drained by the desktop
+    /// shell, which owns the windows). Keyed by role — bounded by role count.
+    pending_assignments: Vec<(String, String)>,
+    /// Output/display status injected by the desktop shell for the operator view.
+    output_status: Vec<OutputStatusView>,
+    display_status: Vec<DisplayView>,
     /// Set by any state-changing command; the host's autosave loop consumes it via
     /// [`take_state_dirty`](Self::take_state_dirty).
     state_dirty: bool,
@@ -98,6 +114,9 @@ pub struct LiveController {
     /// even when the title happens to parse as a reference (review 7y-B).
     live_free_text: Option<String>,
 }
+
+/// How long the identify overlay stays on the outputs once triggered (FR-040).
+pub const IDENTIFY_TTL: Duration = Duration::from_secs(5);
 
 /// Maximum verse-text lines on a scripture slide INCLUDING the ellipsis marker.
 /// The compositor renders at most 7 text lines per frame (title + 6 body:
@@ -182,6 +201,11 @@ impl LiveController {
             stage_dirty: true,
             last_stage_key: None,
             pairing_qr: None,
+            identify_pending: false,
+            identify_until: None,
+            pending_assignments: Vec::new(),
+            output_status: Vec::new(),
+            display_status: Vec::new(),
             state_dirty: false,
             plan_dirty: false,
             staged_scripture: None,
@@ -299,6 +323,34 @@ impl LiveController {
         self.plan_dirty = true;
     }
 
+    /// Arm the identify overlay (host-local `I` key; same path as the command).
+    pub fn trigger_identify(&mut self) {
+        self.identify_pending = true;
+    }
+
+    /// While `Some`, outputs show their identify numbers (window-level overlay —
+    /// presentation state is untouched and resumes by itself at expiry).
+    pub fn identify_until(&self) -> Option<Instant> {
+        self.identify_until
+    }
+
+    /// Drain the requested display assignments (role, display key) — the desktop
+    /// shell applies them to real windows and persists them.
+    pub fn take_pending_assignments(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.pending_assignments)
+    }
+
+    /// Inject the physical output/display status the operator view reports
+    /// (desktop shell only; other hosts leave these empty).
+    pub fn set_output_status(
+        &mut self,
+        outputs: Vec<OutputStatusView>,
+        displays: Vec<DisplayView>,
+    ) {
+        self.output_status = outputs;
+        self.display_status = displays;
+    }
+
     /// The current service plan (for persistence).
     pub fn plan(&self) -> &ServicePlan {
         &self.plan
@@ -358,6 +410,16 @@ impl LiveController {
         self.last_timer_view = view;
         // The countdown is a speaker aid: it appears on the stage/confidence monitor
         // (below), NOT on the audience/program output.
+
+        // Identify overlay: armed by the command/key, started here (injected
+        // clock), auto-expired — never a destructive presentation change.
+        if self.identify_pending {
+            self.identify_pending = false;
+            self.identify_until = Some(now + IDENTIFY_TTL);
+        }
+        if self.identify_until.is_some_and(|t| now >= t) {
+            self.identify_until = None;
+        }
 
         // Auto-dismiss an expired pairing QR (its code is TTL-bound anyway).
         if self.pairing_qr.as_ref().is_some_and(|(_, exp)| now >= *exp) {
@@ -446,6 +508,8 @@ impl LiveController {
             staged_scripture: self.staged_scripture.clone(),
             live_scripture: self.live_scripture.clone(),
             live_free_text: self.live_free_text.clone(),
+            outputs: self.output_status.clone(),
+            displays: self.display_status.clone(),
         }
     }
 
@@ -593,6 +657,28 @@ impl LiveController {
             Command::GetOperatorState => ControllerReply::Message(ServerMessage::OperatorState {
                 view: self.operator_view().into(),
             }),
+            Command::IdentifyOutputs => {
+                self.identify_pending = true;
+                ControllerReply::Ack
+            }
+            Command::AssignOutput { role, display_key } => {
+                if !matches!(role.as_str(), "main" | "stage") {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
+                // Only keys from the advertised display list are acceptable (a
+                // stale/unknown key is denied here, so the client sees it —
+                // the shell re-validates against live monitors before applying).
+                if !self.display_status.is_empty()
+                    && !self.display_status.iter().any(|d| d.key == *display_key)
+                {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
+                // Latest request per role wins; keyed insert keeps this bounded.
+                self.pending_assignments.retain(|(r, _)| r != role);
+                self.pending_assignments
+                    .push((role.clone(), display_key.clone()));
+                ControllerReply::Ack
+            }
             // --- Plan editing (Operator-only via RBAC). Edits NEVER change the Live
             // output (FR-012 spirit): removing the live item keeps its slide on
             // screen; only the index bookkeeping adjusts. ---
@@ -715,10 +801,10 @@ pub fn handler_for(
         Ok(mut controller) => match controller.apply(command) {
             ControllerReply::Ack => Reply::Ack,
             ControllerReply::Deny(reason) => Reply::Deny(reason),
-            ControllerReply::Message(message) => Reply::Message(message),
+            ControllerReply::Message(message) => Reply::Message(Box::new(message)),
         },
-        Err(_) => Reply::Message(ServerMessage::Error {
+        Err(_) => Reply::Message(Box::new(ServerMessage::Error {
             message: "controller unavailable".into(),
-        }),
+        })),
     })
 }

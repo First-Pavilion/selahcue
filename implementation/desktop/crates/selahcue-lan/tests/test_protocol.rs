@@ -195,10 +195,57 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         staged_scripture: Some("Romans 8:28".into()),
         live_scripture: Some("John 3:16".into()),
         live_free_text: Some("Removed Song".into()),
+        outputs: vec![],
+        displays: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
         r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"staged_scripture":"Romans 8:28","live_scripture":"John 3:16","live_free_text":"Removed Song"}}"#
+    );
+
+    // The outputs/displays wire surface (batch 7aa): pinned serialize-side; the
+    // operator webview reads these exact field names.
+    let view = selahcue_lan::protocol::OperatorStateView {
+        plan_name: "Sunday".into(),
+        items: vec![],
+        live_index: None,
+        staged_index: None,
+        blackout: false,
+        timer: None,
+        staged_scripture: None,
+        live_scripture: None,
+        live_free_text: None,
+        outputs: vec![selahcue_lan::protocol::OutputStatusView {
+            role: "main".into(),
+            display: Some("Projector".into()),
+            width: 1920,
+            height: 1080,
+            assigned: true,
+            assigned_key: Some("Projector|1920x1080".into()),
+        }],
+        displays: vec![selahcue_lan::protocol::DisplayView {
+            key: "Projector|1920x1080".into(),
+            name: "Projector".into(),
+            width: 1920,
+            height: 1080,
+        }],
+    };
+    assert_eq!(
+        to_json(&ServerMessage::OperatorState { view }).unwrap(),
+        r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"outputs":[{"role":"main","display":"Projector","width":1920,"height":1080,"assigned":true,"assigned_key":"Projector|1920x1080"}],"displays":[{"key":"Projector|1920x1080","name":"Projector","width":1920,"height":1080}]}}"#
+    );
+    // The output-config commands, pinned like every other command.
+    assert_eq!(
+        to_json(&Command::IdentifyOutputs).unwrap(),
+        r#"{"cmd":"identify_outputs"}"#
+    );
+    assert_eq!(
+        to_json(&Command::AssignOutput {
+            role: "stage".into(),
+            display_key: "Projector|1920x1080".into()
+        })
+        .unwrap(),
+        r#"{"cmd":"assign_output","role":"stage","display_key":"Projector|1920x1080"}"#
     );
 
     let req = Request::new(7, Command::SelectItem { item_id: 3 });

@@ -165,6 +165,32 @@ impl Backend {
             Backend::Local(s) => Ok(s.scripture_search(&query)),
         }
     }
+    async fn identify_outputs(&self) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .identify_outputs()
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.identify_outputs()),
+        }
+    }
+    async fn assign_output(
+        &self,
+        role: String,
+        display_key: String,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .assign_output(&role, &display_key)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.assign_output(&role, &display_key)),
+        }
+    }
 }
 
 struct AppState {
@@ -248,6 +274,18 @@ async fn scripture_search(
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
     state.backend.scripture_search(query).await
+}
+#[tauri::command]
+async fn identify_outputs(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.identify_outputs().await
+}
+#[tauri::command]
+async fn assign_output(
+    role: String,
+    display_key: String,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.assign_output(role, display_key).await
 }
 
 /// The local endpoint descriptor an output window writes so its operator shell can
@@ -340,7 +378,9 @@ fn main() {
             move_item,
             rename_item,
             stage_scripture,
-            scripture_search
+            scripture_search,
+            identify_outputs,
+            assign_output
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");

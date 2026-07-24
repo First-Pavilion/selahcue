@@ -45,6 +45,10 @@ pub struct OperatorView {
     pub live_scripture: Option<String>,
     /// A removed-but-still-on-screen plan item's title on Live (a free slide).
     pub live_free_text: Option<String>,
+    /// Physical outputs and their display assignments (desktop host only).
+    pub outputs: Vec<selahcue_lan::protocol::OutputStatusView>,
+    /// Attached physical displays for the assignment picker (desktop host only).
+    pub displays: Vec<selahcue_lan::protocol::DisplayView>,
 }
 
 /// An ergonomic, UI-facing wrapper over the shared [`LiveController`]. Each action
@@ -159,6 +163,19 @@ impl OperatorShell {
         })
     }
 
+    /// Show the identify overlay on every physical output.
+    pub fn identify_outputs(&self) -> OperatorView {
+        self.act(&Command::IdentifyOutputs)
+    }
+
+    /// Assign an output role ("main"/"stage") to a physical display.
+    pub fn assign_output(&self, role: &str, display_key: &str) -> OperatorView {
+        self.act(&Command::AssignOutput {
+            role: role.into(),
+            display_key: display_key.into(),
+        })
+    }
+
     /// Search scripture: reference parse first, then keyword search over the
     /// bundled translation. Returns display references (stageable directly).
     pub fn scripture_search(&self, query: &str) -> Vec<String> {
@@ -215,6 +232,8 @@ impl From<OperatorView> for OperatorStateView {
             staged_scripture: v.staged_scripture,
             live_scripture: v.live_scripture,
             live_free_text: v.live_free_text,
+            outputs: v.outputs,
+            displays: v.displays,
         }
     }
 }
@@ -231,6 +250,8 @@ impl From<OperatorStateView> for OperatorView {
             staged_scripture: v.staged_scripture,
             live_scripture: v.live_scripture,
             live_free_text: v.live_free_text,
+            outputs: v.outputs,
+            displays: v.displays,
         }
     }
 }
@@ -365,6 +386,24 @@ impl RemoteOperator {
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::StageScripture {
             reference: reference.into(),
+        })
+        .await
+    }
+
+    /// Show the identify overlay on the host's physical outputs.
+    pub async fn identify_outputs(&mut self) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::IdentifyOutputs).await
+    }
+
+    /// Assign an output role to a physical display on the host.
+    pub async fn assign_output(
+        &mut self,
+        role: &str,
+        display_key: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::AssignOutput {
+            role: role.into(),
+            display_key: display_key.into(),
         })
         .await
     }

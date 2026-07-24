@@ -20,6 +20,7 @@ mod error;
 #[cfg(feature = "encryption")]
 mod key;
 pub mod migrations;
+pub mod output_repo;
 pub mod plan_repo;
 pub mod session_repo;
 

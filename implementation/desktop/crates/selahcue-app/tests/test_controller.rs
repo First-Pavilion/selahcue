@@ -729,3 +729,101 @@ fn scripture_slides_never_exceed_the_compositor_line_capacity() {
     assert!(slide.body.len() <= 6);
     assert_ne!(slide.body.last().map(String::as_str), Some("\u{2026}"));
 }
+
+#[test]
+fn identify_overlay_arms_expires_and_never_touches_presentation_state() {
+    use selahcue_app::IDENTIFY_TTL;
+    use std::time::{Duration, Instant};
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    let t0 = Instant::now();
+    c.tick(t0);
+    let live_before = c.presenter().live_output().bytes().to_vec();
+
+    // The command arms; the next tick starts the window (injected clock).
+    assert_eq!(c.apply(&Command::IdentifyOutputs), ControllerReply::Ack);
+    assert!(c.identify_until().is_none(), "starts on tick, not on apply");
+    c.tick(t0 + Duration::from_millis(16));
+    let until = c.identify_until().expect("identify active");
+    assert!(until > t0 + IDENTIFY_TTL - Duration::from_secs(1));
+
+    // Presentation state is untouched the whole time (the overlay is a
+    // window-level blit in the shell) — the audience output never changed.
+    assert_eq!(c.presenter().live_output().bytes(), live_before.as_slice());
+    assert_eq!(c.live_index(), Some(0));
+
+    // Auto-expiry.
+    c.tick(t0 + IDENTIFY_TTL + Duration::from_secs(1));
+    assert!(c.identify_until().is_none(), "expired");
+    assert_eq!(c.presenter().live_output().bytes(), live_before.as_slice());
+}
+
+#[test]
+fn output_assignments_are_bounded_and_latest_per_role_wins() {
+    let (mut c, _) = controller();
+    // Repeated assignment commands never grow state past one entry per role.
+    for i in 0..100 {
+        c.apply(&Command::AssignOutput {
+            role: "main".into(),
+            display_key: format!("D{i}|1x1"),
+        });
+    }
+    c.apply(&Command::AssignOutput {
+        role: "stage".into(),
+        display_key: "S|2x2".into(),
+    });
+    let pending = c.take_pending_assignments();
+    assert_eq!(pending.len(), 2, "one pending entry per role");
+    assert!(pending.contains(&("main".into(), "D99|1x1".into())));
+    assert!(c.take_pending_assignments().is_empty(), "drained");
+    // Unknown roles are rejected outright.
+    assert_eq!(
+        c.apply(&Command::AssignOutput {
+            role: "disco".into(),
+            display_key: "X|1x1".into()
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+}
+
+#[test]
+fn assignment_keys_are_validated_against_the_advertised_displays() {
+    use selahcue_lan::protocol::DisplayView;
+    let (mut c, _) = controller();
+    // With no display list injected (tests/headless), any key passes through —
+    // the desktop shell re-validates against live monitors before applying.
+    assert_eq!(
+        c.apply(&Command::AssignOutput {
+            role: "main".into(),
+            display_key: "anything".into()
+        }),
+        ControllerReply::Ack
+    );
+    c.take_pending_assignments();
+    // Once displays are advertised, unknown keys are denied at the controller
+    // (the client sees the rejection instead of a silent no-op).
+    c.set_output_status(
+        vec![],
+        vec![DisplayView {
+            key: "Projector|1920x1080".into(),
+            name: "Projector".into(),
+            width: 1920,
+            height: 1080,
+        }],
+    );
+    assert_eq!(
+        c.apply(&Command::AssignOutput {
+            role: "main".into(),
+            display_key: "Gone|1x1".into()
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        c.apply(&Command::AssignOutput {
+            role: "main".into(),
+            display_key: "Projector|1920x1080".into()
+        }),
+        ControllerReply::Ack
+    );
+}

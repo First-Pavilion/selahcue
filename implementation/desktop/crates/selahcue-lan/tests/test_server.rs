@@ -61,10 +61,10 @@ async fn start_server_cfg(
 
     // Handler: GetState returns a State snapshot; everything else is Ack.
     let handler: Handler = Arc::new(|_role, cmd| match cmd {
-        Command::GetState => Reply::Message(ServerMessage::State {
+        Command::GetState => Reply::Message(Box::new(ServerMessage::State {
             live_item: None,
             blackout: false,
-        }),
+        })),
         _ => Reply::Ack,
     });
 

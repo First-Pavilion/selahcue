@@ -608,6 +608,21 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7y-001..S7y-007. Change: new `selahcue-scripture` crate (WEB bundled as gzipped TSV, canonical books 1–66, OnceLock index, lookup/passage/keyword search); `scripture_slide` verse-text composition at StageScripture + both restore paths; keyword fallback in ScriptureSearch; scripture fields on the operator views (skip-if-none — v2 fixtures byte-identical); operator + mobile scripture UI; wire E2E. Review (15 agents, 4 lenses incl. an audit of the decompressed asset and a wire-contract mutation test): **7 unique defects → all fixed** — headline: scripture slides overflowed the compositor's real 7-line capacity (tail + ellipsis silently clipped); recovery could recompose a removed item's title into verse text (→ `live_free_text`, schema **v4**); stale-hit staging races in the operator search. Verifier: workspace **244** + Flutter **18**, clippy/analyze clean. Result: PASS. Decision: gate-review.
 
+## Batch 7aa predicate — display enumeration/assignment + identify (86ajpew0c)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7aa-001 | yes | Display enumeration with stable, collision-free identities (identical-monitor venues assignable) | `cargo test -p selahcue-desktop` | position-ordered ordinal keys, unit-tested incl. re-enumeration | display_keys() in main.rs | PASS |
+| S7aa-002 | yes | Per-output assignment persisted (schema v5) and applied as borderless fullscreen at startup + live; a stale key can never destroy a working profile or yank the live output | repo tests + review fix B | validate-before-persist; deny unknown keys at the controller | output_repo.rs; main.rs | PASS |
+| S7aa-003 | yes | Identify overlay: host `I` key + wire command, TTL-bound, window-level blit — presentation state untouched | identify lifecycle test | arm → tick-start → expiry; live output byte-identical throughout | controller.rs; main.rs | PASS |
+| S7aa-004 | yes | Console OUTPUTS panel: role/display/resolution/assignment picker + Identify; focus-safe rebuilds; truthful async status | review fixes C/E/F/G | republish on Moved/Resized; picker reflects assigned_key; deferred rebuilds | index.html | PASS |
+| S7aa-005 | yes | RBAC: ConfigureOutputs Operator-only, wire-tested | E2E | Operator identifies/assigns; Producer denied (no pending change) | test_operator_remote.rs | PASS |
+| S7aa-006 | yes | Independent adversarial review; confirmed findings fixed | run `wf_5b9ebabf-34e` (15 agents) | 11 confirmed → 7 unique (A–G) → **all fixed** | CODE-REVIEW-batch7aa.md | PASS |
+
+### Iteration ledger — batch 7aa
+
+- Target: S7aa-001..S7aa-006. Change: outputs wire surface (OperatorStatusView outputs/displays/assigned_key, skip-if-empty — v2 fixtures byte-identical, new fixtures pinned), Commands IdentifyOutputs/AssignOutput behind new Operator-only `Permission::ConfigureOutputs`; controller identify TTL (pairing-QR pattern) + bounded latest-per-role pending assignments + key validation; schema v5 `output_config` + repo; desktop monitor enumeration with collision-free position-ordinal keys, persisted placement (Fullscreen::Borderless), validate-before-persist application, async-truthful status republish on Moved/Resized, window-level identify blit (I key + command); console OUTPUTS panel with focus-safe rebuilds. Review (rerun after a session-limit abort; 15 agents): 11 confirmed → **7 unique (A–G) → all fixed** — headline: identical-projector key collisions (winit-source-verified), persist-before-validate that could drop a live output to windowed mid-service, and the panel rebuild stealing focus so Enter fired GO LIVE. Verifier: workspace **252** + Flutter **19**, clippy clean. On-device 2+-display acceptance pending (headless CI cannot place windows). Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

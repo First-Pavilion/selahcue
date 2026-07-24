@@ -91,6 +91,27 @@ void main() {
         {'cmd': 'stage_scripture', 'reference': 'Romans 8:28'});
   });
 
+  test('operator_state tolerates the desktop-only outputs fields', () {
+    // Mobile ignores outputs/displays (desktop console surface) — parsing a
+    // frame that carries them must not throw or disturb the known fields.
+    final v = OperatorStateView.fromJson({
+      'plan_name': 'Sunday',
+      'items': [],
+      'live_index': null,
+      'staged_index': null,
+      'blackout': false,
+      'timer': null,
+      'outputs': [
+        {'role': 'main', 'display': 'Projector', 'width': 1920, 'height': 1080, 'assigned': true}
+      ],
+      'displays': [
+        {'key': 'Projector|1920x1080', 'name': 'Projector', 'width': 1920, 'height': 1080}
+      ],
+    });
+    expect(v.planName, 'Sunday');
+    expect(v.blackout, isFalse);
+  });
+
   test('operator_state parses scripture fields (and their absence)', () {
     // The EXACT string the Rust serializer pins in
     // selahcue-lan/tests/test_protocol.rs (wire_fixtures...) — change together.

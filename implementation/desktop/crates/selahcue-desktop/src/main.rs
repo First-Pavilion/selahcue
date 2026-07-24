@@ -20,9 +20,9 @@ use selahcue_app::{
 };
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_data::session_repo::SessionState;
-use selahcue_data::{plan_repo, session_repo, Database};
+use selahcue_data::{output_repo, plan_repo, session_repo, Database};
 use selahcue_engine::raster::FrameBuffer;
-use selahcue_lan::protocol::{Command, PairingInvite};
+use selahcue_lan::protocol::{Command, DisplayView, OutputStatusView, PairingInvite};
 use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
 use selahcue_lan::{generate_pairing_code, generate_token, ControlServer, Role, SelfSigned};
 use selahcue_present::qr_modules;
@@ -51,6 +51,94 @@ const AUTOSAVE_MIN_INTERVAL: Duration = Duration::from_secs(1);
 /// While a countdown runs, refresh its persisted elapsed at least this often — so a
 /// crash loses at most this much timer progress.
 const TIMER_AUTOSAVE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// A monitor's raw identity facts, in a plain shape the key math can be tested on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MonitorFacts {
+    name: Option<String>,
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+}
+
+fn monitor_facts(m: &winit::monitor::MonitorHandle) -> MonitorFacts {
+    let size = m.size();
+    let pos = m.position();
+    MonitorFacts {
+        name: m.name(),
+        width: size.width,
+        height: size.height,
+        x: pos.x,
+        y: pos.y,
+    }
+}
+
+/// Stable, collision-free monitor identities for assignment persistence:
+/// `name|WxH`, with a `#n` ordinal appended for DUPLICATE name+size monitors
+/// (the classic two-identical-projectors venue — macOS names same-model
+/// monitors identically). Ordinals are ordered by desktop position (left-to-
+/// right, top-to-bottom), not enumeration order, so OS re-enumeration across
+/// boots does not swap them; physically swapping the cables of two identical
+/// projectors is indistinguishable to software and needs re-assignment.
+/// Returns one key per input, same order. Display NAMES get the same ordinal
+/// suffix so the operator picker can tell duplicates apart.
+fn display_keys(facts: &[MonitorFacts]) -> Vec<(String, String)> {
+    let base = |f: &MonitorFacts, i: usize| {
+        (
+            f.name
+                .clone()
+                .unwrap_or_else(|| format!("Display {}", i + 1)),
+            format!(
+                "{}|{}x{}",
+                f.name
+                    .clone()
+                    .unwrap_or_else(|| format!("Display {}", i + 1)),
+                f.width,
+                f.height
+            ),
+        )
+    };
+    // Position-ordered ordinal among same-key monitors.
+    let mut order: Vec<usize> = (0..facts.len()).collect();
+    order.sort_by_key(|&i| (facts[i].x, facts[i].y));
+    let mut seen: Vec<(String, u32)> = Vec::new();
+    let mut ordinal = vec![0u32; facts.len()];
+    for &i in &order {
+        let (_, key) = base(&facts[i], i);
+        match seen.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, n)) => {
+                *n += 1;
+                ordinal[i] = *n;
+            }
+            None => seen.push((key, 0)),
+        }
+    }
+    let dup: Vec<bool> = (0..facts.len())
+        .map(|i| {
+            let (_, key) = base(&facts[i], i);
+            facts
+                .iter()
+                .enumerate()
+                .filter(|(j, f)| base(f, *j).1 == key)
+                .count()
+                > 1
+        })
+        .collect();
+    (0..facts.len())
+        .map(|i| {
+            let (name, key) = base(&facts[i], i);
+            if dup[i] {
+                (
+                    format!("{name} #{}", ordinal[i] + 1),
+                    format!("{key}#{}", ordinal[i] + 1),
+                )
+            } else {
+                (name, key)
+            }
+        })
+        .collect()
+}
 
 /// The demo service plan used on a first run (no persisted session yet).
 fn demo_plan() -> ServicePlan {
@@ -167,6 +255,29 @@ impl SessionStore {
             match plan_repo::insert(db, plan) {
                 Ok(id) => self.plan_id = Some(id),
                 Err(e) => eprintln!("SelahCue: could not persist the plan ({e})."),
+            }
+        }
+    }
+
+    /// Persisted output→display assignments (`(role, display_key)`), if any.
+    fn load_output_assignments(&self) -> Vec<(String, String)> {
+        self.db
+            .as_ref()
+            .and_then(|db| match output_repo::load_assignments(db) {
+                Ok(rows) => Some(rows),
+                Err(e) => {
+                    eprintln!("SelahCue: could not read output assignments ({e}).");
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    /// Persist one output→display assignment (reported, never fatal).
+    fn save_output_assignment(&self, role: &str, display_key: &str) {
+        if let Some(db) = self.db.as_ref() {
+            if let Err(e) = output_repo::save_assignment(db, role, display_key) {
+                eprintln!("SelahCue: could not persist the {role} output assignment ({e}).");
             }
         }
     }
@@ -473,6 +584,12 @@ struct App {
     next_frame: Option<Instant>,
     /// The canonical keybinding state machine (UX-CANONICAL §1).
     keymap: Keymap,
+    /// Attached physical displays, refreshed when windows are (re)created.
+    displays: Vec<DisplayView>,
+    /// Persisted role→display assignments (cache of the output_config table).
+    assignments: Vec<(String, String)>,
+    /// Cached identify frames (main = 1, stage = 2) while the overlay is active.
+    identify_frames: Option<(FrameBuffer, FrameBuffer)>,
     /// The session store (SQLite) for autosave + crash recovery.
     store: SessionStore,
     last_autosave: Instant,
@@ -546,9 +663,112 @@ impl App {
             remote,
             next_frame: None,
             keymap: Keymap::new(),
+            displays: Vec::new(),
+            assignments: Vec::new(),
+            identify_frames: None,
             store,
             last_autosave: Instant::now(),
         }
+    }
+
+    /// Report the outputs (role → window/display) + attached displays to the
+    /// controller so every operator surface can render the OUTPUTS panel.
+    /// Re-run on window Moved/Resized: fullscreen transitions land async, so
+    /// the truth arrives with those events, not with the assignment call.
+    fn publish_output_status(&self) {
+        let assignments = &self.assignments;
+        let assigned = |role: &str| assignments.iter().any(|(r, _)| r == role);
+        let assigned_key = |role: &str| {
+            assignments
+                .iter()
+                .find(|(r, _)| r == role)
+                .map(|(_, k)| k.clone())
+        };
+        let display_of = |renderer: &Option<Renderer>| {
+            renderer
+                .as_ref()
+                .and_then(|r| r.window.current_monitor())
+                .and_then(|m| m.name())
+        };
+        let size_of = |renderer: &Option<Renderer>| {
+            renderer
+                .as_ref()
+                .map(|r| {
+                    let s = r.window.inner_size();
+                    (s.width, s.height)
+                })
+                .unwrap_or((OUTPUT_W, OUTPUT_H))
+        };
+        let (mw, mh) = size_of(&self.main);
+        let (sw, sh) = size_of(&self.stage);
+        let outputs = vec![
+            OutputStatusView {
+                role: "main".into(),
+                display: display_of(&self.main),
+                width: mw,
+                height: mh,
+                assigned: assigned("main"),
+                assigned_key: assigned_key("main"),
+            },
+            OutputStatusView {
+                role: "stage".into(),
+                display: display_of(&self.stage),
+                width: sw,
+                height: sh,
+                assigned: assigned("stage"),
+                assigned_key: assigned_key("stage"),
+            },
+        ];
+        if let Ok(mut c) = self.controller.lock() {
+            c.set_output_status(outputs, self.displays.clone());
+        }
+    }
+
+    /// Apply any remotely requested display assignments. The display must exist
+    /// RIGHT NOW to be accepted: a stale key is dropped without persisting and —
+    /// critically — without touching the (possibly live, fullscreen) window.
+    fn apply_pending_assignments(&mut self) {
+        let pending = match self.controller.lock() {
+            Ok(mut c) => c.take_pending_assignments(),
+            Err(_) => return,
+        };
+        if pending.is_empty() {
+            return;
+        }
+        for (role, key) in &pending {
+            let renderer = match role.as_str() {
+                "main" => self.main.as_ref(),
+                _ => self.stage.as_ref(),
+            };
+            let Some(r) = renderer else { continue };
+            let monitors: Vec<winit::monitor::MonitorHandle> =
+                r.window.available_monitors().collect();
+            let facts: Vec<MonitorFacts> = monitors.iter().map(monitor_facts).collect();
+            let keyed = display_keys(&facts);
+            let target = monitors
+                .iter()
+                .zip(keyed.iter())
+                .find(|(_, (_, k))| k == key)
+                .map(|(m, _)| m.clone());
+            match target {
+                Some(monitor) => {
+                    // Persist only what verifiably exists (a bad key must never
+                    // overwrite a working venue profile).
+                    self.store.save_output_assignment(role, key);
+                    self.assignments.retain(|(r2, _)| r2 != role);
+                    self.assignments.push((role.clone(), key.clone()));
+                    r.window
+                        .set_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(monitor))));
+                }
+                None => {
+                    eprintln!(
+                        "SelahCue: display '{key}' for the {role} output is not attached; \
+                         assignment ignored (window and saved profile unchanged)."
+                    );
+                }
+            }
+        }
+        self.publish_output_status();
     }
 
     /// Autosave: persist the session when state changed (throttled to ~1/s) and
@@ -699,8 +919,46 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // Physical displays (FR-040): a stable, collision-free key per monitor.
+        let monitors: Vec<winit::monitor::MonitorHandle> =
+            event_loop.available_monitors().collect();
+        let facts: Vec<MonitorFacts> = monitors.iter().map(monitor_facts).collect();
+        let keyed = display_keys(&facts);
+        self.displays = monitors
+            .iter()
+            .zip(keyed.iter())
+            .map(|(m, (name, key))| {
+                let size = m.size();
+                DisplayView {
+                    key: key.clone(),
+                    name: name.clone(),
+                    width: size.width,
+                    height: size.height,
+                }
+            })
+            .collect();
+        self.assignments = self.store.load_output_assignments();
+        let assignments = self.assignments.clone();
+        let monitor_for = |role: &str| {
+            assignments
+                .iter()
+                .find(|(r, _)| r == role)
+                .and_then(|(_, key)| {
+                    monitors
+                        .iter()
+                        .zip(keyed.iter())
+                        .find(|(_, (_, k))| k == key)
+                })
+                .map(|(m, _)| m.clone())
+        };
         if self.main.is_none() {
-            let attrs = Window::default_attributes().with_title("SelahCue Output");
+            let mut attrs = Window::default_attributes().with_title("SelahCue Output");
+            if let Some(monitor) = monitor_for("main") {
+                // Borderless fullscreen on the assigned display (spike-S4 path);
+                // unassigned keeps the windowed default.
+                attrs = attrs
+                    .with_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(monitor))));
+            }
             let window = Arc::new(
                 event_loop
                     .create_window(attrs)
@@ -709,7 +967,11 @@ impl ApplicationHandler for App {
             self.main = Some(Renderer::new(window));
         }
         if self.stage.is_none() {
-            let attrs = Window::default_attributes().with_title("SelahCue Stage / Confidence");
+            let mut attrs = Window::default_attributes().with_title("SelahCue Stage / Confidence");
+            if let Some(monitor) = monitor_for("stage") {
+                attrs = attrs
+                    .with_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(monitor))));
+            }
             let window = Arc::new(
                 event_loop
                     .create_window(attrs)
@@ -717,6 +979,7 @@ impl ApplicationHandler for App {
             );
             self.stage = Some(Renderer::new(window));
         }
+        self.publish_output_status();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -727,8 +990,56 @@ impl ApplicationHandler for App {
                     renderer.resize(size.width, size.height);
                     renderer.window.request_redraw();
                 }
+                // Fullscreen moves land async: the truthful monitor/size arrive
+                // here. Stale identify frames would render at the old size.
+                self.identify_frames = None;
+                self.publish_output_status();
+            }
+            WindowEvent::Moved(_) => {
+                self.publish_output_status();
             }
             WindowEvent::RedrawRequested => {
+                // Identify (FR-040): while active, each window blits its number
+                // INSTEAD of its scene — presentation state is untouched, so the
+                // outputs resume by themselves when the overlay expires.
+                let identify_active = self
+                    .controller
+                    .lock()
+                    .ok()
+                    .and_then(|c| c.identify_until())
+                    .is_some_and(|t| Instant::now() < t);
+                if identify_active {
+                    if self.identify_frames.is_none() {
+                        let theme = selahcue_present::StageTheme::dark();
+                        let compose = |n: u32, r: &Renderer| {
+                            let size = r.window.inner_size();
+                            selahcue_engine::raster::render(&selahcue_present::compose_identify(
+                                n,
+                                theme.identify_bg,
+                                theme.identify_marker,
+                                size.width.max(1),
+                                size.height.max(1),
+                            ))
+                        };
+                        let frames = match (self.main.as_ref(), self.stage.as_ref()) {
+                            (Some(m), Some(st)) => Some((compose(1, m), compose(2, st))),
+                            _ => None,
+                        };
+                        self.identify_frames = frames;
+                    }
+                    if let Some((main_frame, stage_frame)) = self.identify_frames.as_ref() {
+                        if self.main.as_ref().is_some_and(|r| r.window.id() == id) {
+                            if let Some(r) = self.main.as_mut() {
+                                r.render(main_frame);
+                            }
+                        } else if let Some(r) = self.stage.as_mut() {
+                            r.render(stage_frame);
+                        }
+                        return;
+                    }
+                } else {
+                    self.identify_frames = None;
+                }
                 let Ok(c) = self.controller.lock() else {
                     return;
                 };
@@ -763,6 +1074,13 @@ impl ApplicationHandler for App {
                     Key::Character(c) if c.eq_ignore_ascii_case("p") => {
                         self.keymap.disarm();
                         self.toggle_pairing();
+                        return;
+                    }
+                    Key::Character(c) if c.eq_ignore_ascii_case("i") => {
+                        self.keymap.disarm();
+                        if let Ok(mut ctl) = self.controller.lock() {
+                            ctl.trigger_identify();
+                        }
                         return;
                     }
                     Key::Character(c) if c.eq_ignore_ascii_case("y") => {
@@ -832,6 +1150,7 @@ impl ApplicationHandler for App {
                 c.tick(now);
             }
             self.autosave(now);
+            self.apply_pending_assignments();
             if let Some(r) = self.main.as_ref() {
                 r.window.request_redraw();
             }
@@ -1089,4 +1408,52 @@ fn main() {
     // Best-effort: don't leave a stale endpoint (with a now-dead token/port) behind on a
     // clean exit, so a later operator shell doesn't try to attach to a defunct window.
     let _ = std::fs::remove_file(endpoint_path());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{display_keys, MonitorFacts};
+
+    fn m(name: Option<&str>, w: u32, h: u32, x: i32) -> MonitorFacts {
+        MonitorFacts {
+            name: name.map(String::from),
+            width: w,
+            height: h,
+            x,
+            y: 0,
+        }
+    }
+
+    #[test]
+    fn identical_monitors_get_distinct_position_ordered_keys() {
+        // The two-identical-projectors venue: same name, same size. Keys must
+        // differ, ordered by desktop position regardless of enumeration order.
+        let keys = display_keys(&[
+            m(Some("EPSON PJ"), 1920, 1080, 1920), // enumerated first, but RIGHT
+            m(Some("EPSON PJ"), 1920, 1080, 0),    // LEFT
+        ]);
+        assert_eq!(keys[0].1, "EPSON PJ|1920x1080#2");
+        assert_eq!(keys[1].1, "EPSON PJ|1920x1080#1");
+        assert_eq!(keys[0].0, "EPSON PJ #2");
+        // Re-enumeration in the other order yields the SAME key per position.
+        let swapped = display_keys(&[
+            m(Some("EPSON PJ"), 1920, 1080, 0),
+            m(Some("EPSON PJ"), 1920, 1080, 1920),
+        ]);
+        assert_eq!(swapped[0].1, "EPSON PJ|1920x1080#1");
+        assert_eq!(swapped[1].1, "EPSON PJ|1920x1080#2");
+    }
+
+    #[test]
+    fn distinct_monitors_keep_plain_keys() {
+        let keys = display_keys(&[
+            m(Some("Color LCD"), 2560, 1600, 0),
+            m(Some("EPSON PJ"), 1920, 1080, 2560),
+            m(None, 1024, 768, 5000),
+        ]);
+        assert_eq!(keys[0].1, "Color LCD|2560x1600");
+        assert_eq!(keys[1].1, "EPSON PJ|1920x1080");
+        assert_eq!(keys[2].1, "Display 3|1024x768");
+        assert_eq!(keys[2].0, "Display 3");
+    }
 }

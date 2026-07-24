@@ -330,3 +330,99 @@ async fn wire_scripture_search_stage_golive_shows_verse_text() {
         "audience output shows the WEB verse text, got: {body}"
     );
 }
+
+/// Output configuration is Operator-only over the wire: the Operator identifies
+/// and assigns; a Producer's attempts are RBAC-denied; the injected output
+/// status travels the wire into the remote operator view.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn output_configuration_is_operator_only_and_status_travels_the_wire() {
+    use selahcue_lan::protocol::{DisplayView, OutputStatusView};
+
+    let identity = SelfSigned::generate(vec!["localhost".into()]).unwrap();
+    let pin = identity.pin;
+    let mut plan = ServicePlan::new("Sunday");
+    plan.add_item(ItemKind::Song, "Opening Song");
+    let controller = Arc::new(Mutex::new(LiveController::new(
+        plan,
+        320,
+        180,
+        Theme::dark(),
+    )));
+    controller.lock().unwrap().set_output_status(
+        vec![OutputStatusView {
+            role: "main".into(),
+            display: Some("Projector".into()),
+            width: 1920,
+            height: 1080,
+            assigned: true,
+            assigned_key: Some("Projector|1920x1080".into()),
+        }],
+        vec![DisplayView {
+            key: "Projector|1920x1080".into(),
+            name: "Projector".into(),
+            width: 1920,
+            height: 1080,
+        }],
+    );
+
+    let registry = Arc::new(AsyncMutex::new(SessionRegistry::new()));
+    {
+        let now = Instant::now();
+        let mut reg = registry.lock().await;
+        reg.offer_pairing("o", Role::Operator, now, Duration::from_secs(300));
+        reg.redeem("o", DeviceId("op".into()), SessionToken::new("tok-op"), now)
+            .unwrap();
+        reg.offer_pairing("p", Role::Producer, now, Duration::from_secs(300));
+        reg.redeem(
+            "p",
+            DeviceId("prod".into()),
+            SessionToken::new("tok-prod"),
+            now,
+        )
+        .unwrap();
+    }
+    let server =
+        Arc::new(ControlServer::new(&identity, registry, handler_for(controller.clone())).unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let running = server.clone();
+    tokio::spawn(async move {
+        let _ = running.run(listener).await;
+    });
+
+    // The Operator sees the outputs, identifies, and assigns.
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "op", "tok-op")
+        .await
+        .unwrap();
+    let view = op.view().await.unwrap();
+    assert_eq!(view.outputs.len(), 1);
+    assert_eq!(view.outputs[0].display.as_deref(), Some("Projector"));
+    assert_eq!(view.displays.len(), 1);
+    op.identify_outputs().await.unwrap();
+    controller.lock().unwrap().tick(Instant::now());
+    assert!(controller.lock().unwrap().identify_until().is_some());
+    op.assign_output("stage", "Projector|1920x1080")
+        .await
+        .unwrap();
+    assert_eq!(
+        controller.lock().unwrap().take_pending_assignments(),
+        vec![("stage".to_string(), "Projector|1920x1080".to_string())]
+    );
+
+    // A Producer's identify/assign are DENIED (no pending change appears).
+    let mut prod = RemoteOperator::connect(addr, "localhost", pin, "prod", "tok-prod")
+        .await
+        .unwrap();
+    prod.identify_outputs().await.unwrap();
+    prod.assign_output("main", "Projector|1920x1080")
+        .await
+        .unwrap();
+    assert!(
+        controller
+            .lock()
+            .unwrap()
+            .take_pending_assignments()
+            .is_empty(),
+        "Producer assignment denied"
+    );
+}

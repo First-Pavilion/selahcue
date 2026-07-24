@@ -39,6 +39,10 @@ pub enum Command {
     ScriptureSearch { query: String },
     /// Stage a scripture reference for the operator to review before going live.
     StageScripture { reference: String },
+    /// Show the identify overlay (a distinct number) on every physical output.
+    IdentifyOutputs,
+    /// Assign an output role to a physical display (persisted; applied live).
+    AssignOutput { role: String, display_key: String },
     /// Request the current live/preview state.
     GetState,
     /// Request the full operator view (plan + per-item live/preview flags + blackout),
@@ -161,6 +165,40 @@ pub struct OperatorStateView {
     /// NOT a scripture). Omitted when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_free_text: Option<String>,
+    /// The physical outputs (main/stage) and their display assignments — filled
+    /// by the desktop host; empty (and omitted on the wire) elsewhere.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<OutputStatusView>,
+    /// The attached physical displays (for the assignment picker) — desktop-only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub displays: Vec<DisplayView>,
+}
+
+/// One output role (main/stage) and where it currently renders.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputStatusView {
+    /// Stable role tag: `"main"` or `"stage"`.
+    pub role: String,
+    /// The display it renders on (its name), if known.
+    pub display: Option<String>,
+    /// Output surface size in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// Whether the role has a persisted display assignment.
+    pub assigned: bool,
+    /// The persisted display key for this role (drives the picker's selection).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned_key: Option<String>,
+}
+
+/// One attached physical display (for the assignment picker).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayView {
+    /// Stable key used by [`Command::AssignOutput`].
+    pub key: String,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Why a request was denied. A closed set so clients can react programmatically.

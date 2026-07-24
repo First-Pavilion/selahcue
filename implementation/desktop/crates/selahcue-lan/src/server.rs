@@ -65,7 +65,9 @@ pub enum Reply {
     /// `Denied{request_id, reason}`. (RBAC denials are handled before the handler.)
     Deny(DenyReason),
     /// Return this specific message (e.g. `State`, `ScriptureResults`).
-    Message(ServerMessage),
+    /// Boxed: `ServerMessage` carries the full operator view (plan + outputs),
+    /// far larger than the other variants.
+    Message(Box<ServerMessage>),
 }
 
 /// Application command handler: given the authenticated [`Role`] and an already
@@ -384,7 +386,7 @@ impl ControlServer {
                                 request_id: req.request_id,
                                 reason,
                             },
-                            Reply::Message(msg) => msg,
+                            Reply::Message(msg) => *msg,
                         }
                     } else {
                         ServerMessage::Denied {

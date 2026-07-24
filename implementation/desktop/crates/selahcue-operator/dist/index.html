@@ -162,6 +162,18 @@
       .timer-row { display: flex; gap: 8px; }
       .timer-row button { flex: 1; padding: 9px; font-size: 13px; }
       .timer-note { color: var(--muted); font-size: 11px; text-align: center; }
+      #outputs { display: flex; flex-direction: column; gap: 8px; }
+      .output-row { font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+      .output-row .head2 { display: flex; align-items: center; gap: 6px; }
+      .output-row .role { font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: .05em; }
+      .output-row .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+      .output-row .dot.on { background: var(--preview-ink); }
+      .output-row .where { color: var(--muted); font-size: 11px; }
+      .output-row select {
+        font: inherit; font-size: 11px; color: var(--text); background: var(--bg);
+        border: 1px solid var(--line); border-radius: 6px; padding: 5px;
+      }
+      #identify { padding: 9px; font-size: 13px; }
       /* Always-on emergency chrome (UX-CANONICAL §3): never occluded, never
          removed, operable in every state — including while a row is being edited. */
       #emergency {
@@ -241,6 +253,9 @@
           <button id="timer-stop">Stop</button>
         </div>
         <span class="timer-note">Shown on the stage output only</span>
+        <h2 id="outputs-h">Outputs</h2>
+        <div id="outputs" aria-labelledby="outputs-h"></div>
+        <button id="identify" aria-label="Show the identify number on every display">Identify displays</button>
       </aside>
     </main>
     <footer id="emergency" role="toolbar" aria-label="Emergency controls">
@@ -411,6 +426,8 @@
           big.style.color = t.warn ? "var(--warn-ink)" : "var(--preview-ink)";
         }
 
+        renderOutputs(view);
+
         // Non-colour blackout state: label + aria-pressed + the live-panel
         // overlay, not just the red fill.
         const b = document.getElementById("blackout");
@@ -420,6 +437,86 @@
         document.getElementById("blackout-state").textContent = view.blackout ? "ON" : "";
         document.getElementById("live-panel").classList.toggle("blackout", view.blackout);
       }
+
+      // OUTPUTS panel (FR-040/151): role -> display, assignment picker, health dot.
+      let outputsKey = "";
+      let outputsPending = null; // deferred view while a picker has focus
+      function renderOutputs(view) {
+        const outs = view.outputs || [];
+        const displays = view.displays || [];
+        const key = JSON.stringify([outs, displays]);
+        if (key === outputsKey) return; // pickers are interactive: rebuild only on change
+        const box = document.getElementById("outputs");
+        // Never yank a picker out from under the operator: an open/focused
+        // select survives; the fresh data renders when focus leaves the panel.
+        if (box.contains(document.activeElement)) {
+          outputsPending = view;
+          return;
+        }
+        outputsPending = null;
+        outputsKey = key;
+        box.innerHTML = "";
+        document.getElementById("identify").disabled = outs.length === 0;
+        outs.forEach((o) => {
+          const row = document.createElement("div");
+          row.className = "output-row";
+          const head = document.createElement("div");
+          head.className = "head2";
+          const dot = document.createElement("span");
+          dot.className = "dot" + (o.display ? " on" : "");
+          const role = document.createElement("span");
+          role.className = "role";
+          role.textContent = o.role === "main" ? "Main output" : "Stage display";
+          head.appendChild(dot);
+          head.appendChild(role);
+          const where = document.createElement("span");
+          where.className = "where";
+          where.textContent =
+            (o.display || "unplaced") + " · " + o.width + "×" + o.height +
+            (o.assigned ? "" : " · not assigned");
+          row.appendChild(head);
+          row.appendChild(where);
+          if (displays.length) {
+            const sel = document.createElement("select");
+            sel.setAttribute("aria-label", "Assign the " + o.role + " output to a display");
+            const none = document.createElement("option");
+            none.value = "";
+            none.textContent = "Assign to display…";
+            sel.appendChild(none);
+            displays.forEach((d) => {
+              const opt = document.createElement("option");
+              opt.value = d.key;
+              opt.textContent = d.name + " (" + d.width + "×" + d.height + ")";
+              // The persisted assignment is visible in the picker itself.
+              if (o.assigned_key && o.assigned_key === d.key) opt.selected = true;
+              sel.appendChild(opt);
+            });
+            sel.onchange = () => {
+              const chosen = sel.value;
+              if (chosen) {
+                // Snap back to the truth: the picker re-reflects the host's
+                // persisted state on the next status update; a denied/stale key
+                // simply leaves it unchanged (and re-selectable).
+                sel.value = o.assigned_key || "";
+                act(() => invoke("assign_output", { role: o.role, displayKey: chosen }));
+              }
+            };
+            row.appendChild(sel);
+          }
+          box.appendChild(row);
+        });
+      }
+
+      document.getElementById("outputs").addEventListener("focusout", () => {
+        setTimeout(() => {
+          const box = document.getElementById("outputs");
+          if (outputsPending && !box.contains(document.activeElement)) {
+            const v = outputsPending;
+            outputsPending = null;
+            renderOutputs(v);
+          }
+        }, 0);
+      });
 
       function miniBtn(label, onclick) {
         const b = document.createElement("button");
@@ -467,6 +564,7 @@
       document.getElementById("timer-10").onclick = () =>
         act(() => invoke("start_timer", { seconds: 600 }));
       document.getElementById("timer-stop").onclick = () => act(() => invoke("stop_timer"));
+      document.getElementById("identify").onclick = () => act(() => invoke("identify_outputs"));
       // Scripture: search (reference or keywords) -> click a hit (or Stage) to
       // put its verse text in Preview. Results are display references.
       let scriptureTimer = null;

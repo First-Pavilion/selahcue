@@ -58,6 +58,13 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE session_state ADD COLUMN live_free_text TEXT;
     "#,
+    // v4 -> v5: per-venue output → physical-display assignment (FR-040/FR-151).
+    r#"
+    CREATE TABLE output_config (
+        role        TEXT PRIMARY KEY CHECK (role IN ('main', 'stage')),
+        display_key TEXT NOT NULL
+    );
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).
