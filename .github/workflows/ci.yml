@@ -13,10 +13,21 @@
 #   - Windows runners: DX12/WARP where available
 name: ci
 
+# Docs-only changes skip the matrix (saves runner minutes; docs carry no code
+# to verify). NOTE: if branch protection ever requires these checks, switch to
+# a paths-filter job instead of paths-ignore so PRs are never stuck "pending".
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "TODO"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "TODO"
 
 concurrency:
   group: ci-${{ github.ref }}
