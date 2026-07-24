@@ -57,8 +57,11 @@ descope decision on the task or a follow-up story:
 | `86ajp09nk` CI | SBOM + license (GPL/AGPL) scanning and a GPU device-loss assertion — absent from the pipeline; not descoped anywhere |
 
 ## The honest gap list (to close the milestone)
-1. ~~Autosave + crash recovery~~ — **closed by batch 7u** (live-verified; the story keeps
-   the crash-loop breaker + storage guard as open scope).
+1. ~~Autosave + crash recovery~~ — **closed by batch 7u** (live-verified); the
+   **crash-loop breaker + storage guard landed in batch 7ad** (3-rapid-crash
+   start-clean with the session preserved untouched; low-disk warn + critical
+   write-halt, never silent). Remaining deltas for owner disposition: the GUI
+   Resume-vs-Start-clean dialog and per-item disable attribution.
 2. **Plan authoring/persistence wiring** + the **library scope** of `86ajp0a4z`.
 3. **Verse-text scripture**: bundle ≥1 PD translation, render verse content, add a wire
    E2E, and give at least one shipped client a scripture command.

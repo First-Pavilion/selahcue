@@ -311,13 +311,19 @@ async fn wire_scripture_search_stage_golive_shows_verse_text() {
         .await
         .unwrap();
     assert!(
-        hits.contains(&"Romans 8:28".to_string()),
+        hits.iter().any(|h| h.reference == "Romans 8:28"),
         "keyword search over the wire: {hits:?}"
+    );
+    // The hit carries its verse text (the operator sees WHY it matched).
+    assert!(
+        hits[0].text.contains("work together for good"),
+        "hit snippet present: {}",
+        hits[0].text
     );
 
     // Stage the hit: Preview holds the scripture (not a plan index) and the
     // operator view says so.
-    let view = op.stage_scripture(&hits[0], None).await.unwrap();
+    let view = op.stage_scripture(&hits[0].reference, None).await.unwrap();
     assert_eq!(view.staged_index, None);
     assert_eq!(view.staged_scripture.as_deref(), Some("Romans 8:28"));
 

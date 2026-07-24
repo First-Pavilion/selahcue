@@ -93,10 +93,27 @@
       #scripture-row { border-top: none; padding-bottom: 0; }
       #scripture-hits { padding: 0 8px; }
       #scripture-hits .hit {
+        display: flex; align-items: baseline; gap: 6px;
         padding: 5px 8px; font-size: 12px; color: var(--muted); cursor: pointer;
         border: 1px solid transparent; border-radius: 6px;
       }
-      #scripture-hits .hit:hover { color: var(--text); border-color: var(--line); background: #1d2430; }
+      #scripture-hits .hit:hover, #scripture-hits .hit.sel {
+        color: var(--text); border-color: var(--line); background: #1d2430;
+      }
+      #scripture-hits .hit .ref { color: var(--warn-ink); font-weight: 700; flex: none; }
+      #scripture-hits .hit .chip {
+        flex: none; font-size: 9px; color: var(--muted); border: 1px solid var(--line);
+        border-radius: 4px; padding: 1px 4px;
+      }
+      #scripture-hits .hit .snippet {
+        flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      /* Match highlight: bold + filled (never colour alone), AA vs --warn. */
+      #scripture-hits .hl {
+        background: var(--warn); color: #fff; font-weight: 700;
+        border-radius: 2px; padding: 0 1px;
+      }
       /* --- Center: PREVIEW · STAGED and LIVE · ON AIR panels (Figma) --- */
       /* Center: the scriptures chapter browser (owner request, Pewbeam-style). */
       #scriptures {
@@ -686,22 +703,85 @@
         }
       };
 
+      let hitCursor = -1; // keyboard selection inside the hits list
+      let hitsTranslation = "KJV"; // the translation the CURRENT hits came from
+      // Escape-safe highlight: text nodes + styled spans, never innerHTML.
+      const snippetWithHighlight = (text, query) => {
+        const out = document.createElement("span");
+        out.className = "snippet";
+        const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+        if (!words.length || !text) {
+          out.textContent = text;
+          return out;
+        }
+        let lower = text.toLowerCase();
+        // Earliest match; at the same index the LONGEST word wins so tails
+        // like "loves" are fully marked for the query "love loves".
+        const firstMatch = (from) => {
+          let best = -1;
+          let bestWord = null;
+          for (const w of words) {
+            const i = lower.indexOf(w, from);
+            if (i < 0) continue;
+            if (best < 0 || i < best || (i === best && w.length > bestWord.length)) {
+              best = i;
+              bestWord = w;
+            }
+          }
+          return best < 0 ? null : { at: best, word: bestWord };
+        };
+        // The row is a single ellipsized line: window the text so the FIRST
+        // match is visible even deep inside a long verse.
+        const lead = firstMatch(0);
+        if (lead && lead.at > 40) {
+          const cut = text.lastIndexOf(" ", lead.at - 20);
+          const start = cut > 0 ? cut + 1 : lead.at - 20;
+          text = "… " + text.slice(start);
+          lower = text.toLowerCase();
+        }
+        let pos = 0;
+        while (pos < text.length) {
+          const m = firstMatch(pos);
+          if (!m) {
+            out.appendChild(document.createTextNode(text.slice(pos)));
+            break;
+          }
+          if (m.at > pos) out.appendChild(document.createTextNode(text.slice(pos, m.at)));
+          const mark = document.createElement("span");
+          mark.className = "hl";
+          mark.textContent = text.slice(m.at, m.at + m.word.length);
+          out.appendChild(mark);
+          pos = m.at + m.word.length;
+        }
+        return out;
+      };
+      const openHit = (hit) => {
+        document.getElementById("scripture-q").value = hit.reference;
+        clearTimeout(scriptureTimer);
+        scriptureGen++;
+        scriptureHits = [];
+        hitCursor = -1;
+        renderHits();
+        loadChapter(hit.reference, null);
+      };
       const renderHits = () => {
         const box = document.getElementById("scripture-hits");
+        const q = document.getElementById("scripture-q").value;
         box.innerHTML = "";
-        scriptureHits.slice(0, 6).forEach((ref) => {
+        scriptureHits.slice(0, 6).forEach((hit, i) => {
           const el = document.createElement("div");
-          el.className = "hit";
+          el.className = "hit" + (i === hitCursor ? " sel" : "");
           el.setAttribute("role", "option");
-          el.textContent = ref;
-          el.onclick = () => {
-            document.getElementById("scripture-q").value = ref;
-            clearTimeout(scriptureTimer);
-            scriptureGen++;
-            scriptureHits = [];
-            renderHits();
-            loadChapter(ref, null);
-          };
+          const ref = document.createElement("span");
+          ref.className = "ref";
+          ref.textContent = hit.reference;
+          const chip = document.createElement("span");
+          chip.className = "chip";
+          chip.textContent = hitsTranslation;
+          el.appendChild(ref);
+          el.appendChild(chip);
+          el.appendChild(snippetWithHighlight(hit.text, q));
+          el.onclick = () => openHit(hit);
           box.appendChild(el);
         });
       };
@@ -827,17 +907,20 @@
         clearTimeout(scriptureTimer);
         const gen = ++scriptureGen;
         scriptureHits = [];
+        hitCursor = -1;
         renderHits();
         const q = e.target.value.trim();
         if (!q) return;
         scriptureTimer = setTimeout(async () => {
           try {
+            const searched = currentTranslation;
             const hits = await invoke("scripture_search", {
               query: q,
-              translation: currentTranslation,
+              translation: searched,
             });
             if (gen !== scriptureGen) return; // superseded while in flight
             scriptureHits = hits;
+            hitsTranslation = searched;
             renderHits();
           } catch (err) {
             console.error(err);
@@ -845,6 +928,20 @@
         }, 250);
       };
       document.getElementById("scripture-q").onkeydown = async (e) => {
+        if ((e.key === "ArrowDown" || e.key === "ArrowUp") && scriptureHits.length) {
+          e.preventDefault();
+          const n = Math.min(scriptureHits.length, 6);
+          if (hitCursor < 0) {
+            hitCursor = e.key === "ArrowDown" ? 0 : n - 1;
+          } else {
+            hitCursor =
+              e.key === "ArrowDown"
+                ? (hitCursor + 1) % n
+                : (hitCursor - 1 + n) % n;
+          }
+          renderHits();
+          return;
+        }
         if (e.key !== "Enter") return;
         e.preventDefault();
         const q = document.getElementById("scripture-q").value.trim();
@@ -852,10 +949,11 @@
         clearTimeout(scriptureTimer);
         const gen = ++scriptureGen;
         if (scriptureHits.length) {
-          const ref = scriptureHits[0];
+          const hit = scriptureHits[Math.max(0, hitCursor)];
           scriptureHits = [];
+          hitCursor = -1;
           renderHits();
-          if (await loadChapter(ref, null)) e.target.blur();
+          if (await loadChapter(hit.reference, null)) e.target.blur();
           return;
         }
         // No hits yet (the debounce may not have fired): try it as a chapter;
@@ -868,12 +966,14 @@
           return;
         }
         try {
+          const searched = currentTranslation;
           const hits = await invoke("scripture_search", {
             query: q,
-            translation: currentTranslation,
+            translation: searched,
           });
           if (gen !== scriptureGen) return;
           scriptureHits = hits;
+          hitsTranslation = searched;
           renderHits();
           setStatus(hits.length ? "" : "No matches for “" + q + "”");
         } catch (err) {

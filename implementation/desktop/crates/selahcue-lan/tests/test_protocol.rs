@@ -81,6 +81,7 @@ fn server_messages_round_trip() {
         ServerMessage::ScriptureResults {
             query: "peace".into(),
             references: vec!["John 14:27".into(), "Phil 4:7".into()],
+            hits: vec![],
         },
         ServerMessage::Error {
             message: "boom".into(),

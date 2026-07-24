@@ -190,16 +190,20 @@ impl OperatorShell {
     }
 
     /// Search scripture: reference parse first, then keyword search over the
-    /// bundled translation. Returns display references (stageable directly).
-    pub fn scripture_search(&self, query: &str, translation: Option<&str>) -> Vec<String> {
+    /// bundled translation. Each hit carries its verse text (stage by reference).
+    pub fn scripture_search(
+        &self,
+        query: &str,
+        translation: Option<&str>,
+    ) -> Vec<selahcue_lan::protocol::ScriptureHitView> {
         self.with(|c| {
             match c.apply(&Command::ScriptureSearch {
                 query: query.into(),
                 translation: translation.map(Into::into),
             }) {
                 crate::ControllerReply::Message(
-                    selahcue_lan::protocol::ServerMessage::ScriptureResults { references, .. },
-                ) => references,
+                    selahcue_lan::protocol::ServerMessage::ScriptureResults { hits, .. },
+                ) => hits,
                 _ => Vec::new(),
             }
         })
@@ -438,7 +442,7 @@ impl RemoteOperator {
         &mut self,
         query: &str,
         translation: Option<&str>,
-    ) -> Result<Vec<String>, selahcue_lan::TransportError> {
+    ) -> Result<Vec<selahcue_lan::protocol::ScriptureHitView>, selahcue_lan::TransportError> {
         use selahcue_lan::protocol::ServerMessage;
         match self
             .client
@@ -448,7 +452,23 @@ impl RemoteOperator {
             })
             .await?
         {
-            ServerMessage::ScriptureResults { references, .. } => Ok(references),
+            ServerMessage::ScriptureResults {
+                hits, references, ..
+            } => {
+                // A pre-7ad host sends only bare references: synthesize
+                // text-less hits so results still render (snippets empty).
+                if hits.is_empty() && !references.is_empty() {
+                    Ok(references
+                        .into_iter()
+                        .map(|reference| selahcue_lan::protocol::ScriptureHitView {
+                            reference,
+                            text: String::new(),
+                        })
+                        .collect())
+                } else {
+                    Ok(hits)
+                }
+            }
             other => Err(selahcue_lan::TransportError::Protocol(format!(
                 "expected scripture_results, got: {other:?}"
             ))),

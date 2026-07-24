@@ -173,7 +173,7 @@ impl Backend {
         &self,
         query: String,
         translation: Option<String>,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<selahcue_lan::protocol::ScriptureHitView>, String> {
         match self {
             Backend::Remote(m) => m
                 .lock()
@@ -337,7 +337,7 @@ async fn scripture_search(
     query: String,
     translation: Option<String>,
     state: State<'_, AppState>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<selahcue_lan::protocol::ScriptureHitView>, String> {
     state.backend.scripture_search(query, translation).await
 }
 #[tauri::command]

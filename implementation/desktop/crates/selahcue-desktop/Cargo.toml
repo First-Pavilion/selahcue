@@ -11,6 +11,7 @@ name = "selahcue-output"
 path = "src/main.rs"
 
 [dependencies]
+fs4 = "0.13"
 selahcue-core = { path = "../selahcue-core" }
 selahcue-data = { path = "../selahcue-data" }
 selahcue-engine = { path = "../selahcue-engine" }

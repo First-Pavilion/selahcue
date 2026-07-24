@@ -651,6 +651,20 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7ac-001..S7ac-005. Change: `Timer::adjust` (clamped to the persistable domain; legacy add/subtract delegate), wire `AdjustTimer` + Timer-permission mapping, controller arm with snapshot persistence, console minutes-entry + ±1:00 (disabled without a timer), mobile equivalents, demo-shell ticking. Review (8 agents): 6 confirmed → **4 unique (A–D) → all fixed** — headline: a wire-legal delta could make the recovery snapshot wrap modulo 2³², restoring a different timer than the pre-crash session. Verifier: workspace **256** + Flutter **20**, clippy clean. Owner request ticketed: search-snippet highlighting (86ajpv0ub). Result: PASS. Decision: gate-review.
 
+## Batch 7ad predicate — search-hit highlighting + crash-loop breaker + storage guard (86ajpv0ub · 86ajp09td)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7ad-001 | yes | Search hits carry verse text; the console shows reference + translation chip + snippet with ALL query words highlighted (windowed to the first match; escape-safe; AA + bold) | E2E snippet assert + review fixes F/H | wire hits field (skip-if-empty, fixtures byte-identical); compat fallback for pre-7ad hosts | protocol.rs; index.html | PASS |
+| S7ad-002 | yes | ↑/↓ select hits in the input, Enter opens the selection | review fix G | first-press cases correct | index.html | PASS |
+| S7ad-003 | yes | Crash-loop breaker (FR-169): 3 unstable launches/60s → start clean with checkpointing DISABLED — the preserved session is never touched; stability (10s/clean exit) forgives | guard unit tests + review fix A | pure assess() tests; clean-mode skips every persist path | guard.rs; main.rs | PASS |
+| S7ad-004 | yes | Storage guard (NFR-023): low-disk warn, critical halt enforced from STARTUP, exit save honours halts, unknown-space-while-halted keeps reporting — never silent | threshold tests + review fixes B/C/D | disk_status_from tests; startup seeding | guard.rs; main.rs | PASS |
+| S7ad-005 | yes | Independent adversarial review; confirmed findings fixed | run `wf_a3c5448f-f47` (12 agents) | 10 confirmed → 8 unique (A–H) → **all fixed** | CODE-REVIEW-batch7ad.md | PASS |
+
+### Iteration ledger — batch 7ad
+
+- Target: S7ad-001..S7ad-005. Change: ScriptureResults.hits (verse text on the wire, compat kept), highlighted windowed snippets + keyboard hit selection in the console; new guard.rs (pure breaker assess + disk thresholds + bounded launch journal) wired through App::new/autosave/exit. Review (12 agents): 10 confirmed → **8 unique (A–H) → all fixed** — headline: the breaker's start-clean would have CLOBBERED the preserved session via the singleton UPSERT (now a checkpointing-disabled clean mode); a critical startup disk wasn't actually halted for 60s; deep-verse highlights invisible past the ellipsis. Verifier: workspace **259** + Flutter **20**, clippy clean. Honest deltas on 86ajp09td for owner disposition: GUI Resume-choice dialog; per-item disable. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

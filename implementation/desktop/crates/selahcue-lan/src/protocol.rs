@@ -115,10 +115,14 @@ pub enum ServerMessage {
         live_item: Option<u64>,
         blackout: bool,
     },
-    /// Results of a `ScriptureSearch`.
+    /// Results of a `ScriptureSearch`. `references` remains for compatibility;
+    /// `hits` adds the verse text so the operator can see WHY a result matched
+    /// (omitted when empty — the pinned fixtures are unchanged).
     ScriptureResults {
         query: String,
         references: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hits: Vec<ScriptureHitView>,
     },
     /// The full operator view (reply to [`Command::GetOperatorState`]).
     OperatorState { view: OperatorStateView },
@@ -203,6 +207,16 @@ pub struct OutputStatusView {
     /// The persisted display key for this role (drives the picker's selection).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assigned_key: Option<String>,
+}
+
+/// One scripture search hit: the stageable reference plus its verse text
+/// (so operators never pick a verse blind).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptureHitView {
+    /// e.g. `"Romans 8:28"` — parseable, stages directly.
+    pub reference: String,
+    /// The verse text in the searched translation.
+    pub text: String,
 }
 
 /// One attached physical display (for the assignment picker).

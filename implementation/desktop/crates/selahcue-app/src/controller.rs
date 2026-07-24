@@ -648,20 +648,31 @@ impl LiveController {
                         None => return ControllerReply::Deny(DenyReason::BadRequest),
                     },
                 };
-                let mut references: Vec<String> = scripture::parse(query)
-                    .iter()
-                    .filter(|r| !selahcue_scripture::verses_in(t, r).is_empty())
-                    .map(|r| r.to_string())
-                    .collect();
-                if references.is_empty() {
-                    references = selahcue_scripture::search_in(t, query, 8)
+                let mut hits: Vec<selahcue_lan::protocol::ScriptureHitView> =
+                    scripture::parse(query)
+                        .iter()
+                        .filter_map(|r| {
+                            selahcue_scripture::passage_text_in(t, r).map(|text| {
+                                selahcue_lan::protocol::ScriptureHitView {
+                                    reference: r.to_string(),
+                                    text,
+                                }
+                            })
+                        })
+                        .collect();
+                if hits.is_empty() {
+                    hits = selahcue_scripture::search_in(t, query, 8)
                         .into_iter()
-                        .map(|hit| hit.reference)
+                        .map(|hit| selahcue_lan::protocol::ScriptureHitView {
+                            reference: hit.reference,
+                            text: hit.text,
+                        })
                         .collect();
                 }
                 ControllerReply::Message(ServerMessage::ScriptureResults {
                     query: query.clone(),
-                    references,
+                    references: hits.iter().map(|h| h.reference.clone()).collect(),
+                    hits,
                 })
             }
             Command::StageScripture {

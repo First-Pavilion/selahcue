@@ -15,6 +15,8 @@
 
 #![forbid(unsafe_code)]
 
+mod guard;
+
 use selahcue_app::{
     handler_for, CanonicalAction, ControllerSnapshot, KeyPress, Keymap, LiveController,
 };
@@ -138,6 +140,23 @@ fn display_keys(facts: &[MonitorFacts]) -> Vec<(String, String)> {
             }
         })
         .collect()
+}
+
+/// Report a non-Ok disk status loudly (the storage guard is never silent).
+fn report_disk(status: guard::DiskStatus) {
+    match status {
+        guard::DiskStatus::Ok => {}
+        guard::DiskStatus::Low { available } => eprintln!(
+            "SelahCue: LOW DISK at the data dir ({} MB free) — checkpoints continue, \
+             but free space soon.",
+            available / (1024 * 1024)
+        ),
+        guard::DiskStatus::Critical { available } => eprintln!(
+            "SelahCue: DISK CRITICALLY FULL ({} MB free) — checkpoint writes are \
+             PAUSED to protect the store; the live session continues in memory.",
+            available / (1024 * 1024)
+        ),
+    }
 }
 
 /// The demo service plan used on a first run (no persisted session yet).
@@ -588,6 +607,19 @@ struct App {
     displays: Vec<DisplayView>,
     /// Persisted role→display assignments (cache of the output_config table).
     assignments: Vec<(String, String)>,
+    /// Launch-stability journal (crash-loop breaker, FR-169).
+    launch_guard: Option<guard::LaunchGuard>,
+    /// When this launch started (drives the stability mark).
+    launched_at: Instant,
+    /// Whether stability has been marked for this launch.
+    stable_marked: bool,
+    /// Last periodic disk-headroom check.
+    last_disk_check: Instant,
+    /// Whether checkpoint writes are currently halted (disk below the floor).
+    disk_critical: bool,
+    /// Breaker-tripped clean run: checkpointing fully disabled so the
+    /// preserved on-disk session is never touched (review 7ad-A).
+    clean_mode: bool,
     /// Cached identify frames (main = 1, stage = 2) while the overlay is active.
     identify_frames: Option<(FrameBuffer, FrameBuffer)>,
     /// The session store (SQLite) for autosave + crash recovery.
@@ -609,13 +641,47 @@ impl App {
         // in-memory session (the show must go on) with a clear message.
         let mut store = SessionStore::open();
 
-        let (plan, restored) = match store.load_session() {
-            Some((plan, snap)) => (plan, Some(snap)),
-            None => (demo_plan(), None),
+        // Crash-loop breaker (FR-169): three rapid unstable launches mean
+        // RECOVERY ITSELF is the failure — start clean, keep the session rows.
+        let launch_guard = data_dir().map(|d| guard::LaunchGuard::new(&d));
+        let crash_loop = match launch_guard.as_ref().map(guard::LaunchGuard::record_launch) {
+            Some(guard::LaunchVerdict::CrashLoop { rapid_launches }) => {
+                eprintln!(
+                    "SelahCue: CRASH LOOP DETECTED ({rapid_launches} rapid restarts) — \
+                     starting CLEAN with checkpointing DISABLED for this run, so the \
+                     previous session stays untouched on disk. Once this run is stable, \
+                     simply relaunch to resume the preserved session."
+                );
+                true
+            }
+            _ => false,
         };
-        // Make sure the plan rows exist before the first snapshot references them.
-        store.ensure_plan(&plan);
-        let first_run = restored.is_none();
+
+        // Storage guard: checkpoint headroom is checked up front (and again
+        // periodically in the autosave loop) — degradation is never silent, and
+        // a critical startup status halts writes IMMEDIATELY (review 7ad-B).
+        let startup_disk = data_dir().as_deref().and_then(guard::disk_status);
+        if let Some(status) = startup_disk {
+            report_disk(status);
+        }
+        let disk_critical = matches!(startup_disk, Some(guard::DiskStatus::Critical { .. }));
+
+        let (plan, restored) = if crash_loop {
+            (demo_plan(), None)
+        } else {
+            match store.load_session() {
+                Some((plan, snap)) => (plan, Some(snap)),
+                None => (demo_plan(), None),
+            }
+        };
+        // Make sure the plan rows exist before the first snapshot references them —
+        // except in clean mode (the preserved session must stay untouched, and no
+        // orphan demo rows may accumulate across breaker trips) or on a critical
+        // disk (no writes at all below the floor).
+        if !crash_loop && !disk_critical {
+            store.ensure_plan(&plan);
+        }
+        let first_run = restored.is_none() && !crash_loop;
 
         let controller = Arc::new(Mutex::new(LiveController::new(
             plan,
@@ -641,7 +707,8 @@ impl App {
 
         // First run: write the initial session row NOW so the seeded plan is
         // referenced immediately (a run that dies early must not orphan plan rows).
-        if first_run {
+        // Skipped in clean mode / on a critical disk — no writes in either state.
+        if first_run && !disk_critical {
             if let Ok(c) = controller.lock() {
                 store.save_session(&c.snapshot(Instant::now()));
             }
@@ -665,6 +732,12 @@ impl App {
             keymap: Keymap::new(),
             displays: Vec::new(),
             assignments: Vec::new(),
+            launch_guard,
+            launched_at: Instant::now(),
+            stable_marked: false,
+            last_disk_check: Instant::now(),
+            disk_critical,
+            clean_mode: crash_loop,
             identify_frames: None,
             store,
             last_autosave: Instant::now(),
@@ -774,6 +847,43 @@ impl App {
     /// Autosave: persist the session when state changed (throttled to ~1/s) and
     /// periodically while a countdown runs (so its elapsed stays fresh on disk).
     fn autosave(&mut self, now: Instant) {
+        // Crash-loop breaker: surviving to STABLE_AFTER forgives this launch.
+        if !self.stable_marked && now.duration_since(self.launched_at) >= guard::STABLE_AFTER {
+            self.stable_marked = true;
+            if let Some(g) = self.launch_guard.as_ref() {
+                g.mark_stable();
+            }
+        }
+        // Storage guard: re-check headroom once a minute; halting/resuming
+        // checkpoint writes is always reported.
+        if now.duration_since(self.last_disk_check) >= Duration::from_secs(60) {
+            self.last_disk_check = now;
+            match data_dir().as_deref().and_then(guard::disk_status) {
+                Some(status) => {
+                    let critical = matches!(status, guard::DiskStatus::Critical { .. });
+                    if critical != self.disk_critical || !matches!(status, guard::DiskStatus::Ok) {
+                        report_disk(status);
+                    }
+                    if self.disk_critical && !critical {
+                        eprintln!("SelahCue: disk headroom recovered — checkpoints resumed.");
+                    }
+                    self.disk_critical = critical;
+                }
+                None if self.disk_critical => {
+                    // Free space unknowable while halted: stay safe, keep saying so.
+                    eprintln!(
+                        "SelahCue: cannot determine free disk space — checkpoint \
+                         writes remain paused."
+                    );
+                }
+                None => {}
+            }
+        }
+        if self.disk_critical || self.clean_mode {
+            // Critical disk: never risk corrupting a full store. Clean mode:
+            // the preserved session must stay untouched. State stays in memory.
+            return;
+        }
         let Ok(mut c) = self.controller.lock() else {
             return;
         };
@@ -1397,13 +1507,21 @@ fn main() {
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App::new();
     event_loop.run_app(&mut app).expect("run app");
+    // A clean exit is by definition a stable launch.
+    if let Some(g) = app.launch_guard.as_ref() {
+        g.mark_stable();
+    }
     // Final save on clean exit (the autosave loop already covered crash paths) —
     // including a plan edit acked in the last instants before the loop exited.
-    if let Ok(mut c) = app.controller.lock() {
-        if c.take_plan_dirty() {
-            app.store.save_plan(c.plan());
+    // Honours the same halts as autosave: no writes on a critical disk, and a
+    // clean-mode run never touches the preserved session.
+    if !app.disk_critical && !app.clean_mode {
+        if let Ok(mut c) = app.controller.lock() {
+            if c.take_plan_dirty() {
+                app.store.save_plan(c.plan());
+            }
+            app.store.save_session(&c.snapshot(Instant::now()));
         }
-        app.store.save_session(&c.snapshot(Instant::now()));
     }
     // Best-effort: don't leave a stale endpoint (with a now-dead token/port) behind on a
     // clean exit, so a later operator shell doesn't try to attach to a defunct window.
