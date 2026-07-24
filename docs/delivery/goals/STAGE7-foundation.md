@@ -423,6 +423,23 @@ on-screen rendering are compile-verified/prior-verified. Runnable on a Mac via `
 
 - Target: S7n-001..S7n-008. Change: extended the LAN protocol (`GetOperatorState`/`OperatorState`/`OperatorStateView`, RBAC Monitor); added `RemoteOperator` (control client) + apply arm + 2 E2E tests; the output window writes a local endpoint (0600, cleaned on exit); the Tauri shell connects to it (Remote) or falls back (Local); added a repo-root Makefile. Multi-lens adversarial review (protocol-rbac · conversion · remote-client · integration-security) → 4 raised → **1 confirmed** (client had no connect timeout → possible window-less hang under `block_on`) → **fixed** (`ControlClient` connect timeout mirroring the server + endpoint cleanup on exit). Verifier: workspace 173; app server 8+2+2 E2E; lan 40; operator check + clippy clean. Result: PASS. Decision: gate-review.
 
+## Batch 7o predicate — timers on the output
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7o-001 | yes | `StartTimer`/`StopTimer` drive a real countdown (were no-ops); injected-clock `tick(now)` starts it | `cargo test -p selahcue-app` | timer lifecycle test | controller.rs; test_controller.rs | PASS |
+| S7o-002 | yes | The running timer overlays the live output (bar + `M:SS`/`TIME UP`, state colours) | `cargo test -p selahcue-present` | overlay + TIME-UP tests | compose.rs; test_present.rs | PASS |
+| S7o-003 | yes | **An operator blackout is preserved across the per-second timer recompose** | `cargo test` | blackout-preservation test | present.rs; test_present.rs; test_controller.rs | PASS |
+| S7o-004 | yes | Countdown display ceils (start value holds a full second; 0:00/TIME UP at expiry) | `cargo test` | ceil regression | stage.rs; test_controller.rs | PASS |
+| S7o-005 | yes | Timer in the operator view (`TimerSnapshot`); no stale snapshot on restart | `cargo test --features server` | restart regression + remote E2E | protocol.rs; operator.rs; test_operator_remote.rs | PASS |
+| S7o-006 | yes | Triggerable via the CLI (`timer`/`stop-timer`) and the operator UI (Start/Stop + poll); desktop ticks each frame | build + review | CLI + Tauri commands | remote.rs; operator/main.rs; desktop/main.rs | PASS (compile) |
+| S7o-007 | yes | Seizure-safe (no flash hazard) + bounded timer state (no-leak) | review + tests | safety lens clean; O(1) state | review | PASS |
+| S7o-008 | yes | Full suite + clippy clean; independent adversarial review; confirmed findings fixed | workflow `wgymksqae` | 3 raised → 2 confirmed → fixed | CODE-REVIEW-batch7o-timers.md | PASS |
+
+### Iteration ledger — batch 7o
+
+- Target: S7o-001..S7o-008. Change: wired `StartTimer`/`StopTimer` to a `LiveController` timer + injected-clock `tick`; the presenter overlays it on Live with a blackout-preserving recompose (`show_timer`/`recompose_live`, `timer_display_key`); `compose_live`/`timer_bar_layers`; `TimerSnapshot` in the operator view; CLI + Tauri Start/Stop + poll; desktop ticks each frame; Makefile `remote CMD=timer SECS=`. Multi-lens adversarial review (timer-correctness · **blackout-invariant** · integration-staleness · safety-memory) → 3 raised → **2 confirmed** (floor→ceil display; stale snapshot on restart) → **fixed** + regression tests; 1 dismissed (overrun re-rasterize) → improved anyway; blackout lens clean. Verifier: workspace 181; present overlay + blackout; app timer lifecycle/ceil/restart + remote E2E; operator check + clippy clean. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

@@ -19,9 +19,12 @@ use std::net::SocketAddr;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 6 {
-        eprintln!("usage: remote <addr> <pin-hex> <device> <token> <command>");
-        eprintln!("commands: next  previous  go-live  blackout-on  blackout-off  clear  state");
+    if args.len() < 6 || args.len() > 7 {
+        eprintln!("usage: remote <addr> <pin-hex> <device> <token> <command> [arg]");
+        eprintln!(
+            "commands: next  previous  go-live  blackout-on  blackout-off  clear  state  \
+             timer <seconds>  stop-timer"
+        );
         std::process::exit(2);
     }
 
@@ -40,6 +43,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "blackout-off" => Command::Blackout { on: false },
         "clear" => Command::Clear,
         "state" => Command::GetState,
+        "timer" => {
+            let seconds: u32 = args
+                .get(6)
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| "`timer` needs <seconds>, e.g. `timer 300`".to_string())?;
+            Command::StartTimer { seconds }
+        }
+        "stop-timer" => Command::StopTimer,
         other => return Err(format!("unknown command: {other}").into()),
     };
 

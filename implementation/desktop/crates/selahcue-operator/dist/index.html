@@ -52,6 +52,8 @@
       button:hover { border-color: var(--accent); }
       button.golive { background: #10331b; border-color: #1f7a3a; color: #7ee39b; }
       button.blackout.on { background: #3a0d0f; border-color: var(--live); color: #ff9ea1; }
+      .timer-row { display: flex; gap: 8px; }
+      .timer-row button { flex: 1; padding: 10px; }
       .status { margin-top: auto; color: var(--muted); font-size: 12px; }
       .status b { color: var(--text); }
     </style>
@@ -69,10 +71,15 @@
         <button id="golive" class="golive">GO LIVE</button>
         <button id="blackout" class="blackout">Blackout</button>
         <button id="clear">Clear</button>
+        <div class="timer-row">
+          <button id="timer-start">⏱ 5:00</button>
+          <button id="timer-stop">Stop</button>
+        </div>
         <div class="status">
           Live: <b id="s-live">—</b><br />
           Preview: <b id="s-preview">—</b><br />
-          Blackout: <b id="s-black">off</b>
+          Blackout: <b id="s-black">off</b><br />
+          Timer: <b id="s-timer">—</b>
         </div>
       </aside>
     </main>
@@ -111,6 +118,17 @@
         document.getElementById("s-preview").textContent = nameAt(view.staged_index);
         document.getElementById("s-black").textContent = view.blackout ? "ON" : "off";
 
+        const t = view.timer;
+        const tEl = document.getElementById("s-timer");
+        if (!t) {
+          tEl.textContent = "—";
+          tEl.style.color = "";
+        } else {
+          const secs = t.remaining_secs != null ? t.remaining_secs : t.elapsed_secs;
+          tEl.textContent = t.time_up ? "TIME UP" : fmtClock(secs);
+          tEl.style.color = t.time_up ? "var(--live)" : t.warn ? "var(--preview)" : "#7ee39b";
+        }
+
         const b = document.getElementById("blackout");
         b.classList.toggle("on", view.blackout);
         b.textContent = view.blackout ? "Un-blackout" : "Blackout";
@@ -122,6 +140,10 @@
         el.className = "badge " + cls;
         el.textContent = text;
         return el;
+      }
+
+      function fmtClock(secs) {
+        return Math.floor(secs / 60) + ":" + String(secs % 60).padStart(2, "0");
       }
 
       async function act(fn) {
@@ -140,8 +162,19 @@
         const on = document.getElementById("blackout").dataset.on !== "1";
         act(() => invoke("blackout", { on }));
       };
+      document.getElementById("timer-start").onclick = () =>
+        act(() => invoke("start_timer", { seconds: 300 }));
+      document.getElementById("timer-stop").onclick = () => act(() => invoke("stop_timer"));
 
       act(() => invoke("view"));
+      // Poll so a running countdown ticks in the UI (the host advances it each frame).
+      setInterval(async () => {
+        try {
+          render(await invoke("view"));
+        } catch (e) {
+          /* transient */
+        }
+      }, 1000);
     </script>
   </body>
 </html>

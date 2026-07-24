@@ -142,3 +142,100 @@ fn go_live_with_nothing_staged_is_denied() {
         ControllerReply::Deny(DenyReason::BadRequest)
     );
 }
+
+#[test]
+fn timer_counts_down_reaches_time_up_and_stops() {
+    use std::time::{Duration, Instant};
+    let (mut c, _) = controller();
+    let t0 = Instant::now();
+
+    // No timer initially.
+    c.tick(t0);
+    assert!(c.operator_view().timer.is_none());
+
+    // Start a 60s countdown — it begins on the next tick (injected start instant).
+    assert_eq!(
+        c.apply(&Command::StartTimer { seconds: 60 }),
+        ControllerReply::Ack
+    );
+    c.tick(t0);
+    let snap = c.operator_view().timer.expect("timer running after start + tick");
+    assert_eq!(snap.remaining_secs, Some(60));
+    assert!(snap.running && !snap.time_up && !snap.warn);
+
+    // 45s in: 15s remain, within the 30s warning threshold.
+    c.tick(t0 + Duration::from_secs(45));
+    let snap = c.operator_view().timer.unwrap();
+    assert_eq!(snap.remaining_secs, Some(15));
+    assert!(snap.warn && !snap.time_up);
+
+    // Past the end: TIME UP, zero remaining.
+    c.tick(t0 + Duration::from_secs(65));
+    let snap = c.operator_view().timer.unwrap();
+    assert!(snap.time_up);
+    assert_eq!(snap.remaining_secs, Some(0));
+
+    // Stop clears it.
+    assert_eq!(c.apply(&Command::StopTimer), ControllerReply::Ack);
+    assert!(c.operator_view().timer.is_none());
+}
+
+#[test]
+fn countdown_display_ceils_seconds() {
+    use std::time::{Duration, Instant};
+    let (mut c, _) = controller();
+    let t0 = Instant::now();
+    c.apply(&Command::StartTimer { seconds: 10 });
+    c.tick(t0);
+    // 0.5s in: 9.5s remain -> ceil 10 (the start value holds for the full first second).
+    c.tick(t0 + Duration::from_millis(500));
+    assert_eq!(c.operator_view().timer.unwrap().remaining_secs, Some(10));
+    // 9.5s in: 0.5s remain -> ceil 1 (the last second reads 0:01, not 0:00), not yet up.
+    c.tick(t0 + Duration::from_millis(9500));
+    let snap = c.operator_view().timer.unwrap();
+    assert_eq!(snap.remaining_secs, Some(1));
+    assert!(!snap.time_up);
+    // Exactly at the target: TIME UP, zero remaining.
+    c.tick(t0 + Duration::from_secs(10));
+    assert!(c.operator_view().timer.unwrap().time_up);
+}
+
+#[test]
+fn restarting_a_running_timer_does_not_report_stale_state() {
+    use std::time::{Duration, Instant};
+    let (mut c, _) = controller();
+    let t0 = Instant::now();
+    c.apply(&Command::StartTimer { seconds: 60 });
+    c.tick(t0);
+    c.tick(t0 + Duration::from_secs(20));
+    assert_eq!(c.operator_view().timer.unwrap().remaining_secs, Some(40));
+
+    // Restart to 120 WITHOUT a StopTimer: the snapshot must not mix the old 0:40 /
+    // running=false with the fresh timer.
+    c.apply(&Command::StartTimer { seconds: 120 });
+    assert!(
+        c.operator_view().timer.is_none(),
+        "no stale snapshot between a restart and the next tick"
+    );
+    c.tick(t0 + Duration::from_secs(21));
+    let snap = c.operator_view().timer.unwrap();
+    assert_eq!(snap.remaining_secs, Some(120));
+    assert!(snap.running);
+}
+
+#[test]
+fn timer_overlays_live_and_survives_blackout() {
+    use std::time::{Duration, Instant};
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    let t0 = Instant::now();
+    c.apply(&Command::StartTimer { seconds: 300 });
+    c.tick(t0);
+    assert!(!live_is_black(&c), "slide + timer overlay on live");
+
+    // Blackout, then a timer tick must NOT reveal the content (recompose preserves it).
+    c.apply(&Command::Blackout { on: true });
+    c.tick(t0 + Duration::from_secs(1));
+    assert!(live_is_black(&c), "blackout preserved across a timer tick");
+}

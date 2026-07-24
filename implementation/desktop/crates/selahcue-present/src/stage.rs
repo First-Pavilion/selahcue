@@ -75,7 +75,13 @@ impl TimerView {
         let elapsed = timer.elapsed(now);
         let remaining = timer.remaining(now);
         let time_up = timer.is_time_up(now);
-        let remaining_secs = remaining.map(|d| d.as_secs() as u32);
+        // Ceil the remaining seconds (broadcast convention): the start value shows for the
+        // full first second, and 0:00 / TIME UP lands exactly at expiry — rather than the
+        // display reading one second ahead and showing "0:00" for the whole final second.
+        let remaining_secs = remaining.map(|d| {
+            let whole = d.as_secs();
+            (if d.subsec_nanos() > 0 { whole + 1 } else { whole }) as u32
+        });
         let warn = !time_up && remaining_secs.is_some_and(|r| r <= warn_secs);
         let progress = match (total, remaining) {
             (Some(t), Some(r)) if t.as_secs_f64() > 0.0 => {

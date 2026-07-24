@@ -4,7 +4,7 @@
 
 use selahcue_engine::analysis::analyze_flashes;
 use selahcue_engine::raster::FrameBuffer;
-use selahcue_present::{Presenter, Slide, Theme};
+use selahcue_present::{Presenter, Slide, Theme, TimerView};
 use std::time::{Duration, Instant};
 
 fn presenter() -> Presenter {
@@ -154,4 +154,73 @@ fn presenter_state_is_bounded_over_many_cycles() {
     }
     assert_eq!(p.live_output().byte_len(), expected);
     assert_eq!(p.preview_output().byte_len(), expected);
+}
+
+// --- Timer overlay on the live output (batch 7o) ---
+
+fn timer_view(remaining: u32, total: u32, time_up: bool, warn: bool) -> TimerView {
+    TimerView {
+        elapsed_secs: total.saturating_sub(remaining),
+        remaining_secs: Some(remaining),
+        time_up,
+        warn,
+        progress: if total == 0 {
+            1.0
+        } else {
+            remaining as f64 / total as f64
+        },
+    }
+}
+
+/// Does the framebuffer contain a pixel close to `target` (per-channel tolerance)?
+fn has_color(fb: &FrameBuffer, target: (u8, u8, u8)) -> bool {
+    fb.bytes().chunks_exact(4).any(|px| {
+        let d = |a: u8, b: u8| (a as i32 - b as i32).pow(2);
+        d(px[0], target.0) + d(px[1], target.1) + d(px[2], target.2) < 900
+    })
+}
+
+const TIMER_OK: (u8, u8, u8) = (31, 176, 122);
+const TIMER_ALERT: (u8, u8, u8) = (224, 32, 32);
+
+#[test]
+fn timer_overlay_appears_and_clears_on_live() {
+    let mut p = presenter();
+    p.stage(Slide::title("Sermon"));
+    p.go_live();
+    assert!(!has_color(p.live_output(), TIMER_OK), "no timer bar before");
+    p.show_timer(Some(timer_view(120, 300, false, false)));
+    assert!(has_color(p.live_output(), TIMER_OK), "ok-green timer bar shows on live");
+    p.show_timer(None);
+    assert!(!has_color(p.live_output(), TIMER_OK), "overlay gone after stop");
+}
+
+#[test]
+fn time_up_fills_the_bar_alert_red() {
+    let mut p = presenter();
+    p.stage(Slide::title("Sermon"));
+    p.go_live();
+    p.show_timer(Some(timer_view(0, 300, true, false)));
+    assert!(has_color(p.live_output(), TIMER_ALERT), "TIME UP fills the bar red");
+}
+
+#[test]
+fn blackout_is_preserved_across_a_timer_recompose() {
+    let mut p = presenter();
+    p.stage(Slide::title("Sermon"));
+    p.go_live();
+    p.blackout(true);
+    assert!(is_black(p.live_output()), "blacked out");
+
+    // A timer tick recomposes the live scene via SetScene — it must NOT reveal content.
+    p.show_timer(Some(timer_view(90, 300, false, false)));
+    assert!(
+        is_black(p.live_output()),
+        "blackout must survive the timer recompose"
+    );
+
+    // Un-blackout reveals content *with* the timer bar.
+    p.blackout(false);
+    assert!(!is_black(p.live_output()));
+    assert!(has_color(p.live_output(), TIMER_OK), "timer visible after un-blackout");
 }

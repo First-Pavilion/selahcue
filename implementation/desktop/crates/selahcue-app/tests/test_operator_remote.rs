@@ -102,6 +102,31 @@ async fn remote_operator_drives_the_host_and_sees_authoritative_state() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_start_timer_is_reflected_after_a_host_tick() {
+    let (addr, pin, controller) = setup().await;
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "producer", "tok-prod")
+        .await
+        .unwrap();
+
+    // StartTimer is accepted; the overlay/snapshot appears once the host ticks (the
+    // output window ticks every frame — here we drive one tick explicitly).
+    op.start_timer(120).await.unwrap();
+    controller.lock().unwrap().tick(Instant::now());
+
+    let t = op
+        .view()
+        .await
+        .unwrap()
+        .timer
+        .expect("timer visible after a host tick");
+    assert_eq!(t.remaining_secs, Some(120));
+    assert!(t.running && !t.time_up);
+
+    // Stop clears it immediately (no tick needed).
+    assert!(op.stop_timer().await.unwrap().timer.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_denied_command_is_not_an_error_and_the_view_reflects_unchanged_state() {
     let (addr, pin, controller) = setup().await;
     let mut op = RemoteOperator::connect(addr, "localhost", pin, "assistant", "tok-asst")

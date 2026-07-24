@@ -7,7 +7,7 @@
 //! logic is verified independently of any GUI (which can't be runtime-tested here).
 
 use crate::controller::LiveController;
-use selahcue_lan::protocol::{Command, OperatorStateView, PlanItemView};
+use selahcue_lan::protocol::{Command, OperatorStateView, PlanItemView, TimerSnapshot};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 
@@ -37,6 +37,8 @@ pub struct OperatorView {
     /// holds a non-plan slide such as a staged scripture).
     pub staged_index: Option<usize>,
     pub blackout: bool,
+    /// The active timer, if one is running (updated by [`LiveController::tick`]).
+    pub timer: Option<TimerSnapshot>,
 }
 
 /// An ergonomic, UI-facing wrapper over the shared [`LiveController`]. Each action
@@ -106,6 +108,16 @@ impl OperatorShell {
     pub fn blackout(&self, on: bool) -> OperatorView {
         self.act(&Command::Blackout { on })
     }
+
+    /// Start a countdown timer of `seconds` on the Live output.
+    pub fn start_timer(&self, seconds: u32) -> OperatorView {
+        self.act(&Command::StartTimer { seconds })
+    }
+
+    /// Stop and clear the active timer.
+    pub fn stop_timer(&self) -> OperatorView {
+        self.act(&Command::StopTimer)
+    }
 }
 
 // --- Wire conversions: the local view-model <-> the protocol DTO carried over the LAN
@@ -144,6 +156,7 @@ impl From<OperatorView> for OperatorStateView {
             live_index: v.live_index,
             staged_index: v.staged_index,
             blackout: v.blackout,
+            timer: v.timer,
         }
     }
 }
@@ -156,6 +169,7 @@ impl From<OperatorStateView> for OperatorView {
             live_index: v.live_index,
             staged_index: v.staged_index,
             blackout: v.blackout,
+            timer: v.timer,
         }
     }
 }
@@ -219,6 +233,16 @@ impl RemoteOperator {
     /// Set the host's blackout state.
     pub async fn blackout(&mut self, on: bool) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::Blackout { on }).await
+    }
+
+    /// Start a countdown timer of `seconds` on the host's Live output.
+    pub async fn start_timer(&mut self, seconds: u32) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::StartTimer { seconds }).await
+    }
+
+    /// Stop and clear the host's active timer.
+    pub async fn stop_timer(&mut self) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::StopTimer).await
     }
 
     /// Send a mutating command, then read back the fresh authoritative view. A command

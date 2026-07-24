@@ -326,7 +326,10 @@ impl ApplicationHandler for App {
                 renderer.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                if let Ok(c) = controller.lock() {
+                if let Ok(mut c) = controller.lock() {
+                    // Advance any active countdown to the current instant so the timer
+                    // ticks on the audience output, then render the live frame.
+                    c.tick(Instant::now());
                     renderer.render(c.presenter().live_output());
                 }
             }

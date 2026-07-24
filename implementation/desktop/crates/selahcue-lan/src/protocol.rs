@@ -111,8 +111,20 @@ pub struct PlanItemView {
     pub is_staged: bool,
 }
 
+/// A snapshot of the active timer for the operator UI (`None` when no timer is running).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimerSnapshot {
+    /// Seconds remaining (countdown); `None` for a count-up timer.
+    pub remaining_secs: Option<u32>,
+    pub elapsed_secs: u32,
+    pub time_up: bool,
+    /// Within the warning threshold (and not yet up).
+    pub warn: bool,
+    pub running: bool,
+}
+
 /// A snapshot of the full operator view: the plan with per-item Live/Preview flags,
-/// plus the current live/staged indices and blackout. Carried by
+/// plus the current live/staged indices, blackout, and any active timer. Carried by
 /// [`ServerMessage::OperatorState`] so a remote operator UI renders host-authoritative
 /// state rather than a local guess.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +136,8 @@ pub struct OperatorStateView {
     /// Index into `items` currently staged in Preview, if any.
     pub staged_index: Option<usize>,
     pub blackout: bool,
+    /// The active timer, if one is running.
+    pub timer: Option<TimerSnapshot>,
 }
 
 /// Why a request was denied. A closed set so clients can react programmatically.

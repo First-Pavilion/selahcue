@@ -77,6 +77,18 @@ impl Backend {
             Backend::Local(s) => Ok(s.select(item_id)),
         }
     }
+    async fn start_timer(&self, seconds: u32) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m.lock().await.start_timer(seconds).await.map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.start_timer(seconds)),
+        }
+    }
+    async fn stop_timer(&self) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m.lock().await.stop_timer().await.map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.stop_timer()),
+        }
+    }
 }
 
 struct AppState {
@@ -110,6 +122,14 @@ async fn blackout(on: bool, state: State<'_, AppState>) -> Result<OperatorView, 
 #[tauri::command]
 async fn select(item_id: u64, state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.select(item_id).await
+}
+#[tauri::command]
+async fn start_timer(seconds: u32, state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.start_timer(seconds).await
+}
+#[tauri::command]
+async fn stop_timer(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.stop_timer().await
 }
 
 /// The local endpoint descriptor an output window writes so its operator shell can
@@ -177,7 +197,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            view, next, previous, go_live, clear, blackout, select
+            view, next, previous, go_live, clear, blackout, select, start_timer, stop_timer
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");

@@ -8,8 +8,13 @@
 use crate::operator::{ItemView, OperatorView};
 use selahcue_core::plan::ServicePlan;
 use selahcue_core::scripture;
-use selahcue_lan::protocol::{Command, DenyReason, ServerMessage};
-use selahcue_present::{Presenter, Slide, Theme};
+use selahcue_core::timer::Timer;
+use selahcue_lan::protocol::{Command, DenyReason, ServerMessage, TimerSnapshot};
+use selahcue_present::{Presenter, Slide, Theme, TimerView};
+use std::time::{Duration, Instant};
+
+/// Seconds-remaining threshold at which the countdown enters its amber "warning" state.
+const TIMER_WARN_SECS: u32 = 30;
 
 /// The controller's decision for a command. The transport frames `Ack`/`Deny` with
 /// the request id; `Message` is returned as-is.
@@ -32,6 +37,15 @@ pub struct LiveController {
     plan_cursor: Option<usize>,
     live_idx: Option<usize>,
     blackout: bool,
+    /// The active countdown timer, if any (`StartTimer`/`StopTimer`).
+    timer: Option<Timer>,
+    /// The countdown target (for the progress fraction).
+    timer_total: Option<Duration>,
+    /// Set on `StartTimer`; the timer starts on the next [`tick`](Self::tick) so its
+    /// start instant is the injected render time, not a wall-clock read in `apply`.
+    timer_pending_start: bool,
+    /// The last timer view computed by `tick`, surfaced in the operator view.
+    last_timer_view: Option<TimerView>,
 }
 
 impl LiveController {
@@ -45,7 +59,34 @@ impl LiveController {
             plan_cursor: None,
             live_idx: None,
             blackout: false,
+            timer: None,
+            timer_total: None,
+            timer_pending_start: false,
+            last_timer_view: None,
         }
+    }
+
+    /// Advance the active timer to `now` and overlay it on the Live output. Call once per
+    /// render frame; time is **injected** (no wall-clock read) so it stays deterministic
+    /// and frame-rate independent (NFR-022). A no-op when no timer is running.
+    pub fn tick(&mut self, now: Instant) {
+        let view = match self.timer.as_mut() {
+            Some(timer) => {
+                if self.timer_pending_start {
+                    timer.start(now);
+                    self.timer_pending_start = false;
+                }
+                Some(TimerView::from_timer(
+                    timer,
+                    now,
+                    self.timer_total,
+                    TIMER_WARN_SECS,
+                ))
+            }
+            None => None,
+        };
+        self.last_timer_view = view;
+        self.presenter.show_timer(view);
     }
 
     /// The presenter (for the output window / stage display to render).
@@ -90,6 +131,13 @@ impl LiveController {
             live_index: self.live_idx,
             staged_index: self.staged_idx,
             blackout: self.blackout,
+            timer: self.last_timer_view.map(|v| TimerSnapshot {
+                remaining_secs: v.remaining_secs,
+                elapsed_secs: v.elapsed_secs,
+                time_up: v.time_up,
+                warn: v.warn,
+                running: self.timer.as_ref().is_some_and(Timer::is_running),
+            }),
         }
     }
 
@@ -165,8 +213,25 @@ impl LiveController {
                 self.presenter.blackout(*on);
                 ControllerReply::Ack
             }
-            // Timer wiring onto the live output is a later batch.
-            Command::StartTimer { .. } | Command::StopTimer => ControllerReply::Ack,
+            Command::StartTimer { seconds } => {
+                let duration = Duration::from_secs(u64::from(*seconds));
+                self.timer = Some(Timer::count_down(duration));
+                self.timer_total = Some(duration);
+                self.timer_pending_start = true;
+                // Drop any prior view so the operator snapshot never mixes an old timer's
+                // displayed value with the fresh timer's state before the next tick.
+                self.last_timer_view = None;
+                // The overlay appears on the next tick (which supplies the start instant).
+                ControllerReply::Ack
+            }
+            Command::StopTimer => {
+                self.timer = None;
+                self.timer_total = None;
+                self.timer_pending_start = false;
+                self.last_timer_view = None;
+                self.presenter.show_timer(None);
+                ControllerReply::Ack
+            }
             Command::ScriptureSearch { query } => {
                 let references = scripture::parse(query)
                     .iter()

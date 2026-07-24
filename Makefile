@@ -18,6 +18,7 @@ OP       := --manifest-path $(OPERATOR)/Cargo.toml
 # The local endpoint file the output window writes (matches Rust's std::env::temp_dir()).
 ENDPOINT := $(shell python3 -c "import tempfile,os;print(os.path.join(tempfile.gettempdir(),'selahcue-operator-endpoint.json'))" 2>/dev/null)
 CMD      ?= next
+SECS     ?=
 
 .DEFAULT_GOAL := help
 .PHONY: help launch run output operator remote demo build build-operator test check clippy fmt clean
@@ -48,12 +49,12 @@ output: ## Run only the output window (native audience output + LAN control serv
 operator: ## Run only the operator shell (connects to a running output window, else a standalone demo)
 	$(CARGO) run $(OP)
 
-remote: ## Send one command to a running output window (e.g. make remote CMD=go-live)
+remote: ## Send one command to a running output window (e.g. make remote CMD=go-live, or CMD=timer SECS=300)
 	@test -n "$(ENDPOINT)" && test -f "$(ENDPOINT)" || \
 	  { echo "No endpoint file at '$(ENDPOINT)'. Start the output window first: make output"; exit 1; }
 	@python3 -c "import json;d=json.load(open('$(ENDPOINT)'));print(d['addr'],d['pin'],d['device'],d['token'])" | \
 	  while read A P D T; do \
-	    $(CARGO) run -q $(WS) -p selahcue-lan --example remote --features server -- $$A $$P $$D $$T $(CMD); \
+	    $(CARGO) run -q $(WS) -p selahcue-lan --example remote --features server -- $$A $$P $$D $$T $(CMD) $(SECS); \
 	  done
 
 demo: ## Run the headless LAN foundation demo
