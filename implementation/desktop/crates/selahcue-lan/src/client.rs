@@ -10,6 +10,7 @@ use crate::wire::{recv_json, send_json};
 use rustls::pki_types::ServerName;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
@@ -23,9 +24,15 @@ pub struct ControlClient {
 }
 
 impl ControlClient {
+    /// Total time budget for establishing a session (TCP + TLS + WebSocket + auth).
+    /// Mirrors the server's handshake timeout so a peer that accepts TCP but then stalls
+    /// the TLS/WebSocket handshake degrades to an error instead of hanging the caller
+    /// forever (e.g. a stale endpoint pointing at a now-reused loopback port).
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
     /// Connect to `addr`, trusting the server **only** if its certificate matches
     /// `pin`, then authenticate as `device_id` with `token`. Returns the granted
-    /// role on success.
+    /// role on success. Fails with a timeout rather than hanging if the peer stalls.
     pub async fn connect(
         addr: SocketAddr,
         server_name: &str,
@@ -33,36 +40,43 @@ impl ControlClient {
         device_id: &str,
         token: &str,
     ) -> Result<Self, TransportError> {
-        let tcp = TcpStream::connect(addr).await?;
-        let connector = TlsConnector::from(Arc::new(client_config(pin)?));
-        let dns = ServerName::try_from(server_name.to_string())
-            .map_err(|_| TransportError::Protocol("invalid server name".into()))?;
-        let tls = connector.connect(dns, tcp).await?;
-        let (mut ws, _resp) =
-            tokio_tungstenite::client_async(format!("wss://{server_name}/"), tls).await?;
+        let attempt = async {
+            let tcp = TcpStream::connect(addr).await?;
+            let connector = TlsConnector::from(Arc::new(client_config(pin)?));
+            let dns = ServerName::try_from(server_name.to_string())
+                .map_err(|_| TransportError::Protocol("invalid server name".into()))?;
+            let tls = connector.connect(dns, tcp).await?;
+            let (mut ws, _resp) =
+                tokio_tungstenite::client_async(format!("wss://{server_name}/"), tls).await?;
 
-        send_json(
-            &mut ws,
-            &AuthRequest {
-                v: protocol::VERSION,
-                device_id: device_id.to_string(),
-                token: token.to_string(),
-            },
-        )
-        .await?;
-        let role = match recv_json::<_, AuthResponse>(&mut ws).await? {
-            AuthResponse::Granted { role } => role,
-            AuthResponse::Rejected { reason } => {
-                return Err(TransportError::Protocol(format!(
-                    "authentication rejected: {reason:?}"
-                )))
-            }
+            send_json(
+                &mut ws,
+                &AuthRequest {
+                    v: protocol::VERSION,
+                    device_id: device_id.to_string(),
+                    token: token.to_string(),
+                },
+            )
+            .await?;
+            let role = match recv_json::<_, AuthResponse>(&mut ws).await? {
+                AuthResponse::Granted { role } => role,
+                AuthResponse::Rejected { reason } => {
+                    return Err(TransportError::Protocol(format!(
+                        "authentication rejected: {reason:?}"
+                    )))
+                }
+            };
+            Ok(Self {
+                ws,
+                role,
+                next_id: 1,
+            })
         };
-        Ok(Self {
-            ws,
-            role,
-            next_id: 1,
-        })
+
+        match tokio::time::timeout(Self::CONNECT_TIMEOUT, attempt).await {
+            Ok(result) => result,
+            Err(_) => Err(TransportError::Protocol("connection timed out".into())),
+        }
     }
 
     /// The role granted to this connection.

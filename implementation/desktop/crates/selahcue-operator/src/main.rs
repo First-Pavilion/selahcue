@@ -1,64 +1,162 @@
 //! SelahCue operator shell (Tauri desktop UI).
 //!
 //! The webview renders the service plan and control buttons; each button calls a
-//! `#[tauri::command]` that drives the shared [`OperatorShell`] and returns the fresh
-//! [`OperatorView`] so the UI re-renders from one round trip. The operator logic is
-//! the same surface unit-tested in `selahcue-app` (`tests/test_operator.rs`); this
-//! crate is the GUI veneer over it (ADR-0003).
+//! `#[tauri::command]` that drives a [`Backend`] and returns the fresh [`OperatorView`]
+//! so the UI re-renders from one round trip (ADR-0003).
 //!
-//! Run on a desktop with the Tauri toolchain:  `cargo run` (from this crate).
+//! The backend is chosen at startup:
+//! - **Remote** — if a running SelahCue output window advertised a local endpoint, the
+//!   shell connects to it over the pinned-TLS control link and drives the **on-screen
+//!   audience output** (a `RemoteOperator`, the same path the mobile client will use).
+//! - **Local** — otherwise it drives an in-process demo controller so the UI is still
+//!   useful stand-alone.
+//!
+//! Run on a desktop with the Tauri toolchain: `cargo run` (from this crate). Start the
+//! output window first (`cargo run -p selahcue-desktop`) to drive the real output.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use selahcue_app::{LiveController, OperatorShell, OperatorView};
+use selahcue_app::{LiveController, OperatorShell, OperatorView, RemoteOperator};
 use selahcue_core::plan::{ItemKind, ServicePlan};
+use selahcue_lan::CertPin;
 use selahcue_present::Theme;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use tauri::State;
+use tauri::{Manager, State};
 
-/// Tauri-managed application state: the shared operator shell.
+/// Where the operator commands are dispatched: a remote host output window, or an
+/// in-process demo controller.
+enum Backend {
+    // Boxed: a RemoteOperator (TLS WebSocket client + buffers) is much larger than the
+    // Arc-sized local shell, so box it to keep the enum small.
+    Remote(Box<tokio::sync::Mutex<RemoteOperator>>),
+    Local(OperatorShell),
+}
+
+impl Backend {
+    async fn view(&self) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m.lock().await.view().await.map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.view()),
+        }
+    }
+    async fn next(&self) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m.lock().await.next().await.map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.next()),
+        }
+    }
+    async fn previous(&self) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m.lock().await.previous().await.map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.previous()),
+        }
+    }
+    async fn go_live(&self) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m.lock().await.go_live().await.map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.go_live()),
+        }
+    }
+    async fn clear(&self) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m.lock().await.clear().await.map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.clear()),
+        }
+    }
+    async fn blackout(&self, on: bool) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m.lock().await.blackout(on).await.map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.blackout(on)),
+        }
+    }
+    async fn select(&self, item_id: u64) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m.lock().await.select(item_id).await.map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.select(item_id)),
+        }
+    }
+}
+
 struct AppState {
-    shell: OperatorShell,
+    backend: Backend,
 }
 
 #[tauri::command]
-fn view(state: State<'_, AppState>) -> OperatorView {
-    state.shell.view()
+async fn view(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.view().await
 }
-
 #[tauri::command]
-fn next(state: State<'_, AppState>) -> OperatorView {
-    state.shell.next()
+async fn next(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.next().await
 }
-
 #[tauri::command]
-fn previous(state: State<'_, AppState>) -> OperatorView {
-    state.shell.previous()
+async fn previous(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.previous().await
 }
-
 #[tauri::command]
-fn go_live(state: State<'_, AppState>) -> OperatorView {
-    state.shell.go_live()
+async fn go_live(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.go_live().await
 }
-
 #[tauri::command]
-fn clear(state: State<'_, AppState>) -> OperatorView {
-    state.shell.clear()
+async fn clear(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.clear().await
 }
-
 #[tauri::command]
-fn blackout(on: bool, state: State<'_, AppState>) -> OperatorView {
-    state.shell.blackout(on)
+async fn blackout(on: bool, state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.blackout(on).await
 }
-
 #[tauri::command]
-fn select(item_id: u64, state: State<'_, AppState>) -> OperatorView {
-    state.shell.select(item_id)
+async fn select(item_id: u64, state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.select(item_id).await
 }
 
-/// A demo service plan so the shell is useful to launch stand-alone. In the full app
-/// the plan is loaded from the persistence layer.
+/// The local endpoint descriptor an output window writes so its operator shell can
+/// auto-discover it (loopback-only convenience; real pairing is QR + host confirmation).
+#[derive(serde::Deserialize)]
+struct Endpoint {
+    addr: String,
+    pin: String,
+    device: String,
+    token: String,
+}
+
+fn read_endpoint() -> Option<Endpoint> {
+    let path = std::env::temp_dir().join("selahcue-operator-endpoint.json");
+    let data = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+async fn connect_remote(ep: &Endpoint) -> Result<RemoteOperator, String> {
+    let addr: SocketAddr = ep.addr.parse().map_err(|_| format!("bad addr: {}", ep.addr))?;
+    let pin = CertPin::from_hex(&ep.pin).ok_or_else(|| "bad pin".to_string())?;
+    RemoteOperator::connect(addr, "localhost", pin, &ep.device, &ep.token)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Try to attach to a running output window; fall back to a stand-alone demo controller.
+async fn build_backend() -> Backend {
+    match read_endpoint() {
+        Some(ep) => match connect_remote(&ep).await {
+            Ok(remote) => {
+                eprintln!("SelahCue operator: connected to output window at {}", ep.addr);
+                Backend::Remote(Box::new(tokio::sync::Mutex::new(remote)))
+            }
+            Err(e) => {
+                eprintln!("SelahCue operator: could not connect to output window ({e}); running the stand-alone demo.");
+                Backend::Local(demo_shell())
+            }
+        },
+        None => {
+            eprintln!("SelahCue operator: no running output window found; running the stand-alone demo. Start `cargo run -p selahcue-desktop` first to drive the real output.");
+            Backend::Local(demo_shell())
+        }
+    }
+}
+
+/// A demo service plan for the stand-alone (no output window) case.
 fn demo_shell() -> OperatorShell {
     let mut plan = ServicePlan::new("Sunday Service");
     plan.add_item(ItemKind::Song, "Opening Song");
@@ -71,8 +169,12 @@ fn demo_shell() -> OperatorShell {
 
 fn main() {
     tauri::Builder::default()
-        .manage(AppState {
-            shell: demo_shell(),
+        .setup(|app| {
+            // Connect on the Tauri runtime so the client is bound to the same reactor the
+            // async commands run on.
+            let backend = tauri::async_runtime::block_on(build_backend());
+            app.manage(AppState { backend });
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             view, next, previous, go_live, clear, blackout, select

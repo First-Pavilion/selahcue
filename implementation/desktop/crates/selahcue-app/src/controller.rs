@@ -192,6 +192,9 @@ impl LiveController {
                     blackout: self.blackout,
                 })
             }
+            Command::GetOperatorState => ControllerReply::Message(ServerMessage::OperatorState {
+                view: self.operator_view().into(),
+            }),
         }
     }
 }

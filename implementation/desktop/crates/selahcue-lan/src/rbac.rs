@@ -93,7 +93,7 @@ pub fn required_permission(cmd: &Command) -> Permission {
         Command::Blackout { .. } => Blackout,
         Command::StartTimer { .. } | Command::StopTimer => Timer,
         Command::ScriptureSearch { .. } | Command::StageScripture { .. } => SearchScripture,
-        Command::GetState => Monitor,
+        Command::GetState | Command::GetOperatorState => Monitor,
     }
 }
 

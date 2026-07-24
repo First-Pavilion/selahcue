@@ -22,7 +22,12 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
-selahcue-app = { path = "../selahcue-app" }
+serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
+# `server` feature gives the RemoteOperator (pinned-TLS control client) so the shell can
+# drive the running output window; the shell falls back to an in-process demo otherwise.
+selahcue-app = { path = "../selahcue-app", features = ["server"] }
+selahcue-lan = { path = "../selahcue-lan", features = ["server"] }
 selahcue-core = { path = "../selahcue-core" }
 selahcue-present = { path = "../selahcue-present" }
 

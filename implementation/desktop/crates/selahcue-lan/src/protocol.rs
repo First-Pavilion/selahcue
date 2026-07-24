@@ -39,6 +39,9 @@ pub enum Command {
     StageScripture { reference: String },
     /// Request the current live/preview state.
     GetState,
+    /// Request the full operator view (plan + per-item live/preview flags + blackout),
+    /// so a remote operator UI can render authoritative state from the host.
+    GetOperatorState,
 }
 
 /// A controller → operator request frame.
@@ -88,8 +91,39 @@ pub enum ServerMessage {
         query: String,
         references: Vec<String>,
     },
+    /// The full operator view (reply to [`Command::GetOperatorState`]).
+    OperatorState { view: OperatorStateView },
     /// A protocol-level or transport-level error not tied to a single request.
     Error { message: String },
+}
+
+/// One plan item as the operator UI renders it — the wire form of an item view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanItemView {
+    /// Stable plan-item id (what the UI sends back via [`Command::SelectItem`]).
+    pub id: u64,
+    /// Stable item-kind tag (e.g. `"song"`, `"scripture"`).
+    pub kind: String,
+    pub title: String,
+    /// This item is currently on the audience (Live) output.
+    pub is_live: bool,
+    /// This item is currently staged in Preview.
+    pub is_staged: bool,
+}
+
+/// A snapshot of the full operator view: the plan with per-item Live/Preview flags,
+/// plus the current live/staged indices and blackout. Carried by
+/// [`ServerMessage::OperatorState`] so a remote operator UI renders host-authoritative
+/// state rather than a local guess.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorStateView {
+    pub plan_name: String,
+    pub items: Vec<PlanItemView>,
+    /// Index into `items` currently on Live, if any.
+    pub live_index: Option<usize>,
+    /// Index into `items` currently staged in Preview, if any.
+    pub staged_index: Option<usize>,
+    pub blackout: bool,
 }
 
 /// Why a request was denied. A closed set so clients can react programmatically.

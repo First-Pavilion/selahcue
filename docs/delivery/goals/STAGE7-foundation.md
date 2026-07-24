@@ -399,6 +399,30 @@ fixed to a qualified capability statement.
 
 - Target: S7m-001..S7m-008. Change: added the operator control surface (`OperatorView`/`OperatorShell` + `LiveController::operator_view`) to `selahcue-app` with 8 unit tests; built the `selahcue-operator` Tauri 2 app (commands + self-contained webview console), excluded from the workspace and compile-checked separately. Multi-lens adversarial review (view-model · shell-concurrency · tauri-frontend · integration-honesty) → 3 raised → **1 confirmed** (docstring overclaimed the operator↔output link) → **fixed** (qualified); code logic 0 findings. Verifier: `cargo test` 171 workspace; operator `cargo check` + clippy clean. Result: PASS. Decision: gate-review.
 
+## Batch 7n predicate — operator ↔ output-window wiring
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7n-001 | yes | Protocol carries a full operator view: `Command::GetOperatorState` + `ServerMessage::OperatorState{OperatorStateView}` | `cargo test -p selahcue-lan --features server` | 40 server tests | protocol.rs; rbac.rs | PASS |
+| S7n-002 | yes | `RemoteOperator` drives the **host's authoritative controller** over pinned TLS and renders the host view | `cargo test -p selahcue-app --features server` | remote-operator E2E | operator.rs; test_operator_remote.rs | PASS |
+| S7n-003 | yes | E2E: operator drives host (Next→preview, GoLive→live, blackout/clear) and host controller state reflects it | `cargo test --features server` | 2 E2E pass | test_operator_remote.rs | PASS |
+| S7n-004 | yes | A host-denied command is not a client error; the view shows unchanged state (RBAC over the operator path) | `cargo test --features server` | Assistant GoLive denied, no error | test_operator_remote.rs | PASS |
+| S7n-005 | yes | Output window advertises a local endpoint (token chmod 0600 unix); removed on clean exit | build + review | write_endpoint/endpoint_path | selahcue-desktop/main.rs | PASS (compile) |
+| S7n-006 | yes | Tauri shell connects to a running output window (`RemoteOperator`) or falls back to a standalone demo | `cargo check` (operator) + review | Backend Remote/Local | selahcue-operator/main.rs | PASS (compile) |
+| S7n-007 | yes | Client connect is time-bounded (no window-less hang) | `cargo test` + review | `CONNECT_TIMEOUT` mirrors server | client.rs | PASS |
+| S7n-008 | yes | Full suite + clippy clean; independent adversarial review; confirmed findings fixed | workflow `wwzeesec0` | 4 raised → 1 confirmed → fixed | CODE-REVIEW-batch7n-wiring.md | PASS |
+
+**Makefile:** a repo-root `Makefile` was added (`make launch` runs the output window +
+operator shell together; `make output`/`operator`/`remote`/`demo`/`test`/`check`/`clippy`).
+
+**Honest scope:** the operator↔output loop is verified **headlessly** (the E2E host
+controller stands in for the one the output window renders); the Tauri GUI and the
+on-screen rendering are compile-verified/prior-verified. Runnable on a Mac via `make launch`.
+
+### Iteration ledger — batch 7n
+
+- Target: S7n-001..S7n-008. Change: extended the LAN protocol (`GetOperatorState`/`OperatorState`/`OperatorStateView`, RBAC Monitor); added `RemoteOperator` (control client) + apply arm + 2 E2E tests; the output window writes a local endpoint (0600, cleaned on exit); the Tauri shell connects to it (Remote) or falls back (Local); added a repo-root Makefile. Multi-lens adversarial review (protocol-rbac · conversion · remote-client · integration-security) → 4 raised → **1 confirmed** (client had no connect timeout → possible window-less hang under `block_on`) → **fixed** (`ControlClient` connect timeout mirroring the server + endpoint cleanup on exit). Verifier: workspace 173; app server 8+2+2 E2E; lan 40; operator check + clippy clean. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

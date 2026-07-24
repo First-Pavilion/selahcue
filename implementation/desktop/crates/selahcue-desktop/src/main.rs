@@ -416,16 +416,53 @@ async fn run_server(controller: Arc<Mutex<LiveController>>) -> Result<(), Box<dy
         ControlServer::new(&identity, registry, handler_for(controller))
             .map_err(|e| format!("server: {e:?}"))?,
     );
-    // Loopback only: the remote CLI runs on this machine. LAN binding travels with the
-    // mobile client + QR pairing batch (so we don't expose an unpaired port by default).
+    // Loopback only: the remote CLI / operator shell run on this machine. LAN binding
+    // travels with the mobile client + QR pairing batch (so we don't expose an unpaired
+    // port by default).
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
-    print_connect_banner(addr, &pin.to_hex(), device, token);
+    let endpoint = write_endpoint(addr, &pin.to_hex(), device, token);
+    print_connect_banner(addr, &pin.to_hex(), device, token, endpoint.as_deref());
     server.run(listener).await.map_err(|e| format!("server run: {e:?}"))?;
     Ok(())
 }
 
-fn print_connect_banner(addr: SocketAddr, pin_hex: &str, device: &str, token: &str) {
+/// Write a local endpoint descriptor so the operator shell on this machine can
+/// auto-discover + connect (a loopback-only convenience; real pairing is QR + host
+/// confirmation). Values are simple ASCII (addr/hex/ids), so a hand-built JSON string is
+/// safe. Returns the path written, if any.
+fn endpoint_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("selahcue-operator-endpoint.json")
+}
+
+fn write_endpoint(addr: SocketAddr, pin_hex: &str, device: &str, token: &str) -> Option<std::path::PathBuf> {
+    let json = format!(
+        "{{\"addr\":\"{addr}\",\"pin\":\"{pin_hex}\",\"device\":\"{device}\",\"token\":\"{token}\"}}"
+    );
+    let path = endpoint_path();
+    if let Err(e) = std::fs::write(&path, json) {
+        eprintln!("SelahCue: could not write operator endpoint file: {e}");
+        return None;
+    }
+    // The descriptor carries a bearer token. On macOS `temp_dir()` is already a per-user
+    // private dir, but on Linux it is world-readable `/tmp`, so restrict to owner-only.
+    // (This is a loopback-only demo convenience; real pairing is QR + host confirmation
+    // and persists no token.)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Some(path)
+}
+
+fn print_connect_banner(
+    addr: SocketAddr,
+    pin_hex: &str,
+    device: &str,
+    token: &str,
+    endpoint: Option<&std::path::Path>,
+) {
     println!();
     println!("  SelahCue — remote control ready");
     println!("  ------------------------------------------------------------");
@@ -433,8 +470,13 @@ fn print_connect_banner(addr: SocketAddr, pin_hex: &str, device: &str, token: &s
     println!("  address : {addr}");
     println!("  pin     : {pin_hex}");
     println!("  device  : {device}   token : {token}   role : Producer");
+    if let Some(path) = endpoint {
+        println!("  endpoint: {}  (the operator shell auto-discovers this)", path.display());
+    }
     println!();
-    println!("  Drive the window from another terminal on this machine:");
+    println!("  Drive the window with the operator shell (auto-connects on this machine):");
+    println!("    cargo run   # from crates/selahcue-operator");
+    println!("  or from another terminal with the remote CLI:");
     println!("    cargo run -p selahcue-lan --example remote --features server -- \\");
     println!("      {addr} {pin_hex} {device} {token} next");
     println!("    (commands: next · previous · go-live · blackout-on · blackout-off · clear · state)");
@@ -448,4 +490,7 @@ fn main() {
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App::new();
     event_loop.run_app(&mut app).expect("run app");
+    // Best-effort: don't leave a stale endpoint (with a now-dead token/port) behind on a
+    // clean exit, so a later operator shell doesn't try to attach to a defunct window.
+    let _ = std::fs::remove_file(endpoint_path());
 }

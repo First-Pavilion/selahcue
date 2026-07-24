@@ -14,3 +14,5 @@ pub use operator::{ItemView, OperatorShell, OperatorView};
 
 #[cfg(feature = "server")]
 pub use controller::handler_for;
+#[cfg(feature = "server")]
+pub use operator::RemoteOperator;
