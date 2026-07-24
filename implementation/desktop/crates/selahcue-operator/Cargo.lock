@@ -2661,6 +2661,7 @@ dependencies = [
  "selahcue-core",
  "selahcue-lan",
  "selahcue-present",
+ "selahcue-scripture",
  "serde",
  "serde_json",
  "tauri",

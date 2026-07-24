@@ -306,7 +306,10 @@ async fn wire_scripture_search_stage_golive_shows_verse_text() {
         .unwrap();
 
     // Keyword search (not a reference) finds the verse in the bundled WEB text.
-    let hits = op.scripture_search("work together for good").await.unwrap();
+    let hits = op
+        .scripture_search("work together for good", None)
+        .await
+        .unwrap();
     assert!(
         hits.contains(&"Romans 8:28".to_string()),
         "keyword search over the wire: {hits:?}"
@@ -314,7 +317,7 @@ async fn wire_scripture_search_stage_golive_shows_verse_text() {
 
     // Stage the hit: Preview holds the scripture (not a plan index) and the
     // operator view says so.
-    let view = op.stage_scripture(&hits[0]).await.unwrap();
+    let view = op.stage_scripture(&hits[0], None).await.unwrap();
     assert_eq!(view.staged_index, None);
     assert_eq!(view.staged_scripture.as_deref(), Some("Romans 8:28"));
 
@@ -323,11 +326,14 @@ async fn wire_scripture_search_stage_golive_shows_verse_text() {
     assert_eq!(view.live_scripture.as_deref(), Some("Romans 8:28"));
     let c = controller.lock().unwrap();
     let live = c.presenter().live_slide().expect("live slide");
-    assert!(live.title.contains("Romans 8:28 (WEB)"));
+    assert!(
+        live.title.contains("Romans 8:28 (KJV)"),
+        "default translation is KJV"
+    );
     let body = live.body.join(" ");
     assert!(
         body.contains("all things work together for good"),
-        "audience output shows the WEB verse text, got: {body}"
+        "audience output shows the KJV verse text, got: {body}"
     );
 }
 

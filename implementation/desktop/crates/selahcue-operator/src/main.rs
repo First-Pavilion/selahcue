@@ -143,26 +143,34 @@ impl Backend {
             Backend::Local(s) => Ok(s.rename_item(item_id, &title)),
         }
     }
-    async fn stage_scripture(&self, reference: String) -> Result<OperatorView, String> {
+    async fn stage_scripture(
+        &self,
+        reference: String,
+        translation: Option<String>,
+    ) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
                 .lock()
                 .await
-                .stage_scripture(&reference)
+                .stage_scripture(&reference, translation.as_deref())
                 .await
                 .map_err(|e| e.to_string()),
-            Backend::Local(s) => Ok(s.stage_scripture(&reference)),
+            Backend::Local(s) => Ok(s.stage_scripture(&reference, translation.as_deref())),
         }
     }
-    async fn scripture_search(&self, query: String) -> Result<Vec<String>, String> {
+    async fn scripture_search(
+        &self,
+        query: String,
+        translation: Option<String>,
+    ) -> Result<Vec<String>, String> {
         match self {
             Backend::Remote(m) => m
                 .lock()
                 .await
-                .scripture_search(&query)
+                .scripture_search(&query, translation.as_deref())
                 .await
                 .map_err(|e| e.to_string()),
-            Backend::Local(s) => Ok(s.scripture_search(&query)),
+            Backend::Local(s) => Ok(s.scripture_search(&query, translation.as_deref())),
         }
     }
     async fn identify_outputs(&self) -> Result<OperatorView, String> {
@@ -264,16 +272,58 @@ async fn rename_item(
 #[tauri::command]
 async fn stage_scripture(
     reference: String,
+    translation: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<OperatorView, String> {
-    state.backend.stage_scripture(reference).await
+    state.backend.stage_scripture(reference, translation).await
+}
+
+/// One chapter for the browser (local bundle — identical text on host and
+/// shell). `translation` is a bundled code; omitted = the KJV default.
+#[derive(serde::Serialize)]
+struct ChapterView {
+    book_name: String,
+    chapter: u16,
+    reference: String,
+    translation: String,
+    verses: Vec<(u16, String)>,
+    prev: Option<String>,
+    next: Option<String>,
+    translations: Vec<String>,
+}
+
+#[tauri::command]
+fn get_chapter(reference: String, translation: Option<String>) -> Result<ChapterView, String> {
+    let t = match translation.as_deref() {
+        None => selahcue_scripture::Translation::default(),
+        Some(code) => selahcue_scripture::Translation::from_code(code)
+            .ok_or_else(|| format!("unknown translation: {code}"))?,
+    };
+    let parsed = selahcue_core::scripture::parse_one(&reference)
+        .map_err(|_| format!("not a reference: {reference}"))?;
+    let ch = selahcue_scripture::chapter_in(t, &parsed)
+        .ok_or_else(|| format!("no such chapter: {reference}"))?;
+    Ok(ChapterView {
+        reference: format!("{} {}", ch.book_name, ch.chapter),
+        book_name: ch.book_name,
+        chapter: ch.chapter,
+        translation: t.code().to_string(),
+        verses: ch.verses,
+        prev: selahcue_scripture::adjacent_chapter_in(t, &parsed, false),
+        next: selahcue_scripture::adjacent_chapter_in(t, &parsed, true),
+        translations: selahcue_scripture::Translation::ALL
+            .iter()
+            .map(|t| t.code().to_string())
+            .collect(),
+    })
 }
 #[tauri::command]
 async fn scripture_search(
     query: String,
+    translation: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    state.backend.scripture_search(query).await
+    state.backend.scripture_search(query, translation).await
 }
 #[tauri::command]
 async fn identify_outputs(state: State<'_, AppState>) -> Result<OperatorView, String> {
@@ -379,6 +429,7 @@ fn main() {
             rename_item,
             stage_scripture,
             scripture_search,
+            get_chapter,
             identify_outputs,
             assign_output
         ])

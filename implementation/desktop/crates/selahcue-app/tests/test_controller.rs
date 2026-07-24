@@ -104,6 +104,7 @@ fn scripture_search_parses_references() {
     let (mut c, _) = controller();
     match c.apply(&Command::ScriptureSearch {
         query: "John 3:16; Rom 8:28".into(),
+        translation: None,
     }) {
         ControllerReply::Message(ServerMessage::ScriptureResults { references, .. }) => {
             assert_eq!(references, vec!["John 3:16", "Romans 8:28"]);
@@ -118,7 +119,8 @@ fn staged_scripture_can_go_live() {
     let (mut c, _) = controller();
     assert_eq!(
         c.apply(&Command::StageScripture {
-            reference: "John 3:16".into()
+            reference: "John 3:16".into(),
+            translation: None,
         }),
         ControllerReply::Ack
     );
@@ -138,6 +140,7 @@ fn staging_a_scripture_preserves_plan_navigation() {
     assert_eq!(c.staged_index(), Some(1));
     c.apply(&Command::StageScripture {
         reference: "Ps 23".into(),
+        translation: None,
     });
     assert_eq!(c.staged_index(), None, "preview now holds a scripture");
     c.apply(&Command::Next);
@@ -449,6 +452,7 @@ fn a_live_scripture_survives_crash_recovery() {
     let (mut a, _) = controller();
     a.apply(&Command::StageScripture {
         reference: "Psalm 23:1".into(),
+        translation: None,
     });
     a.apply(&Command::GoLive);
     assert!(!live_is_black(&a), "scripture is on the live output");
@@ -478,6 +482,7 @@ fn a_staged_scripture_survives_crash_recovery() {
     a.apply(&Command::GoLive);
     a.apply(&Command::StageScripture {
         reference: "John 3:16".into(),
+        translation: None,
     });
     let snap = a.snapshot(Instant::now());
 
@@ -615,7 +620,8 @@ fn staged_scripture_composes_verse_text_and_survives_recovery() {
     // Staging a reference composes the bundled translation's verse text.
     assert_eq!(
         c.apply(&Command::StageScripture {
-            reference: "Romans 8:28".into()
+            reference: "Romans 8:28".into(),
+            translation: None,
         }),
         ControllerReply::Ack
     );
@@ -643,6 +649,7 @@ fn staged_scripture_composes_verse_text_and_survives_recovery() {
     let (mut other, _) = controller();
     other.apply(&Command::StageScripture {
         reference: "Announcements".into(),
+        translation: None,
     });
     let staged = other.presenter().staged().expect("staged");
     assert_eq!(staged.title, "Announcements");
@@ -655,6 +662,7 @@ fn scripture_search_falls_back_to_keyword_hits() {
     // A reference query parses (and is confirmed against the bundle).
     let r = c.apply(&Command::ScriptureSearch {
         query: "Rom 8:28".into(),
+        translation: None,
     });
     let refs = match r {
         ControllerReply::Message(ServerMessage::ScriptureResults { references, .. }) => references,
@@ -664,7 +672,8 @@ fn scripture_search_falls_back_to_keyword_hits() {
 
     // A keyword query scans the verse text.
     let r = c.apply(&Command::ScriptureSearch {
-        query: "shepherd I shall lack nothing".into(),
+        query: "my shepherd I shall not want".into(),
+        translation: None,
     });
     let refs = match r {
         ControllerReply::Message(ServerMessage::ScriptureResults { references, .. }) => references,
@@ -716,6 +725,7 @@ fn scripture_slides_never_exceed_the_compositor_line_capacity() {
     let (mut c, _) = controller();
     c.apply(&Command::StageScripture {
         reference: "Psalm 119".into(),
+        translation: None,
     });
     let slide = c.presenter().staged().expect("staged");
     assert!(slide.body.len() <= 6, "body lines: {}", slide.body.len());
@@ -724,6 +734,7 @@ fn scripture_slides_never_exceed_the_compositor_line_capacity() {
     // A short verse is untouched (no marker).
     c.apply(&Command::StageScripture {
         reference: "John 11:35".into(),
+        translation: None,
     });
     let slide = c.presenter().staged().expect("staged");
     assert!(slide.body.len() <= 6);

@@ -35,10 +35,21 @@ pub enum Command {
     StartTimer { seconds: u32 },
     /// Stop the running timer.
     StopTimer,
-    /// Search scripture (does not push live).
-    ScriptureSearch { query: String },
+    /// Search scripture (does not push live). `translation` is a bundled code
+    /// (`"KJV"`/`"WEB"`); omitted = the KJV default. Skip-if-none keeps fixtures.
+    ScriptureSearch {
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        translation: Option<String>,
+    },
     /// Stage a scripture reference for the operator to review before going live.
-    StageScripture { reference: String },
+    /// `translation` is a bundled-translation code (`"KJV"`/`"WEB"`); omitted =
+    /// the product default (KJV). Skip-if-none keeps the v2 fixtures identical.
+    StageScripture {
+        reference: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        translation: Option<String>,
+    },
     /// Show the identify overlay (a distinct number) on every physical output.
     IdentifyOutputs,
     /// Assign an output role to a physical display (persisted; applied live).

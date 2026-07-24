@@ -133,10 +133,17 @@ const SCRIPTURE_WRAP_COLS: usize = 42;
 /// (FR-025/story 86ajpew05). Falls back to a title-only slide when the text is
 /// not a resolvable reference (e.g. the free-slide recovery path).
 fn scripture_slide(reference: &str) -> Slide {
+    scripture_slide_in(selahcue_scripture::Translation::default(), reference)
+}
+
+/// Compose the scripture slide from a specific bundled translation. Recovery
+/// paths use the default (KJV): the chosen translation is session state, not
+/// yet persisted (documented gap; the reference itself recovers faithfully).
+fn scripture_slide_in(t: selahcue_scripture::Translation, reference: &str) -> Slide {
     let Ok(parsed) = selahcue_core::scripture::parse_one(reference) else {
         return Slide::title(reference);
     };
-    let verses = selahcue_scripture::verses(&parsed);
+    let verses = selahcue_scripture::verses_in(t, &parsed);
     if verses.is_empty() {
         return Slide::title(reference);
     }
@@ -157,10 +164,7 @@ fn scripture_slide(reference: &str) -> Slide {
         lines.truncate(SCRIPTURE_MAX_LINES - 1);
         lines.push("…".to_string());
     }
-    Slide::new(
-        format!("{parsed} ({})", selahcue_scripture::TRANSLATION),
-        lines,
-    )
+    Slide::new(format!("{parsed} ({})", t.code()), lines)
 }
 
 /// Greedy word wrap (the raster layer renders one text layer per line).
@@ -618,17 +622,24 @@ impl LiveController {
                 // without the timer. The audience output is untouched (no timer there).
                 ControllerReply::Ack
             }
-            Command::ScriptureSearch { query } => {
+            Command::ScriptureSearch { query, translation } => {
                 // Reference queries ("Rom 8:28") parse directly; anything else
-                // keyword-searches the bundled translation's verse text. Both
-                // return display references, which stage directly.
+                // keyword-searches the CHOSEN translation's verse text (the
+                // search box sits beside the picker — they must agree).
+                let t = match translation.as_deref() {
+                    None => selahcue_scripture::Translation::default(),
+                    Some(code) => match selahcue_scripture::Translation::from_code(code) {
+                        Some(t) => t,
+                        None => return ControllerReply::Deny(DenyReason::BadRequest),
+                    },
+                };
                 let mut references: Vec<String> = scripture::parse(query)
                     .iter()
-                    .filter(|r| !selahcue_scripture::verses(r).is_empty())
+                    .filter(|r| !selahcue_scripture::verses_in(t, r).is_empty())
                     .map(|r| r.to_string())
                     .collect();
                 if references.is_empty() {
-                    references = selahcue_scripture::search(query, 8)
+                    references = selahcue_scripture::search_in(t, query, 8)
                         .into_iter()
                         .map(|hit| hit.reference)
                         .collect();
@@ -638,8 +649,18 @@ impl LiveController {
                     references,
                 })
             }
-            Command::StageScripture { reference } => {
-                self.presenter.stage(scripture_slide(reference));
+            Command::StageScripture {
+                reference,
+                translation,
+            } => {
+                let t = match translation.as_deref() {
+                    None => selahcue_scripture::Translation::default(),
+                    Some(code) => match selahcue_scripture::Translation::from_code(code) {
+                        Some(t) => t,
+                        None => return ControllerReply::Deny(DenyReason::BadRequest),
+                    },
+                };
+                self.presenter.stage(scripture_slide_in(t, reference));
                 self.staged_idx = None; // a scripture slide is not a plan index
                 self.staged_scripture = Some(reference.clone());
                 ControllerReply::Ack

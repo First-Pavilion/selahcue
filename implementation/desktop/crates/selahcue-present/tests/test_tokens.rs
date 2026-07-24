@@ -107,6 +107,12 @@ fn operator_webview_is_pinned_to_the_canonical_tokens() {
         "id=\"preview-panel\"",
         "id=\"live-panel\"",
         "BLACKOUT — OUTPUT DARK",
+        // Chapter browser + compact-thumbnail rebalance (batch 7ab, owner
+        // request): translation picker (KJV default), verse list, 16:9 panels.
+        "id=\"translation\"",
+        "id=\"verse-list\"",
+        "aspect-ratio: 16 / 9",
+        "\"KJV\"",
     ] {
         assert!(html.contains(needle), "webview missing {needle:?}");
     }

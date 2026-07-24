@@ -28,6 +28,7 @@ fn request_round_trips_and_stamps_version() {
         42,
         Command::ScriptureSearch {
             query: "love".into(),
+            translation: None,
         },
     );
     assert_eq!(req.v, VERSION);
@@ -50,9 +51,11 @@ fn every_command_round_trips() {
         Command::StopTimer,
         Command::ScriptureSearch {
             query: "grace".into(),
+            translation: None,
         },
         Command::StageScripture {
             reference: "Rom 8:28".into(),
+            translation: None,
         },
         Command::GetState,
     ];

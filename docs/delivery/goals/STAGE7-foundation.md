@@ -623,6 +623,20 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7aa-001..S7aa-006. Change: outputs wire surface (OperatorStatusView outputs/displays/assigned_key, skip-if-empty — v2 fixtures byte-identical, new fixtures pinned), Commands IdentifyOutputs/AssignOutput behind new Operator-only `Permission::ConfigureOutputs`; controller identify TTL (pairing-QR pattern) + bounded latest-per-role pending assignments + key validation; schema v5 `output_config` + repo; desktop monitor enumeration with collision-free position-ordinal keys, persisted placement (Fullscreen::Borderless), validate-before-persist application, async-truthful status republish on Moved/Resized, window-level identify blit (I key + command); console OUTPUTS panel with focus-safe rebuilds. Review (rerun after a session-limit abort; 15 agents): 11 confirmed → **7 unique (A–G) → all fixed** — headline: identical-projector key collisions (winit-source-verified), persist-before-validate that could drop a live output to windowed mid-service, and the panel rebuild stealing focus so Enter fired GO LIVE. Verifier: workspace **252** + Flutter **19**, clippy clean. On-device 2+-display acceptance pending (headless CI cannot place windows). Result: PASS. Decision: gate-review.
 
+## Batch 7ab predicate — chapter browser + KJV default + console rebalance (86ajpkfcd · 86ajpkfg7)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7ab-001 | yes | KJV bundled (31,102 verses, audited verbatim, markup stripped) and the DEFAULT everywhere; WEB retained; per-translation APIs | `cargo test -p selahcue-scripture` | data audit + default tests; both indexes bounded | selahcue-scripture | PASS |
+| S7ab-002 | yes | Chapter browser: reference → full numbered chapter; ↑/↓ (incl. held-arrow repeat) move + stage the highlighted verse; ‹ › chapter paging across books; Enter (canonical Go Live) commits — the owner's arrow-to-live flow with preview→live safety intact | acceptance walk + chapter/paging tests | "Genesis 1" → ↓↓ → Enter = Genesis 1:3 on air | index.html; get_chapter | PASS |
+| S7ab-003 | yes | Search agrees with the picker (translation-aware, wire-optional field); Enter is never a silent dead-end; ranges stage whole passages; translation switches carry verse NUMBERS (divergent numbering safe) | review fixes A–D | status line; range staging; number-carry with absent-verse guard | protocol.rs; controller.rs; index.html | PASS |
+| S7ab-004 | yes | Console rebalance: Preview/Live as 16:9 thumbnails + timer + outputs in the right column; every prior invariant (pins, emergency chrome, focus machinery, outputs panel) preserved | pin tests + regression lens | all needles + 7z/7aa behaviours verified in context | index.html; test_tokens.rs | PASS |
+| S7ab-005 | yes | Independent adversarial review; confirmed findings fixed | run `wf_c5226f85-e91` (13 agents) | 9 confirmed → 6 unique (A–F) → **all fixed** | CODE-REVIEW-batch7ab.md | PASS |
+
+### Iteration ledger — batch 7ab
+
+- Target: S7ab-001..S7ab-005. Change: KJV bundle (ebible eng-kjv, brackets/pilcrows stripped) + Translation enum (Kjv default per owner) + per-translation APIs + Chapter/adjacent_chapter paging; optional `translation` on StageScripture AND ScriptureSearch (skip-if-none, fixtures byte-identical); operator get_chapter command (local bundle); console restructure (SCRIPTURES center panel with picker/search/verse list; 16:9 thumbnails right); owner ticket 86ajpqfyj created for further translations (PD bundles vs licensed spike). Review (13 agents): 9 confirmed → **6 unique (A–F) → all fixed** — headline: Enter-on-keywords was a silent dead-end that destroyed the pending search; ranges collapsed to single verses; translation switches could silently stage a different verse where KJV/WEB numbering diverges (asset-verified). Verifier: workspace **253** + Flutter **19**, clippy clean. Translation persistence across recovery = documented gap. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

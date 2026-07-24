@@ -29,6 +29,7 @@ tokio = { version = "1", features = ["sync"] }
 selahcue-app = { path = "../selahcue-app", features = ["server"] }
 selahcue-lan = { path = "../selahcue-lan", features = ["server"] }
 selahcue-core = { path = "../selahcue-core" }
+selahcue-scripture = { path = "../selahcue-scripture" }
 selahcue-present = { path = "../selahcue-present" }
 
 [lints.clippy]

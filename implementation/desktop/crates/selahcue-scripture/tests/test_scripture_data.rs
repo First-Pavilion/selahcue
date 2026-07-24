@@ -4,29 +4,49 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_core::scripture::parse_one;
-use selahcue_scripture::{passage_text, search, verse_count, verses, TRANSLATION};
+use selahcue_scripture::{
+    passage_text, passage_text_in, search, verse_count, verse_count_in, verses, Translation,
+    TRANSLATION,
+};
 
 #[test]
-fn the_full_protestant_canon_is_bundled() {
-    assert_eq!(TRANSLATION, "WEB");
-    // 31,098 verses (WEB protestant canon, ebible.org VPL export).
-    assert_eq!(verse_count(), 31_098);
-    // First and last verses of the canon resolve.
+fn both_protestant_canons_are_bundled_and_kjv_is_the_default() {
+    // Owner decision (2026-07-24): KJV is the default translation.
+    assert_eq!(TRANSLATION, "KJV");
+    assert_eq!(Translation::default(), Translation::Kjv);
+    assert_eq!(Translation::ALL[0], Translation::Kjv);
+    // ebible.org VPL exports: KJV 31,102 / WEB 31,098 verses.
+    assert_eq!(verse_count_in(Translation::Kjv), 31_102);
+    assert_eq!(verse_count_in(Translation::Web), 31_098);
+    assert_eq!(verse_count(), 31_102, "default count is the KJV's");
+    // First and last verses of the canon resolve in both.
     let gen = parse_one("Genesis 1:1").unwrap();
-    assert!(passage_text(&gen).unwrap().contains("In the beginning"));
     let rev = parse_one("Revelation 22:21").unwrap();
-    assert!(passage_text(&rev).unwrap().contains("grace"));
+    for t in Translation::ALL {
+        assert!(passage_text_in(t, &gen)
+            .unwrap()
+            .contains("In the beginning"));
+        assert!(passage_text_in(t, &rev).unwrap().contains("grace"));
+    }
+    // Codes round-trip (wire/UI selector), case-insensitively.
+    assert_eq!(Translation::from_code("kjv"), Some(Translation::Kjv));
+    assert_eq!(Translation::from_code("WEB"), Some(Translation::Web));
+    assert_eq!(Translation::from_code("NIV"), None);
 }
 
 #[test]
-fn romans_8_28_has_its_web_text() {
-    // The story's acceptance verse, verbatim from the translation.
+fn romans_8_28_reads_correctly_in_each_translation() {
     let r = parse_one("Romans 8:28").unwrap();
-    let text = passage_text(&r).unwrap();
+    // Default (KJV) wording — with the ebible supplied-word brackets stripped.
+    let kjv = passage_text(&r).unwrap();
     assert!(
-        text.contains("all things work together for good"),
-        "unexpected text: {text}"
+        kjv.contains("all things work together for good to them that love God"),
+        "unexpected KJV text: {kjv}"
     );
+    assert!(!kjv.contains('[') && !kjv.contains('¶'), "markup stripped");
+    // WEB wording stays available explicitly.
+    let web = passage_text_in(Translation::Web, &r).unwrap();
+    assert!(web.contains("work together for good for those who love God"));
 }
 
 #[test]
@@ -80,13 +100,54 @@ fn keyword_search_meets_the_500ms_budget() {
 }
 
 #[test]
-fn the_index_is_bounded_and_idempotent() {
-    // No-leak rule: repeated use never grows the index — one fixed decode.
-    let first = verse_count();
+fn the_indexes_are_bounded_and_idempotent() {
+    // No-leak rule: repeated use never grows EITHER decoded index — one fixed
+    // decode per translation.
+    let first: Vec<usize> = Translation::ALL
+        .iter()
+        .map(|t| verse_count_in(*t))
+        .collect();
     for _ in 0..50 {
         let r = parse_one("John 3:16").unwrap();
+        for t in Translation::ALL {
+            let _ = passage_text_in(t, &r);
+            let _ = selahcue_scripture::search_in(t, "love", 4);
+        }
         let _ = passage_text(&r);
         let _ = search("love", 4);
     }
-    assert_eq!(verse_count(), first);
+    let after: Vec<usize> = Translation::ALL
+        .iter()
+        .map(|t| verse_count_in(*t))
+        .collect();
+    assert_eq!(after, first);
+    assert_eq!(verse_count(), first[0], "default remains the KJV index");
+}
+
+#[test]
+fn chapter_browser_returns_full_chapters_with_paging() {
+    use selahcue_scripture::{adjacent_chapter, chapter};
+    // A verse-level reference yields its WHOLE chapter.
+    let r = parse_one("Genesis 1:3").unwrap();
+    let ch = chapter(&r).unwrap();
+    assert_eq!((ch.book_name.as_str(), ch.chapter), ("Genesis", 1));
+    assert_eq!(ch.verses.len(), 31);
+    assert_eq!(ch.verses[0].0, 1);
+    assert!(!ch.has_prev, "nothing before Genesis 1");
+    assert!(ch.has_next);
+
+    // Paging crosses book boundaries in both directions.
+    assert_eq!(adjacent_chapter(&r, true).as_deref(), Some("Genesis 2"));
+    assert_eq!(adjacent_chapter(&r, false), None);
+    let mal = parse_one("Malachi 4").unwrap();
+    assert_eq!(adjacent_chapter(&mal, true).as_deref(), Some("Matthew 1"));
+    let rev = parse_one("Revelation 22").unwrap();
+    assert!(chapter(&rev).unwrap().has_prev);
+    assert!(adjacent_chapter(&rev, true).is_none(), "end of the canon");
+    // The returned display string parses back (round-trips into the browser).
+    let next = adjacent_chapter(&mal, true).unwrap();
+    assert!(chapter(&parse_one(&next).unwrap()).is_some());
+
+    // Out-of-canon chapters are None, never a panic.
+    assert!(chapter(&parse_one("Psalm 151").unwrap()).is_none());
 }

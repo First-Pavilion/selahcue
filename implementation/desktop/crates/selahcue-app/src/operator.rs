@@ -156,10 +156,11 @@ impl OperatorShell {
     }
 
     /// Stage a scripture reference in Preview (its verse text composes from the
-    /// bundled translation).
-    pub fn stage_scripture(&self, reference: &str) -> OperatorView {
+    /// chosen bundled translation; `None` = the KJV default).
+    pub fn stage_scripture(&self, reference: &str, translation: Option<&str>) -> OperatorView {
         self.act(&Command::StageScripture {
             reference: reference.into(),
+            translation: translation.map(Into::into),
         })
     }
 
@@ -178,10 +179,11 @@ impl OperatorShell {
 
     /// Search scripture: reference parse first, then keyword search over the
     /// bundled translation. Returns display references (stageable directly).
-    pub fn scripture_search(&self, query: &str) -> Vec<String> {
+    pub fn scripture_search(&self, query: &str, translation: Option<&str>) -> Vec<String> {
         self.with(|c| {
             match c.apply(&Command::ScriptureSearch {
                 query: query.into(),
+                translation: translation.map(Into::into),
             }) {
                 crate::ControllerReply::Message(
                     selahcue_lan::protocol::ServerMessage::ScriptureResults { references, .. },
@@ -379,13 +381,16 @@ impl RemoteOperator {
         .await
     }
 
-    /// Stage a scripture reference on the host (verse text from its bundle).
+    /// Stage a scripture reference on the host (verse text from its bundle;
+    /// `None` = the KJV default).
     pub async fn stage_scripture(
         &mut self,
         reference: &str,
+        translation: Option<&str>,
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::StageScripture {
             reference: reference.into(),
+            translation: translation.map(Into::into),
         })
         .await
     }
@@ -412,12 +417,14 @@ impl RemoteOperator {
     pub async fn scripture_search(
         &mut self,
         query: &str,
+        translation: Option<&str>,
     ) -> Result<Vec<String>, selahcue_lan::TransportError> {
         use selahcue_lan::protocol::ServerMessage;
         match self
             .client
             .command(Command::ScriptureSearch {
                 query: query.into(),
+                translation: translation.map(Into::into),
             })
             .await?
         {

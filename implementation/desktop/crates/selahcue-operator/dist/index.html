@@ -38,7 +38,7 @@
       /* --- Console body: plan | preview/live | timer --- */
       main {
         flex: 1; display: grid;
-        grid-template-columns: minmax(220px, 300px) minmax(0, 1fr) minmax(180px, 250px);
+        grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) minmax(240px, 320px);
         gap: 12px; min-height: 0; padding: 12px; min-width: 0;
       }
       main > * { min-width: 0; }
@@ -98,9 +98,48 @@
       }
       #scripture-hits .hit:hover { color: var(--text); border-color: var(--line); background: #1d2430; }
       /* --- Center: PREVIEW · STAGED and LIVE · ON AIR panels (Figma) --- */
-      #stagearea { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+      /* Center: the scriptures chapter browser (owner request, Pewbeam-style). */
+      #scriptures {
+        display: flex; flex-direction: column; gap: 8px; min-height: 0;
+        border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+        padding: 10px 12px;
+      }
+      .scrip-head { display: flex; align-items: center; gap: 8px; }
+      .scrip-head h2 {
+        margin: 0; font-size: 11px; letter-spacing: .06em; color: var(--muted);
+        text-transform: uppercase;
+      }
+      .scrip-head select, .scrip-head input {
+        font: inherit; font-size: 13px; color: var(--text); background: var(--bg);
+        border: 1px solid var(--line); border-radius: 8px; padding: 7px;
+      }
+      .scrip-head input { flex: 1; min-width: 0; }
+      .chapter-nav { display: flex; align-items: center; gap: 8px; }
+      .chapter-nav button { padding: 4px 12px; font-size: 15px; }
+      .chapter-nav button:disabled { opacity: 0.35; cursor: default; }
+      #chapter-ref { font-weight: 700; font-size: 13px; }
+      #verse-list { flex: 1; overflow-y: auto; min-height: 0; }
+      .verse {
+        display: flex; gap: 8px; padding: 6px 8px; border: 1px solid transparent;
+        border-radius: 6px; cursor: pointer; font-size: 13px; line-height: 1.45;
+      }
+      .verse:hover { background: #1d2430; }
+      .verse .vnum { color: var(--warn-ink); font-weight: 700; min-width: 22px; text-align: right; }
+      .verse.cursor { border-color: var(--preview-ink); background: #10231c; }
+      .scrip-note { color: var(--muted); font-size: 11px; text-align: center; }
+      #scrip-status { color: var(--warn-ink); font-size: 12px; min-height: 16px; }
+      /* Right: compact output thumbnails + timer + outputs (owner request). */
+      #rightcol {
+        display: flex; flex-direction: column; gap: 8px; min-height: 0;
+        overflow-y: auto; border: 1px solid var(--line); border-radius: 10px;
+        background: var(--panel); padding: 10px;
+      }
+      .side-h {
+        margin: 6px 0 0; font-size: 11px; letter-spacing: .06em; color: var(--muted);
+        text-transform: uppercase;
+      }
       .outpanel {
-        flex: 1; display: flex; flex-direction: column; min-height: 0;
+        flex: none; display: flex; flex-direction: column; aspect-ratio: 16 / 9;
         border-radius: 10px; overflow: hidden; border: 1px solid var(--line);
       }
       .outpanel .head {
@@ -116,7 +155,7 @@
         align-items: center; justify-content: center; gap: 8px; padding: 16px;
         text-align: center;
       }
-      .outpanel .surface .big { font-size: 24px; font-weight: 700; }
+      .outpanel .surface .big { font-size: 15px; font-weight: 700; }
       .outpanel .surface .cap { color: var(--muted); font-size: 11px; }
       .outpanel .surface.idle .big { color: var(--muted); font-weight: 500; font-size: 15px; }
       #live-black {
@@ -127,7 +166,7 @@
       #live-panel.blackout #live-black { display: inline-block; }
       #live-panel.blackout .surface .big, #live-panel.blackout .surface .cap { opacity: 0.25; }
       .golive-row { display: flex; gap: 8px; align-items: stretch; }
-      .golive-row button { flex: 1; padding: 10px; }
+      .golive-row button { flex: 1; padding: 8px; font-size: 13px; }
       button {
         font: inherit; font-weight: 600; color: var(--text); background: var(--panel);
         border: 1px solid var(--line); border-radius: 8px; padding: 12px; cursor: pointer;
@@ -153,8 +192,8 @@
         text-transform: uppercase;
       }
       #timer-big {
-        font-size: 44px; font-weight: 800; font-variant-numeric: tabular-nums;
-        text-align: center; color: var(--muted); padding: 8px 0;
+        font-size: 34px; font-weight: 800; font-variant-numeric: tabular-nums;
+        text-align: center; color: var(--muted); padding: 4px 0;
       }
       #timer-big.up {
         background: var(--live); color: #fff; border-radius: 8px; font-size: 30px;
@@ -204,11 +243,6 @@
       <section id="plan-wrap" aria-label="Service plan">
         <h2>Service plan</h2>
         <div id="plan"></div>
-        <div class="add-row" id="scripture-row">
-          <input id="scripture-q" placeholder="Scripture — reference or keywords" aria-label="Search scripture" />
-          <button id="scripture-stage" aria-label="Stage the scripture search result">Stage</button>
-        </div>
-        <div id="scripture-hits" role="listbox" aria-label="Scripture results"></div>
         <div class="add-row">
           <select id="add-kind">
             <option value="song">Song</option>
@@ -220,7 +254,23 @@
           <button id="add-item">+ Add</button>
         </div>
       </section>
-      <section id="stagearea" aria-label="Preview and live output">
+      <section id="scriptures" aria-label="Scriptures">
+        <div class="scrip-head">
+          <h2>Scriptures</h2>
+          <select id="translation" aria-label="Bible translation"></select>
+          <input id="scripture-q" placeholder="Reference or keywords — e.g. Genesis 1" aria-label="Search scripture" />
+        </div>
+        <div id="scripture-hits" role="listbox" aria-label="Scripture results"></div>
+        <div class="chapter-nav">
+          <button id="ch-prev" aria-label="Previous chapter">‹</button>
+          <span id="chapter-ref">Type a reference to open a chapter</span>
+          <button id="ch-next" aria-label="Next chapter">›</button>
+        </div>
+        <div id="verse-list" role="listbox" aria-label="Chapter verses"></div>
+        <span id="scrip-status" role="status" aria-live="polite"></span>
+        <span class="scrip-note">↑ ↓ move &amp; stage the highlighted verse · ⏎ Enter sends it live</span>
+      </section>
+      <section id="rightcol" aria-label="Outputs and timer">
         <div class="outpanel" id="preview-panel">
           <div class="head">PREVIEW · STAGED</div>
           <div class="surface idle">
@@ -241,9 +291,7 @@
             <span class="cap" id="live-cap"></span>
           </div>
         </div>
-      </section>
-      <aside aria-label="Service timer">
-        <h2>Service timer</h2>
+        <h2 class="side-h">Service timer</h2>
         <div id="timer-big">–:––</div>
         <div class="timer-row">
           <button id="timer-5">⏱ 5:00</button>
@@ -253,10 +301,10 @@
           <button id="timer-stop">Stop</button>
         </div>
         <span class="timer-note">Shown on the stage output only</span>
-        <h2 id="outputs-h">Outputs</h2>
+        <h2 class="side-h" id="outputs-h">Outputs</h2>
         <div id="outputs" aria-labelledby="outputs-h"></div>
         <button id="identify" aria-label="Show the identify number on every display">Identify displays</button>
-      </aside>
+      </section>
     </main>
     <footer id="emergency" role="toolbar" aria-label="Emergency controls">
       <button id="blackout" aria-pressed="false" aria-label="Blackout the audience output">■ BLACKOUT<span id="blackout-state"></span><span class="key">B</span></button>
@@ -565,11 +613,41 @@
         act(() => invoke("start_timer", { seconds: 600 }));
       document.getElementById("timer-stop").onclick = () => act(() => invoke("stop_timer"));
       document.getElementById("identify").onclick = () => act(() => invoke("identify_outputs"));
-      // Scripture: search (reference or keywords) -> click a hit (or Stage) to
-      // put its verse text in Preview. Results are display references.
+      // ── Scriptures chapter browser (86ajpkfcd, Pewbeam-style; KJV default).
+      // Type a reference -> the chapter opens as a numbered verse list; ↑/↓
+      // move the highlighted verse AND stage it; the canonical Enter (Go Live)
+      // then sends it to the audience. Keywords fall back to search hits.
+      let currentTranslation = "KJV";
+      let currentChapter = null; // {reference, verses:[[num,text]...], prev, next}
+      let verseCursor = -1;
       let scriptureTimer = null;
       let scriptureHits = [];
-      let scriptureGen = 0; // stale async results must never render or stage
+      let scriptureGen = 0;
+
+      const translationSel = document.getElementById("translation");
+      const renderTranslations = (codes) => {
+        if (translationSel.options.length === codes.length) return;
+        translationSel.innerHTML = "";
+        codes.forEach((c) => {
+          const opt = document.createElement("option");
+          opt.value = c;
+          opt.textContent = c;
+          if (c === currentTranslation) opt.selected = true;
+          translationSel.appendChild(opt);
+        });
+      };
+      renderTranslations(["KJV", "WEB"]);
+      translationSel.onchange = () => {
+        currentTranslation = translationSel.value;
+        if (currentChapter) {
+          const num =
+            verseCursor >= 0 && currentChapter.verses[verseCursor]
+              ? currentChapter.verses[verseCursor][0]
+              : null;
+          loadChapter(currentChapter.reference, num);
+        }
+      };
+
       const renderHits = () => {
         const box = document.getElementById("scripture-hits");
         box.innerHTML = "";
@@ -584,15 +662,131 @@
             scriptureGen++;
             scriptureHits = [];
             renderHits();
-            act(() => invoke("stage_scripture", { reference: ref }));
+            loadChapter(ref, null);
           };
           box.appendChild(el);
         });
       };
+
+      function verseRef(i) {
+        const v = currentChapter.verses[i];
+        return currentChapter.reference + ":" + v[0];
+      }
+
+      const setStatus = (msg) => {
+        document.getElementById("scrip-status").textContent = msg || "";
+      };
+
+      // Staging trails the cursor by 120ms so held-arrow traversal lands ONE
+      // stage on the final verse instead of a wire burst per repeat.
+      let stageTimer = null;
+      function setCursor(i, stage) {
+        if (!currentChapter || !currentChapter.verses.length) return;
+        verseCursor = Math.max(0, Math.min(i, currentChapter.verses.length - 1));
+        const list = document.getElementById("verse-list");
+        [...list.children].forEach((el, j) =>
+          el.classList.toggle("cursor", j === verseCursor)
+        );
+        const el = list.children[verseCursor];
+        if (el) el.scrollIntoView({ block: "nearest" });
+        if (stage) {
+          setStatus("");
+          clearTimeout(stageTimer);
+          const ref = verseRef(verseCursor);
+          stageTimer = setTimeout(() => {
+            act(() =>
+              invoke("stage_scripture", {
+                reference: ref,
+                translation: currentTranslation,
+              })
+            );
+          }, 120);
+        }
+      }
+
+      function renderChapter() {
+        document.getElementById("chapter-ref").textContent =
+          currentChapter.reference + " (" + currentChapter.translation + ")";
+        document.getElementById("ch-prev").disabled = !currentChapter.prev;
+        document.getElementById("ch-next").disabled = !currentChapter.next;
+        const list = document.getElementById("verse-list");
+        list.innerHTML = "";
+        currentChapter.verses.forEach(([num, text], i) => {
+          const row = document.createElement("div");
+          row.className = "verse";
+          row.setAttribute("role", "option");
+          const n = document.createElement("span");
+          n.className = "vnum";
+          n.textContent = num;
+          const t = document.createElement("span");
+          t.textContent = text;
+          row.appendChild(n);
+          row.appendChild(t);
+          row.onclick = () => setCursor(i, true);
+          list.appendChild(row);
+        });
+      }
+
+      // cursorVerseNum is a verse NUMBER (not an index): KJV/WEB verse
+      // numbering diverges in six chapters, so indexes silently shift verses.
+      async function loadChapter(reference, cursorVerseNum) {
+        try {
+          const ch = await invoke("get_chapter", {
+            reference,
+            translation: currentTranslation,
+          });
+          currentChapter = ch;
+          renderTranslations(ch.translations);
+          renderChapter();
+          setStatus("");
+          // A typed RANGE ("John 3:16-18") stages the whole passage; the
+          // cursor lands on its first verse without re-staging a single verse.
+          const range = reference.match(/:(\d+)-(\d+)\s*$/);
+          const single = reference.match(/:(\d+)\s*$/);
+          let wantNum = null;
+          if (cursorVerseNum != null) wantNum = cursorVerseNum;
+          else if (range) wantNum = parseInt(range[1], 10);
+          else if (single) wantNum = parseInt(single[1], 10);
+          let idx = wantNum == null ? 0
+            : ch.verses.findIndex(([n]) => n === wantNum);
+          if (wantNum != null && idx < 0) {
+            // The verse number does not exist in this translation (e.g. WEB
+            // omits Acts 8:37): land nearby but do NOT silently stage it.
+            idx = ch.verses.findIndex(([n]) => n > wantNum);
+            if (idx < 0) idx = ch.verses.length - 1;
+            setCursor(idx, false);
+            setStatus(
+              ch.reference + ":" + wantNum + " is not present in " + ch.translation
+            );
+            return;
+          }
+          if (range) {
+            setCursor(Math.max(0, idx), false);
+            act(() =>
+              invoke("stage_scripture", {
+                reference,
+                translation: currentTranslation,
+              })
+            );
+          } else {
+            setCursor(Math.max(0, idx), true);
+          }
+          return true;
+        } catch (e) {
+          setStatus(String(e));
+          return false;
+        }
+      }
+
+      document.getElementById("ch-prev").onclick = () => {
+        if (currentChapter && currentChapter.prev) loadChapter(currentChapter.prev, null);
+      };
+      document.getElementById("ch-next").onclick = () => {
+        if (currentChapter && currentChapter.next) loadChapter(currentChapter.next, null);
+      };
+
       document.getElementById("scripture-q").oninput = (e) => {
         clearTimeout(scriptureTimer);
-        // The old hits are for the OLD query: drop them immediately so Enter or
-        // Stage can never commit a stale first hit while the debounce is pending.
         const gen = ++scriptureGen;
         scriptureHits = [];
         renderHits();
@@ -600,7 +794,10 @@
         if (!q) return;
         scriptureTimer = setTimeout(async () => {
           try {
-            const hits = await invoke("scripture_search", { query: q });
+            const hits = await invoke("scripture_search", {
+              query: q,
+              translation: currentTranslation,
+            });
             if (gen !== scriptureGen) return; // superseded while in flight
             scriptureHits = hits;
             renderHits();
@@ -609,23 +806,40 @@
           }
         }, 250);
       };
-      const stageScripture = () => {
+      document.getElementById("scripture-q").onkeydown = async (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
         const q = document.getElementById("scripture-q").value.trim();
         if (!q) return;
-        // Fresh hits (same generation) may refine the query; otherwise stage the
-        // typed text and let the host resolve it.
-        const ref = scriptureHits.length ? scriptureHits[0] : q;
         clearTimeout(scriptureTimer);
-        scriptureGen++;
-        scriptureHits = [];
-        renderHits();
-        act(() => invoke("stage_scripture", { reference: ref }));
-      };
-      document.getElementById("scripture-stage").onclick = stageScripture;
-      document.getElementById("scripture-q").onkeydown = (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          stageScripture();
+        const gen = ++scriptureGen;
+        if (scriptureHits.length) {
+          const ref = scriptureHits[0];
+          scriptureHits = [];
+          renderHits();
+          if (await loadChapter(ref, null)) e.target.blur();
+          return;
+        }
+        // No hits yet (the debounce may not have fired): try it as a chapter;
+        // a keyword query falls through to an IMMEDIATE search — Enter is
+        // never a silent dead-end and never discards the search.
+        if (await loadChapter(q, null)) {
+          scriptureHits = [];
+          renderHits();
+          e.target.blur(); // hand the arrows to the verse list
+          return;
+        }
+        try {
+          const hits = await invoke("scripture_search", {
+            query: q,
+            translation: currentTranslation,
+          });
+          if (gen !== scriptureGen) return;
+          scriptureHits = hits;
+          renderHits();
+          setStatus(hits.length ? "" : "No matches for “" + q + "”");
+        } catch (err) {
+          console.error(err);
         }
       };
 
@@ -683,9 +897,11 @@
       window.addEventListener(
         "keydown",
         (e) => {
-        // OS auto-repeat is never a deliberate action: a held Esc must not
-        // complete the double-tap, a held B must not strobe the blackout.
-        if (e.repeat) return;
+        // OS auto-repeat is never a deliberate action for the emergency and
+        // transport keys (a held Esc must not complete the double-tap, a held
+        // B must not strobe) — but held ARROWS legitimately traverse the verse
+        // list (staging trails the cursor, so no wire burst).
+        if (e.repeat && !(e.key === "ArrowUp" || e.key === "ArrowDown")) return;
         const mod = e.ctrlKey || e.metaKey;
         // Emergency chords pierce everything, including text fields (§3):
         // Ctrl/Cmd+Shift+B = blackout, Ctrl/Cmd+Shift+. = clear all. Matched by
@@ -713,6 +929,13 @@
         const tag = (e.target && e.target.tagName) || "";
         if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
         if (tag === "BUTTON" && (e.key === "Enter" || e.key === " ")) return;
+        // ↑/↓ own the chapter browser when one is open: move + stage the
+        // highlighted verse (Enter then goes live via the canonical map).
+        if ((e.key === "ArrowUp" || e.key === "ArrowDown") && currentChapter) {
+          e.preventDefault();
+          setCursor(verseCursor + (e.key === "ArrowDown" ? 1 : -1), true);
+          return;
+        }
         switch (e.key) {
           case " ":
           case "ArrowRight":

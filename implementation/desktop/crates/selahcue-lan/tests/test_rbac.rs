@@ -36,9 +36,11 @@ fn operator_can_do_every_command() {
         Command::StopTimer,
         Command::ScriptureSearch {
             query: "love".into(),
+            translation: None,
         },
         Command::StageScripture {
             reference: "John 3:16".into(),
+            translation: None,
         },
         Command::GetState,
     ];
@@ -80,13 +82,15 @@ fn assistant_can_navigate_and_search_but_not_go_live() {
     assert!(authorize(
         Role::Assistant,
         &Command::ScriptureSearch {
-            query: "grace".into()
+            query: "grace".into(),
+            translation: None,
         }
     ));
     assert!(authorize(
         Role::Assistant,
         &Command::StageScripture {
-            reference: "Ps 23".into()
+            reference: "Ps 23".into(),
+            translation: None,
         }
     ));
     assert!(!authorize(Role::Assistant, &Command::GoLive));
@@ -106,7 +110,10 @@ fn viewer_can_only_monitor() {
     assert!(!authorize(Role::Viewer, &Command::Clear));
     assert!(!authorize(
         Role::Viewer,
-        &Command::ScriptureSearch { query: "x".into() }
+        &Command::ScriptureSearch {
+            query: "x".into(),
+            translation: None
+        }
     ));
 }
 
@@ -135,9 +142,11 @@ fn scripture_commands_allowed_for_assistant_and_up_denied_for_viewer() {
     for cmd in [
         Command::ScriptureSearch {
             query: "hope".into(),
+            translation: None,
         },
         Command::StageScripture {
             reference: "Jer 29:11".into(),
+            translation: None,
         },
     ] {
         assert!(authorize(Role::Operator, &cmd), "operator {cmd:?}");
