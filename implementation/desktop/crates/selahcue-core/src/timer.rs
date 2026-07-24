@@ -51,6 +51,14 @@ impl Timer {
         }
     }
 
+    /// Rebuild a timer with time already on the clock (crash recovery): the timer is
+    /// stopped with `elapsed` banked; call [`start`](Self::start) to resume from there.
+    pub fn with_elapsed(mut self, elapsed: Duration) -> Self {
+        self.accumulated = elapsed;
+        self.running_since = None;
+        self
+    }
+
     pub fn mode(&self) -> TimerMode {
         self.mode
     }

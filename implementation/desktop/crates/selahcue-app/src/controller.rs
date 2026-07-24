@@ -32,6 +32,23 @@ pub enum ControllerReply {
     Message(ServerMessage),
 }
 
+/// A persistable snapshot of the live session (crash recovery). Pure data — the
+/// desktop maps it to/from the persistence layer; the controller stays storage-free.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ControllerSnapshot {
+    pub live_idx: Option<u32>,
+    pub staged_idx: Option<u32>,
+    pub plan_cursor: Option<u32>,
+    pub blackout: bool,
+    pub timer_total_secs: Option<u32>,
+    pub timer_elapsed_secs: Option<u32>,
+    pub timer_running: bool,
+    /// A scripture reference on the Live output (a non-plan slide), if any.
+    pub live_scripture: Option<String>,
+    /// A scripture reference staged in Preview, if any.
+    pub staged_scripture: Option<String>,
+}
+
 /// Drives the live/preview presentation from a [`ServicePlan`].
 pub struct LiveController {
     plan: ServicePlan,
@@ -63,6 +80,13 @@ pub struct LiveController {
     /// While pairing mode is active: the invite URI shown as a QR on the stage
     /// output, and when it stops being valid (auto-cleared by `tick`).
     pairing_qr: Option<(String, Instant)>,
+    /// Set by any state-changing command; the host's autosave loop consumes it via
+    /// [`take_state_dirty`](Self::take_state_dirty).
+    state_dirty: bool,
+    /// The scripture reference staged in Preview, if Preview holds one (non-plan slide).
+    staged_scripture: Option<String>,
+    /// The scripture reference on the Live output, if Live shows one.
+    live_scripture: Option<String>,
 }
 
 impl LiveController {
@@ -84,7 +108,106 @@ impl LiveController {
             stage_dirty: true,
             last_stage_key: None,
             pairing_qr: None,
+            state_dirty: false,
+            staged_scripture: None,
+            live_scripture: None,
         }
+    }
+
+    /// A persistable snapshot of the live session at `now` (injected clock, so the
+    /// timer's elapsed is exact at the save instant).
+    pub fn snapshot(&self, now: Instant) -> ControllerSnapshot {
+        let (timer_total_secs, timer_elapsed_secs, timer_running) =
+            match (&self.timer, self.timer_total) {
+                (Some(timer), Some(total)) => (
+                    Some(total.as_secs() as u32),
+                    Some(timer.elapsed(now).as_secs() as u32),
+                    timer.is_running() || self.timer_pending_start,
+                ),
+                _ => (None, None, false),
+            };
+        ControllerSnapshot {
+            live_idx: self.live_idx.map(|i| i as u32),
+            staged_idx: self.staged_idx.map(|i| i as u32),
+            plan_cursor: self.plan_cursor.map(|i| i as u32),
+            blackout: self.blackout,
+            timer_total_secs,
+            timer_elapsed_secs,
+            timer_running,
+            live_scripture: self.live_scripture.clone(),
+            staged_scripture: self.staged_scripture.clone(),
+        }
+    }
+
+    /// Restore a persisted session onto this (freshly constructed) controller —
+    /// the crash-recovery path. State is rebuilt through the same code paths the
+    /// commands use, so the outputs re-render exactly. Indices that don't fit the
+    /// current plan are ignored (defensive: a snapshot from a different plan must
+    /// never panic or point past the end). A running countdown resumes from its
+    /// persisted elapsed on the next [`tick`](Self::tick).
+    pub fn restore(&mut self, snap: &ControllerSnapshot) {
+        let len = self.plan.len();
+        let ok = |v: Option<u32>| v.map(|i| i as usize).filter(|i| *i < len);
+
+        // Rebuild LIVE first: a plan item by index, or a scripture by its reference.
+        if let Some(live) = ok(snap.live_idx) {
+            self.stage_index(live);
+            if self.presenter.go_live() {
+                self.live_idx = Some(live);
+            }
+        } else if let Some(reference) = snap.live_scripture.as_ref() {
+            self.presenter.stage(Slide::title(reference.clone()));
+            if self.presenter.go_live() {
+                self.live_idx = None;
+                self.live_scripture = Some(reference.clone());
+            }
+        }
+        // Then PREVIEW: a plan item, a scripture, or — explicitly — nothing (go_live
+        // leaves its input in the staged slot, so an empty preview must be cleared or
+        // the monitor would show a phantom "next" and a later GoLive would desync).
+        if let Some(staged) = ok(snap.staged_idx) {
+            self.stage_index(staged);
+        } else if let Some(reference) = snap.staged_scripture.as_ref() {
+            self.presenter.stage(Slide::title(reference.clone()));
+            self.staged_idx = None;
+            self.staged_scripture = Some(reference.clone());
+        } else {
+            self.presenter.clear_preview();
+            self.staged_idx = None;
+        }
+        self.plan_cursor = ok(snap.plan_cursor).or(self.plan_cursor);
+
+        self.blackout = snap.blackout;
+        self.presenter.blackout(snap.blackout);
+
+        if let Some(total) = snap.timer_total_secs {
+            let total = Duration::from_secs(u64::from(total));
+            let elapsed = Duration::from_secs(u64::from(snap.timer_elapsed_secs.unwrap_or(0)));
+            self.timer = Some(Timer::count_down(total).with_elapsed(elapsed));
+            self.timer_total = Some(total);
+            self.timer_pending_start = snap.timer_running;
+            self.last_timer_view = None;
+        }
+
+        self.stage_dirty = true;
+        self.state_dirty = false; // we just loaded this state — nothing new to save
+    }
+
+    /// Whether state changed since the last [`take_state_dirty`] (autosave signal).
+    pub fn take_state_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.state_dirty)
+    }
+
+    /// Re-arm the autosave signal (e.g. the save loop consumed it but deferred the
+    /// write to respect its throttle).
+    pub fn mark_state_dirty(&mut self) {
+        self.state_dirty = true;
+    }
+
+    /// Whether a countdown is active (the autosave loop refreshes the persisted
+    /// elapsed periodically while one runs).
+    pub fn timer_active(&self) -> bool {
+        self.timer.is_some()
     }
 
     /// Show the pairing invite as a QR on the stage/confidence output until
@@ -238,6 +361,7 @@ impl LiveController {
                 self.presenter.stage(slide);
                 self.staged_idx = Some(idx);
                 self.plan_cursor = Some(idx);
+                self.staged_scripture = None; // Preview now holds a plan item
                 ControllerReply::Ack
             }
             None => ControllerReply::Deny(DenyReason::BadRequest),
@@ -249,6 +373,11 @@ impl LiveController {
         // Any command may change what the confidence monitor should show; refresh it on
         // the next tick (gated there, so a read just costs one recompose).
         self.stage_dirty = true;
+        // Mutating commands mark the session for autosave (reads don't).
+        match command {
+            Command::GetState | Command::GetOperatorState | Command::ScriptureSearch { .. } => {}
+            _ => self.state_dirty = true,
+        }
         let len = self.plan.len();
         match command {
             Command::Next => {
@@ -280,7 +409,8 @@ impl LiveController {
                 // presenter reports whether anything was staged.
                 if self.presenter.go_live() {
                     self.live_idx = self.staged_idx; // None for a non-plan scripture
-                                                     // Going live from blackout reveals the new content (UX-STATE-MATRIX).
+                    self.live_scripture = self.staged_scripture.clone();
+                    // Going live from blackout reveals the new content (UX-STATE-MATRIX).
                     self.blackout = false;
                     ControllerReply::Ack
                 } else {
@@ -290,6 +420,7 @@ impl LiveController {
             Command::Clear => {
                 self.presenter.clear_live();
                 self.live_idx = None;
+                self.live_scripture = None;
                 self.blackout = false;
                 ControllerReply::Ack
             }
@@ -331,6 +462,7 @@ impl LiveController {
             Command::StageScripture { reference } => {
                 self.presenter.stage(Slide::title(reference.clone()));
                 self.staged_idx = None; // a scripture slide is not a plan index
+                self.staged_scripture = Some(reference.clone());
                 ControllerReply::Ack
             }
             Command::GetState => {

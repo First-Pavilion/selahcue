@@ -21,6 +21,7 @@ mod error;
 mod key;
 pub mod migrations;
 pub mod plan_repo;
+pub mod session_repo;
 
 pub use db::Database;
 pub use error::{DataError, Result};

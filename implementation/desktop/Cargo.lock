@@ -1787,6 +1787,7 @@ dependencies = [
 name = "selahcue-app"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "selahcue-core",
  "selahcue-lan",
  "selahcue-present",
@@ -1816,6 +1817,7 @@ dependencies = [
  "pollster",
  "selahcue-app",
  "selahcue-core",
+ "selahcue-data",
  "selahcue-engine",
  "selahcue-lan",
  "selahcue-present",

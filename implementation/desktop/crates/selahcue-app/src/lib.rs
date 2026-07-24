@@ -9,7 +9,7 @@
 mod controller;
 mod operator;
 
-pub use controller::{ControllerReply, LiveController};
+pub use controller::{ControllerReply, ControllerSnapshot, LiveController};
 pub use operator::{ItemView, OperatorShell, OperatorView};
 
 #[cfg(feature = "server")]

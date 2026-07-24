@@ -91,6 +91,13 @@ impl Presenter {
         self.live_slide = None;
     }
 
+    /// Clear the Preview/staged slot (e.g. session restore establishing "nothing is
+    /// staged" — go-live never clears it, so restores need an explicit reset).
+    pub fn clear_preview(&mut self) {
+        self.preview.apply(EngineCommand::Clear);
+        self.staged = None;
+    }
+
     /// **Blackout** (`B`): toggle the audience output to black. Un-blackout restores
     /// the prior live content (the slide is retained, only hidden).
     pub fn blackout(&mut self, on: bool) {

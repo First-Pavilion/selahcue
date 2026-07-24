@@ -31,6 +31,27 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX idx_plan_item_order ON plan_item(plan_id, ord);
     "#,
+    // v1 -> v2: live-session snapshot for crash recovery (FR: force-kill + recover).
+    // A singleton row (id = 1) — the last autosaved live state; NULLs = "nothing".
+    r#"
+    CREATE TABLE session_state (
+        id                 INTEGER PRIMARY KEY CHECK (id = 1),
+        plan_id            INTEGER REFERENCES service_plan(id) ON DELETE SET NULL,
+        live_idx           INTEGER,
+        staged_idx         INTEGER,
+        plan_cursor        INTEGER,
+        blackout           INTEGER NOT NULL DEFAULT 0,
+        timer_total_secs   INTEGER,
+        timer_elapsed_secs INTEGER,
+        timer_running      INTEGER
+    );
+    "#,
+    // v2 -> v3: a scripture (a non-plan slide) can be live or staged — persist its
+    // reference so recovery restores it instead of a blank surface (review 7u-E).
+    r#"
+    ALTER TABLE session_state ADD COLUMN live_scripture TEXT;
+    ALTER TABLE session_state ADD COLUMN staged_scripture TEXT;
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

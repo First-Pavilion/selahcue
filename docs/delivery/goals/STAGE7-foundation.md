@@ -533,6 +533,21 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7t-001..S7t-005. Change: live demo walk (launch→next→go-live→timer→blackout→clear→kill→relaunch, all state-recorded); FOUNDATION-DEMO-REVIEW.md authored → adversarially audited (17 findings: wrong-evidence ×5, overclaim ×7, omission ×5) → **all corrected** + 1 new E2E closing the pair→advance evidence gap. Milestone `86ajp0bpn` stays open; reconciliation table + gap list to the owner. Verifier: workspace 199; fmt+clippy clean. Result: PASS (review complete; milestone honestly NOT met). Decision: gate-review.
 
+## Batch 7u predicate — autosave + crash recovery
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7u-001 | yes | Live session persisted: plan + live/staged/cursor/blackout/timer (+ scripture refs) in SQLite (migrations v2+v3) | `cargo test -p selahcue-data` | 7 session-repo tests incl. FK SET-NULL + corruption | session_repo.rs | PASS |
+| S7u-002 | yes | Snapshot/restore rebuilds the exact state through the command paths (byte-identical outputs; timer resumes; blackout returns dark; stale indices safe; no phantom preview) | `cargo test -p selahcue-app` | 6 recovery regressions | controller.rs; test_controller.rs | PASS |
+| S7u-003 | yes | Desktop autosave: throttled (≥1s; 5s timer refresh), retry-on-failure, reported degradation, clean-exit save, XDG-correct data dir | build + review | fixes C/D/F verified | selahcue-desktop/main.rs | PASS |
+| S7u-004 | yes | **Force-kill + recover, live** | release-binary walk | `Some(2)`+blackout → kill -9 → identical restore | walk transcript | PASS |
+| S7u-005 | yes | Real-store migration works | user's v2 DB | upgraded to v3 in place; restored across builds; 1 plan row | sqlite inspection | PASS |
+| S7u-006 | yes | Independent adversarial review; confirmed findings fixed | run `wf_9fb846eb-bb6` | 10 raised → 9 confirmed → 6 unique → all fixed | CODE-REVIEW-batch7u-recovery.md | PASS |
+
+### Iteration ledger — batch 7u
+
+- Target: S7u-001..S7u-006. Change: migration v2 (`session_state`) + v3 (scripture refs); `session_repo`; `Timer::with_elapsed`; `ControllerSnapshot`/`snapshot`/`restore` + dirty tracking; `Presenter::clear_preview`; desktop `SessionStore` + throttled autosave + clean-exit save. Review (13 agents, resumed across a session restart): 9 confirmed → **6 unique defects → all fixed** (phantom staged preview — empirically reproduced by a verifier; scripture-on-live blank recovery → schema v3; autosave retry; corrupt-load diagnostics; silent degradation; XDG spec) + regression tests. Verifier: workspace 212; live kill -9 recovery; real-store v2→v3 migration. Demo step 9: FAIL → **PASS**. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

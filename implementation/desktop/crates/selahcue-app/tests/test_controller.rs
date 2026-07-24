@@ -334,3 +334,163 @@ fn timer_shows_on_the_confidence_monitor_not_the_audience_output() {
         "the timer appears on the stage/confidence output (FR-037)"
     );
 }
+
+#[test]
+fn session_snapshot_restores_exact_live_state() {
+    use selahcue_app::ControllerSnapshot;
+    use std::time::{Duration, Instant};
+    let t0 = Instant::now();
+
+    // Drive a session: item 1 live, item 2 staged, a countdown 37s in.
+    let (mut a, _) = controller();
+    a.apply(&Command::Next);
+    a.apply(&Command::Next);
+    a.apply(&Command::GoLive);
+    a.apply(&Command::Next); // stage item 2 in Preview
+    a.apply(&Command::StartTimer { seconds: 300 });
+    a.tick(t0);
+    a.tick(t0 + Duration::from_secs(37));
+    let snap = a.snapshot(t0 + Duration::from_secs(37));
+
+    // A fresh controller (same plan) restores to the exact live state.
+    let (mut b, _) = controller();
+    b.restore(&snap);
+    let t1 = t0 + Duration::from_secs(40); // relaunch happens a little later
+    b.tick(t1);
+
+    assert_eq!(b.live_index(), Some(1), "live item recovered");
+    assert_eq!(b.staged_index(), Some(2), "preview item recovered");
+    assert!(!b.is_blackout());
+    assert_eq!(
+        b.presenter().live_output().bytes(),
+        a.presenter().live_output().bytes(),
+        "the audience output re-renders identically"
+    );
+    // The countdown resumed from its persisted elapsed (37s in => 263s remain).
+    let timer = b.operator_view().timer.expect("timer resumed");
+    assert!(timer.running);
+    assert_eq!(timer.remaining_secs, Some(263));
+
+    // Round-trip sanity: snapshotting B yields the same persisted state.
+    let again = b.snapshot(t1);
+    assert_eq!(
+        ControllerSnapshot {
+            timer_elapsed_secs: snap.timer_elapsed_secs,
+            ..again.clone()
+        },
+        snap,
+        "snapshot(B) matches snapshot(A) apart from timer drift"
+    );
+}
+
+#[test]
+fn restore_recovers_blackout_and_survives_stale_indices() {
+    use selahcue_app::ControllerSnapshot;
+    use std::time::Instant;
+    let (mut c, _) = controller();
+    // A snapshot from some other/older plan: indices out of range + blackout on.
+    c.restore(&ControllerSnapshot {
+        live_idx: Some(99),
+        staged_idx: Some(42),
+        plan_cursor: Some(7),
+        blackout: true,
+        ..Default::default()
+    });
+    c.tick(Instant::now());
+    assert_eq!(c.live_index(), None, "stale live index ignored, no panic");
+    assert!(
+        c.is_blackout(),
+        "blackout restored (safety: come back dark)"
+    );
+    assert!(live_is_black(&c), "output is actually black");
+}
+
+#[test]
+fn restore_with_nothing_staged_leaves_preview_truly_empty() {
+    use selahcue_app::ControllerSnapshot;
+    use std::time::Instant;
+    // Review 7u finding: go_live leaves its input in the staged slot, so a restore of
+    // {live: Some, staged: None} used to leave a PHANTOM staged item — the monitor
+    // showed a "next" that was never staged, and a later GoLive desynced live_idx.
+    let (mut c, _) = controller();
+    c.restore(&ControllerSnapshot {
+        live_idx: Some(1),
+        staged_idx: None,
+        ..Default::default()
+    });
+    c.tick(Instant::now());
+    assert_eq!(c.live_index(), Some(1));
+    assert_eq!(c.staged_index(), None);
+    assert!(
+        c.presenter().staged().is_none(),
+        "the presenter's staged slot must be empty too — no phantom next"
+    );
+    assert!(
+        c.presenter().preview_output().average_luminance() < 1e-6,
+        "the preview readback is blank"
+    );
+    // And GoLive with nothing staged stays DENIED after a restore.
+    assert_eq!(
+        c.apply(&Command::GoLive),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        c.live_index(),
+        Some(1),
+        "live is untouched by the denied GoLive"
+    );
+}
+
+#[test]
+fn a_live_scripture_survives_crash_recovery() {
+    use std::time::Instant;
+    // Review 7u finding: a scripture committed to LIVE has live_idx=None, so recovery
+    // used to restore a BLANK audience surface. The reference is now persisted.
+    let (mut a, _) = controller();
+    a.apply(&Command::StageScripture {
+        reference: "Psalm 23:1".into(),
+    });
+    a.apply(&Command::GoLive);
+    assert!(!live_is_black(&a), "scripture is on the live output");
+    let snap = a.snapshot(Instant::now());
+    assert_eq!(snap.live_scripture.as_deref(), Some("Psalm 23:1"));
+
+    let (mut b, _) = controller();
+    b.restore(&snap);
+    b.tick(Instant::now());
+    assert!(
+        !live_is_black(&b),
+        "the scripture is BACK on the audience output"
+    );
+    assert_eq!(
+        b.presenter().live_output().bytes(),
+        a.presenter().live_output().bytes(),
+        "recovered audience output is byte-identical"
+    );
+    assert_eq!(b.live_index(), None, "still honestly a non-plan slide");
+}
+
+#[test]
+fn a_staged_scripture_survives_crash_recovery() {
+    use std::time::Instant;
+    let (mut a, _) = controller();
+    a.apply(&Command::Next);
+    a.apply(&Command::GoLive);
+    a.apply(&Command::StageScripture {
+        reference: "John 3:16".into(),
+    });
+    let snap = a.snapshot(Instant::now());
+
+    let (mut b, _) = controller();
+    b.restore(&snap);
+    assert_eq!(b.live_index(), Some(0));
+    assert_eq!(b.staged_index(), None, "preview holds a non-plan slide");
+    assert_eq!(
+        b.presenter().preview_output().bytes(),
+        a.presenter().preview_output().bytes(),
+        "the staged scripture is back in Preview"
+    );
+    // Going live commits the recovered scripture, exactly as it would have pre-crash.
+    assert_eq!(b.apply(&Command::GoLive), ControllerReply::Ack);
+    assert_eq!(b.live_index(), None);
+}

@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 selahcue-core = { path = "../selahcue-core" }
+selahcue-data = { path = "../selahcue-data" }
 selahcue-engine = { path = "../selahcue-engine" }
 selahcue-present = { path = "../selahcue-present" }
 # The controller + pinned-TLS control server (so a remote controller drives the window).

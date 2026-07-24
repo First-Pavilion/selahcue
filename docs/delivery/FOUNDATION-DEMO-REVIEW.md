@@ -25,9 +25,9 @@ advance a slide → force-kill + recover exact live state.*
 | 6 | Search & display a PD scripture | **PARTIAL (weak)** | Reference **parse + staging** are unit-tested at the controller; scripture commands are covered by RBAC-mapping and protocol-serialization tests only — **no wire E2E, and no shipped client (CLI, operator shell, or Flutter app) can issue a scripture command yet**. A staged scripture displays the **reference text**; keyword search and verse content are blocked on bundling a PD translation (none exists in the repo). |
 | 7 | Emergency blackout/clear (offline) | **PASS (scoped)** | Live walk: blackout on→off (state true→false), clear (live→None) — **remote-driven over the LAN-local link with zero internet dependency**. The local-keyboard path (B / C keys) is compile-verified + unit-covered at the present crate; a physical-keys, network-cable-out demo has not been recorded. `Clear` RBAC-gated to Producer+ (DEC-002), E2E-enforced. |
 | 8 | Pair mobile by QR + advance | **PARTIAL (strong)** | **New E2E (added by this review): one wire flow pairs with the invite code against the real `LiveController` and advances — `Next` stages, `GoLive` flips the host's live output** (`wire_paired_device_advances_the_live_output`). Plus the 6 pairing E2E (decline / replay / expiry / opt-in / reconnect-with-issued-credentials) and the QR-URI round-trip unit tests. The Flutter controller builds (macOS app, analyze + 12 tests). **A QR has not yet been scanned by a real camera — on-device phone QA pending.** |
-| 9 | Force-kill + recover exact live state | **FAIL — not implemented** | Live walk: `live_item Some(3)` → `kill -9` → relaunch → `Some(1)` (demo-plan reset). Story `86ajp09td` (urgent) never started; the data layer has crash-safe primitives, nothing persists live state. |
+| 9 | Force-kill + recover exact live state | **PASS** *(batch 7u)* | Live walk on the release binary: `live_item Some(2), blackout: true` → `kill -9` → relaunch → **identical state**, "Session restored" printed. Autosaved session (plan + live/preview/blackout/timer incl. scripture refs) in SQLite at the platform data dir; a resumed countdown continues (deep TIME-UP overrun restored correctly); adversarially reviewed (9 confirmed findings fixed, incl. a phantom-staged-preview desync and scripture-on-live recovery). Loss bound: ~1 s of state / ~5 s of timer progress. |
 
-**Score: 1 PASS · 3 PASS (scoped) · 4 PARTIAL · 1 FAIL.**
+**Score (after batch 7u): 2 PASS · 3 PASS (scoped) · 4 PARTIAL · 0 FAIL.**
 
 ## What the foundation provably is (audited wording)
 A cross-platform core that runs end-to-end today: plan → Preview → Live on a real
@@ -57,7 +57,8 @@ descope decision on the task or a follow-up story:
 | `86ajp09nk` CI | SBOM + license (GPL/AGPL) scanning and a GPU device-loss assertion — absent from the pipeline; not descoped anywhere |
 
 ## The honest gap list (to close the milestone)
-1. **Autosave + crash recovery** (`86ajp09td`, urgent) — the demo's only outright FAIL.
+1. ~~Autosave + crash recovery~~ — **closed by batch 7u** (live-verified; the story keeps
+   the crash-loop breaker + storage guard as open scope).
 2. **Plan authoring/persistence wiring** + the **library scope** of `86ajp0a4z`.
 3. **Verse-text scripture**: bundle ≥1 PD translation, render verse content, add a wire
    E2E, and give at least one shipped client a scripture command.
@@ -71,9 +72,8 @@ descope decision on the task or a follow-up story:
 8. User visual re-confirmation of the stage timer readout post-`582d9dc`.
 
 ## Milestone disposition
-**Not met — the milestone stays open.** Only 1 of 9 steps passes unscoped; the scripted
-demo cannot yet run end-to-end as written (no plan authoring, reference-only scripture,
-no crash recovery), and 4 of the 14 foundation stories are unstarted. The strong core
-(steps 3/4/5/7/8) is real and live-evidenced — but an honest demo day needs gaps 1–3
-closed at minimum. Recommended path: recovery (`86ajp09td`) and plan wiring next, then
-re-run this review; the reconciliation table goes to the owner at the gate.
+**Not met — the milestone stays open** (updated after batch 7u). 2 of 9 steps pass
+unscoped and none fail, but the scripted demo still cannot run end-to-end as written:
+no plan authoring in the shipping binary and reference-only scripture. 3 of the 14
+foundation stories remain unstarted. Recommended path: plan persistence wiring + the
+scripture follow-up (verse text), then re-run this review.

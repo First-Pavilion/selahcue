@@ -13,8 +13,10 @@
 
 #![forbid(unsafe_code)]
 
-use selahcue_app::{handler_for, LiveController};
+use selahcue_app::{handler_for, ControllerSnapshot, LiveController};
 use selahcue_core::plan::{ItemKind, ServicePlan};
+use selahcue_data::session_repo::SessionState;
+use selahcue_data::{plan_repo, session_repo, Database};
 use selahcue_engine::raster::FrameBuffer;
 use selahcue_lan::protocol::{Command, PairingInvite};
 use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
@@ -40,6 +42,155 @@ const OUTPUT_H: u32 = 1080;
 const FRAME: Duration = Duration::from_millis(16);
 /// Validity window of a pairing offer (code + QR). Short-lived by design (FR-086).
 const PAIRING_TTL: Duration = Duration::from_secs(120);
+/// Minimum spacing between autosave writes (bounds disk I/O under command bursts).
+const AUTOSAVE_MIN_INTERVAL: Duration = Duration::from_secs(1);
+/// While a countdown runs, refresh its persisted elapsed at least this often — so a
+/// crash loses at most this much timer progress.
+const TIMER_AUTOSAVE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// The demo service plan used on a first run (no persisted session yet).
+fn demo_plan() -> ServicePlan {
+    let mut plan = ServicePlan::new("Sunday Service");
+    plan.add_item(ItemKind::Song, "Opening Song");
+    plan.add_item(ItemKind::Scripture, "Romans 8:28");
+    plan.add_item(ItemKind::Section, "Sermon");
+    plan.add_item(ItemKind::Song, "Closing Song");
+    plan
+}
+
+/// Platform data directory for the session store (created if missing). Every
+/// failure path reports itself — storage degradation must never be silent.
+fn data_dir() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    #[cfg(target_os = "macos")]
+    let dir = home.map(|h| h.join("Library/Application Support/SelahCue"));
+    #[cfg(target_os = "linux")]
+    let dir = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        // Per the XDG spec, an empty or relative XDG_DATA_HOME is treated as unset.
+        .filter(|p| p.is_absolute())
+        .or(home.map(|h| h.join(".local/share")))
+        .map(|d| d.join("selahcue"));
+    #[cfg(target_os = "windows")]
+    let dir = std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .map(|d| d.join("SelahCue"));
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let dir: Option<std::path::PathBuf> = home.map(|h| h.join(".selahcue"));
+    let Some(dir) = dir else {
+        eprintln!("SelahCue: no data directory (HOME/APPDATA unset); running in-memory.");
+        return None;
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "SelahCue: cannot create {} ({e}); running in-memory.",
+            dir.display()
+        );
+        return None;
+    }
+    Some(dir)
+}
+
+/// The desktop's session store: the SQLite database + the persisted plan's row id.
+/// A storage failure degrades to in-memory (never blocks a service) with a message.
+struct SessionStore {
+    db: Option<Database>,
+    plan_id: Option<i64>,
+}
+
+impl SessionStore {
+    fn open() -> Self {
+        let db =
+            data_dir()
+                .map(|dir| dir.join("selahcue.db3"))
+                .and_then(|path| match Database::open(&path) {
+                    Ok(db) => Some(db),
+                    Err(e) => {
+                        eprintln!("SelahCue: session store unavailable ({e}); running in-memory.");
+                        None
+                    }
+                });
+        SessionStore { db, plan_id: None }
+    }
+
+    /// Load the persisted session: the plan + the live-state snapshot. `None` on a
+    /// first run (or unusable store) — the caller seeds the demo plan.
+    fn load_session(&mut self) -> Option<(ServicePlan, ControllerSnapshot)> {
+        let db = self.db.as_ref()?;
+        let state = match session_repo::load(db) {
+            Ok(state) => state?,
+            Err(e) => {
+                // A corrupt snapshot is diagnosable evidence — say so before the
+                // fresh start (the next autosave will overwrite the row).
+                eprintln!("SelahCue: persisted session unreadable ({e}); starting fresh.");
+                return None;
+            }
+        };
+        let plan_id = state.plan_id?;
+        let plan = match plan_repo::load(db, plan_id) {
+            Ok(plan) => plan,
+            Err(e) => {
+                eprintln!("SelahCue: persisted plan unreadable ({e}); starting fresh.");
+                return None;
+            }
+        };
+        self.plan_id = Some(plan_id);
+        Some((
+            plan,
+            ControllerSnapshot {
+                live_idx: state.live_idx,
+                staged_idx: state.staged_idx,
+                plan_cursor: state.plan_cursor,
+                blackout: state.blackout,
+                timer_total_secs: state.timer_total_secs,
+                timer_elapsed_secs: state.timer_elapsed_secs,
+                timer_running: state.timer_running,
+                live_scripture: state.live_scripture,
+                staged_scripture: state.staged_scripture,
+            },
+        ))
+    }
+
+    /// Ensure the (demo) plan exists in the store; called before the first save.
+    fn ensure_plan(&mut self, plan: &ServicePlan) {
+        if self.plan_id.is_some() {
+            return;
+        }
+        if let Some(db) = self.db.as_ref() {
+            match plan_repo::insert(db, plan) {
+                Ok(id) => self.plan_id = Some(id),
+                Err(e) => eprintln!("SelahCue: could not persist the plan ({e})."),
+            }
+        }
+    }
+
+    /// Persist the live-state snapshot. Returns whether the write succeeded (an
+    /// error is reported, never fatal mid-service; the caller re-arms the retry).
+    fn save_session(&mut self, snap: &ControllerSnapshot) -> bool {
+        let Some(db) = self.db.as_ref() else {
+            return true;
+        };
+        let state = SessionState {
+            plan_id: self.plan_id,
+            live_idx: snap.live_idx,
+            staged_idx: snap.staged_idx,
+            plan_cursor: snap.plan_cursor,
+            blackout: snap.blackout,
+            timer_total_secs: snap.timer_total_secs,
+            timer_elapsed_secs: snap.timer_elapsed_secs,
+            timer_running: snap.timer_running,
+            live_scripture: snap.live_scripture.clone(),
+            staged_scripture: snap.staged_scripture.clone(),
+        };
+        match session_repo::save(db, &state) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("SelahCue: autosave failed ({e}).");
+                false
+            }
+        }
+    }
+}
 
 struct Renderer {
     window: Arc<Window>,
@@ -291,6 +442,9 @@ struct App {
     /// The next frame deadline (a *fixed* schedule, advanced only when a frame fires), so
     /// continuous input can't keep pushing it forward and starve the redraw/tick loop.
     next_frame: Option<Instant>,
+    /// The session store (SQLite) for autosave + crash recovery.
+    store: SessionStore,
+    last_autosave: Instant,
 }
 
 /// Apply one command to the shared controller (a poisoned lock just drops the input
@@ -303,11 +457,16 @@ fn drive(controller: &Mutex<LiveController>, command: &Command) {
 
 impl App {
     fn new() -> Self {
-        let mut plan = ServicePlan::new("Sunday Service");
-        plan.add_item(ItemKind::Song, "Opening Song");
-        plan.add_item(ItemKind::Scripture, "Romans 8:28");
-        plan.add_item(ItemKind::Section, "Sermon");
-        plan.add_item(ItemKind::Song, "Closing Song");
+        // Open (or create) the session store; a storage failure degrades to an
+        // in-memory session (the show must go on) with a clear message.
+        let mut store = SessionStore::open();
+
+        let (plan, restored) = match store.load_session() {
+            Some((plan, snap)) => (plan, Some(snap)),
+            None => (demo_plan(), None),
+        };
+        // Make sure the plan rows exist before the first snapshot references them.
+        store.ensure_plan(&plan);
 
         let controller = Arc::new(Mutex::new(LiveController::new(
             plan,
@@ -316,10 +475,19 @@ impl App {
             Theme::dark(),
         )));
 
-        // Show the first item immediately so the window isn't blank at launch.
         if let Ok(mut c) = controller.lock() {
-            let _ = c.apply(&Command::Next); // stage item 0 in Preview
-            let _ = c.apply(&Command::GoLive); // commit it to Live
+            match &restored {
+                Some(snap) => {
+                    // Crash/restart recovery: rebuild the exact live state.
+                    c.restore(snap);
+                    println!("  Session restored (crash/restart recovery).");
+                }
+                None => {
+                    // First run: show the first item so the window isn't blank.
+                    let _ = c.apply(&Command::Next);
+                    let _ = c.apply(&Command::GoLive);
+                }
+            }
         }
 
         // Start the LAN control server so remote controllers can drive this window.
@@ -337,6 +505,30 @@ impl App {
             controller,
             remote,
             next_frame: None,
+            store,
+            last_autosave: Instant::now(),
+        }
+    }
+
+    /// Autosave: persist the session when state changed (throttled to ~1/s) and
+    /// periodically while a countdown runs (so its elapsed stays fresh on disk).
+    fn autosave(&mut self, now: Instant) {
+        let Ok(mut c) = self.controller.lock() else {
+            return;
+        };
+        let dirty = c.take_state_dirty();
+        let periodic =
+            c.timer_active() && now.duration_since(self.last_autosave) >= TIMER_AUTOSAVE_INTERVAL;
+        if (dirty || periodic) && now.duration_since(self.last_autosave) >= AUTOSAVE_MIN_INTERVAL {
+            if self.store.save_session(&c.snapshot(now)) {
+                self.last_autosave = now;
+            } else if dirty {
+                // The write failed: the change is still unpersisted — retry next frame.
+                c.mark_state_dirty();
+            }
+        } else if dirty {
+            // Too soon after the last write: keep the flag so the next frame saves.
+            c.mark_state_dirty();
         }
     }
 
@@ -541,6 +733,7 @@ impl ApplicationHandler for App {
             if let Ok(mut c) = self.controller.lock() {
                 c.tick(now);
             }
+            self.autosave(now);
             if let Some(r) = self.main.as_ref() {
                 r.window.request_redraw();
             }
@@ -785,6 +978,10 @@ fn main() {
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App::new();
     event_loop.run_app(&mut app).expect("run app");
+    // Final save on clean exit (the autosave loop already covered crash paths).
+    if let Ok(c) = app.controller.lock() {
+        app.store.save_session(&c.snapshot(Instant::now()));
+    }
     // Best-effort: don't leave a stale endpoint (with a now-dead token/port) behind on a
     // clean exit, so a later operator shell doesn't try to attach to a defunct window.
     let _ = std::fs::remove_file(endpoint_path());

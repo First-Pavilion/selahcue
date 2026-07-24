@@ -121,3 +121,21 @@ fn elapsed_independent_of_query_frequency() {
     assert_eq!(t.elapsed(at(b, 100)), Duration::from_secs(100));
     assert!(t.is_time_up(at(b, 100)));
 }
+
+#[test]
+fn with_elapsed_resumes_a_recovered_countdown() {
+    // Crash recovery: rebuild a 300s countdown that had 117s on the clock, resume,
+    // and the remaining time continues from there.
+    let base = Instant::now();
+    let mut t = Timer::count_down(Duration::from_secs(300)).with_elapsed(Duration::from_secs(117));
+    assert!(!t.is_running());
+    assert_eq!(t.elapsed(base), Duration::from_secs(117));
+    assert_eq!(t.remaining(base), Some(Duration::from_secs(183)));
+    t.start(base);
+    let later = base + Duration::from_secs(10);
+    assert_eq!(t.remaining(later), Some(Duration::from_secs(173)));
+    // Recovery past the target lands in TIME UP, never a rewind.
+    let up = Timer::count_down(Duration::from_secs(60)).with_elapsed(Duration::from_secs(90));
+    assert!(up.is_time_up(base));
+    assert_eq!(up.overrun(base), Duration::from_secs(30));
+}
