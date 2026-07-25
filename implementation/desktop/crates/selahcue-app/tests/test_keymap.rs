@@ -131,6 +131,70 @@ fn keymap_state_is_bounded() {
     );
 }
 
+/// The operator webview mirrors the canonical keymap in JS, and the emergency
+/// chords PIERCE inputs/dialogs (UX-CANONICAL §3). Pinned by content — like the
+/// wire fixtures and the token audit — since the webview has no JS runtime in
+/// these tests. (Story 86ajp0awx acceptance: keys match UX-CANONICAL exactly;
+/// emergency keys fire even over a dialog.)
+#[test]
+fn operator_webview_mirrors_the_canonical_keymap_and_pierces_modals() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../selahcue-operator/dist/index.html"
+    );
+    let html = std::fs::read_to_string(path).expect("operator dist/index.html exists");
+
+    // The canonical bindings are all present in the JS keydown handler.
+    for needle in [
+        "case \" \":", // Space = Next (UX-CANONICAL §1: "Space or →")
+        "case \"ArrowRight\":",
+        "invoke(\"next\")",
+        "case \"ArrowLeft\":",
+        "invoke(\"previous\")",
+        "case \"Enter\":",
+        "invoke(\"go_live\")",
+        "case \"b\":",
+        "case \"B\":",
+        "toggleBlackout()",
+        "case \"Backspace\":",
+        "case \"Escape\":",
+        "clearAll()",
+        // Backspace still aliases to Clear-all until per-layer clearing lands.
+        "86ajpy59e",
+    ] {
+        assert!(html.contains(needle), "webview keymap missing {needle:?}");
+    }
+
+    // The keydown listener is registered CAPTURE-PHASE (3rd arg `true`, right
+    // after the handler body closes) so nothing can swallow the canonical keys.
+    // Pinned structurally — tied to the handler-close, not the trailing comment
+    // — so a reworded comment doesn't false-fail and flipping to `false` does.
+    assert!(
+        html.contains("},\n        true"),
+        "keydown listener must be registered capture-phase (3rd arg `true`)"
+    );
+
+    // The two emergency chords (Ctrl/Cmd+Shift+B / Ctrl/Cmd+Shift+.) matched by
+    // PHYSICAL key so a Shifted layout can't kill them.
+    let chord_blackout = "if (mod && e.shiftKey && e.code === \"KeyB\")";
+    let chord_clear = "if (mod && e.shiftKey && e.code === \"Period\")";
+    assert!(html.contains(chord_blackout), "missing blackout chord");
+    assert!(html.contains(chord_clear), "missing clear-all chord");
+
+    // MODAL-PIERCE: the chords must be handled BEFORE the input-focus early
+    // return, so they fire even while a text field / dialog owns focus. Assert
+    // that ordering structurally (chord positions precede the input bail-out).
+    let input_bailout = "if (tag === \"INPUT\" || tag === \"SELECT\" || tag === \"TEXTAREA\") return;";
+    let bail = html.find(input_bailout).expect("input-focus bail-out present");
+    let blackout_at = html.find(chord_blackout).expect("blackout chord present");
+    let clear_at = html.find(chord_clear).expect("clear chord present");
+    assert!(
+        blackout_at < bail && clear_at < bail,
+        "emergency chords must be matched before the input-focus early return \
+         (else they would not pierce a focused field/dialog)"
+    );
+}
+
 #[test]
 fn host_handled_keys_disarm_via_the_disarm_api() {
     // Surfaces that handle keys OUTSIDE the keymap (the host pairing keys

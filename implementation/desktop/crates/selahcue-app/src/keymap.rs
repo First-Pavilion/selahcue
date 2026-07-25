@@ -13,8 +13,9 @@
 //! | Clear current layer    | `Backspace`               |
 //!
 //! `Backspace` clears the current (topmost) **live** layer. The live output is
-//! single-layer until per-layer clearing (story 86ajp0awx), so today it performs
-//! the same clear as `Esc Esc`; the two actions stay distinct in the map so the
+//! single-layer until per-layer clearing (story 86ajpy59e, split from 86ajp0awx
+//! and blocked on the R2 multi-layer output model), so today it performs the
+//! same clear as `Esc Esc`; the two actions stay distinct in the map so the
 //! bindings do not change when layers arrive.
 //!
 //! **Emergency actions are non-unbindable:** Clear-all (`Esc Esc`) and Blackout
@@ -54,7 +55,8 @@ pub enum CanonicalAction {
     /// Toggle the audience blackout.
     BlackoutToggle,
     /// Clear the current (topmost) live layer only (see the module doc: equal
-    /// to a full clear while the live output is single-layer).
+    /// to a full clear while the live output is single-layer — real per-layer
+    /// semantics land with story 86ajpy59e).
     ClearLayer,
 }
 

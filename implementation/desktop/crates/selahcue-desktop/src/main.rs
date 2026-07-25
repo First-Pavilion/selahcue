@@ -1321,7 +1321,7 @@ impl ApplicationHandler for App {
                     }
                     Some(CanonicalAction::ClearLayer) => {
                         // Single-layer live output today: clearing the current
-                        // layer IS the full clear (per-layer arrives with 86ajp0awx).
+                        // layer IS the full clear (per-layer arrives with 86ajpy59e).
                         drive(&self.controller, &Command::Clear)
                     }
                     None => {}

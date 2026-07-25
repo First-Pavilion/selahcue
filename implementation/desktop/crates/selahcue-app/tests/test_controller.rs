@@ -41,6 +41,35 @@ fn go_live_commits_preview_to_live() {
 }
 
 #[test]
+fn blackout_and_clear_are_local_and_act_within_200ms() {
+    // FR-076/077 (story 86ajp0awx): the operator's emergency controls act on the
+    // in-process presenter — there is NO LAN round-trip on this path (the server
+    // is a separate layer, only for remote clients), so they work with the
+    // network disabled and well inside the 200ms budget. The margin here is
+    // ~1000x (a sub-millisecond in-memory engine op), so this is a locality +
+    // latency sanity check, not a tight timing race.
+    use std::time::Instant;
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive); // put content on Live
+    assert!(!live_is_black(&c));
+
+    let t = Instant::now();
+    let reply = c.apply(&Command::Blackout { on: true });
+    let blackout_ms = t.elapsed().as_millis();
+    assert_eq!(reply, ControllerReply::Ack);
+    assert!(live_is_black(&c), "blackout darkens the audience output immediately");
+    assert!(blackout_ms < 200, "blackout took {blackout_ms}ms (>200ms budget)");
+
+    let t = Instant::now();
+    let reply = c.apply(&Command::Clear);
+    let clear_ms = t.elapsed().as_millis();
+    assert_eq!(reply, ControllerReply::Ack);
+    assert_eq!(c.live_index(), None, "clear removes the live item");
+    assert!(clear_ms < 200, "clear took {clear_ms}ms (>200ms budget)");
+}
+
+#[test]
 fn next_advances_and_clamps_at_the_end() {
     let (mut c, _) = controller(); // 3 items
     for expected in [0, 1, 2, 2] {
