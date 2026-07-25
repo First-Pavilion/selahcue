@@ -768,6 +768,22 @@ Executed via the `/goal` engine against `docs/delivery/goals/TASK-86ajp0b0t-andr
 
 - Target: S7ao-001..S7ao-005. Change: a Dart `MulticastLock` abstraction + best-effort `PlatformMulticastLock` (`selahcue/multicast` channel, Android-only), `DiscoveryController.refresh()` holding the lock across the browse and **always releasing** it (mDNS browse extracted behind an injectable seam), a Kotlin `MainActivity` channel handler (non-ref-counted lock, `isHeld`-guarded, released on destroy), 3 lock-lifecycle unit tests, and a `flutter build apk --debug` CI step compile-verifying the Kotlin. The `CHANGE_WIFI_MULTICAST_STATE` permission (7aj) is now matched by the runtime lock — so Android multicast reception actually works. Executed via the `/goal` engine (3 iterations). Adversarial review (2 lenses, each verified): **3 raised → 1 confirmed → fixed** (headline: `refresh()` lacked a `catch`, so a throwing browse would leave `_searching=true` forever — a permanent discovery lockout, masked in production but undefended; now best-effort, never wedges); 2 refuted. Verifier: `flutter analyze` clean + **39** Flutter tests; CI green incl. the APK build. On-device discovery (real phone finds a host over mDNS) is explicit owner QA. Result: PASS. Decision: gate-review.
 
+## Batch 7ap predicate — Figma operator-console refresh (86ajpx7c0 remaining half)
+
+Executed via the `/goal` engine against `docs/delivery/goals/TASK-86ajpx7c0-console-refresh.md` (validator `--require-complete` PASS; 5/5 mandatory). Design deliverable — no repository code.
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7ap-001 | yes | A console frame reproduces the shipped 3-column IA (header · plan · scriptures CENTER · preview/live 16:9 + timer + outputs · emergency footer) | get_metadata/get_screenshot | all panels in the correct columns | Figma node 150:124 | PASS |
+| S7ap-002 | yes | Fills bound to the "SelahCue Color" variables (not forked); preview=green / live=red | use_figma bound vars | bound to VariableID:3:3..3:13 | Figma | PASS |
+| S7ap-003 | yes | Post-MVP concept bands (transcript, auto-detection) excluded | screenshot | absent | screenshot | PASS |
+| S7ap-004 | yes | Screenshot matches the shipped console | get_screenshot vs index.html | visual match | node 150:124 PNG | PASS |
+| S7ap-005 | yes | Independent design review; findings fixed | design-reviewer agent | faithful; 3 mediums fixed | CODE-REVIEW-batch7ap.md | PASS |
+
+### Iteration ledger — batch 7ap
+
+- Target: S7ap-001..S7ap-005. Change: built a new Figma frame `150:124` "Operator Console — shipped (86ajpx7c0)" reproducing the shipped 3-column operator console (header · Service plan · **Scriptures centered** with the numbered verse list + cursor · right column Preview/Live 16:9 + GO LIVE + Service timer + Outputs + Identify · emergency footer), every fill bound to the "SelahCue Color" variables. The pre-shipping concept frame `4:2` (Preview/Live 2-up + R3 transcript band + R4 scripture-detection band + "Cloud OFF") is preserved for history; the R3/R4 bands were deliberately dropped. Independent design review (reviewer agent vs the shipped `index.html`): **structurally faithful; no high-severity; 3 medium divergences fixed** — BLACKOUT off-state made dark (was light), timer controls laid out across the shipped 3 rows, Outputs given the real role labels (Main output / Stage display) + Assign picker + full-width Identify. Verifier: get_screenshot before/after vs the shipped console. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.
