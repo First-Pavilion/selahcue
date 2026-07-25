@@ -107,7 +107,23 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Change or investigation: owner directed a smoother arrangement — (1) move Live transcript + Recent detections to the **right**; (2) make PROGRAM an **OBS studio-mode** pair (Preview | Live **horizontal**, GO LIVE transition below); (3) put **Scripture directly below PROGRAM**; (4) put the **Timer in the bottom-right corner**. Rebuilt as frame `165:124` "Operator Console — OBS studio (target)" at 1760 wide: **LEFT** Service Plan · **CENTER** OBS Preview|Live + GO LIVE → Scriptures → Outputs strip · **RIGHT** Live transcript → Recent detections → Service timer (bottom corner) · emergency footer. All tokens preserved; the transcript/detections review fixes carried over.
 - Verifier executed: get_screenshot of `165:124`.
 - Result: **PASS** — all four directives satisfied; the OBS-style program pair + scripture-below reads as a smoother operator flow; uncramped.
+- Decision: iterate (owner made in-Figma edits)
+
+### Iteration 4 — note the owner's in-Figma edits + fine-tune
+
+- Target criterion: C-004 (layout polish)
+- Change or investigation: the owner directly edited frame `165:124` — moved **Live transcript to the bottom-left** (under the Service Plan), the **Service timer to the top-right**, **Recent detections** below it, **Outputs** to the bottom-right, and made **Scriptures taller**. Noted and fine-tuned the resulting rough edges: (1) **reflowed the transcript** for the now-300px-wide column (its text had clipped), (2) **rebuilt Outputs at 628px** (it had overflowed the frame's right edge at w=774), (3) **aligned the right column** (Timer/Detections/Outputs were at x=1112/1124/1128 → all 1112, w=628), (4) **tightened the timer** (removed the dead space, added the "shown on the stage output only" note). Final zones: LEFT Service Plan + Live transcript · CENTER OBS Preview|Live + GO LIVE + Scriptures · RIGHT Service timer + Recent detections + Outputs · emergency footer.
+- Verifier executed: get_screenshot of `165:124` — no clipping, no overflow, right column aligned, transcript readable.
+- Result: **PASS** — the owner's arrangement preserved and cleaned up.
 - Decision: gate-review (all mandatory criteria PASS; final frame = `165:124`)
+
+### Iteration 5 — owner resized panels; placement-only fine-tune
+
+- Target criterion: C-004 (polish)
+- Change or investigation: the owner resized panels again (left column → 415w, Scriptures → 789w, right column → ~446–452w) and directed: **leave the sizes as-is, improve the placements**. Placement-only pass: top-aligned the three columns at y=68; right column set on one left edge with even 12px gaps (Timer → Detections → Outputs); inner content reflowed to fit the owner's panel sizes without changing them — plan rows widened to the 415 panel (badges docked right, add-row at the bottom), transcript text/meter/footer spread to 415, Scriptures search stretched + chapter nav docked right + verse rows filled to 789, detection cards/timer controls/outputs fitted to their ~446–452 panels, Preview/Live headers + captions matched to their panels.
+- Verifier executed: get_screenshot of `165:124` — no clipping, no overflow, aligned tops/edges/gaps; owner sizes preserved.
+- Result: **PASS**.
+- Decision: gate-review (final frame = `165:124`)
 
 ## Risks and rollback
 

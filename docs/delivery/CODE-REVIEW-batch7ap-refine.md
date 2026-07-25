@@ -47,6 +47,18 @@ The owner then directed a smoother arrangement, delivered as frame **`165:124` "
 
 Final zones: **LEFT** Service Plan · **CENTER** OBS Preview|Live + GO LIVE → Scriptures → Outputs · **RIGHT** Live transcript → Recent detections → Service timer · always-on emergency footer. All fills remain bound to the "SelahCue Color" variables; the transcript/detections review fixes (listening cue, HIGH/MED/LOW labels, Preview verb, neutral Pause, no duplicate BLACKOUT) carry over. This is the current target frame; `161:124` and the earlier versions were superseded within this refine.
 
+## Layout v3 — owner's in-Figma edits, noted + fine-tuned (frame `165:124`)
+
+The owner then directly edited `165:124`, reorganizing it — and asked the designer to note the changes and fine-tune them:
+
+- **Live transcript → bottom-left** (under the Service Plan); **Service timer → top-right**; **Recent detections** below the timer; **Outputs → bottom-right**; **Scriptures** made taller.
+
+Fine-tuned the resulting rough edges: **reflowed the transcript** for the now-300px column (its text had clipped), **rebuilt Outputs at 628px** (it had overflowed the frame edge at w=774), **aligned the right column** (panels were at x=1112/1124/1128 → all 1112), and **tightened the timer** (removed dead space + added the "stage output only" note). Final zones: LEFT Service Plan + Live transcript · CENTER OBS Preview|Live + GO LIVE + Scriptures · RIGHT Service timer + Recent detections + Outputs · emergency footer. Verified by screenshot: no clipping, no overflow, aligned.
+
+## Layout v4 — owner resized panels; placement-only fine-tune (frame `165:124`)
+
+The owner resized panels once more (left column 415w, Scriptures 789w, right column ~446–452w) with the direction **"leave the sizes as is but make the placements better."** Placement-only pass, sizes untouched: columns top-aligned at one line; the right column set on a single left edge with even 12px gaps (Timer → Recent Detections → Outputs); and every panel's inner content reflowed to *fit* the owner's sizes — plan rows widened to the panel (badges docked right, add-row bottom-seated), transcript text/meter/REC/footer spread to the panel, Scriptures search stretched with the chapter nav docked right and verse rows filled, detection cards + timer controls + outputs fitted to their panels, Preview/Live headers/captions matched. Screenshot-verified: no clipping, no overflow, clean alignment.
+
 ## Handoff
 
 - Node `165:124` is the **target** Operator console; `150:124` is the current shipped MVP; `4:2` the old concept.
