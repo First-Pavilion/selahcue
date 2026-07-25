@@ -142,7 +142,9 @@ fn operator_webview_mirrors_the_canonical_keymap_and_pierces_modals() {
         env!("CARGO_MANIFEST_DIR"),
         "/../selahcue-operator/dist/index.html"
     );
-    let html = std::fs::read_to_string(path).expect("operator dist/index.html exists");
+    let raw = std::fs::read_to_string(path).expect("operator dist/index.html exists");
+    // Normalize CRLF so a Windows checkout matches the newline-sensitive checks.
+    let html = raw.replace("\r\n", "\n");
 
     // The canonical bindings are all present in the JS keydown handler.
     for needle in [
@@ -184,8 +186,11 @@ fn operator_webview_mirrors_the_canonical_keymap_and_pierces_modals() {
     // MODAL-PIERCE: the chords must be handled BEFORE the input-focus early
     // return, so they fire even while a text field / dialog owns focus. Assert
     // that ordering structurally (chord positions precede the input bail-out).
-    let input_bailout = "if (tag === \"INPUT\" || tag === \"SELECT\" || tag === \"TEXTAREA\") return;";
-    let bail = html.find(input_bailout).expect("input-focus bail-out present");
+    let input_bailout =
+        "if (tag === \"INPUT\" || tag === \"SELECT\" || tag === \"TEXTAREA\") return;";
+    let bail = html
+        .find(input_bailout)
+        .expect("input-focus bail-out present");
     let blackout_at = html.find(chord_blackout).expect("blackout chord present");
     let clear_at = html.find(chord_clear).expect("clear chord present");
     assert!(

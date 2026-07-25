@@ -58,8 +58,14 @@ fn blackout_and_clear_are_local_and_act_within_200ms() {
     let reply = c.apply(&Command::Blackout { on: true });
     let blackout_ms = t.elapsed().as_millis();
     assert_eq!(reply, ControllerReply::Ack);
-    assert!(live_is_black(&c), "blackout darkens the audience output immediately");
-    assert!(blackout_ms < 200, "blackout took {blackout_ms}ms (>200ms budget)");
+    assert!(
+        live_is_black(&c),
+        "blackout darkens the audience output immediately"
+    );
+    assert!(
+        blackout_ms < 200,
+        "blackout took {blackout_ms}ms (>200ms budget)"
+    );
 
     let t = Instant::now();
     let reply = c.apply(&Command::Clear);
