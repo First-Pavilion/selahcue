@@ -7,6 +7,29 @@
 //! perceptually (SSIM ≥ 0.99), not by byte-equality.
 
 use crate::scene::{Frame, Layer, Rect, Rgba};
+use cosmic_text::{Attrs, Buffer, Color as CtColor, FontSystem, Metrics, Shaping, SwashCache};
+use std::cell::RefCell;
+
+/// The single BUNDLED output font (Noto Sans, Regular, Latin subset — OFL, see
+/// `assets/fonts/OFL.txt`). Compiled into the binary so text shapes and
+/// rasterizes IDENTICALLY on every OS (no system-font divergence → NFR-014) with
+/// a memory-safe pure-Rust parser (FR-173). Covers the FR-017 diacritic set
+/// (Yoruba/Hausa/Igbo/French/Spanish).
+static FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSans-Latin.ttf");
+
+thread_local! {
+    /// Per-thread shaper + glyph-raster cache built from ONLY the bundled font
+    /// (system fonts are never loaded, so shaping is deterministic and matches
+    /// across OSes). The SwashCache is keyed by glyph+size+subpixel; our finite
+    /// set of output text sizes keeps it bounded (no unbounded growth).
+    static TEXT: RefCell<(FontSystem, SwashCache)> = RefCell::new({
+        let mut db = cosmic_text::fontdb::Database::new();
+        db.load_font_data(FONT_BYTES.to_vec());
+        // A fixed locale so segmentation/line-breaking is identical everywhere.
+        let fs = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
+        (fs, SwashCache::new())
+    });
+}
 
 /// Largest render dimension per side (covers 8K outputs with headroom). Frames
 /// beyond this are rejected at the engine boundary rather than allocated, so a
@@ -248,52 +271,54 @@ pub fn render(frame: &Frame) -> FrameBuffer {
     fb
 }
 
-/// Draw monospaced text with the bundled 8×8 bitmap font, integer-scaled to about
-/// `px` tall, from `rect`'s top-left, clipped to `rect`. Non-ASCII characters and
-/// glyphs that would overflow the rect are skipped.
+/// Shape and rasterize `text` with the bundled OFL font (cosmic-text/rustybuzz →
+/// swash), from `rect`'s top-left, at ≈`px` tall, in `color`, clipped to the
+/// on-screen intersection of `rect` and the frame (ADR-0014). Unlike the old
+/// bitmap path, Unicode + diacritics (Yoruba/Igbo tonal marks, French/Spanish
+/// accents) shape and position correctly (FR-017). Deterministic: a single
+/// bundled shaper+font renders byte-identically on every OS.
 fn draw_text(fb: &mut FrameBuffer, rect: Rect, text: &str, px: u32, color: Rgba) {
-    if px == 0 || rect.w == 0 || rect.h == 0 {
+    if px == 0 || rect.w == 0 || rect.h == 0 || text.is_empty() {
         return;
     }
-    // Cap the glyph scale at the framebuffer height so a pathological `px` can never
-    // produce an unbounded (or i32-overflowing) block-fill — total work stays bounded
-    // by the framebuffer, mirroring `fill_rect`.
-    let scale = (px / 8).max(1).min(fb.height.max(1));
-    let advance = 8 * scale; // monospace cell width
-                             // Clip everything to the on-screen intersection of the layer rect and the frame.
+    // Clip to the on-screen intersection of the layer rect and the frame.
     let clip_right = rect.x.saturating_add(rect.w as i32).min(fb.width as i32);
     let clip_bottom = rect.y.saturating_add(rect.h as i32).min(fb.height as i32);
+    // Cap the font size at the framebuffer height so a pathological `px` can
+    // never drive unbounded work — total work stays bounded by the frame.
+    let font_size = (px as f32).min(fb.height as f32).max(1.0);
 
-    let mut cursor_x = rect.x;
-    for ch in text.chars() {
-        // Stop once the glyph cell would start at/after the clipped right edge.
-        if cursor_x >= clip_right {
-            break;
-        }
-        let code = ch as u32;
-        if ch != ' ' && code < 128 {
-            let glyph = font8x8::legacy::BASIC_LEGACY[code as usize];
-            for (row, bits) in glyph.iter().enumerate() {
-                for col in 0..8u32 {
-                    // font8x8 packs bit 0 (LSB) as the leftmost column.
-                    if (bits >> col) & 1 == 1 {
-                        let x0 = cursor_x + (col * scale) as i32;
-                        let y0 = rect.y + (row as u32 * scale) as i32;
-                        // Iterate only the visible span of this scale×scale block, so
-                        // an off-screen or oversized block does no wasted work.
-                        let bx0 = x0.max(rect.x).max(0);
-                        let by0 = y0.max(rect.y).max(0);
-                        let bx1 = (x0 + scale as i32).min(clip_right);
-                        let by1 = (y0 + scale as i32).min(clip_bottom);
-                        for y in by0..by1 {
-                            for x in bx0..bx1 {
-                                fb.blend(x as u32, y as u32, color);
-                            }
-                        }
-                    }
+    TEXT.with(|cell| {
+        let (fs, cache) = &mut *cell.borrow_mut();
+        // Line height == font size: a tight cell that fills the layer rect (whose
+        // height `compose` sets equal to `px`), like the old bitmap cell. The
+        // buffer is UNCONSTRAINED (no wrap, no vertical scroll-out) — the single
+        // line always lays out and MY clip below bounds it to the rect. (A height
+        // constraint smaller than the line box would scroll the line out and draw
+        // nothing.) `compose.rs` already splits text into per-line layers.
+        let mut buffer = Buffer::new(fs, Metrics::new(font_size, font_size));
+        buffer.set_size(fs, None, None);
+        buffer.set_text(fs, text, Attrs::new(), Shaping::Advanced);
+        buffer.shape_until_scroll(fs, false);
+
+        // `draw` invokes the closure per covered pixel with the text colour
+        // pre-multiplied by the glyph's antialiased coverage (in the alpha).
+        let ink = CtColor::rgba(color.r, color.g, color.b, color.a);
+        buffer.draw(fs, cache, ink, |gx, gy, gw, gh, gcolor| {
+            let a = gcolor.a();
+            if a == 0 {
+                return;
+            }
+            let blend = Rgba::new(gcolor.r(), gcolor.g(), gcolor.b(), a);
+            let x0 = (rect.x + gx).max(rect.x).max(0);
+            let y0 = (rect.y + gy).max(rect.y).max(0);
+            let x1 = (rect.x + gx + gw as i32).min(clip_right);
+            let y1 = (rect.y + gy + gh as i32).min(clip_bottom);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    fb.blend(x as u32, y as u32, blend);
                 }
             }
-        }
-        cursor_x = cursor_x.saturating_add(advance as i32);
-    }
+        });
+    });
 }

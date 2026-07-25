@@ -3,13 +3,20 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_engine::raster::{render, FrameBuffer};
-use selahcue_engine::scene::Rgba;
 use selahcue_present::{compose_slide, Slide, Theme};
 
-/// Whether any pixel of `color` appears in the `[x0,x1) × [y0,y1)` region — glyph
-/// coverage is sparse, so we scan a band rather than asserting an exact pixel.
-fn has_color_in(fb: &FrameBuffer, x0: u32, y0: u32, x1: u32, y1: u32, color: Rgba) -> bool {
-    (y0..y1).any(|y| (x0..x1).any(|x| fb.pixel(x, y) == Some(color)))
+/// Whether any glyph INK (a pixel meaningfully brighter than the dark theme
+/// background) appears in the region. Real shaping antialiases glyph edges, so
+/// most glyph pixels are partial-coverage greys — an exact-colour match would
+/// miss them; this coverage check is the correct oracle for shaped text.
+fn has_ink_in(fb: &FrameBuffer, x0: u32, y0: u32, x1: u32, y1: u32) -> bool {
+    (y0..y1).any(|y| {
+        (x0..x1).any(|x| {
+            fb.pixel(x, y)
+                .map(|p| p.r as u32 + p.g as u32 + p.b as u32 > 90)
+                .unwrap_or(false)
+        })
+    })
 }
 
 #[test]
@@ -29,9 +36,9 @@ fn slide_draws_text_in_the_safe_area_with_theme_colors() {
     let fb = render(&compose_slide(&Slide::title("HELLO"), &theme, 200, 100));
     // Background shows in the margin / corner.
     assert_eq!(fb.pixel(2, 2).unwrap(), theme.background);
-    // The title renders glyph pixels in the top-left of the safe area (margin ~10px).
+    // The title renders glyph ink in the top-left of the safe area (margin ~10px).
     assert!(
-        has_color_in(&fb, 10, 5, 90, 16, theme.text),
+        has_ink_in(&fb, 10, 5, 90, 22),
         "title glyphs should render in the safe area"
     );
 }
@@ -59,13 +66,16 @@ fn text_never_paints_into_the_bottom_safe_margin() {
     let fb = render(&compose_slide(&slide, &theme, 200, 50));
     // Text renders in the top safe area...
     assert!(
-        has_color_in(&fb, 10, 2, 60, 8, theme.text),
+        has_ink_in(&fb, 10, 2, 60, 12),
         "text should render in the top safe area"
     );
-    // ...but never in the bottom safe margin band (rows >= height - margin_y = 48).
+    // ...but never any INK in the bottom safe margin band (rows >= height -
+    // margin_y = 48) — the real overscan invariant, now robust to antialiasing
+    // (a shaped descender leaking down would trip this, unlike an exact-white
+    // check that AA greys would slip past).
     assert!(
-        !has_color_in(&fb, 0, 48, 200, 50, theme.text),
-        "no text in the bottom safe margin / at the bottom edge"
+        !has_ink_in(&fb, 0, 48, 200, 50),
+        "no text ink in the bottom safe margin / at the bottom edge"
     );
 }
 
