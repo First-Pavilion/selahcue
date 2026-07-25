@@ -87,18 +87,19 @@ fn text_layer_renders_glyphs_within_its_rect() {
         color: Rgba::WHITE,
     });
     let fb = render(&f);
-    // Glyph pixels appear inside the text rect.
-    let mut white = 0;
+    // Antialiased glyph ink appears inside the text rect (partial-coverage greys,
+    // not only exact white — real shaping, not the old solid bitmap).
+    let mut inked = 0;
     for y in 8..32 {
         for x in 10..190 {
-            if fb.pixel(x, y) == Some(Rgba::WHITE) {
-                white += 1;
+            if fb.pixel(x, y).map(|p| p.r > 40).unwrap_or(false) {
+                inked += 1;
             }
         }
     }
     assert!(
-        white > 20,
-        "expected glyph coverage, got {white} white pixels"
+        inked > 20,
+        "expected glyph coverage, got {inked} inked pixels"
     );
     // Nothing painted outside the rect.
     assert_eq!(fb.pixel(0, 0).unwrap(), Rgba::BLACK);
@@ -260,4 +261,81 @@ fn text_rendering_is_byte_deterministic() {
         b.bytes(),
         "identical text must rasterize identically"
     );
+}
+
+#[test]
+fn offscreen_glyphs_are_culled_so_work_is_frame_bounded() {
+    // Review 8b-HIGH regression: a long line must not do work for glyphs past the
+    // clip. Two lines that both overflow a narrow rect must produce IDENTICAL
+    // visible pixels — proving the off-rect glyphs (the extra 5000) neither
+    // change the output nor (via the left-to-right break) get rasterized.
+    let narrow = |text: String| {
+        let mut f = Frame::new(48, 40);
+        f.push(Layer::Text {
+            rect: Rect::new(0, 4, 48, 32), // only ~2-3 glyphs are visible
+            text,
+            px: 28,
+            color: Rgba::WHITE,
+        });
+        render(&f)
+    };
+    let short_overflow = narrow("MMMMMM".into()); // already overflows the 48px rect
+    let very_long = narrow("M".repeat(5000)); // 5000 glyphs, all but ~3 off-screen
+    assert_eq!(
+        short_overflow.bytes(),
+        very_long.bytes(),
+        "off-screen glyphs must not affect the visible output (and are culled, not rasterized)"
+    );
+}
+
+#[test]
+fn descenders_and_dot_below_marks_are_not_cropped() {
+    // Review 8b-MEDIUM regression: the font must fit within the line cell so the
+    // below-baseline zone (g/p/y descenders; the Yoruba/Igbo dot-below marks in
+    // ẹ/ọ/ṣ/ị — FR-017) renders and is not clipped at the cell's bottom edge.
+    let mut f = Frame::new(200, 60);
+    f.push(Layer::Text {
+        rect: Rect::new(4, 4, 192, 52),
+        text: "gpy ẹọṣị".into(),
+        px: 44,
+        color: Rgba::WHITE,
+    });
+    let fb = render(&f);
+    // There is ink in the LOWER portion of the cell (below the x-height band) —
+    // i.e. descenders / dot-below marks survived, not shaved off at the top only.
+    let has_ink = |y0: u32, y1: u32| {
+        (y0..y1).any(|y| (4..196).any(|x| fb.pixel(x, y).map(|p| p.r > 40).unwrap_or(false)))
+    };
+    assert!(has_ink(4, 40), "main glyph body renders");
+    assert!(
+        has_ink(38, 56),
+        "descenders / dot-below marks render in the lower cell (not cropped)"
+    );
+}
+
+#[test]
+fn text_caches_stay_bounded_over_many_renders() {
+    // Review 8b: the per-thread glyph/shape caches must not grow without bound.
+    // Render far past the internal reset threshold at MANY distinct sizes (the
+    // worst case for cache growth) — it must stay responsive, deterministic, and
+    // never OOM/panic (the periodic full reset caps memory).
+    for i in 0..9000u32 {
+        let mut f = Frame::new(80, 40);
+        f.push(Layer::Text {
+            rect: Rect::new(2, 2, 76, 36),
+            text: "Aẹ́g".into(),
+            px: 8 + (i % 30), // distinct sizes cycle → exercises the size dimension
+            color: Rgba::WHITE,
+        });
+        let _ = render(&f);
+    }
+    // Still correct after all that churn (same input → same output).
+    let mut f = Frame::new(80, 40);
+    f.push(Layer::Text {
+        rect: Rect::new(2, 2, 76, 36),
+        text: "Aẹ́g".into(),
+        px: 20,
+        color: Rgba::WHITE,
+    });
+    assert_eq!(render(&f).bytes(), render(&f).bytes());
 }

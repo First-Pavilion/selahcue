@@ -17,18 +17,57 @@ use std::cell::RefCell;
 /// (Yoruba/Hausa/Igbo/French/Spanish).
 static FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSans-Latin.ttf");
 
-thread_local! {
-    /// Per-thread shaper + glyph-raster cache built from ONLY the bundled font
-    /// (system fonts are never loaded, so shaping is deterministic and matches
-    /// across OSes). The SwashCache is keyed by glyph+size+subpixel; our finite
-    /// set of output text sizes keeps it bounded (no unbounded growth).
-    static TEXT: RefCell<(FontSystem, SwashCache)> = RefCell::new({
+/// Font size as a fraction of the line-box (`px`) height. The bundled Noto Sans
+/// has an ascent+descent of ~1.36 em, so a font sized at ~0.72 of the cell keeps
+/// the full glyph box — descenders and dot-below marks included — inside the cell
+/// (leaving normal leading), rather than overflowing and being clipped.
+const FONT_TO_LINE: f32 = 0.72;
+
+/// Per-thread shaper + glyph-raster cache, built from ONLY the bundled font
+/// (system fonts are never loaded, so shaping is deterministic and identical
+/// across OSes). The caches are keyed by glyph/text + size + subpixel; the app's
+/// output size is fixed so `px` takes only a few values in practice, but to keep
+/// memory bounded even against a caller that renders at many distinct sizes, the
+/// whole context is rebuilt from scratch every [`RESET_EVERY`] renders (cheap —
+/// re-loading a 127 KB font — and it fully frees both caches; no unbounded growth).
+struct TextCtx {
+    fs: FontSystem,
+    cache: SwashCache,
+    renders: u32,
+}
+
+/// Rebuild the (bounded but ever-appending) glyph/shape caches this often.
+const RESET_EVERY: u32 = 4096;
+
+impl TextCtx {
+    fn new() -> Self {
         let mut db = cosmic_text::fontdb::Database::new();
         db.load_font_data(FONT_BYTES.to_vec());
         // A fixed locale so segmentation/line-breaking is identical everywhere.
         let fs = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
-        (fs, SwashCache::new())
-    });
+        TextCtx {
+            fs,
+            cache: SwashCache::new(),
+            renders: 0,
+        }
+    }
+    /// Periodically drop the caches so long-running sessions can't accumulate
+    /// glyph images / shaped runs without bound (no-leak rule).
+    fn tick(&mut self) {
+        self.renders = self.renders.wrapping_add(1);
+        if self.renders.is_multiple_of(RESET_EVERY) {
+            self.cache = SwashCache::new();
+            self.fs = {
+                let mut db = cosmic_text::fontdb::Database::new();
+                db.load_font_data(FONT_BYTES.to_vec());
+                FontSystem::new_with_locale_and_db("en-US".to_string(), db)
+            };
+        }
+    }
+}
+
+thread_local! {
+    static TEXT: RefCell<TextCtx> = RefCell::new(TextCtx::new());
 }
 
 /// Largest render dimension per side (covers 8K outputs with headroom). Frames
@@ -284,41 +323,59 @@ fn draw_text(fb: &mut FrameBuffer, rect: Rect, text: &str, px: u32, color: Rgba)
     // Clip to the on-screen intersection of the layer rect and the frame.
     let clip_right = rect.x.saturating_add(rect.w as i32).min(fb.width as i32);
     let clip_bottom = rect.y.saturating_add(rect.h as i32).min(fb.height as i32);
-    // Cap the font size at the framebuffer height so a pathological `px` can
-    // never drive unbounded work — total work stays bounded by the frame.
-    let font_size = (px as f32).min(fb.height as f32).max(1.0);
+    // `px` is the CELL height (a line box, from `compose`). The font size is a
+    // fraction of it so the font's full ascent+descent box (~1.36 em for Noto
+    // Sans) fits INSIDE the cell — otherwise cosmic-text centres a taller box in
+    // the cell and the clip crops descenders and the Yoruba/Igbo dot-below marks
+    // (ẹ/ọ/ṣ/ị) FR-017 targets. Capped at the framebuffer height for safety.
+    let line_h = (px as f32).min(fb.height as f32).max(1.0);
+    let font_size = (line_h * FONT_TO_LINE).max(1.0);
 
     TEXT.with(|cell| {
-        let (fs, cache) = &mut *cell.borrow_mut();
-        // Line height == font size: a tight cell that fills the layer rect (whose
-        // height `compose` sets equal to `px`), like the old bitmap cell. The
-        // buffer is UNCONSTRAINED (no wrap, no vertical scroll-out) — the single
-        // line always lays out and MY clip below bounds it to the rect. (A height
-        // constraint smaller than the line box would scroll the line out and draw
-        // nothing.) `compose.rs` already splits text into per-line layers.
-        let mut buffer = Buffer::new(fs, Metrics::new(font_size, font_size));
+        let ctx = &mut *cell.borrow_mut();
+        ctx.tick();
+        let TextCtx { fs, cache, .. } = ctx;
+        // The font at `font_size`, laid out in a `line_h`-tall line box, so a
+        // glyph's ink stays inside the cell (see above). Unconstrained size → one
+        // line, no wrap; horizontal culling below keeps the WORK frame-bounded.
+        let mut buffer = Buffer::new(fs, Metrics::new(font_size, line_h));
         buffer.set_size(fs, None, None);
         buffer.set_text(fs, text, Attrs::new(), Shaping::Advanced);
         buffer.shape_until_scroll(fs, false);
 
-        // `draw` invokes the closure per covered pixel with the text colour
-        // pre-multiplied by the glyph's antialiased coverage (in the alpha).
         let ink = CtColor::rgba(color.r, color.g, color.b, color.a);
-        buffer.draw(fs, cache, ink, |gx, gy, gw, gh, gcolor| {
-            let a = gcolor.a();
-            if a == 0 {
-                return;
-            }
-            let blend = Rgba::new(gcolor.r(), gcolor.g(), gcolor.b(), a);
-            let x0 = (rect.x + gx).max(rect.x).max(0);
-            let y0 = (rect.y + gy).max(rect.y).max(0);
-            let x1 = (rect.x + gx + gw as i32).min(clip_right);
-            let y1 = (rect.y + gy + gh as i32).min(clip_bottom);
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    fb.blend(x as u32, y as u32, blend);
+        for run in buffer.layout_runs() {
+            let base_y = rect.y.saturating_add(run.line_y as i32);
+            for glyph in run.glyphs.iter() {
+                let pg = glyph.physical((0.0, 0.0), 1.0);
+                let pen_x = rect.x.saturating_add(pg.x);
+                // Glyphs are laid out left-to-right: once one starts at/after the
+                // clip, every later glyph does too — stop. This bounds the work
+                // to the VISIBLE glyphs, not the whole line (a long/pasted line
+                // must not stall the frame — the old bitmap path broke here too).
+                if pen_x >= clip_right {
+                    break;
                 }
+                // A glyph spans at most ~one em; skip those wholly left of the rect.
+                if pen_x + line_h as i32 + 2 < rect.x {
+                    continue;
+                }
+                let gcolor = glyph.color_opt.unwrap_or(ink);
+                cache.with_pixels(fs, pg.cache_key, gcolor, |ox, oy, c| {
+                    let a = c.a();
+                    if a == 0 {
+                        return;
+                    }
+                    // Saturating so an extreme rect origin + glyph offset can
+                    // never i32-overflow-panic (the clip below discards them).
+                    let x = pen_x.saturating_add(ox);
+                    let y = base_y.saturating_add(pg.y).saturating_add(oy);
+                    if x < rect.x || x >= clip_right || y < rect.y || y >= clip_bottom {
+                        return; // clip to the layer rect + frame (protects the safe margin)
+                    }
+                    fb.blend(x as u32, y as u32, Rgba::new(c.r(), c.g(), c.b(), a));
+                });
             }
-        });
+        }
     });
 }
