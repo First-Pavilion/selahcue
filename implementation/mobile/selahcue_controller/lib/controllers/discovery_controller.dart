@@ -42,6 +42,9 @@ class DiscoveryController extends ChangeNotifier {
     await _lock.acquire();
     try {
       await (_browseOverride ?? _mdnsBrowse)(found);
+    } catch (_) {
+      // Discovery is best-effort — a browse failure yields an empty result and
+      // never leaves the controller wedged (see the finally + the reset below).
     } finally {
       await _lock.release();
     }

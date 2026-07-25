@@ -752,6 +752,22 @@ Executed via the `/goal` engine against `docs/delivery/goals/TASK-86ajpevzp-laun
 
 - Target: S7an-001..S7an-005. Change: a GUI-launch **smoke mode** (`--smoke`/`SELAHCUE_SMOKE`) in `selahcue-desktop` (present first frame → exit 0 + time-to-first-frame; 30s watchdog + CI `timeout-minutes` backstop; unit-tested flag detection; no session persistence), a **`launch-smoke` CI job** (ubuntu headless under Xvfb + lavapipe; macOS on the runner; Windows a documented headless-present limitation), and a **`measure_nfr.sh` portability fix** (`mktemp -t <prefix>` was broken on GNU/Linux — the NFR script only ever ran on macOS). Executed through the `/goal` engine (5 iterations). Adversarial review (13 agents, 2 lenses each verified): **11 raised → 7 confirmed → all fixed** (headline: the review caught that C-004 overstated the ≤3s cold-start by using the 5.2s software-lavapipe first-frame instead of the `make nfr` proxy — reframed honestly; also added the CI hang backstop and made the NFR budgets gate). Verifier: CI run 30142530116 green — launch proven on Linux headless + macOS; NFR budgets gate (Linux 0.058s / 203MB); 269 workspace tests, clippy `-D warnings` + fmt clean. Windows launch recorded once (522ms) then documented as an intermittent runner limitation. Result: PASS. Decision: gate-review.
 
+## Batch 7ao predicate — Android MulticastLock for mDNS discovery (86ajp0b0t remainder)
+
+Executed via the `/goal` engine against `docs/delivery/goals/TASK-86ajp0b0t-android-multicastlock.md` (validator `--require-complete` PASS; 5/5 mandatory).
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7ao-001 | yes | A MulticastLock abstraction + best-effort Android-only PlatformMulticastLock; refresh() acquires around the browse and always releases; never throws | `flutter analyze` | clean | multicast_lock.dart; discovery_controller.dart | PASS |
+| S7ao-002 | yes | Unit tests prove acquire→browse→release, no-wedge on browse error, no double-acquire on concurrent refresh | `flutter test` | 3 lock tests pass | discovery_controller_test.dart | PASS |
+| S7ao-003 | yes | Android host registers `selahcue/multicast` + acquires/releases a WifiManager.MulticastLock (isHeld-guarded; released on destroy); compiles | `flutter build apk --debug` (CI) | APK builds — Kotlin compiles | MainActivity.kt; ci.yml | PASS |
+| S7ao-004 | yes | flutter analyze + test + apk build green in CI | CI run | green | run 30143369094 (+ re-run landing the review fix) | PASS |
+| S7ao-005 | yes | Independent review; confirmed findings fixed | run `wf_96cabb67-4a5` | 3 raised → 1 confirmed → **fixed**; 2 refuted | CODE-REVIEW-batch7ao.md | PASS |
+
+### Iteration ledger — batch 7ao
+
+- Target: S7ao-001..S7ao-005. Change: a Dart `MulticastLock` abstraction + best-effort `PlatformMulticastLock` (`selahcue/multicast` channel, Android-only), `DiscoveryController.refresh()` holding the lock across the browse and **always releasing** it (mDNS browse extracted behind an injectable seam), a Kotlin `MainActivity` channel handler (non-ref-counted lock, `isHeld`-guarded, released on destroy), 3 lock-lifecycle unit tests, and a `flutter build apk --debug` CI step compile-verifying the Kotlin. The `CHANGE_WIFI_MULTICAST_STATE` permission (7aj) is now matched by the runtime lock — so Android multicast reception actually works. Executed via the `/goal` engine (3 iterations). Adversarial review (2 lenses, each verified): **3 raised → 1 confirmed → fixed** (headline: `refresh()` lacked a `catch`, so a throwing browse would leave `_searching=true` forever — a permanent discovery lockout, masked in production but undefended; now best-effort, never wedges); 2 refuted. Verifier: `flutter analyze` clean + **39** Flutter tests; CI green incl. the APK build. On-device discovery (real phone finds a host over mDNS) is explicit owner QA. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

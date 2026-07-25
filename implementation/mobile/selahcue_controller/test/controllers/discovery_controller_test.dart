@@ -51,7 +51,7 @@ void main() {
     expect(c.searching, isFalse);
   });
 
-  test('the lock is released even when the browse throws', () async {
+  test('a browse failure never leaks the lock or wedges the controller', () async {
     final events = <String>[];
     final lock = _FakeLock(events);
     final c = DiscoveryController(
@@ -60,11 +60,18 @@ void main() {
     );
     addTearDown(c.dispose);
 
-    await expectLater(c.refresh(), throwsA(isA<StateError>()));
-    // finally still ran: the lock is never leaked on a browse failure.
+    // Best-effort: refresh must NOT throw, must release the lock, and must reset
+    // `searching` so a later browse can run (a stuck flag would block discovery).
+    await c.refresh();
     expect(lock.acquired, 1);
     expect(lock.released, 1);
     expect(events, ['acquire', 'release']);
+    expect(c.searching, isFalse);
+    expect(c.hosts, isEmpty);
+
+    // A subsequent refresh still works (not wedged).
+    await c.refresh();
+    expect(lock.acquired, 2);
   });
 
   test('a concurrent refresh does not double-acquire the lock', () async {
