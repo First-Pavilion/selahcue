@@ -86,12 +86,35 @@ class LiveController extends ChangeNotifier {
   }
 
   /// Stage a scripture reference and, only if it landed in Preview, send it
-  /// live in one action.
-  Future<void> stageScriptureAndGoLive(String reference) async {
-    await act(cmdStageScripture(reference));
+  /// live in one action. `translation` stages the verse in the browsed text.
+  Future<void> stageScriptureAndGoLive(String reference,
+      {String? translation}) async {
+    await act(cmdStageScripture(reference, translation: translation));
     if (_view?.stagedScripture == reference) {
       await act(cmdGoLive());
     }
+  }
+
+  /// Fetch a whole chapter's verses for the verse-list browser. Returns null on
+  /// any non-chapter outcome — an older host that doesn't know `get_chapter`
+  /// replies with `error`/unknown, a bad reference is denied — so the caller can
+  /// fall back to reference-only staging. A read-only query: it does NOT touch
+  /// the denial banner or refresh state.
+  Future<ChapterResult?> fetchChapter(String reference,
+      {String? translation}) async {
+    // Retry once across a reconnect so a transient socket blip on the first
+    // fetch isn't mistaken for an old host that lacks the command (which would
+    // wrongly show the reference-only fallback on a perfectly capable host).
+    for (var attempt = 0; attempt < 2 && !_disposed; attempt++) {
+      try {
+        final reply = await _session
+            .command(cmdGetChapter(reference, translation: translation));
+        return reply is ChapterResult ? reply : null;
+      } on SessionException {
+        await _reconnect();
+      }
+    }
+    return null;
   }
 
   /// Send one command, surface a denial as a message, then re-render fresh state.

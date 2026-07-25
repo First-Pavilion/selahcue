@@ -10,7 +10,7 @@ use selahcue_core::plan::ServicePlan;
 use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{
-    Command, DenyReason, DisplayView, OutputStatusView, ServerMessage, TimerSnapshot,
+    Command, DenyReason, DisplayView, OutputStatusView, ServerMessage, TimerSnapshot, VerseView,
 };
 use selahcue_present::{FrameBuffer, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView};
 use std::time::{Duration, Instant};
@@ -550,7 +550,10 @@ impl LiveController {
         self.stage_dirty = true;
         // Mutating commands mark the session for autosave (reads don't).
         match command {
-            Command::GetState | Command::GetOperatorState | Command::ScriptureSearch { .. } => {}
+            Command::GetState
+            | Command::GetOperatorState
+            | Command::ScriptureSearch { .. }
+            | Command::GetChapter { .. } => {}
             _ => self.state_dirty = true,
         }
         let len = self.plan.len();
@@ -694,6 +697,38 @@ impl LiveController {
                 self.staged_idx = None; // a scripture slide is not a plan index
                 self.staged_scripture = Some(reference.clone());
                 ControllerReply::Ack
+            }
+            Command::GetChapter {
+                reference,
+                translation,
+            } => {
+                let t = match translation.as_deref() {
+                    None => selahcue_scripture::Translation::default(),
+                    Some(code) => match selahcue_scripture::Translation::from_code(code) {
+                        Some(t) => t,
+                        None => return ControllerReply::Deny(DenyReason::BadRequest),
+                    },
+                };
+                // Any parseable reference identifies the chapter (the verse part
+                // is ignored by chapter_in); an unparseable one is a bad request.
+                let Some(parsed) = scripture::parse(reference).into_iter().next() else {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                };
+                match selahcue_scripture::chapter_in(t, &parsed) {
+                    Some(ch) => ControllerReply::Message(ServerMessage::Chapter {
+                        book_name: ch.book_name,
+                        chapter: ch.chapter,
+                        translation: t.code().to_string(),
+                        verses: ch
+                            .verses
+                            .into_iter()
+                            .map(|(number, text)| VerseView { number, text })
+                            .collect(),
+                        prev_ref: selahcue_scripture::adjacent_chapter_in(t, &parsed, false),
+                        next_ref: selahcue_scripture::adjacent_chapter_in(t, &parsed, true),
+                    }),
+                    None => ControllerReply::Deny(DenyReason::BadRequest),
+                }
             }
             Command::GetState => {
                 let live_item = self

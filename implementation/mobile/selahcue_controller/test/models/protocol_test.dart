@@ -94,6 +94,62 @@ void main() {
   test('stage_scripture command matches the Rust wire shape', () {
     expect(cmdStageScripture('Romans 8:28'),
         {'cmd': 'stage_scripture', 'reference': 'Romans 8:28'});
+    // Translation is skip-if-none (byte-identical to the old shape when absent).
+    expect(cmdStageScripture('Romans 8:28', translation: 'WEB'), {
+      'cmd': 'stage_scripture',
+      'reference': 'Romans 8:28',
+      'translation': 'WEB',
+    });
+  });
+
+  test('get_chapter command matches the Rust wire shape', () {
+    expect(jsonEncode(cmdGetChapter('Romans 8')),
+        '{"cmd":"get_chapter","reference":"Romans 8"}');
+    expect(jsonEncode(cmdGetChapter('Romans 8', translation: 'WEB')),
+        '{"cmd":"get_chapter","reference":"Romans 8","translation":"WEB"}');
+  });
+
+  test('chapter reply parses (Rust fixture)', () {
+    const fixture =
+        '{"event":"chapter","book_name":"Romans","chapter":8,"translation":"KJV",'
+        '"verses":[{"number":28,"text":"And we know…"}],'
+        '"prev_ref":"Romans 7","next_ref":"Romans 9"}';
+    final m =
+        ServerMessage.fromJson(jsonDecode(fixture) as Map<String, dynamic>);
+    expect(m, isA<ChapterResult>());
+    final ch = m as ChapterResult;
+    expect(ch.bookName, 'Romans');
+    expect(ch.chapter, 8);
+    expect(ch.translation, 'KJV');
+    expect(ch.heading, 'Romans 8 (KJV)');
+    expect(ch.verses, hasLength(1));
+    expect(ch.verses.first.number, 28);
+    expect(ch.verses.first.reference('Romans', 8), 'Romans 8:28');
+    expect(ch.prevRef, 'Romans 7');
+    expect(ch.nextRef, 'Romans 9');
+  });
+
+  test('chapter reply at a canon edge omits the missing neighbour', () {
+    const fixture =
+        '{"event":"chapter","book_name":"Genesis","chapter":1,"translation":"KJV",'
+        '"verses":[{"number":1,"text":"In the beginning…"}],"next_ref":"Genesis 2"}';
+    final ch = ServerMessage.fromJson(jsonDecode(fixture) as Map<String, dynamic>)
+        as ChapterResult;
+    expect(ch.prevRef, isNull);
+    expect(ch.nextRef, 'Genesis 2');
+  });
+
+  test('operator_state parses the advertised translation list', () {
+    final v = OperatorStateView.fromJson({
+      'plan_name': 'Sunday',
+      'items': const [],
+      'blackout': false,
+      'translations': const ['KJV', 'WEB', 'ASV'],
+    });
+    expect(v.translations, ['KJV', 'WEB', 'ASV']);
+    // Absent = empty (the host doesn't advertise them).
+    final v2 = OperatorStateView.fromJson({'plan_name': 'X', 'items': const []});
+    expect(v2.translations, isEmpty);
   });
 
   test('operator_state tolerates the desktop-only outputs fields', () {

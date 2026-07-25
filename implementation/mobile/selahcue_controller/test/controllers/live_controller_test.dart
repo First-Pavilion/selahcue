@@ -89,4 +89,38 @@ void main() {
     live.dismissError();
     expect(live.error, isNull);
   });
+
+  test('fetchChapter returns the host chapter', () async {
+    const chapter = ChapterResult(
+      bookName: 'Romans',
+      chapter: 8,
+      translation: 'KJV',
+      verses: [VerseView(28, 'And we know…')],
+      prevRef: 'Romans 7',
+      nextRef: 'Romans 9',
+    );
+    final session = FakeSession(_emptyView(), (_) => chapter);
+    final live = LiveController(session: session, stored: _stored);
+    addTearDown(live.dispose);
+
+    final got = await live.fetchChapter('Romans 8');
+    expect(got, isNotNull);
+    expect(got!.bookName, 'Romans');
+    expect(got.verses.single.reference('Romans', 8), 'Romans 8:28');
+  });
+
+  test('fetchChapter degrades to null against an old host (error/denied)', () async {
+    // An older host that doesn't know get_chapter replies with an error event.
+    final old = FakeSession(_emptyView(), (_) => const ErrorMessage('unknown'));
+    final liveOld = LiveController(session: old, stored: _stored);
+    addTearDown(liveOld.dispose);
+    expect(await liveOld.fetchChapter('Romans 8'), isNull);
+
+    final denied = FakeSession(_emptyView(), (_) => const Denied(1, 'forbidden'));
+    final liveDenied = LiveController(session: denied, stored: _stored);
+    addTearDown(liveDenied.dispose);
+    expect(await liveDenied.fetchChapter('Romans 8'), isNull);
+    // A read-only fetch must not raise the denial banner.
+    expect(liveDenied.error, isNull);
+  });
 }

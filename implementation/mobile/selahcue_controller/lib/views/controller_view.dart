@@ -52,7 +52,34 @@ class _ControllerViewState extends State<ControllerView> {
         MaterialPageRoute(builder: (_) => const PairingView()));
   }
 
+  /// Open the About & connection sheet — the home for connection details and
+  /// Disconnect, reached from the top bar instead of a competing nav drawer.
+  void _showAbout() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: DesignTokens.bgPanel,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) => _AboutSheet(
+        stored: widget.stored,
+        live: _live,
+        onDisconnect: () {
+          Navigator.of(sheetContext).pop(); // close the sheet first
+          _unpair();
+        },
+      ),
+    );
+  }
+
   static const _titles = ['Live', 'Plan', 'Scripture', 'Timer'];
+
+  /// Local wall-clock as `H:MM`, e.g. `10:42` (24-hour, no leading zero on hour).
+  static String _wallClock() {
+    final now = DateTime.now();
+    return '${now.hour}:${now.minute.toString().padLeft(2, '0')}';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -97,11 +124,28 @@ class _ControllerViewState extends State<ControllerView> {
                 ],
               ],
             ),
-          ),
-          drawer: _AboutDrawer(
-            stored: widget.stored,
-            reconnecting: _live.reconnecting,
-            onDisconnect: _unpair,
+            actions: [
+              // A wall clock for service-timing awareness (matches the design);
+              // it refreshes on each 1s poll rebuild.
+              Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: Center(
+                  child: Text(_wallClock(),
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: DesignTokens.textMuted)),
+                ),
+              ),
+              // About & connection lives on the top bar, not a nav drawer —
+              // a drawer competing with the bottom tabs is a second nav surface.
+              IconButton(
+                icon: const Icon(Icons.info_outline,
+                    color: DesignTokens.textMuted),
+                tooltip: 'About & connection',
+                onPressed: _showAbout,
+              ),
+            ],
           ),
           body: Column(
             children: [
@@ -177,68 +221,68 @@ class _ControllerViewState extends State<ControllerView> {
   }
 }
 
-/// The About / connection drawer: what this device is paired to, its role, the
+/// The About & connection sheet: what this device is paired to, its role, the
 /// certificate fingerprint (for trust verification), live connection status,
-/// and Disconnect (un-pair).
-class _AboutDrawer extends StatelessWidget {
+/// and Disconnect (un-pair). Presented as a modal sheet from the top bar so it
+/// never becomes a second navigation surface alongside the bottom tabs.
+class _AboutSheet extends StatelessWidget {
   final StoredSession stored;
-  final bool reconnecting;
-  final Future<void> Function() onDisconnect;
+  final LiveController live;
+  final VoidCallback onDisconnect;
 
-  const _AboutDrawer({
+  const _AboutSheet({
     required this.stored,
-    required this.reconnecting,
+    required this.live,
     required this.onDisconnect,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Drawer(
-      backgroundColor: DesignTokens.bgPanel,
-      child: SafeArea(
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 24, 20, 8),
-              child: Row(
-                children: [
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: DesignTokens.accentBrand,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    alignment: Alignment.center,
-                    child: const Text('S',
+            Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: DesignTokens.accentBrand,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  alignment: Alignment.center,
+                  child: const Text('S',
+                      style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white)),
+                ),
+                const SizedBox(width: 12),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: const [
+                    Text('SelahCue',
                         style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                            color: Colors.white)),
-                  ),
-                  const SizedBox(width: 12),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: const [
-                      Text('SelahCue',
-                          style: TextStyle(
-                              fontSize: 17,
-                              fontWeight: FontWeight.w700,
-                              color: DesignTokens.textPrimary)),
-                      Text('Controller',
-                          style: TextStyle(
-                              fontSize: 12,
-                              letterSpacing: 2,
-                              color: DesignTokens.textMuted)),
-                    ],
-                  ),
-                ],
-              ),
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                            color: DesignTokens.textPrimary)),
+                    Text('Controller · Producer',
+                        style: TextStyle(
+                            fontSize: 12,
+                            letterSpacing: 1.5,
+                            color: DesignTokens.textMuted)),
+                  ],
+                ),
+              ],
             ),
-            const Divider(color: DesignTokens.border, height: 24),
+            const Divider(color: DesignTokens.border, height: 28),
             const Padding(
-              padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+              padding: EdgeInsets.only(bottom: 4),
               child: Text('CONNECTION',
                   style: TextStyle(
                       fontSize: 11,
@@ -246,28 +290,30 @@ class _AboutDrawer extends StatelessWidget {
                       letterSpacing: 0.7,
                       color: DesignTokens.textMuted)),
             ),
-            _row('Status', reconnecting ? 'Reconnecting…' : 'Connected',
-                valueColor:
-                    reconnecting ? DesignTokens.warnInk : DesignTokens.previewInk),
+            // Status tracks the live connection while the sheet is open.
+            ListenableBuilder(
+              listenable: live,
+              builder: (context, _) => _row(
+                'Status',
+                live.reconnecting ? 'Reconnecting…' : 'Connected',
+                valueColor: live.reconnecting
+                    ? DesignTokens.warnInk
+                    : DesignTokens.previewInk,
+              ),
+            ),
             _row('Host', '${stored.host}:${stored.port}'),
             _row('Role', 'Producer'),
             _row('Fingerprint', pinFingerprint(stored.pinHex)),
-            const Spacer(),
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: DesignTokens.liveInk,
-                  side: const BorderSide(color: DesignTokens.liveInk),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                ),
-                icon: const Icon(Icons.link_off),
-                label: const Text('Disconnect this device'),
-                onPressed: () {
-                  Navigator.of(context).pop(); // close the drawer
-                  onDisconnect();
-                },
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: DesignTokens.liveInk,
+                side: const BorderSide(color: DesignTokens.liveInk),
+                padding: const EdgeInsets.symmetric(vertical: 14),
               ),
+              icon: const Icon(Icons.link_off),
+              label: const Text('Disconnect this device'),
+              onPressed: onDisconnect,
             ),
           ],
         ),
@@ -276,12 +322,12 @@ class _AboutDrawer extends StatelessWidget {
   }
 
   Widget _row(String label, String value, {Color? valueColor}) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        padding: const EdgeInsets.symmetric(vertical: 7),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             SizedBox(
-              width: 108,
+              width: 104,
               child: Text(label,
                   style: const TextStyle(
                       fontSize: 13, color: DesignTokens.textMuted)),

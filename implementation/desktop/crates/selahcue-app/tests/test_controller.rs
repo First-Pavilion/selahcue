@@ -114,6 +114,78 @@ fn scripture_search_parses_references() {
 }
 
 #[test]
+fn get_chapter_returns_numbered_verses_and_neighbours() {
+    // The mobile verse-list browser fetches a whole chapter over the wire.
+    let (mut c, _) = controller();
+    match c.apply(&Command::GetChapter {
+        reference: "Romans 8".into(),
+        translation: None,
+    }) {
+        ControllerReply::Message(ServerMessage::Chapter {
+            book_name,
+            chapter,
+            translation,
+            verses,
+            prev_ref,
+            next_ref,
+        }) => {
+            assert_eq!(book_name, "Romans");
+            assert_eq!(chapter, 8);
+            assert_eq!(translation, "KJV");
+            assert_eq!(verses.first().map(|v| v.number), Some(1));
+            assert!(verses.len() > 30, "Romans 8 has 39 verses");
+            assert!(verses.iter().all(|v| !v.text.is_empty()));
+            assert_eq!(prev_ref.as_deref(), Some("Romans 7"));
+            assert_eq!(next_ref.as_deref(), Some("Romans 9"));
+        }
+        other => panic!("expected Chapter, got {other:?}"),
+    }
+}
+
+#[test]
+fn get_chapter_clamps_at_the_ends_of_the_canon() {
+    let (mut c, _) = controller();
+    // Genesis 1 has no previous chapter; Revelation 22 has no next.
+    match c.apply(&Command::GetChapter {
+        reference: "Genesis 1".into(),
+        translation: None,
+    }) {
+        ControllerReply::Message(ServerMessage::Chapter { prev_ref, .. }) => {
+            assert_eq!(prev_ref, None, "nothing before Genesis 1");
+        }
+        other => panic!("expected Chapter, got {other:?}"),
+    }
+    match c.apply(&Command::GetChapter {
+        reference: "Revelation 22".into(),
+        translation: None,
+    }) {
+        ControllerReply::Message(ServerMessage::Chapter { next_ref, .. }) => {
+            assert_eq!(next_ref, None, "nothing after Revelation 22");
+        }
+        other => panic!("expected Chapter, got {other:?}"),
+    }
+}
+
+#[test]
+fn get_chapter_rejects_garbage_and_unknown_translations() {
+    let (mut c, _) = controller();
+    assert_eq!(
+        c.apply(&Command::GetChapter {
+            reference: "not a book".into(),
+            translation: None,
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest),
+    );
+    assert_eq!(
+        c.apply(&Command::GetChapter {
+            reference: "Romans 8".into(),
+            translation: Some("NOPE".into()),
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest),
+    );
+}
+
+#[test]
 fn staged_scripture_can_go_live() {
     // A staged scripture (not a plan item) must be committable to Live.
     let (mut c, _) = controller();

@@ -98,7 +98,9 @@ pub fn required_permission(cmd: &Command) -> Permission {
         Command::Clear => ClearLive,
         Command::Blackout { .. } => Blackout,
         Command::StartTimer { .. } | Command::StopTimer | Command::AdjustTimer { .. } => Timer,
-        Command::ScriptureSearch { .. } | Command::StageScripture { .. } => SearchScripture,
+        Command::ScriptureSearch { .. }
+        | Command::StageScripture { .. }
+        | Command::GetChapter { .. } => SearchScripture,
         Command::GetState | Command::GetOperatorState => Monitor,
         Command::AddItem { .. }
         | Command::RemoveItem { .. }

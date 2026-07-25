@@ -53,6 +53,16 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         translation: Option<String>,
     },
+    /// Fetch a whole chapter's numbered verses (read-only; does NOT push live)
+    /// so a remote controller can render the verse list the desktop browser
+    /// holds locally. `reference` is any parseable ref (`"Romans 8"`, `"gen 1 1"`
+    /// — the verse part is ignored); `translation` omitted = the KJV default.
+    /// Skip-if-none keeps the v2 fixtures identical.
+    GetChapter {
+        reference: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        translation: Option<String>,
+    },
     /// Show the identify overlay (a distinct number) on every physical output.
     IdentifyOutputs,
     /// Assign an output role to a physical display (persisted; applied live).
@@ -123,6 +133,22 @@ pub enum ServerMessage {
         references: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         hits: Vec<ScriptureHitView>,
+    },
+    /// Reply to [`Command::GetChapter`]: a whole chapter's numbered verses so a
+    /// remote controller can render the verse list. Each verse stages via the
+    /// reference `"{book_name} {chapter}:{number}"`. `prev_ref`/`next_ref`
+    /// address the neighbouring chapters for ‹ › paging (absent at the ends of
+    /// the canon). Skip-if-none/empty keeps the pinned fixtures compact.
+    Chapter {
+        book_name: String,
+        chapter: u16,
+        translation: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        verses: Vec<VerseView>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prev_ref: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_ref: Option<String>,
     },
     /// The full operator view (reply to [`Command::GetOperatorState`]).
     OperatorState { view: OperatorStateView },
@@ -220,6 +246,15 @@ pub struct ScriptureHitView {
     /// e.g. `"Romans 8:28"` — parseable, stages directly.
     pub reference: String,
     /// The verse text in the searched translation.
+    pub text: String,
+}
+
+/// One verse in a fetched chapter (reply to [`Command::GetChapter`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerseView {
+    /// Verse number within the chapter.
+    pub number: u16,
+    /// The verse text in the fetched translation.
     pub text: String,
 }
 

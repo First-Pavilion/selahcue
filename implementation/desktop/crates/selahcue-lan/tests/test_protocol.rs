@@ -4,7 +4,7 @@
 
 use selahcue_lan::protocol::{
     from_json, to_json, AuthRequest, AuthResponse, Command, DenyReason, Request, ServerMessage,
-    VERSION,
+    VerseView, VERSION,
 };
 use selahcue_lan::rbac::Role;
 
@@ -57,6 +57,14 @@ fn every_command_round_trips() {
             reference: "Rom 8:28".into(),
             translation: None,
         },
+        Command::GetChapter {
+            reference: "Romans 8".into(),
+            translation: None,
+        },
+        Command::GetChapter {
+            reference: "Romans 8".into(),
+            translation: Some("WEB".into()),
+        },
         Command::GetState,
     ];
     for c in cmds {
@@ -82,6 +90,26 @@ fn server_messages_round_trip() {
             query: "peace".into(),
             references: vec!["John 14:27".into(), "Phil 4:7".into()],
             hits: vec![],
+        },
+        ServerMessage::Chapter {
+            book_name: "Romans".into(),
+            chapter: 8,
+            translation: "KJV".into(),
+            verses: vec![VerseView {
+                number: 28,
+                text: "And we know that all things work together for good…".into(),
+            }],
+            prev_ref: Some("Romans 7".into()),
+            next_ref: Some("Romans 9".into()),
+        },
+        // A canon-edge chapter: no neighbours, empty verse fixture allowed.
+        ServerMessage::Chapter {
+            book_name: "Genesis".into(),
+            chapter: 1,
+            translation: "KJV".into(),
+            verses: vec![],
+            prev_ref: None,
+            next_ref: Some("Genesis 2".into()),
         },
         ServerMessage::Error {
             message: "boom".into(),
@@ -288,6 +316,40 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
     assert_eq!(
         to_json(&Command::GetOperatorState).unwrap(),
         r#"{"cmd":"get_operator_state"}"#
+    );
+    // The chapter-fetch command (batch 7al refine) — the Dart client sends THESE
+    // exact shapes; translation is skip-if-none.
+    assert_eq!(
+        to_json(&Command::GetChapter {
+            reference: "Romans 8".into(),
+            translation: None,
+        })
+        .unwrap(),
+        r#"{"cmd":"get_chapter","reference":"Romans 8"}"#
+    );
+    assert_eq!(
+        to_json(&Command::GetChapter {
+            reference: "Romans 8".into(),
+            translation: Some("WEB".into()),
+        })
+        .unwrap(),
+        r#"{"cmd":"get_chapter","reference":"Romans 8","translation":"WEB"}"#
+    );
+    // The chapter reply the Dart client parses — verses + neighbour refs.
+    assert_eq!(
+        to_json(&ServerMessage::Chapter {
+            book_name: "Romans".into(),
+            chapter: 8,
+            translation: "KJV".into(),
+            verses: vec![VerseView {
+                number: 28,
+                text: "And we know…".into(),
+            }],
+            prev_ref: Some("Romans 7".into()),
+            next_ref: Some("Romans 9".into()),
+        })
+        .unwrap(),
+        r#"{"event":"chapter","book_name":"Romans","chapter":8,"translation":"KJV","verses":[{"number":28,"text":"And we know…"}],"prev_ref":"Romans 7","next_ref":"Romans 9"}"#
     );
 
     let granted: PairResponse = selahcue_lan::protocol::from_json(

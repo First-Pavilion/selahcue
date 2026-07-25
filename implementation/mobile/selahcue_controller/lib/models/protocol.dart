@@ -45,9 +45,19 @@ Map<String, dynamic> cmdStartTimer(int seconds) =>
 Map<String, dynamic> cmdStopTimer() => {'cmd': 'stop_timer'};
 Map<String, dynamic> cmdAdjustTimer(int deltaSecs) =>
     {'cmd': 'adjust_timer', 'delta_secs': deltaSecs};
-Map<String, dynamic> cmdStageScripture(String reference) =>
-    {'cmd': 'stage_scripture', 'reference': reference};
+Map<String, dynamic> cmdStageScripture(String reference, {String? translation}) =>
+    {'cmd': 'stage_scripture', 'reference': reference, 'translation': ?translation};
 Map<String, dynamic> cmdGetOperatorState() => {'cmd': 'get_operator_state'};
+
+/// Fetch a whole chapter's verses (read-only) so the mobile verse list mirrors
+/// the desktop browser. `translation` omitted = the host's KJV default. An older
+/// host that predates this command replies with `error`/unknown — the caller
+/// degrades gracefully to reference-only staging.
+Map<String, dynamic> cmdGetChapter(String reference, {String? translation}) => {
+      'cmd': 'get_chapter',
+      'reference': reference,
+      'translation': ?translation,
+    };
 
 /// One plan item as the operator/host reports it.
 class PlanItemView {
@@ -117,6 +127,10 @@ class OperatorStateView {
   /// A removed-but-still-on-screen plan item's title on Live (a free slide).
   final String? liveFreeText;
 
+  /// Translation codes THIS host can stage/browse (the picker must only offer
+  /// these). Empty when the host doesn't advertise them (fall back to KJV).
+  final List<String> translations;
+
   const OperatorStateView({
     required this.planName,
     required this.items,
@@ -127,6 +141,7 @@ class OperatorStateView {
     this.stagedScripture,
     this.liveScripture,
     this.liveFreeText,
+    this.translations = const [],
   });
 
   static OperatorStateView fromJson(Map<String, dynamic> j) => OperatorStateView(
@@ -144,6 +159,9 @@ class OperatorStateView {
         stagedScripture: j['staged_scripture'] as String?,
         liveScripture: j['live_scripture'] as String?,
         liveFreeText: j['live_free_text'] as String?,
+        translations: ((j['translations'] as List?) ?? const [])
+            .whereType<String>()
+            .toList(),
       );
 }
 
@@ -162,6 +180,8 @@ sealed class ServerMessage {
       case 'operator_state':
         return OperatorState(
             OperatorStateView.fromJson(j['view'] as Map<String, dynamic>? ?? {}));
+      case 'chapter':
+        return ChapterResult.fromJson(j);
       case 'error':
         return ErrorMessage(j['message'] as String? ?? '');
       default:
@@ -194,6 +214,55 @@ class ErrorMessage extends ServerMessage {
 class UnknownMessage extends ServerMessage {
   final Map<String, dynamic> raw;
   const UnknownMessage(this.raw);
+}
+
+/// One verse of a fetched chapter (mirror of Rust `VerseView`).
+class VerseView {
+  final int number;
+  final String text;
+  const VerseView(this.number, this.text);
+
+  static VerseView fromJson(Map<String, dynamic> j) =>
+      VerseView(j['number'] as int? ?? 0, j['text'] as String? ?? '');
+
+  /// The stageable reference for this verse within [bookName]/[chapter]
+  /// (e.g. `"Romans 8:28"` — parses on the host).
+  String reference(String bookName, int chapter) => '$bookName $chapter:$number';
+}
+
+/// Reply to `get_chapter`: a whole chapter's numbered verses plus the
+/// neighbouring-chapter references for ‹ › paging (null at the canon ends).
+class ChapterResult extends ServerMessage {
+  final String bookName;
+  final int chapter;
+  final String translation;
+  final List<VerseView> verses;
+  final String? prevRef;
+  final String? nextRef;
+
+  const ChapterResult({
+    required this.bookName,
+    required this.chapter,
+    required this.translation,
+    required this.verses,
+    this.prevRef,
+    this.nextRef,
+  });
+
+  static ChapterResult fromJson(Map<String, dynamic> j) => ChapterResult(
+        bookName: j['book_name'] as String? ?? '',
+        chapter: j['chapter'] as int? ?? 0,
+        translation: j['translation'] as String? ?? '',
+        verses: ((j['verses'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(VerseView.fromJson)
+            .toList(),
+        prevRef: j['prev_ref'] as String?,
+        nextRef: j['next_ref'] as String?,
+      );
+
+  /// The header the browser shows, e.g. `"Romans 8 (KJV)"`.
+  String get heading => '$bookName $chapter ($translation)';
 }
 
 /// The reply to a `pair` hello (`{'pair': 'granted'|'rejected'}` tagged).
