@@ -113,6 +113,17 @@ fn operator_webview_is_pinned_to_the_canonical_tokens() {
         "id=\"verse-list\"",
         "aspect-ratio: 16 / 9",
         "\"KJV\"",
+        // OBS-studio layout (Figma 165:124): the three zones + the OBS Preview|Live row.
+        "zone-left",
+        "zone-center",
+        "zone-right",
+        "obs-row",
+        // Forward-looking panels — present but HONEST: they carry an explicit
+        // "arrives with R3/R4" empty state, never fabricated transcript/detections.
+        "id=\"transcript\"",
+        "id=\"detections\"",
+        "arrives with R3",
+        "arrive with R4",
     ] {
         assert!(html.contains(needle), "webview missing {needle:?}");
     }

@@ -35,16 +35,42 @@
       }
       #live-chip.on { visibility: visible; }
       #clock { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
-      /* --- Console body: plan | preview/live | timer --- */
+      /* --- Console body: the OBS-studio 3-zone layout (Figma 165:124) ---
+         LEFT  = service plan + live transcript
+         CENTER= OBS Preview | Live + GO LIVE + scriptures
+         RIGHT = service timer + recent detections + outputs */
       main {
         flex: 1; display: grid;
-        grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) minmax(240px, 320px);
+        grid-template-columns: minmax(240px, 320px) minmax(0, 1fr) minmax(280px, 360px);
         gap: 12px; min-height: 0; padding: 12px; min-width: 0;
       }
       main > * { min-width: 0; }
-      body { min-width: 720px; overflow-x: auto; }
+      body { min-width: 900px; overflow-x: auto; }
+      /* Each zone stacks its panels vertically and never overflows the row. */
+      .zone { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
+      /* OBS studio mode: Preview and Live sit side by side, each a 16:9 monitor. */
+      .obs-row { display: flex; gap: 10px; flex: none; }
+      .obs-row .outpanel { flex: 1; min-width: 0; }
+      /* Forward-looking panels (transcript, detections) — fed by R3/R4 later. */
+      .fwd-panel {
+        display: flex; flex-direction: column; min-height: 0; flex: 1;
+        border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+        padding: 10px 12px;
+      }
+      .fwd-panel h2 {
+        margin: 0 0 4px; font-size: 11px; letter-spacing: .06em; color: var(--muted);
+        text-transform: uppercase;
+      }
+      .fwd-empty {
+        flex: 1; display: flex; flex-direction: column; align-items: center;
+        justify-content: center; gap: 6px; text-align: center; padding: 12px;
+        border: 1px dashed var(--line); border-radius: 8px; color: var(--muted);
+      }
+      .fwd-empty .fwd-icon { font-size: 22px; opacity: 0.8; }
+      .fwd-empty .fwd-msg { font-size: 12px; color: var(--text); }
+      .fwd-empty .fwd-sub { font-size: 11px; }
       #plan-wrap {
-        display: flex; flex-direction: column; min-height: 0;
+        display: flex; flex-direction: column; min-height: 0; flex: 2;
         border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
       }
       #plan-wrap h2 {
@@ -123,7 +149,7 @@
       /* --- Center: PREVIEW · STAGED and LIVE · ON AIR panels (Figma) --- */
       /* Center: the scriptures chapter browser (owner request, Pewbeam-style). */
       #scriptures {
-        display: flex; flex-direction: column; gap: 8px; min-height: 0;
+        flex: 1; display: flex; flex-direction: column; gap: 8px; min-height: 0;
         border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
         padding: 10px 12px;
       }
@@ -151,16 +177,9 @@
       .verse.cursor { border-color: var(--preview-ink); background: #10231c; }
       .scrip-note { color: var(--muted); font-size: 11px; text-align: center; }
       #scrip-status { color: var(--warn-ink); font-size: 12px; min-height: 16px; }
-      /* Right: compact output thumbnails + timer + outputs (owner request). */
-      #rightcol {
-        display: flex; flex-direction: column; gap: 8px; min-height: 0;
-        overflow-y: auto; border: 1px solid var(--line); border-radius: 10px;
-        background: var(--panel); padding: 10px;
-      }
-      .side-h {
-        margin: 6px 0 0; font-size: 11px; letter-spacing: .06em; color: var(--muted);
-        text-transform: uppercase;
-      }
+      /* Right zone: the timer + outputs cards (see `aside` below) and the
+         detections panel. The detections panel takes the vertical slack. */
+      .zone-right aside { flex: none; }
       .outpanel {
         flex: none; display: flex; flex-direction: column; aspect-ratio: 16 / 9;
         border-radius: 10px; overflow: hidden; border: 1px solid var(--line);
@@ -269,46 +288,57 @@
       <span id="clock"></span>
     </header>
     <main>
-      <section id="plan-wrap" aria-label="Service plan">
-        <h2>Service plan</h2>
-        <div id="plan"></div>
-        <div class="add-row">
-          <select id="add-kind">
-            <option value="song">Song</option>
-            <option value="scripture">Scripture</option>
-            <option value="announcement">Announcement</option>
-            <option value="section">Section</option>
-          </select>
-          <input id="add-title" placeholder="New item title" />
-          <button id="add-item">+ Add</button>
-        </div>
-        <div class="add-row">
-          <textarea id="add-lyrics" rows="3"
-            placeholder="Song lyrics — blank line between stanzas (each stanza = one slide)"></textarea>
-        </div>
-      </section>
-      <section id="scriptures" aria-label="Scriptures">
-        <div class="scrip-head">
-          <h2>Scriptures</h2>
-          <select id="translation" aria-label="Bible translation"></select>
-          <input id="scripture-q" placeholder="Reference or keywords — e.g. Genesis 1" aria-label="Search scripture" />
-        </div>
-        <div id="scripture-hits" role="listbox" aria-label="Scripture results"></div>
-        <div class="chapter-nav">
-          <button id="ch-prev" aria-label="Previous chapter">‹</button>
-          <span id="chapter-ref">Type a reference to open a chapter</span>
-          <button id="ch-next" aria-label="Next chapter">›</button>
-        </div>
-        <div id="verse-list" role="listbox" aria-label="Chapter verses"></div>
-        <span id="scrip-status" role="status" aria-live="polite"></span>
-        <span class="scrip-note">↑ ↓ move &amp; stage · ⏎ Enter sends it live · double-click a verse for instant live</span>
-      </section>
-      <section id="rightcol" aria-label="Outputs and timer">
-        <div class="outpanel" id="preview-panel">
-          <div class="head">PREVIEW · STAGED</div>
-          <div class="surface idle">
-            <span class="big" id="preview-title">Nothing staged</span>
-            <span class="cap" id="preview-cap"></span>
+      <!-- LEFT zone: the service plan (top) + the live transcript (bottom).
+           Figma 165:124 layout; every element id is preserved from the prior
+           console so the whole <script> keeps working unchanged. -->
+      <div class="zone zone-left">
+        <section id="plan-wrap" aria-label="Service plan">
+          <h2>Service plan</h2>
+          <div id="plan"></div>
+          <div class="add-row">
+            <select id="add-kind">
+              <option value="song">Song</option>
+              <option value="scripture">Scripture</option>
+              <option value="announcement">Announcement</option>
+              <option value="section">Section</option>
+            </select>
+            <input id="add-title" placeholder="New item title" />
+            <button id="add-item">+ Add</button>
+          </div>
+          <div class="add-row">
+            <textarea id="add-lyrics" rows="3"
+              placeholder="Song lyrics — blank line between stanzas (each stanza = one slide)"></textarea>
+          </div>
+        </section>
+        <!-- Forward-looking: fed by on-device transcription (R3). Honest empty
+             state — no fabricated transcript is ever shown as if it were real. -->
+        <section id="transcript" class="fwd-panel" aria-label="Live transcript">
+          <h2>Live transcript</h2>
+          <div class="fwd-empty">
+            <span class="fwd-icon" aria-hidden="true">🎙</span>
+            <span class="fwd-msg">On-device transcription arrives with R3.</span>
+            <span class="fwd-sub">The live sermon transcript will stream here.</span>
+          </div>
+        </section>
+      </div>
+      <!-- CENTER zone: OBS studio-mode Preview | Live, the GO LIVE transition,
+           and the scriptures browser directly beneath. -->
+      <div class="zone zone-center">
+        <div class="obs-row">
+          <div class="outpanel" id="preview-panel">
+            <div class="head">PREVIEW · STAGED</div>
+            <div class="surface idle">
+              <span class="big" id="preview-title">Nothing staged</span>
+              <span class="cap" id="preview-cap"></span>
+            </div>
+          </div>
+          <div class="outpanel" id="live-panel">
+            <div class="head">● LIVE · ON AIR</div>
+            <div class="surface idle" aria-live="polite">
+              <span id="live-black">BLACKOUT — OUTPUT DARK</span>
+              <span class="big" id="live-title">Output idle</span>
+              <span class="cap" id="live-cap"></span>
+            </div>
           </div>
         </div>
         <div class="golive-row">
@@ -316,37 +346,62 @@
           <button id="golive" class="golive">GO LIVE<span class="key">⏎ Enter</span></button>
           <button id="next" aria-label="Next — stage the next plan item">▶<span class="key">Space</span></button>
         </div>
-        <div class="outpanel" id="live-panel">
-          <div class="head">● LIVE · ON AIR</div>
-          <div class="surface idle" aria-live="polite">
-            <span id="live-black">BLACKOUT — OUTPUT DARK</span>
-            <span class="big" id="live-title">Output idle</span>
-            <span class="cap" id="live-cap"></span>
+        <section id="scriptures" aria-label="Scriptures">
+          <div class="scrip-head">
+            <h2>Scriptures</h2>
+            <select id="translation" aria-label="Bible translation"></select>
+            <input id="scripture-q" placeholder="Reference or keywords — e.g. Genesis 1" aria-label="Search scripture" />
           </div>
-        </div>
-        <h2 class="side-h">Service timer</h2>
-        <div id="timer-big">–:––</div>
-        <div class="timer-row">
-          <button id="timer-5">⏱ 5:00</button>
-          <button id="timer-10">⏱ 10:00</button>
-        </div>
-        <div class="timer-row">
-          <input id="timer-mins" type="number" min="1" max="999" placeholder="min"
-                 aria-label="Countdown length in minutes" />
-          <button id="timer-start-custom">Start</button>
-        </div>
-        <div class="timer-row">
-          <button id="timer-minus" disabled aria-label="Subtract one minute from the running timer">−1:00</button>
-          <button id="timer-plus" disabled aria-label="Add one minute to the running timer">+1:00</button>
-        </div>
-        <div class="timer-row">
-          <button id="timer-stop">Stop</button>
-        </div>
-        <span class="timer-note">Shown on the stage output only</span>
-        <h2 class="side-h" id="outputs-h">Outputs</h2>
-        <div id="outputs" aria-labelledby="outputs-h"></div>
-        <button id="identify" aria-label="Show the identify number on every display">Identify displays</button>
-      </section>
+          <div id="scripture-hits" role="listbox" aria-label="Scripture results"></div>
+          <div class="chapter-nav">
+            <button id="ch-prev" aria-label="Previous chapter">‹</button>
+            <span id="chapter-ref">Type a reference to open a chapter</span>
+            <button id="ch-next" aria-label="Next chapter">›</button>
+          </div>
+          <div id="verse-list" role="listbox" aria-label="Chapter verses"></div>
+          <span id="scrip-status" role="status" aria-live="polite"></span>
+          <span class="scrip-note">↑ ↓ move &amp; stage · ⏎ Enter sends it live · double-click a verse for instant live</span>
+        </section>
+      </div>
+      <!-- RIGHT zone: the service timer (top), recent detections, and outputs. -->
+      <div class="zone zone-right">
+        <aside class="side-panel" aria-label="Service timer">
+          <h2>Service timer</h2>
+          <div id="timer-big">–:––</div>
+          <div class="timer-row">
+            <button id="timer-5">⏱ 5:00</button>
+            <button id="timer-10">⏱ 10:00</button>
+          </div>
+          <div class="timer-row">
+            <input id="timer-mins" type="number" min="1" max="999" placeholder="min"
+                   aria-label="Countdown length in minutes" />
+            <button id="timer-start-custom">Start</button>
+          </div>
+          <div class="timer-row">
+            <button id="timer-minus" disabled aria-label="Subtract one minute from the running timer">−1:00</button>
+            <button id="timer-plus" disabled aria-label="Add one minute to the running timer">+1:00</button>
+          </div>
+          <div class="timer-row">
+            <button id="timer-stop">Stop</button>
+          </div>
+          <span class="timer-note">Shown on the stage output only</span>
+        </aside>
+        <!-- Forward-looking: fed by scripture intelligence (R4). Honest empty
+             state — no fabricated detections are ever shown as if they were real. -->
+        <section id="detections" class="fwd-panel" aria-label="Recent detections">
+          <h2>Recent detections</h2>
+          <div class="fwd-empty">
+            <span class="fwd-icon" aria-hidden="true">✨</span>
+            <span class="fwd-msg">Auto-detected scriptures arrive with R4.</span>
+            <span class="fwd-sub">Scriptures spoken aloud will surface here to stage in one tap.</span>
+          </div>
+        </section>
+        <aside class="side-panel" aria-label="Outputs">
+          <h2 id="outputs-h">Outputs</h2>
+          <div id="outputs" aria-labelledby="outputs-h"></div>
+          <button id="identify" aria-label="Show the identify number on every display">Identify displays</button>
+        </aside>
+      </div>
     </main>
     <footer id="emergency" role="toolbar" aria-label="Emergency controls">
       <button id="blackout" aria-pressed="false" aria-label="Blackout the audience output">■ BLACKOUT<span id="blackout-state"></span><span class="key">B</span></button>
