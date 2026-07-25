@@ -52,6 +52,12 @@ impl ItemKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ItemId(pub u64);
 
+/// One stanza of a song: the lines shown together on ONE slide (story S8-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stanza {
+    pub lines: Vec<String>,
+}
+
 /// One ordered entry in a service plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanItem {
@@ -62,6 +68,52 @@ pub struct PlanItem {
     pub planned_secs: Option<u32>,
     /// Responsible person/role, if assigned.
     pub owner: Option<String>,
+    /// Stanza content (songs; slide-per-stanza). Empty = a title-only item,
+    /// which is exactly the pre-8a behaviour for every existing item.
+    pub stanzas: Vec<Stanza>,
+}
+
+impl PlanItem {
+    /// How many slides this item presents as (a title-only item is one slide).
+    pub fn slide_count(&self) -> usize {
+        self.stanzas.len().max(1)
+    }
+}
+
+/// Parse the PD-hymn-friendly plain-text stanza format: stanzas are separated
+/// by one or more blank lines; each non-blank run of lines is one stanza (one
+/// slide). Whitespace-only lines count as blank; line ends may be \n or \r\n.
+/// Pure and total — any input parses (possibly to zero stanzas).
+pub fn stanzas_from_text(text: &str) -> Vec<Stanza> {
+    let mut stanzas = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim_end_matches('\r');
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                stanzas.push(Stanza {
+                    lines: std::mem::take(&mut current),
+                });
+            }
+        } else {
+            current.push(line.trim().to_string());
+        }
+    }
+    if !current.is_empty() {
+        stanzas.push(Stanza { lines: current });
+    }
+    stanzas
+}
+
+/// Serialize stanzas back to the plain-text format (lossless round-trip with
+/// [`stanzas_from_text`] for trimmed content): lines joined by newlines,
+/// stanzas separated by one blank line.
+pub fn stanzas_to_text(stanzas: &[Stanza]) -> String {
+    stanzas
+        .iter()
+        .map(|s| s.lines.join("\n"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// An ordered run sheet.
@@ -101,6 +153,7 @@ impl ServicePlan {
             title: title.into(),
             planned_secs: None,
             owner: None,
+            stanzas: Vec::new(),
         });
         id
     }
@@ -123,6 +176,7 @@ impl ServicePlan {
                 title: title.into(),
                 planned_secs: None,
                 owner: None,
+                stanzas: Vec::new(),
             },
         );
         id

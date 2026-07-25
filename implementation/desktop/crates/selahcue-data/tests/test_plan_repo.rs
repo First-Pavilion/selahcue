@@ -192,3 +192,73 @@ fn library_search_treats_like_wildcards_as_literals() {
     assert_eq!(hits[0].name, "youth_night");
     assert!(plan_repo::search(&db, "\\").unwrap().is_empty());
 }
+
+// --- Songs: stanza content persistence + backfill (story S8-1, migration v6) ---
+
+#[test]
+fn song_stanza_content_round_trips_through_the_store() {
+    use selahcue_core::plan::Stanza;
+    let db = db();
+    let mut p = ServicePlan::new("Sunday");
+    let s = p.add_item(ItemKind::Song, "Great Are You Lord");
+    p.get_mut(s).unwrap().stanzas = vec![
+        Stanza {
+            lines: vec!["Great are You Lord".into(), "It's Your breath".into()],
+        },
+        Stanza {
+            lines: vec!["So we pour out our praise".into()],
+        },
+    ];
+    let id = insert(&db, &p).unwrap();
+    let loaded = load(&db, id).unwrap();
+    let item = &loaded.items()[0];
+    assert_eq!(item.slide_count(), 2, "two stanzas survive the round-trip");
+    assert_eq!(item.stanzas[0].lines[0], "Great are You Lord");
+    assert_eq!(item.stanzas[1].lines[0], "So we pour out our praise");
+    // A title-only item alongside keeps NULL content (no phantom stanzas).
+    // (add a plain item and re-load to prove the backfill semantics)
+    let mut p2 = ServicePlan::new("Plain");
+    p2.add_item(ItemKind::Announcement, "Welcome");
+    let id2 = insert(&db, &p2).unwrap();
+    assert!(load(&db, id2).unwrap().items()[0].stanzas.is_empty());
+}
+
+#[test]
+fn update_preserves_stanza_content_atomically() {
+    use selahcue_core::plan::Stanza;
+    let db = db();
+    let mut p = ServicePlan::new("Sunday");
+    let s = p.add_item(ItemKind::Song, "Way Maker");
+    p.get_mut(s).unwrap().stanzas = vec![Stanza {
+        lines: vec!["Way maker".into()],
+    }];
+    let id = insert(&db, &p).unwrap();
+    // Edit: add a second stanza and persist via update (DELETE-then-INSERT path).
+    p.get_mut(s).unwrap().stanzas.push(Stanza {
+        lines: vec!["Miracle worker".into()],
+    });
+    plan_repo::update(&db, id, &p).unwrap();
+    let loaded = load(&db, id).unwrap();
+    assert_eq!(loaded.items()[0].slide_count(), 2);
+    assert_eq!(loaded.items()[0].stanzas[1].lines[0], "Miracle worker");
+}
+
+#[test]
+fn a_pre_v6_row_with_null_content_loads_as_a_title_only_item() {
+    // Simulate an existing store: insert a plan, then NULL its content column
+    // directly (as a v5 row would have no content) and confirm it loads clean.
+    let db = db();
+    let mut p = ServicePlan::new("Legacy");
+    p.add_item(ItemKind::Song, "Old Song");
+    let id = insert(&db, &p).unwrap();
+    db.conn()
+        .execute(
+            "UPDATE plan_item SET content = NULL WHERE plan_id = ?1",
+            params![id],
+        )
+        .unwrap();
+    let loaded = load(&db, id).unwrap();
+    assert!(loaded.items()[0].stanzas.is_empty());
+    assert_eq!(loaded.items()[0].slide_count(), 1);
+    assert_eq!(loaded.items()[0].title, "Old Song");
+}

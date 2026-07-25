@@ -35,9 +35,32 @@ fn snapshot_round_trips_all_fields() {
         live_scripture: Some("Romans 8:28".into()),
         live_free_text: Some("Removed Song".into()),
         staged_scripture: Some("John 3:16".into()),
+        live_slide: Some(3),
+        staged_slide: Some(1),
+        cursor_slide: Some(1),
     };
     session_repo::save(&db, &s).unwrap();
     assert_eq!(session_repo::load(&db).unwrap(), Some(s));
+}
+
+#[test]
+fn within_song_slide_positions_round_trip(/* S8-1 migration v6 */) {
+    let db = db();
+    let mut plan = ServicePlan::new("Sunday");
+    plan.add_item(ItemKind::Song, "Way Maker");
+    let plan_id = plan_repo::insert(&db, &plan).unwrap();
+    let s = SessionState {
+        plan_id: Some(plan_id),
+        live_idx: Some(0),
+        live_slide: Some(4),
+        cursor_slide: Some(4),
+        ..Default::default()
+    };
+    session_repo::save(&db, &s).unwrap();
+    let loaded = session_repo::load(&db).unwrap().unwrap();
+    assert_eq!(loaded.live_slide, Some(4));
+    assert_eq!(loaded.cursor_slide, Some(4));
+    assert_eq!(loaded.staged_slide, None);
 }
 
 #[test]

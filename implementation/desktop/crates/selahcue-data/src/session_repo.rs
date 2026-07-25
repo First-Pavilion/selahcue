@@ -32,6 +32,14 @@ pub struct SessionState {
     pub live_free_text: Option<String>,
     /// A scripture reference staged in Preview, if any.
     pub staged_scripture: Option<String>,
+    /// Within-item slide position of the LIVE item (songs; None = slide 0 /
+    /// title-only — the pre-v6 shape).
+    pub live_slide: Option<u32>,
+    /// Within-item slide position of the STAGED item.
+    pub staged_slide: Option<u32>,
+    /// Within-item slide position paired with `plan_cursor` (survives a
+    /// scripture interruption, like the cursor itself).
+    pub cursor_slide: Option<u32>,
 }
 
 /// Upsert the singleton snapshot (atomic single-statement write).
@@ -40,13 +48,15 @@ pub fn save(db: &Database, s: &SessionState) -> Result<()> {
         "INSERT INTO session_state
             (id, plan_id, live_idx, staged_idx, plan_cursor, blackout,
              timer_total_secs, timer_elapsed_secs, timer_running,
-             live_scripture, staged_scripture, live_free_text)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             live_scripture, staged_scripture, live_free_text,
+             live_slide, staged_slide, cursor_slide)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(id) DO UPDATE SET
             plan_id = ?1, live_idx = ?2, staged_idx = ?3, plan_cursor = ?4,
             blackout = ?5, timer_total_secs = ?6, timer_elapsed_secs = ?7,
             timer_running = ?8, live_scripture = ?9, staged_scripture = ?10,
-            live_free_text = ?11",
+            live_free_text = ?11, live_slide = ?12, staged_slide = ?13,
+            cursor_slide = ?14",
         params![
             s.plan_id,
             s.live_idx.map(i64::from),
@@ -59,6 +69,9 @@ pub fn save(db: &Database, s: &SessionState) -> Result<()> {
             s.live_scripture,
             s.staged_scripture,
             s.live_free_text,
+            s.live_slide.map(i64::from),
+            s.staged_slide.map(i64::from),
+            s.cursor_slide.map(i64::from),
         ],
     )?;
     Ok(())
@@ -72,7 +85,8 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
         .query_row(
             "SELECT plan_id, live_idx, staged_idx, plan_cursor, blackout,
                     timer_total_secs, timer_elapsed_secs, timer_running,
-                    live_scripture, staged_scripture, live_free_text
+                    live_scripture, staged_scripture, live_free_text,
+                    live_slide, staged_slide, cursor_slide
              FROM session_state WHERE id = 1",
             [],
             |r| {
@@ -88,6 +102,9 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
                     r.get::<_, Option<String>>(8)?,
                     r.get::<_, Option<String>>(9)?,
                     r.get::<_, Option<String>>(10)?,
+                    r.get::<_, Option<i64>>(11)?,
+                    r.get::<_, Option<i64>>(12)?,
+                    r.get::<_, Option<i64>>(13)?,
                 ))
             },
         )
@@ -109,6 +126,9 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
         live_scr,
         staged_scr,
         free_text,
+        live_slide,
+        staged_slide,
+        cursor_slide,
     )) = row
     else {
         return Ok(None);
@@ -131,6 +151,9 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
         live_scripture: live_scr,
         staged_scripture: staged_scr,
         live_free_text: free_text,
+        live_slide: idx(live_slide, "live_slide")?,
+        staged_slide: idx(staged_slide, "staged_slide")?,
+        cursor_slide: idx(cursor_slide, "cursor_slide")?,
     }))
 }
 

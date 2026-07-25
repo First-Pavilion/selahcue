@@ -200,4 +200,45 @@ void main() {
     expect(without.liveScripture, isNull);
   });
 
+
+  test('PlanItemView parses old JSON without slide fields (S8-1)', () {
+    // A pre-8a host omits slide fields; serde(default) parity on the Dart side.
+    final it = PlanItemView.fromJson({
+      'id': 9,
+      'kind': 'song',
+      'title': 'Old',
+      'is_live': false,
+      'is_staged': false,
+    });
+    expect(it.slideCount, isNull);
+    expect(it.slideIndex, isNull);
+    expect(it.slideBadge, '');
+  });
+
+  test('PlanItemView reads slide_count/slide_index and formats a badge (S8-1)',
+      () {
+    final it = PlanItemView.fromJson({
+      'id': 2,
+      'kind': 'song',
+      'title': 'Way Maker',
+      'is_live': true,
+      'is_staged': false,
+      'slide_count': 6,
+      'slide_index': 2,
+    });
+    expect(it.slideCount, 6);
+    expect(it.slideIndex, 2);
+    expect(it.slideBadge, ' · 3/6'); // 1-based display
+    // Count-only (not the live/staged item) shows "· N slides".
+    final counted = PlanItemView.fromJson({
+      'id': 3,
+      'kind': 'song',
+      'title': 'Hymn',
+      'is_live': false,
+      'is_staged': false,
+      'slide_count': 4,
+    });
+    expect(counted.slideBadge, ' · 4 slides');
+  });
+
 }

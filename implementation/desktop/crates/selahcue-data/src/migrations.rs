@@ -65,6 +65,18 @@ const MIGRATIONS: &[&str] = &[
         display_key TEXT NOT NULL
     );
     "#,
+    // v5 -> v6: songs are multi-slide (story S8-1). `content` holds the item's
+    // stanza text (blank-line-separated; NULL = title-only, the pre-8a shape,
+    // so every existing row keeps its exact behaviour). The session gains the
+    // within-item slide positions so a force-kill mid-song restores the same
+    // stanza (cursor_slide pairs with plan_cursor and survives a scripture
+    // interruption).
+    r#"
+    ALTER TABLE plan_item ADD COLUMN content TEXT;
+    ALTER TABLE session_state ADD COLUMN live_slide INTEGER;
+    ALTER TABLE session_state ADD COLUMN staged_slide INTEGER;
+    ALTER TABLE session_state ADD COLUMN cursor_slide INTEGER;
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

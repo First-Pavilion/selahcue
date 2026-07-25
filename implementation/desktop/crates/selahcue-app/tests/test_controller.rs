@@ -621,7 +621,8 @@ fn plan_edits_add_remove_move_rename_with_index_fixup() {
     assert_eq!(
         c.apply(&Command::AddItem {
             kind: "song".into(),
-            title: "New Song".into()
+            title: "New Song".into(),
+            content: None,
         }),
         ControllerReply::Ack
     );
@@ -658,7 +659,8 @@ fn plan_edits_add_remove_move_rename_with_index_fixup() {
     assert_eq!(
         c.apply(&Command::AddItem {
             kind: "nonsense".into(),
-            title: "x".into()
+            title: "x".into(),
+            content: None,
         }),
         ControllerReply::Deny(DenyReason::BadRequest)
     );
@@ -986,4 +988,197 @@ fn adjust_timer_extends_reduces_and_survives_recovery() {
     );
     c.tick(at + Duration::from_secs(1));
     assert!(c.operator_view().timer.expect("timer").time_up);
+}
+
+// --- Songs: multi-slide in-item navigation, stage next-line, recovery (S8-1) ---
+
+use selahcue_core::plan::{stanzas_from_text, Stanza};
+
+/// A plan whose first item is a 3-stanza song, then a scripture, then a section.
+fn song_controller() -> LiveController {
+    let mut plan = ServicePlan::new("Sunday");
+    let s = plan.add_item(ItemKind::Song, "Way Maker");
+    plan.get_mut(s).unwrap().stanzas = vec![
+        Stanza {
+            lines: vec!["Way maker".into()],
+        },
+        Stanza {
+            lines: vec!["Miracle worker".into()],
+        },
+        Stanza {
+            lines: vec!["Promise keeper".into()],
+        },
+    ];
+    plan.add_item(ItemKind::Scripture, "Romans 8:28");
+    plan.add_item(ItemKind::Section, "Sermon");
+    LiveController::new(plan, 320, 180, Theme::dark())
+}
+
+fn staged_body(c: &LiveController) -> Vec<String> {
+    c.presenter().staged().unwrap().body.clone()
+}
+
+#[test]
+fn next_advances_slide_within_a_song_before_crossing_items() {
+    let mut c = song_controller();
+    // Next enters the song at stanza 0.
+    c.apply(&Command::Next);
+    assert_eq!(c.staged_index(), Some(0));
+    assert_eq!(staged_body(&c), vec!["Way maker"]);
+    // Next again advances WITHIN the song, not to the scripture.
+    c.apply(&Command::Next);
+    assert_eq!(c.staged_index(), Some(0), "still on the song");
+    assert_eq!(staged_body(&c), vec!["Miracle worker"]);
+    c.apply(&Command::Next);
+    assert_eq!(staged_body(&c), vec!["Promise keeper"]);
+    // Song exhausted → Next crosses to the scripture (item 1).
+    c.apply(&Command::Next);
+    assert_eq!(c.staged_index(), Some(1), "now on the next plan item");
+}
+
+#[test]
+fn previous_steps_back_within_the_song_then_crosses_at_the_last_slide() {
+    let mut c = song_controller();
+    for _ in 0..3 {
+        c.apply(&Command::Next); // land on stanza 2 (Promise keeper)
+    }
+    assert_eq!(staged_body(&c), vec!["Promise keeper"]);
+    c.apply(&Command::Previous);
+    assert_eq!(
+        staged_body(&c),
+        vec!["Miracle worker"],
+        "step back a stanza"
+    );
+    // From item 1 (scripture) going back enters the song at its LAST stanza.
+    c.apply(&Command::Next); // Promise keeper
+    c.apply(&Command::Next); // cross to scripture (item 1)
+    assert_eq!(c.staged_index(), Some(1));
+    c.apply(&Command::Previous); // back into the song
+    assert_eq!(c.staged_index(), Some(0));
+    assert_eq!(
+        staged_body(&c),
+        vec!["Promise keeper"],
+        "enters at last stanza"
+    );
+}
+
+#[test]
+fn a_six_stanza_song_walks_end_to_end_and_go_live_commits_the_current_slide() {
+    let mut plan = ServicePlan::new("Sunday");
+    let s = plan.add_item(ItemKind::Song, "Hymn");
+    plan.get_mut(s).unwrap().stanzas = stanzas_from_text("s1\n\ns2\n\ns3\n\ns4\n\ns5\n\ns6")
+        .into_iter()
+        .collect();
+    let mut c = LiveController::new(plan, 320, 180, Theme::dark());
+    // Walk all six with Next, then Go Live on stanza 3.
+    c.apply(&Command::Next); // s1
+    c.apply(&Command::Next); // s2
+    c.apply(&Command::Next); // s3
+    assert_eq!(staged_body(&c), vec!["s3"]);
+    assert_eq!(c.apply(&Command::GoLive), ControllerReply::Ack);
+    assert_eq!(c.live_index(), Some(0));
+    assert_eq!(
+        c.presenter().live_slide().unwrap().body,
+        vec!["s3"],
+        "Go Live commits the CURRENT slide, not stanza 0"
+    );
+    // Preview/Live isolation still holds: advancing Preview leaves Live on s3.
+    c.apply(&Command::Next); // s4 in Preview
+    assert_eq!(staged_body(&c), vec!["s4"]);
+    assert_eq!(c.presenter().live_slide().unwrap().body, vec!["s3"]);
+}
+
+#[test]
+fn the_stage_next_line_follows_the_song_sequence_not_preview() {
+    // After Go Live mid-song, the confidence monitor's "next" is the song's
+    // NEXT stanza even after the operator stages something else in Preview.
+    let mut c = song_controller();
+    c.apply(&Command::Next); // stage stanza 0
+    c.apply(&Command::GoLive); // live = stanza 0
+                               // The stage "next" is stanza 1 of the LIVE song.
+    assert_eq!(
+        c.stage_next_slide().unwrap().body,
+        vec!["Miracle worker"],
+        "next line = the song's next stanza"
+    );
+    // Stage a scripture in Preview — the song's next is UNCHANGED (the speaker
+    // still needs the coming lyric, not the operator's unrelated Preview).
+    c.apply(&Command::StageScripture {
+        reference: "Romans 8:28".into(),
+        translation: None,
+    });
+    assert_eq!(
+        c.stage_next_slide().unwrap().body,
+        vec!["Miracle worker"],
+        "still the song's next stanza, not the staged scripture"
+    );
+    // On the LAST stanza there is no next stanza, so the stage falls back to
+    // whatever Preview holds (the general, non-song case).
+    c.apply(&Command::Next); // preview stanza 1
+    c.apply(&Command::Next); // preview stanza 2 (last)
+    c.apply(&Command::GoLive); // live = last stanza; no stanza after it
+    assert_eq!(
+        c.stage_next_slide(),
+        c.presenter().staged().cloned(),
+        "past the last stanza, next falls back to Preview"
+    );
+}
+
+#[test]
+fn mid_song_live_position_survives_force_kill_recovery() {
+    let mut c = song_controller();
+    c.apply(&Command::Next); // stanza 0
+    c.apply(&Command::Next); // stanza 1
+    c.apply(&Command::GoLive); // LIVE = song stanza 1
+    assert_eq!(
+        c.presenter().live_slide().unwrap().body,
+        vec!["Miracle worker"]
+    );
+    let snap = c.snapshot(std::time::Instant::now());
+    assert_eq!(snap.live_slide, Some(1), "snapshot records the stanza");
+
+    // Fresh controller (as after a crash) restores from the snapshot.
+    let mut restored = song_controller();
+    restored.restore(&snap);
+    assert_eq!(restored.live_index(), Some(0));
+    assert_eq!(
+        restored.presenter().live_slide().unwrap().body,
+        vec!["Miracle worker"],
+        "recovery lands on the SAME stanza, not stanza 0"
+    );
+}
+
+#[test]
+fn recovery_clamps_an_out_of_range_slide_to_a_valid_one() {
+    // A snapshot whose slide index exceeds the (edited) song's stanza count must
+    // fall back to slide 0, never index past the stanza list.
+    let mut c = song_controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    let mut snap = c.snapshot(std::time::Instant::now());
+    snap.live_slide = Some(99); // pretend the song was shortened since the save
+    let mut restored = song_controller();
+    restored.restore(&snap);
+    assert_eq!(
+        restored.presenter().live_slide().unwrap().body,
+        vec!["Way maker"],
+        "clamped to stanza 0"
+    );
+}
+
+#[test]
+fn add_item_with_content_creates_a_multi_slide_song() {
+    let mut plan = ServicePlan::new("Sunday");
+    plan.add_item(ItemKind::Section, "Sermon");
+    let mut c = LiveController::new(plan, 320, 180, Theme::dark());
+    let reply = c.apply(&Command::AddItem {
+        kind: "song".into(),
+        title: "New Song".into(),
+        content: Some("verse one\n\nverse two".into()),
+    });
+    assert_eq!(reply, ControllerReply::Ack);
+    // The new song is the last item; navigate to it and confirm two slides.
+    let view = c.operator_view();
+    let song = view.items.iter().find(|i| i.title == "New Song").unwrap();
+    assert_eq!(song.slide_count, Some(2), "wire count reflects two stanzas");
 }

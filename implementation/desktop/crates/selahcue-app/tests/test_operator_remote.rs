@@ -270,7 +270,7 @@ async fn plan_editing_is_operator_only_over_the_wire() {
     let mut op = RemoteOperator::connect(addr, "localhost", pin, "op", "tok-op")
         .await
         .unwrap();
-    let view = op.add_item("song", "Closing Song").await.unwrap();
+    let view = op.add_item("song", "Closing Song", None).await.unwrap();
     assert_eq!(view.items.len(), 2);
     let new_id = view.items[1].id;
     let view = op.rename_item(new_id, "Benediction").await.unwrap();
@@ -291,7 +291,7 @@ async fn plan_editing_is_operator_only_over_the_wire() {
     let mut prod = RemoteOperator::connect(addr, "localhost", pin, "prod", "tok-prod")
         .await
         .unwrap();
-    let view = prod.add_item("song", "Sneaky").await.unwrap();
+    let view = prod.add_item("song", "Sneaky", None).await.unwrap();
     assert_eq!(view.items.len(), 2, "Producer edit denied — plan unchanged");
 }
 

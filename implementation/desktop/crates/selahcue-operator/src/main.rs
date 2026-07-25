@@ -110,15 +110,20 @@ impl Backend {
             Backend::Local(s) => Ok(s.adjust_timer(delta_secs)),
         }
     }
-    async fn add_item(&self, kind: String, title: String) -> Result<OperatorView, String> {
+    async fn add_item(
+        &self,
+        kind: String,
+        title: String,
+        content: Option<String>,
+    ) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
                 .lock()
                 .await
-                .add_item(&kind, &title)
+                .add_item(&kind, &title, content.as_deref())
                 .await
                 .map_err(|e| e.to_string()),
-            Backend::Local(s) => Ok(s.add_item(&kind, &title)),
+            Backend::Local(s) => Ok(s.add_item(&kind, &title, content.as_deref())),
         }
     }
     async fn remove_item(&self, item_id: u64) -> Result<OperatorView, String> {
@@ -260,9 +265,10 @@ async fn adjust_timer(delta_secs: i64, state: State<'_, AppState>) -> Result<Ope
 async fn add_item(
     kind: String,
     title: String,
+    content: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<OperatorView, String> {
-    state.backend.add_item(kind, title).await
+    state.backend.add_item(kind, title, content).await
 }
 #[tauri::command]
 async fn remove_item(item_id: u64, state: State<'_, AppState>) -> Result<OperatorView, String> {

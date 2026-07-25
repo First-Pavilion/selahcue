@@ -74,7 +74,14 @@ pub enum Command {
     GetOperatorState,
     /// Append a plan item (plan editing — Operator only). `kind` is the stable
     /// item-kind tag (e.g. `"song"`); unknown tags are rejected.
-    AddItem { kind: String, title: String },
+    AddItem {
+        kind: String,
+        title: String,
+        /// Optional stanza content for songs (plain text, stanzas separated by
+        /// blank lines — S8-1). Skip-if-none keeps the pinned fixtures.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+    },
     /// Remove a plan item by id (Operator only). Never changes the Live output.
     RemoveItem { item_id: u64 },
     /// Move a plan item to a new position (Operator only).
@@ -168,6 +175,13 @@ pub struct PlanItemView {
     pub is_live: bool,
     /// This item is currently staged in Preview.
     pub is_staged: bool,
+    /// Slide count for multi-slide items (songs, story S8-1). Skip-if-none
+    /// keeps every pinned fixture byte-identical; absent = a single slide.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slide_count: Option<u32>,
+    /// Current within-item slide (0-based), present for the live/staged item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slide_index: Option<u32>,
 }
 
 /// A snapshot of the active timer for the operator UI (`None` when no timer is running).

@@ -67,12 +67,20 @@ class PlanItemView {
   final bool isLive;
   final bool isStaged;
 
+  /// Slide count for multi-slide items (songs, S8-1); null = single slide.
+  final int? slideCount;
+
+  /// Current within-item slide (0-based), present for the live/staged item.
+  final int? slideIndex;
+
   const PlanItemView({
     required this.id,
     required this.kind,
     required this.title,
     required this.isLive,
     required this.isStaged,
+    this.slideCount,
+    this.slideIndex,
   });
 
   static PlanItemView fromJson(Map<String, dynamic> j) => PlanItemView(
@@ -81,7 +89,17 @@ class PlanItemView {
         title: j['title'] as String? ?? '',
         isLive: j['is_live'] as bool? ?? false,
         isStaged: j['is_staged'] as bool? ?? false,
+        slideCount: j['slide_count'] as int?,
+        slideIndex: j['slide_index'] as int?,
       );
+
+  /// A human "Song · 2/6"-style suffix for multi-slide items (empty otherwise).
+  String get slideBadge {
+    final c = slideCount;
+    if (c == null) return '';
+    final pos = slideIndex;
+    return pos != null ? ' · ${pos + 1}/$c' : ' · $c slides';
+  }
 }
 
 /// The host's active-timer snapshot.

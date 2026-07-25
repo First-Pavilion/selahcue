@@ -23,9 +23,16 @@ pub fn insert(db: &Database, plan: &ServicePlan) -> Result<i64> {
     )?;
     let plan_id = tx.last_insert_rowid();
     for (ord, item) in plan.items().iter().enumerate() {
+        // Stanza content serialized as the plain-text format; NULL = title-only
+        // (identical to every pre-v6 row).
+        let content = if item.stanzas.is_empty() {
+            None
+        } else {
+            Some(selahcue_core::plan::stanzas_to_text(&item.stanzas))
+        };
         tx.execute(
-            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title, planned_secs, owner)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title, planned_secs, owner, content)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 plan_id,
                 item.id.0 as i64,
@@ -34,6 +41,7 @@ pub fn insert(db: &Database, plan: &ServicePlan) -> Result<i64> {
                 item.title,
                 item.planned_secs.map(|s| s as i64),
                 item.owner,
+                content,
             ],
         )?;
     }
@@ -53,9 +61,16 @@ pub fn update(db: &Database, plan_id: i64, plan: &ServicePlan) -> Result<()> {
     }
     tx.execute("DELETE FROM plan_item WHERE plan_id = ?1", params![plan_id])?;
     for (ord, item) in plan.items().iter().enumerate() {
+        // Stanza content serialized as the plain-text format; NULL = title-only
+        // (identical to every pre-v6 row).
+        let content = if item.stanzas.is_empty() {
+            None
+        } else {
+            Some(selahcue_core::plan::stanzas_to_text(&item.stanzas))
+        };
         tx.execute(
-            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title, planned_secs, owner)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title, planned_secs, owner, content)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 plan_id,
                 item.id.0 as i64,
@@ -64,6 +79,7 @@ pub fn update(db: &Database, plan_id: i64, plan: &ServicePlan) -> Result<()> {
                 item.title,
                 item.planned_secs.map(|s| s as i64),
                 item.owner,
+                content,
             ],
         )?;
     }
@@ -119,7 +135,7 @@ pub fn load(db: &Database, plan_id: i64) -> Result<ServicePlan> {
     // `ord` is UNIQUE per plan; the `item_id` tie-breaker makes the order
     // deterministic even if a future writer ever duplicated an ord.
     let mut stmt = conn.prepare(
-        "SELECT item_id, kind, title, planned_secs, owner
+        "SELECT item_id, kind, title, planned_secs, owner, content
          FROM plan_item WHERE plan_id = ?1 ORDER BY ord, item_id",
     )?;
     let rows = stmt.query_map(params![plan_id], |r| {
@@ -129,12 +145,13 @@ pub fn load(db: &Database, plan_id: i64) -> Result<ServicePlan> {
             r.get::<_, String>(2)?,
             r.get::<_, Option<i64>>(3)?,
             r.get::<_, Option<String>>(4)?,
+            r.get::<_, Option<String>>(5)?,
         ))
     })?;
 
     let mut items = Vec::new();
     for row in rows {
-        let (item_id, kind_tag, title, planned, owner) = row?;
+        let (item_id, kind_tag, title, planned, owner, content) = row?;
         let kind = ItemKind::from_tag(&kind_tag)
             .ok_or_else(|| DataError::Corrupt(format!("unknown item kind '{kind_tag}'")))?;
         // Report out-of-range stored integers as corruption rather than silently
@@ -154,6 +171,10 @@ pub fn load(db: &Database, plan_id: i64) -> Result<ServicePlan> {
             title,
             planned_secs,
             owner,
+            // The parser is total, so any stored text loads (NULL = title-only).
+            stanzas: content
+                .map(|t| selahcue_core::plan::stanzas_from_text(&t))
+                .unwrap_or_default(),
         });
     }
 

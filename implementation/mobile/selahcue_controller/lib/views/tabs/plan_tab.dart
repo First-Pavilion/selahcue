@@ -72,7 +72,7 @@ class PlanTab extends StatelessWidget {
                                       fontWeight: FontWeight.w500,
                                       color: DesignTokens.textPrimary)),
                               const SizedBox(height: 2),
-                              Text(it.kind.toUpperCase(),
+                              Text(it.kind.toUpperCase() + it.slideBadge,
                                   style: const TextStyle(
                                       fontSize: 10,
                                       letterSpacing: 0.5,

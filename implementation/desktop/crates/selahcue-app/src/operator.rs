@@ -23,6 +23,12 @@ pub struct ItemView {
     pub is_live: bool,
     /// This item is currently staged in Preview.
     pub is_staged: bool,
+    /// Slide count for multi-slide items (songs, S8-1); absent = single slide.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slide_count: Option<u32>,
+    /// Current within-item slide (0-based), present for the live/staged item.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slide_index: Option<u32>,
 }
 
 /// A serializable snapshot of everything the operator UI needs to render: the plan,
@@ -144,10 +150,12 @@ impl OperatorShell {
     }
 
     /// Append a plan item (Operator-only via RBAC on the remote path).
-    pub fn add_item(&self, kind: &str, title: &str) -> OperatorView {
+    /// `content` is the optional plain-text stanza body for songs (S8-1).
+    pub fn add_item(&self, kind: &str, title: &str, content: Option<&str>) -> OperatorView {
         self.act(&Command::AddItem {
             kind: kind.into(),
             title: title.into(),
+            content: content.map(Into::into),
         })
     }
 
@@ -224,6 +232,8 @@ impl From<ItemView> for PlanItemView {
             title: i.title,
             is_live: i.is_live,
             is_staged: i.is_staged,
+            slide_count: i.slide_count,
+            slide_index: i.slide_index,
         }
     }
 }
@@ -236,6 +246,8 @@ impl From<PlanItemView> for ItemView {
             title: i.title,
             is_live: i.is_live,
             is_staged: i.is_staged,
+            slide_count: i.slide_count,
+            slide_index: i.slide_index,
         }
     }
 }
@@ -367,14 +379,17 @@ impl RemoteOperator {
     }
 
     /// Append a plan item on the host (requires the Operator role).
+    /// `content` is the optional plain-text stanza body for songs (S8-1).
     pub async fn add_item(
         &mut self,
         kind: &str,
         title: &str,
+        content: Option<&str>,
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::AddItem {
             kind: kind.into(),
             title: title.into(),
+            content: content.map(Into::into),
         })
         .await
     }

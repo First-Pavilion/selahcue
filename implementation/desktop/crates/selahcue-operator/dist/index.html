@@ -90,6 +90,12 @@
         border: 1px solid var(--line); border-radius: 8px; padding: 7px;
       }
       .add-row input { flex: 1; min-width: 0; }
+      .add-row textarea {
+        flex: 1; min-width: 0; resize: vertical;
+        background: var(--bg); color: var(--text);
+        border: 1px solid var(--line); border-radius: 6px;
+        font: inherit; font-size: 12px; padding: 6px 8px;
+      }
       #scripture-row { border-top: none; padding-bottom: 0; }
       #scripture-hits { padding: 0 8px; }
       #scripture-hits .hit {
@@ -276,6 +282,10 @@
           <input id="add-title" placeholder="New item title" />
           <button id="add-item">+ Add</button>
         </div>
+        <div class="add-row">
+          <textarea id="add-lyrics" rows="3"
+            placeholder="Song lyrics — blank line between stanzas (each stanza = one slide)"></textarea>
+        </div>
       </section>
       <section id="scriptures" aria-label="Scriptures">
         <div class="scrip-head">
@@ -379,7 +389,15 @@
           title.textContent = it.title;
           const kind = document.createElement("span");
           kind.className = "kind";
-          kind.textContent = it.kind;
+          // Truthful slide bookkeeping (S8-1): "song · 2/6" for multi-slide
+          // items (position shows for the staged/live item).
+          kind.textContent =
+            it.kind +
+            (it.slide_count
+              ? " · " +
+                (it.slide_index != null ? (it.slide_index + 1) + "/" : "") +
+                it.slide_count
+              : "");
           main.appendChild(title);
           main.appendChild(kind);
 
@@ -1043,10 +1061,29 @@
         const title = document.getElementById("add-title").value.trim();
         const kind = document.getElementById("add-kind").value;
         if (title) {
-          act(() => invoke("add_item", { kind, title }));
+          // Songs may carry stanza lyrics (S8-1): plain text, stanzas
+          // separated by blank lines — each stanza becomes one slide.
+          const lyricsEl = document.getElementById("add-lyrics");
+          const lyrics = kind === "song" ? lyricsEl.value.trim() : "";
+          act(() =>
+            invoke("add_item", {
+              kind,
+              title,
+              content: lyrics ? lyrics : null,
+            })
+          );
           document.getElementById("add-title").value = "";
+          lyricsEl.value = "";
         }
       };
+      // The lyrics box only makes sense for songs — show it per kind.
+      const addKindSel = document.getElementById("add-kind");
+      const syncLyricsVisibility = () => {
+        document.getElementById("add-lyrics").style.display =
+          addKindSel.value === "song" ? "" : "none";
+      };
+      addKindSel.onchange = syncLyricsVisibility;
+      syncLyricsVisibility();
 
       // Top-bar clock (Figma console) — local time, ticks independently.
       const tickClock = () => {

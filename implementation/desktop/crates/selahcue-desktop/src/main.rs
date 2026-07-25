@@ -363,6 +363,9 @@ impl SessionStore {
                 live_scripture: state.live_scripture,
                 live_free_text: state.live_free_text,
                 staged_scripture: state.staged_scripture,
+                live_slide: state.live_slide,
+                staged_slide: state.staged_slide,
+                cursor_slide: state.cursor_slide,
             },
         ))
     }
@@ -442,6 +445,9 @@ impl SessionStore {
             live_scripture: snap.live_scripture.clone(),
             live_free_text: snap.live_free_text.clone(),
             staged_scripture: snap.staged_scripture.clone(),
+            live_slide: snap.live_slide,
+            staged_slide: snap.staged_slide,
+            cursor_slide: snap.cursor_slide,
         };
         match session_repo::save(db, &state) {
             Ok(()) => true,

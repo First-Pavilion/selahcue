@@ -56,6 +56,13 @@ pub struct ControllerSnapshot {
     /// A removed-but-still-on-screen plan item's title (a free slide) — restored
     /// verbatim, never recomposed as scripture.
     pub live_free_text: Option<String>,
+    /// Within-item slide position of the LIVE item (songs, story S8-1).
+    pub live_slide: Option<u32>,
+    /// Within-item slide position of the STAGED item.
+    pub staged_slide: Option<u32>,
+    /// Slide position paired with `plan_cursor` (survives a scripture
+    /// interruption, like the cursor itself).
+    pub cursor_slide: Option<u32>,
 }
 
 /// Drives the live/preview presentation from a [`ServicePlan`].
@@ -113,6 +120,13 @@ pub struct LiveController {
     /// restored VERBATIM as a title-only slide, never recomposed as scripture
     /// even when the title happens to parse as a reference (review 7y-B).
     live_free_text: Option<String>,
+    /// Within-item slide position of the staged item (0 for title-only items).
+    staged_slide: usize,
+    /// Within-item slide position of the live item.
+    live_slide: usize,
+    /// Slide position paired with `plan_cursor` — like the cursor, it survives
+    /// staging a scripture so `Next` resumes mid-song, not at stanza 0.
+    cursor_slide: usize,
 }
 
 /// How long the identify overlay stays on the outputs once triggered (FR-040).
@@ -134,6 +148,29 @@ const SCRIPTURE_WRAP_COLS: usize = 42;
 /// not a resolvable reference (e.g. the free-slide recovery path).
 fn scripture_slide(reference: &str) -> Slide {
     scripture_slide_in(selahcue_scripture::Translation::default(), reference)
+}
+
+/// Compose the slide for one within-item position (story S8-1). A title-only
+/// item (no stanzas) is its single title slide — the exact pre-8a shape. A song
+/// stanza renders as the item title plus the stanza's wrapped lines, capped by
+/// the same physical budget as scripture slides (pagination is a later slice).
+fn item_slide(item: &selahcue_core::plan::PlanItem, slide: usize) -> Slide {
+    if item.stanzas.is_empty() {
+        return Slide::title(item.title.clone());
+    }
+    let idx = slide.min(item.stanzas.len() - 1);
+    let mut lines: Vec<String> = Vec::new();
+    for raw in &item.stanzas[idx].lines {
+        lines.extend(wrap_words(raw, SCRIPTURE_WRAP_COLS));
+        if lines.len() > SCRIPTURE_MAX_LINES {
+            break;
+        }
+    }
+    if lines.len() > SCRIPTURE_MAX_LINES {
+        lines.truncate(SCRIPTURE_MAX_LINES - 1);
+        lines.push("…".to_string());
+    }
+    Slide::new(item.title.clone(), lines)
 }
 
 /// Compose the scripture slide from a specific bundled translation. Recovery
@@ -215,6 +252,9 @@ impl LiveController {
             staged_scripture: None,
             live_scripture: None,
             live_free_text: None,
+            staged_slide: 0,
+            live_slide: 0,
+            cursor_slide: 0,
         }
     }
 
@@ -241,6 +281,9 @@ impl LiveController {
             live_scripture: self.live_scripture.clone(),
             staged_scripture: self.staged_scripture.clone(),
             live_free_text: self.live_free_text.clone(),
+            live_slide: self.live_idx.map(|_| self.live_slide as u32),
+            staged_slide: self.staged_idx.map(|_| self.staged_slide as u32),
+            cursor_slide: self.plan_cursor.map(|_| self.cursor_slide as u32),
         }
     }
 
@@ -254,11 +297,19 @@ impl LiveController {
         let len = self.plan.len();
         let ok = |v: Option<u32>| v.map(|i| i as usize).filter(|i| *i < len);
 
+        // A slide position only applies if it exists on the (possibly edited)
+        // item — otherwise fall back to slide 0, never past the stanza list.
+        fn slide_ok(plan: &ServicePlan, idx: usize, v: Option<u32>) -> usize {
+            let count = plan.items()[idx].slide_count();
+            v.map(|s| s as usize).filter(|s| *s < count).unwrap_or(0)
+        }
         // Rebuild LIVE first: a plan item by index, or a scripture by its reference.
         if let Some(live) = ok(snap.live_idx) {
-            self.stage_index(live);
+            let slide = slide_ok(&self.plan, live, snap.live_slide);
+            self.stage_slide(live, slide);
             if self.presenter.go_live() {
                 self.live_idx = Some(live);
+                self.live_slide = slide;
             }
         } else if let Some(reference) = snap.live_scripture.as_ref() {
             self.presenter.stage(scripture_slide(reference));
@@ -279,7 +330,8 @@ impl LiveController {
         // leaves its input in the staged slot, so an empty preview must be cleared or
         // the monitor would show a phantom "next" and a later GoLive would desync).
         if let Some(staged) = ok(snap.staged_idx) {
-            self.stage_index(staged);
+            let slide = slide_ok(&self.plan, staged, snap.staged_slide);
+            self.stage_slide(staged, slide);
         } else if let Some(reference) = snap.staged_scripture.as_ref() {
             self.presenter.stage(scripture_slide(reference));
             self.staged_idx = None;
@@ -288,7 +340,10 @@ impl LiveController {
             self.presenter.clear_preview();
             self.staged_idx = None;
         }
-        self.plan_cursor = ok(snap.plan_cursor).or(self.plan_cursor);
+        if let Some(cursor) = ok(snap.plan_cursor) {
+            self.plan_cursor = Some(cursor);
+            self.cursor_slide = slide_ok(&self.plan, cursor, snap.cursor_slide);
+        }
 
         self.blackout = snap.blackout;
         self.presenter.blackout(snap.blackout);
@@ -445,19 +500,34 @@ impl LiveController {
                         // freezing a stale frame.
                         self.pairing_qr = None;
                         let current = self.presenter.live_slide().cloned();
-                        let next = self.presenter.staged().cloned();
+                        let next = self.stage_next_slide();
                         self.stage
                             .update(current.as_ref(), next.as_ref(), view.as_ref());
                     }
                 }
                 None => {
                     let current = self.presenter.live_slide().cloned();
-                    let next = self.presenter.staged().cloned();
+                    let next = self.stage_next_slide();
                     self.stage
                         .update(current.as_ref(), next.as_ref(), view.as_ref());
                 }
             }
         }
+    }
+
+    /// What the confidence monitor should show as "next": mid-song, the NEXT
+    /// stanza of the LIVE song (the speaker needs the coming line, which may
+    /// differ from Preview); otherwise whatever is staged in Preview. Public so
+    /// the stage-output contract is directly observable (like [`Presenter::staged`]).
+    pub fn stage_next_slide(&self) -> Option<Slide> {
+        if let Some(i) = self.live_idx {
+            if let Some(item) = self.plan.items().get(i) {
+                if !item.stanzas.is_empty() && self.live_slide + 1 < item.slide_count() {
+                    return Some(item_slide(item, self.live_slide + 1));
+                }
+            }
+        }
+        self.presenter.staged().cloned()
     }
 
     /// The presenter (for the output window / stage display to render).
@@ -494,6 +564,20 @@ impl LiveController {
                 title: item.title.clone(),
                 is_live: self.live_idx == Some(i),
                 is_staged: self.staged_idx == Some(i),
+                // Truthful slide bookkeeping (S8-1): only multi-slide items
+                // advertise a count; the position shows for the live/staged item.
+                slide_count: (item.slide_count() > 1).then(|| item.slide_count() as u32),
+                slide_index: if item.slide_count() > 1 {
+                    if self.live_idx == Some(i) {
+                        Some(self.live_slide as u32)
+                    } else if self.staged_idx == Some(i) {
+                        Some(self.staged_slide as u32)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                },
             })
             .collect();
         OperatorView {
@@ -521,21 +605,31 @@ impl LiveController {
         }
     }
 
-    fn slide_for(&self, idx: usize) -> Option<Slide> {
+    fn slide_for(&self, idx: usize, slide: usize) -> Option<Slide> {
         self.plan
             .items()
             .get(idx)
-            .map(|item| Slide::title(item.title.clone()))
+            .map(|item| item_slide(item, slide))
     }
 
-    /// Stage the plan item at `idx` in Preview (Live is untouched), advancing the
-    /// navigation cursor to it.
+    /// Stage the plan item at `idx` in Preview at slide 0 (Live is untouched),
+    /// advancing the navigation cursor to it.
     fn stage_index(&mut self, idx: usize) -> ControllerReply {
-        match self.slide_for(idx) {
-            Some(slide) => {
-                self.presenter.stage(slide);
+        self.stage_slide(idx, 0)
+    }
+
+    /// Stage a specific within-item slide of the plan item at `idx` (story
+    /// S8-1). The slide is clamped to the item's slide count by [`item_slide`].
+    fn stage_slide(&mut self, idx: usize, slide: usize) -> ControllerReply {
+        match self.slide_for(idx, slide) {
+            Some(composed) => {
+                let count = self.plan.items()[idx].slide_count();
+                let slide = slide.min(count - 1);
+                self.presenter.stage(composed);
                 self.staged_idx = Some(idx);
+                self.staged_slide = slide;
                 self.plan_cursor = Some(idx);
+                self.cursor_slide = slide;
                 self.staged_scripture = None; // Preview now holds a plan item
                 ControllerReply::Ack
             }
@@ -563,18 +657,46 @@ impl LiveController {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 }
                 // Resume from the plan cursor (unaffected by staging a scripture).
-                let next = match self.plan_cursor {
-                    Some(i) => (i + 1).min(len - 1),
-                    None => 0,
-                };
-                self.stage_index(next)
+                // Advance WITHIN the current item's slide sequence first (songs,
+                // S8-1); cross to the next plan item only when it is exhausted.
+                match self.plan_cursor {
+                    Some(i) => {
+                        let slides = self.plan.items()[i].slide_count();
+                        if self.cursor_slide + 1 < slides {
+                            self.stage_slide(i, self.cursor_slide + 1)
+                        } else {
+                            let next = (i + 1).min(len - 1);
+                            if next == i {
+                                // Clamped at the end: re-stage the LAST slide (the
+                                // pre-8a clamp semantics — never loop to stanza 0).
+                                self.stage_slide(i, self.cursor_slide)
+                            } else {
+                                self.stage_slide(next, 0)
+                            }
+                        }
+                    }
+                    None => self.stage_slide(0, 0),
+                }
             }
             Command::Previous => {
                 if len == 0 {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 }
-                let prev = self.plan_cursor.map(|i| i.saturating_sub(1)).unwrap_or(0);
-                self.stage_index(prev)
+                // Step back within the item first; crossing back into the previous
+                // item enters at its LAST slide (symmetric traversal).
+                match self.plan_cursor {
+                    Some(i) if self.cursor_slide > 0 => self.stage_slide(i, self.cursor_slide - 1),
+                    Some(i) => {
+                        let prev = i.saturating_sub(1);
+                        if prev == i {
+                            self.stage_slide(i, 0)
+                        } else {
+                            let last = self.plan.items()[prev].slide_count() - 1;
+                            self.stage_slide(prev, last)
+                        }
+                    }
+                    None => self.stage_slide(0, 0),
+                }
             }
             Command::SelectItem { item_id } => {
                 match self.plan.items().iter().position(|it| it.id.0 == *item_id) {
@@ -587,6 +709,7 @@ impl LiveController {
                 // presenter reports whether anything was staged.
                 if self.presenter.go_live() {
                     self.live_idx = self.staged_idx; // None for a non-plan scripture
+                    self.live_slide = self.staged_slide;
                     self.live_scripture = self.staged_scripture.clone();
                     self.live_free_text = None;
                     // Going live from blackout reveals the new content (UX-STATE-MATRIX).
@@ -768,7 +891,11 @@ impl LiveController {
             // --- Plan editing (Operator-only via RBAC). Edits NEVER change the Live
             // output (FR-012 spirit): removing the live item keeps its slide on
             // screen; only the index bookkeeping adjusts. ---
-            Command::AddItem { kind, title } => {
+            Command::AddItem {
+                kind,
+                title,
+                content,
+            } => {
                 let Some(kind) = selahcue_core::plan::ItemKind::from_tag(kind) else {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 };
@@ -776,7 +903,14 @@ impl LiveController {
                 if title.is_empty() {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 }
-                self.plan.add_item(kind, title);
+                let id = self.plan.add_item(kind, title);
+                // Optional stanza content (S8-1): the PD-hymn plain-text format,
+                // stanzas separated by blank lines. Parsing is total.
+                if let Some(text) = content {
+                    if let Some(item) = self.plan.get_mut(id) {
+                        item.stanzas = selahcue_core::plan::stanzas_from_text(text);
+                    }
+                }
                 self.plan_dirty = true;
                 ControllerReply::Ack
             }
@@ -807,6 +941,16 @@ impl LiveController {
                     if let Some(slide) = self.presenter.live_slide() {
                         self.live_free_text = Some(slide.title.clone());
                     }
+                }
+                // Slide positions follow their item; a removed item's positions reset.
+                if self.live_idx == Some(idx) {
+                    self.live_slide = 0;
+                }
+                if self.staged_idx == Some(idx) {
+                    self.staged_slide = 0;
+                }
+                if self.plan_cursor == Some(idx) {
+                    self.cursor_slide = 0;
                 }
                 self.live_idx = fix(self.live_idx);
                 self.staged_idx = fix(self.staged_idx);
@@ -861,7 +1005,8 @@ impl LiveController {
                 // changed by an edit — the operator re-commits when ready).
                 if self.staged_idx == self.index_of(*item_id) {
                     if let Some(idx) = self.staged_idx {
-                        self.stage_index(idx);
+                        let slide = self.staged_slide;
+                        self.stage_slide(idx, slide);
                     }
                 }
                 ControllerReply::Ack

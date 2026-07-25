@@ -383,3 +383,74 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         other => panic!("expected operator_state, got {other:?}"),
     }
 }
+
+// --- Songs: additive PlanItemView slide fields + AddItem content (S8-1) ---
+
+#[test]
+fn plan_item_view_omits_slide_fields_when_none_keeping_old_fixtures() {
+    use selahcue_lan::protocol::PlanItemView;
+    // A title-only item serializes EXACTLY as the pre-8a shape (skip-if-none).
+    let title_only = PlanItemView {
+        id: 1,
+        kind: "scripture".into(),
+        title: "Romans 8:28".into(),
+        is_live: false,
+        is_staged: true,
+        slide_count: None,
+        slide_index: None,
+    };
+    assert_eq!(
+        to_json(&title_only).unwrap(),
+        r#"{"id":1,"kind":"scripture","title":"Romans 8:28","is_live":false,"is_staged":true}"#,
+        "no slide fields emitted → byte-identical to a v5 host's item"
+    );
+    // A multi-slide song emits the two fields.
+    let song = PlanItemView {
+        id: 2,
+        kind: "song".into(),
+        title: "Way Maker".into(),
+        is_live: true,
+        is_staged: false,
+        slide_count: Some(6),
+        slide_index: Some(2),
+    };
+    let json = to_json(&song).unwrap();
+    assert!(json.contains(r#""slide_count":6"#), "{json}");
+    assert!(json.contains(r#""slide_index":2"#), "{json}");
+    // Round-trips.
+    let back: PlanItemView = from_json(&json).unwrap();
+    assert_eq!(back, song);
+}
+
+#[test]
+fn old_plan_item_json_without_slide_fields_still_parses() {
+    use selahcue_lan::protocol::PlanItemView;
+    // A pre-8a host's item JSON (no slide fields) must parse via serde(default).
+    let v: PlanItemView =
+        from_json(r#"{"id":9,"kind":"song","title":"Old","is_live":false,"is_staged":false}"#)
+            .unwrap();
+    assert_eq!(v.slide_count, None);
+    assert_eq!(v.slide_index, None);
+}
+
+#[test]
+fn add_item_command_carries_optional_song_content() {
+    // Without content: identical to the pre-8a AddItem wire form.
+    assert_eq!(
+        to_json(&Command::AddItem {
+            kind: "section".into(),
+            title: "Sermon".into(),
+            content: None,
+        })
+        .unwrap(),
+        r#"{"cmd":"add_item","kind":"section","title":"Sermon"}"#,
+    );
+    // With content: the stanza text rides along and round-trips.
+    let cmd = Command::AddItem {
+        kind: "song".into(),
+        title: "Hymn".into(),
+        content: Some("v1\n\nv2".into()),
+    };
+    let back: Command = from_json(&to_json(&cmd).unwrap()).unwrap();
+    assert_eq!(back, cmd);
+}
