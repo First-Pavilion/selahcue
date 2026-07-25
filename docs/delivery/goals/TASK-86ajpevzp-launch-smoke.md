@@ -96,6 +96,16 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Target criterion: C-003, C-004
 - Hypothesis: a `launch-smoke` CI job (ubuntu under Xvfb + lavapipe; macOS/Windows on the runner) running `--smoke` proves cross-OS launch and captures per-OS cold-start; `make nfr` under Xvfb records Linux idle memory.
 - Change or investigation: added the `launch-smoke` job to `.github/workflows/ci.yml`; pushing to drive the matrix.
+- Verifier executed: CI run 30141199818 (`launch-smoke` matrix).
+- Result: **macOS + Windows PASS** (launched, first frame presented, exit 0); **Linux FAILED** — but NOT a GPU/headless limitation: `libxkbcommon-x11.so could not be loaded` (winit dlopens it to create the X11 window; the offscreen test job never needs it).
+- New evidence: 2/3 OSes launch cleanly in CI; the Linux failure is a fixable missing runtime lib, not a runner limitation.
+- Decision: iterate (add the lib)
+
+### Iteration 3
+
+- Target criterion: C-003 (Linux lane)
+- Hypothesis: installing `libxkbcommon-x11-dev` provides the `.so` winit dlopens; the Linux smoke then creates its window under Xvfb + lavapipe and presents.
+- Change or investigation: added `libxkbcommon-x11-dev` to the launch-smoke Linux deps; re-pushing.
 - Verifier executed: (pending CI run)
 - Result: (pending)
 - New evidence: (pending)

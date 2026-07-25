@@ -108,10 +108,12 @@ jobs:
           workspaces: implementation/desktop
       - name: Linux system deps (winit/wgpu + software Vulkan + Xvfb)
         if: runner.os == 'Linux'
+        # libxkbcommon-x11: winit dlopens libxkbcommon-x11.so to create a real X11
+        # window (the offscreen test job doesn't need it, but the launch smoke does).
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libx11-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libvulkan1 mesa-vulkan-drivers libdbus-1-dev xvfb
       - name: Build release
         run: cargo build --release -p selahcue-desktop
