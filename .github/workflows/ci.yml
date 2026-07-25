@@ -13,9 +13,14 @@
 #   - Windows runners: DX12/WARP where available
 name: ci
 
-# Docs-only changes skip the matrix (saves runner minutes; docs carry no code
-# to verify). NOTE: if branch protection ever requires these checks, switch to
-# a paths-filter job instead of paths-ignore so PRs are never stuck "pending".
+# Docs-only changes skip the matrix (saves runner minutes; docs carry no code to
+# verify). A `changes` job (below) further gates the desktop vs mobile jobs by
+# path, so a single-side commit doesn't pay for the other side (macOS bills 10x).
+# NOTE: this gates DOWNSTREAM jobs with `if:`, so a skipped required check would
+# DEADLOCK a PR. It is safe only because this repo pushes to main with no branch
+# protection. Before enabling required status checks, add a single aggregator
+# job (`needs:` all jobs; passes if each result is success OR skipped) and
+# require THAT, not the individual matrix jobs (task 86ajq0569).
 on:
   push:
     branches: [main]
@@ -39,8 +44,51 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Which side of the repo changed. Most commits touch only the desktop OR only
+  # the mobile side, so the other side's jobs are pure waste — and macOS runners
+  # bill at 10x minutes, Windows at 2x. Each filter also matches this workflow so
+  # a CI change re-runs everything. (Docs-only changes are already skipped at the
+  # trigger's paths-ignore.) This is the cheap fan-out gate for the costly jobs.
+  changes:
+    name: detect changed areas
+    runs-on: ubuntu-latest
+    outputs:
+      desktop: ${{ steps.filter.outputs.desktop }}
+      mobile: ${{ steps.filter.outputs.mobile }}
+      android: ${{ steps.filter.outputs.android }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            desktop:
+              - 'implementation/desktop/**'
+              # Shared build/NFR tooling the desktop jobs invoke (make nfr, the
+              # NFR proxy script) — a change here must re-run the desktop matrix.
+              - 'Makefile'
+              - 'scripts/**'
+              # Catch-all for any OTHER top-level code area (e.g. implementation/web)
+              # so a change there is never silently unverified. Add a dedicated
+              # filter + job if such an area grows its own build.
+              - 'implementation/web/**'
+              - '.github/workflows/ci.yml'
+            mobile:
+              - 'implementation/mobile/**'
+              - '.github/workflows/ci.yml'
+            android:
+              - 'implementation/mobile/selahcue_controller/android/**'
+              - 'implementation/mobile/selahcue_controller/lib/controllers/discovery_controller.dart'
+              - 'implementation/mobile/selahcue_controller/lib/models/multicast_lock.dart'
+              # A Flutter/plugin dep bump can change the Android build too.
+              - 'implementation/mobile/selahcue_controller/pubspec.yaml'
+              - 'implementation/mobile/selahcue_controller/pubspec.lock'
+              - '.github/workflows/ci.yml'
+
   rust:
     name: rust (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -92,6 +140,8 @@ jobs:
   # a 30s watchdog on a genuine launch failure. Linux runs headless under Xvfb.
   launch-smoke:
     name: launch-smoke (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     # Hard CI backstop: the in-app 30s watchdog can't catch a hang INSIDE
     # window/adapter creation (before the event loop's first about_to_wait), so
     # bound the whole job — a wedged launch fails in minutes, not GitHub's 6h.
@@ -143,6 +193,8 @@ jobs:
 
   operator:
     name: operator shell (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -175,6 +227,8 @@ jobs:
 
   flutter:
     name: flutter controller
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -191,14 +245,21 @@ jobs:
       # Compile-verify the Android host (Kotlin MulticastLock channel, 86ajp0b0t)
       # — the ubuntu runner ships the Android SDK; a debug build exercises the
       # Kotlin without needing a device. JDK 17 for the Android Gradle plugin.
+      # Only when the Android/Kotlin (or its Dart callers) actually changed —
+      # the Gradle/SDK build is the heaviest mobile step, wasted on pure-Dart edits.
       - uses: actions/setup-java@v4
+        if: needs.changes.outputs.android == 'true'
         with:
           distribution: temurin
           java-version: "17"
-      - run: flutter build apk --debug
+      - name: Android host compile-check (apk --debug)
+        if: needs.changes.outputs.android == 'true'
+        run: flutter build apk --debug
 
   audit:
     name: dependency audit (RustSec)
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -217,6 +278,8 @@ jobs:
     # deny.toml) + a CycloneDX SBOM artifact per build. Advisories live in the
     # RustSec job above.
     name: supply chain (licenses + SBOM)
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
