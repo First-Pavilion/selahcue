@@ -6,9 +6,22 @@ import 'package:flutter/foundation.dart';
 import 'package:multicast_dns/multicast_dns.dart';
 
 import '../models/discovery.dart';
+import '../models/multicast_lock.dart';
 
 class DiscoveryController extends ChangeNotifier {
   static const _service = '_selahcue._tcp.local';
+
+  final MulticastLock _lock;
+
+  /// The mDNS browse, injectable so the lock lifecycle is unit-testable without
+  /// touching real sockets. Defaults to the real `multicast_dns` browse.
+  final Future<void> Function(Map<String, DiscoveredHost>)? _browseOverride;
+
+  DiscoveryController({
+    MulticastLock? lock,
+    @visibleForTesting Future<void> Function(Map<String, DiscoveredHost>)? browse,
+  })  : _lock = lock ?? const PlatformMulticastLock(),
+        _browseOverride = browse;
 
   List<DiscoveredHost> _hosts = const [];
   bool _searching = false;
@@ -18,12 +31,29 @@ class DiscoveryController extends ChangeNotifier {
   bool get searching => _searching;
 
   /// One bounded browse pass (~4s). Best-effort: an mDNS-hostile network just
-  /// yields an empty list — the QR/manual paths are unaffected.
+  /// yields an empty list — the QR/manual paths are unaffected. Android drops
+  /// multicast unless a lock is held, so we hold one for the browse and ALWAYS
+  /// release it (no-op on other platforms).
   Future<void> refresh() async {
     if (_searching) return;
     _searching = true;
     _notify();
     final found = <String, DiscoveredHost>{};
+    await _lock.acquire();
+    try {
+      await (_browseOverride ?? _mdnsBrowse)(found);
+    } finally {
+      await _lock.release();
+    }
+    if (_disposed) return;
+    _hosts = found.values.toList()..sort((a, b) => a.name.compareTo(b.name));
+    _searching = false;
+    _notify();
+  }
+
+  /// The real `multicast_dns` browse — populates [found]. Best-effort: any
+  /// failure yields an empty result (never throws out of [refresh]).
+  Future<void> _mdnsBrowse(Map<String, DiscoveredHost> found) async {
     final client = MDnsClient();
     try {
       await client.start();
@@ -78,10 +108,6 @@ class DiscoveryController extends ChangeNotifier {
     } finally {
       client.stop();
     }
-    if (_disposed) return;
-    _hosts = found.values.toList()..sort((a, b) => a.name.compareTo(b.name));
-    _searching = false;
-    _notify();
   }
 
   void _notify() {

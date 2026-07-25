@@ -188,6 +188,14 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
+      # Compile-verify the Android host (Kotlin MulticastLock channel, 86ajp0b0t)
+      # — the ubuntu runner ships the Android SDK; a debug build exercises the
+      # Kotlin without needing a device. JDK 17 for the Android Gradle plugin.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: flutter build apk --debug
 
   audit:
     name: dependency audit (RustSec)
