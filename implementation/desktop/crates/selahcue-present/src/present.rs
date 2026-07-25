@@ -9,8 +9,9 @@
 //! [`go_live`]: Presenter::go_live
 
 use crate::compose::compose_slide;
-use crate::slide::{Slide, Theme};
+use crate::slide::Slide;
 use crate::stage::compose_identify;
+use crate::theme::Theme;
 use selahcue_engine::engine::{Engine, EngineCommand, EngineEvent};
 use selahcue_engine::raster::{FrameBuffer, MAX_DIMENSION};
 use selahcue_engine::scene::Rgba;
@@ -83,6 +84,28 @@ impl Presenter {
         }
         self.live_slide = Some(slide);
         true
+    }
+
+    /// Switch the audience theme, re-composing **both** surfaces from the retained
+    /// slides — the *content* (the tracked `staged`/`live_slide` [`Slide`]s) is
+    /// unchanged, only its styling (FR-010, zero content loss). A blank slot stays
+    /// blank; a transient overlay (identify — no tracked live slide) is left as-is
+    /// until the operator re-stages. The caller re-applies blackout (theme ⟂ blackout).
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        if let Some(slide) = self.staged.clone() {
+            let frame = compose_slide(&slide, &self.theme, self.width, self.height);
+            self.preview.apply(EngineCommand::SetScene { frame });
+        }
+        if let Some(slide) = self.live_slide.clone() {
+            let frame = compose_slide(&slide, &self.theme, self.width, self.height);
+            self.live.apply(EngineCommand::SetScene { frame });
+        }
+    }
+
+    /// The active audience theme.
+    pub fn theme(&self) -> Theme {
+        self.theme
     }
 
     /// **Clear** (`Esc Esc`): clear all Live layers to empty. Preview is untouched.

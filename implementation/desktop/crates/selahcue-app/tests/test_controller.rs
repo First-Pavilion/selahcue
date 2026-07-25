@@ -1215,3 +1215,138 @@ fn removing_a_live_song_recovers_its_lyric_body_verbatim() {
         "recovery restores the lyric BODY verbatim, not a bare title"
     );
 }
+
+#[test]
+fn set_theme_restyles_the_output_and_reports_it_without_losing_content() {
+    // Switching to "high-contrast" yields the SAME audience output as if the
+    // session had STARTED there — content untouched, only its design (FR-010).
+    let (mut a, _) = controller();
+    a.apply(&Command::Next); // stage item 0 (a song)
+    a.apply(&Command::GoLive);
+
+    let mut plan = ServicePlan::new("Sunday");
+    plan.add_item(ItemKind::Song, "Opening Song");
+    plan.add_item(ItemKind::Scripture, "Romans 8:28");
+    plan.add_item(ItemKind::Section, "Sermon");
+    let mut hc = LiveController::new(plan, 320, 180, Theme::high_contrast());
+    hc.apply(&Command::Next);
+    hc.apply(&Command::GoLive);
+
+    assert_eq!(
+        a.operator_view().theme,
+        "classic",
+        "starts on the default design"
+    );
+    assert_eq!(
+        a.apply(&Command::SetTheme {
+            name: "high-contrast".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        a.operator_view().theme,
+        "high-contrast",
+        "active theme reported"
+    );
+    assert_eq!(
+        a.operator_view().themes,
+        vec!["classic", "high-contrast", "lower-third"],
+        "the picker's option list"
+    );
+    assert_eq!(
+        a.presenter().live_output().bytes(),
+        hc.presenter().live_output().bytes(),
+        "switching == having started in that theme (content preserved)"
+    );
+    assert_eq!(
+        a.live_index(),
+        Some(0),
+        "the live item is unchanged by a restyle"
+    );
+
+    // An unknown built-in name is a bad request and leaves the theme unchanged.
+    assert_eq!(
+        a.apply(&Command::SetTheme {
+            name: "neon-disco".into()
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        a.operator_view().theme,
+        "high-contrast",
+        "unknown name is a no-op"
+    );
+}
+
+#[test]
+fn a_theme_switch_preserves_blackout() {
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    c.apply(&Command::Blackout { on: true });
+    assert!(c.is_blackout());
+    assert!(live_is_black(&c), "live is black before the switch");
+    assert_eq!(
+        c.apply(&Command::SetTheme {
+            name: "lower-third".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert!(c.is_blackout(), "the blackout flag survives a theme switch");
+    // The RENDERED live output must still be black — set_theme re-issues SetScene
+    // (which resets the engine's blackout), so the controller MUST re-apply it.
+    // Asserting the flag alone would miss a dropped re-apply (review S8-3b).
+    assert!(
+        live_is_black(&c),
+        "the audience output stays black after a mid-blackout theme switch"
+    );
+}
+
+#[test]
+fn the_active_theme_survives_snapshot_restore() {
+    use std::time::Instant;
+    let t0 = Instant::now();
+    let (mut a, _) = controller();
+    a.apply(&Command::Next);
+    a.apply(&Command::GoLive);
+    a.apply(&Command::SetTheme {
+        name: "high-contrast".into(),
+    });
+    let snap = a.snapshot(t0);
+    assert_eq!(
+        snap.theme,
+        Some("high-contrast".into()),
+        "a non-default theme is persisted"
+    );
+
+    let (mut b, _) = controller();
+    b.restore(&snap);
+    b.tick(t0);
+    assert_eq!(b.operator_view().theme, "high-contrast", "theme recovered");
+    assert_eq!(
+        b.presenter().live_output().bytes(),
+        a.presenter().live_output().bytes(),
+        "the themed audience output re-renders identically after recovery"
+    );
+}
+
+#[test]
+fn a_default_theme_session_persists_the_pre_v8_shape() {
+    use std::time::Instant;
+    let (a, _) = controller();
+    assert_eq!(
+        a.snapshot(Instant::now()).theme,
+        None,
+        "classic => NULL theme"
+    );
+
+    let (mut b, _) = controller();
+    let mut snap = b.snapshot(Instant::now());
+    snap.theme = None;
+    b.restore(&snap);
+    assert_eq!(
+        b.operator_view().theme,
+        "classic",
+        "absent theme => default"
+    );
+}

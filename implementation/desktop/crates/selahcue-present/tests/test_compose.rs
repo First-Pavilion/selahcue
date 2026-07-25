@@ -31,15 +31,22 @@ fn blank_slide_is_background_only() {
 }
 
 #[test]
-fn slide_draws_text_in_the_safe_area_with_theme_colors() {
-    let theme = Theme::dark(); // 5% margin, white text, dark background
+fn title_only_slide_renders_centred_in_the_body_region() {
+    // A title-only slide (e.g. a section header) is the MAIN content, so the
+    // classic theme centres it in the body region — not a small top header.
+    let theme = Theme::dark(); // classic: centred white body over a dark bg
     let fb = render(&compose_slide(&Slide::title("HELLO"), &theme, 200, 100));
-    // Background shows in the margin / corner.
+    // Background shows in the corner (outside any region).
     assert_eq!(fb.pixel(2, 2).unwrap(), theme.background);
-    // The title renders glyph ink in the top-left of the safe area (margin ~10px).
+    // Ink appears in the body region (classic body ≈ x[12..188], y[28..84]),
+    // and around the horizontal centre (centre alignment), not hugging the left.
     assert!(
-        has_ink_in(&fb, 10, 5, 90, 22),
-        "title glyphs should render in the safe area"
+        has_ink_in(&fb, 12, 28, 188, 84),
+        "title renders in the body region"
+    );
+    assert!(
+        has_ink_in(&fb, 70, 28, 130, 84),
+        "centre-aligned text has ink near the horizontal centre"
     );
 }
 
@@ -59,23 +66,18 @@ fn text_stays_within_the_frame() {
 
 #[test]
 fn text_never_paints_into_the_bottom_safe_margin() {
-    // Many lines at a small height would, without a bottom guard, paint into the
-    // bottom overscan band. The bottom inset must be honored symmetrically.
-    let theme = Theme::dark(); // 5% margin -> margin_y = 2 at height 50
+    // The classic theme's regions sit inside the frame (body bottom ≈ 84% of the
+    // height), so a long slide must never paint into the bottom overscan band.
+    let theme = Theme::dark();
     let slide = Slide::new("Title", (0..10).map(|i| format!("Body line number {i}")));
-    let fb = render(&compose_slide(&slide, &theme, 200, 50));
-    // Text renders in the top safe area...
+    let fb = render(&compose_slide(&slide, &theme, 200, 100));
+    // Something renders (the design is not blank)...
+    assert!(has_ink_in(&fb, 0, 0, 200, 100), "the themed slide renders");
+    // ...but no INK in the bottom overscan band (classic body ends at ≈84% →
+    // rows ≥ 90 must stay background — robust to antialiased descenders).
     assert!(
-        has_ink_in(&fb, 10, 2, 60, 12),
-        "text should render in the top safe area"
-    );
-    // ...but never any INK in the bottom safe margin band (rows >= height -
-    // margin_y = 48) — the real overscan invariant, now robust to antialiasing
-    // (a shaped descender leaking down would trip this, unlike an exact-white
-    // check that AA greys would slip past).
-    assert!(
-        !has_ink_in(&fb, 0, 48, 200, 50),
-        "no text ink in the bottom safe margin / at the bottom edge"
+        !has_ink_in(&fb, 0, 90, 200, 100),
+        "no text ink in the bottom overscan band"
     );
 }
 
@@ -90,11 +92,10 @@ fn compose_is_deterministic() {
 
 #[test]
 fn compose_slide_renders_title_plus_six_body_lines() {
-    // The physical line capacity the scripture slide cap relies on
-    // (selahcue-app::SCRIPTURE_MAX_LINES = 6 body lines): at 10% line height +
-    // 3% gap inside the 5% safe margin, exactly 7 text lines fit — a 7th body
-    // line must be dropped by the bottom-edge break, so content past the cap
-    // would silently vanish. If these metrics change, retune the cap.
+    // The classic theme's body region is sized to the scripture cap
+    // (selahcue-app::SCRIPTURE_MAX_LINES = 6): the title renders in the title
+    // region (1 layer) and up to 6 body lines in the body region, so a 7th body
+    // line clips. Keeps the engine's line capacity aligned with the cap.
     use selahcue_engine::scene::Layer;
     let count_text = |body: usize| {
         let slide = Slide::new(

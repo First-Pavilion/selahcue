@@ -66,6 +66,9 @@ fn every_command_round_trips() {
             translation: Some("WEB".into()),
         },
         Command::GetState,
+        Command::SetTheme {
+            name: "classic".into(),
+        },
     ];
     for c in cmds {
         let json = to_json(&c).unwrap();
@@ -230,6 +233,10 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         outputs: vec![],
         displays: vec![],
         translations: vec![],
+        // Empty theme/themes (S8-3b) are skip-if-empty — the pinned bytes below are
+        // UNCHANGED, proving the new fields are additive to the v2 wire.
+        theme: String::new(),
+        themes: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -263,10 +270,47 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
             height: 1080,
         }],
         translations: vec![],
+        theme: String::new(),
+        themes: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
         r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"outputs":[{"role":"main","display":"Projector","width":1920,"height":1080,"assigned":true,"assigned_key":"Projector|1920x1080"}],"displays":[{"key":"Projector|1920x1080","name":"Projector","width":1920,"height":1080}]}}"#
+    );
+
+    // The theme wire surface (S8-3b): the SetTheme command + a view carrying the
+    // active theme + offered themes. Pinned serialize-side; the Dart test mirrors
+    // BOTH strings exactly.
+    assert_eq!(
+        to_json(&Command::SetTheme {
+            name: "high-contrast".into()
+        })
+        .unwrap(),
+        r#"{"cmd":"set_theme","name":"high-contrast"}"#
+    );
+    let themed = selahcue_lan::protocol::OperatorStateView {
+        plan_name: "Sunday".into(),
+        items: vec![],
+        live_index: None,
+        staged_index: None,
+        blackout: false,
+        timer: None,
+        staged_scripture: None,
+        live_scripture: None,
+        live_free_text: None,
+        outputs: vec![],
+        displays: vec![],
+        translations: vec![],
+        theme: "lower-third".into(),
+        themes: vec![
+            "classic".into(),
+            "high-contrast".into(),
+            "lower-third".into(),
+        ],
+    };
+    assert_eq!(
+        to_json(&ServerMessage::OperatorState { view: themed }).unwrap(),
+        r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"theme":"lower-third","themes":["classic","high-contrast","lower-third"]}}"#
     );
     // The output-config commands, pinned like every other command.
     assert_eq!(

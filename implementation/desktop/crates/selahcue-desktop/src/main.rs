@@ -367,6 +367,7 @@ impl SessionStore {
                 live_slide: state.live_slide,
                 staged_slide: state.staged_slide,
                 cursor_slide: state.cursor_slide,
+                theme: state.theme,
             },
         ))
     }
@@ -450,6 +451,7 @@ impl SessionStore {
             live_slide: snap.live_slide,
             staged_slide: snap.staged_slide,
             cursor_slide: snap.cursor_slide,
+            theme: snap.theme.clone(),
         };
         match session_repo::save(db, &state) {
             Ok(()) => true,

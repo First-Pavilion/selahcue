@@ -83,6 +83,12 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE session_state ADD COLUMN live_free_body TEXT;
     "#,
+    // v7 -> v8: the audience output has a switchable theme (FR-010, S8-3b). Persist
+    // the active theme by its stable built-in name so recovery restores the same
+    // design. NULL = the default ("classic"), so every existing row keeps its look.
+    r#"
+    ALTER TABLE session_state ADD COLUMN theme TEXT;
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

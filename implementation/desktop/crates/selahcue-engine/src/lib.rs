@@ -25,4 +25,4 @@ pub mod scene;
 pub use engine::{Engine, EngineCommand, EngineEvent, IPC_VERSION};
 pub use fault::Fault;
 pub use raster::{render, FrameBuffer};
-pub use scene::{Frame, Layer, Rect, Rgba};
+pub use scene::{Frame, Layer, Rect, Rgba, TextAlign};

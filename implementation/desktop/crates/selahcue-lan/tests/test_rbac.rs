@@ -43,10 +43,33 @@ fn operator_can_do_every_command() {
             translation: None,
         },
         Command::GetState,
+        Command::SetTheme {
+            name: "classic".into(),
+        },
     ];
     for c in &cmds {
         assert!(authorize(Role::Operator, c), "operator denied {c:?}");
     }
+}
+
+#[test]
+fn set_theme_is_operator_only_output_config() {
+    // Switching the audience theme is host output-config (like AssignOutput /
+    // IdentifyOutputs) — Operator-only, denied for everyone below (S8-3b).
+    let cmd = Command::SetTheme {
+        name: "high-contrast".into(),
+    };
+    assert!(authorize(Role::Operator, &cmd), "operator");
+    assert!(!authorize(Role::Producer, &cmd), "producer");
+    assert!(!authorize(Role::Assistant, &cmd), "assistant");
+    assert!(!authorize(Role::Viewer, &cmd), "viewer");
+    // Auth precedes the controller's name check — an unknown name is still gated.
+    assert!(authorize(
+        Role::Operator,
+        &Command::SetTheme {
+            name: "bogus".into()
+        }
+    ));
 }
 
 #[test]

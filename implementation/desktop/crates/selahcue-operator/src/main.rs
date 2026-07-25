@@ -71,6 +71,17 @@ impl Backend {
             Backend::Local(s) => Ok(s.blackout(on)),
         }
     }
+    async fn set_theme(&self, name: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_theme(&name)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_theme(&name)),
+        }
+    }
     async fn select(&self, item_id: u64) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
@@ -240,6 +251,10 @@ async fn go_live(state: State<'_, AppState>) -> Result<OperatorView, String> {
 #[tauri::command]
 async fn clear(state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.clear().await
+}
+#[tauri::command]
+async fn set_theme(name: String, state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.set_theme(name).await
 }
 #[tauri::command]
 async fn blackout(on: bool, state: State<'_, AppState>) -> Result<OperatorView, String> {
@@ -460,7 +475,8 @@ fn main() {
             scripture_search,
             get_chapter,
             identify_outputs,
-            assign_output
+            assign_output,
+            set_theme
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");

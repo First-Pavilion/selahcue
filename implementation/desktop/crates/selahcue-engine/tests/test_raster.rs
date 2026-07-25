@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_engine::raster::render;
-use selahcue_engine::scene::{Frame, Layer, Rect, Rgba};
+use selahcue_engine::scene::{Frame, Layer, Rect, Rgba, TextAlign};
 
 fn red_frame_with_blue_box() -> Frame {
     let mut f = Frame::new(32, 32).with_background(Rgba::rgb(255, 0, 0));
@@ -85,6 +85,7 @@ fn text_layer_renders_glyphs_within_its_rect() {
         text: "HELLO".into(),
         px: 16,
         color: Rgba::WHITE,
+        align: TextAlign::Left,
     });
     let fb = render(&f);
     // Antialiased glyph ink appears inside the text rect (partial-coverage greys,
@@ -118,6 +119,7 @@ fn oversized_text_is_bounded_by_the_framebuffer() {
         text: "ABCDEFGH".into(),
         px: 100_000,
         color: Rgba::WHITE,
+        align: TextAlign::Left,
     });
     let fb = render(&f);
     assert_eq!(fb.width(), 64);
@@ -136,6 +138,7 @@ fn glyphs_are_not_mirrored() {
         text: "L".into(),
         px: 34,
         color: Rgba::WHITE,
+        align: TextAlign::Left,
     });
     let fb = render(&f);
     let ink = |x: u32, y: u32| fb.pixel(x, y).map(|p| p.r as u32).unwrap_or(0);
@@ -165,6 +168,7 @@ fn text_is_clipped_to_its_rect() {
         text: "AAAAAAAA".into(),
         px: 16,
         color: Rgba::WHITE,
+        align: TextAlign::Left,
     });
     let fb = render(&f);
     // No glyph pixels beyond the 32px-wide rect.
@@ -218,6 +222,7 @@ fn text_frame(text: &str) -> Frame {
         text: text.into(),
         px: 34,
         color: Rgba::WHITE,
+        align: TextAlign::Left,
     });
     f
 }
@@ -276,6 +281,7 @@ fn offscreen_glyphs_are_culled_so_work_is_frame_bounded() {
             text,
             px: 28,
             color: Rgba::WHITE,
+            align: TextAlign::Left,
         });
         render(&f)
     };
@@ -299,6 +305,7 @@ fn descenders_and_dot_below_marks_are_not_cropped() {
         text: "gpy ẹọṣị".into(),
         px: 44,
         color: Rgba::WHITE,
+        align: TextAlign::Left,
     });
     let fb = render(&f);
     // There is ink in the LOWER portion of the cell (below the x-height band) —
@@ -326,6 +333,7 @@ fn text_caches_stay_bounded_over_many_renders() {
             text: "Aẹ́g".into(),
             px: 8 + (i % 30), // distinct sizes cycle → exercises the size dimension
             color: Rgba::WHITE,
+            align: TextAlign::Left,
         });
         let _ = render(&f);
     }
@@ -336,6 +344,58 @@ fn text_caches_stay_bounded_over_many_renders() {
         text: "Aẹ́g".into(),
         px: 20,
         color: Rgba::WHITE,
+        align: TextAlign::Left,
     });
     assert_eq!(render(&f).bytes(), render(&f).bytes());
+}
+
+#[test]
+fn text_alignment_offsets_the_line_within_its_rect() {
+    // S8-3b crux: Center/Right alignment shifts the shaped line by its measured
+    // width, so a short line no longer hugs the left edge — this is what makes a
+    // theme a *template* (centred/positioned), not just a colour swap.
+    let render_aligned = |align| {
+        let mut f = Frame::new(200, 40);
+        f.push(Layer::Text {
+            rect: Rect::new(0, 4, 200, 32),
+            text: "Hi".into(),
+            px: 32,
+            color: Rgba::WHITE,
+            align,
+        });
+        render(&f)
+    };
+    // Inked column span [lo, hi] of a short line.
+    let span = |fb: &selahcue_engine::raster::FrameBuffer| {
+        let (mut lo, mut hi) = (u32::MAX, 0u32);
+        for y in 0..40 {
+            for x in 0..200 {
+                if fb.pixel(x, y).map(|p| p.r > 40).unwrap_or(false) {
+                    lo = lo.min(x);
+                    hi = hi.max(x);
+                }
+            }
+        }
+        (lo, hi)
+    };
+    let (ll, _) = span(&render_aligned(TextAlign::Left));
+    let (cl, ch) = span(&render_aligned(TextAlign::Center));
+    let (_, rh) = span(&render_aligned(TextAlign::Right));
+    assert!(
+        ll < 20,
+        "left-aligned ink starts near the left edge, got {ll}"
+    );
+    assert!(
+        cl > ll,
+        "centre ink starts further right than left ({cl} vs {ll})"
+    );
+    let cmid = (cl + ch) / 2;
+    assert!(
+        (80..=120).contains(&cmid),
+        "centre ink midpoint near the frame centre, got {cmid}"
+    );
+    assert!(
+        rh > 180,
+        "right-aligned ink reaches near the right edge, got {rh}"
+    );
 }

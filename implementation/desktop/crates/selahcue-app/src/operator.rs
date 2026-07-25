@@ -57,6 +57,10 @@ pub struct OperatorView {
     pub displays: Vec<selahcue_lan::protocol::DisplayView>,
     /// Translation codes the HOST can stage/search (drives the picker).
     pub translations: Vec<String>,
+    /// The active audience-output theme name (drives the picker's selection).
+    pub theme: String,
+    /// The theme names the HOST offers (drives the picker's options).
+    pub themes: Vec<String>,
 }
 
 /// An ergonomic, UI-facing wrapper over the shared [`LiveController`]. Each action
@@ -191,6 +195,11 @@ impl OperatorShell {
         self.act(&Command::IdentifyOutputs)
     }
 
+    /// Switch the audience-output theme by built-in name (classic/high-contrast/lower-third).
+    pub fn set_theme(&self, name: &str) -> OperatorView {
+        self.act(&Command::SetTheme { name: name.into() })
+    }
+
     /// Assign an output role ("main"/"stage") to a physical display.
     pub fn assign_output(&self, role: &str, display_key: &str) -> OperatorView {
         self.act(&Command::AssignOutput {
@@ -267,6 +276,8 @@ impl From<OperatorView> for OperatorStateView {
             outputs: v.outputs,
             displays: v.displays,
             translations: v.translations,
+            theme: v.theme,
+            themes: v.themes,
         }
     }
 }
@@ -286,6 +297,8 @@ impl From<OperatorStateView> for OperatorView {
             outputs: v.outputs,
             displays: v.displays,
             translations: v.translations,
+            theme: v.theme,
+            themes: v.themes,
         }
     }
 }
@@ -454,6 +467,14 @@ impl RemoteOperator {
             display_key: display_key.into(),
         })
         .await
+    }
+
+    /// Switch the host's audience-output theme by built-in name.
+    pub async fn set_theme(
+        &mut self,
+        name: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetTheme { name: name.into() }).await
     }
 
     /// Search scripture on the host; returns stageable display references.

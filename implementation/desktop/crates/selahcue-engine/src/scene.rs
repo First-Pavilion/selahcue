@@ -65,6 +65,19 @@ impl Rect {
     }
 }
 
+/// Horizontal alignment of a text line WITHIN its layer rect. `Left` reproduces
+/// the historical top-left anchoring (the serde default, so older scenes still
+/// deserialize); `Center`/`Right` offset the shaped line by its measured width so
+/// themes can centre/right-align content (FR-010 layout).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
 /// One drawable layer, painted in list order (painter's algorithm).
 ///
 /// The MVP seam models everything as coloured rectangles: the headless analyzers
@@ -76,15 +89,18 @@ impl Rect {
 pub enum Layer {
     /// A solid-colour rectangle (alpha-composited over what is beneath it).
     Fill { rect: Rect, color: Rgba },
-    /// A line of monospaced text drawn left-to-right from the rect's top-left,
-    /// `px` tall, clipped to `rect`. Rendered with a bundled 8×8 bitmap font by the
-    /// CPU rasterizer; the wgpu compositor's GPU-native glyphs are a later batch, so
-    /// today the on-screen path composites text on the CPU and presents via blit.
+    /// A line of shaped text drawn within `rect`, `px` tall (the line-box cell),
+    /// clipped to `rect`, aligned per `align`. Rasterized by the CPU compositor
+    /// (cosmic-text/rustybuzz over the bundled OFL font, ADR-0014); the wgpu backend
+    /// composites the same text on the CPU and presents via blit.
     Text {
         rect: Rect,
         text: String,
         px: u32,
         color: Rgba,
+        /// Horizontal alignment within `rect`. Additive (`#[serde(default)]` = Left).
+        #[serde(default)]
+        align: TextAlign,
     },
 }
 

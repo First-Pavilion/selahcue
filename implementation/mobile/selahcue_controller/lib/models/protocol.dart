@@ -48,6 +48,8 @@ Map<String, dynamic> cmdAdjustTimer(int deltaSecs) =>
 Map<String, dynamic> cmdStageScripture(String reference, {String? translation}) =>
     {'cmd': 'stage_scripture', 'reference': reference, 'translation': ?translation};
 Map<String, dynamic> cmdGetOperatorState() => {'cmd': 'get_operator_state'};
+Map<String, dynamic> cmdSetTheme(String name) =>
+    {'cmd': 'set_theme', 'name': name};
 
 /// Fetch a whole chapter's verses (read-only) so the mobile verse list mirrors
 /// the desktop browser. `translation` omitted = the host's KJV default. An older
@@ -149,6 +151,13 @@ class OperatorStateView {
   /// these). Empty when the host doesn't advertise them (fall back to KJV).
   final List<String> translations;
 
+  /// The active audience-output theme name (empty when the host doesn't report
+  /// one — e.g. an older host).
+  final String theme;
+
+  /// The theme names THIS host offers (drives the picker). Empty when absent.
+  final List<String> themes;
+
   const OperatorStateView({
     required this.planName,
     required this.items,
@@ -160,6 +169,8 @@ class OperatorStateView {
     this.liveScripture,
     this.liveFreeText,
     this.translations = const [],
+    this.theme = '',
+    this.themes = const [],
   });
 
   static OperatorStateView fromJson(Map<String, dynamic> j) => OperatorStateView(
@@ -178,6 +189,10 @@ class OperatorStateView {
         liveScripture: j['live_scripture'] as String?,
         liveFreeText: j['live_free_text'] as String?,
         translations: ((j['translations'] as List?) ?? const [])
+            .whereType<String>()
+            .toList(),
+        theme: j['theme'] as String? ?? '',
+        themes: ((j['themes'] as List?) ?? const [])
             .whereType<String>()
             .toList(),
       );

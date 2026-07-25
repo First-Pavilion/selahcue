@@ -16,13 +16,15 @@ pub mod present;
 pub mod qr;
 pub mod slide;
 pub mod stage;
+pub mod theme;
 pub mod tokens;
 
 pub use compose::compose_slide;
 pub use present::Presenter;
 pub use qr::{compose_qr, qr_modules};
-pub use slide::{Slide, Theme};
+pub use slide::Slide;
 pub use stage::{compose_identify, compose_stage, StageDisplay, StageTheme, TimerView};
+pub use theme::{RegionStyle, Theme, VAlign};
 pub use tokens::{contrast_ratio, SemanticToken, LIVE, NEUTRAL, PREVIEW, WARN};
 
 /// Re-exported so consumers can name the output pixel buffer without depending on

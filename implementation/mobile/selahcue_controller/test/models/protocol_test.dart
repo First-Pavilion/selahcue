@@ -40,6 +40,9 @@ void main() {
     expect(jsonEncode(cmdStartTimer(300)), '{"cmd":"start_timer","seconds":300}');
     expect(jsonEncode(cmdStopTimer()), '{"cmd":"stop_timer"}');
     expect(jsonEncode(cmdGetOperatorState()), '{"cmd":"get_operator_state"}');
+    // S8-3b — mirrors the Rust `set_theme` fixture exactly.
+    expect(jsonEncode(cmdSetTheme('high-contrast')),
+        '{"cmd":"set_theme","name":"high-contrast"}');
   });
 
   test('pair granted parses (Rust fixture)', () {
@@ -150,6 +153,22 @@ void main() {
     // Absent = empty (the host doesn't advertise them).
     final v2 = OperatorStateView.fromJson({'plan_name': 'X', 'items': const []});
     expect(v2.translations, isEmpty);
+  });
+
+  test('operator_state parses the active theme + offered themes (S8-3b)', () {
+    // The EXACT string the Rust serializer pins in test_protocol.rs (the themed
+    // operator_state fixture) — change both together.
+    final v = OperatorStateView.fromJson(jsonDecode(
+      '{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,'
+      '"blackout":false,"timer":null,"theme":"lower-third",'
+      '"themes":["classic","high-contrast","lower-third"]}',
+    ) as Map<String, dynamic>);
+    expect(v.theme, 'lower-third');
+    expect(v.themes, ['classic', 'high-contrast', 'lower-third']);
+    // An older host omits both — they parse to empty (the picker then hides).
+    final v2 = OperatorStateView.fromJson({'plan_name': 'X', 'items': const []});
+    expect(v2.theme, '');
+    expect(v2.themes, isEmpty);
   });
 
   test('operator_state tolerates the desktop-only outputs fields', () {

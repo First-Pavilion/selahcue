@@ -6,7 +6,7 @@
 //! wgpu backend renders the *same* [`Frame`]; cross-GPU parity is asserted
 //! perceptually (SSIM ≥ 0.99), not by byte-equality.
 
-use crate::scene::{Frame, Layer, Rect, Rgba};
+use crate::scene::{Frame, Layer, Rect, Rgba, TextAlign};
 use cosmic_text::{Attrs, Buffer, Color as CtColor, FontSystem, Metrics, Shaping, SwashCache};
 use std::cell::RefCell;
 
@@ -304,7 +304,8 @@ pub fn render(frame: &Frame) -> FrameBuffer {
                 text,
                 px,
                 color,
-            } => draw_text(&mut fb, *rect, text, *px, *color),
+                align,
+            } => draw_text(&mut fb, *rect, text, *px, *color, *align),
         }
     }
     fb
@@ -316,7 +317,7 @@ pub fn render(frame: &Frame) -> FrameBuffer {
 /// bitmap path, Unicode + diacritics (Yoruba/Igbo tonal marks, French/Spanish
 /// accents) shape and position correctly (FR-017). Deterministic: a single
 /// bundled shaper+font renders byte-identically on every OS.
-fn draw_text(fb: &mut FrameBuffer, rect: Rect, text: &str, px: u32, color: Rgba) {
+fn draw_text(fb: &mut FrameBuffer, rect: Rect, text: &str, px: u32, color: Rgba, align: TextAlign) {
     if px == 0 || rect.w == 0 || rect.h == 0 || text.is_empty() {
         return;
     }
@@ -346,9 +347,18 @@ fn draw_text(fb: &mut FrameBuffer, rect: Rect, text: &str, px: u32, color: Rgba)
         let ink = CtColor::rgba(color.r, color.g, color.b, color.a);
         for run in buffer.layout_runs() {
             let base_y = rect.y.saturating_add(run.line_y as i32);
+            // Horizontal alignment: offset the whole line by its measured shaped
+            // width (`line_w`) within the rect. Clamped ≥ 0 so an over-wide line
+            // still starts at the left edge (then the clip trims the overflow).
+            let align_x = match align {
+                TextAlign::Left => 0,
+                TextAlign::Center => (((rect.w as f32) - run.line_w) * 0.5).max(0.0) as i32,
+                TextAlign::Right => ((rect.w as f32) - run.line_w).max(0.0) as i32,
+            };
+            let origin_x = rect.x.saturating_add(align_x);
             for glyph in run.glyphs.iter() {
                 let pg = glyph.physical((0.0, 0.0), 1.0);
-                let pen_x = rect.x.saturating_add(pg.x);
+                let pen_x = origin_x.saturating_add(pg.x);
                 // Glyphs are laid out left-to-right: once one starts at/after the
                 // clip, every later glyph does too — stop. This bounds the work
                 // to the VISIBLE glyphs, not the whole line (a long/pasted line

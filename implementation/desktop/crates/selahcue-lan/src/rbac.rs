@@ -106,7 +106,9 @@ pub fn required_permission(cmd: &Command) -> Permission {
         | Command::RemoveItem { .. }
         | Command::MoveItem { .. }
         | Command::RenameItem { .. } => EditPlan,
-        Command::IdentifyOutputs | Command::AssignOutput { .. } => ConfigureOutputs,
+        Command::IdentifyOutputs | Command::AssignOutput { .. } | Command::SetTheme { .. } => {
+            ConfigureOutputs
+        }
     }
 }
 

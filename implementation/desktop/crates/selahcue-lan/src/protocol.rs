@@ -88,6 +88,10 @@ pub enum Command {
     MoveItem { item_id: u64, to: u32 },
     /// Rename a plan item (Operator only).
     RenameItem { item_id: u64, title: String },
+    /// Switch the audience-output theme by its stable built-in name
+    /// (`"classic"`/`"high-contrast"`/`"lower-third"`). Restyles Preview + Live
+    /// without changing content; an unknown name is rejected. Operator-only.
+    SetTheme { name: String },
 }
 
 /// A controller → operator request frame.
@@ -234,6 +238,14 @@ pub struct OperatorStateView {
     /// host's list, not the shell's — they can differ across versions).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub translations: Vec<String>,
+    /// The active audience-output theme name (empty = the host did not report one,
+    /// e.g. an older host). Omitted on the wire when empty so the v2 byte-pinned
+    /// fixtures are unchanged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub theme: String,
+    /// The theme names this host offers (drives the picker). Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub themes: Vec<String>,
 }
 
 /// One output role (main/stage) and where it currently renders.

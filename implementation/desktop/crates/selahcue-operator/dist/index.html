@@ -219,6 +219,12 @@
         border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; margin-left: 6px;
       }
       button.golive { background: var(--preview); border-color: var(--preview-ink); color: #fff; flex: 2; }
+      /* Theme picker: a row of built-in themes; the active one is outlined + labelled. */
+      #themes { display: flex; flex-wrap: wrap; gap: 6px; }
+      button.theme-btn { text-transform: capitalize; }
+      button.theme-btn[aria-pressed="true"] {
+        border-color: var(--preview-ink); background: #10231c; color: var(--text);
+      }
       /* Key hints on token-filled buttons: white for AA (muted grey is 2-3:1 there). */
       button.golive .key, #blackout.on .key, #clear-all.armed .key {
         color: #fff; border-color: rgba(255, 255, 255, 0.55);
@@ -403,6 +409,10 @@
           <div id="outputs" aria-labelledby="outputs-h"></div>
           <button id="identify" aria-label="Show the identify number on every display">Identify displays</button>
         </aside>
+        <aside class="side-panel" aria-label="Audience theme">
+          <h2 id="theme-h">Theme</h2>
+          <div id="themes" role="group" aria-labelledby="theme-h"></div>
+        </aside>
       </div>
     </main>
     <footer id="emergency" role="toolbar" aria-label="Emergency controls">
@@ -547,6 +557,10 @@
         if (view.translations && view.translations.length) {
           renderTranslations(view.translations);
         }
+
+        // Theme picker: the host is authoritative for both the option list and the
+        // active selection (an older host omits these — the panel then stays empty).
+        renderThemes(view.themes || [], view.theme || "");
 
         // Preview / Live panels (Figma console): the on-air truth must never go
         // stale — an emergency clear/Go-Live can land while an inline editor or
@@ -781,6 +795,30 @@
         });
       };
       renderTranslations(["KJV", "WEB", "ASV", "WEBBE", "DBY"]);
+
+      // Theme picker: rebuild the button row when the offered set changes, and keep
+      // the active theme's aria-pressed in sync every view (cheap, static DOM).
+      const themesBox = document.getElementById("themes");
+      let themeKey = "";
+      const renderThemes = (themes, active) => {
+        const key = themes.join(",");
+        if (key !== themeKey) {
+          themeKey = key;
+          themesBox.innerHTML = "";
+          themes.forEach((name) => {
+            const b = document.createElement("button");
+            b.className = "theme-btn";
+            b.dataset.theme = name;
+            b.textContent = name;
+            b.setAttribute("aria-label", "Set the audience theme to " + name);
+            b.onclick = () => act(() => invoke("set_theme", { name }));
+            themesBox.appendChild(b);
+          });
+        }
+        themesBox.querySelectorAll("button.theme-btn").forEach((b) => {
+          b.setAttribute("aria-pressed", b.dataset.theme === active ? "true" : "false");
+        });
+      };
       translationSel.onchange = () => {
         currentTranslation = translationSel.value;
         if (currentChapter) {

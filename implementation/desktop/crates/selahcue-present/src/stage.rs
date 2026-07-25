@@ -180,6 +180,7 @@ pub fn compose_stage(
             text: label,
             px,
             color: theme.text,
+            align: selahcue_engine::scene::TextAlign::Left,
         });
     }
 
@@ -223,7 +224,13 @@ fn push_region(
         ((height as f64 * 0.8) as u32).max(1),
     );
     let metrics = region_metrics(region);
-    for layer in layout_lines(slide.lines(), theme.text, region, &metrics) {
+    for layer in layout_lines(
+        slide.lines(),
+        theme.text,
+        region,
+        &metrics,
+        selahcue_engine::scene::TextAlign::Left,
+    ) {
         frame.push(layer);
     }
 }

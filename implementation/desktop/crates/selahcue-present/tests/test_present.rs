@@ -245,3 +245,48 @@ fn the_audience_output_never_shows_a_timer() {
         "no TIME UP bar on the audience output"
     );
 }
+
+#[test]
+fn set_theme_restyles_both_outputs_without_losing_content() {
+    // Switching a theme re-styles Preview + Live from the RETAINED slides — the
+    // content is untouched, only its design (FR-010, zero content loss).
+    let mut p = Presenter::new(320, 180, Theme::classic());
+    p.stage(Slide::new("Grace", ["Amazing grace"]));
+    assert!(p.go_live());
+    assert!(has_color(p.live_output(), (8, 10, 20)), "classic navy bg");
+    let staged_before = p.staged().cloned();
+    let live_before = p.live_slide().cloned();
+
+    p.set_theme(Theme::high_contrast());
+
+    // CONTENT preserved — same staged + live slides, only the look changed.
+    assert_eq!(
+        p.staged().cloned(),
+        staged_before,
+        "staged content preserved"
+    );
+    assert_eq!(
+        p.live_slide().cloned(),
+        live_before,
+        "live content preserved"
+    );
+    assert_eq!(p.theme(), Theme::high_contrast(), "active theme updated");
+    // Both surfaces restyled to the high-contrast (pure black) background.
+    assert!(
+        has_color(p.live_output(), (0, 0, 0)),
+        "live restyled to black bg"
+    );
+    assert!(
+        has_color(p.preview_output(), (0, 0, 0)),
+        "preview restyled too"
+    );
+}
+
+#[test]
+fn set_theme_does_not_fabricate_content_on_a_blank_output() {
+    let mut p = Presenter::new(320, 180, Theme::classic());
+    p.set_theme(Theme::lower_third());
+    assert!(p.staged().is_none(), "no phantom staged slide");
+    assert!(p.live_slide().is_none(), "no phantom live slide");
+    assert!(is_black(p.live_output()), "blank live stays blank");
+}

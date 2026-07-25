@@ -39,9 +39,31 @@ fn snapshot_round_trips_all_fields() {
         live_slide: Some(3),
         staged_slide: Some(1),
         cursor_slide: Some(1),
+        theme: Some("high-contrast".into()),
     };
     session_repo::save(&db, &s).unwrap();
     assert_eq!(session_repo::load(&db).unwrap(), Some(s));
+}
+
+#[test]
+fn theme_round_trips_and_defaults_to_none(/* S8-3b migration v8 */) {
+    let db = db();
+    // An absent theme (the pre-v8 shape / a "classic" session) loads back as None.
+    session_repo::save(&db, &SessionState::default()).unwrap();
+    assert_eq!(session_repo::load(&db).unwrap().unwrap().theme, None);
+    // A switched theme survives recovery verbatim.
+    session_repo::save(
+        &db,
+        &SessionState {
+            theme: Some("lower-third".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        session_repo::load(&db).unwrap().unwrap().theme,
+        Some("lower-third".into())
+    );
 }
 
 #[test]

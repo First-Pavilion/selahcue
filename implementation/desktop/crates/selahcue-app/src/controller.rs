@@ -66,6 +66,9 @@ pub struct ControllerSnapshot {
     /// Slide position paired with `plan_cursor` (survives a scripture
     /// interruption, like the cursor itself).
     pub cursor_slide: Option<u32>,
+    /// The active audience-output theme name; `None` = the default ("classic"), so
+    /// a default session persists the pre-v8 (NULL) shape (S8-3b).
+    pub theme: Option<String>,
 }
 
 /// Drives the live/preview presentation from a [`ServicePlan`].
@@ -133,6 +136,9 @@ pub struct LiveController {
     /// Slide position paired with `plan_cursor` — like the cursor, it survives
     /// staging a scripture so `Next` resumes mid-song, not at stanza 0.
     cursor_slide: usize,
+    /// The active audience-output theme name (a built-in; persisted + reported in
+    /// the operator view). Switching it restyles both outputs without losing content.
+    theme_name: String,
 }
 
 /// How long the identify overlay stays on the outputs once triggered (FR-040).
@@ -233,6 +239,9 @@ impl LiveController {
     /// A controller for `plan`, rendering at `width×height` with `theme`. Both
     /// surfaces start blank.
     pub fn new(plan: ServicePlan, width: u32, height: u32, theme: Theme) -> Self {
+        // Report the theme by its built-in name; an off-registry theme (only test
+        // code builds one) falls back to "classic" for the picker's selection.
+        let theme_name = theme.name_of().unwrap_or("classic").to_string();
         LiveController {
             plan,
             presenter: Presenter::new(width, height, theme),
@@ -262,7 +271,22 @@ impl LiveController {
             staged_slide: 0,
             live_slide: 0,
             cursor_slide: 0,
+            theme_name,
         }
+    }
+
+    /// Switch the audience theme by built-in name, restyling Preview + Live with no
+    /// content loss and preserving blackout. Returns `false` for an unknown name.
+    fn set_theme(&mut self, name: &str) -> bool {
+        let Some(theme) = Theme::builtin(name) else {
+            return false;
+        };
+        self.presenter.set_theme(theme);
+        // Re-styling re-issues SetScene on Live; re-apply blackout so a themed
+        // switch never un-blacks the audience output (theme ⟂ blackout).
+        self.presenter.blackout(self.blackout);
+        self.theme_name = name.to_string();
+        true
     }
 
     /// A persistable snapshot of the live session at `now` (injected clock, so the
@@ -293,6 +317,9 @@ impl LiveController {
             live_slide: self.live_idx.map(|_| self.live_slide as u32),
             staged_slide: self.staged_idx.map(|_| self.staged_slide as u32),
             cursor_slide: self.plan_cursor.map(|_| self.cursor_slide as u32),
+            // Persist only a non-default theme (a "classic" session stays a NULL
+            // theme row — the pre-v8 shape).
+            theme: (self.theme_name != "classic").then(|| self.theme_name.clone()),
         }
     }
 
@@ -305,6 +332,12 @@ impl LiveController {
     pub fn restore(&mut self, snap: &ControllerSnapshot) {
         let len = self.plan.len();
         let ok = |v: Option<u32>| v.map(|i| i as usize).filter(|i| *i < len);
+
+        // Apply the persisted theme FIRST so all restored content composes with it
+        // (an unknown/absent name leaves the default). Blackout is re-applied later.
+        if let Some(name) = snap.theme.as_deref() {
+            self.set_theme(name);
+        }
 
         // A slide position only applies if it exists on the (possibly edited)
         // item — otherwise fall back to slide 0, never past the stanza list.
@@ -619,6 +652,8 @@ impl LiveController {
                 .iter()
                 .map(|t| t.code().to_string())
                 .collect(),
+            theme: self.theme_name.clone(),
+            themes: Theme::BUILTIN_NAMES.iter().map(|s| s.to_string()).collect(),
         }
     }
 
@@ -1030,6 +1065,15 @@ impl LiveController {
                     }
                 }
                 ControllerReply::Ack
+            }
+            Command::SetTheme { name } => {
+                // Restyle both outputs in place — content is untouched (only its
+                // design changes). An unknown built-in name is rejected.
+                if self.set_theme(name) {
+                    ControllerReply::Ack
+                } else {
+                    ControllerReply::Deny(DenyReason::BadRequest)
+                }
             }
         }
     }
