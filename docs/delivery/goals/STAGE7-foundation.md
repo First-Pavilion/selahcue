@@ -786,6 +786,22 @@ Executed via the `/goal` engine against `docs/delivery/goals/TASK-86ajpx7c0-cons
 
 - **Refine (2026-07-25, owner: better Operator UX + remove the queue).** The owner wants the Operator design to INCLUDE a **Live transcript** + **Recent detections** (auto-detected scriptures with confidence · Add-to-plan · Preview — like Pewbeam) but uncramped and on SelahCue's own tokens; the transcript (R3) + detection (R4) are post-MVP, so this is the target design (design leads implementation). Built a new 4-zone frame `161:124`: **Service Plan** (running order) · **Listen** (transcript + detections) · **Program** (Preview/Live 16:9 + GO LIVE + "Coming next") · **Reference** (scripture browser + timer + outputs) + emergency footer, all bound to the "SelahCue Color" variables. A design-reviewer agent judged the first version "faithfully delivers the intended better Operator UX"; 2 med + 3 low findings fixed (transcript "listening…" cue + legend, detection action renamed **Preview**, HIGH/MED/LOW confidence labels, dup header BLACKOUT removed, neutral Pause). **Owner insight adopted:** the **Queue was removed** (redundant with the Service Plan + Preview — the plan is the running order, Preview is the on-deck) and the **Service Plan restored** (it had been dropped when the Listen zone was added). Verifier: get_screenshot of `161:124`; Goal Contract `--require-complete` PASS. Then the owner directed a smoother OBS-native reorg → final frame `165:124`: transcript + detections moved right (timer bottom-right corner), PROGRAM as OBS studio-mode (Preview | Live horizontal + GO LIVE transition), Scriptures directly below PROGRAM. Result: PASS. Decision: gate-review.
 
+## Batch 7aq predicate — licensed-translations spike + provider ADR (86ajpqfyj Track 2)
+
+Executed via the `/goal` engine against `docs/delivery/goals/TASK-86ajpqfyj-licensed-translations-spike.md` (validator `--require-complete` PASS; 5/5 mandatory). Research + ADR — no code.
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7aq-001 | yes | All six requested translations (NIV/NLT/AMPC/NKJV/TPT/MSG) mapped: rights holder, commercial routes, constraints, costs where public — classed + dated | doc review | 6 complete rows | LICENSED-TRANSLATIONS.md §1 | PASS |
+| S7aq-002 | yes | Routes compared (aggregators · direct · user-supplied) incl. 7 comparable products + a recommendation | doc review | §2–§4 | LICENSED-TRANSLATIONS.md | PASS |
+| S7aq-003 | yes | ADR-0017 TranslationProvider seam (zero client changes; licence-honouring cache; FUMS hook; attribution; honest degradation) | ADR review | Proposed, consistent with 7ae/7ai | ADR-0017 | PASS |
+| S7aq-004 | yes | Register updated (TPT/AMPC/NIV/AMP/MSG); DECISION + implementation tickets created + linked | register diff + ClickUp | 86ajpzb09 (decision) + 86ajpzb0c (waiting_on) | LICENSING-REGISTER.md | PASS |
+| S7aq-005 | yes | Adversarial source verification; corrections applied | run `wf_e9bd0579-d32` | 4 CONFIRMED + 2 CORRECTED (0 unverifiable) | CODE-REVIEW-batch7aq.md | PASS |
+
+### Iteration ledger — batch 7aq
+
+- Target: S7aq-001..S7aq-005. Change: a 4-lens web research fan-out (`wf_b038fdfb-839`) → the Track-2 dossier (`docs/research/LICENSED-TRANSLATIONS.md`), ADR-0017 (pluggable TranslationProvider seam, Proposed), register updates, and the DECISION/implementation tickets — then a 6-claim **adversarial verification pass** (`wf_e9bd0579-d32`) re-fetching primary sources: **4 CONFIRMED + 2 CORRECTED**, corrections applied. **Headline finding: NIV is verifiably EXCLUDED from commercial use on API.Bible** — NIV's only commercial route is the direct Biblica Standard Publishing License; API.Bible remains the fastest lawful route for NKJV (+ NLT/MSG/AMP pending confirmation) at $29/mo + $10–250/mo per translation; the industry pattern is a per-translation in-app store ($15–$39) on direct publisher licences; TPT is direct-BroadStreet-only with documented stability/reputational risk (owner asked to re-confirm); none of the six is ever bundlable. Result: PASS. Decision: gate-review (the licensing route + budget is the owner's DECISION task 86ajpzb09).
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.
