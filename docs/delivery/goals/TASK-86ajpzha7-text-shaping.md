@@ -6,7 +6,7 @@
 - Parent goal ID: STAGE8-core-presentation
 - Title: Output text is shaped with a real font stack (cosmic-text/rustybuzz) so Unicode + diacritics (Yoruba/Hausa/Igbo/French/Spanish) render correctly on every output, deterministically across all three OSes
 - Role: backend-engineer
-- Status: IN_PROGRESS
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajpzha7
 - Created: 2026-07-25
@@ -60,10 +60,10 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 |---|---|---|---|---|---|---|
 | C-001 | yes | draw_text shapes+rasterizes via cosmic-text over the bundled OFL font (system fonts disabled); ASCII text still renders legibly | `cargo test -p selahcue-engine` | raster tests pass incl. ASCII | raster.rs (16 raster tests) | PASS |
 | C-002 | yes | Non-ASCII diacritics render: "María" shows the í, and a Yoruba/Igbo string (ẹ/ọ/ṣ/ị) produces non-empty glyph coverage where font8x8 produced NONE | diacritic raster test | coverage present for non-ASCII | test_raster.rs (María>Mara; accented-only inks) | PASS |
-| C-003 | yes | Deterministic: the same (text, px, colour, rect) renders byte-identical FrameBuffers (single bundled shaper → cross-OS parity) | determinism test + 3-OS CI | identical bytes; CI green on 3 OSes | byte-determinism test PASS locally; 3-OS byte-parity **BLOCKED on CI** (Actions not dispatching) | BLOCKED |
+| C-003 | yes | Deterministic: the same (text, px, colour, rect) renders byte-identical FrameBuffers (single bundled shaper → cross-OS parity) | determinism test + 3-OS CI | identical bytes; CI green on 3 OSes | byte-determinism test PASS locally; **3-OS byte-parity CONFIRMED** — rust ×3 OSes green in CI run 30165455037 | PASS |
 | C-004 | yes | No regression: compose/stage/present/parity suites green; bounded work (no unbounded font/glyph cache); slide-trigger budget intact | full workspace tests | all green | full workspace + GPU parity green; +offscreen-cull bound test + bounded-cache test (no-leak) | PASS |
-| C-005 | yes | The OFL font + license are bundled and the dependency-audit + supply-chain (license/SBOM) CI jobs pass with the new deps (cosmic-text tree) + the font licence | CI audit + supply-chain jobs | deps MIT/Apache/OFL (deny.toml allowlist by inspection); audit tolerates unmaintained | audit + supply-chain jobs **BLOCKED on CI** | BLOCKED |
-| C-006 | yes | Full verification: fmt/clippy clean, CI green on 3 OSes; independent adversarial review, confirmed findings fixed | make-ci + Workflow review | review done (9 confirmed → fixed); fmt/clippy clean; CI-green **BLOCKED** | CODE-REVIEW-batch8b.md; review wf_6640e4b1-bf5 | BLOCKED |
+| C-005 | yes | The OFL font + license are bundled and the dependency-audit + supply-chain (license/SBOM) CI jobs pass with the new deps (cosmic-text tree) + the font licence | CI audit + supply-chain jobs | deps MIT/Apache/OFL (deny.toml allowlist by inspection); audit tolerates unmaintained | **audit + supply-chain jobs green** (CI run 30165455037) — cosmic-text deps + OFL font pass RustSec + deny.toml | PASS |
+| C-006 | yes | Full verification: fmt/clippy clean, CI green on 3 OSes; independent adversarial review, confirmed findings fixed | make-ci + Workflow review | review done (9 confirmed → fixed); fmt/clippy clean; **CI green (run 30165455037, 12/12 jobs)** | CODE-REVIEW-batch8b.md; review wf_6640e4b1-bf5 | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -84,6 +84,14 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - New evidence: **CI is BLOCKED** — GitHub Actions is not dispatching jobs (every job completes with 0 steps, incl. Rust-independent flutter; runs 30160556745/30161697707) = a repo-level Actions outage (minutes/billing or Actions disabled), not this code. C-003's 3-OS byte-parity, C-005 (audit/supply-chain), and C-006's CI-green cannot be confirmed until the owner restores Actions.
 - Decision: gate-review (BLOCKED on owner CI; all code criteria PASS + review fixed)
 
+### Iteration 2 — CI restored, all criteria confirmed
+
+- Target criterion: C-003, C-005, C-006 (the previously CI-blocked ones)
+- Change or investigation: the owner restored GitHub Actions. CI run **30165455037** (HEAD 9db4e06, which contains this batch's cosmic-text code) ran the **full** matrix and is **completely green (12/12 jobs)**: rust ×3 OSes (cross-OS byte-parity ✓), dependency-audit (RustSec) ✓ and supply-chain (licenses/SBOM) ✓ — the new cosmic-text deps + the bundled OFL font pass cleanly.
+- Verifier executed: CI run 30165455037.
+- Result: **C-003, C-005, C-006 PASS.** All 6 mandatory criteria PASS — VERIFIED_COMPLETE.
+- Decision: complete (story → QA)
+
 ## Risks and rollback
 
 - Risks: cosmic-text rasterization non-determinism across OSes (mitigated: pure-Rust swash + a single static bundled font + a CI 3-OS byte check); dependency-tree size hitting the audit/licence jobs; latency of shaping (mitigated: bounded cache, ≈per-line shaping). Rollback: git; the change is contained to selahcue-engine + a bundled asset.
@@ -95,8 +103,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajpzha7-text-shaping.md`
-- Validator result: PASS (structure); NOT --require-complete (C-003/005/006 BLOCKED on CI)
+- Validator result: PASS --require-complete (6/6 PASS; CI run 30165455037 green)
 - Independent verification result: review wf_6640e4b1-bf5 — 9 confirmed → all fixed + re-verified locally
-- Terminal state: GATE_REVIEW (blocked on the owner's GitHub Actions)
-- Remaining failed or blocked criteria: C-003 (3-OS parity), C-005 (audit/supply-chain), C-006 (CI-green) — all BLOCKED on the repo-level Actions outage
+- Terminal state: VERIFIED_COMPLETE (CI restored; run 30165455037 green)
+- Remaining failed or blocked criteria: none — CI run 30165455037 closed all three
 - ClickUp final evidence comment: posted on 86ajpzha7
