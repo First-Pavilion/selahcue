@@ -58,7 +58,10 @@ const TIMER_AUTOSAVE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// GUI-launch smoke watchdog (story 86ajpevzp): in `--smoke` mode, if the main
 /// window has not presented a frame within this budget, exit non-zero so CI
-/// catches a genuine launch failure instead of hanging until the job times out.
+/// catches a genuine launch failure instead of hanging. This runs in
+/// `about_to_wait`, so it only covers a stall AFTER the event loop starts — a
+/// hang INSIDE window/adapter creation (before the first `about_to_wait`) is
+/// bounded by the CI job's `timeout-minutes` backstop instead.
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Whether the GUI-launch smoke mode was requested (`--smoke` argument or the
@@ -730,7 +733,8 @@ struct App {
     store: SessionStore,
     last_autosave: Instant,
     /// GUI-launch smoke mode (story 86ajpevzp): present the first frame, report
-    /// cold-start-to-first-frame, then exit 0.
+    /// the time-to-first-frame (from App init — an informational figure, NOT the
+    /// ≤3s cold-start NFR, which `make nfr` measures), then exit 0.
     smoke: bool,
     /// Whether the smoke exit has already fired (present can tick more than once).
     smoke_done: bool,
@@ -1275,12 +1279,12 @@ impl ApplicationHandler for App {
                         .map(|r| r.render(c.presenter().live_output()))
                         .unwrap_or(false);
                     // Smoke mode (86ajpevzp): the main window produced a real frame —
-                    // report cold-start-to-first-frame and exit cleanly (0).
+                    // report time-to-first-frame (from App init) and exit cleanly (0).
                     if self.smoke && presented && !self.smoke_done {
                         self.smoke_done = true;
                         let ms = self.launched_at.elapsed().as_millis();
                         println!(
-                            "SMOKE OK: main output window presented its first frame in {ms} ms"
+                            "SMOKE OK: main output window presented its first frame in {ms} ms (from App init)"
                         );
                         event_loop.exit();
                     }
@@ -1714,8 +1718,9 @@ fn main() {
     // Final save on clean exit (the autosave loop already covered crash paths) —
     // including a plan edit acked in the last instants before the loop exited.
     // Honours the same halts as autosave: no writes on a critical disk, and a
-    // clean-mode run never touches the preserved session.
-    if !app.disk_critical && !app.clean_mode {
+    // clean-mode run never touches the preserved session. A `--smoke` launch is a
+    // throwaway probe — it must not persist anything (no session mutation).
+    if !app.disk_critical && !app.clean_mode && !app.smoke {
         if let Ok(mut c) = app.controller.lock() {
             if c.take_plan_dirty() {
                 app.store.save_plan(c.plan());

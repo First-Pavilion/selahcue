@@ -92,6 +92,10 @@ jobs:
   # a 30s watchdog on a genuine launch failure. Linux runs headless under Xvfb.
   launch-smoke:
     name: launch-smoke (${{ matrix.os }})
+    # Hard CI backstop: the in-app 30s watchdog can't catch a hang INSIDE
+    # window/adapter creation (before the event loop's first about_to_wait), so
+    # bound the whole job — a wedged launch fails in minutes, not GitHub's 6h.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -129,12 +133,11 @@ jobs:
       - name: GUI-launch smoke (macOS, runner display)
         if: runner.os != 'Linux'
         run: cargo run --release -p selahcue-desktop -- --smoke
-      # Idle-memory + cold-start NFR figures (POSIX script) — informational so a
-      # loaded-runner blip records rather than fails; the macOS baseline is
-      # already recorded and Windows is a documented POSIX-script limitation.
-      - name: NFR figures (Linux under Xvfb)
+      # Idle-memory + cold-start NFR budgets (POSIX script; ≤300MB / ≤3s), GATED
+      # on Linux — a real memory regression must fail CI (no-unbounded-growth
+      # rule). macOS baseline already recorded; Windows is a POSIX-script limit.
+      - name: NFR budgets (Linux under Xvfb)
         if: runner.os == 'Linux'
-        continue-on-error: true
         working-directory: ${{ github.workspace }}
         run: xvfb-run -a -s "-screen 0 1920x1080x24" make nfr
 
