@@ -51,6 +51,21 @@
 5. **AMPC:** confirm on API.Bible; else the Lockman form (an established software-vendor path).
 6. **Always:** a **user-supplied import** provider (OSIS/Zefania/USFM) for users holding their own licences — zero licensing cost, honest responsibility note (OpenLP/FreeShow pattern).
 
+## 4b. Offline access without bundling (owner refine, verified 2026-07-25)
+
+**Owner question:** can users download the other versions themselves — not bundled — for offline access?
+
+**Answer: yes for offline, no for user-sourced downloads.** Two verified facts shape this:
+
+1. **There is no lawful public download source** for NIV/NLT/AMPC/NKJV/TPT/MSG module files an end user could import. Retail digital copies are **app-locked**: eStudySource (the sole licensed NIV source for e-Sword) states resources "must be opened and read with the software for which they were designed"; Olive Tree's EULA prohibits copying/distribution (5-device limit); Logos content is licensed-not-sold with no redistribution. Sites offering "free NIV modules" are unlicensed — a user download from them is an infringing copy, and owning a print Bible confers no digital-copy right. **OBSERVED/High** (estudysource.com/help, olivetree.com/eula; Logos DOCUMENTED via excerpts). The user-supplied import route therefore only genuinely serves users who hold their own licence or open-licensed texts.
+
+2. **The lawful offline path is download-on-purchase/entitlement under SelahCue's own licence** — exactly the comparable-product model:
+   - **EasyWorship (CONFIRMED/OBSERVED):** purchased Bibles "automatically download and install"; a dedicated **"Installing Bibles With Offline Registration"** flow lets users download the purchased Bible on another machine, carry it by USB, and install on a **never-online computer**. Purchased licensed Bibles are demonstrably local, offline-usable files.
+   - **ProPresenter (corrected nuance):** "Internet access is required in order to purchase **and install**"; neither article *states* offline use afterwards — consistent with local storage, but INFERRED, not OBSERVED.
+   - **API.Bible (CONFIRMED/OBSERVED — conditional permission, not prohibition):** T&C §11 opens "**If you store** API.Bible Content … offline, you must keep it up to date" — offline storage is permitted **provided**: industry-standard **DRM** restricting copying/distribution (§12), a **100-verse print cap**, territory + declared **device limits**, a **30-day update check** (24h on request), and content **removal within 72 hours** of a terminated subscription (§10). (Precision: 72h is the termination-deletion window; 30 days is the refresh-check interval.)
+
+**Implication for SelahCue (feeds ADR-0017):** licensed translations can be **offline after activation** — the app (not the user) downloads the text under its licence into an **encrypted, app-locked local store** honouring DRM/refresh/deletion/device conditions. "Not bundled" = not in the installer and gated behind per-translation entitlement; thereafter Sunday morning works with the network down. This holds under either route (API.Bible per its §10–12, or direct publisher licences per negotiated terms — EasyWorship proves publishers do grant it).
+
 ## 5. Unknowns → exact resolution paths
 
 1. ~~Whether NIV commercial is excluded on API.Bible~~ **RESOLVED (verification pass 2026-07-25): NIV is excluded from commercial use.** Remaining: per-version commercial availability + exact tier pricing for **NKJV/NLT/MSG/AMP** → free account + authenticated versions table, and support@api.bible.

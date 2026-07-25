@@ -107,6 +107,14 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Result: **C-005 PASS** — every load-bearing claim now primary-source-verified or explicitly corrected.
 - Decision: gate-review (all mandatory criteria PASS)
 
+### Iteration 4 — owner refine: offline access without bundling
+
+- Target criterion: C-001/C-002/C-003 extension (owner question: "can users download the other versions for offline access?")
+- Change or investigation: one adversarial verification agent re-fetched the primary sources. Verdicts: **EasyWorship download-on-purchase offline model CONFIRMED** (purchased Bibles install locally; a dedicated offline-registration flow installs on never-online machines via USB); **API.Bible offline storage CONFIRMED as conditionally PERMITTED** (T&C §11 "If you store … offline" + §12 DRM/100-verse print cap/device limits + §10 72-hour termination deletion; 30-day refresh checks); ProPresenter offline-after-install **corrected to INFERRED** (internet required "to purchase and install"; offline use not stated); **no lawful public download source exists** for the six (retail digital copies are app-locked — eStudySource/e-Sword, Olive Tree EULA, Logos licensed-not-sold). Dossier gained §4b; ADR-0017's cache policy upgraded with the **entitlement-gated encrypted offline store** (DRM-style app-locked, print-cap hook, device binding, 30-day refresh, 72h revocation).
+- Verifier executed: fact-check agent (22 web tool calls, primary sources quoted verbatim).
+- Result: PASS — the owner's question answered with verified evidence: offline is achievable via download-on-purchase under SelahCue's licence; user-sourced downloads are not lawful.
+- Decision: gate-review
+
 ## Risks and rollback
 
 - Risks: pricing/terms often behind contact-us walls → recorded UNKNOWN with contact path (acceptable per acceptance). Rollback: docs-only spike; no code.

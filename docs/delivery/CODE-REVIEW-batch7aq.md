@@ -35,6 +35,10 @@ All corrections were applied to the dossier and register before this record.
 6. **User-supplied imports** are the zero-licence fallback (OpenLP/FreeShow pattern).
 7. **ADR-0017** makes all of these adapters behind one seam — zero client changes, licence constraints enforced structurally.
 
+## Refine — offline access without bundling (owner question, verified 2026-07-25)
+
+**Q: can users download the other versions themselves for offline access?** A: **offline yes — via download-on-purchase under SelahCue's licence; user-sourced downloads no** (no lawful source exists; retail digital copies are app-locked — e-Sword/Olive Tree/Logos all prohibit export). Verified by a fact-check agent quoting primary sources: **EasyWorship's** purchased Bibles install locally with an explicit offline-registration (USB, never-online machine) flow — CONFIRMED; **API.Bible's T&C §10–12 conditionally PERMIT offline storage** (DRM, 100-verse print cap, device limits, 30-day refresh checks, 72h termination deletion) — CONFIRMED; ProPresenter's offline-after-install corrected to INFERRED (internet required "to purchase and install"; subsequent use unstated). Dossier gained **§4b**; **ADR-0017** upgraded with the **entitlement-gated encrypted offline store** capability; the DECISION + implementation tickets updated (offline no longer weighs against either route).
+
 ## Residual unknowns (all with exact resolution paths in the dossier §5)
 
 Per-version commercial availability/pricing for NKJV/NLT/MSG/AMP on API.Bible; AMPC edition availability; offline-TEXT terms under Biblica's Standard License; NKJV/NLT/MSG/AMPC direct-licence fees (unpublished — contact paths recorded); FUMS applicability to a Tauri desktop app; a manual browser re-read of the two Cloudflare-blocked pages before signing anything.
