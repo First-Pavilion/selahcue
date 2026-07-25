@@ -736,6 +736,22 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7am-001..S7am-005. Change: verified/hardened the already-shipped emergency controls with the story's required tests — a webview keybinding + **modal-pierce** contract test (reads `index.html`, pins the JS keymap to the canonical map and asserts the emergency chords are matched before the input-focus early-return, capture-phase) and a **blackout/clear offline+<200ms** locality/latency test; comment-only edits pointing the "ClearLayer aliases to Clear-all" note at the new follow-up. **Scoping decision (owner-approved): per-layer clearing deferred** — the live output is a single `Slide` (no independently-addressable layers), so real per-layer clearing needs the R2 multi-layer/overlay model; split into `86ajpy59e` under R2. Review (2 lenses, verified): **3 confirmed → 2 unique (both low, in the new tests) → fixed** (Space→Next now pinned; capture-phase check made structural); 2 refuted; closeout-soundness lens confirmed the deferral is sound. Verifier: workspace **268** (+2), clippy clean. Result: PASS. Decision: gate-review.
 
+## Batch 7an predicate — cross-OS GUI-launch smoke + per-OS NFR (86ajpevzp)
+
+Executed via the `/goal` engine against `docs/delivery/goals/TASK-86ajpevzp-launch-smoke.md` (validator `--require-complete` PASS; 5/5 mandatory PASS).
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7an-001 | yes | A GUI-launch smoke mode presents the first frame + exits 0; a watchdog + CI timeout fail loudly instead of hanging | `cargo run --release -p selahcue-desktop -- --smoke` + unit test | exit 0, "SMOKE OK … (from App init)"; `smoke_mode_requested` test | main.rs | PASS |
+| S7an-002 | yes | `launch-smoke` CI job proves cross-OS launch (windows created + first frame presented + exit 0) | CI run 30142530116 | ubuntu (Xvfb+lavapipe) + macOS green; Windows documented limitation + recorded run | ci.yml | PASS |
+| S7an-003 | yes | Per-OS cold-start ≤3s + idle ≤300MB, GATED in CI on Linux; macOS baseline; Windows POSIX limitation | `make nfr` (gated) | Linux 0.058s / 203MB; macOS 1.13s / 121.5MB | measure_nfr.sh | PASS |
+| S7an-004 | yes | Cross-OS NFR script actually works (was broken on Linux) | `xvfb-run make nfr` in CI | `mktemp` portability fixed; Linux figures produced | measure_nfr.sh | PASS |
+| S7an-005 | yes | Independent review; confirmed findings fixed | run `wf_12f98261-a6c` (13 agents) | 11 raised → 7 confirmed → **all fixed**; 4 refuted | CODE-REVIEW-batch7an.md | PASS |
+
+### Iteration ledger — batch 7an
+
+- Target: S7an-001..S7an-005. Change: a GUI-launch **smoke mode** (`--smoke`/`SELAHCUE_SMOKE`) in `selahcue-desktop` (present first frame → exit 0 + time-to-first-frame; 30s watchdog + CI `timeout-minutes` backstop; unit-tested flag detection; no session persistence), a **`launch-smoke` CI job** (ubuntu headless under Xvfb + lavapipe; macOS on the runner; Windows a documented headless-present limitation), and a **`measure_nfr.sh` portability fix** (`mktemp -t <prefix>` was broken on GNU/Linux — the NFR script only ever ran on macOS). Executed through the `/goal` engine (5 iterations). Adversarial review (13 agents, 2 lenses each verified): **11 raised → 7 confirmed → all fixed** (headline: the review caught that C-004 overstated the ≤3s cold-start by using the 5.2s software-lavapipe first-frame instead of the `make nfr` proxy — reframed honestly; also added the CI hang backstop and made the NFR budgets gate). Verifier: CI run 30142530116 green — launch proven on Linux headless + macOS; NFR budgets gate (Linux 0.058s / 203MB); 269 workspace tests, clippy `-D warnings` + fmt clean. Windows launch recorded once (522ms) then documented as an intermittent runner limitation. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

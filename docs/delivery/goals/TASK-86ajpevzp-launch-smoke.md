@@ -68,7 +68,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-002 | yes | The smoke-flag detection is unit-tested (pure helper) | `cargo test -p selahcue-desktop` | the smoke-detection test passes | main.rs `smoke_mode_is_detected_from_arg_or_env` (269 workspace tests) | PASS |
 | C-003 | yes | A `launch-smoke` CI job runs the smoke on ubuntu (Xvfb) / macOS / windows and asserts exit 0 (windows created + first frame presented) | CI run of the `launch-smoke` job | all 3 lanes green, OR a documented runner limitation + a recorded manual run per affected OS | run 30141856816: ubuntu+macOS green; Windows = documented limitation + recorded run 30141199818 (522ms); ci.yml | PASS |
 | C-004 | yes | Per-OS cold-start ≤3s (measure_nfr control-server-ready proxy — the story's canonical NFR, GATED in CI on Linux) and idle memory ≤300MB; macOS baseline recorded; Windows NFR = POSIX-script limitation. The smoke first-frame is a SEPARATE informational figure, not the ≤3s bar | `make nfr` (Linux gated under Xvfb + macOS baseline) | Linux + macOS both within budget | Linux cold 0.07s / idle 203MB (gated PASS, run 30141856816); macOS cold 1.13s / idle 121.5MB; informational first-frame Linux 5.2s (software lavapipe) · macOS 820ms · Win 522ms | PASS |
-| C-005 | yes | Independent review; confirmed findings fixed | Workflow adversarial review run | confirmed findings fixed; refuted noted | CODE-REVIEW-batch7an.md | PENDING |
+| C-005 | yes | Independent review; confirmed findings fixed | Workflow adversarial review run `wf_12f98261-a6c` | confirmed findings fixed; refuted noted | 11 raised → 7 confirmed → all fixed; 4 refuted; re-verified CI green (run 30142530116); CODE-REVIEW-batch7an.md | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -126,10 +126,10 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Target criterion: C-005 (and integrity fixes to C-004)
 - Hypothesis: an adversarial review will catch overstated claims + hang/gating gaps; fixing them makes the batch honest and robust.
 - Change or investigation: Workflow review `wf_12f98261-a6c` (13 agents, 2 lenses each verified) — **11 raised → 7 confirmed → all fixed; 4 refuted**. Fixes: (A high) reframed C-004 so the ≤3s cold-start uses the `make nfr` proxy (Linux 0.07s / macOS 1.13s), with the smoke first-frame as a separate informational figure; (B med) added `timeout-minutes: 20` to the launch-smoke job (bounds a hang inside window/adapter creation the watchdog can't reach); (C med) removed `continue-on-error` so the NFR ≤3s/≤300MB budgets GATE on Linux; (D/E/F low) `--smoke` no longer persists the session store, relabelled the metric honestly, documented the endpoint-race + watchdog limitations.
-- Verifier executed: local `cargo fmt`/clippy `-D warnings`/smoke exit 0 (602ms); CI (pending re-run for the gating NFR + timeout).
-- Result: 7 confirmed findings fixed; re-verifying in CI.
-- New evidence: (pending CI re-run)
-- Decision: gate-review
+- Verifier executed: local `cargo fmt`/clippy `-D warnings`/smoke exit 0 (602ms); CI run 30142530116.
+- Result: **all 7 confirmed findings fixed; CI green** — launch-smoke ubuntu+macOS, and the now-GATING NFR budgets passed (Linux cold 0.058s / idle 203MB).
+- New evidence: NFR budgets now gate on Linux; hang backstop (`timeout-minutes`) in place; C-004 framing honest.
+- Decision: gate-review (all mandatory criteria PASS)
 
 ## Risks and rollback
 
@@ -142,9 +142,9 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 ## Final evaluation
 
-- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajpevzp-launch-smoke.md`
-- Validator result: PENDING
-- Independent verification result: PENDING
-- Terminal state: IN_PROGRESS → GATE_REVIEW
-- Remaining failed or blocked criteria: all PENDING
-- ClickUp final evidence comment: PENDING
+- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajpevzp-launch-smoke.md --require-complete`
+- Validator result: PASS (all 5 mandatory criteria PASS)
+- Independent verification result: Workflow review `wf_12f98261-a6c` — 7 confirmed findings fixed, re-verified CI green (run 30142530116)
+- Terminal state: GATE_REVIEW (all verifiable work done; awaiting the /build user gate)
+- Remaining failed or blocked criteria: none
+- ClickUp final evidence comment: posted on 86ajpevzp (CI-green + per-OS figures + handoff)
