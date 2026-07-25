@@ -6,7 +6,7 @@
 - Parent goal ID: BUILD-selahcue
 - Title: Core presentation implementation — songs/slides with themes and a real editor, media playback via sandboxed platform decoders, and the epic remainders (missing-media check, timer surfaces, per-layer clearing once layers exist)
 - Role: build (stage goal; specialists per batch)
-- Status: DRAFT — activated only on the owner's Stage-8 gate approval
+- Status: ACTIVE (gate-approved 2026-07-25, songs-first)
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajnx548
 - Created: 2026-07-25
@@ -95,7 +95,7 @@ Critical path: **8a → 8b → 8c → 8d** (content model → shaping → themes
 
 ### Iteration 0 — planning (batch 7as)
 
-- Drafted; awaiting the Stage-8 gate. On `continue`: create S8-1..S8-10 in ClickUp under their epics (with owners/deps per this table), set this contract ACTIVE, and open batch 8a.
+- Drafted; gate-approved 2026-07-25 (songs-first). Stories created in ClickUp: S8-1 `86ajpzha3` · S8-2 `86ajpzha7` · S8-3 `86ajpzhak` (waiting_on S8-2) · S8-4 `86ajpzhan` (waiting_on S8-3) · S8-5 `86ajpzhb8` (waiting_on S8-1) · S8-6 `86ajpzhbc` · S8-8 `86ajpzhbg` (waiting_on S8-6) · S8-9 `86ajpzhbh`; existing S8-7 = `86ajp0az9` (now waiting_on S8-6) and S8-10 = `86ajpy59e` (now waiting_on S8-1). Batch 8a (Songs) opened.
 
 ## Risks and rollback
 
@@ -110,6 +110,6 @@ Critical path: **8a → 8b → 8c → 8d** (content model → shaping → themes
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/STAGE8-core-presentation.md`
 - Validator result: PENDING (structure validated at draft time)
 - Independent verification result: PENDING
-- Terminal state: DRAFT
+- Terminal state: ACTIVE (in progress)
 - Remaining failed or blocked criteria: all PENDING
 - ClickUp final evidence comment: PENDING
