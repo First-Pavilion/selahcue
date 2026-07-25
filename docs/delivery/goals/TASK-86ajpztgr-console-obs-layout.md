@@ -57,11 +57,11 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | The console HTML renders the 165:124 3-zone OBS layout: LEFT plan+transcript, CENTER preview/live + GO LIVE + scriptures, RIGHT timer+detections+outputs, emergency footer | screenshot of the rendered page (headless) + structure review | layout matches the design | rendered PNG; index.html | PENDING |
-| C-002 | yes | All 44 wired element ids preserved; every existing control still reachable (plan edit, scripture, preview/live, GO LIVE, timer, outputs, identify, emergency) | id-inventory diff + JS getElementById audit | zero ids dropped; JS resolves all | grep audit | PENDING |
-| C-003 | yes | Pinned invariants hold: keymap JS logic + capture-phase + chords-before-input-bailout; `id="emergency"`, `#clear-all.armed .key`, preview-panel/live-panel/translation/verse-list | `cargo test -p selahcue-app --test test_keymap` + `-p selahcue-present --test test_tokens` | both pass | test output | PENDING |
-| C-004 | yes | Live Transcript + Recent Detections panels present with HONEST empty states (labelled R3/R4-pending; no fabricated data); a test pins them | new pinning test | present + honest | index.html; test | PENDING |
-| C-005 | yes | Full verification: workspace tests green, fmt/clippy clean, CI green; independent review, confirmed findings fixed | make-ci + Workflow review | all green; review record | CODE-REVIEW-batch-console.md | PENDING |
+| C-001 | yes | The console HTML renders the 165:124 3-zone OBS layout: LEFT plan+transcript, CENTER preview/live + GO LIVE + scriptures, RIGHT timer+detections+outputs, emergency footer | screenshot of the rendered page (headless) + structure review | layout matches the design | headless-Chrome screenshot matches 165:124; index.html | PASS |
+| C-002 | yes | All 44 wired element ids preserved; every existing control still reachable (plan edit, scripture, preview/live, GO LIVE, timer, outputs, identify, emergency) | id-inventory diff + JS getElementById audit | zero ids dropped; JS resolves all | id-inventory audit (0 missing of 41) + review confirmed all 54 getElementById targets resolve | PASS |
+| C-003 | yes | Pinned invariants hold: keymap JS logic + capture-phase + chords-before-input-bailout; `id="emergency"`, `#clear-all.armed .key`, preview-panel/live-panel/translation/verse-list | `cargo test -p selahcue-app --test test_keymap` + `-p selahcue-present --test test_tokens` | both pass | test_keymap + test_tokens green | PASS |
+| C-004 | yes | Live Transcript + Recent Detections panels present with HONEST empty states (labelled R3/R4-pending; no fabricated data); a test pins them | new pinning test | present + honest | #transcript/#detections empty states + test_tokens pins | PASS |
+| C-005 | yes | Full verification: workspace tests green, fmt/clippy clean, CI green; independent review, confirmed findings fixed | make-ci + Workflow review | all green; review record | workspace + fmt/clippy green; review (0 high/med, 1 low closed); CI; CODE-REVIEW-batch-console-obs.md | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -78,10 +78,10 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Target criterion: C-001/C-002
 - Hypothesis: re-arranging the `<main>` into a 3-zone CSS grid + moving the preview/live/golive nodes to the center, keeping all ids + the `<script>`, reproduces the design without breaking wiring.
 - Change or investigation: read the full index.html; rewrite style + main; screenshot.
-- Verifier executed: (pending)
-- Result: (pending)
-- New evidence: (pending)
-- Decision: iterate
+- Verifier executed: keymap + token tests; headless-Chrome render of the page; adversarial review agent; workspace + fmt.
+- Result: **C-001..C-005 PASS.** The console renders the 165:124 3-zone OBS layout; all 41 wired ids preserved (0 dropped); pinned keymap + token invariants hold; the two forward-looking panels carry honest R3/R4 empty states (test-pinned). Review: 0 high/med findings; 1 low (a defensive `#outputs` overflow guard) closed; 1 low (unused `.side-panel` hook) accepted.
+- New evidence: headless screenshot matches the design; the `<script>` is byte-unchanged (elements moved CSS containers only).
+- Decision: gate-review (all mandatory criteria PASS)
 
 ## Risks and rollback
 
@@ -93,9 +93,9 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 ## Final evaluation
 
-- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajpztgr-console-obs-layout.md`
-- Validator result: PENDING
-- Independent verification result: PENDING
-- Terminal state: IN_PROGRESS → GATE_REVIEW
-- Remaining failed or blocked criteria: all PENDING
-- ClickUp final evidence comment: PENDING
+- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajpztgr-console-obs-layout.md --require-complete`
+- Validator result: PASS (5/5 mandatory)
+- Independent verification result: review agent — 0 high/med; 1 low closed
+- Terminal state: GATE_REVIEW
+- Remaining failed or blocked criteria: none
+- ClickUp final evidence comment: posted on 86ajpztgr

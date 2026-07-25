@@ -249,7 +249,9 @@
         padding: 7px;
       }
       .timer-note { color: var(--muted); font-size: 11px; text-align: center; }
-      #outputs { display: flex; flex-direction: column; gap: 8px; }
+      /* Bounded to the two output roles (main/stage) today; the overflow guard
+         keeps it inside its card if the role set ever grows (review 86ajpztgr). */
+      #outputs { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
       .output-row { font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
       .output-row .head2 { display: flex; align-items: center; gap: 6px; }
       .output-row .role { font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: .05em; }

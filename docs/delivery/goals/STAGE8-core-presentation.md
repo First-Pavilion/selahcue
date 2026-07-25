@@ -101,6 +101,10 @@ Critical path: **8a → 8b → 8c → 8d** (content model → shaping → themes
 
 - Delivered S8-1: songs are multi-slide items. `PlanItem.stanzas` + slide-per-stanza compose, in-song Next/Previous navigation, stage next-stanza, additive wire (`slide_count`/`slide_index`, fixtures byte-identical), migration v6 (NULL backfill), plain-text import, mid-song recovery. Clients: webview "song · N/M" + lyrics box; mobile slideBadge. Independent review `wf_bee2e975-576`: 1 confirmed medium (removed-live-song lost its lyric body on recovery) → fixed (`live_free_body`, migration v7). +22 Rust / +2 Dart tests; CI run 30156606042 green. Story `86ajpzha3` → QA. Contract `--require-complete` PASS. Next: batch 8b (Text shaping, S8-2 `86ajpzha7`).
 
+### Owner-directed — Operator console OBS layout (86ajpztgr)
+
+- Owner asked to implement Figma 165:124 (the OBS-studio operator console) in the Tauri webview. Delivered: `dist/index.html` restructured into the 3-zone OBS layout (LEFT plan + live transcript · CENTER Preview|Live + GO LIVE + scriptures · RIGHT timer + recent detections + outputs · emergency footer), the entire `<script>` + all 41 wired ids preserved (pure re-parenting; the unreferenced `#rightcol` wrapper dropped). The transcript + detections panels are honest-empty forward-looking UI (wire to R3/R4 later). Independent review: **0 high/med, 1 low fixed, 1 low accepted**. Pinned keymap + token tests green; headless render matches the design; CI green. Story `86ajpztgr` → QA. **Batch 8b (Text shaping) is parked** (recon only, no code) — resume next.
+
 ## Risks and rollback
 
 - Risks: media decode integration (sandbox + HW paths per OS) is the stage's long pole; text-shaping regressions on the parity oracle. Rollback: per-batch git; additive crates for media.
