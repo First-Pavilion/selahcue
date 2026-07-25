@@ -99,7 +99,7 @@ Critical path: **8a → 8b → 8c → 8d** (content model → shaping → themes
 
 ### Iteration 1 — batch 8a (Songs, S8-1) COMPLETE
 
-- Delivered S8-1: songs are multi-slide items. `PlanItem.stanzas` + slide-per-stanza compose, in-song Next/Previous navigation, stage next-stanza, additive wire (`slide_count`/`slide_index`, fixtures byte-identical), migration v6 (NULL backfill), plain-text import, mid-song recovery. Clients: webview "song · N/M" + lyrics box; mobile slideBadge. Independent review `wf_bee2e975-576`: 1 confirmed medium (removed-live-song lost its lyric body on recovery) → fixed (`live_free_body`, migration v7). +22 Rust / +2 Dart tests; CI run 30156606042 green. Story `86ajpzha3` → QA. Contract `--require-complete` PASS. Next: batch 8b (Text shaping, S8-2 `86ajpzha7`).
+- Delivered S8-1: songs are multi-slide items. `PlanItem.stanzas` + slide-per-stanza compose, in-song Next/Previous navigation, stage next-stanza, additive wire (`slide_count`/`slide_index`, fixtures byte-identical), migration v6 (NULL backfill), plain-text import, mid-song recovery. Clients: webview "song · N/M" + lyrics box; mobile slideBadge. Independent review `wf_bee2e975-576`: 1 confirmed medium (removed-live-song lost its lyric body on recovery) → fixed (`live_free_body`, migration v7). +22 Rust / +2 Dart tests; CI run 30156606042 green. Story `86ajpzha3` → QA. Contract `--require-complete` PASS. ~~Next: batch 8b~~ **batch 8b done (blocked on CI)** — S8-2 (Text shaping, S8-2 `86ajpzha7`). 
 
 ### Owner-directed — Operator console OBS layout (86ajpztgr)
 
