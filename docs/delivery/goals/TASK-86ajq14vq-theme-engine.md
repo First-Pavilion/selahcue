@@ -6,7 +6,7 @@
 - Parent goal ID: STAGE8-core-presentation
 - Title: Implement the theme render model + engine (FR-010, MVP cut) — a slide-design template applied to the audience output with real alignment + per-region typography, switchable with zero content loss, persisted + recovered
 - Role: backend-engineer
-- Status: IN_PROGRESS
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajq14vq
 - Created: 2026-07-25
@@ -68,7 +68,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-004 | yes | `Presenter::set_theme` recomposes Preview+Live with ZERO content loss; a themed scripture + song render (switch = same content, new look) | present test | content preserved; look changes | test_present::set_theme_restyles..._without_losing_content (switch==started-there; content preserved) | PASS |
 | C-005 | yes | Wire additive: `SetTheme` pinned fixture; `OperatorStateView` gains theme/themes WITHOUT changing v2 fixtures; RBAC Operator-only; Dart parity | `cargo test -p selahcue-lan` + flutter | fixtures stable; rbac correct | test_protocol (pinned v2 fixtures byte-stable + SetTheme fixture) + test_rbac (Operator-only) + dart parity (flutter 42 green) | PASS |
 | C-006 | yes | Persist: migration v8 (`target_version()==8`), older DB upgrades; active theme round-trips snapshot→save→load→restore | data + app tests | theme survives recovery | test_db (target_version==8, v7→v8 upgrade) + test_session_repo (theme round-trip) + test_controller (snapshot/restore theme) | PASS |
-| C-007 | yes | Full: workspace + GPU parity + fmt/clippy clean; adversarial Workflow review, findings fixed; 3-OS CI green | make-ci + Workflow + CI | all green; review fixed | workspace+GPU parity+fmt/clippy GREEN; review wf_fe4db576-c11 (3 LOW confirmed → fixed/dispositioned, 0 hi/med); CODE-REVIEW-batchS83b.md; CI pending push | PENDING |
+| C-007 | yes | Full: workspace + GPU parity + fmt/clippy clean; adversarial Workflow review, findings fixed; 3-OS CI green | make-ci + Workflow + CI | all green; review fixed | workspace+GPU parity+fmt/clippy GREEN; review wf_fe4db576-c11 (3 LOW→fixed, 0 hi/med); **CI run 30176359947 GREEN 12/12 (rust ×3 OSes)** | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -98,7 +98,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajq14vq-theme-engine.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending)
+- Validator result: PASS --require-complete (7/7)
+- Independent verification result: adversarial Workflow wf_fe4db576-c11 — 3 LOW confirmed → fixed/dispositioned, 0 hi/med
+- Terminal state: VERIFIED_COMPLETE (CI run 30176359947 green)
+- ClickUp final evidence comment: posted on 86ajq14vq
