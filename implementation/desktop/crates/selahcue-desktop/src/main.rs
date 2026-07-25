@@ -56,6 +56,17 @@ const AUTOSAVE_MIN_INTERVAL: Duration = Duration::from_secs(1);
 /// crash loses at most this much timer progress.
 const TIMER_AUTOSAVE_INTERVAL: Duration = Duration::from_secs(5);
 
+/// GUI-launch smoke watchdog (story 86ajpevzp): in `--smoke` mode, if the main
+/// window has not presented a frame within this budget, exit non-zero so CI
+/// catches a genuine launch failure instead of hanging until the job times out.
+const SMOKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Whether the GUI-launch smoke mode was requested (`--smoke` argument or the
+/// `SELAHCUE_SMOKE` env var set). Pure over its inputs so it is unit-testable.
+fn smoke_mode_requested(mut args: impl Iterator<Item = String>, env_set: bool) -> bool {
+    env_set || args.any(|a| a == "--smoke")
+}
+
 /// A monitor's raw identity facts, in a plain shape the key math can be tested on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MonitorFacts {
@@ -558,7 +569,11 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    fn render(&mut self, frame: &FrameBuffer) {
+    /// Composite `frame` onto this window's surface. Returns `true` when a frame
+    /// was actually presented (false when the swapchain was lost/outdated and the
+    /// paint is deferred to the next tick) — the smoke mode uses this to know the
+    /// window really produced a visible frame before exiting.
+    fn render(&mut self, frame: &FrameBuffer) -> bool {
         let (fw, fh) = (frame.width(), frame.height());
         if self.frame_texture.as_ref().map(|(_, w, h)| (*w, *h)) != Some((fw, fh)) {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -578,7 +593,7 @@ impl Renderer {
             self.frame_texture = Some((texture, fw, fh));
         }
         let Some((texture, _, _)) = self.frame_texture.as_ref() else {
-            return;
+            return false;
         };
         self.queue.write_texture(
             wgpu::ImageCopyTexture {
@@ -625,7 +640,7 @@ impl Renderer {
                 if matches!(err, wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) {
                     self.surface.configure(&self.device, &self.config);
                 }
-                return;
+                return false;
             }
         };
         let target = surface_frame
@@ -655,6 +670,7 @@ impl Renderer {
         }
         self.queue.submit(Some(encoder.finish()));
         surface_frame.present();
+        true
     }
 }
 
@@ -713,6 +729,11 @@ struct App {
     /// The session store (SQLite) for autosave + crash recovery.
     store: SessionStore,
     last_autosave: Instant,
+    /// GUI-launch smoke mode (story 86ajpevzp): present the first frame, report
+    /// cold-start-to-first-frame, then exit 0.
+    smoke: bool,
+    /// Whether the smoke exit has already fired (present can tick more than once).
+    smoke_done: bool,
 }
 
 /// Apply one command to the shared controller (a poisoned lock just drops the input
@@ -829,6 +850,11 @@ impl App {
             identify_frames: None,
             store,
             last_autosave: Instant::now(),
+            smoke: smoke_mode_requested(
+                std::env::args(),
+                std::env::var_os("SELAHCUE_SMOKE").is_some(),
+            ),
+            smoke_done: false,
         }
     }
 
@@ -1243,8 +1269,20 @@ impl ApplicationHandler for App {
                 };
                 // Each window presents its own surface from the same shared live state.
                 if self.main.as_ref().is_some_and(|r| r.window.id() == id) {
-                    if let Some(r) = self.main.as_mut() {
-                        r.render(c.presenter().live_output());
+                    let presented = self
+                        .main
+                        .as_mut()
+                        .map(|r| r.render(c.presenter().live_output()))
+                        .unwrap_or(false);
+                    // Smoke mode (86ajpevzp): the main window produced a real frame —
+                    // report cold-start-to-first-frame and exit cleanly (0).
+                    if self.smoke && presented && !self.smoke_done {
+                        self.smoke_done = true;
+                        let ms = self.launched_at.elapsed().as_millis();
+                        println!(
+                            "SMOKE OK: main output window presented its first frame in {ms} ms"
+                        );
+                        event_loop.exit();
                     }
                 } else if let Some(r) = self.stage.as_mut() {
                     r.render(c.stage_output());
@@ -1359,6 +1397,16 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Smoke watchdog (86ajpevzp): a launch that never presents must FAIL, not
+        // hang the CI job. If the window hasn't produced a frame within the budget,
+        // exit non-zero with a clear message.
+        if self.smoke && !self.smoke_done && self.launched_at.elapsed() > SMOKE_TIMEOUT {
+            eprintln!(
+                "SMOKE FAIL: no frame presented within {}s of launch",
+                SMOKE_TIMEOUT.as_secs()
+            );
+            std::process::exit(1);
+        }
         // Wake at the *fixed* next-frame deadline. The repaint is requested in
         // `new_events` (not here), so the loop idles until the deadline instead of
         // spinning on a self-posted redraw — a window that can't present never pegs a CPU
@@ -1682,7 +1730,31 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_keys, MonitorFacts};
+    use super::{display_keys, smoke_mode_requested, MonitorFacts};
+
+    #[test]
+    fn smoke_mode_is_detected_from_arg_or_env() {
+        // Neither the flag nor the env var: normal launch.
+        assert!(!smoke_mode_requested(
+            ["selahcue-output".to_string()].into_iter(),
+            false
+        ));
+        // The `--smoke` argument enables it.
+        assert!(smoke_mode_requested(
+            ["selahcue-output".to_string(), "--smoke".to_string()].into_iter(),
+            false
+        ));
+        // The env var enables it even without the argument.
+        assert!(smoke_mode_requested(
+            ["selahcue-output".to_string()].into_iter(),
+            true
+        ));
+        // An unrelated flag does NOT enable it.
+        assert!(!smoke_mode_requested(
+            ["selahcue-output".to_string(), "--verbose".to_string()].into_iter(),
+            false
+        ));
+    }
 
     fn m(name: Option<&str>, w: u32, h: u32, x: i32) -> MonitorFacts {
         MonitorFacts {
