@@ -30,6 +30,9 @@ pub struct SessionState {
     /// The title of a removed-but-still-on-screen plan item (a free slide) —
     /// restored verbatim as a title-only slide.
     pub live_free_text: Option<String>,
+    /// The body lines (newline-joined) of that free slide — a removed song
+    /// keeps its lyrics on screen (S8-1 review). NULL = title-only.
+    pub live_free_body: Option<String>,
     /// A scripture reference staged in Preview, if any.
     pub staged_scripture: Option<String>,
     /// Within-item slide position of the LIVE item (songs; None = slide 0 /
@@ -49,14 +52,14 @@ pub fn save(db: &Database, s: &SessionState) -> Result<()> {
             (id, plan_id, live_idx, staged_idx, plan_cursor, blackout,
              timer_total_secs, timer_elapsed_secs, timer_running,
              live_scripture, staged_scripture, live_free_text,
-             live_slide, staged_slide, cursor_slide)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             live_slide, staged_slide, cursor_slide, live_free_body)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(id) DO UPDATE SET
             plan_id = ?1, live_idx = ?2, staged_idx = ?3, plan_cursor = ?4,
             blackout = ?5, timer_total_secs = ?6, timer_elapsed_secs = ?7,
             timer_running = ?8, live_scripture = ?9, staged_scripture = ?10,
             live_free_text = ?11, live_slide = ?12, staged_slide = ?13,
-            cursor_slide = ?14",
+            cursor_slide = ?14, live_free_body = ?15",
         params![
             s.plan_id,
             s.live_idx.map(i64::from),
@@ -72,6 +75,7 @@ pub fn save(db: &Database, s: &SessionState) -> Result<()> {
             s.live_slide.map(i64::from),
             s.staged_slide.map(i64::from),
             s.cursor_slide.map(i64::from),
+            s.live_free_body,
         ],
     )?;
     Ok(())
@@ -86,7 +90,7 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
             "SELECT plan_id, live_idx, staged_idx, plan_cursor, blackout,
                     timer_total_secs, timer_elapsed_secs, timer_running,
                     live_scripture, staged_scripture, live_free_text,
-                    live_slide, staged_slide, cursor_slide
+                    live_slide, staged_slide, cursor_slide, live_free_body
              FROM session_state WHERE id = 1",
             [],
             |r| {
@@ -105,6 +109,7 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
                     r.get::<_, Option<i64>>(11)?,
                     r.get::<_, Option<i64>>(12)?,
                     r.get::<_, Option<i64>>(13)?,
+                    r.get::<_, Option<String>>(14)?,
                 ))
             },
         )
@@ -129,6 +134,7 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
         live_slide,
         staged_slide,
         cursor_slide,
+        live_free_body,
     )) = row
     else {
         return Ok(None);
@@ -154,6 +160,7 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
         live_slide: idx(live_slide, "live_slide")?,
         staged_slide: idx(staged_slide, "staged_slide")?,
         cursor_slide: idx(cursor_slide, "cursor_slide")?,
+        live_free_body,
     }))
 }
 

@@ -1182,3 +1182,36 @@ fn add_item_with_content_creates_a_multi_slide_song() {
     let song = view.items.iter().find(|i| i.title == "New Song").unwrap();
     assert_eq!(song.slide_count, Some(2), "wire count reflects two stanzas");
 }
+
+#[test]
+fn removing_a_live_song_recovers_its_lyric_body_verbatim() {
+    // 8a review fix: a removed live song keeps its lyrics on screen (a free
+    // slide with a body) and recovery must restore the BODY, not just the title.
+    let mut c = song_controller();
+    c.apply(&Command::Next); // stage stanza 0
+    c.apply(&Command::Next); // stage stanza 1
+    c.apply(&Command::GoLive); // LIVE = "Way Maker" / "Miracle worker"
+    assert_eq!(
+        c.presenter().live_slide().unwrap().body,
+        vec!["Miracle worker"]
+    );
+    // Remove the live song — the lyric slide stays on the audience output.
+    let song_id = c.operator_view().items[0].id;
+    c.apply(&Command::RemoveItem { item_id: song_id });
+    assert_eq!(
+        c.presenter().live_slide().unwrap().body,
+        vec!["Miracle worker"],
+        "the removed song's lyrics stay on Live (FR-012)"
+    );
+    // Force-kill + recover from the snapshot on a fresh controller.
+    let snap = c.snapshot(std::time::Instant::now());
+    let mut restored = song_controller();
+    restored.restore(&snap);
+    let live = restored.presenter().live_slide().unwrap();
+    assert_eq!(live.title, "Way Maker");
+    assert_eq!(
+        live.body,
+        vec!["Miracle worker"],
+        "recovery restores the lyric BODY verbatim, not a bare title"
+    );
+}

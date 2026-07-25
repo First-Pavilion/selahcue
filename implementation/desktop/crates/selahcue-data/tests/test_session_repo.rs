@@ -35,6 +35,7 @@ fn snapshot_round_trips_all_fields() {
         live_scripture: Some("Romans 8:28".into()),
         live_free_text: Some("Removed Song".into()),
         staged_scripture: Some("John 3:16".into()),
+        live_free_body: Some("Way maker\nMiracle worker".into()),
         live_slide: Some(3),
         staged_slide: Some(1),
         cursor_slide: Some(1),

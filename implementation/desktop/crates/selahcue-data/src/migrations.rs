@@ -77,6 +77,12 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE session_state ADD COLUMN staged_slide INTEGER;
     ALTER TABLE session_state ADD COLUMN cursor_slide INTEGER;
     "#,
+    // v6 -> v7: a removed live song keeps its LYRICS on screen (a free slide
+    // with a body), so recovery must restore the body verbatim, not just the
+    // title (batch-8a review). NULL = a title-only free slide, the prior shape.
+    r#"
+    ALTER TABLE session_state ADD COLUMN live_free_body TEXT;
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

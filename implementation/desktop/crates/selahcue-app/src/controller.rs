@@ -56,6 +56,9 @@ pub struct ControllerSnapshot {
     /// A removed-but-still-on-screen plan item's title (a free slide) — restored
     /// verbatim, never recomposed as scripture.
     pub live_free_text: Option<String>,
+    /// The BODY lines of a free live slide (a removed song keeps its lyrics on
+    /// screen — S8-1). Newline-joined; None/empty = a title-only free slide.
+    pub live_free_body: Option<String>,
     /// Within-item slide position of the LIVE item (songs, story S8-1).
     pub live_slide: Option<u32>,
     /// Within-item slide position of the STAGED item.
@@ -120,6 +123,9 @@ pub struct LiveController {
     /// restored VERBATIM as a title-only slide, never recomposed as scripture
     /// even when the title happens to parse as a reference (review 7y-B).
     live_free_text: Option<String>,
+    /// The body lines of a free live slide (a removed song's lyrics stay on
+    /// screen and must recover verbatim, not as a bare title — S8-1 review fix).
+    live_free_body: Vec<String>,
     /// Within-item slide position of the staged item (0 for title-only items).
     staged_slide: usize,
     /// Within-item slide position of the live item.
@@ -252,6 +258,7 @@ impl LiveController {
             staged_scripture: None,
             live_scripture: None,
             live_free_text: None,
+            live_free_body: Vec::new(),
             staged_slide: 0,
             live_slide: 0,
             cursor_slide: 0,
@@ -281,6 +288,8 @@ impl LiveController {
             live_scripture: self.live_scripture.clone(),
             staged_scripture: self.staged_scripture.clone(),
             live_free_text: self.live_free_text.clone(),
+            live_free_body: (!self.live_free_body.is_empty())
+                .then(|| self.live_free_body.join("\n")),
             live_slide: self.live_idx.map(|_| self.live_slide as u32),
             staged_slide: self.staged_idx.map(|_| self.staged_slide as u32),
             cursor_slide: self.plan_cursor.map(|_| self.cursor_slide as u32),
@@ -318,12 +327,20 @@ impl LiveController {
                 self.live_scripture = Some(reference.clone());
             }
         } else if let Some(text) = snap.live_free_text.as_ref() {
-            // A removed item's slide: restore exactly what was on screen (a
-            // title-only slide) — even if the title parses as a reference.
-            self.presenter.stage(Slide::title(text.clone()));
+            // A removed item's slide: restore exactly what was on screen — title
+            // AND body (a removed song keeps its lyrics), never recomposed as
+            // scripture even if the title parses as a reference (review 7y-B/8a).
+            let body: Vec<String> = snap
+                .live_free_body
+                .as_ref()
+                .filter(|b| !b.is_empty())
+                .map(|b| b.split('\n').map(str::to_string).collect())
+                .unwrap_or_default();
+            self.presenter.stage(Slide::new(text.clone(), body.clone()));
             if self.presenter.go_live() {
                 self.live_idx = None;
                 self.live_free_text = Some(text.clone());
+                self.live_free_body = body;
             }
         }
         // Then PREVIEW: a plan item, a scripture, or — explicitly — nothing (go_live
@@ -712,6 +729,7 @@ impl LiveController {
                     self.live_slide = self.staged_slide;
                     self.live_scripture = self.staged_scripture.clone();
                     self.live_free_text = None;
+                    self.live_free_body = Vec::new();
                     // Going live from blackout reveals the new content (UX-STATE-MATRIX).
                     self.blackout = false;
                     ControllerReply::Ack
@@ -724,6 +742,7 @@ impl LiveController {
                 self.live_idx = None;
                 self.live_scripture = None;
                 self.live_free_text = None;
+                self.live_free_body = Vec::new();
                 self.blackout = false;
                 ControllerReply::Ack
             }
@@ -940,6 +959,7 @@ impl LiveController {
                 if self.live_idx == Some(idx) {
                     if let Some(slide) = self.presenter.live_slide() {
                         self.live_free_text = Some(slide.title.clone());
+                        self.live_free_body = slide.body.clone();
                     }
                 }
                 // Slide positions follow their item; a removed item's positions reset.
