@@ -36,7 +36,9 @@ if pgrep -f selahcue-output >/dev/null 2>&1; then
   exit 1
 fi
 rm -f "$ENDPOINT"
-APP_LOG=$(mktemp -t selahcue-nfr-log)
+# Portable temp file: `mktemp -t <prefix>` is a BSD/macOS-ism that GNU mktemp
+# rejects ("too few X's"). An explicit XXXXXX template works on both.
+APP_LOG=$(mktemp "${TMPDIR:-/tmp}/selahcue-nfr-log.XXXXXX")
 echo ">> launching selahcue-output (release)…"
 T0=$(python3 -c "import time;print(time.time())")
 "$BIN" >"$APP_LOG" 2>&1 &
