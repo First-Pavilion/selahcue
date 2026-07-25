@@ -80,3 +80,46 @@ unscoped and none fail, but the scripted demo still cannot run end-to-end as wri
 no plan authoring in the shipping binary and reference-only scripture. 3 of the 14
 foundation stories remain unstarted. Recommended path: plan persistence wiring + the
 scripture follow-up (verse text), then re-run this review.
+
+---
+
+# V2 Re-score (batch 7ar · 2026-07-25)
+
+**Method:** 9 fresh-context auditors — one per demo step — independently re-audited the
+current tree/CI/docs (323 tool calls; the auditors **re-ran the cited test suites** and
+pulled live CI runner logs, not just documents). Discipline: upgrades require concrete
+new evidence; owner-hardware items stay honest `[owner-QA]` gaps; downgrades allowed.
+Executed via the `/goal` engine (`TASK-86ajp0bpn-foundation-demo-rescore.md`).
+
+## V2 verdict table
+
+| # | Demo step | 7t-era | **V2** | What changed (audited) |
+|---|---|---|---|---|
+| 1 | Launch on 3 OSes | PARTIAL | **PASS (scoped)** | The core defect ("GUI launch not exercised on any runner") is closed: the 7an `launch-smoke` CI job runs the release GUI to a presented first frame, continuously green on Linux (Xvfb) + macOS (live logs, runs 30142530116/30143889962), plus a **verbatim runner-log-confirmed Windows launch** (522 ms, run 30141199818) before its documented headless-flake exclusion. NFR budgets now **gate** on Linux (cold 0.07 s / idle 203 MB PASS). Scoped: Windows continuous coverage + encryption-test toolchain + POSIX-only NFR script. |
+| 2 | Build a plan | PASS (scoped) | **PASS (scoped)** | Re-verified green (RBAC wire test, transactional plan_repo, joint plan+session autosave, controller index-fixup suite — re-run by the auditor). Scope shrank: verse text has since landed (drop from this step's list). **Wording correction:** the "library ships" claim overstated — `plan_repo::search/duplicate` are data-layer + tests only; **no shipped client exposes them** (kept as a story-level delta). |
+| 3 | Static slide on main output | PASS | **PASS** | Reaffirmed on the current tree; strengthened by two post-7t wire E2Es driving go-live over pinned TLS. |
+| 4 | Stage display | PASS (scoped) | **PASS (scoped)** | All 7aa surfaces re-verified green (assignment persistence, identify TTL lifecycle, collision-free keys). Note: the owner closed `86ajpew0c` complete on 2026-07-25. Remaining `[owner-QA]`: the 2+-physical-display walk has no recorded affirmative outcome. |
+| 5 | Countdown → TIME UP (stage-only) | PASS (scoped) | **PASS** | The only scoped-out remainder (visual re-confirmation post-`582d9dc`) is closed: the owner personally QA'd and **closed `86ajphu98` ("QA Passed ✅")** after the 7ac delivery, whose scripted steps (QA-WALKTHROUGH step 8) explicitly include the stage countdown + solid-red TIME UP. 7ac added manual entry + live ±1:00 with recovery-tested adjustment. |
+| 6 | Search & display a PD scripture | PASS (scoped) | **PASS (scoped)** | Scope substantially narrowed: **5 PD translations** (≥4 asked; KJV default), chapter browser + highlighted hits + double-click-live + "gen 1 1" shorthand, and the **mobile verse list over the new GetChapter wire command**. Still scoped: pagination past the slide cap, stage-output verse text, mobile keyword search (by design), translation persistence across recovery. |
+| 7 | Emergency blackout/clear (offline) | PASS (scoped) | **PASS (scoped)** | Materially stronger: offline locality now **proven by test** (in-process presenter, no LAN on the path, <200 ms asserted), the keymap contract-tested (8 Rust tests + the webview mirror incl. modal-pierce ordering + capture phase). Per-layer clearing deferred to R2 (`86ajpy59e`, owner-approved). `[owner-QA]`: the physical-keys cable-out demo (steps posted on `86ajp0awx`). |
+| 8 | Pair mobile by QR + advance | PARTIAL (strong) | **PASS (scoped)** | mDNS + SAS fingerprint gate (7aj) + Android MulticastLock (7ao, APK compile-verified in CI) + the full mobile revamp (12 → **39 Flutter tests**) close the old gap-list items; the wire pair+advance E2E stands. `[owner-QA]`: a real camera QR scan + on-device mDNS on real Wi-Fi (steps posted on `86ajp0b0t`). `[missing]`: no automated cross-language pairing E2E (Dart↔Rust compatibility rests on byte-pinned fixtures both sides). |
+| 9 | Force-kill + recover exact live state | PASS | **PASS (scoped)** | Substance strengthened (adjusted-timer recovery, verbatim free-slide restore, header-discriminated key state machine) — but the label is honestly refined: the live `kill -9` walk was performed on the 7u-era binary and the restore path has since changed (each change component-regression-tested); no automated process-level kill test exists. `[descoped]`: translation restores as KJV; 7ad GUI-dialog deltas await owner disposition. |
+
+**V2 score: 2 PASS · 7 PASS (scoped) · 0 PARTIAL · 0 FAIL** *(7t-era: 2 · 5 · 2 · 0).*
+
+## Remaining gaps by class
+
+- **`[owner-QA]` (hardware in the owner's hands; steps already posted as list-form QA on the tickets):** on-device phone QA — real camera QR scan + mDNS discovery on real Wi-Fi (`86ajp0b0t`); the 2+-physical-display walk (`86ajpew0c`-adjacent, QA-WALKTHROUGH item 10); physical-keys network-cable-out emergency demo (`86ajp0awx`); visual re-confirmations of the audience output post-7w/7x styling and both windows on Linux/Windows.
+- **`[toolchain]`:** Windows encryption tests (perl/nasm for vendored OpenSSL); Windows NFR figures (POSIX script); Windows launch-smoke excluded after one recorded success (documented flake).
+- **`[descoped — tracked]`:** per-layer clearing → R2 `86ajpy59e`; passage pagination; stage-output verse text; translation persistence in recovery; the 7ad Resume-dialog deltas (owner disposition on `86ajp09td`).
+- **`[missing — follow-up worthy]`:** a cross-language (Dart↔Rust) pairing E2E; an automated process-level kill-9 recovery test; a user-facing surface (or explicit descope) for the plan library; relocating `CODE-REVIEW-batch7u-recovery.md` to `docs/delivery/`.
+
+## V2 milestone disposition (recommendation — the decision is the owner's)
+
+**Conditionally met.** Every demo step now passes (none partial, none failing); the
+automatable evidence is exhausted, and everything left is either owner-hardware QA
+(already queued as scripted steps on the QA tickets), a documented toolchain limit, or a
+tracked descope. **Recommended:** the owner runs the on-device/multi-monitor QA
+walk-throughs; if green, close this milestone and Stage 7, and open the Stage-8
+planning gate. The `[missing]` hardening items go to a follow-up task rather than
+blocking the milestone.

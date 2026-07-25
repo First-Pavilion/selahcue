@@ -802,6 +802,22 @@ Executed via the `/goal` engine against `docs/delivery/goals/TASK-86ajpqfyj-lice
 
 - Target: S7aq-001..S7aq-005. Change: a 4-lens web research fan-out (`wf_b038fdfb-839`) → the Track-2 dossier (`docs/research/LICENSED-TRANSLATIONS.md`), ADR-0017 (pluggable TranslationProvider seam, Proposed), register updates, and the DECISION/implementation tickets — then a 6-claim **adversarial verification pass** (`wf_e9bd0579-d32`) re-fetching primary sources: **4 CONFIRMED + 2 CORRECTED**, corrections applied. **Headline finding: NIV is verifiably EXCLUDED from commercial use on API.Bible** — NIV's only commercial route is the direct Biblica Standard Publishing License; API.Bible remains the fastest lawful route for NKJV (+ NLT/MSG/AMP pending confirmation) at $29/mo + $10–250/mo per translation; the industry pattern is a per-translation in-app store ($15–$39) on direct publisher licences; TPT is direct-BroadStreet-only with documented stability/reputational risk (owner asked to re-confirm); none of the six is ever bundlable. Result: PASS. Decision: gate-review (the licensing route + budget is the owner's DECISION task 86ajpzb09).
 
+## Batch 7ar predicate — foundation-demo milestone re-score (86ajp0bpn)
+
+Executed via the `/goal` engine against `docs/delivery/goals/TASK-86ajp0bpn-foundation-demo-rescore.md` (validator `--require-complete` PASS; 5/5). Docs + ClickUp — no code.
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7ar-001 | yes | All 9 demo steps re-audited by fresh-context auditors (citations; suites re-run; live CI logs) | run `wf_4e58027d-bb3` | 9 evidence-cited verdicts | FOUNDATION-DEMO-REVIEW.md V2 | PASS |
+| S7ar-002 | yes | V2 verdict table + score + classed gap list published | doc review | 2 PASS · 7 PASS(scoped) · 0 PARTIAL · 0 FAIL | FOUNDATION-DEMO-REVIEW.md | PASS |
+| S7ar-003 | yes | Milestone ticket updated; [missing] items ticketed | ClickUp | 86ajp0bpn comment; follow-up 86ajpzbxf | ClickUp | PASS |
+| S7ar-004 | yes | Stage-7 disposition recommendation at the gate | gate report | "conditionally met — owner QA then close" | gate + BUILD_STATE | PASS |
+| S7ar-005 | yes | Synthesis never exceeds audit evidence (incl. downgrades/corrections honoured) | audit-vs-v2 cross-check | step-9 label refined; library wording corrected | CODE-REVIEW-batch7ar.md | PASS |
+
+### Iteration ledger — batch 7ar
+
+- Target: S7ar-001..S7ar-005. Change: 9 fresh-context auditors (Workflow `wf_4e58027d-bb3`, 323 tool calls — test suites re-run, live CI runner logs pulled) re-scored the 7t-era demo table; synthesized `FOUNDATION-DEMO-REVIEW.md` **V2**: **2 PASS · 7 PASS(scoped) · 0 PARTIAL · 0 FAIL** (was 2·5·2·0). Upgrades on new evidence: step 1 (launch-smoke CI + gated NFR + a runner-log-confirmed Windows launch), step 5 (owner-closed QA on 86ajphu98), step 8 (mDNS/SAS/MulticastLock/revamp). Honest corrections applied against the old wording: the plan library is data-layer-only (no shipped surface), and step 9 refined PASS→PASS(scoped) (7u-era kill-walk; no process-level test). Gap classes: [owner-QA] (steps already posted), [toolchain], [descoped-tracked], [missing]→86ajpzbxf. Disposition recommendation: **conditionally met** — owner runs the posted on-device/multi-monitor QA; if green, close the milestone + Stage 7 and open Stage-8 planning. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.
