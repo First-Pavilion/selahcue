@@ -6,6 +6,8 @@
 /// `views/` (widgets only, bound via `ListenableBuilder`).
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'models/design_tokens.dart';
@@ -88,10 +90,15 @@ class _LauncherState extends State<Launcher> {
   }
 
   Future<void> _start() async {
+    // A brief brand moment, run in parallel with the reconnect attempt so the
+    // splash never adds perceptible delay.
+    final brand = Future<void>.delayed(const Duration(milliseconds: 900));
     final stored = await StoredSession.load();
     if (!mounted) return;
     if (stored == null) {
-      _goPair();
+      // First run: no delay-then-pair; show the splash briefly, then Connect.
+      await brand;
+      if (mounted) _goPair();
       return;
     }
     setState(() => _status = 'Reconnecting to ${stored.host}…');
@@ -102,14 +109,20 @@ class _LauncherState extends State<Launcher> {
         pinHex: stored.pinHex,
         creds: Credentials(deviceId: stored.deviceId, token: stored.token),
       );
-      if (!mounted) return;
+      await brand;
+      if (!mounted) {
+        // Unmounted during the brand delay — nothing will navigate to the
+        // controller, so close the freshly-opened session rather than leak
+        // its pinned-TLS socket (no-leak rule).
+        unawaited(session.close());
+        return;
+      }
       Navigator.of(context).pushReplacement(MaterialPageRoute(
           builder: (_) => ControllerView(session: session, stored: stored)));
-    } on SessionException catch (e) {
-      if (!mounted) return;
-      setState(() => _status = 'Could not reconnect: $e');
-      // Credentials may be revoked or the host moved — offer pairing again.
-      await Future<void>.delayed(const Duration(seconds: 2));
+    } on SessionException {
+      // Credentials may be revoked or the host moved — go straight to Connect
+      // (which explains the situation), rather than stalling on the splash.
+      await brand;
       if (mounted) _goPair();
     }
   }
@@ -122,17 +135,47 @@ class _LauncherState extends State<Launcher> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: DesignTokens.bgBase,
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            Container(
+              width: 64,
+              height: 64,
+              decoration: BoxDecoration(
+                color: DesignTokens.accentBrand,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              alignment: Alignment.center,
+              child: const Text('S',
+                  style: TextStyle(
+                      fontSize: 34,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.white)),
+            ),
+            const SizedBox(height: 18),
             const Text('SelahCue',
-                style: TextStyle(fontSize: 28, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 16),
-            const CircularProgressIndicator(),
+                style: TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w700,
+                    color: DesignTokens.textPrimary)),
+            const Text('Controller',
+                style: TextStyle(
+                    fontSize: 13,
+                    letterSpacing: 3,
+                    color: DesignTokens.textMuted)),
+            const SizedBox(height: 28),
+            const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(strokeWidth: 2)),
             if (_status != null) ...[
               const SizedBox(height: 16),
-              Text(_status!, textAlign: TextAlign.center),
+              Text(_status!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 13, color: DesignTokens.textMuted)),
             ],
           ],
         ),

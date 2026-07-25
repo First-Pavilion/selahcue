@@ -27,4 +27,7 @@ abstract final class DesignTokens {
   static const Color border = Color(0xFF2B323D);
   static const Color textPrimary = Color(0xFFEEF1F6);
   static const Color textMuted = Color(0xFF9AA4B2);
+
+  // Audience output surface (the on-screen black behind slides).
+  static const Color outputBlack = Color(0xFF000000);
 }

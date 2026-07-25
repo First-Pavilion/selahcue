@@ -1,16 +1,23 @@
-/// Controller view (V in MVC): the host-authoritative plan with LIVE/PREVIEW
-/// badges and the control buttons. All logic lives in [LiveController]; this is
-/// widgets only.
+/// Controller view (V in MVC) — the tabbed Producer shell (revamp 86ajpx7bd).
+/// A bottom tab bar (Live · Plan · Scripture · Timer) with a PERSISTENT
+/// emergency strip above it on every tab, a compact top bar (plan name · LIVE
+/// pill · unpair), and a non-blocking reconnecting banner. All logic lives in
+/// [LiveController]; this is widgets only.
 library;
 
 import 'package:flutter/material.dart';
 
 import '../controllers/live_controller.dart';
 import '../models/design_tokens.dart';
-import '../models/protocol.dart';
+import '../models/discovery.dart' show pinFingerprint;
 import '../models/session.dart';
 import '../models/stored_session.dart';
 import 'pairing_view.dart';
+import 'tabs/live_tab.dart';
+import 'tabs/plan_tab.dart';
+import 'tabs/scripture_tab.dart';
+import 'tabs/timer_tab.dart';
+import 'widgets/mobile_widgets.dart';
 
 class ControllerView extends StatefulWidget {
   final SelahSession session;
@@ -24,8 +31,7 @@ class ControllerView extends StatefulWidget {
 
 class _ControllerViewState extends State<ControllerView> {
   late final LiveController _live;
-  final _scriptureCtrl = TextEditingController();
-  final _minutesCtrl = TextEditingController();
+  int _tab = 0;
 
   @override
   void initState() {
@@ -35,26 +41,18 @@ class _ControllerViewState extends State<ControllerView> {
 
   @override
   void dispose() {
-    _minutesCtrl.dispose();
-    _scriptureCtrl.dispose();
     _live.dispose();
     super.dispose();
-  }
-
-  void _stageScripture() {
-    final ref = _scriptureCtrl.text.trim();
-    if (ref.isEmpty) return;
-    _live.act(cmdStageScripture(ref));
-    _scriptureCtrl.clear();
-    FocusScope.of(context).unfocus();
   }
 
   Future<void> _unpair() async {
     await _live.unpair();
     if (!mounted) return;
-    Navigator.of(context)
-        .pushReplacement(MaterialPageRoute(builder: (_) => const PairingView()));
+    Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const PairingView()));
   }
+
+  static const _titles = ['Live', 'Plan', 'Scripture', 'Timer'];
 
   @override
   Widget build(BuildContext context) {
@@ -62,231 +60,115 @@ class _ControllerViewState extends State<ControllerView> {
       listenable: _live,
       builder: (context, _) {
         final view = _live.view;
-        final blackout = _live.blackout;
+        final onAir = view?.liveIndex != null ||
+            view?.liveScripture != null ||
+            view?.liveFreeText != null;
+        final tabs = [
+          LiveTab(live: _live),
+          PlanTab(live: _live),
+          ScriptureTab(live: _live),
+          TimerTab(live: _live),
+        ];
         return Scaffold(
+          backgroundColor: DesignTokens.bgBase,
           appBar: AppBar(
-            title: Text(view?.planName ?? 'SelahCue'),
-            actions: [
-              if (view?.timer != null)
-                Padding(
-                  padding: const EdgeInsets.only(right: 12),
-                  child: Center(child: _TimerBadge(timer: view!.timer!)),
+            backgroundColor: DesignTokens.bgPanel,
+            elevation: 0,
+            titleSpacing: 16,
+            title: Row(
+              children: [
+                Flexible(
+                  // planName defaults to '' (not null) once connected, and an
+                  // unnamed plan is a legitimate host state — fall back to the
+                  // tab title on empty too, so the bar is never blank.
+                  child: Text(
+                      (view?.planName.isNotEmpty ?? false)
+                          ? view!.planName
+                          : _titles[_tab],
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: DesignTokens.textPrimary)),
                 ),
-              IconButton(
-                tooltip: 'Un-pair this device',
-                onPressed: _unpair,
-                icon: const Icon(Icons.link_off),
-              ),
-            ],
+                if (onAir) ...[
+                  const SizedBox(width: 8),
+                  const StatusBadge(text: '● LIVE', color: DesignTokens.liveFill),
+                ],
+              ],
+            ),
+          ),
+          drawer: _AboutDrawer(
+            stored: widget.stored,
+            reconnecting: _live.reconnecting,
+            onDisconnect: _unpair,
           ),
           body: Column(
             children: [
-              if (_live.error != null)
-                MaterialBanner(
-                  content: Text(_live.error!),
-                  actions: [
-                    TextButton(
-                      onPressed: _live.dismissError,
-                      child: const Text('Dismiss'),
-                    ),
-                  ],
-                ),
-              Expanded(
-                child: view == null
-                    ? const Center(child: CircularProgressIndicator())
-                    : ListView.builder(
-                        itemCount: view.items.length,
-                        itemBuilder: (context, i) {
-                          final item = view.items[i];
-                          return ListTile(
-                            onTap: () => _live.act(cmdSelectItem(item.id)),
-                            leading: _KindChip(kind: item.kind),
-                            title: Text(item.title),
-                            trailing: item.isLive
-                                ? const _Badge(
-                                    text: 'LIVE',
-                                    color: DesignTokens.liveFill)
-                                : item.isStaged
-                                    ? const _Badge(
-                                        text: 'PREVIEW',
-                                        color: DesignTokens.previewFill)
-                                    : null,
-                          );
-                        },
-                      ),
-              ),
-              SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (view?.stagedScripture != null ||
-                          view?.liveScripture != null ||
-                          view?.liveFreeText != null)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Row(
-                            children: [
-                              if (view?.stagedScripture != null) ...[
-                                const _Badge(
-                                    text: 'PREVIEW',
-                                    color: DesignTokens.previewFill),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                    child: Text(view!.stagedScripture!,
-                                        overflow: TextOverflow.ellipsis)),
-                              ],
-                              if (view?.liveScripture != null ||
-                                  view?.liveFreeText != null) ...[
-                                const _Badge(
-                                    text: 'LIVE', color: DesignTokens.liveFill),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                    child: Text(
-                                        view!.liveScripture ??
-                                            view.liveFreeText!,
-                                        overflow: TextOverflow.ellipsis)),
-                              ],
-                            ],
-                          ),
-                        ),
-                      Row(
+              if (_live.reconnecting)
+                Container(
+                  width: double.infinity,
+                  color: DesignTokens.warnFill,
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: const Text('Reconnecting to the host…',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white)),
+                )
+              else if (_live.error != null)
+                Material(
+                  color: DesignTokens.liveFill,
+                  child: InkWell(
+                    onTap: _live.dismissError,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      child: Row(
                         children: [
                           Expanded(
-                            child: TextField(
-                              controller: _scriptureCtrl,
-                              decoration: const InputDecoration(
-                                isDense: true,
-                                border: OutlineInputBorder(),
-                                hintText: 'Scripture — e.g. Romans 8:28',
-                              ),
-                              onSubmitted: (_) => _stageScripture(),
-                            ),
+                            child: Text(_live.error!,
+                                style: const TextStyle(
+                                    fontSize: 12, color: Colors.white)),
                           ),
-                          const SizedBox(width: 8),
-                          OutlinedButton(
-                            onPressed: _stageScripture,
-                            child: const Text('Stage'),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: () => _live.act(cmdPrevious()),
-                              child: const Text('◀ Prev'),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: () => _live.act(cmdNext()),
-                              child: const Text('Next ▶'),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 52,
-                        child: FilledButton(
-                          style: FilledButton.styleFrom(
-                              backgroundColor: DesignTokens.previewFill),
-                          onPressed: () => _live.act(cmdGoLive()),
-                          child: const Text('GO LIVE',
+                          const Text('Dismiss',
                               style: TextStyle(
-                                  fontSize: 18, fontWeight: FontWeight.w700)),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              style: blackout
-                                  ? OutlinedButton.styleFrom(
-                                      backgroundColor: DesignTokens.liveFill)
-                                  : null,
-                              onPressed: () => _live.act(cmdBlackout(!blackout)),
-                              child: Text(blackout ? 'Un-blackout' : 'Blackout'),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: () => _live.act(cmdClear()),
-                              child: const Text('Clear'),
-                            ),
-                          ),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white)),
                         ],
                       ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: () => _live.act(cmdStartTimer(300)),
-                              child: const Text('⏱ 5:00'),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          SizedBox(
-                            width: 72,
-                            child: TextField(
-                              controller: _minutesCtrl,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                isDense: true,
-                                border: OutlineInputBorder(),
-                                hintText: 'min',
-                              ),
-                              onSubmitted: (v) {
-                                var mins = int.tryParse(v.trim());
-                                if (mins != null && mins >= 1) {
-                                  if (mins > 999) mins = 999;
-                                  _live.act(cmdStartTimer(mins * 60));
-                                  _minutesCtrl.clear();
-                                }
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: () => _live.act(cmdStopTimer()),
-                              child: const Text('Stop timer'),
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (view?.timer != null) ...[
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: () => _live.act(cmdAdjustTimer(-60)),
-                                child: const Text('−1:00'),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: () => _live.act(cmdAdjustTimer(60)),
-                                child: const Text('+1:00'),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ],
+                    ),
                   ),
                 ),
-              ),
+              Expanded(child: IndexedStack(index: _tab, children: tabs)),
+              // Persistent emergency chrome — on every tab, above the nav.
+              EmergencyStrip(live: _live),
+            ],
+          ),
+          bottomNavigationBar: NavigationBar(
+            backgroundColor: DesignTokens.bgPanel,
+            indicatorColor: DesignTokens.accentBrand.withValues(alpha: 0.22),
+            selectedIndex: _tab,
+            onDestinationSelected: (i) => setState(() => _tab = i),
+            destinations: const [
+              NavigationDestination(
+                  icon: Icon(Icons.play_arrow_outlined),
+                  selectedIcon: Icon(Icons.play_arrow),
+                  label: 'Live'),
+              NavigationDestination(
+                  icon: Icon(Icons.list_alt_outlined),
+                  selectedIcon: Icon(Icons.list_alt),
+                  label: 'Plan'),
+              NavigationDestination(
+                  icon: Icon(Icons.menu_book_outlined),
+                  selectedIcon: Icon(Icons.menu_book),
+                  label: 'Scripture'),
+              NavigationDestination(
+                  icon: Icon(Icons.timer_outlined),
+                  selectedIcon: Icon(Icons.timer),
+                  label: 'Timer'),
             ],
           ),
         );
@@ -295,61 +177,123 @@ class _ControllerViewState extends State<ControllerView> {
   }
 }
 
-class _KindChip extends StatelessWidget {
-  final String kind;
-  const _KindChip({required this.kind});
+/// The About / connection drawer: what this device is paired to, its role, the
+/// certificate fingerprint (for trust verification), live connection status,
+/// and Disconnect (un-pair).
+class _AboutDrawer extends StatelessWidget {
+  final StoredSession stored;
+  final bool reconnecting;
+  final Future<void> Function() onDisconnect;
+
+  const _AboutDrawer({
+    required this.stored,
+    required this.reconnecting,
+    required this.onDisconnect,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        border: Border.all(color: DesignTokens.border),
-        borderRadius: BorderRadius.circular(4),
+    return Drawer(
+      backgroundColor: DesignTokens.bgPanel,
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 24, 20, 8),
+              child: Row(
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: DesignTokens.accentBrand,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    alignment: Alignment.center,
+                    child: const Text('S',
+                        style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white)),
+                  ),
+                  const SizedBox(width: 12),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: const [
+                      Text('SelahCue',
+                          style: TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700,
+                              color: DesignTokens.textPrimary)),
+                      Text('Controller',
+                          style: TextStyle(
+                              fontSize: 12,
+                              letterSpacing: 2,
+                              color: DesignTokens.textMuted)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: DesignTokens.border, height: 24),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Text('CONNECTION',
+                  style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.7,
+                      color: DesignTokens.textMuted)),
+            ),
+            _row('Status', reconnecting ? 'Reconnecting…' : 'Connected',
+                valueColor:
+                    reconnecting ? DesignTokens.warnInk : DesignTokens.previewInk),
+            _row('Host', '${stored.host}:${stored.port}'),
+            _row('Role', 'Producer'),
+            _row('Fingerprint', pinFingerprint(stored.pinHex)),
+            const Spacer(),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: DesignTokens.liveInk,
+                  side: const BorderSide(color: DesignTokens.liveInk),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                icon: const Icon(Icons.link_off),
+                label: const Text('Disconnect this device'),
+                onPressed: () {
+                  Navigator.of(context).pop(); // close the drawer
+                  onDisconnect();
+                },
+              ),
+            ),
+          ],
+        ),
       ),
-      child: Text(kind.toUpperCase(),
-          style: const TextStyle(fontSize: 10, color: DesignTokens.textMuted)),
     );
   }
-}
 
-class _Badge extends StatelessWidget {
-  final String text;
-  final Color color;
-  const _Badge({required this.text, required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(text,
-          style: const TextStyle(
-              fontSize: 10, fontWeight: FontWeight.w800, color: Colors.white)),
-    );
-  }
-}
-
-class _TimerBadge extends StatelessWidget {
-  final TimerSnapshot timer;
-  const _TimerBadge({required this.timer});
-
-  @override
-  Widget build(BuildContext context) {
-    final String label;
-    final Color color;
-    if (timer.timeUp) {
-      label = 'TIME UP';
-      color = DesignTokens.liveInk;
-    } else {
-      final secs = timer.remainingSecs ?? timer.elapsedSecs;
-      label = '${secs ~/ 60}:${(secs % 60).toString().padLeft(2, '0')}';
-      color = timer.warn ? DesignTokens.warnInk : DesignTokens.previewInk;
-    }
-    return Text(label,
-        style: TextStyle(fontWeight: FontWeight.w700, color: color));
-  }
+  Widget _row(String label, String value, {Color? valueColor}) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 108,
+              child: Text(label,
+                  style: const TextStyle(
+                      fontSize: 13, color: DesignTokens.textMuted)),
+            ),
+            Expanded(
+              child: Text(value,
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: valueColor ?? DesignTokens.textPrimary)),
+            ),
+          ],
+        ),
+      );
 }

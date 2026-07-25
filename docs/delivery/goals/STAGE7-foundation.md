@@ -706,6 +706,20 @@ follow-up. **User refine mid-batch:** the mobile app restructured to **MVC**
 
 - Target: S7aj-001..S7aj-004. Change: host mDNS advertising (mdns-sd, auto-addr, fingerprint-bearing name), mobile DiscoveryController + Nearby-hosts UI, pin-fingerprint SAS gate (Rust+Dart, pinned), iOS/Android manifest declarations. Security review (6 agents, manifest-aware): **5 findings (A–E) → all fixed** — headline: mDNS supplied the cert pin, enabling a rogue host to phish the pairing code and pivot to Producer control; closed with a confirm-the-fingerprint gate that restores the QR-model's atomic trust. Verifier: workspace **263** + Flutter **23**, clippy/deny/analyze clean. Recorded remainders on 86ajp0b0t: Android MulticastLock (native), on-device phone QA. Result: PASS. Decision: gate-review.
 
+## Batch 7al predicate — mobile Producer revamp: tabbed shell + connection flow (86ajpx7bd)
+
+| ID | Required | Criterion | Verify | Evidence | Artifact | Status |
+|---|---|---|---|---|---|---|
+| S7al-001 | yes | The crammed single screen is replaced by a progressive-disclosure tabbed shell (Live/Plan/Scripture/Timer via IndexedStack) with a PERSISTENT emergency strip (Blackout/Clear All) above the nav on every tab | `flutter analyze` + build | tabbed ControllerView + EmergencyStrip | controller_view.dart; mobile_widgets.dart | PASS |
+| S7al-002 | yes | Splash→Connect→Controller flow: returning user reconnects behind a brief brand moment; first-run/failure lands on the "Nearby hosts / Scan QR / paste" Connect screen; nearby hosts auto-browse on entry | `flutter test` + build | branded Splash; auto `_discovery.refresh()` | main.dart; pairing_view.dart | PASS |
+| S7al-003 | yes | Single-tap stages to Preview; double-tap sends live in one verified gesture (stage must actually land before commit — never commits stale Preview) | controller tests + build | `selectAndGoLive`/`stageScriptureAndGoLive` (verify staged before go-live) | live_controller.dart; plan_tab.dart; scripture_tab.dart | PASS |
+| S7al-004 | yes | About/connection drawer with connection details (host:port, role, pin fingerprint, live status) and a Disconnect (un-pair); scripture reference autocomplete (offline 66-book suggester) | `flutter test` | `_AboutDrawer`; `bible_books.dart` + chips | controller_view.dart; bible_books.dart; scripture_tab.dart | PASS |
+| S7al-005 | yes | Independent adversarial review; confirmed findings fixed; no unbounded growth (bounded suggester; sticky-denial tested) | run `wf_40675e8e-899` (13 agents) | 6 confirmed → 5 unique (A–E) → **all fixed** | CODE-REVIEW-batch7al.md | PASS |
+
+### Iteration ledger — batch 7al
+
+- Target: S7al-001..S7al-005. Change: tabbed `ControllerView` (bottom NavigationBar + IndexedStack + persistent EmergencyStrip), four focused tabs (Live/Plan/Scripture/Timer), branded Splash + "Nearby hosts" Connect flow, single-tap-preview/double-tap-live with verified staging, About drawer + Disconnect, offline scripture autocomplete, and a `ControllerSession` interface extracted for testability. Adversarial review (13 agents, 3 lenses each verified to refute): **6 confirmed → 5 unique (A–E) → all fixed**; 3 refuted — headline: the new command-denial banner was **inert** (`act()`'s refresh and the 1s poll both nulled `_error`, so a denied CLEAR ALL/BLACKOUT flashed sub-frame and the RBAC-limited Producer got no feedback mid-service) → closed by splitting the transient connection status from a **sticky denial** that survives the poll (regression-tested). Also fixed: glyph-only transport buttons had no accessible name (a11y), blank AppBar on an unnamed plan, Nearby-hosts never auto-searching, and a splash session-leak window. Verifier: `flutter analyze` clean + **29** Flutter tests (+3 controller denial-lifecycle). Recorded remainder on 86ajpx7bd: on-device QA; mobile verse-list parity needs a wire path. Result: PASS. Decision: gate-review.
+
 ## Risks and rollback
 
 - Risks: scope creep into GPU/UI (out of scope this batch). Rollback: git-versioned; additive crate.

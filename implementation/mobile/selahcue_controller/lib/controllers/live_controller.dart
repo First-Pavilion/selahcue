@@ -12,11 +12,17 @@ import '../models/session.dart';
 import '../models/stored_session.dart';
 
 class LiveController extends ChangeNotifier {
-  SelahSession _session;
+  ControllerSession _session;
   final StoredSession stored;
 
   OperatorStateView? _view;
-  String? _error;
+  // Two independent notices with different lifetimes: a transient connection
+  // status (set/cleared by reconnect+refresh) and a *sticky* command denial that
+  // must survive the 1s poll so the operator can actually read it. A blind
+  // `_error = null` on every successful refresh used to wipe the denial before
+  // it could be seen — hence the split.
+  String? _statusError;
+  String? _denial;
   bool _reconnecting = false;
   bool _refreshing = false;
   bool _disposed = false;
@@ -28,12 +34,18 @@ class LiveController extends ChangeNotifier {
   }
 
   OperatorStateView? get view => _view;
-  String? get error => _error;
+
+  /// The single message the banner surfaces. While reconnecting the connection
+  /// status wins (nothing works until we are back); otherwise a pending denial
+  /// takes priority over any stale status because it is the actionable one.
+  String? get error =>
+      _reconnecting ? (_statusError ?? _denial) : (_denial ?? _statusError);
   bool get reconnecting => _reconnecting;
   bool get blackout => _view?.blackout ?? false;
 
   void dismissError() {
-    _error = null;
+    _denial = null;
+    _statusError = null;
     _notify();
   }
 
@@ -49,12 +61,36 @@ class LiveController extends ChangeNotifier {
     try {
       final view = await _session.operatorState();
       _view = view;
-      _error = null;
+      // Connection is healthy — clear only the transient status. A pending
+      // denial is left untouched so it survives the poll (see field docs).
+      _statusError = null;
       _notify();
     } on SessionException {
       await _reconnect();
     } finally {
       _refreshing = false;
+    }
+  }
+
+  /// Stage a plan item and — only if it actually landed in Preview — send it
+  /// live in one gesture (mobile double-tap; mirrors the desktop's verified
+  /// double-click so a denied stage never commits the wrong thing).
+  Future<void> selectAndGoLive(int itemId) async {
+    await act(cmdSelectItem(itemId));
+    final v = _view;
+    if (v == null) return;
+    final idx = v.items.indexWhere((it) => it.id == itemId);
+    if (idx >= 0 && v.stagedIndex == idx) {
+      await act(cmdGoLive());
+    }
+  }
+
+  /// Stage a scripture reference and, only if it landed in Preview, send it
+  /// live in one action.
+  Future<void> stageScriptureAndGoLive(String reference) async {
+    await act(cmdStageScripture(reference));
+    if (_view?.stagedScripture == reference) {
+      await act(cmdGoLive());
     }
   }
 
@@ -64,7 +100,11 @@ class LiveController extends ChangeNotifier {
     try {
       final reply = await _session.command(cmd);
       if (reply is Denied) {
-        _error = 'Not allowed (${reply.reason}).';
+        _denial = 'Not allowed (${reply.reason}).';
+        _notify();
+      } else if (_denial != null) {
+        // A command went through — the earlier denial notice is now stale.
+        _denial = null;
         _notify();
       }
       await refresh();
@@ -78,7 +118,7 @@ class LiveController extends ChangeNotifier {
   Future<void> _reconnect() async {
     if (_reconnecting || _disposed) return;
     _reconnecting = true;
-    _error = 'Connection lost — reconnecting…';
+    _statusError = 'Connection lost — reconnecting…';
     _notify();
     // Release the broken session's socket before replacing it (no-leak rule) —
     // best-effort: the transport may already be gone.
@@ -101,7 +141,7 @@ class LiveController extends ChangeNotifier {
         }
         _session = fresh;
         _reconnecting = false;
-        _error = null;
+        _statusError = null;
         _notify();
         return;
       } on SessionException {

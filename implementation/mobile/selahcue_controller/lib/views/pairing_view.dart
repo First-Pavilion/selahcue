@@ -7,6 +7,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../models/design_tokens.dart';
 import '../controllers/discovery_controller.dart';
 import '../controllers/pairing_controller.dart';
 import '../models/discovery.dart';
@@ -29,6 +30,10 @@ class _PairingViewState extends State<PairingView> {
   void initState() {
     super.initState();
     _nameField.text = _defaultDeviceName();
+    // Nearby hosts is the promoted primary path — start a discovery pass on
+    // entry so the foregrounded list fills itself instead of stranding a
+    // first-run user on an empty "None found…" until they find the refresh icon.
+    _discovery.refresh();
   }
 
   static String _defaultDeviceName() {
@@ -130,6 +135,42 @@ class _PairingViewState extends State<PairingView> {
     await _pair();
   }
 
+  Widget _waiting() {
+    final name = _nameField.text.trim().isEmpty
+        ? _defaultDeviceName()
+        : _nameField.text.trim();
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+                width: 30,
+                height: 30,
+                child: CircularProgressIndicator(strokeWidth: 3)),
+            const SizedBox(height: 24),
+            const Text('Waiting for the host to allow this device',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600,
+                    color: DesignTokens.textPrimary)),
+            const SizedBox(height: 10),
+            Text('You appear as "$name" — the operator presses Y to allow.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    fontSize: 13, color: DesignTokens.textMuted)),
+            const SizedBox(height: 6),
+            const Text('This request expires in about 30 seconds.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12, color: DesignTokens.textMuted)),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _pair() async {
     final name = _nameField.text.trim().isEmpty
         ? _defaultDeviceName()
@@ -149,97 +190,137 @@ class _PairingViewState extends State<PairingView> {
         listenable: _controller,
         builder: (context, _) {
           final busy = _controller.busy;
-          return Padding(
+          if (busy) return _waiting();
+          return ListView(
             padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text(
-                  'On the SelahCue host, press P to show a pairing QR, then scan '
-                  'it — or paste the invite below.',
-                ),
-                const SizedBox(height: 20),
-                FilledButton.icon(
-                  onPressed: busy ? null : _scan,
-                  icon: const Icon(Icons.qr_code_scanner),
-                  label: const Text('Scan the pairing QR'),
-                ),
-                const SizedBox(height: 20),
-                TextField(
-                  controller: _uriField,
-                  enabled: !busy,
-                  decoration: const InputDecoration(
-                    labelText: 'or paste the invite (selahcue://pair?...)',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _nameField,
-                  enabled: !busy,
-                  decoration: const InputDecoration(
-                    labelText: 'This device shows to the operator as',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                ListenableBuilder(
-                  listenable: _discovery,
-                  builder: (context, _) => Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
-                        children: [
-                          const Expanded(
-                            child: Text('Nearby hosts',
-                                style: TextStyle(fontWeight: FontWeight.w600)),
-                          ),
-                          _discovery.searching
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child:
-                                      CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : IconButton(
-                                  tooltip: 'Search the network',
-                                  onPressed: busy ? null : _discovery.refresh,
-                                  icon: const Icon(Icons.refresh),
-                                ),
-                        ],
-                      ),
-                      if (_discovery.hosts.isEmpty && !_discovery.searching)
-                        const Text('None found yet — tap refresh.',
-                            style: TextStyle(fontSize: 12)),
-                      for (final h in _discovery.hosts)
-                        ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          leading: const Icon(Icons.cast),
-                          title: Text(h.name),
-                          subtitle: Text('${h.host}:${h.port}'),
-                          onTap: busy ? null : () => _pairDiscovered(h),
+            children: [
+              const Text('Connect to a host',
+                  style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: DesignTokens.textPrimary)),
+              const SizedBox(height: 6),
+              const Text(
+                  'On the SelahCue host, press P to start pairing. Pick it '
+                  'below, scan its QR, or paste the invite.',
+                  style: TextStyle(fontSize: 13, color: DesignTokens.textMuted)),
+              const SizedBox(height: 20),
+
+              // Nearby hosts (primary path)
+              ListenableBuilder(
+                listenable: _discovery,
+                builder: (context, _) => Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text('NEARBY HOSTS',
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: 0.7,
+                                  color: DesignTokens.textMuted)),
                         ),
-                    ],
-                  ),
+                        _discovery.searching
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2))
+                            : IconButton(
+                                tooltip: 'Search the network',
+                                onPressed: _discovery.refresh,
+                                icon: const Icon(Icons.refresh,
+                                    color: DesignTokens.textMuted)),
+                      ],
+                    ),
+                    if (_discovery.hosts.isEmpty && !_discovery.searching)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 4),
+                        child: Text(
+                            'None found — make sure this phone is on the same '
+                            'Wi-Fi as the host, then tap refresh.',
+                            style: TextStyle(
+                                fontSize: 12, color: DesignTokens.textMuted)),
+                      ),
+                    for (final h in _discovery.hosts)
+                      Card(
+                        color: DesignTokens.bgPanel,
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: const Icon(Icons.cast,
+                              color: DesignTokens.accentBrand),
+                          title: Text(h.name,
+                              style: const TextStyle(
+                                  color: DesignTokens.textPrimary)),
+                          subtitle: Text('${h.host}:${h.port}',
+                              style: const TextStyle(
+                                  color: DesignTokens.textMuted)),
+                          trailing: const Icon(Icons.chevron_right,
+                              color: DesignTokens.textMuted),
+                          onTap: () => _pairDiscovered(h),
+                        ),
+                      ),
+                  ],
                 ),
+              ),
+              const SizedBox(height: 16),
+
+              // Scan QR (primary)
+              FilledButton.icon(
+                onPressed: _scan,
+                style: FilledButton.styleFrom(
+                    backgroundColor: DesignTokens.accentBrand,
+                    padding: const EdgeInsets.symmetric(vertical: 14)),
+                icon: const Icon(Icons.qr_code_scanner),
+                label: const Text('Scan the pairing QR'),
+              ),
+              const SizedBox(height: 16),
+
+              // Device name
+              TextField(
+                controller: _nameField,
+                style: const TextStyle(color: DesignTokens.textPrimary),
+                decoration: const InputDecoration(
+                  labelText: 'This device shows to the operator as',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 8),
+
+              // Paste invite (tucked behind a disclosure)
+              Theme(
+                data: Theme.of(context)
+                    .copyWith(dividerColor: Colors.transparent),
+                child: ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  title: const Text('Enter an invite manually',
+                      style: TextStyle(
+                          fontSize: 13, color: DesignTokens.textMuted)),
+                  children: [
+                    TextField(
+                      controller: _uriField,
+                      style: const TextStyle(color: DesignTokens.textPrimary),
+                      decoration: const InputDecoration(
+                        labelText: 'selahcue://pair?...',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    FilledButton.tonal(
+                      onPressed: _pair,
+                      child: const Text('Pair with this invite'),
+                    ),
+                  ],
+                ),
+              ),
+              if (_controller.error != null) ...[
                 const SizedBox(height: 12),
-                FilledButton.tonal(
-                  onPressed: busy ? null : _pair,
-                  child: busy
-                      ? const Padding(
-                          padding: EdgeInsets.all(4),
-                          child: Text('Waiting for the host to allow…'),
-                        )
-                      : const Text('Pair'),
-                ),
-                if (_controller.error != null) ...[
-                  const SizedBox(height: 16),
-                  Text(_controller.error!,
-                      style:
-                          TextStyle(color: Theme.of(context).colorScheme.error)),
-                ],
+                Text(_controller.error!,
+                    style:
+                        const TextStyle(color: DesignTokens.liveInk)),
               ],
-            ),
+            ],
           );
         },
       ),

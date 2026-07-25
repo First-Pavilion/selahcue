@@ -35,7 +35,16 @@ class Credentials {
   const Credentials({required this.deviceId, required this.token});
 }
 
-class SelahSession {
+/// The slice of a live connection the [LiveController] drives. Extracted as an
+/// interface so the controller can be unit-tested against a fake without a real
+/// pinned-TLS socket; [SelahSession] is the production implementation.
+abstract interface class ControllerSession {
+  Future<ServerMessage> command(Map<String, dynamic> cmd);
+  Future<OperatorStateView> operatorState();
+  Future<void> close();
+}
+
+class SelahSession implements ControllerSession {
   final WebSocket _ws;
   final StreamQueue _incoming;
 
@@ -123,6 +132,7 @@ class SelahSession {
   /// timeout) means this session should be TORN DOWN and reconnected — a timed-out
   /// command's uncorrelated reply (state frames carry no request_id) could otherwise
   /// be attributed to the next command on the same socket.
+  @override
   Future<ServerMessage> command(Map<String, dynamic> cmd) {
     final completer = Completer<ServerMessage>();
     _turn = _turn.then((_) async {
@@ -151,12 +161,14 @@ class SelahSession {
   }
 
   /// Fetch the host-authoritative operator view.
+  @override
   Future<OperatorStateView> operatorState() async {
     final reply = await command(cmdGetOperatorState());
     if (reply is OperatorState) return reply.view;
     throw SessionException('unexpected reply to get_operator_state');
   }
 
+  @override
   Future<void> close() async {
     await _ws.close();
   }
