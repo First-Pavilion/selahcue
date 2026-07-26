@@ -101,7 +101,59 @@ pub enum Layer {
         /// Horizontal alignment within `rect`. Additive (`#[serde(default)]` = Left).
         #[serde(default)]
         align: TextAlign,
+        /// The font family to shape with (86ajq6fxt). `None` = the bundled default
+        /// (Noto Sans) — the deterministic, cross-OS-identical path (NFR-014). `Some`
+        /// selects a SYSTEM font installed on the render machine (per-machine; a missing
+        /// family falls back to the bundled font). Additive (`skip_serializing_if`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        font: Option<FontName>,
     },
+}
+
+/// A bounded, `Copy` font-family name (86ajq6fxt). A fixed-capacity stack string (not a
+/// heap `String`) so [`Layer`] and `Theme` stay fixed-size `Copy` PODs and every name is
+/// bounded (no-leak). A name that is empty / whitespace-only / over [`FontName::CAP`]
+/// bytes is rejected — on BOTH the constructor AND deserialization (a hand-edited /
+/// externally-supplied theme JSON cannot smuggle an empty or untrimmed family through the
+/// wire, which would otherwise masquerade as a themed non-deterministic default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FontName(arrayvec::ArrayString<{ FontName::CAP }>);
+
+impl FontName {
+    /// Maximum family-name length in bytes (font family names are short).
+    pub const CAP: usize = 64;
+
+    /// A font name from a trimmed, non-empty, ≤[`CAP`](Self::CAP)-byte string; `None`
+    /// otherwise (empty / whitespace-only / too long / not representable).
+    pub fn new(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.is_empty() || s.len() > Self::CAP {
+            return None;
+        }
+        arrayvec::ArrayString::from(s).ok().map(FontName)
+    }
+
+    /// The family name as a string slice.
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl serde::Serialize for FontName {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for FontName {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // Route through the constructor so the wire enforces the SAME invariant (trim +
+        // reject empty/over-long) — never a derived pass-through that bypasses it.
+        let s = String::deserialize(d)?;
+        FontName::new(&s).ok_or_else(|| {
+            serde::de::Error::custom("empty, whitespace-only, or over-long font family name")
+        })
+    }
 }
 
 /// A single frame's scene: resolution, background, ordered layers, and the

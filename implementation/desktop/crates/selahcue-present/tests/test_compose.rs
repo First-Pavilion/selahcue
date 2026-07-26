@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_engine::raster::{render, FrameBuffer};
-use selahcue_present::{compose_slide, Slide, Theme};
+use selahcue_present::{compose_slide, FontName, Slide, Theme};
 
 /// Whether any glyph INK (a pixel meaningfully brighter than the dark theme
 /// background) appears in the region. Real shaping antialiases glyph edges, so
@@ -246,7 +246,7 @@ fn auto_fit_wraps_a_long_paragraph_to_the_region_and_keeps_every_word() {
     // EVERY wrapped line fits the region width (nothing clips on the right)...
     for (text, px, _) in &body {
         assert!(
-            measure_line_width(text, *px) <= region.w as f32 + 1.0,
+            measure_line_width(text, *px, None) <= region.w as f32 + 1.0,
             "wrapped line wider than the region: {text:?}"
         );
     }
@@ -294,9 +294,9 @@ fn auto_fit_shrinks_an_unbreakable_token_to_fit_the_width() {
         })
         .expect("the token renders");
     assert!(
-        measure_line_width(&text, px) <= region.w as f32 + 1.0,
+        measure_line_width(&text, px, None) <= region.w as f32 + 1.0,
         "the unbreakable token must shrink to fit the region width, not clip: {}px > {}px",
-        measure_line_width(&text, px),
+        measure_line_width(&text, px, None),
         region.w
     );
     // It shrank below the design size (proving the WIDTH path engaged, not just height).
@@ -305,4 +305,90 @@ fn auto_fit_shrinks_an_unbreakable_token_to_fit_the_width() {
         "the cell shrank for width ({px} !< design {})",
         theme.body.cell_px(h)
     );
+}
+
+// --- Selectable system fonts (86ajq6fxt) -----------------------------------
+
+#[test]
+fn a_theme_font_is_additive_serde_and_byte_stable_by_default() {
+    // A default-font theme's JSON has NO "font" field (skip-if-none) → pinned theme
+    // fixtures stay byte-stable; a themed theme includes it + round-trips; old JSON
+    // without the field deserializes to the default (None).
+    let classic_json = serde_json::to_string(&Theme::classic()).unwrap();
+    assert!(
+        !classic_json.contains("\"font\""),
+        "a default-font theme omits the font field (byte-stable JSON)"
+    );
+
+    let mut themed = Theme::classic();
+    themed.font = FontName::new("Arial");
+    let themed_json = serde_json::to_string(&themed).unwrap();
+    assert!(
+        themed_json.contains("\"font\":\"Arial\""),
+        "a themed theme serializes its font family: {themed_json}"
+    );
+    let back: Theme = serde_json::from_str(&themed_json).unwrap();
+    assert_eq!(
+        back.font.map(|f| f.as_str().to_string()),
+        Some("Arial".into())
+    );
+
+    // Old (pre-font) JSON deserializes to the default font.
+    let old: Theme = serde_json::from_str(&classic_json).unwrap();
+    assert_eq!(old.font, None);
+}
+
+#[test]
+fn a_theme_font_changes_the_composed_slide() {
+    // A per-theme system font actually drives the composed output (threaded through
+    // compose → the Text layers). Robust over the enumerated set; skips only when the
+    // machine has no installed fonts (the default bundled font always composes).
+    let families = selahcue_engine::raster::system_font_families();
+    if families.is_empty() {
+        eprintln!("no system fonts — skipping the themed-compose differs check");
+        return;
+    }
+    let slide = Slide::new("John 3:16", ["For God so loved the world"]);
+    let default = render(&compose_slide(&slide, &Theme::classic(), 320, 180))
+        .bytes()
+        .to_vec();
+    let differs = families.iter().take(40).any(|fam| {
+        let mut t = Theme::classic();
+        t.font = FontName::new(fam);
+        render(&compose_slide(&slide, &t, 320, 180))
+            .bytes()
+            .to_vec()
+            != default
+    });
+    assert!(
+        differs,
+        "a per-theme system font changes the composed slide vs the bundled default"
+    );
+}
+
+#[test]
+fn a_theme_font_is_validated_on_deserialization() {
+    // The wire path (SetCustomTheme/SaveTheme run serde_json::from_str::<Theme>) must
+    // enforce the SAME invariant as FontName::new — an empty/whitespace font cannot
+    // masquerade as a themed (non-deterministic) default, and a spaced name is trimmed.
+    let with_font = |fv: serde_json::Value| {
+        let mut v = serde_json::to_value(Theme::classic()).unwrap();
+        v["font"] = fv;
+        serde_json::from_str::<Theme>(&v.to_string())
+    };
+    assert!(
+        with_font(serde_json::json!("")).is_err(),
+        "empty font rejected"
+    );
+    assert!(
+        with_font(serde_json::json!("   ")).is_err(),
+        "whitespace font rejected"
+    );
+    assert!(
+        with_font(serde_json::json!("n".repeat(65))).is_err(),
+        "over-long font (>64 bytes) rejected"
+    );
+    // A spaced name trims to the canonical family (so it matches the installed font).
+    let t = with_font(serde_json::json!(" Arial ")).unwrap();
+    assert_eq!(t.font.map(|f| f.as_str().to_string()), Some("Arial".into()));
 }

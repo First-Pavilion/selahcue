@@ -94,6 +94,9 @@ name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "as-raw-xcb-connection"
@@ -2171,6 +2174,7 @@ dependencies = [
 name = "selahcue-engine"
 version = "0.1.0"
 dependencies = [
+ "arrayvec",
  "cosmic-text",
  "serde",
  "serde_json",

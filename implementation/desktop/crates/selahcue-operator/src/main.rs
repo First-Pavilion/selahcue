@@ -363,6 +363,13 @@ fn builtin_themes() -> Vec<serde_json::Value> {
         })
         .collect()
 }
+/// The fonts installed on THIS machine (sorted, deduped, bounded) for the Theme Designer
+/// font picker (86ajq6fxt). A pure, host-local enumeration (like `builtin_themes`); the
+/// selected family rides in the theme JSON, so there is NO new wire command.
+#[tauri::command]
+fn system_fonts() -> Vec<String> {
+    selahcue_present::system_font_families()
+}
 /// Render a Theme-Designer theme as a sample slide and return it as base64 RGBA8
 /// (+ dimensions) — the webview draws it to a <canvas> via ImageData for an ACCURATE
 /// preview (same compositor as the audience output). A pure function of the theme;
@@ -604,7 +611,8 @@ fn main() {
             delete_theme,
             set_screen_theme,
             preview_theme,
-            builtin_themes
+            builtin_themes,
+            system_fonts
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");

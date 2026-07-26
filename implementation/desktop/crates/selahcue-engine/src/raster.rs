@@ -6,8 +6,11 @@
 //! wgpu backend renders the *same* [`Frame`]; cross-GPU parity is asserted
 //! perceptually (SSIM ≥ 0.99), not by byte-equality.
 
+use crate::scene::FontName;
 use crate::scene::{Frame, Layer, Rect, Rgba, TextAlign};
-use cosmic_text::{Attrs, Buffer, Color as CtColor, FontSystem, Metrics, Shaping, SwashCache};
+use cosmic_text::{
+    Attrs, Buffer, Color as CtColor, Family, FontSystem, Metrics, Shaping, SwashCache,
+};
 use std::cell::RefCell;
 
 /// The single BUNDLED output font (Noto Sans, Regular, Latin subset — OFL, see
@@ -31,7 +34,13 @@ const FONT_TO_LINE: f32 = 0.72;
 /// whole context is rebuilt from scratch every [`RESET_EVERY`] renders (cheap —
 /// re-loading a 127 KB font — and it fully frees both caches; no unbounded growth).
 struct TextCtx {
+    /// The DEFAULT shaper: the bundled font ONLY, system fonts never loaded — so text
+    /// with no per-theme font shapes byte-identically on every OS (NFR-014).
     fs: FontSystem,
+    /// The shaper for a per-theme SYSTEM font (86ajq6fxt): the bundled font PLUS the
+    /// machine's installed fonts. Lazily built on the first themed render (scanning the
+    /// OS font dirs is not free) and dropped on reset. `None` until a themed font is used.
+    system_fs: Option<FontSystem>,
     cache: SwashCache,
     renders: u32,
 }
@@ -39,30 +48,84 @@ struct TextCtx {
 /// Rebuild the (bounded but ever-appending) glyph/shape caches this often.
 const RESET_EVERY: u32 = 4096;
 
+/// A `FontSystem` holding only the bundled font — the deterministic default shaper.
+fn build_bundled_fs() -> FontSystem {
+    let mut db = cosmic_text::fontdb::Database::new();
+    db.load_font_data(FONT_BYTES.to_vec());
+    // A fixed locale so segmentation/line-breaking is identical everywhere.
+    FontSystem::new_with_locale_and_db("en-US".to_string(), db)
+}
+
+/// Upper bound on the enumerated system-font list (86ajq6fxt) — a machine rarely has
+/// this many distinct families; bounds the picker + the IPC payload (no unbounded growth).
+pub const MAX_SYSTEM_FONTS: usize = 2048;
+
+/// The distinct family names of the fonts installed on THIS machine, sorted + deduped +
+/// bounded — for the Theme Designer's font picker (86ajq6fxt). Scans the OS font
+/// directories (not free); call once when the picker opens. Empty on a machine with no
+/// installed fonts (a minimal headless container); the default bundled font always works.
+pub fn system_font_families() -> Vec<String> {
+    let mut db = cosmic_text::fontdb::Database::new();
+    db.load_system_fonts();
+    let mut names: Vec<String> = db
+        .faces()
+        .flat_map(|face| face.families.iter().map(|(name, _lang)| name.clone()))
+        .filter(|n| !n.trim().is_empty() && n.len() <= FontName::CAP)
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names.truncate(MAX_SYSTEM_FONTS);
+    names
+}
+
+/// A `FontSystem` holding the bundled font PLUS the machine's installed fonts (86ajq6fxt).
+/// A per-theme font is requested by `Family::Name`; when that family is absent, cosmic-text
+/// falls through its own fallback chain to a READABLE platform default (Noto Sans on Linux,
+/// the OS UI font on macOS/Windows) — never tofu, blank, or a panic, and deterministic on a
+/// given machine. (We do NOT set the generic sans-serif/serif families: those are only
+/// consulted for `Family::SansSerif`/`Serif`/… which this path never emits, so they would be
+/// dead code — the honest guarantee is "a readable platform font", not "always Noto Sans".)
+fn build_system_fs() -> FontSystem {
+    let mut db = cosmic_text::fontdb::Database::new();
+    db.load_font_data(FONT_BYTES.to_vec());
+    db.load_system_fonts();
+    FontSystem::new_with_locale_and_db("en-US".to_string(), db)
+}
+
 impl TextCtx {
     fn new() -> Self {
-        let mut db = cosmic_text::fontdb::Database::new();
-        db.load_font_data(FONT_BYTES.to_vec());
-        // A fixed locale so segmentation/line-breaking is identical everywhere.
-        let fs = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
         TextCtx {
-            fs,
+            fs: build_bundled_fs(),
+            system_fs: None,
             cache: SwashCache::new(),
             renders: 0,
         }
     }
     /// Periodically drop the caches so long-running sessions can't accumulate
-    /// glyph images / shaped runs without bound (no-leak rule).
+    /// glyph images / shaped runs without bound (no-leak rule). The system shaper is
+    /// dropped too (re-loaded lazily only if a themed font is used again).
     fn tick(&mut self) {
         self.renders = self.renders.wrapping_add(1);
         if self.renders.is_multiple_of(RESET_EVERY) {
             self.cache = SwashCache::new();
-            self.fs = {
-                let mut db = cosmic_text::fontdb::Database::new();
-                db.load_font_data(FONT_BYTES.to_vec());
-                FontSystem::new_with_locale_and_db("en-US".to_string(), db)
-            };
+            self.fs = build_bundled_fs();
+            self.system_fs = None;
         }
+    }
+    /// Ensure the lazy system shaper exists when a per-theme font is requested.
+    fn ensure_system_fs(&mut self, font: Option<&FontName>) {
+        if font.is_some() && self.system_fs.is_none() {
+            self.system_fs = Some(build_system_fs());
+        }
+    }
+}
+
+/// The cosmic-text `Attrs` for `font`: the default (bundled) family, or a named system
+/// family. A tiny helper so `draw_text` + `measure_line_width` agree exactly.
+fn attrs_for(font: Option<&FontName>) -> Attrs<'_> {
+    match font {
+        None => Attrs::new(),
+        Some(f) => Attrs::new().family(Family::Name(f.as_str())),
     }
 }
 
@@ -305,7 +368,8 @@ pub fn render(frame: &Frame) -> FrameBuffer {
                 px,
                 color,
                 align,
-            } => draw_text(&mut fb, *rect, text, *px, *color, *align),
+                font,
+            } => draw_text(&mut fb, *rect, text, *px, *color, *align, font.as_ref()),
         }
     }
     fb
@@ -315,21 +379,29 @@ pub fn render(frame: &Frame) -> FrameBuffer {
 /// [`draw_text`] does (`px·FONT_TO_LINE`, one unwrapped line). `compose`'s shrink-to-fit
 /// uses this to scale the cell so the WIDEST line fits the region width, not only its
 /// height: `draw_text` never wraps, so an over-wide line would otherwise clip on the
-/// right. Deterministic (single bundled shaper+font). Returns `0.0` for empty/zero input.
-pub fn measure_line_width(text: &str, px: u32) -> f32 {
+/// right. Uses the SAME font as `draw_text` (`font`: `None` = bundled default; `Some` =
+/// the per-theme system font) so the width matches what is drawn. Returns `0.0` for
+/// empty/zero input.
+pub fn measure_line_width(text: &str, px: u32, font: Option<&FontName>) -> f32 {
     if px == 0 || text.is_empty() {
         return 0.0;
     }
     let line_h = (px as f32).max(1.0);
     let font_size = (line_h * FONT_TO_LINE).max(1.0);
+    let attrs = attrs_for(font);
     TEXT.with(|cell| {
         let ctx = &mut *cell.borrow_mut();
         ctx.tick();
-        let TextCtx { fs, .. } = ctx;
-        let mut buffer = Buffer::new(fs, Metrics::new(font_size, line_h));
-        buffer.set_size(fs, None, None);
-        buffer.set_text(fs, text, Attrs::new(), Shaping::Advanced);
-        buffer.shape_until_scroll(fs, false);
+        ctx.ensure_system_fs(font);
+        let TextCtx { fs, system_fs, .. } = ctx;
+        let shaper: &mut FontSystem = match font {
+            None => fs,
+            Some(_) => system_fs.as_mut().expect("ensured above"),
+        };
+        let mut buffer = Buffer::new(shaper, Metrics::new(font_size, line_h));
+        buffer.set_size(shaper, None, None);
+        buffer.set_text(shaper, text, attrs, Shaping::Advanced);
+        buffer.shape_until_scroll(shaper, false);
         buffer
             .layout_runs()
             .map(|r| r.line_w)
@@ -343,7 +415,16 @@ pub fn measure_line_width(text: &str, px: u32) -> f32 {
 /// bitmap path, Unicode + diacritics (Yoruba/Igbo tonal marks, French/Spanish
 /// accents) shape and position correctly (FR-017). Deterministic: a single
 /// bundled shaper+font renders byte-identically on every OS.
-fn draw_text(fb: &mut FrameBuffer, rect: Rect, text: &str, px: u32, color: Rgba, align: TextAlign) {
+#[allow(clippy::too_many_arguments)]
+fn draw_text(
+    fb: &mut FrameBuffer,
+    rect: Rect,
+    text: &str,
+    px: u32,
+    color: Rgba,
+    align: TextAlign,
+    font: Option<&FontName>,
+) {
     if px == 0 || rect.w == 0 || rect.h == 0 || text.is_empty() {
         return;
     }
@@ -358,16 +439,29 @@ fn draw_text(fb: &mut FrameBuffer, rect: Rect, text: &str, px: u32, color: Rgba,
     let line_h = (px as f32).min(fb.height as f32).max(1.0);
     let font_size = (line_h * FONT_TO_LINE).max(1.0);
 
+    let attrs = attrs_for(font);
     TEXT.with(|cell| {
         let ctx = &mut *cell.borrow_mut();
         ctx.tick();
-        let TextCtx { fs, cache, .. } = ctx;
+        ctx.ensure_system_fs(font);
+        // Split-borrow: the chosen shaper (bundled default OR the system shaper) and the
+        // glyph cache are independent fields of the context.
+        let TextCtx {
+            fs,
+            system_fs,
+            cache,
+            ..
+        } = ctx;
+        let fs: &mut FontSystem = match font {
+            None => fs,
+            Some(_) => system_fs.as_mut().expect("ensured above"),
+        };
         // The font at `font_size`, laid out in a `line_h`-tall line box, so a
         // glyph's ink stays inside the cell (see above). Unconstrained size → one
         // line, no wrap; horizontal culling below keeps the WORK frame-bounded.
         let mut buffer = Buffer::new(fs, Metrics::new(font_size, line_h));
         buffer.set_size(fs, None, None);
-        buffer.set_text(fs, text, Attrs::new(), Shaping::Advanced);
+        buffer.set_text(fs, text, attrs, Shaping::Advanced);
         buffer.shape_until_scroll(fs, false);
 
         let ink = CtColor::rgba(color.r, color.g, color.b, color.a);

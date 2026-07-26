@@ -187,6 +187,8 @@ pub fn compose_stage(
             px,
             color: theme.text,
             align: selahcue_engine::scene::TextAlign::Left,
+            // The confidence monitor always uses the bundled default font (deterministic).
+            font: None,
         });
     }
 
@@ -243,6 +245,7 @@ fn push_region(
         VAlign::Top,
         theme.text,
         Fit::ShrinkToFit,
+        None, // the confidence monitor always uses the bundled default font
     ) {
         frame.push(layer);
     }

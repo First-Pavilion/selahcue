@@ -556,6 +556,41 @@
         if (tdOrder.length) tdList();
       }
 
+      // Ensure the Font picker has an option for `font` even when it is NOT installed on
+      // THIS machine (a theme designed elsewhere) — so a saved theme's font is reflected +
+      // preserved, never silently blanked. Deduped; a no-op for the default ("").
+      function tdEnsureFontOption(font) {
+        if (!font) return;
+        const sel = document.getElementById("td-font");
+        if (Array.from(sel.options).some((o) => o.value === font)) return;
+        const o = document.createElement("option");
+        o.value = font;
+        o.textContent = font + " (not installed here)";
+        sel.appendChild(o);
+      }
+
+      // Populate the Font picker from the fonts installed on THIS machine (86ajq6fxt).
+      // The default "Noto Sans (default)" option (value "") stays; families append after.
+      async function tdLoadFonts() {
+        const sel = document.getElementById("td-font");
+        let fonts = [];
+        try {
+          fonts = await invoke("system_fonts");
+        } catch (e) {
+          console.error(e);
+        }
+        fonts.forEach((fam) => {
+          const o = document.createElement("option");
+          o.value = fam;
+          o.textContent = fam;
+          sel.appendChild(o);
+        });
+        if (tdTheme) {
+          tdEnsureFontOption(tdTheme.font);
+          sel.value = tdTheme.font || "";
+        }
+      }
+
       async function tdLoadBuiltins() {
         let list = [];
         try {
@@ -705,6 +740,11 @@
         tdSeg("td-align", r.align_h, "a");
         tdSeg("td-valign", r.align_v, "v");
         tdSeg("td-fit", r.fit, "f");
+        // Reflect the theme's font (86ajq6fxt); "" = the bundled default. If the theme's
+        // font isn't installed on THIS machine, still show it (a "(not installed here)"
+        // entry) so it is faithfully reflected + preserved, not silently blanked/cleared.
+        tdEnsureFontOption(tdTheme.font);
+        document.getElementById("td-font").value = tdTheme.font || "";
         tdSyncLayout();
       }
 
@@ -733,6 +773,14 @@
         r.y_permille = tdClamp(Math.round(r.y_permille), 0, 1000 - r.h_permille);
       }
 
+      // Per-theme font family (86ajq6fxt): "" = the bundled default (drop the field so
+      // the theme JSON stays byte-stable); a name = a system font on this machine.
+      document.getElementById("td-font").onchange = (e) => {
+        if (!tdTheme) return;
+        const fam = e.target.value;
+        if (fam) tdTheme.font = fam; else delete tdTheme.font;
+        tdPreview();
+      };
       document.getElementById("td-bg").oninput = (e) => { if (!tdTheme) return; tdTheme.background = tdRgb(e.target.value); tdPreview(); };
       document.getElementById("td-color").oninput = (e) => { if (!tdTheme) return; tdTheme[tdRegion].color = tdRgb(e.target.value); tdPreview(); };
       document.getElementById("td-size").oninput = (e) => { if (!tdTheme) return; tdTheme[tdRegion].size_permille = +e.target.value; document.getElementById("td-size-v").textContent = (e.target.value / 10).toFixed(1); tdPreview(); };
@@ -941,6 +989,7 @@
           .catch((e) => { s.textContent = "Couldn't apply the theme — the audience output is unchanged."; throw e; }));
       };
       tdLoadBuiltins();
+      tdLoadFonts();
 
       function miniBtn(label, onclick) {
         const b = document.createElement("button");

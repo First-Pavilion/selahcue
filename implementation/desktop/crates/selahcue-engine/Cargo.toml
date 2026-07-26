@@ -9,6 +9,10 @@ description = "SelahCue render-engine test seam (ADR-0015): scene model, GPU-fre
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+# A fixed-capacity, Copy, stack-allocated string for the per-theme font-family name
+# (86ajq6fxt) — keeps `scene::Layer::Text` and `Theme` fixed-size Copy PODs (no heap
+# String) with a bounded name. Already in the tree (transitive via cosmic-text).
+arrayvec = { version = "0.7", features = ["serde"] }
 # Real text shaping + rasterization (ADR-0014, FR-017): cosmic-text drives
 # rustybuzz (a pure-Rust HarfBuzz port over ttf-parser) for shaping + mark
 # positioning and swash for CPU glyph rasterization, over a single BUNDLED OFL

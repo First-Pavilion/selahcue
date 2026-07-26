@@ -2,8 +2,8 @@
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_engine::raster::render;
-use selahcue_engine::scene::{Frame, Layer, Rect, Rgba, TextAlign};
+use selahcue_engine::raster::{render, system_font_families, MAX_SYSTEM_FONTS};
+use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, TextAlign};
 
 fn red_frame_with_blue_box() -> Frame {
     let mut f = Frame::new(32, 32).with_background(Rgba::rgb(255, 0, 0));
@@ -86,6 +86,7 @@ fn text_layer_renders_glyphs_within_its_rect() {
         px: 16,
         color: Rgba::WHITE,
         align: TextAlign::Left,
+        font: None,
     });
     let fb = render(&f);
     // Antialiased glyph ink appears inside the text rect (partial-coverage greys,
@@ -120,6 +121,7 @@ fn oversized_text_is_bounded_by_the_framebuffer() {
         px: 100_000,
         color: Rgba::WHITE,
         align: TextAlign::Left,
+        font: None,
     });
     let fb = render(&f);
     assert_eq!(fb.width(), 64);
@@ -139,6 +141,7 @@ fn glyphs_are_not_mirrored() {
         px: 34,
         color: Rgba::WHITE,
         align: TextAlign::Left,
+        font: None,
     });
     let fb = render(&f);
     let ink = |x: u32, y: u32| fb.pixel(x, y).map(|p| p.r as u32).unwrap_or(0);
@@ -169,6 +172,7 @@ fn text_is_clipped_to_its_rect() {
         px: 16,
         color: Rgba::WHITE,
         align: TextAlign::Left,
+        font: None,
     });
     let fb = render(&f);
     // No glyph pixels beyond the 32px-wide rect.
@@ -223,6 +227,7 @@ fn text_frame(text: &str) -> Frame {
         px: 34,
         color: Rgba::WHITE,
         align: TextAlign::Left,
+        font: None,
     });
     f
 }
@@ -282,6 +287,7 @@ fn offscreen_glyphs_are_culled_so_work_is_frame_bounded() {
             px: 28,
             color: Rgba::WHITE,
             align: TextAlign::Left,
+            font: None,
         });
         render(&f)
     };
@@ -306,6 +312,7 @@ fn descenders_and_dot_below_marks_are_not_cropped() {
         px: 44,
         color: Rgba::WHITE,
         align: TextAlign::Left,
+        font: None,
     });
     let fb = render(&f);
     // There is ink in the LOWER portion of the cell (below the x-height band) —
@@ -334,6 +341,7 @@ fn text_caches_stay_bounded_over_many_renders() {
             px: 8 + (i % 30), // distinct sizes cycle → exercises the size dimension
             color: Rgba::WHITE,
             align: TextAlign::Left,
+            font: None,
         });
         let _ = render(&f);
     }
@@ -345,6 +353,7 @@ fn text_caches_stay_bounded_over_many_renders() {
         px: 20,
         color: Rgba::WHITE,
         align: TextAlign::Left,
+        font: None,
     });
     assert_eq!(render(&f).bytes(), render(&f).bytes());
 }
@@ -362,6 +371,7 @@ fn text_alignment_offsets_the_line_within_its_rect() {
             px: 32,
             color: Rgba::WHITE,
             align,
+            font: None,
         });
         render(&f)
     };
@@ -398,4 +408,92 @@ fn text_alignment_offsets_the_line_within_its_rect() {
         rh > 180,
         "right-aligned ink reaches near the right edge, got {rh}"
     );
+}
+
+// --- Selectable system fonts (86ajq6fxt) -----------------------------------
+
+/// Render "HELLO" in a 200×40 frame under `font` (None = the bundled default).
+fn render_text(font: Option<FontName>) -> Vec<u8> {
+    let mut f = Frame::new(200, 40);
+    f.push(Layer::Text {
+        rect: Rect::new(10, 8, 180, 24),
+        text: "HELLO".into(),
+        px: 20,
+        color: Rgba::WHITE,
+        align: TextAlign::Left,
+        font,
+    });
+    render(&f).bytes().to_vec()
+}
+
+#[test]
+fn a_missing_font_falls_back_readably_and_deterministically() {
+    // A per-theme font not installed on this machine must degrade to a READABLE fallback
+    // (cosmic-text's fallback chain → a real platform font: Noto Sans on Linux, the OS UI
+    // font on macOS/Windows) — never tofu, never blank, never a panic. The fallback goes
+    // through the system shaper (not the bundled-only default path), so it need not be
+    // byte-identical to the default; it must be NON-BLANK and DETERMINISTIC on this machine
+    // (two different unknown families fall back to the same thing).
+    let a = render_text(Some(
+        FontName::new("NoSuchFont-\u{2205}-ZZZ-12345").unwrap(),
+    ));
+    let b = render_text(Some(FontName::new("AlsoMissing-\u{2603}-QQQ").unwrap()));
+    assert!(
+        a.iter().any(|&px| px != 0),
+        "a missing font still draws readable ink (fallback), not a blank frame"
+    );
+    assert_eq!(
+        a, b,
+        "two unknown families fall back to the SAME (deterministic) render"
+    );
+    // And the bundled default itself draws ink.
+    assert!(render_text(None).iter().any(|&px| px != 0));
+}
+
+#[test]
+fn a_selected_system_font_can_change_the_render() {
+    // A per-theme font actually drives shaping: if the machine has ANY installed family
+    // distinct enough from the bundled Noto Sans, selecting it changes the pixels. Robust
+    // over the enumerated set (a machine with fonts has some that differ). Skips only on a
+    // minimal env with NO installed fonts (the default bundled font always works there).
+    let families = system_font_families();
+    if families.is_empty() {
+        eprintln!("no system fonts enumerated on this machine — skipping the differs check");
+        return;
+    }
+    let default = render_text(None);
+    let any_differs = families
+        .iter()
+        .take(40)
+        .any(|fam| FontName::new(fam).is_some_and(|f| render_text(Some(f)) != default));
+    assert!(
+        any_differs,
+        "at least one of the {} installed fonts renders differently from the bundled default",
+        families.len().min(40)
+    );
+}
+
+#[test]
+fn system_font_enumeration_is_sorted_deduped_and_bounded() {
+    let families = system_font_families();
+    assert!(families.len() <= MAX_SYSTEM_FONTS, "enumeration is bounded");
+    // Sorted + deduped.
+    assert!(
+        families.windows(2).all(|w| w[0] < w[1]),
+        "family list is sorted + deduped"
+    );
+    // Every name is within the bounded FontName capacity (so all are assignable).
+    assert!(families.iter().all(|n| FontName::new(n).is_some()));
+}
+
+#[test]
+fn themed_font_rendering_is_bounded_over_many_renders() {
+    // No-leak: rendering many frames with a per-theme font holds O(1) buffer state (the
+    // system shaper is bounded + periodically reset), and never panics.
+    let font = FontName::new("SelahCue-Probe-Font").unwrap(); // missing → fallback path
+    let first = render_text(Some(font));
+    for _ in 0..5000u32 {
+        let out = render_text(Some(font));
+        assert_eq!(out.len(), first.len(), "frame size stays constant");
+    }
 }

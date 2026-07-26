@@ -11,7 +11,7 @@
 //! and real H+V alignment + per-region size/colour. Gradient/image backgrounds,
 //! per-role templates + per-item override, and multi-weight fonts are later slices.
 
-use selahcue_engine::scene::{Rect, Rgba, TextAlign};
+use selahcue_engine::scene::{FontName, Rect, Rgba, TextAlign};
 use serde::{Deserialize, Serialize};
 
 /// Vertical alignment of a region's text block within the region rect.
@@ -139,6 +139,13 @@ pub struct Theme {
     /// `None`, and full-screen themes serialize without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub band: Option<Band>,
+    /// The font family to shape ALL of this theme's text with (86ajq6fxt). `None` = the
+    /// bundled default (Noto Sans) — deterministic, cross-OS-identical. `Some` selects a
+    /// SYSTEM font on the render machine (a missing family falls back to the bundled
+    /// font). Additive (`skip_serializing_if` → a default-font theme's JSON is unchanged,
+    /// so pinned theme fixtures stay byte-stable). Keeps `Theme` a fixed-size `Copy` POD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<FontName>,
 }
 
 const AMBER: Rgba = Rgba {
@@ -190,6 +197,7 @@ impl Theme {
                 visible: true,
             },
             band: None,
+            font: None,
         }
     }
 
@@ -225,6 +233,7 @@ impl Theme {
                 visible: true,
             },
             band: None,
+            font: None,
         }
     }
 
@@ -284,6 +293,7 @@ impl Theme {
                 border: AMBER,
                 border_permille: 5,
             }),
+            font: None,
         }
     }
 

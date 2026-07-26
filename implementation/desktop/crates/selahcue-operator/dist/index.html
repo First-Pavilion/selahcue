@@ -245,8 +245,8 @@
             <input type="color" id="td-bg" />
             <label for="td-color">Text colour</label>
             <input type="color" id="td-color" />
-            <label class="td-later" for="td-font">Font</label>
-            <select id="td-font" class="td-later" disabled><option>Noto Sans (bundled)</option></select>
+            <label for="td-font">Font</label>
+            <select id="td-font" aria-label="Font family (system fonts on this machine; default = bundled Noto Sans)"><option value="">Noto Sans (default)</option></select>
             <div class="td-grid2 td-later">
               <label for="td-weight">Weight</label><label for="td-letter">Letter</label>
               <select id="td-weight" disabled><option>Regular</option></select>
@@ -260,7 +260,7 @@
             <div class="seg" id="td-fit" role="group" aria-labelledby="td-lbl-fit">
               <button data-f="shrink_to_fit" aria-pressed="false">Shrink to fit</button><button data-f="paginate" aria-pressed="false">Paginate</button><button data-f="clip" aria-pressed="false">Clip</button>
             </div>
-            <p class="td-hint coming-soon">One bundled font (Noto Sans) for now · font family / weight / letter-spacing + reference-gap arrive with the theme-engine enhancements (86ajq3225).</p>
+            <p class="td-hint coming-soon">Font family = any font installed on this machine (a themed font renders per-machine; the default Noto Sans is cross-OS-identical). Weight / letter-spacing / reference-gap arrive later (86ajq3225).</p>
           </aside>
         </div>
       </section>

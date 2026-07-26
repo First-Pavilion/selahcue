@@ -8,7 +8,7 @@
 
 use crate::slide::Slide;
 use crate::theme::{Band, Fit, RegionStyle, Theme, VAlign};
-use selahcue_engine::scene::{Frame, Layer, Rect, Rgba, TextAlign};
+use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, TextAlign};
 
 /// Lay out `lines` into a themed [`RegionStyle`] — per-region cell size, line
 /// height, colour, and H+V alignment, resolution-independent. The text block is
@@ -43,6 +43,7 @@ pub(crate) fn autofit_layers(
     align_v: VAlign,
     color: Rgba,
     fit: Fit,
+    font: Option<FontName>,
 ) -> Vec<Layer> {
     let non_empty: Vec<&str> = lines
         .iter()
@@ -68,8 +69,8 @@ pub(crate) fn autofit_layers(
     let wrap_at = |cell: u32| -> (Vec<String>, bool) {
         // Space advance at this cell (shaping trims a bare " ", so difference it out);
         // floored so an under-measured space can't over-pack a line into a clip.
-        let space_w = (selahcue_engine::raster::measure_line_width("x x", cell)
-            - selahcue_engine::raster::measure_line_width("xx", cell))
+        let space_w = (selahcue_engine::raster::measure_line_width("x x", cell, font.as_ref())
+            - selahcue_engine::raster::measure_line_width("xx", cell, font.as_ref()))
         .max((cell as f32) * 0.15);
         let mut memo: std::collections::HashMap<&str, f32> = std::collections::HashMap::new();
         let mut out: Vec<String> = Vec::new();
@@ -83,9 +84,9 @@ pub(crate) fn autofit_layers(
                     break 'paras;
                 }
                 budget -= 1;
-                let ww = *memo
-                    .entry(word)
-                    .or_insert_with(|| selahcue_engine::raster::measure_line_width(word, cell));
+                let ww = *memo.entry(word).or_insert_with(|| {
+                    selahcue_engine::raster::measure_line_width(word, cell, font.as_ref())
+                });
                 if ww > max_w {
                     fits_w = false; // an unbreakable token wider than the region
                 }
@@ -169,6 +170,7 @@ pub(crate) fn autofit_layers(
             px: cell,
             color,
             align: align_h,
+            font,
         });
     }
     layers
@@ -176,7 +178,13 @@ pub(crate) fn autofit_layers(
 
 /// Lay out `lines` into a themed [`RegionStyle`] region (the audience output) — a thin
 /// wrapper over [`autofit_layers`] that derives the geometry/typography from the theme.
-fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -> Vec<Layer> {
+fn layout_region(
+    lines: &[&str],
+    style: &RegionStyle,
+    width: u32,
+    height: u32,
+    font: Option<FontName>,
+) -> Vec<Layer> {
     autofit_layers(
         lines,
         style.rect(width, height),
@@ -186,6 +194,7 @@ fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -
         style.align_v,
         style.color,
         style.fit,
+        font,
     )
 }
 
@@ -244,7 +253,7 @@ pub fn compose_slide(slide: &Slide, theme: &Theme, width: u32, height: u32) -> F
         // content, so it renders large + centred in the BODY region — not as a
         // small header. (This matches the pre-theme "big centred title" behaviour.)
         if theme.body.visible && !title.is_empty() {
-            for layer in layout_region(&[title], &theme.body, width, height) {
+            for layer in layout_region(&[title], &theme.body, width, height, theme.font) {
                 frame.push(layer);
             }
         }
@@ -252,12 +261,12 @@ pub fn compose_slide(slide: &Slide, theme: &Theme, width: u32, height: u32) -> F
         // Content slide: the title is the reference/heading (title region) and the
         // body lines fill the body region.
         if theme.title.visible && !title.is_empty() {
-            for layer in layout_region(&[title], &theme.title, width, height) {
+            for layer in layout_region(&[title], &theme.title, width, height, theme.font) {
                 frame.push(layer);
             }
         }
         if theme.body.visible {
-            for layer in layout_region(&body, &theme.body, width, height) {
+            for layer in layout_region(&body, &theme.body, width, height, theme.font) {
                 frame.push(layer);
             }
         }

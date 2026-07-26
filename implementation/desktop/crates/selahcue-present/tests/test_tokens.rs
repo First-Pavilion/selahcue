@@ -309,6 +309,40 @@ fn operator_webview_offers_saved_themes_per_item_and_per_screen() {
     }
 }
 
+/// The Theme Designer font picker (86ajq6fxt) is a real, enabled control populated from
+/// the host's installed fonts, wired to the theme's font — not the old disabled "later"
+/// placeholder. Pinned so a future edit cannot silently re-disable it.
+#[test]
+fn operator_webview_wires_the_system_font_picker() {
+    let html = operator_console_sources();
+    let index = operator_dist("index.html");
+    let js = operator_dist("app.js");
+    for needle in [
+        // The picker is present + has the default (bundled) entry.
+        "id=\"td-font\"",
+        "Noto Sans (default)",
+        // Wired to the host enumeration + the theme's font.
+        "system_fonts",
+        "tdLoadFonts",
+        "tdTheme.font",
+        // A theme font NOT installed on this machine is still reflected (not blanked).
+        "tdEnsureFontOption",
+        "(not installed here)",
+    ] {
+        assert!(html.contains(needle), "webview missing {needle:?}");
+    }
+    // The Font control is no longer a disabled "later" placeholder.
+    assert!(
+        !index.contains(r#"<select id="td-font" class="td-later" disabled>"#),
+        "the Font picker must be enabled (not the disabled 'later' placeholder)"
+    );
+    // The change handler drops the field for the default (byte-stable theme JSON).
+    assert!(
+        js.contains("delete tdTheme.font"),
+        "selecting the default font clears the theme font field"
+    );
+}
+
 /// The Flutter controller carries the same canonical values.
 #[test]
 fn mobile_tokens_are_pinned_to_the_canonical_tokens() {

@@ -29,8 +29,8 @@ pub use tokens::{contrast_ratio, SemanticToken, LIVE, NEUTRAL, PREVIEW, WARN};
 
 /// Re-exported so consumers can name the output pixel buffer (and its pixel colour)
 /// without depending on `selahcue-engine` directly.
-pub use selahcue_engine::raster::FrameBuffer;
-pub use selahcue_engine::scene::Rgba;
+pub use selahcue_engine::raster::{system_font_families, FrameBuffer};
+pub use selahcue_engine::scene::{FontName, Rgba};
 
 /// Render a canonical **sample scripture slide** with `theme` into a `width×height`
 /// [`FrameBuffer`] (RGBA8) — a pure function used by the Theme Designer to preview a
