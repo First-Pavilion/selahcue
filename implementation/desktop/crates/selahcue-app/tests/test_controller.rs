@@ -827,27 +827,56 @@ fn removed_live_item_with_a_reference_title_recovers_verbatim() {
 }
 
 #[test]
-fn scripture_slides_never_exceed_the_compositor_line_capacity() {
-    // Psalm 119 (176 verses) truncates INSIDE the renderable region: at most 6
-    // body lines, the last being the ellipsis marker — pinned against the
-    // compositor capacity test in selahcue-present (title + 6 body lines).
+fn scripture_slides_keep_the_full_passage_never_truncating() {
+    // Zero content loss (FR-010, owner refine): a scripture slide carries the FULL
+    // passage — one paragraph per verse, NEVER truncated with an ellipsis. The
+    // compositor word-wraps + auto-sizes so the whole thing fits + fills the box.
     let (mut c, _) = controller();
+
+    // The longest KJV verse (Esther 8:9) is kept in full — no "…", tail words present.
+    c.apply(&Command::StageScripture {
+        reference: "Esther 8:9".into(),
+        translation: None,
+    });
+    let slide = c.presenter().staged().expect("staged");
+    let joined = slide.body.join(" ");
+    assert!(
+        !joined.contains('\u{2026}'),
+        "no ellipsis truncation: {joined:?}"
+    );
+    assert!(
+        joined.contains("provinces"),
+        "the FULL verse is kept (tail not dropped): {joined:?}"
+    );
+
+    // A whole chapter (Psalm 119, 176 verses) keeps EVERY verse as its own paragraph.
     c.apply(&Command::StageScripture {
         reference: "Psalm 119".into(),
         translation: None,
     });
     let slide = c.presenter().staged().expect("staged");
-    assert!(slide.body.len() <= 6, "body lines: {}", slide.body.len());
-    assert_eq!(slide.body.last().map(String::as_str), Some("\u{2026}"));
+    assert_eq!(
+        slide.body.len(),
+        176,
+        "one paragraph per verse, none dropped"
+    );
+    assert!(
+        !slide.body.iter().any(|l| l.contains('\u{2026}')),
+        "no ellipsis anywhere"
+    );
 
-    // A short verse is untouched (no marker).
+    // A short verse is a single paragraph (unchanged).
     c.apply(&Command::StageScripture {
         reference: "John 11:35".into(),
         translation: None,
     });
     let slide = c.presenter().staged().expect("staged");
-    assert!(slide.body.len() <= 6);
-    assert_ne!(slide.body.last().map(String::as_str), Some("\u{2026}"));
+    assert_eq!(
+        slide.body.len(),
+        1,
+        "a single-verse passage is one paragraph"
+    );
+    assert!(!slide.body[0].contains('\u{2026}'));
 }
 
 #[test]

@@ -220,10 +220,10 @@ fn shrink_to_fit_renders_all_body_lines_by_scaling_not_clipping() {
 }
 
 #[test]
-fn shrink_to_fit_scales_a_wide_line_to_fit_the_region_width() {
-    // Owner bug: a long verse LINE wider than the region clipped on the right, because
-    // shrink-to-fit only fit the line COUNT (height), not the line WIDTH. `draw_text`
-    // never wraps, so the fix shrinks the cell so the widest line also fits rect.w.
+fn auto_fit_wraps_a_long_paragraph_to_the_region_and_keeps_every_word() {
+    // Owner bug (auto-fit): a long verse must WRAP to the region width + shrink to fit
+    // the whole passage — never clip on the right, never truncate. The compositor wraps
+    // each paragraph to rect.w and auto-sizes so all wrapped lines fit rect.h.
     use selahcue_engine::raster::measure_line_width;
     use selahcue_engine::scene::Layer;
     let long =
@@ -232,33 +232,77 @@ fn shrink_to_fit_scales_a_wide_line_to_fit_the_region_width() {
     let (w, h) = (960u32, 540u32);
     let region = theme.body.rect(w, h);
     let frame = compose_slide(&Slide::new("John 3:16", [long]), &theme, w, h);
-    // The body line layer (compose pushes the title first).
-    let (text, px, rect) = frame
+    let body: Vec<(String, u32, i32)> = frame
         .layers
         .iter()
-        .find_map(|l| match l {
-            Layer::Text { text, px, rect, .. } if text.contains("begotten") => {
-                Some((text.clone(), *px, *rect))
+        .filter_map(|l| match l {
+            Layer::Text { text, px, rect, .. } if !text.contains("John 3:16") => {
+                Some((text.clone(), *px, rect.y))
             }
             _ => None,
         })
-        .expect("the long body line renders");
-    // The shaped width now fits the region width (+1px rounding) — nothing clips.
-    let measured = measure_line_width(&text, px);
+        .collect();
+    assert!(body.len() > 1, "the long verse wraps into multiple lines");
+    // EVERY wrapped line fits the region width (nothing clips on the right)...
+    for (text, px, _) in &body {
+        assert!(
+            measure_line_width(text, *px) <= region.w as f32 + 1.0,
+            "wrapped line wider than the region: {text:?}"
+        );
+    }
+    // ...NO word is lost (the joined wrapped lines contain every original word)...
+    let joined = body
+        .iter()
+        .map(|(t, _, _)| t.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    for word in long.split_whitespace() {
+        assert!(joined.contains(word), "auto-fit dropped the word {word:?}");
+    }
+    assert!(!joined.contains('…'), "no ellipsis truncation");
+    // ...and the whole block fits inside the region height (all lines on-screen).
+    let (_, cell, _) = body[0];
+    let advance = ((cell as f64) * theme.body.line_height())
+        .round()
+        .max(cell as f64) as u32;
+    let block_h = (body.len() as u32 - 1) * advance + cell;
     assert!(
-        measured <= region.w as f32 + 1.0,
-        "wide line must shrink to fit the region width: measured {measured}px > region {}px",
+        block_h <= region.h,
+        "the wrapped block ({block_h}px) must fit the region height ({}px)",
+        region.h
+    );
+}
+
+#[test]
+fn auto_fit_shrinks_an_unbreakable_token_to_fit_the_width() {
+    // An unbreakable token wider than the region — a very long word, or a space-less CJK
+    // verse (`split_whitespace` yields ONE token) — must SHRINK the cell until it fits
+    // rect.w, never clip on the right. The auto-fit predicate checks width, not only height.
+    use selahcue_engine::raster::measure_line_width;
+    use selahcue_engine::scene::Layer;
+    let token = "Supercalifragilisticexpialidocioussupercalifragilisticexpialidociousandthenmore";
+    let theme = Theme::classic();
+    let (w, h) = (960u32, 540u32);
+    let region = theme.body.rect(w, h);
+    let frame = compose_slide(&Slide::new("T", [token]), &theme, w, h);
+    let (text, px) = frame
+        .layers
+        .iter()
+        .find_map(|l| match l {
+            Layer::Text { text, px, .. } if text.contains("Supercali") => Some((text.clone(), *px)),
+            _ => None,
+        })
+        .expect("the token renders");
+    assert!(
+        measure_line_width(&text, px) <= region.w as f32 + 1.0,
+        "the unbreakable token must shrink to fit the region width, not clip: {}px > {}px",
+        measure_line_width(&text, px),
         region.w
     );
-    // ...and it renders inside the region horizontally (no overflow past the right edge).
+    // It shrank below the design size (proving the WIDTH path engaged, not just height).
     assert!(
-        (rect.x as f32) + measured <= (region.x as f32) + region.w as f32 + 1.0,
-        "the line must sit within the region's right edge"
-    );
-    // Sanity: at the DESIGN cell the same line WOULD have overflowed (proving the fix
-    // did work, not that the line was already narrow).
-    assert!(
-        measure_line_width(&text, theme.body.cell_px(h)) > region.w as f32,
-        "the long line overflows at the design size (so the shrink was necessary)"
+        px < theme.body.cell_px(h),
+        "the cell shrank for width ({px} !< design {})",
+        theme.body.cell_px(h)
     );
 }

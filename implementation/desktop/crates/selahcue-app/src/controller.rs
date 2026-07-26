@@ -152,16 +152,6 @@ pub struct LiveController {
 /// How long the identify overlay stays on the outputs once triggered (FR-040).
 pub const IDENTIFY_TTL: Duration = Duration::from_secs(5);
 
-/// Maximum verse-text lines on a scripture slide INCLUDING the ellipsis marker.
-/// The compositor renders at most 7 text lines per frame (title + 6 body:
-/// line height 10% + gap 3% inside the 5% safe margin — pinned by the
-/// `compose_slide_renders_title_plus_six_body_lines` test in selahcue-present),
-/// so longer passages truncate to 5 verse lines + "…" (pagination is a later
-/// slice).
-const SCRIPTURE_MAX_LINES: usize = 6;
-/// Word-wrap budget per rendered line (the compositor does not wrap).
-const SCRIPTURE_WRAP_COLS: usize = 42;
-
 /// Compose the slide for a scripture reference: the parsed reference as the
 /// title and the bundled translation's verse text as wrapped body lines
 /// (FR-025/story 86ajpew05). Falls back to a title-only slide when the text is
@@ -179,17 +169,9 @@ fn item_slide(item: &selahcue_core::plan::PlanItem, slide: usize) -> Slide {
         return Slide::title(item.title.clone());
     }
     let idx = slide.min(item.stanzas.len() - 1);
-    let mut lines: Vec<String> = Vec::new();
-    for raw in &item.stanzas[idx].lines {
-        lines.extend(wrap_words(raw, SCRIPTURE_WRAP_COLS));
-        if lines.len() > SCRIPTURE_MAX_LINES {
-            break;
-        }
-    }
-    if lines.len() > SCRIPTURE_MAX_LINES {
-        lines.truncate(SCRIPTURE_MAX_LINES - 1);
-        lines.push("…".to_string());
-    }
+    // Pass the stanza's lines VERBATIM as paragraphs — the compositor word-wraps each
+    // to the region width and auto-sizes so the whole stanza fits (zero content loss).
+    let lines: Vec<String> = item.stanzas[idx].lines.clone();
     Slide::new(item.title.clone(), lines)
 }
 
@@ -205,42 +187,20 @@ fn scripture_slide_in(t: selahcue_scripture::Translation, reference: &str) -> Sl
         return Slide::title(reference);
     }
     let multi = verses.len() > 1;
-    let mut lines: Vec<String> = Vec::new();
-    for v in &verses {
-        let text = if multi {
-            format!("{} {}", v.verse, v.text)
-        } else {
-            v.text.clone()
-        };
-        lines.extend(wrap_words(&text, SCRIPTURE_WRAP_COLS));
-        if lines.len() > SCRIPTURE_MAX_LINES {
-            break;
-        }
-    }
-    if lines.len() > SCRIPTURE_MAX_LINES {
-        lines.truncate(SCRIPTURE_MAX_LINES - 1);
-        lines.push("…".to_string());
-    }
+    // Each verse is one PARAGRAPH — the full text, never truncated. The compositor
+    // word-wraps it to the region width and auto-sizes the font so the WHOLE passage
+    // fits + fills the box (zero content loss, FR-010 — no more "…" on long verses).
+    let lines: Vec<String> = verses
+        .iter()
+        .map(|v| {
+            if multi {
+                format!("{} {}", v.verse, v.text)
+            } else {
+                v.text.clone()
+            }
+        })
+        .collect();
     Slide::new(format!("{parsed} ({})", t.code()), lines)
-}
-
-/// Greedy word wrap (the raster layer renders one text layer per line).
-fn wrap_words(text: &str, cols: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        if !current.is_empty() && current.len() + 1 + word.len() > cols {
-            lines.push(std::mem::take(&mut current));
-        }
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        current.push_str(word);
-    }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
 }
 
 impl LiveController {

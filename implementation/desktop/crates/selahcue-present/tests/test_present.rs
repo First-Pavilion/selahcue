@@ -139,6 +139,36 @@ fn go_live_slide_trigger_latency_is_within_budget() {
 }
 
 #[test]
+fn go_live_latency_holds_for_the_longest_verse_auto_fit() {
+    // The auto-fit path (wrap-to-width + binary-search font sizing) shapes text many
+    // times per compose. A long verse (Esther 8:9, the longest KJV verse — the case the
+    // owner hit) must still trigger within budget — the short-verse test above would
+    // otherwise hide an auto-fit latency regression. Debug keeps a generous tripwire.
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_millis(1500)
+    } else {
+        Duration::from_millis(150)
+    };
+    let verse = "Then were the king's scribes called at that time in the third month, that \
+        is, the month Sivan, on the three and twentieth day thereof; and it was written \
+        according to all that Mordecai commanded unto the Jews, and to the lieutenants, and \
+        the deputies and rulers of the provinces which are from India unto Ethiopia, an \
+        hundred twenty and seven provinces, unto every province according to the writing \
+        thereof, and unto every people after their language, and to the Jews according to \
+        their writing, and according to their language.";
+    let mut p = Presenter::new(1920, 1080, Theme::classic());
+    p.stage(Slide::new("Esther 8:9 (KJV)", [verse]));
+    let start = Instant::now();
+    assert!(p.go_live());
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed <= budget,
+        "long-verse auto-fit latency exceeded {budget:?}: {elapsed:?}"
+    );
+    assert!(p.live_output().average_luminance() > 1e-6);
+}
+
+#[test]
 fn degenerate_dimensions_keep_tracked_state_consistent() {
     // Created before the output size is known (0×0): dimensions clamp to a valid
     // range, so go_live still projects and live_slide truthfully reflects it.

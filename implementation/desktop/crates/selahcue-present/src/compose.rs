@@ -72,6 +72,17 @@ pub(crate) fn layout_lines<'a>(
 /// **`ShrinkToFit`** (the default) shrinks the cell so *every* line fits — nothing
 /// is dropped; `Clip`/`Paginate` keep the design size and drop what overflows
 /// (`Paginate` is a later slice, treated as `Clip` for now).
+/// Upper bound on words wrapped per region — far above any real verse or stanza (the
+/// longest KJV verse is ~90 words), so real content is never truncated, but a
+/// pathological free-text paste cannot make the SYNCHRONOUS Go-Live compose shape an
+/// unbounded number of glyphs (a mid-service stall). Overflow → pagination (a later slice).
+const MAX_WRAP_WORDS: usize = 1000;
+
+/// Per-line vertical advance: the cell scaled by the line-height multiplier.
+fn advance_of(cell: u32, lh: f64) -> u32 {
+    ((cell as f64) * lh).round().max(cell as f64) as u32
+}
+
 fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -> Vec<Layer> {
     let non_empty: Vec<&str> = lines
         .iter()
@@ -87,60 +98,119 @@ fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -
     }
     let lh = style.line_height();
     let design_cell = style.cell_px(height).min(rect.h).max(1);
-    // For `ShrinkToFit`, size the cell so ALL `want` lines fit the region height:
-    // want lines occupy `cell·((want−1)·lh + 1)` ≤ rect.h → solve for the largest
-    // cell, capped at the design size (never enlarge) and floored at 1px.
-    let want = non_empty.len();
-    let mut cell = match style.fit {
-        Fit::ShrinkToFit => {
-            // Largest cell where all `want` lines fit rect.h. `span` is the block
-            // height in cell-units; `safety` absorbs the per-line advance rounding
-            // (`round(cell·lh)` can add up to +0.5px each) so the discrete
-            // `max_lines` below actually reaches `want`. Capped at the design size.
-            let span = ((want as f64 - 1.0) * lh + 1.0).max(1.0);
-            let safety = (want as f64 - 1.0) * 0.5;
-            let fit_cell = (((rect.h as f64) - safety) / span).floor().max(1.0) as u32;
-            design_cell.min(fit_cell)
-        }
-        Fit::Clip | Fit::Paginate => design_cell,
-    };
-    // Shrink-to-fit must also fit the region WIDTH: `draw_text` never wraps, so a line
-    // wider than `rect.w` at this cell would clip on the right (owner bug — long verses
-    // clipped). `line_w` scales ~linearly with the cell, so scale by the width ratio;
-    // iterate a few times to absorb shaping/rounding non-linearity (converges fast).
-    if matches!(style.fit, Fit::ShrinkToFit) {
-        for _ in 0..4 {
-            let max_w = non_empty
-                .iter()
-                .map(|l| selahcue_engine::raster::measure_line_width(l, cell))
-                .fold(0.0_f32, f32::max);
-            if max_w <= rect.w as f32 || max_w <= 0.0 || cell <= 1 {
-                break;
+
+    // Word-wrap every input paragraph (a song stanza line, or a whole verse) to the
+    // region WIDTH at `cell`, returning the display lines + whether they ALL fit `rect.w`.
+    // Each word is measured ONCE (memoized per cell) and lines are filled by summed
+    // advances — O(words), so a large paste can't trigger the O(words²) re-shaping a
+    // per-line measure would (mid-service Go-Live stall). A single unbreakable token
+    // wider than the region (e.g. a space-less CJK verse, since `split_whitespace` makes
+    // it one token) sets `fits_w = false`, so the auto-fit shrinks the cell until even it
+    // fits — never clipping. `line_cap` (a block taller than the region never fits) and
+    // `MAX_WRAP_WORDS` bound the work for a pathological passage.
+    let line_cap = rect.h as usize + 1;
+    let max_w = rect.w as f32;
+    let wrap_at = |cell: u32| -> (Vec<String>, bool) {
+        // Space advance at this cell (shaping trims a bare " ", so difference it out);
+        // floored so an under-measured space can't over-pack a line into a clip.
+        let space_w = (selahcue_engine::raster::measure_line_width("x x", cell)
+            - selahcue_engine::raster::measure_line_width("xx", cell))
+        .max((cell as f32) * 0.15);
+        let mut memo: std::collections::HashMap<&str, f32> = std::collections::HashMap::new();
+        let mut out: Vec<String> = Vec::new();
+        let mut fits_w = true;
+        let mut budget = MAX_WRAP_WORDS;
+        'paras: for para in &non_empty {
+            let mut line = String::new();
+            let mut line_w = 0.0f32;
+            for word in para.split_whitespace() {
+                if budget == 0 || out.len() > line_cap {
+                    break 'paras;
+                }
+                budget -= 1;
+                let ww = *memo
+                    .entry(word)
+                    .or_insert_with(|| selahcue_engine::raster::measure_line_width(word, cell));
+                if ww > max_w {
+                    fits_w = false; // an unbreakable token wider than the region
+                }
+                if line.is_empty() {
+                    line.push_str(word);
+                    line_w = ww;
+                } else if line_w + space_w + ww > max_w {
+                    out.push(std::mem::take(&mut line));
+                    line.push_str(word);
+                    line_w = ww;
+                } else {
+                    line.push(' ');
+                    line.push_str(word);
+                    line_w += space_w + ww;
+                }
             }
-            let scaled = (((cell as f32) * (rect.w as f32) / max_w).floor() as u32).max(1);
-            // Guarantee progress even when the floor() rounds back to the same cell.
-            cell = if scaled >= cell { cell - 1 } else { scaled };
+            if !line.is_empty() {
+                out.push(line);
+            }
         }
-    }
-    // Per-line vertical advance (cell scaled by the line-height multiplier).
-    let advance = ((cell as f64) * lh).round().max(cell as f64) as u32;
-    // Lines that fit at this cell size (== want under ShrinkToFit; a cap under Clip).
+        (out, fits_w)
+    };
+    // Height of an `n`-line block at `cell`: (n-1) advances + one cell.
+    let block_h = |n: usize, cell: u32| -> u32 {
+        if n == 0 {
+            0
+        } else {
+            (n as u32 - 1) * advance_of(cell, lh) + cell
+        }
+    };
+
+    // Auto-fit: pick the cell + wrapped lines.
+    let (cell, display) = match style.fit {
+        // ShrinkToFit fills the box: the LARGEST cell (≤ the design size) at which every
+        // wrapped line fits BOTH rect.h (height) AND rect.w (width) — so a long verse
+        // shrinks so the WHOLE passage shows (zero content loss, FR-010) and a short one
+        // keeps the design size. Both conditions become true only as the cell shrinks
+        // (fewer/narrower lines, shorter line-height), so the predicate is monotone in
+        // the cell → binary search for the largest cell that satisfies it.
+        Fit::ShrinkToFit => {
+            let mut lo = 1u32;
+            let mut hi = design_cell;
+            let mut best = 1u32;
+            let (mut best_disp, _) = wrap_at(1);
+            while lo <= hi {
+                let mid = lo + (hi - lo) / 2;
+                let (disp, fits_w) = wrap_at(mid);
+                if fits_w && block_h(disp.len(), mid) <= rect.h {
+                    best = mid;
+                    best_disp = disp;
+                    lo = mid + 1;
+                } else if mid <= 1 {
+                    break;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            (best, best_disp)
+        }
+        // Clip/Paginate keep the design size + wrap to width; overflow past rect.h is
+        // dropped (Clip) — full pagination is a later slice.
+        Fit::Clip | Fit::Paginate => (design_cell, wrap_at(design_cell).0),
+    };
+
+    let advance = advance_of(cell, lh);
+    // Lines that fit vertically (== display.len() under ShrinkToFit; a cap under Clip).
     let max_lines = ((rect.h.saturating_sub(cell) / advance) + 1).max(1) as usize;
-    let n = want.min(max_lines);
-    // Height of the n-line block: (n-1) advances + one cell.
-    let block_h = (n as u32 - 1) * advance + cell;
-    let free = rect.h.saturating_sub(block_h);
+    let n = display.len().min(max_lines);
+    let free = rect.h.saturating_sub(block_h(n, cell));
     let offset = match style.align_v {
         VAlign::Top => 0,
         VAlign::Middle => (free / 2) as i32,
         VAlign::Bottom => free as i32,
     };
     let mut layers = Vec::with_capacity(n);
-    for (i, line) in non_empty.iter().take(n).enumerate() {
+    for (i, line) in display.iter().take(n).enumerate() {
         let y = rect.y + offset + (i as u32 * advance) as i32;
         layers.push(Layer::Text {
             rect: Rect::new(rect.x, y, rect.w, cell),
-            text: (*line).to_string(),
+            text: line.clone(),
             px: cell,
             color: style.color,
             align: style.align_h,
