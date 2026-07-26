@@ -6,7 +6,7 @@
 - Parent goal ID: STAGE8-core-presentation
 - Title: Implement the app menu + Screens page in the operator console per the gated design, preserving the pinned console invariants
 - Role: frontend-engineer
-- Status: IN_PROGRESS
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajq321f
 - Created: 2026-07-26
@@ -62,7 +62,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-003 | yes | Screens surface renders per-screen rows (role/enable/output/format/theme/identify) wired to assign_output/identify_outputs + honest states | screenshot + review | Screens matches 217:124 | #surface-screens + #screens-list wired to assign_output/set_theme/identify; role-driven (Audience→theme, Stage→chips); honest states | PASS |
 | C-004 | yes | Console de-cluttered: compact outputs status + "Manage outputs" route replaces the aside body; identify + theme picker kept | screenshot + review | compact status + route | compact #outputs-status + #manage-outputs route; #identify + #themes kept | PASS |
 | C-005 | yes | ALL pinned invariants intact: `test_tokens` green (every needle present); the webview still parses/loads; no console pin regression | `cargo test -p selahcue-present test_tokens` + operator build | test_tokens PASS; builds | token pin test 5/5 + structure test PASS; JS syntax valid; tags balanced (div 31/31) | PASS |
-| C-006 | yes | Full verification: make ci (fmt/clippy/tests) + operator build green; independent Workflow review, findings fixed; 3-OS CI green | make-ci + Workflow + CI | all green; review fixed | review wf_24fcee74-a1e (11 confirmed → 8 fixed incl. 2 HIGH, 3 accepted pre-existing); CODE-REVIEW-batch-nav-screens.md; tests+JS+render green; CI pending | PENDING |
+| C-006 | yes | Full verification: make ci (fmt/clippy/tests) + operator build green; independent Workflow review, findings fixed; 3-OS CI green | make-ci + Workflow + CI | all green; review fixed | review wf_24fcee74-a1e (11→8 fixed incl. 2 HIGH, 3 accepted); CODE-REVIEW-batch-nav-screens.md; **CI run 30190586979 green (11 success, flutter path-skipped)** | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -97,7 +97,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajq321f-nav-screens-impl.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending)
+- Validator result: PASS --require-complete (6/6)
+- Independent verification result: adversarial Workflow wf_24fcee74-a1e — 11 confirmed → 8 fixed (2 HIGH), 3 accepted pre-existing, 1 refuted
+- Terminal state: VERIFIED_COMPLETE (CI run 30190586979 green)
+- ClickUp final evidence comment: posted on 86ajq321f
