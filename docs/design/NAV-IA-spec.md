@@ -6,9 +6,11 @@
 
 ---
 
-## 1. Decision — a top-bar **app menu** (not a left nav rail)
+## 1. Decision — a top-bar **app menu** (committed; not a left nav rail)
 
-The top-left **SelahCue** wordmark becomes an **app-menu button** (`≡ SelahCue ▾`). Clicking it — or **`F10`** / **`Cmd/Ctrl+M`** — opens a menu listing the surfaces. Each surface is a **full-page route** (the WKWebView swaps content) sharing the top bar (`SelahCue / <surface>`), matching the existing `28:2` / `204:124` frames.
+**Chosen:** the top-left **SelahCue** wordmark is an **app-menu button** (`≡ SelahCue ▾`); clicking it — or **`F10`** / **`Cmd/Ctrl+M`** — opens a menu of surfaces. Each surface is a **full-page route** (the WKWebView swaps content) sharing the top bar (`SelahCue / <surface>`), matching the existing `28:2` / `204:124` frames.
+
+**Why (UX rationale, owner asked for the best call):** the operator's real job is **live cueing** in a dense OBS 3-zone console with a pinned emergency footer; the other surfaces (Theme Designer, Displays & Outputs, Settings) are **occasional setup/config**, not per-cue. A persistent left nav rail permanently taxes the console's horizontal space (Preview|Live + panels are already tight) to speed up navigation that happens a few times per service — a poor trade. The top-bar menu is **zero-footprint when closed**, keeps every pixel for the live zones, and reuses the design language already in `28:2`/`204:124`. *Rejected:* **left nav rail** (constant ~48px space cost for rare nav; wrong priority for a live tool), **bottom tabs** (collide with the pinned emergency footer). One-click speed is recovered via **accesskeys 1–5** for power users.
 
 **Surfaces (menu order):**
 | Item | Route | Home? | Accesskey |
@@ -34,17 +36,33 @@ The top-left **SelahCue** wordmark becomes an **app-menu button** (`≡ SelahCue
 
 ---
 
-## 3. Output manager — its own surface (reuse `28:2`)
+## 3. Output manager — its own **page**, redesigned for ease of use (`Output settings`)
 
-The Output manager **moves out of the console** into the existing **Displays & Outputs page** (`28:2`), reached from the menu (or the console shortcut, §4). That page already has: the **OUTPUTS list** (role rows with a status dot + resolution/connection + `Add output`), the **drag-arrange grid** (monitors numbered to match *Identify*), and the **per-output settings** inspector (resolution / fps / orientation / layout / theme / safe-area / delay / scaling / mirroring / test-pattern). *Page, not modal:* the arrange grid + settings are substantial and match `28:2`; a quick-assign modal is a possible later shortcut (noted).
+The Output manager **moves out of the console** into its own **page** (reached from the menu, or the console shortcut §4). Per owner direction it drops the complex drag-grid + big inspector (the earlier `28:2`) in favour of a **simple, scannable per-output list** ("Output settings"): one **row per output**, each a self-contained card the operator enables and configures in place.
 
-**States to add on the manager surface:**
+**Per-output row (design):**
+- **Title + subtitle** — `Main Output` / `Configure Main Output` (and `Output 2…N`).
+- **Enable this output** — a right-aligned toggle (accent when ON). A disabled output shows the row collapsed (title + toggle only).
+- **On enable, reveal three dropdowns** (one line):
+  1. **Select theme** — the **per-output theme/template** (e.g. *Full Screen*, *Lower Third*) — so each output renders its own look (Main = Full Screen, an NDI feed = Lower Third). *(This establishes **per-output theme** as the model — see §3a.)*
+  2. **Output monitor** — a physical display **or** a virtual output (*NDI Output*, browser-source).
+  3. **Output format** — resolution + refresh (e.g. *1920×1080 / 30 Hz*, */ 24 Hz*).
+- **`Identify`** stays available (top-right of the page) to flash the number on each physical output.
+
+*Page, not modal:* multiple outputs each with three controls is a scannable list that benefits from a full page. A quick-assign modal is a possible later shortcut (noted). The advanced per-output transforms (delay/rotate/crop/test-pattern, R2 FR-044) live under an optional **"Advanced ▾"** disclosure per row so the default view stays simple.
+
+**States:**
 | State | Trigger | Treatment |
 |---|---|---|
-| **empty** | no displays detected | "No displays found — connect a projector or add a virtual output" + `Add output` |
-| **assigned** | roles mapped to displays | the shipped look (`28:2`) — role rows with green dots |
-| **mismatch** | an assigned display disappeared | the role row + its grid tile turn **amber**: "Main projector — display disconnected · Reassign"; the audience output falls back per FR-040 |
-| **identify-active** | *Identify displays* pressed | each grid tile + each physical output shows its big number; the button is `aria-pressed` |
+| **empty** | no displays detected | rows show the monitor dropdown as "No displays found — connect a projector / add NDI"; enable is disabled with a hint |
+| **disabled** | output toggle OFF | row collapsed to title + toggle (no dropdowns) — the default for unused outputs |
+| **enabled/assigned** | toggle ON + monitor chosen | the three dropdowns filled; a green status dot by the title |
+| **mismatch** | an assigned monitor disappeared | the monitor dropdown turns **amber** "— display disconnected · reselect"; title dot amber; a text label (colour never the only cue) |
+| **identify-active** | *Identify* pressed | each physical output shows its big number; the button is `aria-pressed` |
+
+### 3a. Per-output theme (model implication)
+
+Each output carries its **own theme/template** (the row's *Select theme*). The audience/main output, a stage display, and a lower-third NDI feed can each render a different design **simultaneously** from the same live content. This extends the S8-3b engine (one global theme today) to a **per-output theme map** — a follow-up engine story (relates to S8-3d per-item override, but keyed by **output**, not plan item). Flagged for the engine backlog; the design here is the source of truth for it.
 
 ---
 

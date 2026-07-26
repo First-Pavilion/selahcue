@@ -60,7 +60,7 @@ Typography {
   line_height:     f32            // multiplier (e.g. 1.2)
   letter_spacing:  f32            // em
   color:           Rgba
-  auto_fit:        ShrinkToFit | Paginate | Overflow   // region overflow policy
+  fit:             ShrinkToFit | Clip | Paginate   // region overflow policy; DEFAULT = ShrinkToFit
 }
 ```
 
@@ -92,9 +92,11 @@ Typography {
 | **Solid background colour** | ✅ | `Frame::with_background`. |
 | **Gradient / image background** | ❌ Deferred | Gradient = a compositor add; image needs the **S8-6 sandboxed decode** path. Model supports it; engine ships Solid first. |
 | **Custom font import** | ❌ Deferred | FR-173 (untrusted-font hardening) — later. MVP = bundled OFL only. |
-| Overflow: shrink-to-fit / paginate | ⚠️ Partial | Shrink-to-fit is a measure-loop (feasible); full pagination is a later slice — MVP warns + shrinks. |
+| **Overflow = `ShrinkToFit` (DEFAULT, all templates)** | ✅ | A measure-loop: shrink the region's `size` until the block fits `rect.h` (down to a min floor), so a long verse **never clips** — it scales to fit. This is the default `fit` for **every** built-in (owner direction). `Clip` and `Paginate` are opt-in via the designer's **Fit** control; full pagination is a later slice. |
 
-**S8-3b MVP cut:** Solid backgrounds, the bundled family, full alignment + per-region typography + reference styling, shrink-to-fit overflow, 3 built-in templates (scripture/song/lower-third). Gradient/image backgrounds, multi-family/weight, pagination, custom-font import = flagged deferrals with the seams above.
+**S8-3b/rev MVP cut:** Solid backgrounds, the bundled family, full alignment + per-region typography + reference styling, **`ShrinkToFit` overflow by default on all built-ins** (user-selectable via the Theme Designer's **Fit** control — Shrink to fit / Clip / Paginate), 3 built-in templates (scripture/song/lower-third). Gradient/image backgrounds, multi-family/weight, full pagination, custom-font import = flagged deferrals with the seams above.
+
+> **Resolves the S8-3b review finding** (lower-third clipping a 6-line verse to ~2 lines): with `ShrinkToFit` as the default, switching a long verse into a small template **shrinks the text to fit the band** rather than dropping lines — a visual guarantee, not only a data one.
 
 ---
 
@@ -103,7 +105,7 @@ Typography {
 **Layout (3 zones):**
 - **Left rail** — theme list (thumbnails) + `＋ New` / `⤓ Import` / `⤒ Export`; search; **Scriptures / Slides** tabs (filter templates by role); each row `⋯` menu (Rename/Duplicate/Delete[T2 inline-confirm]).
 - **Center canvas** — the 16:9 output preview with the selected template; **Add content** bar (Text · Scripture · Shape · Image[deferred]); elements selectable (click), movable (drag), resizable (handles); a real sample verse/lyric renders via the **live engine** (S8-3c) so preview == audience output.
-- **Right inspector** — for the selected region: **Layout** (Alignment 9-point · Position X/Y · Dimension W/H · Lock aspect · Reference gap) and **Typography** (Font · Weight · Size · Line height · Letter spacing · Colour). Collapsible sections.
+- **Right inspector** — for the selected region: **Layout** (Alignment 9-point · Position X/Y · Dimension W/H · Lock aspect · Reference gap), **Typography** (Font · Weight · Size · Line height · Letter spacing · Colour), and **Fit** — a segmented control **Shrink to fit** (default) · **Clip** · **Paginate** that sets the region's overflow policy, so the author chooses how over-long content behaves. Collapsible sections.
 
 **Save model:** autosaved continuously (FR-074); `Save changes` is an explicit commit affordance; edits **never touch Live** (FR-012) — the designer stages to preview only.
 

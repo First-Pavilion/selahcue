@@ -58,7 +58,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 |---|---|---|---|---|---|---|
 | C-001 | yes | Nav/menu pattern chosen + designed in Figma (reaches all 5 surfaces; states default/open/active); rationale recorded | figma + doc | menu frame + spec | Figma 212:124 (menu open, 5 surfaces + accesskeys) + NAV-IA-spec §1 | PASS |
 | C-002 | yes | Emergency footer + live controls + canonical keymap remain reachable on every surface (shown/annotated); keyboard + focus + SR specified | doc + figma review | reachability + a11y specified | Figma 212:124 (pinned emergency footer annotated) + NAV-IA-spec §2 + §5 | PASS |
-| C-003 | yes | Output manager designed as its own surface (modal/page) on 28:2: assignment rows + pickers + Identify + arrange + per-output settings; states empty/assigned/mismatch/identify | figma | manager frame + states | existing Displays & Outputs page 28:2 (assignment/arrange/settings) + NAV-IA-spec §3 states (empty/assigned/mismatch/identify) | PASS |
+| C-003 | yes | Output manager designed as its own surface (modal/page) on 28:2: assignment rows + pickers + Identify + arrange + per-output settings; states empty/assigned/mismatch/identify | figma | manager frame + states | **Figma 215:124 — redesigned "Output settings" page** (per-output enable toggle + Select theme / Output monitor / Output format; enabled/disabled/mismatch states) + NAV-IA-spec §3/§3a (per-output theme) | PASS |
 | C-004 | yes | Console de-cluttered: a compact read-only outputs status + a "Manage outputs" entry replace the Outputs aside (designed) | figma | compact console status | Figma 212:124 compact outputs status + "Manage outputs" route + NAV-IA-spec §4 | PASS |
 | C-005 | yes | Bound to design-system tokens (no fork); IA/nav spec is implementation-ready; decisions trace to the requirements | doc review | tokenised + spec complete | NAV-IA-spec.md (tokens bound; §6 handoff) | PASS |
 
@@ -77,6 +77,14 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Verifier: doc review + Figma screenshot (212:124) + the existing 28:2.
 - Result: all 5 criteria PASS.
 - Decision: gate-review (design gates a frontend impl story).
+
+### Iteration 2 — owner refine (menu decision · easy output manager · shrink-to-fit)
+
+- Target: refine per owner direction.
+- Change: (a) **committed the top-bar app menu** with a UX rationale vs the rejected left-rail (NAV-IA §1). (b) **Redesigned the Output manager** into an easy per-output "Output settings" page matching the owner's screenshot — Figma **215:124** (per-output enable toggle → Select theme / Output monitor / Output format; Advanced disclosure; enabled/disabled/mismatch states) + **per-output theme** established as the model (NAV-IA §3/§3a; flags a per-output-theme engine follow-up). (c) **Fit control** — relabelled the Theme Designer inspector (204:124) to **Fit: Shrink to fit (default) / Clip / Paginate**; THEME-MODEL-spec §2/§4/§5 makes **ShrinkToFit the default overflow for all built-ins** (resolves the S8-3b lower-third clip finding), user-selectable.
+- Verifier: Figma screenshots (215:124 output settings; 204:140 Fit control) + spec review.
+- Result: criteria remain PASS; the output-manager evidence now points to 215:124 (supersedes 28:2).
+- Decision: gate-review. Engine shrink-to-fit + per-output theme are implementation follow-ups (backend).
 
 ## Risks and rollback
 
