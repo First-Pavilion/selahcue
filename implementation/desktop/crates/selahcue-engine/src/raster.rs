@@ -311,6 +311,32 @@ pub fn render(frame: &Frame) -> FrameBuffer {
     fb
 }
 
+/// The shaped pixel width of `text` at cell height `px` — using the SAME font sizing
+/// [`draw_text`] does (`px·FONT_TO_LINE`, one unwrapped line). `compose`'s shrink-to-fit
+/// uses this to scale the cell so the WIDEST line fits the region width, not only its
+/// height: `draw_text` never wraps, so an over-wide line would otherwise clip on the
+/// right. Deterministic (single bundled shaper+font). Returns `0.0` for empty/zero input.
+pub fn measure_line_width(text: &str, px: u32) -> f32 {
+    if px == 0 || text.is_empty() {
+        return 0.0;
+    }
+    let line_h = (px as f32).max(1.0);
+    let font_size = (line_h * FONT_TO_LINE).max(1.0);
+    TEXT.with(|cell| {
+        let ctx = &mut *cell.borrow_mut();
+        ctx.tick();
+        let TextCtx { fs, .. } = ctx;
+        let mut buffer = Buffer::new(fs, Metrics::new(font_size, line_h));
+        buffer.set_size(fs, None, None);
+        buffer.set_text(fs, text, Attrs::new(), Shaping::Advanced);
+        buffer.shape_until_scroll(fs, false);
+        buffer
+            .layout_runs()
+            .map(|r| r.line_w)
+            .fold(0.0_f32, f32::max)
+    })
+}
+
 /// Shape and rasterize `text` with the bundled OFL font (cosmic-text/rustybuzz →
 /// swash), from `rect`'s top-left, at ≈`px` tall, in `color`, clipped to the
 /// on-screen intersection of `rect` and the frame (ADR-0014). Unlike the old

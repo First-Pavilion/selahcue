@@ -218,3 +218,47 @@ fn shrink_to_fit_renders_all_body_lines_by_scaling_not_clipping() {
         "more lines => smaller body text (shrink-to-fit): {px12} < {px6}"
     );
 }
+
+#[test]
+fn shrink_to_fit_scales_a_wide_line_to_fit_the_region_width() {
+    // Owner bug: a long verse LINE wider than the region clipped on the right, because
+    // shrink-to-fit only fit the line COUNT (height), not the line WIDTH. `draw_text`
+    // never wraps, so the fix shrinks the cell so the widest line also fits rect.w.
+    use selahcue_engine::raster::measure_line_width;
+    use selahcue_engine::scene::Layer;
+    let long =
+        "For God so loved the world that he gave his only begotten Son that whosoever believeth";
+    let theme = Theme::classic();
+    let (w, h) = (960u32, 540u32);
+    let region = theme.body.rect(w, h);
+    let frame = compose_slide(&Slide::new("John 3:16", [long]), &theme, w, h);
+    // The body line layer (compose pushes the title first).
+    let (text, px, rect) = frame
+        .layers
+        .iter()
+        .find_map(|l| match l {
+            Layer::Text { text, px, rect, .. } if text.contains("begotten") => {
+                Some((text.clone(), *px, *rect))
+            }
+            _ => None,
+        })
+        .expect("the long body line renders");
+    // The shaped width now fits the region width (+1px rounding) — nothing clips.
+    let measured = measure_line_width(&text, px);
+    assert!(
+        measured <= region.w as f32 + 1.0,
+        "wide line must shrink to fit the region width: measured {measured}px > region {}px",
+        region.w
+    );
+    // ...and it renders inside the region horizontally (no overflow past the right edge).
+    assert!(
+        (rect.x as f32) + measured <= (region.x as f32) + region.w as f32 + 1.0,
+        "the line must sit within the region's right edge"
+    );
+    // Sanity: at the DESIGN cell the same line WOULD have overflowed (proving the fix
+    // did work, not that the line was already narrow).
+    assert!(
+        measure_line_width(&text, theme.body.cell_px(h)) > region.w as f32,
+        "the long line overflows at the design size (so the shrink was necessary)"
+    );
+}

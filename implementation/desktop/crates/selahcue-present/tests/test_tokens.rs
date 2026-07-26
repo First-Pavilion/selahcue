@@ -199,6 +199,16 @@ fn operator_webview_has_the_app_menu_and_screens_surface() {
         "id=\"td-x\"",
         "id=\"td-valign\"",
         "builtin_themes",
+        // Refine 2 (Figma 204-124 alignment): header actions, tabs, add-content, lock,
+        // and honest 'later' affordances (present but not fake). Save routes to 86ajq4xmy.
+        "class=\"td-header\"",
+        "id=\"td-save\"",
+        "id=\"td-tab-scriptures\"",
+        "id=\"td-tab-slides\"",
+        "data-add=\"text\"",
+        "id=\"td-lock\"",
+        "id=\"td-font\"",
+        "td-later",
     ] {
         assert!(html.contains(needle), "webview missing {needle:?}");
     }

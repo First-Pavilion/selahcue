@@ -106,6 +106,36 @@
       .seg { display: flex; gap: 4px; flex-wrap: wrap; }
       .seg button { flex: 1; font-size: 12px; padding: 6px 8px; }
       .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+      /* Refine 2 (Figma 204-124 alignment): header · tabs · add-content · 9-point align · honest 'later' affordances. */
+      #surface-theme-designer.active { display: flex; flex-direction: column; }
+      .td-wrap { flex: 1; min-height: 0; } /* fill under the header (overrides height:100%) */
+      .td-header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+      .td-brand { font-size: 15px; font-weight: 700; }
+      .td-header-actions { margin-left: auto; display: flex; gap: 8px; }
+      .td-header-actions button { font-size: 12px; padding: 6px 12px; }
+      .td-tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+      .td-tab { flex: 1; font-size: 12px; padding: 6px 8px; }
+      .td-tab.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .td-list-new { width: 100%; margin-top: 6px; }
+      .td-addbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+      .td-addbar-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-right: 4px; }
+      .td-addbar button { font-size: 12px; padding: 4px 10px; }
+      .td-addbar-note { font-size: 11px; margin: 0 0 0 auto; }
+      .td-canvas-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; display: flex; gap: 10px; align-items: baseline; }
+      .td-canvas-label #td-status { margin: 0; text-transform: none; letter-spacing: 0; }
+      .td-align-grid { display: flex; gap: 8px; }
+      .td-align-grid .seg { flex: 1; }
+      .seg.td-icons button { font-size: 15px; line-height: 1; padding: 5px 0; }
+      .td-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; align-items: center; }
+      .td-grid2 label { margin: 4px 0 0; }
+      .td-grid2 select, .td-grid2 input { width: 100%; box-sizing: border-box; }
+      .td-lockrow { align-items: center; margin-top: 10px; }
+      .td-check { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text); margin: 0; cursor: pointer; }
+      .td-check input { width: auto; }
+      #td-font { width: 100%; box-sizing: border-box; }
+      /* Honest 'later' affordances: present (design fidelity) but visibly not-yet-live. */
+      .td-later { opacity: .55; }
+      .td-later[disabled], .td-later :disabled { cursor: not-allowed; }
       .nav-item .nav-key {
         margin-left: auto; font-size: 10px; color: var(--muted);
         border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-weight: 600;

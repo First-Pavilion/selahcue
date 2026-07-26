@@ -575,6 +575,21 @@
           if (hh.includes("w")) left = tdClamp(left + dxp, 0, right - MIN);
           if (hh.includes("s")) bottom = tdClamp(bottom + dyp, top + MIN, 1000);
           if (hh.includes("n")) top = tdClamp(top + dyp, 0, bottom - MIN);
+          // Lock aspect: constrain the height to the region's original w:h ratio
+          // (width-driven), re-anchored on the dragged vertical edge + clamped to the frame.
+          if (document.getElementById("td-lock").checked && tdDrag.h > 0) {
+            const aspect = tdDrag.w / tdDrag.h;
+            const newH = (right - left) / aspect;
+            if (hh.includes("n")) top = bottom - newH;
+            else bottom = top + newH;
+            top = Math.max(0, top);
+            bottom = Math.min(1000, bottom);
+            const w2 = (bottom - top) * aspect;
+            if (hh.includes("w")) left = right - w2;
+            else right = left + w2;
+            left = Math.max(0, left);
+            right = Math.min(1000, right);
+          }
           const r = tdTheme[tdRegion];
           r.x_permille = Math.round(left);
           r.y_permille = Math.round(top);
@@ -613,7 +628,18 @@
         tdPreview();
       });
 
-      document.getElementById("td-new").onclick = () => { tdSelected = ""; tdList(); document.getElementById("td-status").textContent = "Editing a new theme from the current values."; };
+      const tdStatus = (msg) => { document.getElementById("td-status").textContent = msg; };
+      const tdNew = () => { tdSelected = ""; tdList(); tdStatus("Editing a new theme from the current values."); };
+      document.getElementById("td-new").onclick = tdNew;
+      document.getElementById("td-new-2").onclick = tdNew;
+      // Honest 'later' affordances (design fidelity, no fake success): these route to
+      // their follow-up stories instead of pretending to work.
+      document.getElementById("td-import").onclick = () => tdStatus("Importing a theme file arrives with the saved-theme library (86ajq4xmy).");
+      document.getElementById("td-export").onclick = () => tdStatus("Exporting a theme file arrives with the saved-theme library (86ajq4xmy).");
+      document.getElementById("td-save").onclick = () => tdStatus("Saving a named theme arrives with the saved-theme library (86ajq4xmy). Use Apply to set the audience output now.");
+      document.getElementById("td-tab-slides").onclick = () => tdStatus("Slide (non-scripture) templates arrive in a later increment; scripture templates are shown now.");
+      document.querySelectorAll("#surface-theme-designer .td-addbar button[data-add]").forEach((b) =>
+        (b.onclick = () => tdStatus("Adding a " + b.dataset.add + " element on the canvas arrives with on-canvas editing.")));
       document.getElementById("td-apply").onclick = () => {
         if (!tdTheme) return;
         const s = document.getElementById("td-status");

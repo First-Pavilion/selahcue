@@ -91,7 +91,7 @@ fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -
     // want lines occupy `cell·((want−1)·lh + 1)` ≤ rect.h → solve for the largest
     // cell, capped at the design size (never enlarge) and floored at 1px.
     let want = non_empty.len();
-    let cell = match style.fit {
+    let mut cell = match style.fit {
         Fit::ShrinkToFit => {
             // Largest cell where all `want` lines fit rect.h. `span` is the block
             // height in cell-units; `safety` absorbs the per-line advance rounding
@@ -104,6 +104,24 @@ fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -
         }
         Fit::Clip | Fit::Paginate => design_cell,
     };
+    // Shrink-to-fit must also fit the region WIDTH: `draw_text` never wraps, so a line
+    // wider than `rect.w` at this cell would clip on the right (owner bug — long verses
+    // clipped). `line_w` scales ~linearly with the cell, so scale by the width ratio;
+    // iterate a few times to absorb shaping/rounding non-linearity (converges fast).
+    if matches!(style.fit, Fit::ShrinkToFit) {
+        for _ in 0..4 {
+            let max_w = non_empty
+                .iter()
+                .map(|l| selahcue_engine::raster::measure_line_width(l, cell))
+                .fold(0.0_f32, f32::max);
+            if max_w <= rect.w as f32 || max_w <= 0.0 || cell <= 1 {
+                break;
+            }
+            let scaled = (((cell as f32) * (rect.w as f32) / max_w).floor() as u32).max(1);
+            // Guarantee progress even when the floor() rounds back to the same cell.
+            cell = if scaled >= cell { cell - 1 } else { scaled };
+        }
+    }
     // Per-line vertical advance (cell scaled by the line-height multiplier).
     let advance = ((cell as f64) * lh).round().max(cell as f64) as u32;
     // Lines that fit at this cell size (== want under ShrinkToFit; a cap under Clip).
