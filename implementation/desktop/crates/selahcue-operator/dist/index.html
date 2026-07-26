@@ -101,11 +101,6 @@
       .stage-chips { display: flex; gap: 6px; }
       .stage-chip { display:flex; align-items:center; gap:6px; font-size:12px; border:1px solid var(--line); border-radius:15px; padding:6px 12px; color:var(--muted); }
       .stage-chip.on { background: var(--accent); color:#fff; border-color: var(--accent); }
-      /* --- Compact outputs status in the console --- */
-      #outputs-status { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 10px; font-size: 12px; }
-      #outputs-status .st { display: inline-flex; align-items: center; gap: 6px; }
-      #outputs-status .stdot { width: 8px; height: 8px; border-radius: 50%; }
-      #manage-outputs { width: 100%; margin-bottom: 6px; }
       /* Each zone stacks its panels vertically and never overflows the row. */
       .zone { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
       /* OBS studio mode: Preview and Live sit side by side, each a 16:9 monitor. */
@@ -469,12 +464,6 @@
             <span class="fwd-sub">Scriptures spoken aloud will surface here to stage in one tap.</span>
           </div>
         </section>
-        <aside class="side-panel" aria-label="Outputs">
-          <h2 id="outputs-h">Outputs</h2>
-          <div id="outputs-status" aria-labelledby="outputs-h"></div>
-          <button id="manage-outputs" aria-label="Open the Screens manager">Manage outputs ⤢</button>
-          <button id="identify" aria-label="Show the identify number on every display">Identify displays</button>
-        </aside>
       </div><!-- /zone-right -->
       </div><!-- /surface-console -->
 
@@ -719,28 +708,8 @@
         outputsPending = null;
         outputsKey = key;
 
-        // --- Compact console status (de-cluttered right zone) ---
-        const status = document.getElementById("outputs-status");
-        status.innerHTML = "";
-        if (!outs.length) {
-          const s = document.createElement("span");
-          s.className = "st"; s.style.color = "var(--muted)"; s.textContent = "No outputs";
-          status.appendChild(s);
-        } else {
-          outs.forEach((o) => {
-            const st = document.createElement("span"); st.className = "st";
-            const d = document.createElement("span"); d.className = "stdot";
-            d.style.background = o.assigned ? "var(--preview-ink)" : "var(--warn-ink)";
-            const lbl = document.createElement("span");
-            lbl.textContent = o.role === "main" ? "Main" : "Stage";
-            st.appendChild(d); st.appendChild(lbl); status.appendChild(st);
-          });
-          const n = document.createElement("span");
-          n.className = "st"; n.style.color = "var(--muted)";
-          n.textContent = outs.filter((o) => o.assigned).length + " assigned";
-          status.appendChild(n);
-        }
-        document.getElementById("identify").disabled = outs.length === 0;
+        // Outputs/screens are shown + managed on the Screens surface (menu →
+        // Screens); the console no longer carries an outputs panel.
         document.getElementById("screens-identify").disabled = outs.length === 0;
 
         // --- Full Screens list (per-screen: role → content control) ---
@@ -915,7 +884,6 @@
       document.addEventListener("click", (e) => {
         if (isMenuOpen() && !appMenu.contains(e.target) && e.target !== appMenuBtn) closeAppMenu();
       });
-      document.getElementById("manage-outputs").onclick = () => showSurface("screens");
       document.getElementById("screens-identify").onclick = () => act(() => invoke("identify_outputs"));
 
       function miniBtn(label, onclick) {
@@ -982,7 +950,6 @@
         act(() => invoke("adjust_timer", { deltaSecs: 60 }));
       document.getElementById("timer-minus").onclick = () =>
         act(() => invoke("adjust_timer", { deltaSecs: -60 }));
-      document.getElementById("identify").onclick = () => act(() => invoke("identify_outputs"));
       // ── Scriptures chapter browser (86ajpkfcd, Pewbeam-style; KJV default).
       // Type a reference -> the chapter opens as a numbered verse list; ↑/↓
       // move the highlighted verse AND stage it; the canonical Enter (Go Live)

@@ -152,10 +152,9 @@ fn operator_webview_has_the_app_menu_and_screens_surface() {
         "class=\"surface-page active\"",
         "id=\"surface-screens\"",
         "id=\"screens-list\"",
-        // Console de-clutter: compact status + a route to the Screens manager.
-        "id=\"outputs-status\"",
-        "id=\"manage-outputs\"",
-        "Manage outputs",
+        // Outputs are managed on the Screens surface (menu → Screens), not the
+        // console — the console-side outputs panel + theme picker were removed.
+        "id=\"screens-identify\"",
     ] {
         assert!(html.contains(needle), "webview missing {needle:?}");
     }
