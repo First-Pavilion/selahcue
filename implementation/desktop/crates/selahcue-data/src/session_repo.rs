@@ -46,6 +46,9 @@ pub struct SessionState {
     /// The active audience-output theme name (`None` = the default, "classic" —
     /// the pre-v8 shape). Restored so recovery shows the same design (S8-3b).
     pub theme: Option<String>,
+    /// A custom theme (serialized JSON) authored in the Theme Designer; takes
+    /// precedence over `theme` on restore. `None` = no custom theme (S8-3c).
+    pub custom_theme: Option<String>,
 }
 
 /// Upsert the singleton snapshot (atomic single-statement write).
@@ -55,14 +58,14 @@ pub fn save(db: &Database, s: &SessionState) -> Result<()> {
             (id, plan_id, live_idx, staged_idx, plan_cursor, blackout,
              timer_total_secs, timer_elapsed_secs, timer_running,
              live_scripture, staged_scripture, live_free_text,
-             live_slide, staged_slide, cursor_slide, live_free_body, theme)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+             live_slide, staged_slide, cursor_slide, live_free_body, theme, custom_theme)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
          ON CONFLICT(id) DO UPDATE SET
             plan_id = ?1, live_idx = ?2, staged_idx = ?3, plan_cursor = ?4,
             blackout = ?5, timer_total_secs = ?6, timer_elapsed_secs = ?7,
             timer_running = ?8, live_scripture = ?9, staged_scripture = ?10,
             live_free_text = ?11, live_slide = ?12, staged_slide = ?13,
-            cursor_slide = ?14, live_free_body = ?15, theme = ?16",
+            cursor_slide = ?14, live_free_body = ?15, theme = ?16, custom_theme = ?17",
         params![
             s.plan_id,
             s.live_idx.map(i64::from),
@@ -80,6 +83,7 @@ pub fn save(db: &Database, s: &SessionState) -> Result<()> {
             s.cursor_slide.map(i64::from),
             s.live_free_body,
             s.theme,
+            s.custom_theme,
         ],
     )?;
     Ok(())
@@ -94,7 +98,8 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
             "SELECT plan_id, live_idx, staged_idx, plan_cursor, blackout,
                     timer_total_secs, timer_elapsed_secs, timer_running,
                     live_scripture, staged_scripture, live_free_text,
-                    live_slide, staged_slide, cursor_slide, live_free_body, theme
+                    live_slide, staged_slide, cursor_slide, live_free_body, theme,
+                    custom_theme
              FROM session_state WHERE id = 1",
             [],
             |r| {
@@ -115,6 +120,7 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
                     r.get::<_, Option<i64>>(13)?,
                     r.get::<_, Option<String>>(14)?,
                     r.get::<_, Option<String>>(15)?,
+                    r.get::<_, Option<String>>(16)?,
                 ))
             },
         )
@@ -141,6 +147,7 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
         cursor_slide,
         live_free_body,
         theme,
+        custom_theme,
     )) = row
     else {
         return Ok(None);
@@ -168,6 +175,7 @@ pub fn load(db: &Database) -> Result<Option<SessionState>> {
         cursor_slide: idx(cursor_slide, "cursor_slide")?,
         live_free_body,
         theme,
+        custom_theme,
     }))
 }
 

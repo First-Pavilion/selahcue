@@ -1350,3 +1350,108 @@ fn a_default_theme_session_persists_the_pre_v8_shape() {
         "absent theme => default"
     );
 }
+
+#[test]
+fn set_custom_theme_applies_and_survives_recovery() {
+    use std::time::Instant;
+    let t0 = Instant::now();
+    // A custom theme is a serialized Theme (here a tweaked built-in stands in for a
+    // Theme-Designer-authored design). SetCustomTheme applies it in place.
+    let json = serde_json::to_string(&Theme::high_contrast()).unwrap();
+    let (mut a, _) = controller();
+    a.apply(&Command::Next);
+    a.apply(&Command::GoLive);
+    assert_eq!(
+        a.apply(&Command::SetCustomTheme {
+            theme_json: json.clone()
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        a.operator_view().theme,
+        "custom",
+        "reported as a custom theme"
+    );
+
+    // Malformed JSON is rejected and leaves the current theme unchanged.
+    assert_eq!(
+        a.apply(&Command::SetCustomTheme {
+            theme_json: "not-json".into()
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(a.operator_view().theme, "custom", "bad JSON is a no-op");
+
+    // Persist + recover: the custom JSON round-trips and re-renders identically,
+    // taking precedence over any built-in name.
+    let snap = a.snapshot(t0);
+    assert_eq!(
+        snap.custom_theme,
+        Some(json.clone()),
+        "custom theme persisted"
+    );
+    assert_eq!(snap.theme, Some("custom".into()));
+    let (mut b, _) = controller();
+    b.restore(&snap);
+    b.tick(t0);
+    assert_eq!(b.operator_view().theme, "custom", "custom theme recovered");
+    assert_eq!(
+        b.presenter().live_output().bytes(),
+        a.presenter().live_output().bytes(),
+        "the custom-themed audience output re-renders identically after recovery"
+    );
+}
+
+#[test]
+fn recovery_prefers_the_custom_theme_over_a_conflicting_built_in_name() {
+    use std::time::Instant;
+    let t0 = Instant::now();
+    // A snapshot that carries BOTH a valid built-in NAME and a custom theme must restore
+    // the operator's CUSTOM design, never the built-in. The normal path always writes
+    // theme = "custom", so hand-craft the conflict the precedence branch (restore()) guards.
+    // Use a custom theme (classic → navy) that visibly differs from the conflicting name
+    // ("high-contrast" → black) so precedence is observable in pixels, not just a flag.
+    let custom_json = serde_json::to_string(&Theme::classic()).unwrap();
+    let (mut a, _) = controller();
+    a.apply(&Command::Next);
+    a.apply(&Command::GoLive);
+    a.apply(&Command::SetCustomTheme {
+        theme_json: custom_json.clone(),
+    });
+
+    let mut snap = a.snapshot(t0);
+    snap.theme = Some("high-contrast".into()); // inject the conflicting built-in name
+    assert_eq!(
+        snap.custom_theme,
+        Some(custom_json),
+        "custom theme still persisted"
+    );
+
+    let (mut b, _) = controller();
+    b.restore(&snap);
+    b.tick(t0);
+    assert_eq!(
+        b.operator_view().theme,
+        "custom",
+        "custom theme must win over the conflicting built-in name"
+    );
+    // Pixels confirm it: the recovered output matches the CUSTOM (classic) design...
+    assert_eq!(
+        b.presenter().live_output().bytes(),
+        a.presenter().live_output().bytes(),
+        "recovered the custom design, not the injected built-in"
+    );
+    // ...and is NOT the high-contrast built-in the name would have selected.
+    let (mut hc, _) = controller();
+    hc.apply(&Command::Next);
+    hc.apply(&Command::GoLive);
+    hc.apply(&Command::SetTheme {
+        name: "high-contrast".into(),
+    });
+    hc.tick(t0);
+    assert_ne!(
+        b.presenter().live_output().bytes(),
+        hc.presenter().live_output().bytes(),
+        "the conflicting built-in name must NOT have taken precedence"
+    );
+}

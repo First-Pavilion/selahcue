@@ -200,6 +200,13 @@ impl OperatorShell {
         self.act(&Command::SetTheme { name: name.into() })
     }
 
+    /// Apply a custom audience theme (serialized JSON) from the Theme Designer.
+    pub fn set_custom_theme(&self, theme_json: &str) -> OperatorView {
+        self.act(&Command::SetCustomTheme {
+            theme_json: theme_json.into(),
+        })
+    }
+
     /// Assign an output role ("main"/"stage") to a physical display.
     pub fn assign_output(&self, role: &str, display_key: &str) -> OperatorView {
         self.act(&Command::AssignOutput {
@@ -475,6 +482,17 @@ impl RemoteOperator {
         name: &str,
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::SetTheme { name: name.into() }).await
+    }
+
+    /// Apply a custom audience theme (serialized JSON) on the host.
+    pub async fn set_custom_theme(
+        &mut self,
+        theme_json: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetCustomTheme {
+            theme_json: theme_json.into(),
+        })
+        .await
     }
 
     /// Search scripture on the host; returns stageable display references.

@@ -70,6 +70,13 @@ fn set_theme_is_operator_only_output_config() {
             name: "bogus".into()
         }
     ));
+    // A custom theme (Theme Designer, S8-3c) is the same output-config permission.
+    let custom = Command::SetCustomTheme {
+        theme_json: "{}".into(),
+    };
+    assert!(authorize(Role::Operator, &custom), "operator custom");
+    assert!(!authorize(Role::Producer, &custom), "producer custom");
+    assert!(!authorize(Role::Viewer, &custom), "viewer custom");
 }
 
 #[test]

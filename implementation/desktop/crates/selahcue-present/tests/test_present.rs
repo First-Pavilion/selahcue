@@ -283,6 +283,30 @@ fn set_theme_restyles_both_outputs_without_losing_content() {
 }
 
 #[test]
+fn render_sample_previews_a_theme_deterministically() {
+    // The Theme Designer preview (S8-3c) renders a sample slide with the theme via
+    // this exact path — so the webview preview matches the audience output.
+    let fb = selahcue_present::render_sample(&Theme::classic(), 480, 270);
+    assert_eq!((fb.width(), fb.height()), (480, 270));
+    // The classic background is present and some glyph ink renders (not blank).
+    assert!(has_color(&fb, (8, 10, 20)), "classic background rendered");
+    assert!(
+        fb.average_luminance() > 1e-6,
+        "sample text renders (not blank)"
+    );
+    // Deterministic + theme-sensitive: high-contrast (black bg) differs.
+    let a = selahcue_present::render_sample(&Theme::classic(), 480, 270);
+    let b = selahcue_present::render_sample(&Theme::classic(), 480, 270);
+    assert_eq!(a.bytes(), b.bytes(), "preview is deterministic");
+    let hc = selahcue_present::render_sample(&Theme::high_contrast(), 480, 270);
+    assert_ne!(
+        hc.bytes(),
+        a.bytes(),
+        "a different theme previews differently"
+    );
+}
+
+#[test]
 fn set_theme_does_not_fabricate_content_on_a_blank_output() {
     let mut p = Presenter::new(320, 180, Theme::classic());
     p.set_theme(Theme::lower_third());

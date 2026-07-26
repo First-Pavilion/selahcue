@@ -2773,6 +2773,7 @@ dependencies = [
  "selahcue-present",
  "selahcue-scripture",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2809,6 +2810,7 @@ dependencies = [
 name = "selahcue-operator"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "selahcue-app",
  "selahcue-core",
  "selahcue-lan",

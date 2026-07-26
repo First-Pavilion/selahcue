@@ -30,3 +30,19 @@ pub use tokens::{contrast_ratio, SemanticToken, LIVE, NEUTRAL, PREVIEW, WARN};
 /// Re-exported so consumers can name the output pixel buffer without depending on
 /// `selahcue-engine` directly.
 pub use selahcue_engine::raster::FrameBuffer;
+
+/// Render a canonical **sample scripture slide** with `theme` into a `width×height`
+/// [`FrameBuffer`] (RGBA8) — a pure function used by the Theme Designer to preview a
+/// theme exactly as the audience output would render it (same compose + rasterizer).
+/// A consumer (e.g. the operator webview) can base64-encode the bytes and draw them.
+pub fn render_sample(theme: &Theme, width: u32, height: u32) -> FrameBuffer {
+    let slide = Slide::new(
+        "John 3:16 (KJV)",
+        [
+            "For God so loved the world, that he gave",
+            "his only begotten Son, that whosoever",
+            "believeth in him should not perish.",
+        ],
+    );
+    selahcue_engine::raster::render(&compose_slide(&slide, theme, width, height))
+}

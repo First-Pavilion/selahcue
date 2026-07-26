@@ -82,6 +82,17 @@ impl Backend {
             Backend::Local(s) => Ok(s.set_theme(&name)),
         }
     }
+    async fn set_custom_theme(&self, theme_json: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_custom_theme(&theme_json)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_custom_theme(&theme_json)),
+        }
+    }
     async fn select(&self, item_id: u64) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
@@ -255,6 +266,27 @@ async fn clear(state: State<'_, AppState>) -> Result<OperatorView, String> {
 #[tauri::command]
 async fn set_theme(name: String, state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.set_theme(name).await
+}
+#[tauri::command]
+async fn set_custom_theme(
+    theme_json: String,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_custom_theme(theme_json).await
+}
+/// Render a Theme-Designer theme as a sample slide and return it as base64 RGBA8
+/// (+ dimensions) — the webview draws it to a <canvas> via ImageData for an ACCURATE
+/// preview (same compositor as the audience output). A pure function of the theme;
+/// no host round-trip. Malformed theme JSON is reported as an error.
+#[tauri::command]
+fn preview_theme(theme_json: String) -> Result<serde_json::Value, String> {
+    use base64::Engine;
+    let theme: selahcue_present::Theme =
+        serde_json::from_str(&theme_json).map_err(|e| format!("invalid theme: {e}"))?;
+    let (w, h) = (480u32, 270u32);
+    let fb = selahcue_present::render_sample(&theme, w, h);
+    let rgba = base64::engine::general_purpose::STANDARD.encode(fb.bytes());
+    Ok(serde_json::json!({ "w": w, "h": h, "rgba": rgba }))
 }
 #[tauri::command]
 async fn blackout(on: bool, state: State<'_, AppState>) -> Result<OperatorView, String> {
@@ -476,7 +508,9 @@ fn main() {
             get_chapter,
             identify_outputs,
             assign_output,
-            set_theme
+            set_theme,
+            set_custom_theme,
+            preview_theme
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");

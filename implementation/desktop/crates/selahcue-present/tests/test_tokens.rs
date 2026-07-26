@@ -155,6 +155,26 @@ fn operator_webview_has_the_app_menu_and_screens_surface() {
         // Outputs are managed on the Screens surface (menu → Screens), not the
         // console — the console-side outputs panel + theme picker were removed.
         "id=\"screens-identify\"",
+        // Theme Designer editor (S8-3c): a canvas preview + Apply.
+        "id=\"surface-theme-designer\"",
+        "id=\"td-preview\"",
+        "id=\"td-apply\"",
+        "preview_theme",
+        "set_custom_theme",
+        // The inspector's authoring controls (C-004): per-region colour/size/align/
+        // line-height/Fit + the region selector + background. Pinned so a future edit
+        // cannot strip the authoring half while leaving preview + Apply green.
+        "id=\"td-region\"",
+        "id=\"td-bg\"",
+        "id=\"td-color\"",
+        "id=\"td-size\"",
+        "id=\"td-align\"",
+        "id=\"td-lh\"",
+        "id=\"td-fit\"",
+        // Segmented groups carry an accessible name + per-button pressed state (WCAG
+        // 4.1.2) — not colour-only selection.
+        "aria-labelledby=\"td-lbl-align\"",
+        "aria-pressed",
     ] {
         assert!(html.contains(needle), "webview missing {needle:?}");
     }

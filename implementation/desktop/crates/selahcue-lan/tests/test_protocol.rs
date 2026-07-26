@@ -69,6 +69,9 @@ fn every_command_round_trips() {
         Command::SetTheme {
             name: "classic".into(),
         },
+        Command::SetCustomTheme {
+            theme_json: r#"{"background":{"r":1,"g":2,"b":3,"a":255}}"#.into(),
+        },
     ];
     for c in cmds {
         let json = to_json(&c).unwrap();

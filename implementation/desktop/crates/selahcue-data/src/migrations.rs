@@ -89,6 +89,12 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE session_state ADD COLUMN theme TEXT;
     "#,
+    // v8 -> v9: a CUSTOM theme authored in the Theme Designer (S8-3c), persisted as
+    // serialized JSON so recovery restores the exact custom design. NULL = no custom
+    // theme (the built-in `theme` name applies) — the pre-v9 shape.
+    r#"
+    ALTER TABLE session_state ADD COLUMN custom_theme TEXT;
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

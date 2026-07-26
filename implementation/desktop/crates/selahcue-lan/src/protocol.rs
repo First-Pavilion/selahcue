@@ -92,6 +92,11 @@ pub enum Command {
     /// (`"classic"`/`"high-contrast"`/`"lower-third"`). Restyles Preview + Live
     /// without changing content; an unknown name is rejected. Operator-only.
     SetTheme { name: String },
+    /// Apply a CUSTOM audience theme authored in the Theme Designer. `theme_json`
+    /// is a serialized `selahcue-present::Theme` (opaque to the wire — this layer
+    /// does not depend on the presentation crate; the controller deserializes it).
+    /// Malformed JSON is rejected. Operator-only (output config).
+    SetCustomTheme { theme_json: String },
 }
 
 /// A controller → operator request frame.

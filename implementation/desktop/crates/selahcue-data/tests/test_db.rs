@@ -16,33 +16,45 @@ fn opens_migrated_and_integrity_ok() {
 #[test]
 fn schema_version_is_pinned() {
     // Append-only migrations: bump deliberately with each new migration so an
-    // accidental reorder/removal is caught. v8 = session_state.theme (S8-3b).
-    assert_eq!(migrations::target_version(), 8);
+    // accidental reorder/removal is caught. v8 = session_state.theme (S8-3b);
+    // v9 = session_state.custom_theme (S8-3c).
+    assert_eq!(migrations::target_version(), 9);
 }
 
 #[test]
-fn a_pre_theme_database_upgrades_and_gains_the_theme_column() {
-    // A v7 DB (no `theme` column) must upgrade cleanly to v8 — the migration is
-    // additive, so existing rows survive and the new column reads back NULL.
+fn a_pre_theme_database_upgrades_and_gains_the_theme_columns() {
+    // A v7 DB (no theme columns) must upgrade cleanly — the migrations are additive,
+    // so existing rows survive and the new columns read back NULL. Dropping `theme`
+    // + resetting to v7 forces v7->v8 (theme) and v8->v9 (custom_theme) to re-run.
     let file = tempfile::NamedTempFile::new().unwrap();
     let path = file.path().to_path_buf();
     {
         let _ = Database::open(&path).unwrap();
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch("ALTER TABLE session_state DROP COLUMN theme; PRAGMA user_version = 7;")
-            .unwrap();
-    }
-    let db = Database::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), 8, "re-ran the v8 migration");
-    let has_theme: i64 = db
-        .conn()
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('session_state') WHERE name = 'theme'",
-            [],
-            |r| r.get(0),
+        conn.execute_batch(
+            "ALTER TABLE session_state DROP COLUMN theme;
+             ALTER TABLE session_state DROP COLUMN custom_theme;
+             PRAGMA user_version = 7;",
         )
         .unwrap();
-    assert_eq!(has_theme, 1, "theme column present after upgrade");
+    }
+    let db = Database::open(&path).unwrap();
+    assert_eq!(
+        db.schema_version().unwrap(),
+        9,
+        "re-ran the v8 + v9 migrations"
+    );
+    for col in ["theme", "custom_theme"] {
+        let present: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session_state') WHERE name = ?1",
+                [col],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(present, 1, "{col} column present after upgrade");
+    }
 }
 
 #[test]

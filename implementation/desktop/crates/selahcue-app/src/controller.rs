@@ -69,6 +69,9 @@ pub struct ControllerSnapshot {
     /// The active audience-output theme name; `None` = the default ("classic"), so
     /// a default session persists the pre-v8 (NULL) shape (S8-3b).
     pub theme: Option<String>,
+    /// The active custom theme (serialized JSON), when one is applied via the Theme
+    /// Designer; takes precedence over `theme` on restore. `None` otherwise (S8-3c).
+    pub custom_theme: Option<String>,
 }
 
 /// Drives the live/preview presentation from a [`ServicePlan`].
@@ -138,7 +141,12 @@ pub struct LiveController {
     cursor_slide: usize,
     /// The active audience-output theme name (a built-in; persisted + reported in
     /// the operator view). Switching it restyles both outputs without losing content.
+    /// `"custom"` when a Theme-Designer theme is active (see `custom_theme_json`).
     theme_name: String,
+    /// The active CUSTOM theme (serialized JSON), when `theme_name == "custom"`
+    /// (Theme Designer, S8-3c). Persisted verbatim so recovery restores the exact
+    /// custom design; `None` when a built-in theme is active.
+    custom_theme_json: Option<String>,
 }
 
 /// How long the identify overlay stays on the outputs once triggered (FR-040).
@@ -272,11 +280,13 @@ impl LiveController {
             live_slide: 0,
             cursor_slide: 0,
             theme_name,
+            custom_theme_json: None,
         }
     }
 
     /// Switch the audience theme by built-in name, restyling Preview + Live with no
     /// content loss and preserving blackout. Returns `false` for an unknown name.
+    /// Selecting a built-in clears any active custom theme.
     fn set_theme(&mut self, name: &str) -> bool {
         let Some(theme) = Theme::builtin(name) else {
             return false;
@@ -286,6 +296,28 @@ impl LiveController {
         // switch never un-blacks the audience output (theme ⟂ blackout).
         self.presenter.blackout(self.blackout);
         self.theme_name = name.to_string();
+        self.custom_theme_json = None;
+        true
+    }
+
+    /// Apply a CUSTOM theme from its serialized JSON (Theme Designer, S8-3c),
+    /// restyling Preview + Live with no content loss and preserving blackout.
+    /// Returns `false` for malformed JSON (the current theme is unchanged).
+    fn set_custom_theme(&mut self, theme_json: &str) -> bool {
+        let Ok(theme) = serde_json::from_str::<Theme>(theme_json) else {
+            return false;
+        };
+        // Persist the CANONICAL re-serialized theme, not the raw input. `Theme` is a
+        // fixed struct of scalars, so this bounds the stored/snapshotted size to a few
+        // hundred bytes and strips any ignored or duplicate JSON a client may have
+        // padded the (Operator-authorized) payload with — recovery restores the same
+        // Theme either way. Falls back to the raw string only if re-serialization fails
+        // (it cannot for a value that just deserialized).
+        let canonical = serde_json::to_string(&theme).unwrap_or_else(|_| theme_json.to_string());
+        self.presenter.set_theme(theme);
+        self.presenter.blackout(self.blackout);
+        self.theme_name = "custom".to_string();
+        self.custom_theme_json = Some(canonical);
         true
     }
 
@@ -320,6 +352,7 @@ impl LiveController {
             // Persist only a non-default theme (a "classic" session stays a NULL
             // theme row — the pre-v8 shape).
             theme: (self.theme_name != "classic").then(|| self.theme_name.clone()),
+            custom_theme: self.custom_theme_json.clone(),
         }
     }
 
@@ -333,9 +366,16 @@ impl LiveController {
         let len = self.plan.len();
         let ok = |v: Option<u32>| v.map(|i| i as usize).filter(|i| *i < len);
 
-        // Apply the persisted theme FIRST so all restored content composes with it
-        // (an unknown/absent name leaves the default). Blackout is re-applied later.
-        if let Some(name) = snap.theme.as_deref() {
+        // Apply the persisted theme FIRST so all restored content composes with it.
+        // A custom theme (Theme Designer) takes precedence over a built-in name; an
+        // unknown/absent/corrupt value leaves the default. Blackout is re-applied later.
+        if let Some(json) = snap.custom_theme.as_deref() {
+            if !self.set_custom_theme(json) {
+                if let Some(name) = snap.theme.as_deref() {
+                    self.set_theme(name);
+                }
+            }
+        } else if let Some(name) = snap.theme.as_deref() {
             self.set_theme(name);
         }
 
@@ -1070,6 +1110,15 @@ impl LiveController {
                 // Restyle both outputs in place — content is untouched (only its
                 // design changes). An unknown built-in name is rejected.
                 if self.set_theme(name) {
+                    ControllerReply::Ack
+                } else {
+                    ControllerReply::Deny(DenyReason::BadRequest)
+                }
+            }
+            Command::SetCustomTheme { theme_json } => {
+                // Apply a Theme-Designer custom theme (content untouched). Malformed
+                // JSON is rejected and leaves the current theme unchanged.
+                if self.set_custom_theme(theme_json) {
                     ControllerReply::Ack
                 } else {
                     ControllerReply::Deny(DenyReason::BadRequest)

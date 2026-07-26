@@ -40,9 +40,31 @@ fn snapshot_round_trips_all_fields() {
         staged_slide: Some(1),
         cursor_slide: Some(1),
         theme: Some("high-contrast".into()),
+        custom_theme: None,
     };
     session_repo::save(&db, &s).unwrap();
     assert_eq!(session_repo::load(&db).unwrap(), Some(s));
+}
+
+#[test]
+fn custom_theme_json_round_trips(/* S8-3c migration v9 */) {
+    let db = db();
+    // Absent = None (the pre-v9 shape). A custom-theme JSON blob round-trips verbatim.
+    session_repo::save(&db, &SessionState::default()).unwrap();
+    assert_eq!(session_repo::load(&db).unwrap().unwrap().custom_theme, None);
+    let json = r#"{"background":{"r":1,"g":2,"b":3,"a":255},"title":{},"body":{}}"#;
+    session_repo::save(
+        &db,
+        &SessionState {
+            theme: Some("custom".into()),
+            custom_theme: Some(json.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let loaded = session_repo::load(&db).unwrap().unwrap();
+    assert_eq!(loaded.theme, Some("custom".into()));
+    assert_eq!(loaded.custom_theme, Some(json.into()));
 }
 
 #[test]

@@ -76,6 +76,24 @@
       .nav-item:focus-visible { background: #232a35; outline: 2px solid var(--accent); outline-offset: -2px; }
       .nav-item[aria-current="page"] { background: #10231c; box-shadow: inset 3px 0 0 var(--preview-ink); }
       .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+      /* --- Theme Designer surface (S8-3c) --- */
+      .td-wrap { display: grid; grid-template-columns: 220px 1fr 300px; gap: 16px; height: 100%; padding: 16px; box-sizing: border-box; }
+      .td-list, .td-inspector { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; overflow-y: auto; }
+      .td-list h2, .td-inspector h2 { margin: 0 0 10px; font-size: 11px; letter-spacing: .06em; color: var(--muted); text-transform: uppercase; }
+      #td-themes button { display: block; width: 100%; text-align: left; margin-bottom: 6px; text-transform: capitalize; }
+      #td-themes button[aria-pressed="true"] { border-color: var(--preview-ink); background: #10231c; }
+      #td-new { width: 100%; margin-top: 6px; }
+      .td-canvas { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; overflow-y: auto; }
+      .td-canvas h1 { font-size: 20px; margin: 0; }
+      #td-preview { width: 480px; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: #000; image-rendering: auto; }
+      .td-actions { display: flex; align-items: center; gap: 12px; }
+      #td-apply { flex: none; }
+      .td-inspector label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin: 14px 0 6px; }
+      .td-inspector input[type=color] { width: 52px; height: 30px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); padding: 2px; cursor: pointer; }
+      .td-inspector input[type=range] { width: 100%; }
+      .seg { display: flex; gap: 4px; flex-wrap: wrap; }
+      .seg button { flex: 1; font-size: 12px; padding: 6px 8px; }
+      .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
       .nav-item .nav-key {
         margin-left: auto; font-size: 10px; color: var(--muted);
         border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-weight: 600;
@@ -476,9 +494,47 @@
         <p class="coming-soon" style="margin-top:2px;">Configure each output — role, display/NDI, format, and its theme. Per-screen theme rendering arrives with the per-screen theme engine.</p>
         <div id="screens-list" style="margin-top:8px;"></div>
       </section>
-      <section id="surface-theme-designer" class="surface-page surface-pad" aria-label="Theme Designer">
-        <h1>Theme Designer</h1>
-        <p class="coming-soon">The visual theme editor arrives with story S8-3c. Today, pick a built-in theme from the console's Theme panel.</p>
+      <section id="surface-theme-designer" class="surface-page" aria-label="Theme Designer">
+        <div class="td-wrap">
+          <aside class="td-list" aria-label="Themes">
+            <h2>Themes</h2>
+            <div id="td-themes"></div>
+            <button id="td-new">＋ New (from current)</button>
+          </aside>
+          <div class="td-canvas">
+            <h1>Theme Designer</h1>
+            <canvas id="td-preview" width="480" height="270" aria-label="Live theme preview"></canvas>
+            <div class="td-actions">
+              <button id="td-apply" class="golive">Apply to audience output</button>
+              <span id="td-status" class="coming-soon" role="status" aria-live="polite"></span>
+            </div>
+            <p class="coming-soon" style="font-size:11px;max-width:480px;">Live preview — the audience output renders this exactly (same compositor). On-canvas element drag, import/export, and a saved theme library arrive in later increments.</p>
+          </div>
+          <aside class="td-inspector" aria-label="Inspector">
+            <h2>Inspector</h2>
+            <label id="td-lbl-region">Region</label>
+            <div class="seg" id="td-region" role="group" aria-labelledby="td-lbl-region">
+              <button id="td-region-body" data-region="body" class="on" aria-pressed="true">Body</button>
+              <button data-region="title" aria-pressed="false">Reference / Title</button>
+            </div>
+            <label for="td-bg">Background colour</label>
+            <input type="color" id="td-bg" />
+            <label for="td-color">Text colour</label>
+            <input type="color" id="td-color" />
+            <label for="td-size">Text size — <span id="td-size-v"></span>% of height</label>
+            <input type="range" id="td-size" min="20" max="140" step="1" />
+            <label id="td-lbl-align">Alignment</label>
+            <div class="seg" id="td-align" role="group" aria-labelledby="td-lbl-align">
+              <button data-a="left" aria-pressed="false">Left</button><button data-a="center" aria-pressed="false">Center</button><button data-a="right" aria-pressed="false">Right</button>
+            </div>
+            <label for="td-lh">Line height — <span id="td-lh-v"></span>×</label>
+            <input type="range" id="td-lh" min="1000" max="1600" step="10" />
+            <label id="td-lbl-fit">Fit</label>
+            <div class="seg" id="td-fit" role="group" aria-labelledby="td-lbl-fit">
+              <button data-f="shrink_to_fit" aria-pressed="false">Shrink to fit</button><button data-f="clip" aria-pressed="false">Clip</button><button data-f="paginate" aria-pressed="false">Paginate</button>
+            </div>
+          </aside>
+        </div>
       </section>
       <section id="surface-plan" class="surface-page surface-pad" aria-label="Plan and Library">
         <h1>Plan / Library</h1>
@@ -885,6 +941,105 @@
         if (isMenuOpen() && !appMenu.contains(e.target) && e.target !== appMenuBtn) closeAppMenu();
       });
       document.getElementById("screens-identify").onclick = () => act(() => invoke("identify_outputs"));
+
+      // --- Theme Designer (S8-3c) ---
+      // The built-in themes mirror selahcue-present::Theme::{classic,high_contrast,
+      // lower_third} — kept in sync with theme.rs (the host is authoritative on
+      // Apply; this is the editing seed). RegionStyle field names match the serde.
+      const TD_REG = (x, y, w, h, ah, av, sz, lh, col, vis) => ({
+        x_permille: x, y_permille: y, w_permille: w, h_permille: h,
+        align_h: ah, align_v: av, size_permille: sz, line_height_permille: lh,
+        color: col, fit: "shrink_to_fit", visible: vis,
+      });
+      const TD_AMBER = { r: 242, g: 181, b: 60, a: 255 };
+      const TD_WHITE = { r: 255, g: 255, b: 255, a: 255 };
+      const TD_BUILTINS = {
+        classic: {
+          background: { r: 8, g: 10, b: 20, a: 255 },
+          title: TD_REG(60, 150, 880, 110, "center", "middle", 48, 1200, TD_AMBER, true),
+          body: TD_REG(60, 280, 880, 560, "center", "middle", 78, 1150, TD_WHITE, true),
+        },
+        "high-contrast": {
+          background: { r: 0, g: 0, b: 0, a: 255 },
+          title: TD_REG(40, 130, 920, 120, "center", "middle", 52, 1150, TD_AMBER, true),
+          body: TD_REG(40, 250, 920, 640, "center", "middle", 95, 1120, TD_WHITE, true),
+        },
+        "lower-third": {
+          background: { r: 2, g: 10, b: 7, a: 255 },
+          title: TD_REG(60, 700, 880, 80, "left", "middle", 40, 1100, TD_AMBER, true),
+          body: TD_REG(60, 778, 880, 170, "left", "top", 62, 1100, TD_WHITE, true),
+        },
+      };
+      const tdCanvas = document.getElementById("td-preview");
+      const tdCtx = tdCanvas.getContext("2d");
+      let tdTheme = JSON.parse(JSON.stringify(TD_BUILTINS.classic));
+      let tdRegion = "body";
+      let tdSelected = "classic";
+      const tdHex = (c) => "#" + [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("");
+      const tdRgb = (h) => ({ r: parseInt(h.slice(1, 3), 16), g: parseInt(h.slice(3, 5), 16), b: parseInt(h.slice(5, 7), 16), a: 255 });
+      const tdSeg = (id, val, attr) =>
+        document.querySelectorAll("#" + id + " button").forEach((b) => {
+          const sel = b.dataset[attr] === val;
+          b.classList.toggle("on", sel);
+          // Selection must be perceivable to assistive tech, not colour-only (WCAG 4.1.2).
+          b.setAttribute("aria-pressed", sel ? "true" : "false");
+        });
+      function tdList() {
+        const box = document.getElementById("td-themes");
+        box.innerHTML = "";
+        Object.keys(TD_BUILTINS).forEach((name) => {
+          const b = document.createElement("button");
+          b.textContent = name;
+          b.setAttribute("aria-pressed", name === tdSelected ? "true" : "false");
+          b.onclick = () => { tdSelected = name; tdTheme = JSON.parse(JSON.stringify(TD_BUILTINS[name])); tdSync(); tdPreview(); tdList(); };
+          box.appendChild(b);
+        });
+      }
+      function tdSync() {
+        const reg = tdTheme[tdRegion];
+        document.getElementById("td-bg").value = tdHex(tdTheme.background);
+        document.getElementById("td-color").value = tdHex(reg.color);
+        document.getElementById("td-size").value = reg.size_permille;
+        document.getElementById("td-size-v").textContent = (reg.size_permille / 10).toFixed(1);
+        document.getElementById("td-lh").value = reg.line_height_permille;
+        document.getElementById("td-lh-v").textContent = (reg.line_height_permille / 1000).toFixed(2);
+        tdSeg("td-region", tdRegion, "region");
+        tdSeg("td-align", reg.align_h, "a");
+        tdSeg("td-fit", reg.fit, "f");
+      }
+      let tdTimer = null;
+      function tdPreview() {
+        clearTimeout(tdTimer);
+        tdTimer = setTimeout(async () => {
+          try {
+            const p = await invoke("preview_theme", { themeJson: JSON.stringify(tdTheme) });
+            const bytes = Uint8Array.from(atob(p.rgba), (c) => c.charCodeAt(0));
+            tdCanvas.width = p.w; tdCanvas.height = p.h;
+            tdCtx.putImageData(new ImageData(new Uint8ClampedArray(bytes), p.w, p.h), 0, 0);
+          } catch (e) { console.error(e); }
+        }, 120);
+      }
+      document.getElementById("td-bg").oninput = (e) => { tdTheme.background = tdRgb(e.target.value); tdPreview(); };
+      document.getElementById("td-color").oninput = (e) => { tdTheme[tdRegion].color = tdRgb(e.target.value); tdPreview(); };
+      document.getElementById("td-size").oninput = (e) => { tdTheme[tdRegion].size_permille = +e.target.value; document.getElementById("td-size-v").textContent = (e.target.value / 10).toFixed(1); tdPreview(); };
+      document.getElementById("td-lh").oninput = (e) => { tdTheme[tdRegion].line_height_permille = +e.target.value; document.getElementById("td-lh-v").textContent = (e.target.value / 1000).toFixed(2); tdPreview(); };
+      document.querySelectorAll("#td-region button").forEach((b) => (b.onclick = () => { tdRegion = b.dataset.region; tdSync(); }));
+      document.querySelectorAll("#td-align button").forEach((b) => (b.onclick = () => { tdTheme[tdRegion].align_h = b.dataset.a; tdSeg("td-align", b.dataset.a, "a"); tdPreview(); }));
+      document.querySelectorAll("#td-fit button").forEach((b) => (b.onclick = () => { tdTheme[tdRegion].fit = b.dataset.f; tdSeg("td-fit", b.dataset.f, "f"); tdPreview(); }));
+      document.getElementById("td-new").onclick = () => { tdSelected = ""; tdList(); document.getElementById("td-status").textContent = "Editing a new theme from the current values."; };
+      document.getElementById("td-apply").onclick = () => {
+        const s = document.getElementById("td-status");
+        s.textContent = "Applying…";
+        // Surface BOTH outcomes on the aria-live status: a rejected apply (host
+        // disconnect / IPC failure in the Remote backend) must not leave the operator
+        // stuck on "Applying…" believing the audience theme changed when it did not.
+        act(() => invoke("set_custom_theme", { themeJson: JSON.stringify(tdTheme) })
+          .then((v) => { s.textContent = "Applied to the audience output."; return v; })
+          .catch((e) => { s.textContent = "Couldn't apply the theme — the audience output is unchanged."; throw e; }));
+      };
+      tdList();
+      tdSync();
+      tdPreview();
 
       function miniBtn(label, onclick) {
         const b = document.createElement("button");
