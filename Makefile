@@ -70,7 +70,7 @@ MOBILE  := implementation/mobile/selahcue_controller
 FLUTTER ?= flutter
 
 mobile: ## Run the Flutter controller on this Mac (pair it with a running `make output` via P)
-	cd $(MOBILE) && $(FLUTTER) run -d macos
+	cd $(MOBILE) && $(FLUTTER) run
 
 mobile-test: ## Analyze + unit-test the Flutter controller
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
