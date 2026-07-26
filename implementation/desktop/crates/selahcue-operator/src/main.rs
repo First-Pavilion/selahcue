@@ -274,6 +274,19 @@ async fn set_custom_theme(
 ) -> Result<OperatorView, String> {
     state.backend.set_custom_theme(theme_json).await
 }
+/// The built-in themes as `[{ name, theme }]` (theme = the serialized `Theme`) so the
+/// Theme Designer edits/previews the REAL built-ins from `theme.rs` — no hand-mirrored
+/// JS copy to drift out of sync with the engine (e.g. the lower-third band).
+#[tauri::command]
+fn builtin_themes() -> Vec<serde_json::Value> {
+    selahcue_present::Theme::BUILTIN_NAMES
+        .iter()
+        .filter_map(|name| {
+            let theme = selahcue_present::Theme::builtin(name)?;
+            Some(serde_json::json!({ "name": name, "theme": serde_json::to_value(theme).ok()? }))
+        })
+        .collect()
+}
 /// Render a Theme-Designer theme as a sample slide and return it as base64 RGBA8
 /// (+ dimensions) — the webview draws it to a <canvas> via ImageData for an ACCURATE
 /// preview (same compositor as the audience output). A pure function of the theme;
@@ -510,7 +523,8 @@ fn main() {
             assign_output,
             set_theme,
             set_custom_theme,
-            preview_theme
+            preview_theme,
+            builtin_themes
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");

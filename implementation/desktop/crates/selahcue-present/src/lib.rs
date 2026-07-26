@@ -24,7 +24,7 @@ pub use present::Presenter;
 pub use qr::{compose_qr, qr_modules};
 pub use slide::Slide;
 pub use stage::{compose_identify, compose_stage, StageDisplay, StageTheme, TimerView};
-pub use theme::{Fit, RegionStyle, Theme, VAlign};
+pub use theme::{Band, Fit, RegionStyle, Theme, VAlign};
 pub use tokens::{contrast_ratio, SemanticToken, LIVE, NEUTRAL, PREVIEW, WARN};
 
 /// Re-exported so consumers can name the output pixel buffer without depending on

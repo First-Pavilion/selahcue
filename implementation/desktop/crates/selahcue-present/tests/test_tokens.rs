@@ -70,15 +70,34 @@ fn stage_display_uses_the_semantic_inks() {
     assert_eq!(t.timer_alert, LIVE.ink);
 }
 
+/// Read one file from the operator's `dist/`. The console is split into
+/// `index.html` (structure) + `app.css` (styles) + `app.js` (logic), all served
+/// locally; pinned needles may live in any of them.
+fn operator_dist(file: &str) -> String {
+    let path = format!(
+        "{}/../selahcue-operator/dist/{}",
+        env!("CARGO_MANIFEST_DIR"),
+        file
+    );
+    std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("operator dist/{file} exists"))
+}
+
+/// The three console sources concatenated — content pins run against this so the
+/// split (structure/style/logic across files) doesn't hide a needle.
+fn operator_console_sources() -> String {
+    format!(
+        "{}\n{}\n{}",
+        operator_dist("index.html"),
+        operator_dist("app.css"),
+        operator_dist("app.js")
+    )
+}
+
 /// The operator webview carries the same canonical values (and the emergency
 /// chrome + reduced-motion invariants) — pinned by content, like wire fixtures.
 #[test]
 fn operator_webview_is_pinned_to_the_canonical_tokens() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../selahcue-operator/dist/index.html"
-    );
-    let html = std::fs::read_to_string(path).expect("operator dist/index.html exists");
+    let html = operator_console_sources();
     for needle in [
         PREVIEW.fill_hex,
         LIVE.fill_hex,
@@ -133,11 +152,7 @@ fn operator_webview_is_pinned_to_the_canonical_tokens() {
 /// footer stays OUTSIDE the surface router (so it persists on every surface).
 #[test]
 fn operator_webview_has_the_app_menu_and_screens_surface() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../selahcue-operator/dist/index.html"
-    );
-    let html = std::fs::read_to_string(path).expect("operator dist/index.html exists");
+    let html = operator_console_sources();
     for needle in [
         // App menu (accessible): a role=menu with menuitems + accesskeys, F10 hint.
         "id=\"app-menu-btn\"",
@@ -175,13 +190,24 @@ fn operator_webview_has_the_app_menu_and_screens_surface() {
         // 4.1.2) — not colour-only selection.
         "aria-labelledby=\"td-lbl-align\"",
         "aria-pressed",
+        // Refine (Figma 204-124/208-137): a full-center canvas with an on-canvas
+        // selection box + resize handles, numeric X/Y/W/H, vertical alignment, and
+        // host-sourced built-ins (no hand-mirrored JS drift).
+        "id=\"td-canvas-box\"",
+        "id=\"td-sel\"",
+        "data-h=\"nw\"",
+        "id=\"td-x\"",
+        "id=\"td-valign\"",
+        "builtin_themes",
     ] {
         assert!(html.contains(needle), "webview missing {needle:?}");
     }
     // The emergency footer must be a SIBLING of <main> (outside every surface),
-    // so it stays reachable on every surface. Assert </main> precedes the footer.
-    let main_close = html.find("</main>").expect("</main>");
-    let footer = html.find("id=\"emergency\"").expect("emergency footer");
+    // so it stays reachable on every surface. Assert </main> precedes the footer —
+    // a DOM-structure invariant, checked on index.html specifically.
+    let index = operator_dist("index.html");
+    let main_close = index.find("</main>").expect("</main>");
+    let footer = index.find("id=\"emergency\"").expect("emergency footer");
     assert!(
         main_close < footer,
         "the emergency footer must sit AFTER </main> (outside the surface router)"

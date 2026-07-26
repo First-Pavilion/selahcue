@@ -138,11 +138,12 @@ fn keymap_state_is_bounded() {
 /// emergency keys fire even over a dialog.)
 #[test]
 fn operator_webview_mirrors_the_canonical_keymap_and_pierces_modals() {
+    // The keymap logic lives in the split-out app.js (index.html is structure only).
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../selahcue-operator/dist/index.html"
+        "/../selahcue-operator/dist/app.js"
     );
-    let raw = std::fs::read_to_string(path).expect("operator dist/index.html exists");
+    let raw = std::fs::read_to_string(path).expect("operator dist/app.js exists");
     // Normalize CRLF so a Windows checkout matches the newline-sensitive checks.
     let html = raw.replace("\r\n", "\n");
 

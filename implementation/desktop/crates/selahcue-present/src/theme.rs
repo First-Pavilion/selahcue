@@ -63,6 +63,47 @@ pub struct RegionStyle {
     pub visible: bool,
 }
 
+/// A decorative **band** drawn behind a theme's text — a filled rect (use a
+/// non-opaque `fill` alpha to let video/background show through) with a border.
+/// It composes *before* the text regions, so the reference/body sit on top of it.
+/// The lower-third's full-width bottom bar (Figma 208-137) is a band; full-screen
+/// themes carry `None`. Geometry is per-mille of the frame, like [`RegionStyle`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Band {
+    pub x_permille: u16,
+    pub y_permille: u16,
+    pub w_permille: u16,
+    pub h_permille: u16,
+    /// Fill colour — a non-opaque alpha reads as a translucent panel over the
+    /// background/video (the engine's `fill_rect` blends src-over).
+    pub fill: Rgba,
+    /// Border colour (the amber outline that delineates the lower-third bar).
+    pub border: Rgba,
+    /// Border thickness as per-mille of frame HEIGHT (`0` = no border).
+    pub border_permille: u16,
+}
+
+impl Band {
+    /// The band's pixel rect within a `width×height` frame.
+    pub fn rect(&self, width: u32, height: u32) -> Rect {
+        let map = |dim: u32, permille: u16| (dim as u64 * permille as u64 / 1000) as u32;
+        Rect::new(
+            map(width, self.x_permille) as i32,
+            map(height, self.y_permille) as i32,
+            map(width, self.w_permille).max(1),
+            map(height, self.h_permille).max(1),
+        )
+    }
+    /// Border thickness in pixels for a `height`-tall frame (`0` when no border).
+    pub fn border_px(&self, height: u32) -> u32 {
+        if self.border_permille == 0 {
+            0
+        } else {
+            (height as u64 * self.border_permille as u64 / 1000).max(1) as u32
+        }
+    }
+}
+
 impl RegionStyle {
     /// The region's pixel rect within a `width×height` frame.
     pub fn rect(&self, width: u32, height: u32) -> Rect {
@@ -93,6 +134,11 @@ pub struct Theme {
     pub background: Rgba,
     pub title: RegionStyle,
     pub body: RegionStyle,
+    /// An optional decorative band behind the text (the lower-third bar). Additive and
+    /// backward-compatible: older custom-theme JSON without this field deserializes to
+    /// `None`, and full-screen themes serialize without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub band: Option<Band>,
 }
 
 const AMBER: Rgba = Rgba {
@@ -143,6 +189,7 @@ impl Theme {
                 fit: Fit::ShrinkToFit,
                 visible: true,
             },
+            band: None,
         }
     }
 
@@ -177,25 +224,29 @@ impl Theme {
                 fit: Fit::ShrinkToFit,
                 visible: true,
             },
+            band: None,
         }
     }
 
-    /// **Lower-third** — content in the bottom band, left-aligned (for keyed /
-    /// stream lower-thirds). The reference sits above the body in the band.
+    /// **Lower-third** — a **full-width bottom band** (Figma 208-137): a translucent
+    /// dark panel with a thin amber border, keyed over live video, carrying the
+    /// reference (amber) above the body (white), left-aligned inside the band. The
+    /// band spans nearly the full width (3%–97%) rather than a narrow left column
+    /// (owner refine).
     ///
-    /// This is a **short-form** template by design: the band fits ~2 lines at the
-    /// design size, so a long (e.g. 6-line) verse switched into it **shrinks to
-    /// fit** the band (`Fit::ShrinkToFit`, the default) rather than dropping lines —
-    /// a visual guarantee, not only a data one (owner refine; resolves the S8-3b
-    /// lower-third clip finding).
+    /// Short-form by design: the band fits ~2 lines at the design size, so a long
+    /// (e.g. 6-line) verse switched into it **shrinks to fit** the band
+    /// (`Fit::ShrinkToFit`, the default) rather than dropping lines.
     pub fn lower_third() -> Self {
         Theme {
-            background: Rgba::rgb(2, 10, 7),
+            // Dark backdrop stands in for the keyed video on opaque outputs + the
+            // Designer preview; true NDI alpha-keying is a later slice.
+            background: Rgba::rgb(4, 12, 9),
             title: RegionStyle {
-                x_permille: 60,
-                y_permille: 700,
-                w_permille: 880,
-                h_permille: 80,
+                x_permille: 55,
+                y_permille: 688,
+                w_permille: 890,
+                h_permille: 70,
                 align_h: TextAlign::Left,
                 align_v: VAlign::Middle,
                 size_permille: 40,
@@ -205,10 +256,10 @@ impl Theme {
                 visible: true,
             },
             body: RegionStyle {
-                x_permille: 60,
-                y_permille: 778,
-                w_permille: 880,
-                h_permille: 170,
+                x_permille: 55,
+                y_permille: 762,
+                w_permille: 890,
+                h_permille: 175,
                 align_h: TextAlign::Left,
                 align_v: VAlign::Top,
                 size_permille: 62,
@@ -217,6 +268,22 @@ impl Theme {
                 fit: Fit::ShrinkToFit,
                 visible: true,
             },
+            band: Some(Band {
+                x_permille: 30,
+                y_permille: 660,
+                w_permille: 940,
+                h_permille: 300,
+                // Translucent darkening panel; the amber border is what delineates
+                // the bar over a dark backdrop (matches 208-137).
+                fill: Rgba {
+                    r: 0,
+                    g: 0,
+                    b: 0,
+                    a: 150,
+                },
+                border: AMBER,
+                border_permille: 5,
+            }),
         }
     }
 

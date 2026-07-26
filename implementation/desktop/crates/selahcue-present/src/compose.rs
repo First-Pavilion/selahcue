@@ -7,7 +7,7 @@
 //! under a different theme restyles it without loss.
 
 use crate::slide::Slide;
-use crate::theme::{Fit, RegionStyle, Theme, VAlign};
+use crate::theme::{Band, Fit, RegionStyle, Theme, VAlign};
 use selahcue_engine::scene::{Frame, Layer, Rect, Rgba, TextAlign};
 
 /// Fraction of the reference height used per text line, and the gap between lines.
@@ -136,10 +136,43 @@ fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -
 /// The slide's title renders in the theme's title/reference region (when visible +
 /// non-empty) and its body lines in the body region — each styled + aligned per the
 /// theme. A blank slide renders as background only.
+/// The [`Layer::Fill`] rects for a decorative [`Band`]: the translucent panel fill
+/// plus up to four border edges (top/bottom/left/right), in draw order (fill first,
+/// border on top). The engine blends fills src-over, so a non-opaque `fill` reads as
+/// a translucent panel over the background/video.
+fn band_layers(band: &Band, width: u32, height: u32) -> Vec<Layer> {
+    let rect = band.rect(width, height);
+    let mut layers = vec![Layer::Fill {
+        rect,
+        color: band.fill,
+    }];
+    let bt = band.border_px(height) as i32;
+    if bt > 0 && band.border.a > 0 {
+        let (x, y, w, h) = (rect.x, rect.y, rect.w as i32, rect.h as i32);
+        // Clamp each edge to the band so a thick border never inverts on a tiny band.
+        let bt = bt.min(w).min(h);
+        let edge = |x: i32, y: i32, w: i32, h: i32| Layer::Fill {
+            rect: Rect::new(x, y, w.max(0) as u32, h.max(0) as u32),
+            color: band.border,
+        };
+        layers.push(edge(x, y, w, bt)); // top
+        layers.push(edge(x, y + h - bt, w, bt)); // bottom
+        layers.push(edge(x, y, bt, h)); // left
+        layers.push(edge(x + w - bt, y, bt, h)); // right
+    }
+    layers
+}
+
 pub fn compose_slide(slide: &Slide, theme: &Theme, width: u32, height: u32) -> Frame {
     let mut frame = Frame::new(width, height).with_background(theme.background);
     if slide.is_blank() {
         return frame; // background only
+    }
+    // A decorative band (e.g. the lower-third bar) sits behind the text regions.
+    if let Some(band) = &theme.band {
+        for layer in band_layers(band, width, height) {
+            frame.push(layer);
+        }
     }
     let body: Vec<&str> = slide
         .body

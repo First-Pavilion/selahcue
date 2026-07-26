@@ -90,6 +90,98 @@ fn compose_is_deterministic() {
     assert_eq!(a.bytes(), b.bytes());
 }
 
+/// Is the pixel amber-ish (the lower-third border / reference colour ≈ 242,181,60)?
+fn is_amber(fb: &FrameBuffer, x: u32, y: u32) -> bool {
+    fb.pixel(x, y)
+        .map(|p| p.r > 200 && (150..=215).contains(&p.g) && p.b < 110)
+        .unwrap_or(false)
+}
+
+#[test]
+fn lower_third_renders_a_full_width_band_not_left_only() {
+    // Figma 208-137 (owner refine): the lower-third is a FULL-WIDTH bottom band with
+    // an amber border — its right edge reaches ~97% of the width, so the design is no
+    // longer a narrow bottom-left column. Render at 1280×720 so the 5‰ border is ~3px.
+    let (w, h) = (1280u32, 720u32);
+    let fb = render(&compose_slide(
+        &Slide::new("John 3:16", ["For God so loved the world"]),
+        &Theme::lower_third(),
+        w,
+        h,
+    ));
+    // Band rect ≈ x[3%..97%]=[38..1203], y[66%..96%]=[475..691]. Sample a row inside
+    // the band and confirm amber appears near BOTH the far-left and far-right edges —
+    // the key proof the band spans the width (a left-only text never touches x≈97%).
+    // Band spans x[3%..97%] = [38..1241] at 1280px; the amber border edges are ~3px.
+    let mid_y = 560;
+    let left = (25..55).any(|x| is_amber(&fb, x, mid_y));
+    let right = (1225..1255).any(|x| is_amber(&fb, x, mid_y));
+    assert!(left, "amber band border near the left edge (~3%)");
+    assert!(
+        right,
+        "amber band border near the RIGHT edge (~97%) — proves full-width, not left-only"
+    );
+    // The reference (amber) + body (white) ink render inside the band.
+    assert!(
+        has_ink_in(&fb, 60, 490, 1200, 545),
+        "reference line renders in the band"
+    );
+    assert!(
+        has_ink_in(&fb, 60, 545, 1200, 675),
+        "body renders in the band"
+    );
+    // A full-screen theme has NO band (no amber near the far-right edge, mid-frame).
+    let classic = render(&compose_slide(
+        &Slide::new("John 3:16", ["For God so loved the world"]),
+        &Theme::classic(),
+        w,
+        h,
+    ));
+    assert!(
+        !(1180..1215).any(|x| is_amber(&classic, x, mid_y)),
+        "classic has no lower-third band"
+    );
+}
+
+#[test]
+fn theme_band_serde_is_additive_and_backward_compatible() {
+    use selahcue_present::Band;
+    // Full-screen themes omit `band` entirely (skip_serializing_if) → old readers +
+    // compact JSON; the lower-third serializes WITH a band.
+    let classic_json = serde_json::to_string(&Theme::classic()).unwrap();
+    assert!(
+        !classic_json.contains("band"),
+        "classic must not serialize a band field"
+    );
+    let lt_json = serde_json::to_string(&Theme::lower_third()).unwrap();
+    assert!(
+        lt_json.contains("\"band\""),
+        "lower-third serializes a band"
+    );
+
+    // Old custom-theme JSON WITHOUT a band field still deserializes (→ band: None).
+    let no_band = serde_json::json!({
+        "background": {"r":8,"g":10,"b":20,"a":255},
+        "title": serde_json::from_str::<serde_json::Value>(
+            &serde_json::to_string(&Theme::classic().title).unwrap()).unwrap(),
+        "body": serde_json::from_str::<serde_json::Value>(
+            &serde_json::to_string(&Theme::classic().body).unwrap()).unwrap(),
+    });
+    let t: Theme = serde_json::from_value(no_band).unwrap();
+    assert_eq!(t.band, None, "absent band deserializes to None");
+
+    // A theme WITH a band round-trips exactly.
+    let rt: Theme = serde_json::from_str(&lt_json).unwrap();
+    assert_eq!(rt, Theme::lower_third(), "band round-trips");
+    assert!(matches!(
+        rt.band,
+        Some(Band {
+            border_permille: 5,
+            ..
+        })
+    ));
+}
+
 #[test]
 fn shrink_to_fit_renders_all_body_lines_by_scaling_not_clipping() {
     // Fit::ShrinkToFit is the default for every built-in (owner refine): the body
