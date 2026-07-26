@@ -227,6 +227,36 @@ fn operator_webview_has_the_app_menu_and_screens_surface() {
     );
 }
 
+/// The saved-theme library (86ajq4xmy): the Theme Designer's Save-changes form + the
+/// built-in/saved template list wired to the host `save_theme`/`delete_theme` commands.
+/// Pinned so a future edit cannot strip the library half while leaving Apply green.
+#[test]
+fn operator_webview_has_the_saved_theme_library() {
+    let html = operator_console_sources();
+    for needle in [
+        // The inline (WKWebView-safe) Save form — name input + Save/Cancel.
+        "id=\"td-save-row\"",
+        "id=\"td-save-name\"",
+        "id=\"td-save-confirm\"",
+        "id=\"td-save-cancel\"",
+        // The template list carries built-ins (read-only tag) + deletable saved themes.
+        "td-theme-name",
+        "td-theme-del",
+        // Wired to the real host library commands + the view field that feeds the list.
+        "save_theme",
+        "delete_theme",
+        "saved_themes",
+    ] {
+        assert!(html.contains(needle), "webview missing {needle:?}");
+    }
+    // The Save flow uses the inline name form (never window.prompt, which WKWebView
+    // blocks): the form's keydown handler commits on Enter — pin that wiring.
+    assert!(
+        operator_dist("app.js").contains("tdSaveName.addEventListener(\"keydown\""),
+        "the Save name field must commit via its own inline keydown handler"
+    );
+}
+
 /// The Flutter controller carries the same canonical values.
 #[test]
 fn mobile_tokens_are_pinned_to_the_canonical_tokens() {

@@ -1565,3 +1565,181 @@ fn per_item_theme_override_renders_survives_a_global_switch_and_recovers() {
         "recovery restores the item's override on the live output"
     );
 }
+
+// --- Saved-theme library (86ajq4xmy) ---------------------------------------
+
+#[test]
+fn save_theme_stores_the_canonical_theme_and_marks_dirty() {
+    use selahcue_app::MAX_THEME_NAME_LEN;
+    let (mut c, _) = controller();
+    assert!(!c.take_saved_themes_dirty(), "clean at start");
+
+    // A saved theme is a serialized Theme (a built-in stands in for a designed one).
+    let json = serde_json::to_string(&Theme::high_contrast()).unwrap();
+    assert_eq!(
+        c.apply(&Command::SaveTheme {
+            name: "  Sermon Bold  ".into(), // untrimmed on the wire
+            theme_json: json.clone(),
+        }),
+        ControllerReply::Ack
+    );
+    assert!(
+        c.take_saved_themes_dirty(),
+        "a save marks the library dirty"
+    );
+    assert!(
+        !c.take_saved_themes_dirty(),
+        "the dirty flag clears on read (one persist per change)"
+    );
+
+    // Stored under the TRIMMED name, as the CANONICAL re-serialized form.
+    let canonical = serde_json::to_string(&Theme::high_contrast()).unwrap();
+    assert_eq!(c.saved_themes().get("Sermon Bold"), Some(&canonical));
+    assert_eq!(c.saved_themes().len(), 1);
+
+    // The operator view reports the library so the Theme Designer can list + load it.
+    let view = c.operator_view();
+    assert_eq!(view.saved_themes.len(), 1);
+    assert_eq!(view.saved_themes[0].name, "Sermon Bold");
+    assert_eq!(view.saved_themes[0].theme_json, canonical);
+    // The Theme Designer reads `view.saved_themes[i].name / .theme_json` — so the JSON
+    // Tauri hands the webview MUST be objects, not `[[name, json]]` tuples. Pin the shape.
+    let serialized = serde_json::to_value(&view).unwrap();
+    assert_eq!(
+        serialized["saved_themes"][0]["name"],
+        serde_json::json!("Sermon Bold"),
+        "saved_themes must serialize as {{name, theme_json}} objects for the webview"
+    );
+    assert_eq!(
+        serialized["saved_themes"][0]["theme_json"],
+        serde_json::json!(canonical)
+    );
+
+    // Invalid JSON and an empty / over-long name are rejected without dirtying.
+    assert_eq!(
+        c.apply(&Command::SaveTheme {
+            name: "bad".into(),
+            theme_json: "not-json".into(),
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        c.apply(&Command::SaveTheme {
+            name: "   ".into(),
+            theme_json: json.clone(),
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        c.apply(&Command::SaveTheme {
+            name: "n".repeat(MAX_THEME_NAME_LEN + 1),
+            theme_json: json,
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert!(
+        !c.take_saved_themes_dirty(),
+        "rejected saves never mark dirty"
+    );
+    assert_eq!(c.saved_themes().len(), 1, "library unchanged by rejects");
+}
+
+#[test]
+fn save_theme_overwrites_by_name_then_delete_removes() {
+    let (mut c, _) = controller();
+    let classic = serde_json::to_string(&Theme::classic()).unwrap();
+    let contrast = serde_json::to_string(&Theme::high_contrast()).unwrap();
+
+    c.apply(&Command::SaveTheme {
+        name: "Look".into(),
+        theme_json: classic.clone(),
+    });
+    // Overwriting the same name replaces its JSON (rename/duplicate build on this).
+    c.apply(&Command::SaveTheme {
+        name: "Look".into(),
+        theme_json: contrast.clone(),
+    });
+    assert_eq!(c.saved_themes().len(), 1, "overwrite, not a second entry");
+    assert_eq!(c.saved_themes().get("Look"), Some(&contrast));
+
+    // Delete removes it and marks dirty; deleting an absent name is a no-op Ack.
+    let _ = c.take_saved_themes_dirty();
+    assert_eq!(
+        c.apply(&Command::DeleteTheme {
+            name: "Look".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert!(
+        c.take_saved_themes_dirty(),
+        "a delete marks the library dirty"
+    );
+    assert!(c.saved_themes().is_empty());
+    assert_eq!(
+        c.apply(&Command::DeleteTheme {
+            name: "ghost".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert!(
+        !c.take_saved_themes_dirty(),
+        "deleting an absent name never dirties"
+    );
+}
+
+#[test]
+fn saved_theme_library_is_bounded_and_load_drops_bad_entries() {
+    use selahcue_app::{MAX_SAVED_THEMES, MAX_THEME_NAME_LEN};
+    let (mut c, _) = controller();
+    let json = serde_json::to_string(&Theme::classic()).unwrap();
+
+    // Fill to the cap; the next NEW name is rejected, an overwrite still succeeds.
+    for i in 0..MAX_SAVED_THEMES {
+        assert_eq!(
+            c.apply(&Command::SaveTheme {
+                name: format!("t{i}"),
+                theme_json: json.clone(),
+            }),
+            ControllerReply::Ack
+        );
+    }
+    assert_eq!(c.saved_themes().len(), MAX_SAVED_THEMES);
+    assert_eq!(
+        c.apply(&Command::SaveTheme {
+            name: "one-too-many".into(),
+            theme_json: json.clone(),
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest),
+        "a new name past the cap is rejected (bounded memory)"
+    );
+    assert_eq!(
+        c.apply(&Command::SaveTheme {
+            name: "t0".into(),
+            theme_json: json.clone(),
+        }),
+        ControllerReply::Ack,
+        "overwriting an existing name at the cap is allowed"
+    );
+
+    // load_saved_themes: startup filters invalid JSON / bad names and honours the cap
+    // without dirtying (a corrupt store can never exceed the bound or crash).
+    let mut incoming: Vec<(String, String)> = (0..MAX_SAVED_THEMES + 10)
+        .map(|i| (format!("k{i}"), json.clone()))
+        .collect();
+    incoming.push(("bad-json".into(), "{not a theme}".into()));
+    incoming.push((" ".into(), json.clone()));
+    incoming.push(("n".repeat(MAX_THEME_NAME_LEN + 1), json.clone()));
+    c.load_saved_themes(incoming);
+    assert!(
+        c.saved_themes().len() <= MAX_SAVED_THEMES,
+        "load honours the cap"
+    );
+    assert!(
+        c.saved_themes().keys().all(|k| k.starts_with('k')),
+        "invalid entries dropped on load"
+    );
+    assert!(
+        !c.take_saved_themes_dirty(),
+        "loading from the store is not a change to persist"
+    );
+}

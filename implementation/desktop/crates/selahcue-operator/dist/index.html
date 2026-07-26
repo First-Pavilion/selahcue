@@ -147,15 +147,15 @@
       </section>
       <section id="surface-theme-designer" class="surface-page" aria-label="Theme Designer">
         <!-- Header (Figma 204-124): title + New / Import / Export / Save changes.
-             Import/Export/Save changes are honest 'later' affordances — they route to
-             the saved-theme library story (86ajq4xmy), not fake success. -->
+             Save changes is a real named-theme save into the library (86ajq4xmy).
+             Import/Export a theme FILE remain honest 'later' affordances. -->
         <div class="td-header">
           <div class="td-brand">Theme Designer</div>
           <div class="td-header-actions">
             <button id="td-new">＋ New</button>
             <button id="td-import" class="td-later">↓ Import</button>
             <button id="td-export" class="td-later">↑ Export</button>
-            <button id="td-save" class="td-later">Save changes</button>
+            <button id="td-save">Save changes</button>
           </div>
         </div>
         <div class="td-wrap">
@@ -168,7 +168,18 @@
               <div class="td-sub">Templates</div>
               <div id="td-themes"></div>
               <button id="td-new-2" class="td-list-new">＋ New (from current)</button>
-              <p class="td-hint coming-soon" id="td-list-note">Duplicate · rename · delete + a saved theme library arrive with the theme library (86ajq4xmy).</p>
+              <!-- Inline save form (WKWebView-safe — no window.prompt). Toggled by
+                   "Save changes"; names the current design into the library. -->
+              <div id="td-save-row" class="td-save-row" hidden>
+                <input id="td-save-name" class="td-save-name" type="text" maxlength="64"
+                       placeholder="Theme name" aria-label="Name for the saved theme"
+                       autocomplete="off" autocorrect="off" spellcheck="false" />
+                <div class="td-save-row-actions">
+                  <button id="td-save-confirm" class="golive">Save</button>
+                  <button id="td-save-cancel">Cancel</button>
+                </div>
+              </div>
+              <p class="td-hint" id="td-list-note">Built-ins are read-only. Save the current design as a named theme; saved themes can be loaded, re-saved, or deleted.</p>
             </div>
           </aside>
           <div class="td-stage">

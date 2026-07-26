@@ -24,7 +24,7 @@ use selahcue_app::{
 };
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_data::session_repo::SessionState;
-use selahcue_data::{output_repo, plan_repo, session_repo, DataError, Database};
+use selahcue_data::{output_repo, plan_repo, saved_theme_repo, session_repo, DataError, Database};
 use selahcue_engine::raster::FrameBuffer;
 use selahcue_lan::protocol::{Command, DisplayView, OutputStatusView, PairingInvite};
 use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
@@ -405,6 +405,35 @@ impl SessionStore {
         if let Some(db) = self.db.as_ref() {
             if let Err(e) = output_repo::save_assignment(db, role, display_key) {
                 eprintln!("SelahCue: could not persist the {role} output assignment ({e}).");
+            }
+        }
+    }
+
+    /// The persisted saved-theme library (`(name, theme_json)`), if any (86ajq4xmy).
+    fn load_saved_themes(&self) -> Vec<(String, String)> {
+        self.db
+            .as_ref()
+            .and_then(|db| match saved_theme_repo::load_all(db) {
+                Ok(rows) => Some(rows),
+                Err(e) => {
+                    eprintln!("SelahCue: could not read the saved-theme library ({e}).");
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    /// Persist the whole saved-theme library (reported, never fatal). Returns whether
+    /// the write succeeded so the caller can re-arm the dirty flag on failure.
+    fn save_saved_themes(&self, themes: &[(String, String)]) -> bool {
+        let Some(db) = self.db.as_ref() else {
+            return true;
+        };
+        match saved_theme_repo::save_all(db, themes) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("SelahCue: could not persist the saved-theme library ({e}).");
+                false
             }
         }
     }
@@ -828,6 +857,9 @@ impl App {
                     let _ = c.apply(&Command::GoLive);
                 }
             }
+            // The saved-theme library (86ajq4xmy) is user config, not session state,
+            // so it loads on every start (clean/crash included) without dirtying.
+            c.load_saved_themes(store.load_saved_themes());
         }
 
         // First run: write the initial session row NOW so the seeded plan is
@@ -1017,6 +1049,19 @@ impl App {
         let Ok(mut c) = self.controller.lock() else {
             return;
         };
+        // The saved-theme library (86ajq4xmy) persists immediately on any change
+        // (rare, operator-driven Save/Delete) — it is user config, independent of the
+        // session snapshot, so it saves outside the plan/state throttle below.
+        if c.take_saved_themes_dirty() {
+            let themes: Vec<(String, String)> = c
+                .saved_themes()
+                .iter()
+                .map(|(n, j)| (n.clone(), j.clone()))
+                .collect();
+            if !self.store.save_saved_themes(&themes) {
+                c.mark_saved_themes_dirty(); // failed write: retry next frame
+            }
+        }
         // Plan edits persist immediately (rare, operator-driven actions) — and the
         // session snapshot goes with them, bypassing the throttle: the on-disk pair
         // (plan, indices) must never be split across a crash window.
@@ -1736,6 +1781,14 @@ fn main() {
         if let Ok(mut c) = app.controller.lock() {
             if c.take_plan_dirty() {
                 app.store.save_plan(c.plan());
+            }
+            if c.take_saved_themes_dirty() {
+                let themes: Vec<(String, String)> = c
+                    .saved_themes()
+                    .iter()
+                    .map(|(n, j)| (n.clone(), j.clone()))
+                    .collect();
+                app.store.save_saved_themes(&themes);
             }
             app.store.save_session(&c.snapshot(Instant::now()));
         }

@@ -86,6 +86,22 @@ fn set_theme_is_operator_only_output_config() {
     assert!(!authorize(Role::Producer, &per_item), "producer per-item");
     assert!(!authorize(Role::Assistant, &per_item), "assistant per-item");
     assert!(!authorize(Role::Viewer, &per_item), "viewer per-item");
+    // Saving/deleting a NAMED theme in the library (86ajq4xmy) is the same
+    // output-config permission — Operator-only.
+    for cmd in [
+        Command::SaveTheme {
+            name: "Look".into(),
+            theme_json: "{}".into(),
+        },
+        Command::DeleteTheme {
+            name: "Look".into(),
+        },
+    ] {
+        assert!(authorize(Role::Operator, &cmd), "operator {cmd:?}");
+        assert!(!authorize(Role::Producer, &cmd), "producer {cmd:?}");
+        assert!(!authorize(Role::Assistant, &cmd), "assistant {cmd:?}");
+        assert!(!authorize(Role::Viewer, &cmd), "viewer {cmd:?}");
+    }
 }
 
 #[test]

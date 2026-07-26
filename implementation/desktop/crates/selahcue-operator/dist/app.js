@@ -8,6 +8,12 @@
         // view — the blackout toggle must read true state even while an editor
         // is open.
         syncChrome(view);
+        // The saved-theme library (86ajq4xmy) rides on every view. Refresh the Theme
+        // Designer's template list whenever it changes — but never while the save-name
+        // field is focused (a mid-type rebuild would clobber the entry), and only after
+        // the built-ins have loaded (tdList needs them). This runs before the plan's
+        // early-returns so the library stays live even with an open plan editor.
+        syncSavedThemes(view);
         // Never clobber an open editor or a pending delete-confirm, and skip
         // identical re-renders (the 1s poll must not eat in-flight clicks).
         const key = JSON.stringify(view);
@@ -433,10 +439,14 @@
       const tdBox = document.getElementById("td-canvas-box");
       const tdSel = document.getElementById("td-sel");
       let TD_BUILTINS = {}; // name -> theme object (from the host)
-      let tdOrder = []; // template names, in order
+      let tdOrder = []; // built-in template names, in order
+      let tdSaved = []; // saved library themes: [{name, theme_json}] (from the host view)
+      let tdSavedKey = ""; // change-detect so the 1s poll only rebuilds the list on a real change
       let tdTheme = null; // the theme being edited
       let tdRegion = "body";
-      let tdSelected = "";
+      let tdSelected = ""; // the selected TEMPLATE name (built-in or saved), "" = a new/unsaved theme
+      let tdSelectedKind = ""; // "builtin" | "saved" | "" — disambiguates a saved theme that shares a built-in's name
+      let tdConfirmDel = null; // saved-theme name in the two-click delete-confirm state
       const tdHex = (c) => "#" + [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("");
       const tdRgb = (h) => ({ r: parseInt(h.slice(1, 3), 16), g: parseInt(h.slice(3, 5), 16), b: parseInt(h.slice(5, 7), 16), a: 255 });
       const tdClamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -447,6 +457,21 @@
           // Selection must be perceivable to assistive tech, not colour-only (WCAG 4.1.2).
           b.setAttribute("aria-pressed", sel ? "true" : "false");
         });
+
+      // Fold the host's saved-theme library (from every operator view) into the Theme
+      // Designer list. Change-detected so the 1s poll only rebuilds on a real change,
+      // and never while the save-name field is focused (would clobber a half-typed name).
+      function syncSavedThemes(view) {
+        const incoming = Array.isArray(view.saved_themes) ? view.saved_themes : [];
+        const key = JSON.stringify(incoming);
+        if (key === tdSavedKey) return;
+        // Leave the key unconsumed while typing a name so it rebuilds once focus leaves.
+        if (document.activeElement && document.activeElement.id === "td-save-name") return;
+        tdSavedKey = key;
+        tdSaved = incoming;
+        // Only rebuild once the built-ins exist (tdLoadBuiltins renders the first list).
+        if (tdOrder.length) tdList();
+      }
 
       async function tdLoadBuiltins() {
         let list = [];
@@ -460,6 +485,7 @@
         tdOrder = [];
         list.forEach(({ name, theme }) => { TD_BUILTINS[name] = theme; tdOrder.push(name); });
         tdSelected = tdOrder[0] || "";
+        tdSelectedKind = tdSelected ? "builtin" : "";
         tdTheme = tdSelected ? JSON.parse(JSON.stringify(TD_BUILTINS[tdSelected])) : null;
         tdList();
         tdSync();
@@ -469,18 +495,92 @@
       function tdList() {
         const box = document.getElementById("td-themes");
         box.innerHTML = "";
+        // A rebuild recreates every ✕ in its UNARMED look, so any pending two-click
+        // delete-confirm must be dropped here too — otherwise the button would show
+        // "✕" while the state stayed armed, and one click would delete without a confirm.
+        tdConfirmDel = null;
+        // Built-ins first — read-only reference templates (load into the editor, never
+        // edited in place). Selecting one loads a working COPY. Selection is keyed by
+        // KIND too, so a saved theme that shares a built-in's name never co-highlights.
         tdOrder.forEach((name) => {
+          const row = document.createElement("div");
+          row.className = "td-theme-row";
           const b = document.createElement("button");
+          b.className = "td-theme-name";
           b.textContent = name;
-          b.setAttribute("aria-pressed", name === tdSelected ? "true" : "false");
+          b.setAttribute("aria-pressed", tdSelectedKind === "builtin" && name === tdSelected ? "true" : "false");
           b.onclick = () => {
             tdSelected = name;
+            tdSelectedKind = "builtin";
             tdTheme = JSON.parse(JSON.stringify(TD_BUILTINS[name]));
             tdSync();
             tdPreview();
             tdList();
           };
-          box.appendChild(b);
+          const tag = document.createElement("span");
+          tag.className = "td-theme-tag";
+          tag.textContent = "built-in";
+          row.appendChild(b);
+          row.appendChild(tag);
+          box.appendChild(row);
+        });
+        // Saved (named custom) themes from the library — selectable (load into the
+        // editor) and deletable (✕). A confirm-on-second-click delete mirrors the plan.
+        tdSaved.forEach(({ name, theme_json }) => {
+          const row = document.createElement("div");
+          row.className = "td-theme-row td-theme-saved";
+          const b = document.createElement("button");
+          b.className = "td-theme-name";
+          b.textContent = name;
+          b.setAttribute("aria-pressed", tdSelectedKind === "saved" && name === tdSelected ? "true" : "false");
+          b.onclick = () => {
+            let parsed;
+            try {
+              parsed = JSON.parse(theme_json);
+            } catch (e) {
+              tdStatus("That saved theme is unreadable and can't be loaded.");
+              return;
+            }
+            tdSelected = name;
+            tdSelectedKind = "saved";
+            tdTheme = parsed;
+            tdSync();
+            tdPreview();
+            tdList();
+          };
+          const del = document.createElement("button");
+          del.className = "td-theme-del";
+          del.textContent = "✕";
+          del.title = "Delete this saved theme";
+          del.setAttribute("aria-label", "Delete saved theme " + name);
+          del.onclick = (ev) => {
+            ev.stopPropagation();
+            if (tdConfirmDel === name) {
+              tdConfirmDel = null;
+              // The next view (poll or this reply) drops it from tdSaved → list rebuilds.
+              act(() => invoke("delete_theme", { name }));
+              if (tdSelectedKind === "saved" && tdSelected === name) {
+                tdSelected = "";
+                tdSelectedKind = "";
+              }
+              tdStatus("Deleted “" + name + "”.");
+            } else {
+              tdConfirmDel = name;
+              del.textContent = "✕?";
+              del.classList.add("confirm");
+              tdStatus("Click ✕ again to delete “" + name + "”.");
+              setTimeout(() => {
+                if (tdConfirmDel === name) {
+                  tdConfirmDel = null;
+                  del.textContent = "✕";
+                  del.classList.remove("confirm");
+                }
+              }, 3000);
+            }
+          };
+          row.appendChild(b);
+          row.appendChild(del);
+          box.appendChild(row);
         });
       }
 
@@ -665,15 +765,78 @@
       });
 
       const tdStatus = (msg) => { document.getElementById("td-status").textContent = msg; };
-      const tdNew = () => { tdSelected = ""; tdList(); tdStatus("Editing a new theme from the current values."); };
+      // The host caps a theme name at 64 BYTES (MAX_THEME_NAME_LEN, UTF-8), not chars —
+      // so a short non-Latin name can still be rejected. Measure bytes to agree exactly.
+      const TD_NAME_MAX_BYTES = 64;
+      const tdNameBytes = (s) => {
+        try { return new TextEncoder().encode(s).length; }
+        catch (e) { return unescape(encodeURIComponent(s)).length; } // WKWebView fallback
+      };
+      const tdNew = () => { tdSelected = ""; tdSelectedKind = ""; tdList(); tdStatus("Editing a new theme from the current values."); };
       document.getElementById("td-new").onclick = tdNew;
       document.getElementById("td-new-2").onclick = tdNew;
-      // Honest 'later' affordances (design fidelity, no fake success): these route to
-      // their follow-up stories instead of pretending to work.
-      document.getElementById("td-import").onclick = () => tdStatus("Importing a theme file arrives with the saved-theme library (86ajq4xmy).");
-      document.getElementById("td-export").onclick = () => tdStatus("Exporting a theme file arrives with the saved-theme library (86ajq4xmy).");
-      document.getElementById("td-save").onclick = () => tdStatus("Saving a named theme arrives with the saved-theme library (86ajq4xmy). Use Apply to set the audience output now.");
+      // Honest 'later' affordances (design fidelity, no fake success): importing /
+      // exporting a theme FILE is deferred; the in-app library (Save changes) is live.
+      document.getElementById("td-import").onclick = () => tdStatus("Importing a theme file is a later increment; save named themes in the library for now.");
+      document.getElementById("td-export").onclick = () => tdStatus("Exporting a theme file is a later increment; save named themes in the library for now.");
       document.getElementById("td-tab-slides").onclick = () => tdStatus("Slide (non-scripture) templates arrive in a later increment; scripture templates are shown now.");
+
+      // Save changes → name the current design into the library (86ajq4xmy). An inline
+      // name form (no window.prompt, which WKWebView blocks); Enter saves, Esc cancels.
+      const tdSaveRow = document.getElementById("td-save-row");
+      const tdSaveName = document.getElementById("td-save-name");
+      const tdCloseSaveRow = () => {
+        tdSaveRow.hidden = true;
+        tdSaveName.value = "";
+      };
+      const tdOpenSaveRow = () => {
+        if (!tdTheme) { tdStatus("Nothing to save yet."); return; }
+        // Pre-fill the name only when re-saving an existing SAVED theme (overwrite) —
+        // keyed by kind so a selected BUILT-IN (read-only) never pre-fills its name and
+        // silently overwrites a same-named saved copy (Save = save-as-new for a built-in).
+        const isSaved = tdSelectedKind === "saved";
+        tdSaveName.value = isSaved ? tdSelected : "";
+        tdSaveRow.hidden = false;
+        tdSaveName.focus();
+        tdSaveName.select();
+      };
+      const tdDoSave = () => {
+        if (!tdTheme) return;
+        const name = tdSaveName.value.trim();
+        if (!name) { tdStatus("Enter a name to save this theme."); tdSaveName.focus(); return; }
+        // Reject client-side what the host would reject, so an over-long name never
+        // produces a false "Saved" (a host DENY resolves Ok with the unchanged view).
+        if (tdNameBytes(name) > TD_NAME_MAX_BYTES) {
+          tdStatus("That name is too long (max " + TD_NAME_MAX_BYTES + " bytes). Try a shorter name.");
+          tdSaveName.focus();
+          return;
+        }
+        tdStatus("Saving…");
+        tdCloseSaveRow();
+        // Confirm success against the RETURNED view — a host-side DENY (name too long,
+        // library full) resolves Ok with the UNCHANGED view, so promise-resolution alone
+        // must never be reported as saved. Only claim success if the name is really there.
+        act(() => invoke("save_theme", { name, themeJson: JSON.stringify(tdTheme) })
+          .then((v) => {
+            const saved = v && Array.isArray(v.saved_themes) && v.saved_themes.some((t) => t.name === name);
+            if (saved) {
+              tdSelected = name;
+              tdSelectedKind = "saved";
+              tdStatus("Saved “" + name + "” to the library.");
+            } else {
+              tdStatus("Couldn't save “" + name + "” — the name may be too long or the library is full.");
+            }
+            return v;
+          })
+          .catch((e) => { tdStatus("Couldn't save the theme — the library is unchanged."); throw e; }));
+      };
+      document.getElementById("td-save").onclick = tdOpenSaveRow;
+      document.getElementById("td-save-confirm").onclick = tdDoSave;
+      document.getElementById("td-save-cancel").onclick = () => { tdCloseSaveRow(); tdStatus("Save cancelled."); };
+      tdSaveName.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); tdDoSave(); }
+        else if (e.key === "Escape") { e.preventDefault(); tdCloseSaveRow(); }
+      });
       document.querySelectorAll("#surface-theme-designer .td-addbar button[data-add]").forEach((b) =>
         (b.onclick = () => tdStatus("Adding a " + b.dataset.add + " element on the canvas arrives with on-canvas editing.")));
       document.getElementById("td-apply").onclick = () => {

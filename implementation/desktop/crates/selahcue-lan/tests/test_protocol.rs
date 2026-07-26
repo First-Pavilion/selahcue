@@ -81,6 +81,13 @@ fn every_command_round_trips() {
             item_id: 5,
             theme: None,
         },
+        Command::SaveTheme {
+            name: "Sermon Bold".into(),
+            theme_json: r#"{"background":{"r":1,"g":2,"b":3,"a":255}}"#.into(),
+        },
+        Command::DeleteTheme {
+            name: "Sermon Bold".into(),
+        },
     ];
     for c in cmds {
         let json = to_json(&c).unwrap();
@@ -254,10 +261,11 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         outputs: vec![],
         displays: vec![],
         translations: vec![],
-        // Empty theme/themes (S8-3b) are skip-if-empty — the pinned bytes below are
-        // UNCHANGED, proving the new fields are additive to the v2 wire.
+        // Empty theme/themes (S8-3b) + saved_themes (86ajq4xmy) are skip-if-empty —
+        // the pinned bytes below are UNCHANGED, proving the new fields are additive.
         theme: String::new(),
         themes: vec![],
+        saved_themes: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -293,6 +301,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         translations: vec![],
         theme: String::new(),
         themes: vec![],
+        saved_themes: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -328,10 +337,38 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
             "high-contrast".into(),
             "lower-third".into(),
         ],
+        saved_themes: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: themed }).unwrap(),
         r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"theme":"lower-third","themes":["classic","high-contrast","lower-third"]}}"#
+    );
+    // The saved-theme LIBRARY (86ajq4xmy) on the wire: when non-empty it serializes
+    // as `saved_themes: [{name, theme_json}]`. Pinned serialize-side; the Theme
+    // Designer parses these exact field names to list + load the library.
+    let library = selahcue_lan::protocol::OperatorStateView {
+        plan_name: "Sunday".into(),
+        items: vec![],
+        live_index: None,
+        staged_index: None,
+        blackout: false,
+        timer: None,
+        staged_scripture: None,
+        live_scripture: None,
+        live_free_text: None,
+        outputs: vec![],
+        displays: vec![],
+        translations: vec![],
+        theme: String::new(),
+        themes: vec![],
+        saved_themes: vec![selahcue_lan::protocol::SavedThemeView {
+            name: "Sermon Bold".into(),
+            theme_json: r#"{"background":{"r":1,"g":2,"b":3,"a":255}}"#.into(),
+        }],
+    };
+    assert_eq!(
+        to_json(&ServerMessage::OperatorState { view: library }).unwrap(),
+        r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"saved_themes":[{"name":"Sermon Bold","theme_json":"{\"background\":{\"r\":1,\"g\":2,\"b\":3,\"a\":255}}"}]}}"#
     );
     // The output-config commands, pinned like every other command.
     assert_eq!(

@@ -105,6 +105,13 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         theme: Option<String>,
     },
+    /// Save a NAMED custom theme into the library (Theme Designer "Save changes",
+    /// 86ajq4xmy). `theme_json` is a serialized `Theme` (opaque to the wire). An empty/
+    /// over-long name, invalid JSON, or a new name past the cap is rejected.
+    /// Operator-only (output config).
+    SaveTheme { name: String, theme_json: String },
+    /// Delete a saved theme from the library by name (idempotent). Operator-only.
+    DeleteTheme { name: String },
 }
 
 /// A controller → operator request frame.
@@ -263,6 +270,19 @@ pub struct OperatorStateView {
     /// The theme names this host offers (drives the picker). Omitted when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub themes: Vec<String>,
+    /// The SAVED (named custom) themes in the library (86ajq4xmy) — each `name` + its
+    /// serialized `Theme`, so the Theme Designer can list + load them. Omitted when
+    /// empty so the pinned v2 fixtures stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub saved_themes: Vec<SavedThemeView>,
+}
+
+/// One saved (named custom) theme in the library (86ajq4xmy).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedThemeView {
+    pub name: String,
+    /// The serialized `Theme` (opaque to the wire — the shell/Designer deserializes it).
+    pub theme_json: String,
 }
 
 /// One output role (main/stage) and where it currently renders.

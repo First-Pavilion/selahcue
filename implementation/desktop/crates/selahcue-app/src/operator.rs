@@ -7,7 +7,9 @@
 //! logic is verified independently of any GUI (which can't be runtime-tested here).
 
 use crate::controller::LiveController;
-use selahcue_lan::protocol::{Command, OperatorStateView, PlanItemView, TimerSnapshot};
+use selahcue_lan::protocol::{
+    Command, OperatorStateView, PlanItemView, SavedThemeView, TimerSnapshot,
+};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 
@@ -65,6 +67,10 @@ pub struct OperatorView {
     pub theme: String,
     /// The theme names the HOST offers (drives the picker's options).
     pub themes: Vec<String>,
+    /// The saved (named custom) themes in the library (86ajq4xmy). A `SavedThemeView`
+    /// (not a tuple) so it serializes as `{name, theme_json}` — the shape the Theme
+    /// Designer reads, and identical to the wire `OperatorStateView.saved_themes`.
+    pub saved_themes: Vec<SavedThemeView>,
 }
 
 /// An ergonomic, UI-facing wrapper over the shared [`LiveController`]. Each action
@@ -215,6 +221,19 @@ impl OperatorShell {
         self.act(&Command::SetItemTheme { item_id, theme })
     }
 
+    /// Save a NAMED custom theme into the library (86ajq4xmy).
+    pub fn save_theme(&self, name: &str, theme_json: &str) -> OperatorView {
+        self.act(&Command::SaveTheme {
+            name: name.into(),
+            theme_json: theme_json.into(),
+        })
+    }
+
+    /// Delete a saved theme from the library by name (86ajq4xmy).
+    pub fn delete_theme(&self, name: &str) -> OperatorView {
+        self.act(&Command::DeleteTheme { name: name.into() })
+    }
+
     /// Assign an output role ("main"/"stage") to a physical display.
     pub fn assign_output(&self, role: &str, display_key: &str) -> OperatorView {
         self.act(&Command::AssignOutput {
@@ -295,6 +314,7 @@ impl From<OperatorView> for OperatorStateView {
             translations: v.translations,
             theme: v.theme,
             themes: v.themes,
+            saved_themes: v.saved_themes,
         }
     }
 }
@@ -316,6 +336,7 @@ impl From<OperatorStateView> for OperatorView {
             translations: v.translations,
             theme: v.theme,
             themes: v.themes,
+            saved_themes: v.saved_themes,
         }
     }
 }
@@ -511,6 +532,27 @@ impl RemoteOperator {
         theme: Option<String>,
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::SetItemTheme { item_id, theme }).await
+    }
+
+    /// Save a NAMED custom theme into the host's library (86ajq4xmy).
+    pub async fn save_theme(
+        &mut self,
+        name: &str,
+        theme_json: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SaveTheme {
+            name: name.into(),
+            theme_json: theme_json.into(),
+        })
+        .await
+    }
+
+    /// Delete a saved theme from the host's library by name (86ajq4xmy).
+    pub async fn delete_theme(
+        &mut self,
+        name: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::DeleteTheme { name: name.into() }).await
     }
 
     /// Search scripture on the host; returns stageable display references.

@@ -10,7 +10,8 @@ use selahcue_core::plan::{ItemId, ServicePlan};
 use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{
-    Command, DenyReason, DisplayView, OutputStatusView, ServerMessage, TimerSnapshot, VerseView,
+    Command, DenyReason, DisplayView, OutputStatusView, SavedThemeView, ServerMessage,
+    TimerSnapshot, VerseView,
 };
 use selahcue_present::{FrameBuffer, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView};
 use std::time::{Duration, Instant};
@@ -147,7 +148,19 @@ pub struct LiveController {
     /// (Theme Designer, S8-3c). Persisted verbatim so recovery restores the exact
     /// custom design; `None` when a built-in theme is active.
     custom_theme_json: Option<String>,
+    /// The saved-theme LIBRARY (S8-3d follow-up 86ajq4xmy): NAMED custom themes the
+    /// operator authored + saved, `name → canonical theme JSON`. Persisted separately
+    /// from the live session (like the plan), so `saved_themes_dirty` signals the host
+    /// to write it. Bounded by [`MAX_SAVED_THEMES`] + [`MAX_THEME_NAME_LEN`].
+    saved_themes: std::collections::BTreeMap<String, String>,
+    saved_themes_dirty: bool,
 }
+
+/// Upper bounds on the saved-theme library so it cannot grow without limit (no-leak):
+/// a sane cap on the count and each name's length. Each theme's JSON is the canonical
+/// fixed-size [`Theme`] (a few hundred bytes), so total storage is bounded.
+pub const MAX_SAVED_THEMES: usize = 256;
+pub const MAX_THEME_NAME_LEN: usize = 64;
 
 /// How long the identify overlay stays on the outputs once triggered (FR-040).
 pub const IDENTIFY_TTL: Duration = Duration::from_secs(5);
@@ -241,6 +254,8 @@ impl LiveController {
             cursor_slide: 0,
             theme_name,
             custom_theme_json: None,
+            saved_themes: std::collections::BTreeMap::new(),
+            saved_themes_dirty: false,
         }
     }
 
@@ -279,6 +294,67 @@ impl LiveController {
         self.theme_name = "custom".to_string();
         self.custom_theme_json = Some(canonical);
         true
+    }
+
+    /// Save a NAMED custom theme into the library (S8-3d follow-up 86ajq4xmy). The name
+    /// is trimmed + bounded; the JSON must deserialize to a `Theme` (stored CANONICAL,
+    /// bounded). Overwriting an existing name is allowed; a NEW name past the cap is
+    /// rejected. Rejects an empty/over-long name or invalid JSON.
+    fn save_theme(&mut self, name: &str, theme_json: &str) -> ControllerReply {
+        let name = name.trim();
+        if name.is_empty() || name.len() > MAX_THEME_NAME_LEN {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        let Ok(theme) = serde_json::from_str::<Theme>(theme_json) else {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        };
+        // A NEW name must fit under the cap; overwriting an existing one always may.
+        if !self.saved_themes.contains_key(name) && self.saved_themes.len() >= MAX_SAVED_THEMES {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        let canonical = serde_json::to_string(&theme).unwrap_or_else(|_| theme_json.to_string());
+        self.saved_themes.insert(name.to_string(), canonical);
+        self.saved_themes_dirty = true;
+        ControllerReply::Ack
+    }
+
+    /// Delete a saved theme by name (idempotent — deleting an absent name is a no-op Ack).
+    fn delete_theme(&mut self, name: &str) -> ControllerReply {
+        if self.saved_themes.remove(name).is_some() {
+            self.saved_themes_dirty = true;
+        }
+        ControllerReply::Ack
+    }
+
+    /// The saved-theme library (`name → canonical JSON`), for the operator view + persist.
+    pub fn saved_themes(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.saved_themes
+    }
+
+    /// Whether the saved-theme library changed since the last check (persist signal).
+    pub fn take_saved_themes_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.saved_themes_dirty)
+    }
+
+    /// Re-arm the saved-theme persist signal (a failed write must be retried).
+    pub fn mark_saved_themes_dirty(&mut self) {
+        self.saved_themes_dirty = true;
+    }
+
+    /// Load the saved-theme library at startup (from the store). Replaces the in-memory
+    /// map without marking it dirty (nothing new to persist). Over-cap / invalid entries
+    /// are dropped defensively so a corrupt store can never exceed the bound or crash.
+    pub fn load_saved_themes(&mut self, themes: impl IntoIterator<Item = (String, String)>) {
+        self.saved_themes = themes
+            .into_iter()
+            .filter(|(name, json)| {
+                !name.trim().is_empty()
+                    && name.len() <= MAX_THEME_NAME_LEN
+                    && serde_json::from_str::<Theme>(json).is_ok()
+            })
+            .take(MAX_SAVED_THEMES)
+            .collect();
+        self.saved_themes_dirty = false;
     }
 
     /// A persistable snapshot of the live session at `now` (injected clock, so the
@@ -655,6 +731,14 @@ impl LiveController {
                 .collect(),
             theme: self.theme_name.clone(),
             themes: Theme::BUILTIN_NAMES.iter().map(|s| s.to_string()).collect(),
+            saved_themes: self
+                .saved_themes
+                .iter()
+                .map(|(name, json)| SavedThemeView {
+                    name: name.clone(),
+                    theme_json: json.clone(),
+                })
+                .collect(),
         }
     }
 
@@ -1094,6 +1178,8 @@ impl LiveController {
             Command::SetItemTheme { item_id, theme } => {
                 self.set_item_theme(*item_id, theme.clone())
             }
+            Command::SaveTheme { name, theme_json } => self.save_theme(name, theme_json),
+            Command::DeleteTheme { name } => self.delete_theme(name),
         }
     }
 

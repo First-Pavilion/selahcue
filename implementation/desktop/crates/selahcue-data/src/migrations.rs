@@ -101,6 +101,16 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE plan_item ADD COLUMN theme TEXT;
     "#,
+    // v10 -> v11: the saved-theme library (86ajq4xmy) — named CUSTOM themes the
+    // Theme Designer can save, list, and re-apply. `theme_json` is the canonical
+    // serialized `Theme`. A fresh table (not a column), so an older database opens
+    // unchanged and simply starts with an empty library.
+    r#"
+    CREATE TABLE saved_theme (
+        name       TEXT PRIMARY KEY,
+        theme_json TEXT NOT NULL
+    );
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

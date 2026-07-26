@@ -73,9 +73,22 @@
       .td-wrap { display: grid; grid-template-columns: 220px 1fr 300px; gap: 16px; height: 100%; padding: 16px; box-sizing: border-box; }
       .td-list, .td-inspector { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; overflow-y: auto; }
       .td-list h2, .td-inspector h2 { margin: 0 0 10px; font-size: 11px; letter-spacing: .06em; color: var(--muted); text-transform: uppercase; }
-      #td-themes button { display: block; width: 100%; text-align: left; margin-bottom: 6px; text-transform: capitalize; }
-      #td-themes button[aria-pressed="true"] { border-color: var(--preview-ink); background: #10231c; }
+      /* Each template is a row: the name button (fills) + a built-in tag or ✕ delete. */
+      .td-theme-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+      .td-theme-name { flex: 1 1 auto; min-width: 0; text-align: left; text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .td-theme-name[aria-pressed="true"] { border-color: var(--preview-ink); background: #10231c; }
+      .td-theme-tag { flex: 0 0 auto; font-size: 10px; letter-spacing: .04em; color: var(--muted); text-transform: uppercase; }
+      .td-theme-del { flex: 0 0 auto; padding: 4px 8px; line-height: 1; color: var(--muted); }
+      .td-theme-del:hover { color: var(--danger, #e5484d); border-color: var(--danger, #e5484d); }
+      .td-theme-del.confirm { color: #fff; background: var(--danger, #e5484d); border-color: var(--danger, #e5484d); }
       #td-new { width: 100%; margin-top: 6px; }
+      /* Inline "Save changes" name form (WKWebView-safe). The [hidden] rule must win
+         over the flex display below (an author `display` otherwise defeats [hidden]). */
+      .td-save-row[hidden] { display: none; }
+      .td-save-row { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding: 8px; background: #10231c; border: 1px solid var(--line); border-radius: 8px; }
+      .td-save-name { width: 100%; }
+      .td-save-row-actions { display: flex; gap: 6px; }
+      .td-save-row-actions button { flex: 1 1 0; }
       .td-hint { font-size: 11px; margin-top: 10px; }
       /* Center stage: the preview canvas fills the middle column. */
       .td-stage { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }

@@ -108,6 +108,28 @@ impl Backend {
             Backend::Local(s) => Ok(s.set_item_theme(item_id, theme)),
         }
     }
+    async fn save_theme(&self, name: String, theme_json: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .save_theme(&name, &theme_json)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.save_theme(&name, &theme_json)),
+        }
+    }
+    async fn delete_theme(&self, name: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .delete_theme(&name)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.delete_theme(&name)),
+        }
+    }
     async fn select(&self, item_id: u64) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
@@ -296,6 +318,18 @@ async fn set_item_theme(
     state: State<'_, AppState>,
 ) -> Result<OperatorView, String> {
     state.backend.set_item_theme(item_id, theme).await
+}
+#[tauri::command]
+async fn save_theme(
+    name: String,
+    theme_json: String,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.save_theme(name, theme_json).await
+}
+#[tauri::command]
+async fn delete_theme(name: String, state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.delete_theme(name).await
 }
 /// The built-in themes as `[{ name, theme }]` (theme = the serialized `Theme`) so the
 /// Theme Designer edits/previews the REAL built-ins from `theme.rs` — no hand-mirrored
@@ -547,6 +581,8 @@ fn main() {
             set_theme,
             set_custom_theme,
             set_item_theme,
+            save_theme,
+            delete_theme,
             preview_theme,
             builtin_themes
         ])

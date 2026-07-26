@@ -110,7 +110,9 @@ pub fn required_permission(cmd: &Command) -> Permission {
         | Command::AssignOutput { .. }
         | Command::SetTheme { .. }
         | Command::SetCustomTheme { .. }
-        | Command::SetItemTheme { .. } => ConfigureOutputs,
+        | Command::SetItemTheme { .. }
+        | Command::SaveTheme { .. }
+        | Command::DeleteTheme { .. } => ConfigureOutputs,
     }
 }
 
