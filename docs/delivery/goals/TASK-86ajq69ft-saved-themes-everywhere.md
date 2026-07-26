@@ -55,7 +55,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-002 | yes | Re-sync on library change: EDITING a saved theme used by the live item / `main` screen re-renders it live; DELETING it drops the reference (plan item → None, screen entry removed) and the output falls back to global with no stale frame; the staged item re-stages; blackout preserved | `cargo test -p selahcue-app` | no stale cached theme after edit/delete | test_controller | PASS |
 | C-003 | yes | Recovery: a per-item AND per-screen SAVED theme resolves after a restart (library + per-screen map loaded before `restore()`); desktop load order updated | `cargo test -p selahcue-app` | saved overrides survive recovery | test_controller | PASS |
 | C-004 | yes | Frontend: the per-item + per-screen Theme pickers offer built-ins + saved themes; a saved theme is selectable per-item and per-screen; pinned console invariants intact | structure test + headless render | pickers offer saved themes | test_tokens + render | PASS |
-| C-005 | yes | Full: make ci + operator build + fmt/clippy clean; NO wire/migration change (fixtures byte-stable, `target_version` unchanged); independent Workflow review, findings fixed; 3-OS CI green | make-ci + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-saved-themes-everywhere.md; CI run | PENDING |
+| C-005 | yes | Full: make ci + operator build + fmt/clippy clean; NO wire/migration change (fixtures byte-stable, `target_version` unchanged); independent Workflow review, findings fixed; 3-OS CI green | make-ci + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-saved-themes-everywhere.md; CI run 30220206582 | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -79,7 +79,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajq69ft-saved-themes-everywhere.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending)
+- Validator result: PASS (all 5 mandatory criteria PASS).
+- Independent verification result: adversarial Workflow review `wf_d2389630-37f` (3 lenses → per-finding verify, 4 agents) — 1 raised → 1 confirmed (LOW), fixed; 0 refuted. 3-OS CI run 30220206582 GREEN (11/11 jobs; Flutter path-skipped).
+- Terminal state: VERIFIED_COMPLETE (story `86ajq69ft` handed to QA; not self-marked Done).
+- ClickUp final evidence comment: posted on 86ajq69ft (comment 90130296740211); commit `b7e7a19`.
