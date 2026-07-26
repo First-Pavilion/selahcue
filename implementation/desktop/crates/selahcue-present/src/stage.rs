@@ -5,8 +5,9 @@
 //! large and high-contrast for a speaker at a distance. Also composes the
 //! display-**identify** overlay (a number on each physical output, FR-040).
 
-use crate::compose::{layout_lines, LineMetrics};
+use crate::compose::autofit_layers;
 use crate::slide::Slide;
+use crate::theme::{Fit, VAlign};
 use selahcue_core::timer::Timer;
 use selahcue_engine::engine::{Engine, EngineCommand};
 use selahcue_engine::raster::FrameBuffer;
@@ -120,9 +121,14 @@ impl TimerView {
     }
 }
 
-fn region_metrics(region: Rect) -> LineMetrics {
-    // A confidence region shows a few large lines — scale to the region height.
-    LineMetrics::for_height((region.h as f64 * 2.0) as u32)
+/// Line-height multiplier for the confidence monitor (≈ the historical line+gap ratio,
+/// 0.13 / 0.10), so a short line keeps the familiar spacing and a long verse still fits.
+const STAGE_LINE_HEIGHT: f64 = 1.3;
+
+/// The design (ceiling) cell height for a confidence region — a few large lines (≈ 20% of
+/// the region height, the historical `line_h`); auto-fit shrinks below this for longer content.
+fn region_max_cell(region: Rect) -> u32 {
+    ((region.h as f64 * 0.2) as u32).max(1)
 }
 
 /// Format a whole-second count as `M:SS` for the timer readout.
@@ -223,13 +229,20 @@ fn push_region(
         width.saturating_sub(margin.saturating_mul(2)).max(1),
         ((height as f64 * 0.8) as u32).max(1),
     );
-    let metrics = region_metrics(region);
-    for layer in layout_lines(
-        slide.lines(),
-        theme.text,
+    // Auto-fit the whole slide (reference + full verse / all stanza lines) into the
+    // confidence region — word-wrap to the width + shrink the font so the speaker sees
+    // EVERYTHING, never truncated or clipped (parity with the audience output).
+    let lines: Vec<&str> = slide.lines().collect();
+    let max_cell = region_max_cell(region);
+    for layer in autofit_layers(
+        &lines,
         region,
-        &metrics,
+        max_cell,
+        STAGE_LINE_HEIGHT,
         selahcue_engine::scene::TextAlign::Left,
+        VAlign::Top,
+        theme.text,
+        Fit::ShrinkToFit,
     ) {
         frame.push(layer);
     }

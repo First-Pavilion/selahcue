@@ -85,6 +85,63 @@ fn timer_bar_colour_reflects_state() {
 }
 
 #[test]
+fn stage_current_region_auto_fits_a_long_verse_without_truncation_or_clip() {
+    // The confidence monitor must AUTO-FIT (wrap to width + shrink) so the speaker sees
+    // the WHOLE verse — parity with the audience output, never truncated or clipped (owner
+    // refine). Esther 8:9 is the longest KJV verse.
+    use selahcue_engine::raster::measure_line_width;
+    use selahcue_engine::scene::Layer;
+    let theme = StageTheme::dark();
+    let verse = "Then were the king's scribes called at that time in the third month, that is, \
+        the month Sivan, on the three and twentieth day thereof; and it was written according \
+        to all that Mordecai commanded unto the Jews, and to the deputies and rulers of the \
+        provinces which are from India unto Ethiopia, an hundred twenty and seven provinces.";
+    let current = Slide::new("Esther 8:9 (KJV)", [verse]);
+    let (w, h) = (960u32, 540u32);
+    let frame = compose_stage(Some(&current), None, None, &theme, w, h);
+    // With no next slide + no timer, the only Text layers are the current region.
+    let texts: Vec<(&String, u32, i32, u32)> = frame
+        .layers
+        .iter()
+        .filter_map(|l| match l {
+            Layer::Text { text, px, rect, .. } => Some((text, *px, rect.y, rect.w)),
+            _ => None,
+        })
+        .collect();
+    // It WRAPPED into multiple lines (not one clipped line)...
+    assert!(
+        texts.len() >= 3,
+        "the long verse should wrap into multiple lines, got {}",
+        texts.len()
+    );
+    // ...every line fits the region width (no horizontal clip)...
+    for (t, px, _, rw) in &texts {
+        assert!(
+            measure_line_width(t, *px) <= *rw as f32 + 1.0,
+            "stage line clips the region width: {t:?}"
+        );
+    }
+    // ...no word is dropped (the reference + full verse are present)...
+    let joined = texts
+        .iter()
+        .map(|(t, _, _, _)| t.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(joined.contains("Esther"), "the reference renders");
+    for word in verse.split_whitespace() {
+        assert!(joined.contains(word), "stage dropped the word {word:?}");
+    }
+    // ...and nothing overflows the current region (bottom ≈ 0.60·height).
+    let current_bottom = (h as f64 * 0.60) as i32 + 2;
+    for (_, px, y, _) in &texts {
+        assert!(
+            *y + *px as i32 <= current_bottom,
+            "stage text overflows the current region (y={y}, px={px})"
+        );
+    }
+}
+
+#[test]
 fn current_and_next_regions_show_text_when_present() {
     let theme = StageTheme::dark();
     let current = Slide::title("CURRENT LINE");

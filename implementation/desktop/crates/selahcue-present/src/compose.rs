@@ -10,62 +10,6 @@ use crate::slide::Slide;
 use crate::theme::{Band, Fit, RegionStyle, Theme, VAlign};
 use selahcue_engine::scene::{Frame, Layer, Rect, Rgba, TextAlign};
 
-/// Fraction of the reference height used per text line, and the gap between lines.
-/// (Used by the stage/confidence monitor, which has its own fixed layout.)
-const LINE_HEIGHT_FRAC: f64 = 0.10;
-const LINE_GAP_FRAC: f64 = 0.03;
-
-/// Line sizing derived from a reference height.
-pub(crate) struct LineMetrics {
-    pub line_h: u32,
-    pub gap: u32,
-}
-
-impl LineMetrics {
-    /// Metrics scaled to a reference height (a frame or a sub-region).
-    pub(crate) fn for_height(reference: u32) -> Self {
-        LineMetrics {
-            line_h: ((reference as f64 * LINE_HEIGHT_FRAC) as u32).max(1),
-            gap: (reference as f64 * LINE_GAP_FRAC) as u32,
-        }
-    }
-}
-
-/// Lay out text `lines` as [`Layer::Text`] within `region` (top-anchored), never
-/// crossing the region's bottom edge, aligned horizontally by `align`. Shared by
-/// the confidence monitor (fixed layout); themed slides use [`layout_region`].
-pub(crate) fn layout_lines<'a>(
-    lines: impl Iterator<Item = &'a str>,
-    text: Rgba,
-    region: Rect,
-    metrics: &LineMetrics,
-    align: TextAlign,
-) -> Vec<Layer> {
-    let mut layers = Vec::new();
-    if region.w == 0 || region.h == 0 || metrics.line_h == 0 {
-        return layers;
-    }
-    let bottom = region.y.saturating_add(region.h as i32);
-    let mut y = region.y;
-    for line in lines {
-        if y.saturating_add(metrics.line_h as i32) > bottom {
-            break;
-        }
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            layers.push(Layer::Text {
-                rect: Rect::new(region.x, y, region.w, metrics.line_h),
-                text: trimmed.to_string(),
-                px: metrics.line_h,
-                color: text,
-                align,
-            });
-        }
-        y = y.saturating_add((metrics.line_h + metrics.gap) as i32);
-    }
-    layers
-}
-
 /// Lay out `lines` into a themed [`RegionStyle`] — per-region cell size, line
 /// height, colour, and H+V alignment, resolution-independent. The text block is
 /// V-aligned within the region. Overflow follows the region's [`Fit`]:
@@ -83,21 +27,32 @@ fn advance_of(cell: u32, lh: f64) -> u32 {
     ((cell as f64) * lh).round().max(cell as f64) as u32
 }
 
-fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -> Vec<Layer> {
+/// Lay out `lines` (each a paragraph) into `rect` with AUTO-FIT: word-wrap to the region
+/// width + size the font so the block fits, per `fit`. Shared by the themed audience
+/// regions ([`layout_region`]) and the confidence monitor (`stage::push_region`), so the
+/// speaker's stage output shrinks-to-fit the FULL verse exactly like the audience output.
+/// `max_cell` is the design-size ceiling; `lh` the line-height multiplier; `align_h`/
+/// `align_v` + `color` style the text. Zero content loss under `ShrinkToFit`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn autofit_layers(
+    lines: &[&str],
+    rect: Rect,
+    max_cell: u32,
+    lh: f64,
+    align_h: TextAlign,
+    align_v: VAlign,
+    color: Rgba,
+    fit: Fit,
+) -> Vec<Layer> {
     let non_empty: Vec<&str> = lines
         .iter()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .collect();
-    if non_empty.is_empty() {
+    if non_empty.is_empty() || rect.w == 0 || rect.h == 0 {
         return Vec::new();
     }
-    let rect = style.rect(width, height);
-    if rect.w == 0 || rect.h == 0 {
-        return Vec::new();
-    }
-    let lh = style.line_height();
-    let design_cell = style.cell_px(height).min(rect.h).max(1);
+    let design_cell = max_cell.min(rect.h).max(1);
 
     // Word-wrap every input paragraph (a song stanza line, or a whole verse) to the
     // region WIDTH at `cell`, returning the display lines + whether they ALL fit `rect.w`.
@@ -163,7 +118,7 @@ fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -
     };
 
     // Auto-fit: pick the cell + wrapped lines.
-    let (cell, display) = match style.fit {
+    let (cell, display) = match fit {
         // ShrinkToFit fills the box: the LARGEST cell (≤ the design size) at which every
         // wrapped line fits BOTH rect.h (height) AND rect.w (width) — so a long verse
         // shrinks so the WHOLE passage shows (zero content loss, FR-010) and a short one
@@ -200,7 +155,7 @@ fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -
     let max_lines = ((rect.h.saturating_sub(cell) / advance) + 1).max(1) as usize;
     let n = display.len().min(max_lines);
     let free = rect.h.saturating_sub(block_h(n, cell));
-    let offset = match style.align_v {
+    let offset = match align_v {
         VAlign::Top => 0,
         VAlign::Middle => (free / 2) as i32,
         VAlign::Bottom => free as i32,
@@ -212,11 +167,26 @@ fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -
             rect: Rect::new(rect.x, y, rect.w, cell),
             text: line.clone(),
             px: cell,
-            color: style.color,
-            align: style.align_h,
+            color,
+            align: align_h,
         });
     }
     layers
+}
+
+/// Lay out `lines` into a themed [`RegionStyle`] region (the audience output) — a thin
+/// wrapper over [`autofit_layers`] that derives the geometry/typography from the theme.
+fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -> Vec<Layer> {
+    autofit_layers(
+        lines,
+        style.rect(width, height),
+        style.cell_px(height),
+        style.line_height(),
+        style.align_h,
+        style.align_v,
+        style.color,
+        style.fit,
+    )
 }
 
 /// Render a slide over its theme into a frame of `width×height`.
