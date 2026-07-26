@@ -58,7 +58,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 |---|---|---|---|---|---|---|
 | C-001 | yes | Nav/menu pattern chosen + designed in Figma (reaches all 5 surfaces; states default/open/active); rationale recorded | figma + doc | menu frame + spec | Figma 212:124 (menu open, 5 surfaces + accesskeys) + NAV-IA-spec §1 | PASS |
 | C-002 | yes | Emergency footer + live controls + canonical keymap remain reachable on every surface (shown/annotated); keyboard + focus + SR specified | doc + figma review | reachability + a11y specified | Figma 212:124 (pinned emergency footer annotated) + NAV-IA-spec §2 + §5 | PASS |
-| C-003 | yes | Output manager designed as its own surface (modal/page) on 28:2: assignment rows + pickers + Identify + arrange + per-output settings; states empty/assigned/mismatch/identify | figma | manager frame + states | **Figma 215:124 — redesigned "Output settings" page** (per-output enable toggle + Select theme / Output monitor / Output format; enabled/disabled/mismatch states) + NAV-IA-spec §3/§3a (per-output theme) | PASS |
+| C-003 | yes | Output manager designed as its own surface (modal/page) on 28:2: assignment rows + pickers + Identify + arrange + per-output settings; states empty/assigned/mismatch/identify | figma | manager frame + states | **Figma 217:124 — "Screens" page** (per-screen role badge → Audience/theme · Stage/layout-toggles; enable toggle; Output/Format; audience-configured/stage-configured/disabled/mismatch states) + NAV-IA-spec §3/§3a (ProPresenter+Pewbeam synthesis, per-screen theme) | PASS |
 | C-004 | yes | Console de-cluttered: a compact read-only outputs status + a "Manage outputs" entry replace the Outputs aside (designed) | figma | compact console status | Figma 212:124 compact outputs status + "Manage outputs" route + NAV-IA-spec §4 | PASS |
 | C-005 | yes | Bound to design-system tokens (no fork); IA/nav spec is implementation-ready; decisions trace to the requirements | doc review | tokenised + spec complete | NAV-IA-spec.md (tokens bound; §6 handoff) | PASS |
 
@@ -85,6 +85,15 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Verifier: Figma screenshots (215:124 output settings; 204:140 Fit control) + spec review.
 - Result: criteria remain PASS; the output-manager evidence now points to 215:124 (supersedes 28:2).
 - Decision: gate-review. Engine shrink-to-fit + per-output theme are implementation follow-ups (backend).
+
+### Iteration 3 — owner refine: best-of-ProPresenter+Pewbeam screen manager
+
+- Target: decide the definitive output/screen-management design.
+- Research: WebFetched ProPresenter's Screen Configuration (Screens vs Outputs; Audience/Stage roles; per-screen type + Hardware assignment + Looks; add/delete). Compared with Pewbeam's flat per-output list + enable toggle.
+- Decision: **"Screens"** — Pewbeam's simple per-screen list + enable toggle (volunteer-friendly) enriched with ProPresenter's **screen ROLE** (Audience/Stage/Lower-third/Stream) that swaps the content control (Audience→Theme; Stage→Current/Next/Timer/Clock layout toggles) + one Output dropdown (display/NDI/SDI/browser) + Format + Identify + Add/delete-virtual. Deferred R2 (seams): per-layer Looks, Mirror/Grouped/Edge-blend, multi-screen groups. NAV-IA §3/§3a.
+- Verifier: Figma **217:124** ("Screens" — Audience-configured / Stage-configured / disabled rows with role badges) + spec review.
+- Result: criteria PASS; output-manager evidence now 217:124 (supersedes 215:124/28:2).
+- Decision: gate-review. Per-SCREEN theme = engine follow-up.
 
 ## Risks and rollback
 

@@ -36,33 +36,43 @@
 
 ---
 
-## 3. Output manager — its own **page**, redesigned for ease of use (`Output settings`)
+## 3. Screen manager — its own **page** ("Screens"): the best of ProPresenter + Pewbeam
 
-The Output manager **moves out of the console** into its own **page** (reached from the menu, or the console shortcut §4). Per owner direction it drops the complex drag-grid + big inspector (the earlier `28:2`) in favour of a **simple, scannable per-output list** ("Output settings"): one **row per output**, each a self-contained card the operator enables and configures in place.
+The output manager **moves out of the console** into its own **"Screens"** page. **Decision (owner asked for the best call, weighing two references):**
 
-**Per-output row (design):**
-- **Title + subtitle** — `Main Output` / `Configure Main Output` (and `Output 2…N`).
-- **Enable this output** — a right-aligned toggle (accent when ON). A disabled output shows the row collapsed (title + toggle only).
-- **On enable, reveal three dropdowns** (one line):
-  1. **Select theme** — the **per-output theme/template** (e.g. *Full Screen*, *Lower Third*) — so each output renders its own look (Main = Full Screen, an NDI feed = Lower Third). *(This establishes **per-output theme** as the model — see §3a.)*
-  2. **Output monitor** — a physical display **or** a virtual output (*NDI Output*, browser-source).
-  3. **Output format** — resolution + refresh (e.g. *1920×1080 / 30 Hz*, */ 24 Hz*).
-- **`Identify`** stays available (top-right of the page) to flash the number on each physical output.
+- **From ProPresenter** — the **Screen vs Output** distinction and, crucially, the **screen ROLE**: *Audience* vs *Stage* (SelahCue already has main/stage outputs + a stage/confidence display + FR-040). A role determines what a screen shows.
+- **From Pewbeam** — the **flat, scannable per-screen list with an enable toggle**: volunteer-friendly, low cognitive load (the target user is often a church volunteer, not an AV engineer).
+- **Rejected for MVP (ProPresenter power features, deferred R2 — seams noted):** per-layer **Looks**, **Mirror / Grouped / Edge-blend** screen types, multi-screen groups.
+- **Rejected (pure Pewbeam):** a role-less flat list — SelahCue's stage/confidence output genuinely needs *different* config (current/next/timer, not a theme), so a role concept is required.
 
-*Page, not modal:* multiple outputs each with three controls is a scannable list that benefits from a full page. A quick-assign modal is a possible later shortcut (noted). The advanced per-output transforms (delay/rotate/crop/test-pattern, R2 FR-044) live under an optional **"Advanced ▾"** disclosure per row so the default view stays simple.
+**Verdict:** a **simple per-screen list** (Pewbeam ergonomics) where each screen carries a **role** (ProPresenter's concept) that swaps its content control.
+
+**Per-screen row (design):**
+- **Name + role badge** — `Main Screen` · **Audience**; `Stage Display` · **Stage**; `Lower Third` · **Lower-third**; `Stream` · **Stream**.
+- **Enable this screen** — a right-aligned toggle (accent ON). *Chose Pewbeam's toggle over ProPresenter's add/delete* — an operator flips a stream/lower-third on/off fast mid-service; deleting + recreating is wrong for the common fixed set. A disabled screen collapses to name + role + toggle.
+- **On enable, reveal:**
+  1. **Output** — one dropdown: a physical display / **NDI** / **SDI** / browser-source (ProPresenter's Hardware tab, simplified to a single control).
+  2. **Format** — resolution + refresh (e.g. *1920×1080 · 60 Hz*).
+  3. **Content — role-dependent:**
+     - **Audience / Lower-third / Stream** → a **Theme** picker (the **per-screen theme/template**, §3a) — SelahCue's MVP simplification of ProPresenter's *Looks* (per-layer routing is R2).
+     - **Stage** → **Stage layout** toggles (Current line · Next line · Timer · Clock) instead of a theme — driving the confidence monitor SelahCue already renders (`StageDisplay`).
+- **`Identify`** (page top-right) flashes each physical output's number. **`+ Add screen`** creates a virtual/NDI/stream screen; **delete** is offered for virtual screens only (a physical-display screen can be disabled, not deleted).
+
+*Page, not modal:* multiple screens each with several controls is a scannable list that suits a full page; advanced per-screen transforms (delay/rotate/crop, R2 FR-044) sit under a per-row **"Advanced ▾"**.
 
 **States:**
 | State | Trigger | Treatment |
 |---|---|---|
-| **empty** | no displays detected | rows show the monitor dropdown as "No displays found — connect a projector / add NDI"; enable is disabled with a hint |
-| **disabled** | output toggle OFF | row collapsed to title + toggle (no dropdowns) — the default for unused outputs |
-| **enabled/assigned** | toggle ON + monitor chosen | the three dropdowns filled; a green status dot by the title |
-| **mismatch** | an assigned monitor disappeared | the monitor dropdown turns **amber** "— display disconnected · reselect"; title dot amber; a text label (colour never the only cue) |
-| **identify-active** | *Identify* pressed | each physical output shows its big number; the button is `aria-pressed` |
+| **empty** | no displays detected | the Output dropdown reads "No displays found — connect a projector / add NDI"; enable disabled with a hint |
+| **disabled** | screen toggle OFF | row collapsed to name + role + toggle (default for unused screens) |
+| **audience-configured** | Audience/Lower-third/Stream role, enabled | Output · Format · **Theme** filled; green role dot |
+| **stage-configured** | Stage role, enabled | Output · Format · **Stage-layout toggles** (no theme) |
+| **mismatch** | an assigned output disappeared | Output dropdown **amber** "— display disconnected · reselect"; role dot amber + text label (colour never the only cue) |
+| **identify-active** | *Identify* pressed | each physical output shows its big number; button `aria-pressed` |
 
-### 3a. Per-output theme (model implication)
+### 3a. Per-screen theme (model implication)
 
-Each output carries its **own theme/template** (the row's *Select theme*). The audience/main output, a stage display, and a lower-third NDI feed can each render a different design **simultaneously** from the same live content. This extends the S8-3b engine (one global theme today) to a **per-output theme map** — a follow-up engine story (relates to S8-3d per-item override, but keyed by **output**, not plan item). Flagged for the engine backlog; the design here is the source of truth for it.
+Each **Audience-class** screen carries its **own theme/template** (its *Theme* control): the main projector, a lower-third NDI feed, and a stream can render **different designs simultaneously** from the same live content. This extends the S8-3b engine (one global theme today) to a **per-screen theme map** — a follow-up **engine story** (related to S8-3d per-item override, but keyed by **screen**, not plan item). The design here is the source of truth for it; flagged for the engine backlog.
 
 ---
 
