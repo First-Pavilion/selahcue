@@ -130,11 +130,7 @@ impl Backend {
             Backend::Local(s) => Ok(s.delete_theme(&name)),
         }
     }
-    async fn set_screen_theme(
-        &self,
-        screen: String,
-        name: String,
-    ) -> Result<OperatorView, String> {
+    async fn set_screen_theme(&self, screen: String, name: String) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
                 .lock()
