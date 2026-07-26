@@ -58,7 +58,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-002 | yes | Wire + RBAC: `SetScreenTheme{screen,name}` additive (pinned v2 fixtures byte-stable) + RBAC Operator-only; bad screen/name rejected; `OperatorStateView.screen_themes` (skip-if-empty) reports the map | `cargo test -p selahcue-lan -p selahcue-app` | wire additive; rbac gated | test_protocol/test_rbac/test_controller | PASS |
 | C-003 | yes | Persistence + recovery: migration v12 (`screen_theme` table; `target_version()==12`, older DB upgrades); `screen_theme_repo` round-trips; desktop loads on startup + saves on dirty; recovery restores every screen's theme | `cargo test -p selahcue-data -p selahcue-app` | per-screen theme survives save/load + recovery | test_db/test_screen_theme_repo/test_controller | PASS |
 | C-004 | yes | Frontend + desktop: the Screens page's audience Theme picker sets a PER-SCREEN theme (`set_screen_theme`), reflects each screen's theme; main window renders the `main` screen; secondary delivery an honest seam; pinned console invariants intact | structure test + headless render | Screens page wires per-screen theme | test_tokens + render | PASS |
-| C-005 | yes | Full: make ci + operator build + fmt/clippy clean; independent Workflow review, findings fixed; 3-OS CI green | make-ci + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-per-screen-theme.md; CI run | PENDING |
+| C-005 | yes | Full: make ci + operator build + fmt/clippy clean; independent Workflow review, findings fixed; 3-OS CI green | make-ci + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-per-screen-theme.md; CI run 30218357436 | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -82,7 +82,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajq321k-per-screen-theme.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending)
+- Validator result: PASS (all 5 mandatory criteria PASS).
+- Independent verification result: adversarial Workflow review `wf_89bb043f-d79` (4 lenses → per-finding verify, 6 agents) — 2 raised → 2 confirmed (both MED), both fixed; 0 refuted. Re-verified: `cargo test --workspace` 341/0, fmt/clippy clean (workspace + operator), headless Screens render + scripted picker check. 3-OS CI run 30218357436 GREEN (11/11 jobs; Flutter path-skipped). (An earlier run 30218133629 caught an operator-crate `cargo fmt` miss — the operator is a separate workspace; fixed in commit 8d78955.)
+- Terminal state: VERIFIED_COMPLETE (story `86ajq321k` handed to QA; not self-marked Done).
+- ClickUp final evidence comment: posted on 86ajq321k (comment 90130296736231) + BUILD CONTROL 86ajnx548 (comment 90130296736267); commits `fce0643` + `8d78955`.
