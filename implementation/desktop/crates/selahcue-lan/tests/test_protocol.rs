@@ -72,12 +72,30 @@ fn every_command_round_trips() {
         Command::SetCustomTheme {
             theme_json: r#"{"background":{"r":1,"g":2,"b":3,"a":255}}"#.into(),
         },
+        Command::SetItemTheme {
+            item_id: 3,
+            theme: Some("lower-third".into()),
+        },
+        // Clearing an override (theme: None) skip-serializes the field.
+        Command::SetItemTheme {
+            item_id: 5,
+            theme: None,
+        },
     ];
     for c in cmds {
         let json = to_json(&c).unwrap();
         let back: Command = from_json(&json).unwrap();
         assert_eq!(back, c, "round-trip failed for {json}");
     }
+    // The clear form omits `theme` entirely (additive skip-if-none — keeps peers lean).
+    assert_eq!(
+        to_json(&Command::SetItemTheme {
+            item_id: 5,
+            theme: None
+        })
+        .unwrap(),
+        r#"{"cmd":"set_item_theme","item_id":5}"#
+    );
 }
 
 #[test]
@@ -445,11 +463,12 @@ fn plan_item_view_omits_slide_fields_when_none_keeping_old_fixtures() {
         is_staged: true,
         slide_count: None,
         slide_index: None,
+        theme: None,
     };
     assert_eq!(
         to_json(&title_only).unwrap(),
         r#"{"id":1,"kind":"scripture","title":"Romans 8:28","is_live":false,"is_staged":true}"#,
-        "no slide fields emitted → byte-identical to a v5 host's item"
+        "no slide/theme fields emitted → byte-identical to a v5 host's item"
     );
     // A multi-slide song emits the two fields.
     let song = PlanItemView {
@@ -460,8 +479,10 @@ fn plan_item_view_omits_slide_fields_when_none_keeping_old_fixtures() {
         is_staged: false,
         slide_count: Some(6),
         slide_index: Some(2),
+        theme: Some("lower-third".into()),
     };
     let json = to_json(&song).unwrap();
+    assert!(json.contains(r#""theme":"lower-third""#), "{json}");
     assert!(json.contains(r#""slide_count":6"#), "{json}");
     assert!(json.contains(r#""slide_index":2"#), "{json}");
     // Round-trips.

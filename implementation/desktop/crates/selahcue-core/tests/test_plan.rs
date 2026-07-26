@@ -109,6 +109,7 @@ fn from_parts_preserves_no_reuse_invariant() {
         planned_secs: None,
         owner: None,
         stanzas: Vec::new(),
+        theme: None,
     }];
     // Even if a too-small next_id is supplied, the next add must not collide.
     let mut p = ServicePlan::from_parts("Rehydrated", items, 1);

@@ -1484,3 +1484,84 @@ fn recovery_prefers_the_custom_theme_over_a_conflicting_built_in_name() {
         "the conflicting built-in name must NOT have taken precedence"
     );
 }
+
+#[test]
+fn per_item_theme_override_renders_survives_a_global_switch_and_recovers() {
+    use std::time::Instant;
+    let t0 = Instant::now();
+    // Reference: the item (ids[1], a scripture) rendered under the GLOBAL lower-third.
+    let (mut d, dids) = controller();
+    d.apply(&Command::SetTheme {
+        name: "lower-third".into(),
+    });
+    d.apply(&Command::SelectItem { item_id: dids[1] });
+    d.apply(&Command::GoLive);
+    let live_lower_third = d.presenter().live_output().bytes().to_vec();
+
+    // Per-item OVERRIDE: the GLOBAL stays classic, but the item overrides to lower-third.
+    let (mut a, ids) = controller();
+    assert_eq!(
+        a.apply(&Command::SetItemTheme {
+            item_id: ids[1],
+            theme: Some("lower-third".into()),
+        }),
+        ControllerReply::Ack
+    );
+    // The override lives in the PLAN — it must mark the plan dirty so the desktop
+    // persists it (otherwise it is silently lost on restart; the plan_repo round-trip
+    // test covers the save/load itself). This is what makes recovery below real.
+    assert!(
+        a.take_plan_dirty(),
+        "SetItemTheme must mark the plan for persistence"
+    );
+    a.apply(&Command::SelectItem { item_id: ids[1] });
+    a.apply(&Command::GoLive);
+    // The override renders the item on lower-third — identical to the global-lower-third render.
+    assert_eq!(
+        a.presenter().live_output().bytes(),
+        live_lower_third.as_slice(),
+        "the per-item override renders the item on its own template"
+    );
+
+    // A GLOBAL theme switch must NOT clobber the overridden live item (zero content loss).
+    a.apply(&Command::SetTheme {
+        name: "high-contrast".into(),
+    });
+    assert_eq!(
+        a.presenter().live_output().bytes(),
+        live_lower_third.as_slice(),
+        "a global theme switch preserves the item's override"
+    );
+
+    // Unknown item id and unknown built-in name are rejected.
+    assert_eq!(
+        a.apply(&Command::SetItemTheme {
+            item_id: 9999,
+            theme: Some("classic".into())
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        a.apply(&Command::SetItemTheme {
+            item_id: ids[0],
+            theme: Some("not-a-theme".into())
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+
+    // Recovery: the override survives snapshot→restore (the plan carries it, as the
+    // desktop reloads it from plan_repo — simulated here by re-applying it to b's plan).
+    let snap = a.snapshot(t0);
+    let (mut b, bids) = controller();
+    b.apply(&Command::SetItemTheme {
+        item_id: bids[1],
+        theme: Some("lower-third".into()),
+    });
+    b.restore(&snap);
+    b.tick(t0);
+    assert_eq!(
+        b.presenter().live_output().bytes(),
+        a.presenter().live_output().bytes(),
+        "recovery restores the item's override on the live output"
+    );
+}

@@ -93,6 +93,21 @@ impl Backend {
             Backend::Local(s) => Ok(s.set_custom_theme(&theme_json)),
         }
     }
+    async fn set_item_theme(
+        &self,
+        item_id: u64,
+        theme: Option<String>,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_item_theme(item_id, theme)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_item_theme(item_id, theme)),
+        }
+    }
     async fn select(&self, item_id: u64) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
@@ -273,6 +288,14 @@ async fn set_custom_theme(
     state: State<'_, AppState>,
 ) -> Result<OperatorView, String> {
     state.backend.set_custom_theme(theme_json).await
+}
+#[tauri::command]
+async fn set_item_theme(
+    item_id: u64,
+    theme: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_item_theme(item_id, theme).await
 }
 /// The built-in themes as `[{ name, theme }]` (theme = the serialized `Theme`) so the
 /// Theme Designer edits/previews the REAL built-ins from `theme.rs` — no hand-mirrored
@@ -523,6 +546,7 @@ fn main() {
             assign_output,
             set_theme,
             set_custom_theme,
+            set_item_theme,
             preview_theme,
             builtin_themes
         ])

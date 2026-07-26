@@ -71,6 +71,10 @@ pub struct PlanItem {
     /// Stanza content (songs; slide-per-stanza). Empty = a title-only item,
     /// which is exactly the pre-8a behaviour for every existing item.
     pub stanzas: Vec<Stanza>,
+    /// Optional per-item theme override — a built-in theme NAME (S8-3d). When set,
+    /// the audience output renders THIS item on that template instead of the global
+    /// theme; `None` = use the global theme (the pre-8-3d behaviour for every item).
+    pub theme: Option<String>,
 }
 
 impl PlanItem {
@@ -154,6 +158,7 @@ impl ServicePlan {
             planned_secs: None,
             owner: None,
             stanzas: Vec::new(),
+            theme: None,
         });
         id
     }
@@ -177,6 +182,7 @@ impl ServicePlan {
                 planned_secs: None,
                 owner: None,
                 stanzas: Vec::new(),
+                theme: None,
             },
         );
         id
@@ -207,6 +213,18 @@ impl ServicePlan {
     /// Mutable access to an item by id.
     pub fn get_mut(&mut self, id: ItemId) -> Option<&mut PlanItem> {
         self.items.iter_mut().find(|i| i.id == id)
+    }
+
+    /// Set (or clear, with `None`) an item's per-item theme override (S8-3d).
+    /// Returns `NotFound` if no item has that id.
+    pub fn set_item_theme(&mut self, id: ItemId, theme: Option<String>) -> Result<(), PlanError> {
+        match self.get_mut(id) {
+            Some(item) => {
+                item.theme = theme.filter(|t| !t.is_empty());
+                Ok(())
+            }
+            None => Err(PlanError::NotFound(id)),
+        }
     }
 
     /// Read access to an item by id.

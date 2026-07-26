@@ -109,7 +109,8 @@ pub fn required_permission(cmd: &Command) -> Permission {
         Command::IdentifyOutputs
         | Command::AssignOutput { .. }
         | Command::SetTheme { .. }
-        | Command::SetCustomTheme { .. } => ConfigureOutputs,
+        | Command::SetCustomTheme { .. }
+        | Command::SetItemTheme { .. } => ConfigureOutputs,
     }
 }
 

@@ -95,6 +95,12 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE session_state ADD COLUMN custom_theme TEXT;
     "#,
+    // v9 -> v10: a plan item's per-item theme OVERRIDE by built-in name (S8-3d). The
+    // audience output renders that item on its own template; NULL = the global theme
+    // (the pre-v10 shape for every existing item).
+    r#"
+    ALTER TABLE plan_item ADD COLUMN theme TEXT;
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

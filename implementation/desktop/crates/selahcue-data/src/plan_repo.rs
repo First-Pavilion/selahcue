@@ -31,8 +31,8 @@ pub fn insert(db: &Database, plan: &ServicePlan) -> Result<i64> {
             Some(selahcue_core::plan::stanzas_to_text(&item.stanzas))
         };
         tx.execute(
-            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title, planned_secs, owner, content)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title, planned_secs, owner, content, theme)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 plan_id,
                 item.id.0 as i64,
@@ -42,6 +42,7 @@ pub fn insert(db: &Database, plan: &ServicePlan) -> Result<i64> {
                 item.planned_secs.map(|s| s as i64),
                 item.owner,
                 content,
+                item.theme,
             ],
         )?;
     }
@@ -69,8 +70,8 @@ pub fn update(db: &Database, plan_id: i64, plan: &ServicePlan) -> Result<()> {
             Some(selahcue_core::plan::stanzas_to_text(&item.stanzas))
         };
         tx.execute(
-            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title, planned_secs, owner, content)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title, planned_secs, owner, content, theme)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 plan_id,
                 item.id.0 as i64,
@@ -80,6 +81,7 @@ pub fn update(db: &Database, plan_id: i64, plan: &ServicePlan) -> Result<()> {
                 item.planned_secs.map(|s| s as i64),
                 item.owner,
                 content,
+                item.theme,
             ],
         )?;
     }
@@ -135,7 +137,7 @@ pub fn load(db: &Database, plan_id: i64) -> Result<ServicePlan> {
     // `ord` is UNIQUE per plan; the `item_id` tie-breaker makes the order
     // deterministic even if a future writer ever duplicated an ord.
     let mut stmt = conn.prepare(
-        "SELECT item_id, kind, title, planned_secs, owner, content
+        "SELECT item_id, kind, title, planned_secs, owner, content, theme
          FROM plan_item WHERE plan_id = ?1 ORDER BY ord, item_id",
     )?;
     let rows = stmt.query_map(params![plan_id], |r| {
@@ -146,12 +148,13 @@ pub fn load(db: &Database, plan_id: i64) -> Result<ServicePlan> {
             r.get::<_, Option<i64>>(3)?,
             r.get::<_, Option<String>>(4)?,
             r.get::<_, Option<String>>(5)?,
+            r.get::<_, Option<String>>(6)?,
         ))
     })?;
 
     let mut items = Vec::new();
     for row in rows {
-        let (item_id, kind_tag, title, planned, owner, content) = row?;
+        let (item_id, kind_tag, title, planned, owner, content, theme) = row?;
         let kind = ItemKind::from_tag(&kind_tag)
             .ok_or_else(|| DataError::Corrupt(format!("unknown item kind '{kind_tag}'")))?;
         // Report out-of-range stored integers as corruption rather than silently
@@ -175,6 +178,8 @@ pub fn load(db: &Database, plan_id: i64) -> Result<ServicePlan> {
             stanzas: content
                 .map(|t| selahcue_core::plan::stanzas_from_text(&t))
                 .unwrap_or_default(),
+            // Per-item theme override (S8-3d); NULL = the global theme.
+            theme,
         });
     }
 

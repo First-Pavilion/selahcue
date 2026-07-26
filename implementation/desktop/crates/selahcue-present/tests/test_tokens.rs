@@ -209,6 +209,9 @@ fn operator_webview_has_the_app_menu_and_screens_surface() {
         "id=\"td-lock\"",
         "id=\"td-font\"",
         "td-later",
+        // Per-item theme override (S8-3d): a picker on each plan row → set_item_theme.
+        "set_item_theme",
+        "item-theme",
     ] {
         assert!(html.contains(needle), "webview missing {needle:?}");
     }

@@ -77,6 +77,15 @@ fn set_theme_is_operator_only_output_config() {
     assert!(authorize(Role::Operator, &custom), "operator custom");
     assert!(!authorize(Role::Producer, &custom), "producer custom");
     assert!(!authorize(Role::Viewer, &custom), "viewer custom");
+    // A per-item theme override (S8-3d) is the same output-config permission.
+    let per_item = Command::SetItemTheme {
+        item_id: 1,
+        theme: Some("lower-third".into()),
+    };
+    assert!(authorize(Role::Operator, &per_item), "operator per-item");
+    assert!(!authorize(Role::Producer, &per_item), "producer per-item");
+    assert!(!authorize(Role::Assistant, &per_item), "assistant per-item");
+    assert!(!authorize(Role::Viewer, &per_item), "viewer per-item");
 }
 
 #[test]

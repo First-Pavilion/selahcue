@@ -36,6 +36,30 @@ fn round_trips_a_plan_faithfully() {
 }
 
 #[test]
+fn round_trips_a_per_item_theme_override() {
+    // S8-3d: a plan item's per-item theme override persists + reloads; an item with no
+    // override reloads as `None` (the global theme). Full PlanItem equality covers it.
+    let db = Database::open_in_memory().unwrap();
+    let mut p = ServicePlan::new("Themed");
+    let a = p.add_item(ItemKind::Scripture, "John 3:16");
+    let b = p.add_item(ItemKind::Announcement, "Notices");
+    p.set_item_theme(a, Some("lower-third".into())).unwrap();
+    let id = insert(&db, &p).unwrap();
+    let loaded = load(&db, id).unwrap();
+    assert_eq!(loaded, p, "the per-item theme override round-trips");
+    assert_eq!(
+        loaded.get(a).unwrap().theme.as_deref(),
+        Some("lower-third"),
+        "overridden item keeps its theme"
+    );
+    assert_eq!(
+        loaded.get(b).unwrap().theme,
+        None,
+        "un-overridden item is None"
+    );
+}
+
+#[test]
 fn preserves_item_order() {
     let db = Database::open_in_memory().unwrap();
     let mut p = ServicePlan::new("Order");

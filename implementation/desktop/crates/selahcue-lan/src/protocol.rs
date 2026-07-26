@@ -97,6 +97,14 @@ pub enum Command {
     /// does not depend on the presentation crate; the controller deserializes it).
     /// Malformed JSON is rejected. Operator-only (output config).
     SetCustomTheme { theme_json: String },
+    /// Set (or clear, with `None`) a plan item's per-item theme OVERRIDE by built-in
+    /// name (S8-3d). That item then renders on its own template instead of the global
+    /// theme; an unknown item or name is rejected. Operator-only (output config).
+    SetItemTheme {
+        item_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        theme: Option<String>,
+    },
 }
 
 /// A controller → operator request frame.
@@ -191,6 +199,10 @@ pub struct PlanItemView {
     /// Current within-item slide (0-based), present for the live/staged item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slide_index: Option<u32>,
+    /// Per-item theme override (built-in name), if this item overrides the global
+    /// theme (S8-3d). Skip-if-none keeps every pinned fixture byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 /// A snapshot of the active timer for the operator UI (`None` when no timer is running).

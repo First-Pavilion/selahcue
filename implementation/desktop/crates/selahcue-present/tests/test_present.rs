@@ -337,6 +337,46 @@ fn render_sample_previews_a_theme_deterministically() {
 }
 
 #[test]
+fn per_item_theme_override_is_independent_per_surface_and_survives_a_global_switch() {
+    // S8-3d: Preview + Live can carry DIFFERENT per-item themes at once, and switching
+    // the GLOBAL theme recomposes each surface with its own effective theme — never
+    // clobbering an overridden item (FR-010, zero content loss).
+    let mut p = Presenter::new(320, 180, Theme::classic());
+    // A live item OVERRIDDEN to lower-third.
+    p.stage_themed(
+        Slide::new("John 3:16", ["For God so loved"]),
+        Some(Theme::lower_third()),
+    );
+    assert!(p.go_live());
+    let live_override = p.live_output().bytes().to_vec();
+    // A staged item with NO override → the global (classic). Two themes on screen at once.
+    p.stage(Slide::new("Psalm 23", ["The LORD is my shepherd"]));
+    assert_ne!(
+        p.preview_output().bytes(),
+        p.live_output().bytes(),
+        "Preview (global) and Live (override) show different themes at once"
+    );
+
+    // Switch the GLOBAL theme → the overridden LIVE surface is unchanged...
+    p.set_theme(Theme::high_contrast());
+    assert_eq!(
+        p.live_output().bytes(),
+        live_override.as_slice(),
+        "a global theme switch must NOT clobber the live item's override"
+    );
+    // ...while the un-overridden PREVIEW follows the new global theme (high-contrast).
+    let mut reference = Presenter::new(320, 180, Theme::high_contrast());
+    reference.stage(Slide::new("Psalm 23", ["The LORD is my shepherd"]));
+    assert_eq!(
+        p.preview_output().bytes(),
+        reference.preview_output().bytes(),
+        "the un-overridden preview follows the global theme"
+    );
+    // The live content is preserved (zero content loss) — still the overridden verse.
+    assert_eq!(p.live_slide().unwrap().title, "John 3:16");
+}
+
+#[test]
 fn set_theme_does_not_fabricate_content_on_a_blank_output() {
     let mut p = Presenter::new(320, 180, Theme::classic());
     p.set_theme(Theme::lower_third());

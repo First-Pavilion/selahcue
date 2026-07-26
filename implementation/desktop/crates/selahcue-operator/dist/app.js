@@ -12,6 +12,16 @@
         // identical re-renders (the 1s poll must not eat in-flight clicks).
         const key = JSON.stringify(view);
         if (editing !== null || confirmDelete !== null) return;
+        // Never yank an OPEN per-item theme picker out from under the operator: the 1s
+        // poll would otherwise rebuild the plan (a running timer changes the view every
+        // second) and tear out the focused <select> before a choice is made. Defer the
+        // plan rebuild while it holds focus; it renders when focus leaves (chrome above
+        // already synced, so emergency/timer state stays live).
+        if (
+          document.activeElement &&
+          document.activeElement.classList.contains("item-theme")
+        )
+          return;
         if (key === lastRendered) return;
         lastRendered = key;
         document.getElementById("plan-name").textContent = view.plan_name;
@@ -96,7 +106,33 @@
             }
           });
 
+          // Per-item theme override (S8-3d): a small picker on each row. Blank = the
+          // global theme; a built-in name renders THIS item on that template.
+          const themeSel = document.createElement("select");
+          themeSel.className = "item-theme";
+          themeSel.title = "Item theme (blank = follow the global theme)";
+          themeSel.onclick = (e) => e.stopPropagation();
+          const optGlobal = document.createElement("option");
+          optGlobal.value = "";
+          optGlobal.textContent = "◈ theme";
+          themeSel.appendChild(optGlobal);
+          (view.themes || []).forEach((name) => {
+            const o = document.createElement("option");
+            o.value = name;
+            o.textContent = name;
+            themeSel.appendChild(o);
+          });
+          themeSel.value = it.theme || "";
+          if (it.theme) themeSel.classList.add("on");
+          themeSel.onchange = (e) => {
+            e.stopPropagation();
+            const v = e.target.value;
+            act(() => invoke("set_item_theme", { itemId: it.id, theme: v || null }));
+          };
+
           row.appendChild(main);
+          // Outside `tools` (which hides until hover) so an ACTIVE override stays visible.
+          row.appendChild(themeSel);
           tools.appendChild(ren);
           tools.appendChild(up);
           tools.appendChild(down);

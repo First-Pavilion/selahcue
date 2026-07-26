@@ -29,6 +29,10 @@ pub struct ItemView {
     /// Current within-item slide (0-based), present for the live/staged item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slide_index: Option<u32>,
+    /// Per-item theme override (built-in name), if this item overrides the global
+    /// theme (S8-3d); absent = the global theme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 /// A serializable snapshot of everything the operator UI needs to render: the plan,
@@ -206,6 +210,10 @@ impl OperatorShell {
             theme_json: theme_json.into(),
         })
     }
+    /// Set (or clear, with an empty name) a plan item's per-item theme override (S8-3d).
+    pub fn set_item_theme(&self, item_id: u64, theme: Option<String>) -> OperatorView {
+        self.act(&Command::SetItemTheme { item_id, theme })
+    }
 
     /// Assign an output role ("main"/"stage") to a physical display.
     pub fn assign_output(&self, role: &str, display_key: &str) -> OperatorView {
@@ -250,6 +258,7 @@ impl From<ItemView> for PlanItemView {
             is_staged: i.is_staged,
             slide_count: i.slide_count,
             slide_index: i.slide_index,
+            theme: i.theme,
         }
     }
 }
@@ -264,6 +273,7 @@ impl From<PlanItemView> for ItemView {
             is_staged: i.is_staged,
             slide_count: i.slide_count,
             slide_index: i.slide_index,
+            theme: i.theme,
         }
     }
 }
@@ -493,6 +503,14 @@ impl RemoteOperator {
             theme_json: theme_json.into(),
         })
         .await
+    }
+    /// Set (or clear, with an empty name) a plan item's per-item theme override (S8-3d).
+    pub async fn set_item_theme(
+        &mut self,
+        item_id: u64,
+        theme: Option<String>,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetItemTheme { item_id, theme }).await
     }
 
     /// Search scripture on the host; returns stageable display references.

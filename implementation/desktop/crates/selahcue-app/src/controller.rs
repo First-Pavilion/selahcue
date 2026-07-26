@@ -6,7 +6,7 @@
 //! **Live** output. `Clear`/`Blackout` act on Live.
 
 use crate::operator::{ItemView, OperatorView};
-use selahcue_core::plan::ServicePlan;
+use selahcue_core::plan::{ItemId, ServicePlan};
 use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{
@@ -628,6 +628,7 @@ impl LiveController {
                 } else {
                     None
                 },
+                theme: item.theme.clone(),
             })
             .collect();
         OperatorView {
@@ -677,7 +678,13 @@ impl LiveController {
             Some(composed) => {
                 let count = self.plan.items()[idx].slide_count();
                 let slide = slide.min(count - 1);
-                self.presenter.stage(composed);
+                // Per-item theme override (S8-3d): render this item on its own template,
+                // falling back to the global theme when it has no override.
+                let item_theme = self.plan.items()[idx]
+                    .theme
+                    .as_deref()
+                    .and_then(Theme::builtin);
+                self.presenter.stage_themed(composed, item_theme);
                 self.staged_idx = Some(idx);
                 self.staged_slide = slide;
                 self.plan_cursor = Some(idx);
@@ -1084,7 +1091,40 @@ impl LiveController {
                     ControllerReply::Deny(DenyReason::BadRequest)
                 }
             }
+            Command::SetItemTheme { item_id, theme } => {
+                self.set_item_theme(*item_id, theme.clone())
+            }
         }
+    }
+
+    /// Set (or clear, with `None`) a plan item's per-item theme override (S8-3d). An
+    /// unknown item id or an unknown built-in name is rejected; content is never touched.
+    /// If the item is currently staged and/or live, its surface re-renders immediately.
+    fn set_item_theme(&mut self, item_id: u64, theme: Option<String>) -> ControllerReply {
+        let Some(idx) = self.index_of(item_id) else {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        };
+        // A set (not a clear) must name a known built-in.
+        let override_theme = match theme.as_deref() {
+            Some(name) => match Theme::builtin(name) {
+                Some(t) => Some(t),
+                None => return ControllerReply::Deny(DenyReason::BadRequest),
+            },
+            None => None,
+        };
+        let _ = self.plan.set_item_theme(ItemId(item_id), theme);
+        // The override lives ONLY in the plan (not the session snapshot), so mark the
+        // plan dirty — otherwise the desktop never persists it and it is lost on restart.
+        self.plan_dirty = true;
+        // Reflect on the live surface in place; re-stage to reflect on preview.
+        if self.live_idx == Some(idx) {
+            self.presenter.set_live_theme(override_theme);
+            self.presenter.blackout(self.blackout);
+        }
+        if self.staged_idx == Some(idx) {
+            self.stage_slide(idx, self.staged_slide);
+        }
+        ControllerReply::Ack
     }
 
     /// The current index of a plan item id, if present.
