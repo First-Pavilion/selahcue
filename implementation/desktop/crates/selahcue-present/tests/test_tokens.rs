@@ -286,6 +286,29 @@ fn operator_webview_wires_per_screen_theme() {
     );
 }
 
+/// Saved themes are offered per-item AND per-screen (86ajq69ft): both Theme pickers list
+/// the library's saved themes (a "Saved" optgroup), not just built-ins. Pinned so a future
+/// edit cannot silently drop the saved themes from either picker.
+#[test]
+fn operator_webview_offers_saved_themes_per_item_and_per_screen() {
+    let js = operator_dist("app.js");
+    // Both pickers read the library from the view and group the saved names.
+    assert!(
+        js.matches("view.saved_themes").count() >= 3,
+        "the per-item + per-screen pickers (and the change-detect key) read view.saved_themes"
+    );
+    for needle in [
+        "savedNames",
+        "optgroup",
+        "grp.label = \"Saved\"",
+        // Both pickers stay wired to their per-item / per-screen commands.
+        "set_item_theme",
+        "set_screen_theme",
+    ] {
+        assert!(js.contains(needle), "app.js missing {needle:?}");
+    }
+}
+
 /// The Flutter controller carries the same canonical values.
 #[test]
 fn mobile_tokens_are_pinned_to_the_canonical_tokens() {

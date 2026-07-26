@@ -1633,10 +1633,22 @@ fn save_theme_stores_the_canonical_theme_and_marks_dirty() {
     assert_eq!(
         c.apply(&Command::SaveTheme {
             name: "n".repeat(MAX_THEME_NAME_LEN + 1),
-            theme_json: json,
+            theme_json: json.clone(),
         }),
         ControllerReply::Deny(DenyReason::BadRequest)
     );
+    // A BUILT-IN name is reserved (86ajq69ft) — a saved theme named like a built-in would
+    // be shadowed (built-ins resolve first) and unreachable by name per-item/per-screen.
+    for builtin in ["classic", "high-contrast", "lower-third"] {
+        assert_eq!(
+            c.apply(&Command::SaveTheme {
+                name: builtin.into(),
+                theme_json: json.clone(),
+            }),
+            ControllerReply::Deny(DenyReason::BadRequest),
+            "saving under the built-in name {builtin:?} is rejected"
+        );
+    }
     assert!(
         !c.take_saved_themes_dirty(),
         "rejected saves never mark dirty"
@@ -1817,8 +1829,8 @@ fn set_screen_theme_validates_maps_and_recomposes_main() {
         }),
         ControllerReply::Deny(DenyReason::BadRequest)
     );
-    // A SAVED-library name is rejected for a screen (built-in only, like per-item) — this
-    // is what keeps main's cached theme from going stale when the library is edited/deleted.
+    // A SAVED-library name IS assignable per-screen (86ajq69ft) — the cached theme is
+    // kept fresh by resync_theme_overrides when the library changes (covered separately).
     let saved_json = serde_json::to_string(&Theme::high_contrast()).unwrap();
     assert_eq!(
         c.apply(&Command::SaveTheme {
@@ -1830,10 +1842,14 @@ fn set_screen_theme_validates_maps_and_recomposes_main() {
     assert_eq!(
         c.apply(&Command::SetScreenTheme {
             screen: "stream".into(),
-            name: "MyCustom".into(), // a real saved theme, but not a built-in → rejected
+            name: "MyCustom".into(),
         }),
-        ControllerReply::Deny(DenyReason::BadRequest),
-        "a saved-library theme is not assignable per-screen (built-in only)"
+        ControllerReply::Ack,
+        "a saved-library theme is assignable per-screen"
+    );
+    assert_eq!(
+        c.screen_themes().get("stream").map(String::as_str),
+        Some("MyCustom")
     );
 }
 
@@ -1930,5 +1946,236 @@ fn per_screen_theme_map_is_bounded_and_load_restores_main_dropping_stale() {
         d.presenter().live_output().bytes(),
         main_before.as_slice(),
         "load restored main's per-screen theme onto the physical output"
+    );
+}
+
+// --- Saved themes usable per-item + per-screen (86ajq69ft) ------------------
+
+fn has_pixel(c: &LiveController, rgb: (u8, u8, u8)) -> bool {
+    c.presenter()
+        .live_output()
+        .bytes()
+        .chunks_exact(4)
+        .any(|px| {
+            let d = |a: u8, b: u8| (a as i32 - b as i32).pow(2);
+            d(px[0], rgb.0) + d(px[1], rgb.1) + d(px[2], rgb.2) < 900
+        })
+}
+
+#[test]
+fn a_saved_theme_is_assignable_per_item_and_per_screen() {
+    let (mut c, ids) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive); // item 0 live
+
+    // Save a custom theme (high-contrast, black bg, stands in for a designed one).
+    let hc = serde_json::to_string(&Theme::high_contrast()).unwrap();
+    assert_eq!(
+        c.apply(&Command::SaveTheme {
+            name: "Branded".into(),
+            theme_json: hc,
+        }),
+        ControllerReply::Ack
+    );
+
+    // Assign it to the LIVE plan item — the physical live output restyles to it (black).
+    let before = c.presenter().live_output().bytes().to_vec();
+    assert_eq!(
+        c.apply(&Command::SetItemTheme {
+            item_id: ids[0],
+            theme: Some("Branded".into()),
+        }),
+        ControllerReply::Ack
+    );
+    assert_ne!(
+        c.presenter().live_output().bytes(),
+        before.as_slice(),
+        "a saved theme applied per-item restyles the live output"
+    );
+    assert!(
+        has_pixel(&c, (0, 0, 0)),
+        "the saved high-contrast (black) design renders"
+    );
+
+    // Assign a saved theme to the `main` screen too.
+    assert_eq!(
+        c.apply(&Command::SetScreenTheme {
+            screen: "main".into(),
+            name: "Branded".into(),
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.screen_themes().get("main").map(String::as_str),
+        Some("Branded")
+    );
+
+    // A truly-unknown name is still rejected on both paths.
+    assert_eq!(
+        c.apply(&Command::SetItemTheme {
+            item_id: ids[0],
+            theme: Some("no-such".into()),
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        c.apply(&Command::SetScreenTheme {
+            screen: "stream".into(),
+            name: "no-such".into(),
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+}
+
+#[test]
+fn editing_a_saved_theme_re_renders_every_place_it_is_used() {
+    let (mut c, ids) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive); // item 0 live
+
+    // Save v1 = classic (navy), assign to the live item + the main screen.
+    let v1 = serde_json::to_string(&Theme::classic()).unwrap();
+    c.apply(&Command::SaveTheme {
+        name: "Look".into(),
+        theme_json: v1,
+    });
+    c.apply(&Command::SetItemTheme {
+        item_id: ids[0],
+        theme: Some("Look".into()),
+    });
+    assert!(
+        has_pixel(&c, (8, 10, 20)),
+        "classic navy renders before the edit"
+    );
+    let before = c.presenter().live_output().bytes().to_vec();
+
+    // EDIT: save v2 = high-contrast (black) under the SAME name → the LIVE output updates
+    // WITHOUT re-assigning (the cached theme is re-synced, no stale frame).
+    let v2 = serde_json::to_string(&Theme::high_contrast()).unwrap();
+    assert_eq!(
+        c.apply(&Command::SaveTheme {
+            name: "Look".into(),
+            theme_json: v2,
+        }),
+        ControllerReply::Ack
+    );
+    assert_ne!(
+        c.presenter().live_output().bytes(),
+        before.as_slice(),
+        "editing the saved theme re-rendered the live item in place"
+    );
+    assert!(
+        has_pixel(&c, (0, 0, 0)),
+        "the live item now shows the edited (black) design"
+    );
+    // Content preserved (zero content loss).
+    assert_eq!(c.plan().items()[0].theme.as_deref(), Some("Look"));
+}
+
+#[test]
+fn deleting_a_saved_theme_drops_references_and_falls_back_to_global() {
+    let (mut c, ids) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive); // item 0 live (global theme = dark)
+
+    let hc = serde_json::to_string(&Theme::high_contrast()).unwrap();
+    c.apply(&Command::SaveTheme {
+        name: "Temp".into(),
+        theme_json: hc,
+    });
+    c.apply(&Command::SetItemTheme {
+        item_id: ids[0],
+        theme: Some("Temp".into()),
+    });
+    c.apply(&Command::SetScreenTheme {
+        screen: "main".into(),
+        name: "Temp".into(),
+    });
+    assert!(has_pixel(&c, (0, 0, 0)), "the saved (black) theme is live");
+
+    // DELETE the theme → both references drop, the outputs fall back to the GLOBAL theme
+    // with NO stale frame (the black design is gone).
+    let _ = c.take_plan_dirty();
+    let _ = c.take_screen_themes_dirty();
+    assert_eq!(
+        c.apply(&Command::DeleteTheme {
+            name: "Temp".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.plan().items()[0].theme,
+        None,
+        "the plan item's dangling theme reference is dropped"
+    );
+    assert!(
+        c.screen_themes().get("main").is_none(),
+        "the per-screen dangling reference is dropped"
+    );
+    assert!(
+        c.take_plan_dirty() && c.take_screen_themes_dirty(),
+        "dropping references marks the plan + screen map dirty to persist"
+    );
+    // The live output is no longer the deleted black design — it fell back to the global.
+    let (mut ref_c, ref_ids) = controller();
+    ref_c.apply(&Command::Next);
+    ref_c.apply(&Command::GoLive);
+    let _ = ref_ids;
+    assert_eq!(
+        c.presenter().live_output().bytes(),
+        ref_c.presenter().live_output().bytes(),
+        "after delete the live item renders exactly the global theme (no override, no stale frame)"
+    );
+}
+
+#[test]
+fn a_saved_per_item_theme_resolves_on_recovery_only_with_the_correct_load_order() {
+    use selahcue_core::plan::ItemKind;
+    use std::time::Instant;
+    let t0 = Instant::now();
+    let canonical = serde_json::to_string(&Theme::high_contrast()).unwrap();
+
+    // A controller whose PLAN already carries a per-item SAVED-theme override on item 0
+    // (as the desktop's plan_repo would restore it) — built directly so the seed does not
+    // depend on the library being loaded (SetItemTheme would reject "Brand" while empty).
+    let make = || {
+        let mut plan = ServicePlan::new("Sunday");
+        let a = plan.add_item(ItemKind::Song, "Opening Song");
+        plan.add_item(ItemKind::Scripture, "Romans 8:28");
+        plan.add_item(ItemKind::Section, "Sermon");
+        plan.set_item_theme(a, Some("Brand".into())).unwrap();
+        LiveController::new(plan, 320, 180, Theme::dark())
+    };
+
+    // Establish the reference live output: library loaded, item 0 live under "Brand".
+    let mut a = make();
+    a.load_saved_themes([("Brand".to_string(), canonical.clone())]);
+    a.apply(&Command::Next);
+    a.apply(&Command::GoLive);
+    let live = a.presenter().live_output().bytes().to_vec();
+    let snap = a.snapshot(t0);
+
+    // CORRECT order (mirrors the desktop): load the library FIRST, then restore. The
+    // per-item saved theme resolves and the recovered live output matches.
+    let mut good = make();
+    good.load_saved_themes([("Brand".to_string(), canonical.clone())]);
+    good.restore(&snap);
+    good.tick(t0);
+    assert_eq!(
+        good.presenter().live_output().bytes(),
+        live.as_slice(),
+        "a per-item saved theme resolves on recovery when the library loads before restore"
+    );
+
+    // WRONG order (restore before the library loads) resolves "Brand" against an empty
+    // library and falls back to the global — demonstrating why the order matters.
+    let mut bad = make();
+    bad.restore(&snap); // library not loaded yet
+    bad.load_saved_themes([("Brand".to_string(), canonical)]);
+    bad.tick(t0);
+    assert_ne!(
+        bad.presenter().live_output().bytes(),
+        live.as_slice(),
+        "restoring before the library loads loses the per-item saved theme (order matters)"
     );
 }

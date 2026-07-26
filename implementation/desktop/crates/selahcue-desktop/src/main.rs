@@ -876,6 +876,14 @@ impl App {
         )));
 
         if let Ok(mut c) = controller.lock() {
+            // Load the user config (the saved-theme library + the per-screen theme map)
+            // BEFORE restoring the session, so a per-item / per-screen override that
+            // references a SAVED theme resolves as content is re-staged (86ajq69ft). The
+            // library loads first (a per-screen name may reference it); the per-screen map
+            // applies `main` (a no-op recompose while nothing is staged) so `restore()`
+            // then composes the restored content with every override in place.
+            c.load_saved_themes(store.load_saved_themes());
+            c.load_screen_themes(store.load_screen_themes());
             match &restored {
                 Some(snap) => {
                     // Crash/restart recovery: rebuild the exact live state.
@@ -888,13 +896,6 @@ impl App {
                     let _ = c.apply(&Command::GoLive);
                 }
             }
-            // The saved-theme library (86ajq4xmy) is user config, not session state,
-            // so it loads on every start (clean/crash included) without dirtying.
-            c.load_saved_themes(store.load_saved_themes());
-            // The per-screen theme map (86ajq321k) is likewise config — load it AFTER the
-            // library (a saved-library name a screen references must resolve) and AFTER
-            // restore (so `main`'s per-screen theme recomposes the restored live content).
-            c.load_screen_themes(store.load_screen_themes());
         }
 
         // First run: write the initial session row NOW so the seeded plan is

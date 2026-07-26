@@ -113,7 +113,8 @@
           });
 
           // Per-item theme override (S8-3d): a small picker on each row. Blank = the
-          // global theme; a built-in name renders THIS item on that template.
+          // global theme; a built-in OR a saved-library theme (86ajq69ft) renders THIS
+          // item on that template.
           const themeSel = document.createElement("select");
           themeSel.className = "item-theme";
           themeSel.title = "Item theme (blank = follow the global theme)";
@@ -128,6 +129,19 @@
             o.textContent = name;
             themeSel.appendChild(o);
           });
+          // Saved (named custom) themes from the library, in a labelled group.
+          const savedNames = (view.saved_themes || []).map((t) => t.name);
+          if (savedNames.length) {
+            const grp = document.createElement("optgroup");
+            grp.label = "Saved";
+            savedNames.forEach((name) => {
+              const o = document.createElement("option");
+              o.value = name;
+              o.textContent = name;
+              grp.appendChild(o);
+            });
+            themeSel.appendChild(grp);
+          }
           themeSel.value = it.theme || "";
           if (it.theme) themeSel.classList.add("on");
           themeSel.onchange = (e) => {
@@ -244,7 +258,7 @@
         // absent from the map follows the global; the picker shows that as its selection.
         const screenThemes = {};
         (view.screen_themes || []).forEach((st) => { screenThemes[st.screen] = st.theme; });
-        const key = JSON.stringify([outs, displays, themes, activeTheme, view.screen_themes || []]);
+        const key = JSON.stringify([outs, displays, themes, activeTheme, view.screen_themes || [], view.saved_themes || []]);
         if (key === outputsKey) return; // pickers are interactive: rebuild only on change
         const list = document.getElementById("screens-list");
         // Never yank a picker out from under the operator: an open/focused
@@ -287,6 +301,19 @@
               if (explicit && t === screenThemes[screen]) opt.selected = true;
               sel.appendChild(opt);
             });
+            // Saved (named custom) themes from the library (86ajq69ft), in a labelled group.
+            const savedNames = (view.saved_themes || []).map((t) => t.name);
+            if (savedNames.length) {
+              const grp = document.createElement("optgroup");
+              grp.label = "Saved";
+              savedNames.forEach((name) => {
+                const opt = document.createElement("option");
+                opt.value = name; opt.textContent = name;
+                if (explicit && name === screenThemes[screen]) opt.selected = true;
+                grp.appendChild(opt);
+              });
+              sel.appendChild(grp);
+            }
             sel.onchange = () => act(() => invoke("set_screen_theme", { screen, name: sel.value }));
           }
           frag.appendChild(sel);
@@ -864,6 +891,13 @@
         // produces a false "Saved" (a host DENY resolves Ok with the unchanged view).
         if (tdNameBytes(name) > TD_NAME_MAX_BYTES) {
           tdStatus("That name is too long (max " + TD_NAME_MAX_BYTES + " bytes). Try a shorter name.");
+          tdSaveName.focus();
+          return;
+        }
+        // A built-in name is reserved — a saved theme named like a built-in would be
+        // shadowed (built-ins resolve first) and never applyable by name (86ajq69ft).
+        if (tdOrder.indexOf(name) !== -1) {
+          tdStatus("“" + name + "” is a built-in template name — choose a different name.");
           tdSaveName.focus();
           return;
         }

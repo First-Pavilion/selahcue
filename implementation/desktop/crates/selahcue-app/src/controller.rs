@@ -176,6 +176,22 @@ pub const MAX_THEME_NAME_LEN: usize = 64;
 /// stage layout, not an audience theme. The per-screen theme map is bounded to these ids.
 pub const AUDIENCE_SCREENS: [&str; 3] = ["main", "lower-third", "stream"];
 
+/// Resolve a theme NAME to a `Theme`: a built-in (classic/high-contrast/lower-third)
+/// first, else a SAVED-library name (its canonical JSON). `None` for an unknown name
+/// (86ajq69ft). A **free** fn (takes the library map, not `&self`) so a caller can
+/// re-resolve overrides while holding a mutable borrow of another controller field
+/// (the plan, the per-screen map) — avoiding a partial-borrow conflict on `self`.
+fn resolve_theme_name(
+    name: &str,
+    saved: &std::collections::BTreeMap<String, String>,
+) -> Option<Theme> {
+    Theme::builtin(name).or_else(|| {
+        saved
+            .get(name)
+            .and_then(|json| serde_json::from_str::<Theme>(json).ok())
+    })
+}
+
 /// How long the identify overlay stays on the outputs once triggered (FR-040).
 pub const IDENTIFY_TTL: Duration = Duration::from_secs(5);
 
@@ -315,10 +331,16 @@ impl LiveController {
     /// Save a NAMED custom theme into the library (S8-3d follow-up 86ajq4xmy). The name
     /// is trimmed + bounded; the JSON must deserialize to a `Theme` (stored CANONICAL,
     /// bounded). Overwriting an existing name is allowed; a NEW name past the cap is
-    /// rejected. Rejects an empty/over-long name or invalid JSON.
+    /// rejected. Rejects an empty/over-long name, invalid JSON, or a **built-in** name.
     fn save_theme(&mut self, name: &str, theme_json: &str) -> ControllerReply {
         let name = name.trim();
         if name.is_empty() || name.len() > MAX_THEME_NAME_LEN {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        // A built-in name is RESERVED: since a saved theme is now applied BY NAME
+        // (86ajq69ft) and built-ins resolve first, a saved theme named like a built-in
+        // would be silently shadowed + unreachable. Reject it so names stay unambiguous.
+        if Theme::builtin(name).is_some() {
             return ControllerReply::Deny(DenyReason::BadRequest);
         }
         let Ok(theme) = serde_json::from_str::<Theme>(theme_json) else {
@@ -331,6 +353,9 @@ impl LiveController {
         let canonical = serde_json::to_string(&theme).unwrap_or_else(|_| theme_json.to_string());
         self.saved_themes.insert(name.to_string(), canonical);
         self.saved_themes_dirty = true;
+        // An EDIT of a name a plan item / screen references must reach its physical output
+        // (and never leave a stale cached theme) — re-sync the overrides (86ajq69ft).
+        self.resync_theme_overrides();
         ControllerReply::Ack
     }
 
@@ -338,6 +363,9 @@ impl LiveController {
     fn delete_theme(&mut self, name: &str) -> ControllerReply {
         if self.saved_themes.remove(name).is_some() {
             self.saved_themes_dirty = true;
+            // A DELETE drops any per-item / per-screen reference to the removed theme and
+            // falls those outputs back to the global — no stale frame (86ajq69ft).
+            self.resync_theme_overrides();
         }
         ControllerReply::Ack
     }
@@ -373,13 +401,87 @@ impl LiveController {
         self.saved_themes_dirty = false;
     }
 
-    // --- Per-screen theme map (86ajq321k) -----------------------------------
+    // --- Per-screen theme map (86ajq321k) + saved-theme resolution (86ajq69ft) ------
     //
-    // A per-screen theme is a BUILT-IN name only (classic/high-contrast/lower-third),
-    // matching the per-item override. Built-ins are immutable, so `main`'s theme cached
-    // in the Presenter can never be edited/deleted out from under the physical output —
-    // hence `Theme::builtin` is the sole resolver on every per-screen path (set/compose/
-    // load), and no saved-library name is ever stored for a screen.
+    // A per-item / per-screen theme is a built-in OR a saved-library name. The Presenter
+    // caches the resolved CONCRETE theme, so [`resync_theme_overrides`] re-applies it when
+    // the library changes (an edit/delete of a name a screen or plan item references),
+    // keeping no cached theme stale.
+
+    /// Resolve a theme name against the built-ins + this controller's saved-theme library.
+    fn resolve_theme(&self, name: &str) -> Option<Theme> {
+        resolve_theme_name(name, &self.saved_themes)
+    }
+
+    /// Re-sync per-item + per-screen theme overrides after the saved-theme LIBRARY changed
+    /// (86ajq69ft) — a name a plan item or screen references was edited or deleted. First
+    /// DROPS any override whose theme no longer resolves (a deleted theme → that item/screen
+    /// falls back to the global), then RE-APPLIES the currently-displayed overrides (the
+    /// `main` screen, the LIVE item, and a re-stage of the STAGED item) with freshly-resolved
+    /// themes — so an edit reaches the physical output live and a delete never leaves a stale
+    /// frame. Idempotent (recomposes to the same bytes when nothing referencing changed).
+    fn resync_theme_overrides(&mut self) {
+        // 1. Drop plan-item overrides that no longer resolve (deleted theme → global).
+        let stale_items: Vec<ItemId> = {
+            let saved = &self.saved_themes;
+            self.plan
+                .items()
+                .iter()
+                .filter(|it| {
+                    it.theme
+                        .as_deref()
+                        .is_some_and(|n| resolve_theme_name(n, saved).is_none())
+                })
+                .map(|it| it.id)
+                .collect()
+        };
+        if !stale_items.is_empty() {
+            for id in stale_items {
+                let _ = self.plan.set_item_theme(id, None);
+            }
+            self.plan_dirty = true;
+        }
+        // 2. Drop per-screen entries that no longer resolve.
+        let stale_screens: Vec<String> = {
+            let saved = &self.saved_themes;
+            self.screen_themes
+                .iter()
+                .filter(|(_, n)| resolve_theme_name(n, saved).is_none())
+                .map(|(s, _)| s.clone())
+                .collect()
+        };
+        if !stale_screens.is_empty() {
+            for s in &stale_screens {
+                self.screen_themes.remove(s);
+            }
+            self.screen_themes_dirty = true;
+        }
+        // 3. Re-apply the `main` screen theme (edit → new design; delete → dropped above).
+        let main = {
+            let saved = &self.saved_themes;
+            self.screen_themes
+                .get("main")
+                .and_then(|n| resolve_theme_name(n, saved))
+        };
+        self.presenter.set_main_screen_theme(main);
+        // 4. Re-apply the LIVE item's override (edit reaches the live output; delete → global).
+        if let Some(idx) = self.live_idx {
+            let live = {
+                let saved = &self.saved_themes;
+                self.plan.items()[idx]
+                    .theme
+                    .as_deref()
+                    .and_then(|n| resolve_theme_name(n, saved))
+            };
+            self.presenter.set_live_theme(live);
+        }
+        // 5. Re-stage the STAGED item so Preview reflects the change too.
+        if let Some(idx) = self.staged_idx {
+            self.stage_slide(idx, self.staged_slide);
+        }
+        // Theme ⟂ blackout — a recompose re-issues SetScene, so re-assert blackout.
+        self.presenter.blackout(self.blackout);
+    }
 
     /// Set (or clear, with an empty `name`) an Audience-class screen's own theme
     /// (86ajq321k). The `main` screen drives the physical audience output via the
@@ -387,11 +489,9 @@ impl LiveController {
     /// screens (`lower-third`/`stream`) are stored + composed on-demand. Rejects an
     /// unknown screen or an unknown theme name (`BadRequest`).
     ///
-    /// A per-screen theme is restricted to a **built-in** name (like the per-item
-    /// override, [`Self::set_item_theme`]). Built-ins are immutable, so `main`'s cached
-    /// theme in the Presenter can never go stale — a saved-library theme could be edited
-    /// or deleted out from under the physical output. Assigning a SAVED (custom) theme to
-    /// a screen is a follow-up (it also needs a re-sync-on-library-change path).
+    /// The name may be a built-in OR a saved-library theme (86ajq69ft). A saved theme's
+    /// cached copy on the physical `main` output is kept fresh by [`resync_theme_overrides`]
+    /// when the library changes.
     fn set_screen_theme(&mut self, screen: &str, name: &str) -> ControllerReply {
         if !AUDIENCE_SCREENS.contains(&screen) {
             return ControllerReply::Deny(DenyReason::BadRequest);
@@ -407,9 +507,7 @@ impl LiveController {
             }
             return ControllerReply::Ack;
         }
-        // Built-in only (see the doc note) — a saved-library name is rejected here even
-        // though `resolve_theme_name` (used by compose/load) would resolve it.
-        let Some(theme) = Theme::builtin(name) else {
+        let Some(theme) = self.resolve_theme(name) else {
             return ControllerReply::Deny(DenyReason::BadRequest);
         };
         self.screen_themes
@@ -443,7 +541,7 @@ impl LiveController {
         let theme = self
             .screen_themes
             .get(screen)
-            .and_then(|name| Theme::builtin(name));
+            .and_then(|name| self.resolve_theme(name));
         Some(self.presenter.compose_screen_live(theme.as_ref()))
     }
 
@@ -466,10 +564,12 @@ impl LiveController {
     /// screens with a known built-in theme name (so a stale/removed name is dropped,
     /// never crashes), applies `main` to the Presenter, and does not dirty.
     pub fn load_screen_themes(&mut self, themes: impl IntoIterator<Item = (String, String)>) {
+        let saved = &self.saved_themes;
         self.screen_themes = themes
             .into_iter()
             .filter(|(screen, name)| {
-                AUDIENCE_SCREENS.contains(&screen.as_str()) && Theme::builtin(name).is_some()
+                AUDIENCE_SCREENS.contains(&screen.as_str())
+                    && resolve_theme_name(name, saved).is_some()
             })
             .collect();
         self.screen_themes_dirty = false;
@@ -478,7 +578,7 @@ impl LiveController {
         if let Some(theme) = self
             .screen_themes
             .get("main")
-            .and_then(|name| Theme::builtin(name))
+            .and_then(|name| self.resolve_theme(name))
         {
             self.presenter.set_main_screen_theme(Some(theme));
             self.presenter.blackout(self.blackout);
@@ -898,12 +998,13 @@ impl LiveController {
             Some(composed) => {
                 let count = self.plan.items()[idx].slide_count();
                 let slide = slide.min(count - 1);
-                // Per-item theme override (S8-3d): render this item on its own template,
-                // falling back to the global theme when it has no override.
+                // Per-item theme override (S8-3d): render this item on its own template
+                // (a built-in or a saved-library theme, 86ajq69ft), falling back to the
+                // global theme when it has no override or the name no longer resolves.
                 let item_theme = self.plan.items()[idx]
                     .theme
-                    .as_deref()
-                    .and_then(Theme::builtin);
+                    .clone()
+                    .and_then(|name| self.resolve_theme(&name));
                 self.presenter.stage_themed(composed, item_theme);
                 self.staged_idx = Some(idx);
                 self.staged_slide = slide;
@@ -1327,9 +1428,10 @@ impl LiveController {
         let Some(idx) = self.index_of(item_id) else {
             return ControllerReply::Deny(DenyReason::BadRequest);
         };
-        // A set (not a clear) must name a known built-in.
+        // A set (not a clear) must name a known theme — a built-in or a saved-library
+        // theme (86ajq69ft). A stale reference is later re-synced on library change.
         let override_theme = match theme.as_deref() {
-            Some(name) => match Theme::builtin(name) {
+            Some(name) => match self.resolve_theme(name) {
                 Some(t) => Some(t),
                 None => return ControllerReply::Deny(DenyReason::BadRequest),
             },
