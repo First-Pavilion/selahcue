@@ -24,7 +24,9 @@ use selahcue_app::{
 };
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_data::session_repo::SessionState;
-use selahcue_data::{output_repo, plan_repo, saved_theme_repo, session_repo, DataError, Database};
+use selahcue_data::{
+    output_repo, plan_repo, saved_theme_repo, screen_theme_repo, session_repo, DataError, Database,
+};
 use selahcue_engine::raster::FrameBuffer;
 use selahcue_lan::protocol::{Command, DisplayView, OutputStatusView, PairingInvite};
 use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
@@ -433,6 +435,35 @@ impl SessionStore {
             Ok(()) => true,
             Err(e) => {
                 eprintln!("SelahCue: could not persist the saved-theme library ({e}).");
+                false
+            }
+        }
+    }
+
+    /// The persisted per-screen theme map (`(screen, theme_name)`), if any (86ajq321k).
+    fn load_screen_themes(&self) -> Vec<(String, String)> {
+        self.db
+            .as_ref()
+            .and_then(|db| match screen_theme_repo::load_all(db) {
+                Ok(rows) => Some(rows),
+                Err(e) => {
+                    eprintln!("SelahCue: could not read the per-screen theme map ({e}).");
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    /// Persist the whole per-screen theme map (reported, never fatal). Returns whether
+    /// the write succeeded so the caller can re-arm the dirty flag on failure.
+    fn save_screen_themes(&self, themes: &[(String, String)]) -> bool {
+        let Some(db) = self.db.as_ref() else {
+            return true;
+        };
+        match screen_theme_repo::save_all(db, themes) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("SelahCue: could not persist the per-screen theme map ({e}).");
                 false
             }
         }
@@ -860,6 +891,10 @@ impl App {
             // The saved-theme library (86ajq4xmy) is user config, not session state,
             // so it loads on every start (clean/crash included) without dirtying.
             c.load_saved_themes(store.load_saved_themes());
+            // The per-screen theme map (86ajq321k) is likewise config — load it AFTER the
+            // library (a saved-library name a screen references must resolve) and AFTER
+            // restore (so `main`'s per-screen theme recomposes the restored live content).
+            c.load_screen_themes(store.load_screen_themes());
         }
 
         // First run: write the initial session row NOW so the seeded plan is
@@ -1060,6 +1095,17 @@ impl App {
                 .collect();
             if !self.store.save_saved_themes(&themes) {
                 c.mark_saved_themes_dirty(); // failed write: retry next frame
+            }
+        }
+        // The per-screen theme map (86ajq321k) persists immediately on any change too.
+        if c.take_screen_themes_dirty() {
+            let themes: Vec<(String, String)> = c
+                .screen_themes()
+                .iter()
+                .map(|(s, t)| (s.clone(), t.clone()))
+                .collect();
+            if !self.store.save_screen_themes(&themes) {
+                c.mark_screen_themes_dirty(); // failed write: retry next frame
             }
         }
         // Plan edits persist immediately (rare, operator-driven actions) — and the
@@ -1789,6 +1835,14 @@ fn main() {
                     .map(|(n, j)| (n.clone(), j.clone()))
                     .collect();
                 app.store.save_saved_themes(&themes);
+            }
+            if c.take_screen_themes_dirty() {
+                let themes: Vec<(String, String)> = c
+                    .screen_themes()
+                    .iter()
+                    .map(|(s, t)| (s.clone(), t.clone()))
+                    .collect();
+                app.store.save_screen_themes(&themes);
             }
             app.store.save_session(&c.snapshot(Instant::now()));
         }

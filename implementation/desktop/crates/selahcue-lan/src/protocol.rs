@@ -112,6 +112,11 @@ pub enum Command {
     SaveTheme { name: String, theme_json: String },
     /// Delete a saved theme from the library by name (idempotent). Operator-only.
     DeleteTheme { name: String },
+    /// Set (or clear, with an empty `name`) an Audience-class SCREEN's own theme
+    /// (86ajq321k): `screen` is `main` / `lower-third` / `stream`; `name` is a built-in
+    /// or a saved-library name. Each screen renders the same live content under its own
+    /// theme. An unknown screen or unresolvable name is rejected. Operator-only.
+    SetScreenTheme { screen: String, name: String },
 }
 
 /// A controller → operator request frame.
@@ -146,6 +151,11 @@ impl Request {
 /// An operator → controller message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
+// `OperatorState` carries the full view (the largest variant by far), but a ServerMessage
+// is a short-lived per-request value that is serialized and dropped — never stored in a
+// collection — so the size skew is harmless; boxing the view would only add an allocation
+// on the hot reply path. (Same rationale as `ControllerReply`.)
+#[allow(clippy::large_enum_variant)]
 pub enum ServerMessage {
     /// The referenced request was accepted and performed.
     Ack { request_id: u64 },
@@ -275,6 +285,11 @@ pub struct OperatorStateView {
     /// empty so the pinned v2 fixtures stay byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub saved_themes: Vec<SavedThemeView>,
+    /// The per-SCREEN theme map (86ajq321k): each Audience-class `screen` and its assigned
+    /// theme `name`, so the Screens page shows a distinct theme per screen. Omitted when
+    /// empty so the pinned v2 fixtures stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screen_themes: Vec<ScreenThemeView>,
 }
 
 /// One saved (named custom) theme in the library (86ajq4xmy).
@@ -283,6 +298,15 @@ pub struct SavedThemeView {
     pub name: String,
     /// The serialized `Theme` (opaque to the wire — the shell/Designer deserializes it).
     pub theme_json: String,
+}
+
+/// One Audience-class screen's assigned theme (86ajq321k).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenThemeView {
+    /// The screen id (`main` / `lower-third` / `stream`).
+    pub screen: String,
+    /// The assigned theme name (a built-in or a saved-library name).
+    pub theme: String,
 }
 
 /// One output role (main/stage) and where it currently renders.

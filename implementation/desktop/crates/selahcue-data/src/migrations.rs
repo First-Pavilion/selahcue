@@ -111,6 +111,16 @@ const MIGRATIONS: &[&str] = &[
         theme_json TEXT NOT NULL
     );
     "#,
+    // v11 -> v12: the per-SCREEN theme map (86ajq321k) — each Audience-class screen
+    // (main / lower-third / stream) and its assigned theme NAME (a built-in or a
+    // saved-library name). A fresh table, so an older database opens unchanged and
+    // simply starts with no per-screen overrides (every screen follows the global).
+    r#"
+    CREATE TABLE screen_theme (
+        screen     TEXT PRIMARY KEY,
+        theme_name TEXT NOT NULL
+    );
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

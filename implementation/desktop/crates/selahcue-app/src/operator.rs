@@ -8,7 +8,7 @@
 
 use crate::controller::LiveController;
 use selahcue_lan::protocol::{
-    Command, OperatorStateView, PlanItemView, SavedThemeView, TimerSnapshot,
+    Command, OperatorStateView, PlanItemView, SavedThemeView, ScreenThemeView, TimerSnapshot,
 };
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
@@ -71,6 +71,9 @@ pub struct OperatorView {
     /// (not a tuple) so it serializes as `{name, theme_json}` — the shape the Theme
     /// Designer reads, and identical to the wire `OperatorStateView.saved_themes`.
     pub saved_themes: Vec<SavedThemeView>,
+    /// The per-SCREEN theme map (86ajq321k): each Audience screen and its assigned theme,
+    /// so the Screens page shows a distinct theme per screen.
+    pub screen_themes: Vec<ScreenThemeView>,
 }
 
 /// An ergonomic, UI-facing wrapper over the shared [`LiveController`]. Each action
@@ -234,6 +237,14 @@ impl OperatorShell {
         self.act(&Command::DeleteTheme { name: name.into() })
     }
 
+    /// Set (or clear, with an empty name) an Audience screen's own theme (86ajq321k).
+    pub fn set_screen_theme(&self, screen: &str, name: &str) -> OperatorView {
+        self.act(&Command::SetScreenTheme {
+            screen: screen.into(),
+            name: name.into(),
+        })
+    }
+
     /// Assign an output role ("main"/"stage") to a physical display.
     pub fn assign_output(&self, role: &str, display_key: &str) -> OperatorView {
         self.act(&Command::AssignOutput {
@@ -315,6 +326,7 @@ impl From<OperatorView> for OperatorStateView {
             theme: v.theme,
             themes: v.themes,
             saved_themes: v.saved_themes,
+            screen_themes: v.screen_themes,
         }
     }
 }
@@ -337,6 +349,7 @@ impl From<OperatorStateView> for OperatorView {
             theme: v.theme,
             themes: v.themes,
             saved_themes: v.saved_themes,
+            screen_themes: v.screen_themes,
         }
     }
 }
@@ -553,6 +566,19 @@ impl RemoteOperator {
         name: &str,
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::DeleteTheme { name: name.into() }).await
+    }
+
+    /// Set (or clear) an Audience screen's own theme on the host (86ajq321k).
+    pub async fn set_screen_theme(
+        &mut self,
+        screen: &str,
+        name: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetScreenTheme {
+            screen: screen.into(),
+            name: name.into(),
+        })
+        .await
     }
 
     /// Search scripture on the host; returns stageable display references.

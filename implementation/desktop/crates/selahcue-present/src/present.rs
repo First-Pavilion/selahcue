@@ -13,8 +13,8 @@ use crate::slide::Slide;
 use crate::stage::compose_identify;
 use crate::theme::Theme;
 use selahcue_engine::engine::{Engine, EngineCommand, EngineEvent};
-use selahcue_engine::raster::{FrameBuffer, MAX_DIMENSION};
-use selahcue_engine::scene::Rgba;
+use selahcue_engine::raster::{self, FrameBuffer, MAX_DIMENSION};
+use selahcue_engine::scene::{Frame, Rgba};
 
 /// Identify-overlay colours for the main output (FR-040).
 const IDENTIFY_BG: Rgba = Rgba::rgb(20, 60, 140);
@@ -35,6 +35,13 @@ pub struct Presenter {
     /// with its own effective theme and never clobbers an overridden one.
     staged_theme: Option<Theme>,
     live_theme: Option<Theme>,
+    /// The `main` audience SCREEN's per-screen theme (86ajq321k). `None` = follow the
+    /// per-item override / global. When set, it is the strongest signal for the physical
+    /// `main` output: the effective theme is `main_screen_theme ?? item_theme ?? global`,
+    /// so a global theme switch never overrides an explicitly per-screen-themed main and
+    /// a `None` value leaves the S8-3d behaviour byte-identical. Secondary audience
+    /// screens are composed on-demand (see [`Presenter::compose_screen_live`]).
+    main_screen_theme: Option<Theme>,
 }
 
 impl Presenter {
@@ -58,7 +65,19 @@ impl Presenter {
             live_slide: None,
             staged_theme: None,
             live_theme: None,
+            main_screen_theme: None,
         }
+    }
+
+    /// The effective theme for the physical `main` audience surface rendering content
+    /// whose per-item override is `item_theme`: **per-screen (`main`) ?? per-item ?? global**
+    /// (86ajq321k). With no per-screen theme this is exactly `item_theme ?? global` — the
+    /// pre-per-screen behaviour, so the main output is unchanged by default.
+    fn effective<'a>(&'a self, item_theme: Option<&'a Theme>) -> &'a Theme {
+        self.main_screen_theme
+            .as_ref()
+            .or(item_theme)
+            .unwrap_or(&self.theme)
     }
 
     /// Stage a slide in **Preview** with the global theme (also serves "Next").
@@ -70,8 +89,12 @@ impl Presenter {
     /// Stage a slide in **Preview** with an optional per-item theme override (S8-3d) —
     /// `None` uses the global theme. The Live output is untouched (FR-012).
     pub fn stage_themed(&mut self, slide: Slide, theme_override: Option<Theme>) {
-        let theme = theme_override.as_ref().unwrap_or(&self.theme);
-        let frame = compose_slide(&slide, theme, self.width, self.height);
+        let frame = compose_slide(
+            &slide,
+            self.effective(theme_override.as_ref()),
+            self.width,
+            self.height,
+        );
         // Only track the slide if the engine actually rendered it (defensive — the
         // clamped dimensions make rejection unreachable in normal use).
         if !matches!(
@@ -89,8 +112,12 @@ impl Presenter {
         let Some(slide) = self.staged.clone() else {
             return false;
         };
-        let theme = self.staged_theme.as_ref().unwrap_or(&self.theme);
-        let frame = compose_slide(&slide, theme, self.width, self.height);
+        let frame = compose_slide(
+            &slide,
+            self.effective(self.staged_theme.as_ref()),
+            self.width,
+            self.height,
+        );
         // Report success (and record the live slide) only if the frame actually
         // reached the output — never claim "live" for a rejected frame.
         if matches!(
@@ -113,15 +140,71 @@ impl Presenter {
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
         if let Some(slide) = self.staged.clone() {
-            let t = self.staged_theme.as_ref().unwrap_or(&self.theme);
-            let frame = compose_slide(&slide, t, self.width, self.height);
+            let frame = compose_slide(
+                &slide,
+                self.effective(self.staged_theme.as_ref()),
+                self.width,
+                self.height,
+            );
             self.preview.apply(EngineCommand::SetScene { frame });
         }
         if let Some(slide) = self.live_slide.clone() {
-            let t = self.live_theme.as_ref().unwrap_or(&self.theme);
-            let frame = compose_slide(&slide, t, self.width, self.height);
+            let frame = compose_slide(
+                &slide,
+                self.effective(self.live_theme.as_ref()),
+                self.width,
+                self.height,
+            );
             self.live.apply(EngineCommand::SetScene { frame });
         }
+    }
+
+    /// Set the `main` audience screen's per-screen theme (86ajq321k) and recompose
+    /// Preview + Live from the retained slides — content unchanged (zero content loss).
+    /// `None` clears it (main falls back to the per-item override / global). Blackout is
+    /// orthogonal; the caller re-applies it (as with [`set_theme`]).
+    pub fn set_main_screen_theme(&mut self, theme: Option<Theme>) {
+        self.main_screen_theme = theme;
+        if let Some(slide) = self.staged.clone() {
+            let frame = compose_slide(
+                &slide,
+                self.effective(self.staged_theme.as_ref()),
+                self.width,
+                self.height,
+            );
+            self.preview.apply(EngineCommand::SetScene { frame });
+        }
+        if let Some(slide) = self.live_slide.clone() {
+            let frame = compose_slide(
+                &slide,
+                self.effective(self.live_theme.as_ref()),
+                self.width,
+                self.height,
+            );
+            self.live.apply(EngineCommand::SetScene { frame });
+        }
+    }
+
+    /// The `main` audience screen's per-screen theme, if one is set.
+    pub fn main_screen_theme(&self) -> Option<Theme> {
+        self.main_screen_theme
+    }
+
+    /// Compose the current LIVE content for a SECONDARY audience screen (lower-third /
+    /// stream) with its own per-screen theme, on-demand and WITHOUT a persistent engine
+    /// (86ajq321k). Effective theme = **`screen_theme` ?? the live item override ?? global**
+    /// — the same precedence the physical `main` surface uses, minus main's own per-screen
+    /// theme (each screen renders its own design). A blank live surface yields a safe
+    /// black frame (matching the main output when idle). Pure: content ⟂ theme, so calling
+    /// it for N screens renders the SAME live item under N different themes at once.
+    pub fn compose_screen_live(&self, screen_theme: Option<&Theme>) -> FrameBuffer {
+        let Some(slide) = self.live_slide.as_ref() else {
+            return raster::render(&Frame::new(self.width, self.height));
+        };
+        let theme = screen_theme
+            .or(self.live_theme.as_ref())
+            .unwrap_or(&self.theme);
+        raster::render(&compose_slide(slide, theme, self.width, self.height))
     }
 
     /// The active global audience theme.
@@ -135,8 +218,12 @@ impl Presenter {
     pub fn set_live_theme(&mut self, theme_override: Option<Theme>) {
         self.live_theme = theme_override;
         if let Some(slide) = self.live_slide.clone() {
-            let t = self.live_theme.as_ref().unwrap_or(&self.theme);
-            let frame = compose_slide(&slide, t, self.width, self.height);
+            let frame = compose_slide(
+                &slide,
+                self.effective(self.live_theme.as_ref()),
+                self.width,
+                self.height,
+            );
             self.live.apply(EngineCommand::SetScene { frame });
         }
     }

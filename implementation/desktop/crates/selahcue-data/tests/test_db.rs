@@ -18,15 +18,15 @@ fn schema_version_is_pinned() {
     // Append-only migrations: bump deliberately with each new migration so an
     // accidental reorder/removal is caught. v8 = session_state.theme (S8-3b);
     // v9 = session_state.custom_theme (S8-3c); v10 = plan_item.theme (S8-3d);
-    // v11 = saved_theme library table (86ajq4xmy).
-    assert_eq!(migrations::target_version(), 11);
+    // v11 = saved_theme library table (86ajq4xmy); v12 = screen_theme table (86ajq321k).
+    assert_eq!(migrations::target_version(), 12);
 }
 
 #[test]
 fn a_pre_saved_theme_database_upgrades_and_gains_the_saved_theme_table() {
     // A v10 DB (no saved_theme table) must upgrade cleanly to v11 — a fresh table, so
-    // existing data survives and the library simply starts empty. Dropping the table
-    // + resetting to v10 forces the v10->v11 migration to re-run.
+    // existing data survives and the library simply starts empty. Dropping saved_theme
+    // + screen_theme and resetting to v10 forces the v10->v11->v12 migrations to re-run.
     let file = tempfile::NamedTempFile::new().unwrap();
     let path = file.path().to_path_buf();
     {
@@ -34,12 +34,17 @@ fn a_pre_saved_theme_database_upgrades_and_gains_the_saved_theme_table() {
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(
             "DROP TABLE saved_theme;
+             DROP TABLE screen_theme;
              PRAGMA user_version = 10;",
         )
         .unwrap();
     }
     let db = Database::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), 11, "re-ran the v11 migration");
+    assert_eq!(
+        db.schema_version().unwrap(),
+        12,
+        "re-ran the v11 + v12 migrations"
+    );
     let present: i64 = db
         .conn()
         .query_row(
@@ -49,6 +54,35 @@ fn a_pre_saved_theme_database_upgrades_and_gains_the_saved_theme_table() {
         )
         .unwrap();
     assert_eq!(present, 1, "saved_theme table present after upgrade");
+}
+
+#[test]
+fn a_pre_screen_theme_database_upgrades_and_gains_the_screen_theme_table() {
+    // A v11 DB (no screen_theme table) must upgrade cleanly to v12 — a fresh table, so
+    // existing data survives and the per-screen map starts empty. Dropping the table
+    // + resetting to v11 forces the v11->v12 migration to re-run.
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_path_buf();
+    {
+        let _ = Database::open(&path).unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "DROP TABLE screen_theme;
+             PRAGMA user_version = 11;",
+        )
+        .unwrap();
+    }
+    let db = Database::open(&path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), 12, "re-ran the v12 migration");
+    let present: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'screen_theme'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(present, 1, "screen_theme table present after upgrade");
 }
 
 #[test]
@@ -63,6 +97,7 @@ fn a_pre_per_item_theme_database_upgrades_and_gains_the_plan_item_theme_column()
         conn.execute_batch(
             "ALTER TABLE plan_item DROP COLUMN theme;
              DROP TABLE saved_theme;
+             DROP TABLE screen_theme;
              PRAGMA user_version = 9;",
         )
         .unwrap();
@@ -70,8 +105,8 @@ fn a_pre_per_item_theme_database_upgrades_and_gains_the_plan_item_theme_column()
     let db = Database::open(&path).unwrap();
     assert_eq!(
         db.schema_version().unwrap(),
-        11,
-        "re-ran the v10 + v11 migrations"
+        12,
+        "re-ran the v10 + v11 + v12 migrations"
     );
     let present: i64 = db
         .conn()
@@ -99,6 +134,7 @@ fn a_pre_theme_database_upgrades_and_gains_the_theme_columns() {
              ALTER TABLE session_state DROP COLUMN custom_theme;
              ALTER TABLE plan_item DROP COLUMN theme;
              DROP TABLE saved_theme;
+             DROP TABLE screen_theme;
              PRAGMA user_version = 7;",
         )
         .unwrap();
@@ -106,8 +142,8 @@ fn a_pre_theme_database_upgrades_and_gains_the_theme_columns() {
     let db = Database::open(&path).unwrap();
     assert_eq!(
         db.schema_version().unwrap(),
-        11,
-        "re-ran the v8 + v9 + v10 + v11 migrations"
+        12,
+        "re-ran the v8 + v9 + v10 + v11 + v12 migrations"
     );
     for col in ["theme", "custom_theme"] {
         let present: i64 = db

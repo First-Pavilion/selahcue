@@ -10,8 +10,8 @@ use selahcue_core::plan::{ItemId, ServicePlan};
 use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{
-    Command, DenyReason, DisplayView, OutputStatusView, SavedThemeView, ServerMessage,
-    TimerSnapshot, VerseView,
+    Command, DenyReason, DisplayView, OutputStatusView, SavedThemeView, ScreenThemeView,
+    ServerMessage, TimerSnapshot, VerseView,
 };
 use selahcue_present::{FrameBuffer, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView};
 use std::time::{Duration, Instant};
@@ -154,6 +154,13 @@ pub struct LiveController {
     /// to write it. Bounded by [`MAX_SAVED_THEMES`] + [`MAX_THEME_NAME_LEN`].
     saved_themes: std::collections::BTreeMap<String, String>,
     saved_themes_dirty: bool,
+    /// The per-SCREEN theme map (86ajq321k): `audience screen id → theme NAME` (a built-in
+    /// or a saved-library name). An absent screen follows the per-item override / global.
+    /// `main`'s entry drives the physical audience output (via the Presenter); secondary
+    /// screens (`lower-third`/`stream`) are composed on-demand ([`Self::compose_screen`]).
+    /// Bounded to [`AUDIENCE_SCREENS`]. Persisted separately (like `saved_themes`).
+    screen_themes: std::collections::BTreeMap<String, String>,
+    screen_themes_dirty: bool,
 }
 
 /// Upper bounds on the saved-theme library so it cannot grow without limit (no-leak):
@@ -161,6 +168,13 @@ pub struct LiveController {
 /// fixed-size [`Theme`] (a few hundred bytes), so total storage is bounded.
 pub const MAX_SAVED_THEMES: usize = 256;
 pub const MAX_THEME_NAME_LEN: usize = 64;
+
+/// The Audience-class SCREENS that carry their own per-screen theme (86ajq321k; Screens
+/// design §3): the physical `main` projector plus the virtual `lower-third` / `stream`
+/// feeds. A fixed, bounded set this batch (dynamic Add/Delete virtual screens is a
+/// Screens-page follow-up); the `stage` confidence monitor is NOT here — it keeps its
+/// stage layout, not an audience theme. The per-screen theme map is bounded to these ids.
+pub const AUDIENCE_SCREENS: [&str; 3] = ["main", "lower-third", "stream"];
 
 /// How long the identify overlay stays on the outputs once triggered (FR-040).
 pub const IDENTIFY_TTL: Duration = Duration::from_secs(5);
@@ -256,6 +270,8 @@ impl LiveController {
             custom_theme_json: None,
             saved_themes: std::collections::BTreeMap::new(),
             saved_themes_dirty: false,
+            screen_themes: std::collections::BTreeMap::new(),
+            screen_themes_dirty: false,
         }
     }
 
@@ -355,6 +371,118 @@ impl LiveController {
             .take(MAX_SAVED_THEMES)
             .collect();
         self.saved_themes_dirty = false;
+    }
+
+    // --- Per-screen theme map (86ajq321k) -----------------------------------
+    //
+    // A per-screen theme is a BUILT-IN name only (classic/high-contrast/lower-third),
+    // matching the per-item override. Built-ins are immutable, so `main`'s theme cached
+    // in the Presenter can never be edited/deleted out from under the physical output —
+    // hence `Theme::builtin` is the sole resolver on every per-screen path (set/compose/
+    // load), and no saved-library name is ever stored for a screen.
+
+    /// Set (or clear, with an empty `name`) an Audience-class screen's own theme
+    /// (86ajq321k). The `main` screen drives the physical audience output via the
+    /// Presenter (recomposed on its effective theme, blackout preserved); secondary
+    /// screens (`lower-third`/`stream`) are stored + composed on-demand. Rejects an
+    /// unknown screen or an unknown theme name (`BadRequest`).
+    ///
+    /// A per-screen theme is restricted to a **built-in** name (like the per-item
+    /// override, [`Self::set_item_theme`]). Built-ins are immutable, so `main`'s cached
+    /// theme in the Presenter can never go stale — a saved-library theme could be edited
+    /// or deleted out from under the physical output. Assigning a SAVED (custom) theme to
+    /// a screen is a follow-up (it also needs a re-sync-on-library-change path).
+    fn set_screen_theme(&mut self, screen: &str, name: &str) -> ControllerReply {
+        if !AUDIENCE_SCREENS.contains(&screen) {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        if name.is_empty() {
+            // Clear the screen's override — it falls back to the per-item / global theme.
+            if self.screen_themes.remove(screen).is_some() {
+                self.screen_themes_dirty = true;
+            }
+            if screen == "main" {
+                self.presenter.set_main_screen_theme(None);
+                self.presenter.blackout(self.blackout);
+            }
+            return ControllerReply::Ack;
+        }
+        // Built-in only (see the doc note) — a saved-library name is rejected here even
+        // though `resolve_theme_name` (used by compose/load) would resolve it.
+        let Some(theme) = Theme::builtin(name) else {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        };
+        self.screen_themes
+            .insert(screen.to_string(), name.to_string());
+        self.screen_themes_dirty = true;
+        if screen == "main" {
+            self.presenter.set_main_screen_theme(Some(theme));
+            // Re-styling re-issues SetScene on Live; re-apply blackout (theme ⟂ blackout).
+            self.presenter.blackout(self.blackout);
+        }
+        ControllerReply::Ack
+    }
+
+    /// Compose the current LIVE content for an Audience-class `screen` under ITS theme
+    /// (86ajq321k) — a `FrameBuffer` a physical/NDI/stream output would show. `main` and
+    /// the secondaries all render the SAME live item, each under its own theme, so N calls
+    /// prove simultaneous multi-theme output. Blackout blacks every screen (audience-wide
+    /// emergency). `None` for an unknown screen id.
+    pub fn compose_screen(&self, screen: &str) -> Option<FrameBuffer> {
+        if !AUDIENCE_SCREENS.contains(&screen) {
+            return None;
+        }
+        let out = self.presenter.live_output();
+        if self.blackout {
+            return Some(FrameBuffer::filled(
+                out.width(),
+                out.height(),
+                selahcue_present::Rgba::BLACK,
+            ));
+        }
+        let theme = self
+            .screen_themes
+            .get(screen)
+            .and_then(|name| Theme::builtin(name));
+        Some(self.presenter.compose_screen_live(theme.as_ref()))
+    }
+
+    /// The per-screen theme map (`screen → theme name`), for the operator view + persist.
+    pub fn screen_themes(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.screen_themes
+    }
+
+    /// Whether the per-screen theme map changed since the last check (persist signal).
+    pub fn take_screen_themes_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.screen_themes_dirty)
+    }
+
+    /// Re-arm the per-screen persist signal (a failed write must be retried).
+    pub fn mark_screen_themes_dirty(&mut self) {
+        self.screen_themes_dirty = true;
+    }
+
+    /// Load the per-screen theme map at startup (from the store). Keeps only known
+    /// screens with a known built-in theme name (so a stale/removed name is dropped,
+    /// never crashes), applies `main` to the Presenter, and does not dirty.
+    pub fn load_screen_themes(&mut self, themes: impl IntoIterator<Item = (String, String)>) {
+        self.screen_themes = themes
+            .into_iter()
+            .filter(|(screen, name)| {
+                AUDIENCE_SCREENS.contains(&screen.as_str()) && Theme::builtin(name).is_some()
+            })
+            .collect();
+        self.screen_themes_dirty = false;
+        // Reflect the restored `main` screen theme on the physical output (a no-op when
+        // nothing is staged/live yet; recovery re-stages afterwards using it).
+        if let Some(theme) = self
+            .screen_themes
+            .get("main")
+            .and_then(|name| Theme::builtin(name))
+        {
+            self.presenter.set_main_screen_theme(Some(theme));
+            self.presenter.blackout(self.blackout);
+        }
     }
 
     /// A persistable snapshot of the live session at `now` (injected clock, so the
@@ -737,6 +865,14 @@ impl LiveController {
                 .map(|(name, json)| SavedThemeView {
                     name: name.clone(),
                     theme_json: json.clone(),
+                })
+                .collect(),
+            screen_themes: self
+                .screen_themes
+                .iter()
+                .map(|(screen, theme)| ScreenThemeView {
+                    screen: screen.clone(),
+                    theme: theme.clone(),
                 })
                 .collect(),
         }
@@ -1180,6 +1316,7 @@ impl LiveController {
             }
             Command::SaveTheme { name, theme_json } => self.save_theme(name, theme_json),
             Command::DeleteTheme { name } => self.delete_theme(name),
+            Command::SetScreenTheme { screen, name } => self.set_screen_theme(screen, name),
         }
     }
 

@@ -240,7 +240,11 @@
         const displays = view.displays || [];
         const themes = view.themes || [];
         const activeTheme = view.theme || "";
-        const key = JSON.stringify([outs, displays, themes, activeTheme]);
+        // Per-screen theme map (86ajq321k): screen id → its assigned theme name. A screen
+        // absent from the map follows the global; the picker shows that as its selection.
+        const screenThemes = {};
+        (view.screen_themes || []).forEach((st) => { screenThemes[st.screen] = st.theme; });
+        const key = JSON.stringify([outs, displays, themes, activeTheme, view.screen_themes || []]);
         if (key === outputsKey) return; // pickers are interactive: rebuild only on change
         const list = document.getElementById("screens-list");
         // Never yank a picker out from under the operator: an open/focused
@@ -255,6 +259,39 @@
         // Outputs/screens are shown + managed on the Screens surface (menu →
         // Screens); the console no longer carries an outputs panel.
         document.getElementById("screens-identify").disabled = outs.length === 0;
+
+        // A per-SCREEN Theme picker (86ajq321k): sets THIS screen's theme (not the
+        // global) and reflects the screen's current theme. Returned as a label + select.
+        const themePickerFor = (screen) => {
+          const frag = document.createDocumentFragment();
+          const cl = document.createElement("label"); cl.textContent = "Theme"; frag.appendChild(cl);
+          const sel = document.createElement("select");
+          sel.setAttribute("aria-label", "Theme for the " + screen + " screen");
+          if (!themes.length) {
+            const opt = document.createElement("option");
+            opt.textContent = "No themes offered"; opt.disabled = true; opt.selected = true;
+            sel.appendChild(opt); sel.disabled = true;
+          } else {
+            // Whether this screen has an EXPLICIT per-screen theme (vs. following the
+            // global). Membership, not value — "explicitly classic" ≠ "unset (global)".
+            const explicit = Object.prototype.hasOwnProperty.call(screenThemes, screen);
+            // A "follow global" entry (empty value) — sending it clears the override
+            // (the backend's empty-name clear). Mirrors the per-item picker (S8-3d).
+            const glob = document.createElement("option");
+            glob.value = ""; glob.textContent = "◈ Follow global";
+            if (!explicit) glob.selected = true;
+            sel.appendChild(glob);
+            themes.forEach((t) => {
+              const opt = document.createElement("option");
+              opt.value = t; opt.textContent = t;
+              if (explicit && t === screenThemes[screen]) opt.selected = true;
+              sel.appendChild(opt);
+            });
+            sel.onchange = () => act(() => invoke("set_screen_theme", { screen, name: sel.value }));
+          }
+          frag.appendChild(sel);
+          return frag;
+        };
 
         // --- Full Screens list (per-screen: role → content control) ---
         list.innerHTML = "";
@@ -318,26 +355,10 @@
           const fv = document.createElement("div"); fv.className = "field";
           fv.textContent = o.width + " × " + o.height;
           ff.appendChild(fv); fields.appendChild(ff);
-          // Content — role-driven: Audience → Theme; Stage → layout chips.
+          // Content — role-driven: Audience → per-screen Theme; Stage → layout chips.
           const cf = document.createElement("div");
           if (audience) {
-            const cl = document.createElement("label"); cl.textContent = "Theme"; cf.appendChild(cl);
-            const sel = document.createElement("select");
-            sel.setAttribute("aria-label", "Theme for the " + o.role + " output");
-            if (!themes.length) {
-              const opt = document.createElement("option");
-              opt.textContent = "No themes offered"; opt.disabled = true; opt.selected = true;
-              sel.appendChild(opt); sel.disabled = true;
-            } else {
-              themes.forEach((t) => {
-                const opt = document.createElement("option");
-                opt.value = t; opt.textContent = t;
-                if (t === activeTheme) opt.selected = true;
-                sel.appendChild(opt);
-              });
-              sel.onchange = () => act(() => invoke("set_theme", { name: sel.value }));
-            }
-            cf.appendChild(sel);
+            cf.appendChild(themePickerFor("main"));
           } else {
             const cl = document.createElement("label"); cl.textContent = "Stage layout"; cf.appendChild(cl);
             const chips = document.createElement("div"); chips.className = "stage-chips";
@@ -351,11 +372,46 @@
           row.appendChild(fields);
           list.appendChild(row);
         });
-        // Honest seam: the richer model needs the per-screen theme engine.
+
+        // Virtual Audience-class screens (86ajq321k): lower-third + stream. Each carries
+        // its OWN per-screen theme now (real); their physical NDI/stream OUTPUT delivery
+        // is the honest remaining seam. Rendered only when the main output exists.
+        if (outs.length) {
+          [
+            { screen: "lower-third", name: "Lower Third", badge: "Lower-third" },
+            { screen: "stream", name: "Stream", badge: "Stream" },
+          ].forEach((v) => {
+            const row = document.createElement("div"); row.className = "screen-row";
+            const head = document.createElement("div"); head.className = "screen-head";
+            const name = document.createElement("strong");
+            name.style.fontSize = "17px"; name.textContent = v.name;
+            const rb = document.createElement("span"); rb.className = "role-badge";
+            rb.textContent = v.badge;
+            rb.style.color = "var(--accent)"; rb.style.borderColor = "var(--accent)";
+            head.appendChild(name); head.appendChild(rb);
+            row.appendChild(head);
+
+            const fields = document.createElement("div"); fields.className = "screen-fields";
+            // Output — an honest seam: NDI/stream delivery arrives later.
+            const of = document.createElement("div");
+            const ol = document.createElement("label"); ol.textContent = "Output"; of.appendChild(ol);
+            const f = document.createElement("div"); f.className = "field coming-soon";
+            f.textContent = "NDI / stream — delivery arrives later";
+            of.appendChild(f); fields.appendChild(of);
+            // Theme — REAL per-screen theme (composed now; shown on the output when delivery lands).
+            const cf = document.createElement("div");
+            cf.appendChild(themePickerFor(v.screen));
+            fields.appendChild(cf);
+            row.appendChild(fields);
+            list.appendChild(row);
+          });
+        }
+
+        // Honest seam: physical multi-output delivery + enable/disable + add/delete.
         const note = document.createElement("p");
         note.className = "coming-soon"; note.style.fontSize = "11px";
         note.textContent =
-          "Enable/disable · Add NDI/virtual screen · a distinct theme PER screen arrive with the per-screen theme engine (86ajq321k). The Theme dropdown sets the global audience theme today.";
+          "Each Audience screen now carries its OWN theme (86ajq321k). Physical NDI/stream OUTPUT delivery for the lower-third/stream screens, plus enable/disable and add/delete a virtual screen, arrive next.";
         list.appendChild(note);
       }
 

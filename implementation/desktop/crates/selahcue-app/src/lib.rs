@@ -11,8 +11,8 @@ pub mod keymap;
 mod operator;
 
 pub use controller::{
-    ControllerReply, ControllerSnapshot, LiveController, IDENTIFY_TTL, MAX_SAVED_THEMES,
-    MAX_THEME_NAME_LEN,
+    ControllerReply, ControllerSnapshot, LiveController, AUDIENCE_SCREENS, IDENTIFY_TTL,
+    MAX_SAVED_THEMES, MAX_THEME_NAME_LEN,
 };
 pub use keymap::{CanonicalAction, KeyPress, Keymap};
 pub use operator::{ItemView, OperatorShell, OperatorView};

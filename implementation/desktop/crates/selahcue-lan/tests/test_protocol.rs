@@ -88,12 +88,30 @@ fn every_command_round_trips() {
         Command::DeleteTheme {
             name: "Sermon Bold".into(),
         },
+        Command::SetScreenTheme {
+            screen: "lower-third".into(),
+            name: "lower-third".into(),
+        },
+        // The clear form (empty name) still round-trips.
+        Command::SetScreenTheme {
+            screen: "main".into(),
+            name: String::new(),
+        },
     ];
     for c in cmds {
         let json = to_json(&c).unwrap();
         let back: Command = from_json(&json).unwrap();
         assert_eq!(back, c, "round-trip failed for {json}");
     }
+    // SetScreenTheme is pinned serialize-side (the Screens page emits this exact shape).
+    assert_eq!(
+        to_json(&Command::SetScreenTheme {
+            screen: "stream".into(),
+            name: "high-contrast".into(),
+        })
+        .unwrap(),
+        r#"{"cmd":"set_screen_theme","screen":"stream","name":"high-contrast"}"#
+    );
     // The clear form omits `theme` entirely (additive skip-if-none — keeps peers lean).
     assert_eq!(
         to_json(&Command::SetItemTheme {
@@ -266,6 +284,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         theme: String::new(),
         themes: vec![],
         saved_themes: vec![],
+        screen_themes: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -302,6 +321,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         theme: String::new(),
         themes: vec![],
         saved_themes: vec![],
+        screen_themes: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -338,6 +358,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
             "lower-third".into(),
         ],
         saved_themes: vec![],
+        screen_themes: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: themed }).unwrap(),
@@ -365,10 +386,45 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
             name: "Sermon Bold".into(),
             theme_json: r#"{"background":{"r":1,"g":2,"b":3,"a":255}}"#.into(),
         }],
+        screen_themes: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: library }).unwrap(),
         r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"saved_themes":[{"name":"Sermon Bold","theme_json":"{\"background\":{\"r\":1,\"g\":2,\"b\":3,\"a\":255}}"}]}}"#
+    );
+    // The per-SCREEN theme map (86ajq321k) on the wire: when non-empty it serializes as
+    // `screen_themes: [{screen, theme}]`. Pinned serialize-side; the Screens page parses
+    // these exact field names to show a distinct theme per screen.
+    let screens = selahcue_lan::protocol::OperatorStateView {
+        plan_name: "Sunday".into(),
+        items: vec![],
+        live_index: None,
+        staged_index: None,
+        blackout: false,
+        timer: None,
+        staged_scripture: None,
+        live_scripture: None,
+        live_free_text: None,
+        outputs: vec![],
+        displays: vec![],
+        translations: vec![],
+        theme: String::new(),
+        themes: vec![],
+        saved_themes: vec![],
+        screen_themes: vec![
+            selahcue_lan::protocol::ScreenThemeView {
+                screen: "main".into(),
+                theme: "classic".into(),
+            },
+            selahcue_lan::protocol::ScreenThemeView {
+                screen: "lower-third".into(),
+                theme: "lower-third".into(),
+            },
+        ],
+    };
+    assert_eq!(
+        to_json(&ServerMessage::OperatorState { view: screens }).unwrap(),
+        r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"screen_themes":[{"screen":"main","theme":"classic"},{"screen":"lower-third","theme":"lower-third"}]}}"#
     );
     // The output-config commands, pinned like every other command.
     assert_eq!(

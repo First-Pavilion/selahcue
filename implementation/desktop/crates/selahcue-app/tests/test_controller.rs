@@ -1743,3 +1743,192 @@ fn saved_theme_library_is_bounded_and_load_drops_bad_entries() {
         "loading from the store is not a change to persist"
     );
 }
+
+// --- Per-screen theme map (86ajq321k) --------------------------------------
+
+/// Put a live scripture on the audience output so per-screen composition has content.
+fn controller_live() -> LiveController {
+    let (mut c, _) = controller();
+    c.apply(&Command::Next); // stage the first item
+    c.apply(&Command::GoLive);
+    c
+}
+
+#[test]
+fn set_screen_theme_validates_maps_and_recomposes_main() {
+    let mut c = controller_live();
+    assert!(!c.take_screen_themes_dirty(), "clean at start");
+
+    // A per-screen theme for the physical `main` recomposes the live output + marks dirty.
+    let main_before = c.presenter().live_output().bytes().to_vec();
+    assert_eq!(
+        c.apply(&Command::SetScreenTheme {
+            screen: "main".into(),
+            name: "high-contrast".into(),
+        }),
+        ControllerReply::Ack
+    );
+    assert!(c.take_screen_themes_dirty(), "a set marks the map dirty");
+    assert_ne!(
+        c.presenter().live_output().bytes(),
+        main_before.as_slice(),
+        "main's per-screen theme restyled the physical live output"
+    );
+    assert_eq!(
+        c.screen_themes().get("main").map(String::as_str),
+        Some("high-contrast")
+    );
+
+    // A secondary screen (no physical output) is stored without touching main's output.
+    let main_after = c.presenter().live_output().bytes().to_vec();
+    assert_eq!(
+        c.apply(&Command::SetScreenTheme {
+            screen: "lower-third".into(),
+            name: "lower-third".into(),
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.presenter().live_output().bytes(),
+        main_after.as_slice(),
+        "a secondary screen's theme never touches the main output"
+    );
+
+    // The operator view reports the per-screen map so the Screens page can reflect it.
+    let view = c.operator_view();
+    assert_eq!(view.screen_themes.len(), 2);
+    assert!(view
+        .screen_themes
+        .iter()
+        .any(|s| s.screen == "main" && s.theme == "high-contrast"));
+
+    // Unknown screen id and unknown theme name are rejected.
+    assert_eq!(
+        c.apply(&Command::SetScreenTheme {
+            screen: "disco".into(),
+            name: "classic".into(),
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        c.apply(&Command::SetScreenTheme {
+            screen: "stream".into(),
+            name: "no-such-theme".into(),
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    // A SAVED-library name is rejected for a screen (built-in only, like per-item) — this
+    // is what keeps main's cached theme from going stale when the library is edited/deleted.
+    let saved_json = serde_json::to_string(&Theme::high_contrast()).unwrap();
+    assert_eq!(
+        c.apply(&Command::SaveTheme {
+            name: "MyCustom".into(),
+            theme_json: saved_json,
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.apply(&Command::SetScreenTheme {
+            screen: "stream".into(),
+            name: "MyCustom".into(), // a real saved theme, but not a built-in → rejected
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest),
+        "a saved-library theme is not assignable per-screen (built-in only)"
+    );
+}
+
+#[test]
+fn compose_screen_renders_each_audience_screen_under_its_own_theme() {
+    let mut c = controller_live();
+    c.apply(&Command::SetScreenTheme {
+        screen: "lower-third".into(),
+        name: "lower-third".into(),
+    });
+    c.apply(&Command::SetScreenTheme {
+        screen: "stream".into(),
+        name: "high-contrast".into(),
+    });
+
+    let main = c.compose_screen("main").expect("main composes");
+    let lower = c
+        .compose_screen("lower-third")
+        .expect("lower-third composes");
+    let stream = c.compose_screen("stream").expect("stream composes");
+
+    // main mirrors the physical live output; the three screens are three designs at once.
+    assert_eq!(main.bytes(), c.presenter().live_output().bytes());
+    assert_ne!(main.bytes(), lower.bytes(), "main ≠ lower-third");
+    assert_ne!(lower.bytes(), stream.bytes(), "lower-third ≠ stream");
+
+    // Isolation: changing `stream` leaves `main` + `lower-third` untouched.
+    let main_b = main.bytes().to_vec();
+    let lower_b = lower.bytes().to_vec();
+    c.apply(&Command::SetScreenTheme {
+        screen: "stream".into(),
+        name: "classic".into(),
+    });
+    assert_eq!(c.compose_screen("main").unwrap().bytes(), main_b.as_slice());
+    assert_eq!(
+        c.compose_screen("lower-third").unwrap().bytes(),
+        lower_b.as_slice()
+    );
+
+    // An unknown screen id has no composition.
+    assert!(c.compose_screen("disco").is_none());
+
+    // Clearing a screen (empty name) drops it back to the global.
+    assert_eq!(
+        c.apply(&Command::SetScreenTheme {
+            screen: "lower-third".into(),
+            name: String::new(),
+        }),
+        ControllerReply::Ack
+    );
+    assert!(c.screen_themes().get("lower-third").is_none());
+    assert_eq!(
+        c.compose_screen("lower-third").unwrap().bytes(),
+        c.compose_screen("main").unwrap().bytes(),
+        "a cleared screen follows the global (same as main)"
+    );
+}
+
+#[test]
+fn per_screen_theme_map_is_bounded_and_load_restores_main_dropping_stale() {
+    let mut c = controller_live();
+    // Only known screens are accepted, so the map is bounded to AUDIENCE_SCREENS.
+    for s in selahcue_app::AUDIENCE_SCREENS {
+        c.apply(&Command::SetScreenTheme {
+            screen: s.into(),
+            name: "classic".into(),
+        });
+    }
+    assert_eq!(
+        c.screen_themes().len(),
+        selahcue_app::AUDIENCE_SCREENS.len()
+    );
+
+    // load_screen_themes (startup / recovery): keeps known+resolvable, drops the rest,
+    // applies `main` to the physical output, and does not dirty.
+    let mut d = controller_live();
+    let main_before = d.presenter().live_output().bytes().to_vec();
+    d.load_screen_themes([
+        ("main".to_string(), "high-contrast".to_string()),
+        ("stream".to_string(), "classic".to_string()),
+        ("bogus-screen".to_string(), "classic".to_string()), // unknown screen → dropped
+        ("lower-third".to_string(), "no-such-theme".to_string()), // stale name → dropped
+    ]);
+    assert_eq!(
+        d.screen_themes().len(),
+        2,
+        "unknown screen + stale name dropped"
+    );
+    assert!(
+        !d.take_screen_themes_dirty(),
+        "load is not a change to persist"
+    );
+    assert_ne!(
+        d.presenter().live_output().bytes(),
+        main_before.as_slice(),
+        "load restored main's per-screen theme onto the physical output"
+    );
+}

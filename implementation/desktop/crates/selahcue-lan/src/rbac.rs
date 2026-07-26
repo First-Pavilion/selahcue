@@ -112,7 +112,8 @@ pub fn required_permission(cmd: &Command) -> Permission {
         | Command::SetCustomTheme { .. }
         | Command::SetItemTheme { .. }
         | Command::SaveTheme { .. }
-        | Command::DeleteTheme { .. } => ConfigureOutputs,
+        | Command::DeleteTheme { .. }
+        | Command::SetScreenTheme { .. } => ConfigureOutputs,
     }
 }
 

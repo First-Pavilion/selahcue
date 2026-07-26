@@ -96,6 +96,11 @@ fn set_theme_is_operator_only_output_config() {
         Command::DeleteTheme {
             name: "Look".into(),
         },
+        // A per-SCREEN theme (86ajq321k) is the same output-config permission.
+        Command::SetScreenTheme {
+            screen: "lower-third".into(),
+            name: "lower-third".into(),
+        },
     ] {
         assert!(authorize(Role::Operator, &cmd), "operator {cmd:?}");
         assert!(!authorize(Role::Producer, &cmd), "producer {cmd:?}");

@@ -384,3 +384,114 @@ fn set_theme_does_not_fabricate_content_on_a_blank_output() {
     assert!(p.live_slide().is_none(), "no phantom live slide");
     assert!(is_black(p.live_output()), "blank live stays blank");
 }
+
+// --- Per-screen theme (86ajq321k) ------------------------------------------
+
+#[test]
+fn main_output_is_byte_identical_with_no_per_screen_theme() {
+    // The per-screen `main` override defaults to None → the physical main output must be
+    // exactly the pre-per-screen behaviour (S8-3d preserved, no regression).
+    let mut a = Presenter::new(320, 180, Theme::classic());
+    a.stage_themed(
+        Slide::new("John 3:16", ["For God so loved"]),
+        Some(Theme::lower_third()),
+    );
+    assert!(a.go_live());
+    a.stage(Slide::new("Psalm 23", ["The LORD is my shepherd"]));
+
+    // A reference presenter that never touches the per-screen theme API.
+    let mut b = Presenter::new(320, 180, Theme::classic());
+    b.stage_themed(
+        Slide::new("John 3:16", ["For God so loved"]),
+        Some(Theme::lower_third()),
+    );
+    assert!(b.go_live());
+    b.stage(Slide::new("Psalm 23", ["The LORD is my shepherd"]));
+    // Explicitly set + clear the main screen theme → back to the default, still identical.
+    b.set_main_screen_theme(Some(Theme::high_contrast()));
+    b.set_main_screen_theme(None);
+
+    assert_eq!(
+        a.live_output().bytes(),
+        b.live_output().bytes(),
+        "main live output byte-identical with no per-screen theme"
+    );
+    assert_eq!(a.preview_output().bytes(), b.preview_output().bytes());
+}
+
+#[test]
+fn main_screen_theme_wins_over_item_and_global_and_survives_a_global_switch() {
+    // Precedence: per-screen (main) ?? per-item ?? global. A main screen theme is the
+    // strongest signal — it survives both a per-item-overridden item and a global switch.
+    let mut p = Presenter::new(320, 180, Theme::classic());
+    p.stage_themed(
+        Slide::new("John 3:16", ["For God so loved"]),
+        Some(Theme::lower_third()), // a per-item override…
+    );
+    assert!(p.go_live());
+    // …but the main SCREEN theme (high-contrast, black bg) wins on the physical output.
+    p.set_main_screen_theme(Some(Theme::high_contrast()));
+    assert!(
+        has_color(p.live_output(), (0, 0, 0)),
+        "main screen theme (high-contrast black) overrides the item override"
+    );
+    // A GLOBAL theme switch does not disturb the explicitly per-screen-themed main.
+    let before = p.live_output().bytes().to_vec();
+    p.set_theme(Theme::classic());
+    assert_eq!(
+        p.live_output().bytes(),
+        before.as_slice(),
+        "a global switch never clobbers the main screen theme"
+    );
+    // Content preserved throughout.
+    assert_eq!(p.live_slide().unwrap().title, "John 3:16");
+}
+
+#[test]
+fn secondary_screens_render_the_same_live_content_under_different_themes_at_once() {
+    // The heart of 86ajq321k: one live item composed for N Audience screens, each under
+    // its OWN theme → different designs simultaneously, with zero content change.
+    let mut p = Presenter::new(320, 180, Theme::classic());
+    p.stage(Slide::new("John 3:16", ["For God so loved the world"]));
+    assert!(p.go_live());
+
+    // main (global classic) vs a lower-third screen vs a high-contrast stream screen.
+    let main = p.compose_screen_live(None);
+    let lower = p.compose_screen_live(Some(&Theme::lower_third()));
+    let stream = p.compose_screen_live(Some(&Theme::high_contrast()));
+
+    // main matches the physical live output exactly (same effective theme path).
+    assert_eq!(
+        main.bytes(),
+        p.live_output().bytes(),
+        "compose_screen_live(None) == the physical main output"
+    );
+    // Three DIFFERENT designs from the SAME live item, all at once.
+    assert_ne!(main.bytes(), lower.bytes(), "main ≠ lower-third");
+    assert_ne!(main.bytes(), stream.bytes(), "main ≠ stream");
+    assert_ne!(lower.bytes(), stream.bytes(), "lower-third ≠ stream");
+    assert!(
+        has_color(&stream, (0, 0, 0)),
+        "the stream screen renders its high-contrast (black) design"
+    );
+
+    // Isolation: changing the main screen theme leaves a secondary compose untouched.
+    let lower_before = p
+        .compose_screen_live(Some(&Theme::lower_third()))
+        .bytes()
+        .to_vec();
+    p.set_main_screen_theme(Some(Theme::high_contrast()));
+    assert_eq!(
+        p.compose_screen_live(Some(&Theme::lower_third())).bytes(),
+        lower_before.as_slice(),
+        "a secondary screen's render is independent of main's theme"
+    );
+}
+
+#[test]
+fn a_blank_live_composes_a_safe_black_secondary_screen() {
+    let p = Presenter::new(320, 180, Theme::classic());
+    let fb = p.compose_screen_live(Some(&Theme::classic()));
+    assert_eq!((fb.width(), fb.height()), (320, 180));
+    assert!(is_black(&fb), "nothing live → a safe black secondary frame");
+}

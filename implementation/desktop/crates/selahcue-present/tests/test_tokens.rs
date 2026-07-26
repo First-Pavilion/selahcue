@@ -257,6 +257,35 @@ fn operator_webview_has_the_saved_theme_library() {
     );
 }
 
+/// The per-screen theme wiring (86ajq321k): the Screens page's audience Theme picker
+/// sets a PER-SCREEN theme (not the global) + lists the virtual Audience-class screens.
+/// Pinned so a future edit cannot silently revert the picker to the global `set_theme`.
+#[test]
+fn operator_webview_wires_per_screen_theme() {
+    let js = operator_dist("app.js");
+    for needle in [
+        // The audience Theme picker invokes the PER-SCREEN command, not the global.
+        "set_screen_theme",
+        // The reusable per-screen picker + the map fed from the view.
+        "themePickerFor",
+        "screen_themes",
+        // The virtual Audience-class screens carry their own theme (an honest output seam).
+        "screen: \"lower-third\"",
+        "screen: \"stream\"",
+        // A "follow global" entry (empty value) so a set per-screen theme can be cleared
+        // back to the global (mirrors the per-item picker; the backend's empty-name clear).
+        "Follow global",
+    ] {
+        assert!(js.contains(needle), "app.js missing {needle:?}");
+    }
+    // The audience Theme picker must NOT wire the GLOBAL set_theme any more (regression
+    // guard: the placeholder that 86ajq321k replaces).
+    assert!(
+        !js.contains("invoke(\"set_theme\""),
+        "the Screens audience picker must use set_screen_theme, not the global set_theme"
+    );
+}
+
 /// The Flutter controller carries the same canonical values.
 #[test]
 fn mobile_tokens_are_pinned_to_the_canonical_tokens() {

@@ -130,6 +130,21 @@ impl Backend {
             Backend::Local(s) => Ok(s.delete_theme(&name)),
         }
     }
+    async fn set_screen_theme(
+        &self,
+        screen: String,
+        name: String,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_screen_theme(&screen, &name)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_screen_theme(&screen, &name)),
+        }
+    }
     async fn select(&self, item_id: u64) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
@@ -330,6 +345,14 @@ async fn save_theme(
 #[tauri::command]
 async fn delete_theme(name: String, state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.delete_theme(name).await
+}
+#[tauri::command]
+async fn set_screen_theme(
+    screen: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_screen_theme(screen, name).await
 }
 /// The built-in themes as `[{ name, theme }]` (theme = the serialized `Theme`) so the
 /// Theme Designer edits/previews the REAL built-ins from `theme.rs` — no hand-mirrored
@@ -583,6 +606,7 @@ fn main() {
             set_item_theme,
             save_theme,
             delete_theme,
+            set_screen_theme,
             preview_theme,
             builtin_themes
         ])
