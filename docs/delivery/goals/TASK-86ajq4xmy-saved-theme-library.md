@@ -49,7 +49,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-002 | yes | Wire + RBAC: `SaveTheme`/`DeleteTheme` additive (pinned v2 fixtures byte-stable) + RBAC Operator-only; `OperatorStateView.saved_themes` (skip-if-empty) reports the library | `cargo test -p selahcue-lan` | wire additive; rbac gated | test_protocol/test_rbac | PASS |
 | C-003 | yes | Persistence: migration v11 (`saved_theme` table; `target_version()==11`, older DB upgrades); `saved_theme_repo` save_all/load_all round-trips; desktop loads on startup + saves on dirty | `cargo test -p selahcue-data` | library survives save/load | test_db/test_saved_theme_repo | PASS |
 | C-004 | yes | Frontend: Theme Designer library — Save (named) the current design, list built-ins + saved, select a saved theme (load), delete a saved theme, Apply; pinned console invariants intact | structure test + headless render | library UI works; invariants intact | test_tokens + render | PASS |
-| C-005 | yes | Full: make ci + operator build + fmt/clippy clean; independent Workflow review, findings fixed; 3-OS CI green | make-ci + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-saved-themes.md; CI run | PENDING |
+| C-005 | yes | Full: make ci + operator build + fmt/clippy clean; independent Workflow review, findings fixed; 3-OS CI green | make-ci + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-saved-themes.md; CI run 30215838572 | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -73,7 +73,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajq4xmy-saved-theme-library.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending)
+- Validator result: PASS (all 5 mandatory criteria PASS).
+- Independent verification result: adversarial Workflow review `wf_f5b8ac93-041` (4 lenses → per-finding verify, 9 agents) — 5 raised → 3 confirmed (2 MED + 1 LOW), all fixed; 2 refuted; + 1 serialization defect caught by the batch's headless render, fixed + pinned. Re-verified: `cargo test --workspace` 329/0, fmt/clippy clean (workspace + operator), headless render + scripted interaction. 3-OS CI run 30215838572 GREEN (11/11 jobs; Flutter path-skipped).
+- Terminal state: VERIFIED_COMPLETE (story `86ajq4xmy` handed to QA; not self-marked Done).
+- ClickUp final evidence comment: posted on 86ajq4xmy (comment 90130296730617) + BUILD CONTROL 86ajnx548 (comment 90130296730685); commit `8b7a54b`.
