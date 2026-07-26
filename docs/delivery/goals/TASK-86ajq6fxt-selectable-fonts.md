@@ -54,7 +54,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-002 | yes | Theme + compose: `Theme.font: Option<FontName>` (bounded `Copy`; `Theme` still a fixed-size POD) threaded through `compose` to the Text layers; a themed font renders; additive serde (empty font → theme JSON byte-identical; pinned fixtures unchanged) | `cargo test -p selahcue-present` | per-theme font renders; serde additive | test_compose/test_slide/test_tokens | PASS |
 | C-003 | yes | Enumeration + no wire/migration: `system_fonts()` lists installed families (sorted, deduped, bounded); the font persists in the theme JSON only — `target_version` unchanged, pinned wire fixtures byte-stable | `cargo test -p selahcue-lan -p selahcue-data` + operator build | enumeration bounded; no wire/migration drift | test_protocol/test_db + operator | PASS |
 | C-004 | yes | Frontend: the Theme Designer Font control is a real picker from `system_fonts()`; selecting a font sets the theme font; the preview + Apply render it; a "default" entry clears it; pinned console invariants intact | structure test + headless render | font picker works; invariants intact | test_tokens + render | PASS |
-| C-005 | yes | Full: make ci + operator build + fmt/clippy clean; determinism preserved (parity + pinned render tests green); independent Workflow review, findings fixed; 3-OS CI green | make-ci + Workflow + CI | all green; review fixed; parity holds | CODE-REVIEW-batch-selectable-fonts.md; CI run | PENDING |
+| C-005 | yes | Full: make ci + operator build + fmt/clippy clean; determinism preserved (parity + pinned render tests green); independent Workflow review, findings fixed; 3-OS CI green | make-ci + Workflow + CI | all green; review fixed; parity holds | CODE-REVIEW-batch-selectable-fonts.md; CI run 30223399683 | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -78,7 +78,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajq6fxt-selectable-fonts.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending)
+- Validator result: PASS (all 5 mandatory criteria PASS).
+- Independent verification result: adversarial Workflow review `wf_a5313bef-b7e` (3 lenses → per-finding verify, 7 agents) — 4 raised → 3 confirmed (1 MED + 2 LOW), all fixed; 1 refuted. 3-OS CI run 30223399683 GREEN (11/11 jobs incl. the rust/parity determinism gate on all 3 OSes; Flutter path-skipped). Committed to main as `e44bc56` (cherry-picked — a parallel QA-programme process had switched the tree onto its branch; my commit was extracted to main and the parallel branch restored).
+- Terminal state: VERIFIED_COMPLETE (story `86ajq6fxt` handed to QA; not self-marked Done).
+- ClickUp final evidence comment: posted on 86ajq6fxt (comment 90130296744099); commit `e44bc56`.
