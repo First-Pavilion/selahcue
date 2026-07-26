@@ -24,6 +24,20 @@ pub enum VAlign {
     Bottom,
 }
 
+/// How a region handles content taller than it fits (FR-010; the Theme Designer's
+/// **Fit** control). `ShrinkToFit` (the default for all built-ins, owner direction)
+/// scales the text down so **every** line fits — a long verse never drops lines;
+/// `Clip` keeps the design size and drops overflow; `Paginate` is a later slice
+/// (treated as `Clip` until then).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Fit {
+    #[default]
+    ShrinkToFit,
+    Clip,
+    Paginate,
+}
+
 /// One positioned, styled text region of a theme. Geometry is **per-mille of the
 /// output frame** (resolution-independent → identical layout on 1080p and 4K).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +57,8 @@ pub struct RegionStyle {
     pub line_height_permille: u16,
     /// Text colour.
     pub color: Rgba,
+    /// Overflow policy — how content taller than the region is handled.
+    pub fit: Fit,
     /// When `false`, the region is not rendered (e.g. a template that hides the title).
     pub visible: bool,
 }
@@ -108,6 +124,7 @@ impl Theme {
                 size_permille: 48,
                 line_height_permille: 1200,
                 color: AMBER,
+                fit: Fit::ShrinkToFit,
                 visible: true,
             },
             body: RegionStyle {
@@ -115,14 +132,15 @@ impl Theme {
                 y_permille: 280,
                 w_permille: 880,
                 // Sized so a full 6-line wrapped verse (the controller cap,
-                // SCRIPTURE_MAX_LINES) fits, and a 7th line clips — keeping the
-                // engine's line capacity aligned with the cap.
+                // SCRIPTURE_MAX_LINES) renders at the DESIGN size; longer content
+                // shrinks to fit (Fit::ShrinkToFit) rather than clipping.
                 h_permille: 560,
                 align_h: TextAlign::Center,
                 align_v: VAlign::Middle,
                 size_permille: 78,
                 line_height_permille: 1150,
                 color: Rgba::WHITE,
+                fit: Fit::ShrinkToFit,
                 visible: true,
             },
         }
@@ -143,6 +161,7 @@ impl Theme {
                 size_permille: 52,
                 line_height_permille: 1150,
                 color: AMBER,
+                fit: Fit::ShrinkToFit,
                 visible: true,
             },
             body: RegionStyle {
@@ -155,6 +174,7 @@ impl Theme {
                 size_permille: 95,
                 line_height_permille: 1120,
                 color: Rgba::WHITE,
+                fit: Fit::ShrinkToFit,
                 visible: true,
             },
         }
@@ -163,11 +183,11 @@ impl Theme {
     /// **Lower-third** — content in the bottom band, left-aligned (for keyed /
     /// stream lower-thirds). The reference sits above the body in the band.
     ///
-    /// This is a **short-form** template by design: the band body fits ~2 lines at
-    /// every resolution, so a long (e.g. 6-line) verse switched into it **clips**
-    /// to the first lines on the audience output (MVP overflow = clip; content is
-    /// retained on the `Slide`, so switching back restores it — a data guarantee,
-    /// not a visual one). Shrink-to-fit / pagination is a later slice (S8-3a §4).
+    /// This is a **short-form** template by design: the band fits ~2 lines at the
+    /// design size, so a long (e.g. 6-line) verse switched into it **shrinks to
+    /// fit** the band (`Fit::ShrinkToFit`, the default) rather than dropping lines —
+    /// a visual guarantee, not only a data one (owner refine; resolves the S8-3b
+    /// lower-third clip finding).
     pub fn lower_third() -> Self {
         Theme {
             background: Rgba::rgb(2, 10, 7),
@@ -181,6 +201,7 @@ impl Theme {
                 size_permille: 40,
                 line_height_permille: 1100,
                 color: AMBER,
+                fit: Fit::ShrinkToFit,
                 visible: true,
             },
             body: RegionStyle {
@@ -193,6 +214,7 @@ impl Theme {
                 size_permille: 62,
                 line_height_permille: 1100,
                 color: Rgba::WHITE,
+                fit: Fit::ShrinkToFit,
                 visible: true,
             },
         }

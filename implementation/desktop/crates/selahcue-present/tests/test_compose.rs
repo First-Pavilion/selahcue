@@ -91,23 +91,38 @@ fn compose_is_deterministic() {
 }
 
 #[test]
-fn compose_slide_renders_title_plus_six_body_lines() {
-    // The classic theme's body region is sized to the scripture cap
-    // (selahcue-app::SCRIPTURE_MAX_LINES = 6): the title renders in the title
-    // region (1 layer) and up to 6 body lines in the body region, so a 7th body
-    // line clips. Keeps the engine's line capacity aligned with the cap.
+fn shrink_to_fit_renders_all_body_lines_by_scaling_not_clipping() {
+    // Fit::ShrinkToFit is the default for every built-in (owner refine): the body
+    // region renders the classic 6-line verse at its DESIGN size, and MORE lines
+    // shrink to fit rather than clipping — no line is ever dropped.
     use selahcue_engine::scene::Layer;
-    let count_text = |body: usize| {
+    // (number of text layers, first BODY line's px). compose pushes the title
+    // region first (layers[0]) then the body lines, so texts[1] is a body cell.
+    let body = |lines: usize| -> (usize, u32) {
         let slide = Slide::new(
             "Title",
-            (0..body).map(|i| format!("line {i}")).collect::<Vec<_>>(),
+            (0..lines).map(|i| format!("line {i}")).collect::<Vec<_>>(),
         );
-        compose_slide(&slide, &Theme::dark(), 1920, 1080)
+        let texts: Vec<u32> = compose_slide(&slide, &Theme::dark(), 1920, 1080)
             .layers
             .iter()
-            .filter(|l| matches!(l, Layer::Text { .. }))
-            .count()
+            .filter_map(|l| match l {
+                Layer::Text { px, .. } => Some(*px),
+                _ => None,
+            })
+            .collect();
+        (texts.len(), texts.get(1).copied().unwrap_or(0))
     };
-    assert_eq!(count_text(6), 7, "title + 6 body lines all render");
-    assert_eq!(count_text(7), 7, "a 7th body line is clipped");
+    let (n6, px6) = body(6);
+    let (n12, px12) = body(12);
+    assert_eq!(n6, 7, "title + 6 body lines render");
+    assert_eq!(
+        n12, 13,
+        "title + 12 body lines ALL render (shrunk, not clipped)"
+    );
+    // Proof it SHRANK: 12 lines render smaller than 6 (which are at design size).
+    assert!(
+        px12 < px6,
+        "more lines => smaller body text (shrink-to-fit): {px12} < {px6}"
+    );
 }

@@ -7,7 +7,7 @@
 //! under a different theme restyles it without loss.
 
 use crate::slide::Slide;
-use crate::theme::{RegionStyle, Theme, VAlign};
+use crate::theme::{Fit, RegionStyle, Theme, VAlign};
 use selahcue_engine::scene::{Frame, Layer, Rect, Rgba, TextAlign};
 
 /// Fraction of the reference height used per text line, and the gap between lines.
@@ -68,8 +68,10 @@ pub(crate) fn layout_lines<'a>(
 
 /// Lay out `lines` into a themed [`RegionStyle`] — per-region cell size, line
 /// height, colour, and H+V alignment, resolution-independent. The text block is
-/// V-aligned within the region; lines that would cross the region's bottom are
-/// dropped (MVP overflow = clip; shrink-to-fit is a later slice, S8-3a §4).
+/// V-aligned within the region. Overflow follows the region's [`Fit`]:
+/// **`ShrinkToFit`** (the default) shrinks the cell so *every* line fits — nothing
+/// is dropped; `Clip`/`Paginate` keep the design size and drop what overflows
+/// (`Paginate` is a later slice, treated as `Clip` for now).
 fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -> Vec<Layer> {
     let non_empty: Vec<&str> = lines
         .iter()
@@ -83,14 +85,30 @@ fn layout_region(lines: &[&str], style: &RegionStyle, width: u32, height: u32) -
     if rect.w == 0 || rect.h == 0 {
         return Vec::new();
     }
-    let cell = style.cell_px(height).min(rect.h).max(1);
+    let lh = style.line_height();
+    let design_cell = style.cell_px(height).min(rect.h).max(1);
+    // For `ShrinkToFit`, size the cell so ALL `want` lines fit the region height:
+    // want lines occupy `cell·((want−1)·lh + 1)` ≤ rect.h → solve for the largest
+    // cell, capped at the design size (never enlarge) and floored at 1px.
+    let want = non_empty.len();
+    let cell = match style.fit {
+        Fit::ShrinkToFit => {
+            // Largest cell where all `want` lines fit rect.h. `span` is the block
+            // height in cell-units; `safety` absorbs the per-line advance rounding
+            // (`round(cell·lh)` can add up to +0.5px each) so the discrete
+            // `max_lines` below actually reaches `want`. Capped at the design size.
+            let span = ((want as f64 - 1.0) * lh + 1.0).max(1.0);
+            let safety = (want as f64 - 1.0) * 0.5;
+            let fit_cell = (((rect.h as f64) - safety) / span).floor().max(1.0) as u32;
+            design_cell.min(fit_cell)
+        }
+        Fit::Clip | Fit::Paginate => design_cell,
+    };
     // Per-line vertical advance (cell scaled by the line-height multiplier).
-    let advance = ((cell as f64) * style.line_height())
-        .round()
-        .max(cell as f64) as u32;
-    // How many lines actually fit in the region (clip, don't overflow the design).
+    let advance = ((cell as f64) * lh).round().max(cell as f64) as u32;
+    // Lines that fit at this cell size (== want under ShrinkToFit; a cap under Clip).
     let max_lines = ((rect.h.saturating_sub(cell) / advance) + 1).max(1) as usize;
-    let n = non_empty.len().min(max_lines);
+    let n = want.min(max_lines);
     // Height of the n-line block: (n-1) advances + one cell.
     let block_h = (n as u32 - 1) * advance + cell;
     let free = rect.h.saturating_sub(block_h);
