@@ -129,6 +129,46 @@ fn operator_webview_is_pinned_to_the_canonical_tokens() {
     }
 }
 
+/// The app menu + Screens surface (86ajq321f) are present and the emergency
+/// footer stays OUTSIDE the surface router (so it persists on every surface).
+#[test]
+fn operator_webview_has_the_app_menu_and_screens_surface() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../selahcue-operator/dist/index.html"
+    );
+    let html = std::fs::read_to_string(path).expect("operator dist/index.html exists");
+    for needle in [
+        // App menu (accessible): a role=menu with menuitems + accesskeys, F10 hint.
+        "id=\"app-menu-btn\"",
+        "id=\"app-menu\"",
+        "role=\"menu\"",
+        "role=\"menuitem\"",
+        "data-surface=\"screens\"",
+        "data-surface=\"console\"",
+        "accesskey=\"1\"",
+        // Surfaces: the console is wrapped as a routable surface; Screens exists.
+        "id=\"surface-console\"",
+        "class=\"surface-page active\"",
+        "id=\"surface-screens\"",
+        "id=\"screens-list\"",
+        // Console de-clutter: compact status + a route to the Screens manager.
+        "id=\"outputs-status\"",
+        "id=\"manage-outputs\"",
+        "Manage outputs",
+    ] {
+        assert!(html.contains(needle), "webview missing {needle:?}");
+    }
+    // The emergency footer must be a SIBLING of <main> (outside every surface),
+    // so it stays reachable on every surface. Assert </main> precedes the footer.
+    let main_close = html.find("</main>").expect("</main>");
+    let footer = html.find("id=\"emergency\"").expect("emergency footer");
+    assert!(
+        main_close < footer,
+        "the emergency footer must sit AFTER </main> (outside the surface router)"
+    );
+}
+
 /// The Flutter controller carries the same canonical values.
 #[test]
 fn mobile_tokens_are_pinned_to_the_canonical_tokens() {

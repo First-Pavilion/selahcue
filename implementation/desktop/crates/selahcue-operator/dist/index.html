@@ -39,13 +39,73 @@
          LEFT  = service plan + live transcript
          CENTER= OBS Preview | Live + GO LIVE + scriptures
          RIGHT = service timer + recent detections + outputs */
-      main {
-        flex: 1; display: grid;
+      /* main is now a surface container; the console 3-zone grid lives on
+         #surface-console so other surfaces (Screens, placeholders) can swap in. */
+      main { flex: 1; min-height: 0; min-width: 0; position: relative; }
+      .surface-page { display: none; height: 100%; box-sizing: border-box; }
+      .surface-page.active { display: block; }
+      #surface-console {
         grid-template-columns: minmax(240px, 320px) minmax(0, 1fr) minmax(280px, 360px);
         gap: 12px; min-height: 0; padding: 12px; min-width: 0;
       }
-      main > * { min-width: 0; }
+      #surface-console.active { display: grid; }
+      #surface-console > * { min-width: 0; }
+      .surface-pad { padding: 22px 28px; overflow-y: auto; height: 100%; box-sizing: border-box; }
+      .surface-pad h1 { font-size: 22px; margin: 0 0 4px; }
+      .coming-soon { color: var(--muted); margin-top: 24px; }
       body { min-width: 900px; overflow-x: auto; }
+      /* --- App menu (top-bar navigation, 86ajq321f) --- */
+      #app-menu-btn {
+        display: flex; align-items: center; gap: 8px; background: var(--panel);
+        border: 1px solid var(--line); color: var(--text); border-radius: 8px;
+        padding: 6px 10px; font-weight: 700; cursor: pointer; font-size: 14px;
+      }
+      #app-menu-btn[aria-expanded="true"] { border-color: var(--accent); }
+      #app-menu {
+        position: absolute; top: 44px; left: 12px; z-index: 60; width: 264px;
+        background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+        padding: 8px; box-shadow: 0 10px 28px rgba(0,0,0,0.5); display: none;
+      }
+      #app-menu.open { display: block; }
+      .nav-item {
+        display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+        background: none; border: none; color: var(--text); border-radius: 8px;
+        padding: 9px 10px; cursor: pointer; font-size: 13px; font-weight: 600;
+      }
+      .nav-item:hover { background: #232a35; }
+      .nav-item:focus-visible { background: #232a35; outline: 2px solid var(--accent); outline-offset: -2px; }
+      .nav-item[aria-current="page"] { background: #10231c; box-shadow: inset 3px 0 0 var(--preview-ink); }
+      .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+      .nav-item .nav-key {
+        margin-left: auto; font-size: 10px; color: var(--muted);
+        border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-weight: 600;
+      }
+      /* --- Screens surface --- */
+      .screen-row { border-bottom: 1px solid var(--line); padding: 16px 0; max-width: 1100px; }
+      .screen-head { display: flex; align-items: center; gap: 10px; }
+      .role-badge { font-size: 11px; font-weight: 700; border: 1px solid; border-radius: 10px; padding: 1px 8px; }
+      .screen-toggle {
+        margin-left: auto; width: 46px; height: 26px; border-radius: 13px; background: #2b323d;
+        border: none; position: relative; cursor: pointer; flex: none;
+      }
+      .screen-toggle.on { background: var(--accent); }
+      .screen-toggle .knob { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; }
+      .screen-toggle.on .knob { left: 23px; }
+      .screen-fields { display: flex; gap: 20px; margin-top: 14px; flex-wrap: wrap; }
+      .screen-fields label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+      .screen-fields select, .screen-fields .field {
+        min-width: 220px; background: var(--panel); border: 1px solid var(--line);
+        color: var(--text); border-radius: 8px; padding: 10px 12px; font-size: 13px;
+      }
+      .screen-fields select.mismatch, .screen-fields .field.mismatch { border-color: var(--warn-ink); color: var(--warn-ink); }
+      .stage-chips { display: flex; gap: 6px; }
+      .stage-chip { display:flex; align-items:center; gap:6px; font-size:12px; border:1px solid var(--line); border-radius:15px; padding:6px 12px; color:var(--muted); }
+      .stage-chip.on { background: var(--accent); color:#fff; border-color: var(--accent); }
+      /* --- Compact outputs status in the console --- */
+      #outputs-status { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 10px; font-size: 12px; }
+      #outputs-status .st { display: inline-flex; align-items: center; gap: 6px; }
+      #outputs-status .stdot { width: 8px; height: 8px; border-radius: 50%; }
+      #manage-outputs { width: 100%; margin-bottom: 6px; }
       /* Each zone stacks its panels vertically and never overflows the row. */
       .zone { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
       /* OBS studio mode: Preview and Live sit side by side, each a 16:9 monitor. */
@@ -290,12 +350,23 @@
   </head>
   <body>
     <header>
+      <button id="app-menu-btn" aria-haspopup="menu" aria-expanded="false"
+        aria-controls="app-menu" aria-label="Open the app menu (F10)">☰ SelahCue ▾</button>
+      <div id="app-menu" role="menu" aria-label="Go to">
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" accesskey="1" aria-current="page">◉ Live Console<span class="nav-key">1</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="theme-designer" accesskey="2">✎ Theme Designer<span class="nav-key">2</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="screens" accesskey="3">▤ Screens<span class="nav-key">3</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="plan" accesskey="4">☰ Plan / Library<span class="nav-key">4</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="settings" accesskey="5">⚙ Settings<span class="nav-key">5</span></button>
+      </div>
+      <span id="route-status" class="sr-only" aria-live="polite"></span>
       <h1 id="plan-name">SelahCue Operator</h1>
       <span class="sub" id="plan-sub"></span>
       <span id="live-chip">● LIVE</span>
       <span id="clock"></span>
     </header>
     <main>
+      <div id="surface-console" class="surface-page active">
       <!-- LEFT zone: the service plan (top) + the live transcript (bottom).
            Figma 165:124 layout; every element id is preserved from the prior
            console so the whole <script> keeps working unchanged. -->
@@ -406,14 +477,38 @@
         </section>
         <aside class="side-panel" aria-label="Outputs">
           <h2 id="outputs-h">Outputs</h2>
-          <div id="outputs" aria-labelledby="outputs-h"></div>
+          <div id="outputs-status" aria-labelledby="outputs-h"></div>
+          <button id="manage-outputs" aria-label="Open the Screens manager">Manage outputs ⤢</button>
           <button id="identify" aria-label="Show the identify number on every display">Identify displays</button>
         </aside>
         <aside class="side-panel" aria-label="Audience theme">
           <h2 id="theme-h">Theme</h2>
           <div id="themes" role="group" aria-labelledby="theme-h"></div>
         </aside>
-      </div>
+      </div><!-- /zone-right -->
+      </div><!-- /surface-console -->
+
+      <!-- SCREENS surface: the output manager (design 86ajq1n14, Figma 217:124). -->
+      <section id="surface-screens" class="surface-page surface-pad" aria-label="Screens">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <h1 style="flex:1;">Screens</h1>
+          <button id="screens-identify" aria-label="Show the identify number on every display">Identify</button>
+        </div>
+        <p class="coming-soon" style="margin-top:2px;">Configure each output — role, display/NDI, format, and its theme. Per-screen theme rendering arrives with the per-screen theme engine.</p>
+        <div id="screens-list" style="margin-top:8px;"></div>
+      </section>
+      <section id="surface-theme-designer" class="surface-page surface-pad" aria-label="Theme Designer">
+        <h1>Theme Designer</h1>
+        <p class="coming-soon">The visual theme editor arrives with story S8-3c. Today, pick a built-in theme from the console's Theme panel.</p>
+      </section>
+      <section id="surface-plan" class="surface-page surface-pad" aria-label="Plan and Library">
+        <h1>Plan / Library</h1>
+        <p class="coming-soon">A dedicated plan + song/scripture library surface arrives later. Edit the plan inline on the Live Console for now.</p>
+      </section>
+      <section id="surface-settings" class="surface-page surface-pad" aria-label="Settings">
+        <h1>Settings</h1>
+        <p class="coming-soon">Application settings arrive later.</p>
+      </section>
     </main>
     <footer id="emergency" role="toolbar" aria-label="Emergency controls">
       <button id="blackout" aria-pressed="false" aria-label="Blackout the audience output">■ BLACKOUT<span id="blackout-state"></span><span class="key">B</span></button>
@@ -624,79 +719,218 @@
       function renderOutputs(view) {
         const outs = view.outputs || [];
         const displays = view.displays || [];
-        const key = JSON.stringify([outs, displays]);
+        const themes = view.themes || [];
+        const activeTheme = view.theme || "";
+        const key = JSON.stringify([outs, displays, themes, activeTheme]);
         if (key === outputsKey) return; // pickers are interactive: rebuild only on change
-        const box = document.getElementById("outputs");
+        const list = document.getElementById("screens-list");
         // Never yank a picker out from under the operator: an open/focused
-        // select survives; the fresh data renders when focus leaves the panel.
-        if (box.contains(document.activeElement)) {
+        // select survives; the fresh data renders when focus leaves the surface.
+        if (list.contains(document.activeElement)) {
           outputsPending = view;
           return;
         }
         outputsPending = null;
         outputsKey = key;
-        box.innerHTML = "";
+
+        // --- Compact console status (de-cluttered right zone) ---
+        const status = document.getElementById("outputs-status");
+        status.innerHTML = "";
+        if (!outs.length) {
+          const s = document.createElement("span");
+          s.className = "st"; s.style.color = "var(--muted)"; s.textContent = "No outputs";
+          status.appendChild(s);
+        } else {
+          outs.forEach((o) => {
+            const st = document.createElement("span"); st.className = "st";
+            const d = document.createElement("span"); d.className = "stdot";
+            d.style.background = o.assigned ? "var(--preview-ink)" : "var(--warn-ink)";
+            const lbl = document.createElement("span");
+            lbl.textContent = o.role === "main" ? "Main" : "Stage";
+            st.appendChild(d); st.appendChild(lbl); status.appendChild(st);
+          });
+          const n = document.createElement("span");
+          n.className = "st"; n.style.color = "var(--muted)";
+          n.textContent = outs.filter((o) => o.assigned).length + " assigned";
+          status.appendChild(n);
+        }
         document.getElementById("identify").disabled = outs.length === 0;
+        document.getElementById("screens-identify").disabled = outs.length === 0;
+
+        // --- Full Screens list (per-screen: role → content control) ---
+        list.innerHTML = "";
+        if (!outs.length) {
+          const p = document.createElement("p");
+          p.className = "coming-soon";
+          p.textContent = "No outputs detected — connect a display or start the output window.";
+          list.appendChild(p);
+          return;
+        }
         outs.forEach((o) => {
-          const row = document.createElement("div");
-          row.className = "output-row";
-          const head = document.createElement("div");
-          head.className = "head2";
-          const dot = document.createElement("span");
-          dot.className = "dot" + (o.display ? " on" : "");
-          const role = document.createElement("span");
-          role.className = "role";
-          role.textContent = o.role === "main" ? "Main output" : "Stage display";
-          head.appendChild(dot);
-          head.appendChild(role);
-          const where = document.createElement("span");
-          where.className = "where";
-          where.textContent =
-            (o.display || "unplaced") + " · " + o.width + "×" + o.height +
-            (o.assigned ? "" : " · not assigned");
+          const audience = o.role === "main";
+          const row = document.createElement("div"); row.className = "screen-row";
+          const head = document.createElement("div"); head.className = "screen-head";
+          const name = document.createElement("strong");
+          name.style.fontSize = "17px";
+          name.textContent = audience ? "Main Screen" : "Stage Display";
+          const rb = document.createElement("span"); rb.className = "role-badge";
+          rb.textContent = audience ? "Audience" : "Stage";
+          const rc = audience ? "var(--accent)" : "var(--warn-ink)";
+          rb.style.color = rc; rb.style.borderColor = rc;
+          head.appendChild(name); head.appendChild(rb);
           row.appendChild(head);
-          row.appendChild(where);
+
+          const fields = document.createElement("div"); fields.className = "screen-fields";
+          // Output assignment
+          const of = document.createElement("div");
+          const ol = document.createElement("label"); ol.textContent = "Output"; of.appendChild(ol);
           if (displays.length) {
             const sel = document.createElement("select");
             sel.setAttribute("aria-label", "Assign the " + o.role + " output to a display");
+            if (!o.assigned) sel.classList.add("mismatch");
             const none = document.createElement("option");
             none.value = "";
-            none.textContent = "Assign to display…";
+            none.textContent = o.assigned ? "Assign to display…" : "— not assigned · select";
             sel.appendChild(none);
             displays.forEach((d) => {
               const opt = document.createElement("option");
               opt.value = d.key;
               opt.textContent = d.name + " (" + d.width + "×" + d.height + ")";
-              // The persisted assignment is visible in the picker itself.
               if (o.assigned_key && o.assigned_key === d.key) opt.selected = true;
               sel.appendChild(opt);
             });
             sel.onchange = () => {
               const chosen = sel.value;
               if (chosen) {
-                // Snap back to the truth: the picker re-reflects the host's
-                // persisted state on the next status update; a denied/stale key
-                // simply leaves it unchanged (and re-selectable).
                 sel.value = o.assigned_key || "";
                 act(() => invoke("assign_output", { role: o.role, displayKey: chosen }));
               }
             };
-            row.appendChild(sel);
+            of.appendChild(sel);
+          } else {
+            const f = document.createElement("div"); f.className = "field";
+            f.textContent = o.display || "No displays found";
+            of.appendChild(f);
           }
-          box.appendChild(row);
+          fields.appendChild(of);
+          // Format (read-only for now)
+          const ff = document.createElement("div");
+          const fl = document.createElement("label"); fl.textContent = "Format"; ff.appendChild(fl);
+          const fv = document.createElement("div"); fv.className = "field";
+          fv.textContent = o.width + " × " + o.height;
+          ff.appendChild(fv); fields.appendChild(ff);
+          // Content — role-driven: Audience → Theme; Stage → layout chips.
+          const cf = document.createElement("div");
+          if (audience) {
+            const cl = document.createElement("label"); cl.textContent = "Theme"; cf.appendChild(cl);
+            const sel = document.createElement("select");
+            sel.setAttribute("aria-label", "Theme for the " + o.role + " output");
+            if (!themes.length) {
+              const opt = document.createElement("option");
+              opt.textContent = "No themes offered"; opt.disabled = true; opt.selected = true;
+              sel.appendChild(opt); sel.disabled = true;
+            } else {
+              themes.forEach((t) => {
+                const opt = document.createElement("option");
+                opt.value = t; opt.textContent = t;
+                if (t === activeTheme) opt.selected = true;
+                sel.appendChild(opt);
+              });
+              sel.onchange = () => act(() => invoke("set_theme", { name: sel.value }));
+            }
+            cf.appendChild(sel);
+          } else {
+            const cl = document.createElement("label"); cl.textContent = "Stage layout"; cf.appendChild(cl);
+            const chips = document.createElement("div"); chips.className = "stage-chips";
+            ["Current", "Next", "Timer"].forEach((l) => {
+              const c = document.createElement("span"); c.className = "stage-chip on";
+              c.textContent = l; chips.appendChild(c);
+            });
+            cf.appendChild(chips);
+          }
+          fields.appendChild(cf);
+          row.appendChild(fields);
+          list.appendChild(row);
         });
+        // Honest seam: the richer model needs the per-screen theme engine.
+        const note = document.createElement("p");
+        note.className = "coming-soon"; note.style.fontSize = "11px";
+        note.textContent =
+          "Enable/disable · Add NDI/virtual screen · a distinct theme PER screen arrive with the per-screen theme engine (86ajq321k). The Theme dropdown sets the global audience theme today.";
+        list.appendChild(note);
       }
 
-      document.getElementById("outputs").addEventListener("focusout", () => {
+      document.getElementById("screens-list").addEventListener("focusout", () => {
         setTimeout(() => {
-          const box = document.getElementById("outputs");
-          if (outputsPending && !box.contains(document.activeElement)) {
+          const list = document.getElementById("screens-list");
+          if (outputsPending && !list.contains(document.activeElement)) {
             const v = outputsPending;
             outputsPending = null;
             renderOutputs(v);
           }
         }, 0);
       });
+
+      // --- App menu + surface routing (86ajq321f) ---
+      const APP_SURFACES = ["console", "theme-designer", "screens", "plan", "settings"];
+      const SURFACE_LABEL = {
+        console: "Live Console", "theme-designer": "Theme Designer",
+        screens: "Screens", plan: "Plan / Library", settings: "Settings",
+      };
+      const appMenu = document.getElementById("app-menu");
+      const appMenuBtn = document.getElementById("app-menu-btn");
+      const navItems = Array.from(appMenu.querySelectorAll(".nav-item"));
+      function isMenuOpen() { return appMenu.classList.contains("open"); }
+      // Roving tabindex: only the focused menuitem is tabbable (APG menu pattern).
+      function focusNav(i) {
+        navItems.forEach((it, j) => { it.tabIndex = j === i ? 0 : -1; });
+        navItems[i].focus();
+      }
+      function showSurface(name) {
+        APP_SURFACES.forEach((s) => {
+          const el = document.getElementById("surface-" + s);
+          if (el) el.classList.toggle("active", s === name);
+        });
+        navItems.forEach((it) => {
+          if (it.dataset.surface === name) it.setAttribute("aria-current", "page");
+          else it.removeAttribute("aria-current");
+        });
+        closeAppMenu();
+        // Move focus INTO the new surface (never leave it on a now-hidden element)
+        // and announce the route to assistive tech (NAV-IA §2/§5).
+        const surf = document.getElementById("surface-" + name);
+        if (surf) { surf.tabIndex = -1; surf.focus(); }
+        document.getElementById("route-status").textContent =
+          "Now on: " + (SURFACE_LABEL[name] || name);
+      }
+      function openAppMenu() {
+        appMenu.classList.add("open");
+        appMenuBtn.setAttribute("aria-expanded", "true");
+        const cur = navItems.findIndex((i) => i.getAttribute("aria-current") === "page");
+        focusNav(cur >= 0 ? cur : 0);
+      }
+      function closeAppMenu() {
+        appMenu.classList.remove("open");
+        appMenuBtn.setAttribute("aria-expanded", "false");
+      }
+      function toggleAppMenu() { isMenuOpen() ? closeAppMenu() : openAppMenu(); }
+      appMenuBtn.onclick = toggleAppMenu;
+      navItems.forEach((it, i) => {
+        it.onclick = () => showSurface(it.dataset.surface);
+        it.addEventListener("keydown", (e) => {
+          if (e.key === "ArrowDown") { e.preventDefault(); focusNav((i + 1) % navItems.length); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); focusNav((i - 1 + navItems.length) % navItems.length); }
+          else if (e.key === "Home") { e.preventDefault(); focusNav(0); }
+          else if (e.key === "End") { e.preventDefault(); focusNav(navItems.length - 1); }
+          else if (e.key === "Escape") { e.preventDefault(); closeAppMenu(); appMenuBtn.focus(); }
+          else if (e.key === "Tab") { closeAppMenu(); } // Tab moves focus on AND closes the menu
+        });
+      });
+      document.addEventListener("click", (e) => {
+        if (isMenuOpen() && !appMenu.contains(e.target) && e.target !== appMenuBtn) closeAppMenu();
+      });
+      document.getElementById("manage-outputs").onclick = () => showSurface("screens");
+      document.getElementById("screens-identify").onclick = () => act(() => invoke("identify_outputs"));
 
       function miniBtn(label, onclick) {
         const b = document.createElement("button");
@@ -1245,6 +1479,31 @@
           e.preventDefault();
           disarm();
           clearAll();
+          return;
+        }
+        // App menu: F10 opens/closes the surface navigation (reachable anywhere).
+        // Cmd/Ctrl+M is intentionally NOT bound — it is the macOS "Minimize window"
+        // accelerator. disarm() so opening the menu can't leave a Clear-all armed.
+        if (e.key === "F10") {
+          e.preventDefault();
+          disarm();
+          toggleAppMenu();
+          return;
+        }
+        // While the app menu is OPEN, only the menu's own arrow/Home/End/Esc/Tab
+        // keys act — transport/emergency keys must NOT drive the live output
+        // (opening the menu is a benign navigation gesture; the emergency chords
+        // above still pierce). review 86ajq321f-HIGH.
+        if (isMenuOpen()) {
+          if (e.key !== "Escape") disarm();
+          return;
+        }
+        // Transport keys (Space/Enter/arrows/b/Backspace) act on the LIVE CONSOLE
+        // ONLY — never while a config surface (Screens/Settings/…) is active, so
+        // navigating those can't advance/clear/blackout the show. The emergency
+        // chords (handled above) remain global. review 86ajq321f.
+        if (!document.getElementById("surface-console").classList.contains("active")) {
+          if (e.key !== "Escape") disarm();
           return;
         }
         // ANY intervening key disarms the double-tap — including keys typed in
