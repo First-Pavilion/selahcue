@@ -575,3 +575,180 @@ fn theme_elements_are_additive_serde_and_byte_stable_by_default() {
         "absent elements deserialize to empty"
     );
 }
+
+// --- Image element (86ajq6j49) --------------------------------------------------------
+
+use selahcue_present::MediaRef;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static IMG_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// An RAII temp-file guard: deletes the fixture on drop (incl. panic unwind) so tests
+/// leave no PNGs accumulating in the system temp dir (no-leak, even on-disk).
+struct TempImage(std::path::PathBuf);
+
+impl TempImage {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempImage {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Encode a solid-colour RGBA PNG to a unique temp file; the returned guard removes it.
+fn temp_image(w: u32, h: u32, c: Rgba) -> TempImage {
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for _ in 0..(w * h) {
+        data.extend_from_slice(&[c.r, c.g, c.b, c.a]);
+    }
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut wr = enc.write_header().unwrap();
+        wr.write_image_data(&data).unwrap();
+    }
+    let n = IMG_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut p = std::env::temp_dir();
+    p.push(format!("selahcue_imgel_{}_{}.png", std::process::id(), n));
+    std::fs::write(&p, &out).unwrap();
+    TempImage(p)
+}
+
+/// A full-frame image element referencing `path`, at draw order `z`.
+fn full_image(path: &std::path::Path, opacity: u8, z: i16) -> Element {
+    Element::Image {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 1000,
+        h_permille: 1000,
+        source: MediaRef::new(path.to_str().unwrap()).unwrap(),
+        opacity,
+        z,
+    }
+}
+
+#[test]
+fn an_image_element_composes_to_an_image_layer_with_the_mapped_rect() {
+    use selahcue_engine::scene::Layer;
+    let img = temp_image(2, 2, Rgba::WHITE);
+    let mut theme = Theme::classic();
+    theme.elements.push(Element::Image {
+        x_permille: 100,
+        y_permille: 200,
+        w_permille: 500,
+        h_permille: 250,
+        source: MediaRef::new(img.path().to_str().unwrap()).unwrap(),
+        opacity: 200,
+        z: 1,
+    });
+    let frame = compose_slide(&Slide::new("R", ["B"]), &theme, 1000, 1000);
+    let img = frame
+        .layers
+        .iter()
+        .find_map(|l| match l {
+            Layer::Image { rect, opacity, .. } => Some((*rect, *opacity)),
+            _ => None,
+        })
+        .expect("an image element composes to a Layer::Image");
+    // Per-mille → pixel at 1000×1000: x=100, y=200, w=500, h=250; opacity threaded.
+    assert_eq!((img.0.x, img.0.y, img.0.w, img.0.h), (100, 200, 500, 250));
+    assert_eq!(img.1, 200);
+}
+
+#[test]
+fn an_image_element_renders_its_pixels_on_the_output() {
+    // A full-frame red image renders red on the composed output (end-to-end through the
+    // engine decode + blit) — the model half of the image vision is wired.
+    let img = temp_image(1, 1, Rgba::rgb(220, 30, 30));
+    let mut theme = Theme::classic();
+    theme.elements.push(full_image(img.path(), 255, 1));
+    let fb = render(&compose_slide(&Slide::new("R", ["B"]), &theme, 64, 64));
+    let p = fb.pixel(32, 8).unwrap(); // near the top, away from the centred text
+    assert!(
+        p.r > 180 && p.g < 80 && p.b < 80,
+        "the image element paints its red pixels, got {p:?}"
+    );
+}
+
+#[test]
+fn image_element_z_order_behind_and_in_front_of_the_text() {
+    use selahcue_engine::scene::Layer;
+    let img = temp_image(1, 1, Rgba::WHITE);
+    let idx_of = |theme: &Theme| {
+        let frame = compose_slide(&Slide::new("Title", ["Body"]), theme, 400, 400);
+        let img = frame
+            .layers
+            .iter()
+            .position(|l| matches!(l, Layer::Image { .. }));
+        let text = frame
+            .layers
+            .iter()
+            .position(|l| matches!(l, Layer::Text { .. }));
+        (img, text)
+    };
+    // z < 0 → the image layer precedes the first text layer (painted behind).
+    let mut behind = Theme::classic();
+    behind.elements.push(full_image(img.path(), 255, -1));
+    let (bi, bt) = idx_of(&behind);
+    assert!(
+        bi.unwrap() < bt.unwrap(),
+        "a z<0 image composes BEFORE the text"
+    );
+    // z >= 0 → the image layer follows the text (painted in front).
+    let mut front = Theme::classic();
+    front.elements.push(full_image(img.path(), 255, 1));
+    let (fi, ft) = idx_of(&front);
+    assert!(
+        fi.unwrap() > ft.unwrap(),
+        "a z>=0 image composes AFTER the text"
+    );
+}
+
+#[test]
+fn a_missing_image_element_renders_the_non_black_placeholder() {
+    // A missing source → the engine's non-black placeholder, never blank, never a crash.
+    let mut theme = Theme::classic();
+    theme.elements.push(Element::Image {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 1000,
+        h_permille: 1000,
+        source: MediaRef::new("/no/such/theme/image.png").unwrap(),
+        opacity: 255,
+        z: 1,
+    });
+    let fb = render(&compose_slide(&Slide::new("R", ["B"]), &theme, 64, 64));
+    // The placeholder base (64,54,74) fills most of the frame — assert a non-black pixel.
+    assert_ne!(
+        fb.pixel(48, 6).unwrap(),
+        Rgba::BLACK,
+        "missing image → non-black placeholder"
+    );
+}
+
+#[test]
+fn an_image_element_is_additive_serde_and_round_trips() {
+    let img = temp_image(1, 1, Rgba::WHITE);
+    let mut t = Theme::classic();
+    t.elements.push(full_image(img.path(), 128, -1));
+    let json = serde_json::to_string(&t).unwrap();
+    assert!(
+        json.contains("\"kind\":\"image\"") && json.contains(img.path().to_str().unwrap()),
+        "an image element serializes with its kind tag + source: {json}"
+    );
+    assert_eq!(
+        serde_json::from_str::<Theme>(&json).unwrap(),
+        t,
+        "an image element round-trips"
+    );
+    // A no-image-element theme is still byte-stable (no elements field).
+    assert!(!serde_json::to_string(&Theme::classic())
+        .unwrap()
+        .contains("\"elements\""));
+}

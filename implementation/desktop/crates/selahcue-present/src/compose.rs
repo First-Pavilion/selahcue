@@ -289,6 +289,32 @@ fn element_layers(element: &Element, width: u32, height: u32) -> Vec<Layer> {
             }
             layers
         }
+        Element::Image {
+            x_permille,
+            y_permille,
+            w_permille,
+            h_permille,
+            source,
+            opacity,
+            z: _,
+        } => {
+            // Per-mille → pixel rect (same mapping as `Shape`/`Band`). The engine decodes
+            // `source` through its bounded, deterministic cache and blits it scaled into
+            // this rect at `opacity`; a missing/corrupt/unsupported source draws the
+            // missing-media placeholder (FR-070). Decoded pixels never ride the scene.
+            let map = |dim: u32, permille: u16| (dim as u64 * permille as u64 / 1000) as u32;
+            let rect = Rect::new(
+                map(width, *x_permille) as i32,
+                map(height, *y_permille) as i32,
+                map(width, *w_permille).max(1),
+                map(height, *h_permille).max(1),
+            );
+            vec![Layer::Image {
+                rect,
+                source: source.clone(),
+                opacity: *opacity,
+            }]
+        }
     }
 }
 

@@ -2237,6 +2237,7 @@ dependencies = [
 name = "selahcue-present"
 version = "0.1.0"
 dependencies = [
+ "png",
  "qrcode",
  "selahcue-core",
  "selahcue-engine",

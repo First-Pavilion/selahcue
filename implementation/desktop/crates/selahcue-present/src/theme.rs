@@ -11,7 +11,7 @@
 //! and real H+V alignment + per-region size/colour. Gradient/image backgrounds,
 //! per-role templates + per-item override, and multi-weight fonts are later slices.
 
-use selahcue_engine::scene::{FontName, Rect, Rgba, TextAlign};
+use selahcue_engine::scene::{FontName, MediaRef, Rect, Rgba, TextAlign};
 use serde::{Deserialize, Serialize};
 
 /// Vertical alignment of a region's text block within the region rect.
@@ -127,15 +127,17 @@ impl RegionStyle {
 
 /// A layered design **element** on the canvas (Canvas Editing epic, 86ajq6j2q): a
 /// positioned, opacity-blended, z-ordered item composited over the background. Additive,
-/// internally-tagged enum — the `Image` (needs the S8-6 decode) and `Text` (free text
-/// box) kinds land in the dependent stories without a wire break.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// internally-tagged enum — the `Text` (free text box) kind lands in a dependent story
+/// without a wire break.
+///
+/// `Element` is `Clone` but NOT `Copy`: the [`Image`](Element::Image) kind carries a
+/// heap-backed [`MediaRef`]. `RegionStyle`/`Band`/`FontName` stay `Copy`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Element {
     /// A decorative shape — a fill rect + optional border, at a per-mille rect, blended at
     /// `opacity`, ordered by `z` relative to the text (`z < 0` = behind, `z >= 0` = in
-    /// front). Generalises [`Band`] to an arbitrary, arrangeable element. All-scalar, so
-    /// `Element` is `Copy`; the `Vec<Element>` on the [`Theme`] is what makes it non-`Copy`.
+    /// front). Generalises [`Band`] to an arbitrary, arrangeable element.
     Shape {
         x_permille: u16,
         y_permille: u16,
@@ -146,6 +148,25 @@ pub enum Element {
         /// Border thickness as per-mille of frame HEIGHT (`0` = no border).
         border_permille: u16,
         /// Whole-shape opacity, `0..=255`, multiplied into the fill + border alpha.
+        opacity: u8,
+        /// Draw order relative to the text regions: `< 0` behind the text, `>= 0` in front.
+        z: i16,
+    },
+    /// A raster **image** (86ajq6j49) at a per-mille rect, blended at `opacity`, ordered by
+    /// `z` relative to the text (`z < 0` = behind, `z >= 0` = in front). `source` is a
+    /// bounded reference to a host-local media file the engine decodes (PNG this batch)
+    /// through its size-capped decode cache — the decoded pixels never ride the theme JSON.
+    /// A missing / corrupt / unsupported source draws the missing-media placeholder
+    /// (FR-070), never a blank rect or a crash. The image is scaled to FILL its rect
+    /// (stretch); aspect-preserving fit modes are a later slice.
+    Image {
+        x_permille: u16,
+        y_permille: u16,
+        w_permille: u16,
+        h_permille: u16,
+        /// A bounded, validated reference to the image file (resolved on the render host).
+        source: MediaRef,
+        /// Whole-image opacity, `0..=255`.
         opacity: u8,
         /// Draw order relative to the text regions: `< 0` behind the text, `>= 0` in front.
         z: i16,
@@ -161,6 +182,7 @@ impl Element {
     pub fn z(&self) -> i16 {
         match self {
             Element::Shape { z, .. } => *z,
+            Element::Image { z, .. } => *z,
         }
     }
 }
@@ -171,7 +193,8 @@ impl Element {
 /// per-item override are S8-3d.
 ///
 /// NOTE: `Theme` is `Clone` but NOT `Copy` (it carries a `Vec<Element>` for the Canvas
-/// Editing epic, 86ajq6j2q). `RegionStyle`/`Band`/`FontName`/`Element` stay `Copy`.
+/// Editing epic, 86ajq6j2q). `RegionStyle`/`Band`/`FontName` stay `Copy`; `Element` is
+/// `Clone` (its `Image` kind carries a heap-backed `MediaRef`, 86ajq6j49).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Theme {
     pub background: Rgba,

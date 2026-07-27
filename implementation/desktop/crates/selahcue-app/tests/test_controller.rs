@@ -5,7 +5,7 @@
 use selahcue_app::{ControllerReply, LiveController};
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_lan::protocol::{Command, DenyReason, ServerMessage};
-use selahcue_present::{Element, Rgba, Theme, MAX_ELEMENTS};
+use selahcue_present::{Element, MediaRef, Rgba, Theme, MAX_ELEMENTS};
 
 fn controller() -> (LiveController, Vec<u64>) {
     let mut plan = ServicePlan::new("Sunday");
@@ -2274,5 +2274,80 @@ fn a_custom_theme_with_elements_applies_recovers_and_is_bounded() {
         }),
         ControllerReply::Deny(DenyReason::BadRequest),
         "an over-cap element list is rejected"
+    );
+}
+
+#[test]
+fn a_custom_theme_with_an_image_element_applies_recovers_and_is_bounded() {
+    use std::time::Instant;
+    let t0 = Instant::now();
+    // An image element pointing at a MISSING file → the engine draws the non-black
+    // missing-media placeholder (FR-070). This exercises the full controller path (the
+    // image element rides the theme JSON → compose → Layer::Image → engine) without
+    // needing to encode a PNG here; the successful-image render is covered in test_compose.
+    let image = |z: i16| Element::Image {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 1000,
+        h_permille: 1000,
+        source: MediaRef::new("/no/such/controller/image.png").unwrap(),
+        opacity: 255,
+        z,
+    };
+    let mut theme = Theme::high_contrast();
+    theme.elements.push(image(1)); // in front of the text
+    let json = serde_json::to_string(&theme).unwrap();
+    assert!(
+        json.contains("\"kind\":\"image\""),
+        "the image element rides the theme JSON"
+    );
+
+    let (mut a, _) = controller();
+    a.apply(&Command::Next);
+    a.apply(&Command::GoLive);
+    assert_eq!(
+        a.apply(&Command::SetCustomTheme {
+            theme_json: json.clone()
+        }),
+        ControllerReply::Ack
+    );
+    // The placeholder (base 64,54,74 — clearly not black) reaches the live output.
+    let has_placeholder = |c: &LiveController| {
+        c.presenter()
+            .live_output()
+            .bytes()
+            .chunks_exact(4)
+            .any(|p| p[0] == 64 && p[1] == 54 && p[2] == 74)
+    };
+    assert!(
+        has_placeholder(&a),
+        "a missing image element renders the non-black placeholder on the live output"
+    );
+
+    // Persist + recover: the image element survives (recovered live output is identical).
+    let snap = a.snapshot(t0);
+    let live = a.presenter().live_output().bytes().to_vec();
+    let (mut b, _) = controller();
+    b.restore(&snap);
+    b.tick(t0);
+    assert_eq!(
+        b.presenter().live_output().bytes(),
+        live.as_slice(),
+        "a custom theme + its image element recover after a restart"
+    );
+
+    // Over-cap: image elements count toward MAX_ELEMENTS (no-leak).
+    let mut huge = Theme::classic();
+    for _ in 0..=MAX_ELEMENTS {
+        huge.elements.push(image(0));
+    }
+    assert!(huge.elements.len() > MAX_ELEMENTS);
+    let (mut c, _) = controller();
+    assert_eq!(
+        c.apply(&Command::SetCustomTheme {
+            theme_json: serde_json::to_string(&huge).unwrap()
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest),
+        "an over-cap image element list is rejected"
     );
 }
