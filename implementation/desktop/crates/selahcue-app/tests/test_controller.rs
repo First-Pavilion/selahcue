@@ -5,7 +5,7 @@
 use selahcue_app::{ControllerReply, LiveController};
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_lan::protocol::{Command, DenyReason, ServerMessage};
-use selahcue_present::Theme;
+use selahcue_present::{Element, Rgba, Theme, MAX_ELEMENTS};
 
 fn controller() -> (LiveController, Vec<u64>) {
     let mut plan = ServicePlan::new("Sunday");
@@ -1741,6 +1741,28 @@ fn saved_theme_library_is_bounded_and_load_drops_bad_entries() {
     incoming.push(("bad-json".into(), "{not a theme}".into()));
     incoming.push((" ".into(), json.clone()));
     incoming.push(("n".repeat(MAX_THEME_NAME_LEN + 1), json.clone()));
+    // Valid JSON + valid name but an OVER-CAP element list (a tampered / version-skewed
+    // store row) — the one theme-with-elements ingress the write paths don't guard. It
+    // must be dropped defensively so an unbounded element Vec never reaches compose.
+    let mut over_cap = Theme::classic();
+    for _ in 0..=MAX_ELEMENTS {
+        over_cap.elements.push(Element::Shape {
+            x_permille: 0,
+            y_permille: 0,
+            w_permille: 10,
+            h_permille: 10,
+            fill: Rgba::WHITE,
+            border: Rgba::new(0, 0, 0, 0),
+            border_permille: 0,
+            opacity: 255,
+            z: 0,
+        });
+    }
+    assert!(over_cap.elements.len() > MAX_ELEMENTS);
+    incoming.push((
+        "elements-over-cap".into(),
+        serde_json::to_string(&over_cap).unwrap(),
+    ));
     c.load_saved_themes(incoming);
     assert!(
         c.saved_themes().len() <= MAX_SAVED_THEMES,
@@ -1748,7 +1770,11 @@ fn saved_theme_library_is_bounded_and_load_drops_bad_entries() {
     );
     assert!(
         c.saved_themes().keys().all(|k| k.starts_with('k')),
-        "invalid entries dropped on load"
+        "invalid entries dropped on load (bad name/JSON AND over-cap elements)"
+    );
+    assert!(
+        !c.saved_themes().contains_key("elements-over-cap"),
+        "an over-cap element list is dropped at load (bounded before compose)"
     );
     assert!(
         !c.take_saved_themes_dirty(),
@@ -2177,5 +2203,76 @@ fn a_saved_per_item_theme_resolves_on_recovery_only_with_the_correct_load_order(
         bad.presenter().live_output().bytes(),
         live.as_slice(),
         "restoring before the library loads loses the per-item saved theme (order matters)"
+    );
+}
+
+// --- Layered elements: apply + recover + bounded (Canvas Editing, 86ajq6j2q) ---
+
+#[test]
+fn a_custom_theme_with_elements_applies_recovers_and_is_bounded() {
+    use std::time::Instant;
+    let t0 = Instant::now();
+    let shape = |z: i16| Element::Shape {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 1000,
+        h_permille: 1000,
+        fill: Rgba::rgb(220, 20, 20),
+        border: Rgba::new(0, 0, 0, 0),
+        border_permille: 0,
+        opacity: 255,
+        z,
+    };
+    // A custom theme with a full-frame opaque red shape IN FRONT (z=1).
+    let mut theme = Theme::high_contrast();
+    theme.elements.push(shape(1));
+    let json = serde_json::to_string(&theme).unwrap();
+
+    let (mut a, _) = controller();
+    a.apply(&Command::Next);
+    a.apply(&Command::GoLive);
+    assert_eq!(
+        a.apply(&Command::SetCustomTheme {
+            theme_json: json.clone()
+        }),
+        ControllerReply::Ack
+    );
+    let is_red = |c: &LiveController| {
+        c.presenter()
+            .live_output()
+            .bytes()
+            .chunks_exact(4)
+            .any(|p| p[0] > 200 && p[1] < 60 && p[2] < 60)
+    };
+    assert!(
+        is_red(&a),
+        "the custom theme's front element renders on the live output"
+    );
+
+    // Persist + recover: the element survives (recovered live output is identical).
+    let snap = a.snapshot(t0);
+    let live = a.presenter().live_output().bytes().to_vec();
+    let (mut b, _) = controller();
+    b.restore(&snap);
+    b.tick(t0);
+    assert_eq!(
+        b.presenter().live_output().bytes(),
+        live.as_slice(),
+        "a custom theme + its elements recover after a restart"
+    );
+
+    // Over-cap: a theme with more than MAX_ELEMENTS elements is rejected (no-leak).
+    let mut huge = Theme::classic();
+    for _ in 0..=MAX_ELEMENTS {
+        huge.elements.push(shape(0));
+    }
+    assert!(huge.elements.len() > MAX_ELEMENTS);
+    let (mut c, _) = controller();
+    assert_eq!(
+        c.apply(&Command::SetCustomTheme {
+            theme_json: serde_json::to_string(&huge).unwrap()
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest),
+        "an over-cap element list is rejected"
     );
 }

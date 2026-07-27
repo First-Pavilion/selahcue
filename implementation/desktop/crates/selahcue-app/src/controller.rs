@@ -13,7 +13,9 @@ use selahcue_lan::protocol::{
     Command, DenyReason, DisplayView, OutputStatusView, SavedThemeView, ScreenThemeView,
     ServerMessage, TimerSnapshot, VerseView,
 };
-use selahcue_present::{FrameBuffer, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView};
+use selahcue_present::{
+    FrameBuffer, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView, MAX_ELEMENTS,
+};
 use std::time::{Duration, Instant};
 
 /// Seconds-remaining threshold at which the countdown enters its amber "warning" state.
@@ -314,6 +316,11 @@ impl LiveController {
         let Ok(theme) = serde_json::from_str::<Theme>(theme_json) else {
             return false;
         };
+        // Bound the element list (Canvas Editing, 86ajq6j2q) so a hostile/hand-edited
+        // theme JSON cannot grow the design without limit (no-leak).
+        if theme.elements.len() > MAX_ELEMENTS {
+            return false;
+        }
         // Persist the CANONICAL re-serialized theme, not the raw input. `Theme` is a
         // fixed struct of scalars, so this bounds the stored/snapshotted size to a few
         // hundred bytes and strips any ignored or duplicate JSON a client may have
@@ -346,6 +353,10 @@ impl LiveController {
         let Ok(theme) = serde_json::from_str::<Theme>(theme_json) else {
             return ControllerReply::Deny(DenyReason::BadRequest);
         };
+        // Bound the element list (Canvas Editing, 86ajq6j2q) — no unbounded design growth.
+        if theme.elements.len() > MAX_ELEMENTS {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
         // A NEW name must fit under the cap; overwriting an existing one always may.
         if !self.saved_themes.contains_key(name) && self.saved_themes.len() >= MAX_SAVED_THEMES {
             return ControllerReply::Deny(DenyReason::BadRequest);
@@ -394,7 +405,13 @@ impl LiveController {
             .filter(|(name, json)| {
                 !name.trim().is_empty()
                     && name.len() <= MAX_THEME_NAME_LEN
-                    && serde_json::from_str::<Theme>(json).is_ok()
+                    // Bound the element list too (not just name/count/JSON): the write paths
+                    // (set_custom_theme / save_theme) reject over-cap themes, so a corrupt or
+                    // version-skewed store row is the one ingress that could otherwise smuggle
+                    // an unbounded element Vec straight into compose. Drop it defensively.
+                    && serde_json::from_str::<Theme>(json)
+                        .map(|t| t.elements.len() <= MAX_ELEMENTS)
+                        .unwrap_or(false)
             })
             .take(MAX_SAVED_THEMES)
             .collect();

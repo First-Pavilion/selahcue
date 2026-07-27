@@ -7,7 +7,7 @@
 //! under a different theme restyles it without loss.
 
 use crate::slide::Slide;
-use crate::theme::{Band, Fit, RegionStyle, Theme, VAlign};
+use crate::theme::{Band, Element, Fit, RegionStyle, Theme, VAlign};
 use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, TextAlign};
 
 /// Lay out `lines` into a themed [`RegionStyle`] — per-region cell size, line
@@ -230,14 +230,87 @@ fn band_layers(band: &Band, width: u32, height: u32) -> Vec<Layer> {
     layers
 }
 
+/// The [`Layer::Fill`] rects for a design [`Element`] (Canvas Editing, 86ajq6j2q). A
+/// `Shape` is a fill rect + up to four border edges (like [`band_layers`]), with the
+/// element's `opacity` multiplied into the fill + border alpha (the engine blends fills
+/// src-over, so a translucent shape reads as a panel over what is beneath). Positions +
+/// sizes are per-mille of the frame, matching [`Band`].
+fn element_layers(element: &Element, width: u32, height: u32) -> Vec<Layer> {
+    match element {
+        Element::Shape {
+            x_permille,
+            y_permille,
+            w_permille,
+            h_permille,
+            fill,
+            border,
+            border_permille,
+            opacity,
+            z: _,
+        } => {
+            let map = |dim: u32, permille: u16| (dim as u64 * permille as u64 / 1000) as u32;
+            let rect = Rect::new(
+                map(width, *x_permille) as i32,
+                map(height, *y_permille) as i32,
+                map(width, *w_permille).max(1),
+                map(height, *h_permille).max(1),
+            );
+            // Multiply the whole-shape opacity into each colour's alpha (0 = fully hidden).
+            let apply =
+                |c: Rgba| Rgba::new(c.r, c.g, c.b, ((c.a as u16 * *opacity as u16) / 255) as u8);
+            let mut layers = Vec::new();
+            let f = apply(*fill);
+            if f.a > 0 {
+                layers.push(Layer::Fill { rect, color: f });
+            }
+            let bt = if *border_permille == 0 {
+                0
+            } else {
+                (height as u64 * *border_permille as u64 / 1000).max(1) as i32
+            };
+            let b = apply(*border);
+            if bt > 0 && b.a > 0 {
+                let (x, y, w, h) = (rect.x, rect.y, rect.w as i32, rect.h as i32);
+                let bt = bt.min(w).min(h);
+                let edge = |x: i32, y: i32, w: i32, h: i32| Layer::Fill {
+                    rect: Rect::new(x, y, w.max(0) as u32, h.max(0) as u32),
+                    color: b,
+                };
+                // Left/right span the FULL height and own the four corners; top/bottom
+                // cover only the interior width (w - 2*bt) so no pixel is painted by two
+                // edges. Overlapping edges are idempotent for an OPAQUE border, but this
+                // batch multiplies the shape opacity into the border alpha — a translucent
+                // border would double-blend (brighter) at the corners without this split.
+                let iw = (w - 2 * bt).max(0); // interior width (0 when the border fills the box)
+                layers.push(edge(x, y, bt, h)); // left (full height)
+                layers.push(edge(x + w - bt, y, bt, h)); // right (full height)
+                layers.push(edge(x + bt, y, iw, bt)); // top (interior)
+                layers.push(edge(x + bt, y + h - bt, iw, bt)); // bottom (interior)
+            }
+            layers
+        }
+    }
+}
+
 pub fn compose_slide(slide: &Slide, theme: &Theme, width: u32, height: u32) -> Frame {
     let mut frame = Frame::new(width, height).with_background(theme.background);
     if slide.is_blank() {
         return frame; // background only
     }
-    // A decorative band (e.g. the lower-third bar) sits behind the text regions.
+    // A decorative band (e.g. the lower-third bar) sits behind everything else.
     if let Some(band) = &theme.band {
         for layer in band_layers(band, width, height) {
+            frame.push(layer);
+        }
+    }
+    // Design elements (Canvas Editing, 86ajq6j2q) composite by z-order relative to the
+    // text: `z < 0` BEHIND the text, `z >= 0` IN FRONT. A stable sort by z gives a
+    // well-defined order (list order within equal z). Rendered here (behind pass) + after
+    // the text (front pass). Absent for every current built-in → a no-op → determinism.
+    let mut ordered: Vec<&Element> = theme.elements.iter().collect();
+    ordered.sort_by_key(|e| e.z());
+    for e in ordered.iter().filter(|e| e.z() < 0) {
+        for layer in element_layers(e, width, height) {
             frame.push(layer);
         }
     }
@@ -269,6 +342,12 @@ pub fn compose_slide(slide: &Slide, theme: &Theme, width: u32, height: u32) -> F
             for layer in layout_region(&body, &theme.body, width, height, theme.font) {
                 frame.push(layer);
             }
+        }
+    }
+    // Front pass: design elements with `z >= 0` composite IN FRONT of the text.
+    for e in ordered.iter().filter(|e| e.z() >= 0) {
+        for layer in element_layers(e, width, height) {
+            frame.push(layer);
         }
     }
     frame

@@ -3,7 +3,22 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_engine::raster::{render, FrameBuffer};
-use selahcue_present::{compose_slide, FontName, Slide, Theme};
+use selahcue_present::{compose_slide, Element, FontName, Rgba, Slide, Theme};
+
+/// A full-frame opaque shape element at draw order `z`.
+fn full_shape(fill: Rgba, opacity: u8, z: i16) -> Element {
+    Element::Shape {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 1000,
+        h_permille: 1000,
+        fill,
+        border: Rgba::new(0, 0, 0, 0),
+        border_permille: 0,
+        opacity,
+        z,
+    }
+}
 
 /// Whether any glyph INK (a pixel meaningfully brighter than the dark theme
 /// background) appears in the region. Real shaping antialiases glyph edges, so
@@ -391,4 +406,172 @@ fn a_theme_font_is_validated_on_deserialization() {
     // A spaced name trims to the canonical family (so it matches the installed font).
     let t = with_font(serde_json::json!(" Arial ")).unwrap();
     assert_eq!(t.font.map(|f| f.as_str().to_string()), Some("Arial".into()));
+}
+
+// --- Layered elements: z-order + opacity (Canvas Editing, 86ajq6j2q) --------
+
+#[test]
+fn a_theme_with_no_elements_composes_identically_to_before() {
+    // Determinism guard: adding the `elements` field must not change the default render.
+    let slide = Slide::new("John 3:16", ["For God so loved the world"]);
+    let theme = Theme::classic();
+    assert!(theme.elements.is_empty());
+    let a = render(&compose_slide(&slide, &theme, 320, 180));
+    // A theme with an explicitly-empty element list renders byte-identically.
+    let mut b_theme = Theme::classic();
+    b_theme.elements = Vec::new();
+    let b = render(&compose_slide(&slide, &b_theme, 320, 180));
+    assert_eq!(
+        a.bytes(),
+        b.bytes(),
+        "an empty element list is a no-op (determinism)"
+    );
+}
+
+#[test]
+fn a_front_element_paints_over_the_text() {
+    // A z>=0 opaque shape covering the frame occludes the text (in front).
+    let slide = Slide::new("Ref", ["Body text"]);
+    let mut theme = Theme::classic();
+    let baseline = render(&compose_slide(&slide, &theme, 200, 100));
+    theme
+        .elements
+        .push(full_shape(Rgba::rgb(255, 0, 0), 255, 1));
+    let fb = render(&compose_slide(&slide, &theme, 200, 100));
+    assert_ne!(
+        fb.bytes(),
+        baseline.bytes(),
+        "a front element changes the render"
+    );
+    // The centre (where the text was) is now the opaque red shape.
+    let p = fb.pixel(100, 50).unwrap();
+    assert!(
+        p.r > 200 && p.g < 60 && p.b < 60,
+        "the front shape paints over the text, got {p:?}"
+    );
+}
+
+#[test]
+fn a_behind_element_keeps_the_text_visible_on_top() {
+    // A z<0 opaque shape covers the background, but the text renders ON TOP of it.
+    let slide = Slide::new("Ref", ["Body"]);
+    let mut theme = Theme::classic();
+    theme
+        .elements
+        .push(full_shape(Rgba::rgb(0, 130, 0), 255, -1));
+    let fb = render(&compose_slide(&slide, &theme, 200, 100));
+    // A corner (no text): the behind shape covers the background (green, not navy).
+    let corner = fb.pixel(2, 2).unwrap();
+    assert!(
+        corner.g > 100 && corner.r < 40 && corner.b < 40,
+        "the behind shape covers the background, got {corner:?}"
+    );
+    // The WHITE body text still shows ON TOP of the green shape (near-white pixels in the
+    // body region — green alone has b≈0, so a high-blue pixel proves text over the shape).
+    let text_on_top = (28..84).any(|y| {
+        (12u32..188).any(|x| {
+            fb.pixel(x, y)
+                .map(|p| p.r > 150 && p.b > 150)
+                .unwrap_or(false)
+        })
+    });
+    assert!(text_on_top, "the text renders on top of the behind element");
+}
+
+#[test]
+fn a_shape_element_opacity_blends_over_what_is_beneath() {
+    // A 50%-opacity white shape in the top-left corner blends with the background.
+    let slide = Slide::new("R", ["B"]);
+    let mut theme = Theme::classic(); // dark background
+    theme.elements.push(Element::Shape {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 100, // 20px wide at 200px
+        h_permille: 100, // 10px tall at 100px
+        fill: Rgba::WHITE,
+        border: Rgba::new(0, 0, 0, 0),
+        border_permille: 0,
+        opacity: 128, // 50%
+        z: 1,
+    });
+    let fb = render(&compose_slide(&slide, &theme, 200, 100));
+    // Inside the shape (top-left): 50% white over the dark bg → a mid grey, not full white.
+    let inside = fb.pixel(2, 2).unwrap();
+    assert!(
+        (100..=175).contains(&inside.r) && (100..=175).contains(&inside.b),
+        "50% white over dark blends to mid grey, got {inside:?}"
+    );
+    // Outside the shape (bottom-right corner): the dark background is untouched.
+    let outside = fb.pixel(198, 98).unwrap();
+    assert!(
+        outside.r < 40 && outside.b < 60,
+        "outside the shape stays the dark background, got {outside:?}"
+    );
+}
+
+#[test]
+fn a_translucent_element_border_paints_its_corners_uniformly() {
+    // A shape with a TRANSLUCENT border (opacity < 255, opaque border colour): every
+    // border pixel must be blended exactly once, so the four corners read the SAME as
+    // the straight edges. Before the edge split they double-blended and rendered brighter.
+    let slide = Slide::new("R", ["B"]);
+    let mut theme = Theme::classic(); // dark background
+    theme.elements.push(Element::Shape {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 800,     // 160px wide at 200px
+        h_permille: 800,     // 80px tall at 100px
+        fill: Rgba::WHITE,   // transparent below (opacity applies to alpha) — isolate the border
+        border: Rgba::WHITE, // opaque white border
+        border_permille: 50, // 5px thick at 100px
+        opacity: 128,        // 50% → border alpha 128
+        z: 1,
+    });
+    let fb = render(&compose_slide(&slide, &theme, 200, 100));
+    let corner = fb.pixel(1, 1).unwrap(); // top-left corner square
+    let top_edge = fb.pixel(80, 1).unwrap(); // straight top edge (past the corner)
+    let left_edge = fb.pixel(1, 40).unwrap(); // straight left edge (below the corner)
+    assert_eq!(
+        (corner.r, corner.g, corner.b),
+        (top_edge.r, top_edge.g, top_edge.b),
+        "the corner blends the same as the straight top edge (no double-blend), got corner={corner:?} edge={top_edge:?}"
+    );
+    assert_eq!(
+        (corner.r, corner.g, corner.b),
+        (left_edge.r, left_edge.g, left_edge.b),
+        "the corner blends the same as the straight left edge, got corner={corner:?} edge={left_edge:?}"
+    );
+    // Proof it is genuinely translucent (a single blend, not the opaque-white corner):
+    assert!(
+        corner.r < 255,
+        "a 50% border reads as a single blend, not full white, got {corner:?}"
+    );
+}
+
+#[test]
+fn theme_elements_are_additive_serde_and_byte_stable_by_default() {
+    // A no-element theme omits the field (byte-stable JSON); a theme with elements
+    // round-trips; old JSON without the field deserializes to empty.
+    let classic_json = serde_json::to_string(&Theme::classic()).unwrap();
+    assert!(
+        !classic_json.contains("\"elements\""),
+        "a theme with no elements omits the field (byte-stable)"
+    );
+    let mut t = Theme::classic();
+    t.elements.push(full_shape(Rgba::rgb(10, 20, 30), 200, -1));
+    let jt = serde_json::to_string(&t).unwrap();
+    assert!(
+        jt.contains("\"elements\"") && jt.contains("\"kind\":\"shape\""),
+        "an element serializes with its kind tag: {jt}"
+    );
+    assert_eq!(
+        serde_json::from_str::<Theme>(&jt).unwrap(),
+        t,
+        "elements round-trip"
+    );
+    let old: Theme = serde_json::from_str(&classic_json).unwrap();
+    assert!(
+        old.elements.is_empty(),
+        "absent elements deserialize to empty"
+    );
 }

@@ -125,11 +125,54 @@ impl RegionStyle {
     }
 }
 
+/// A layered design **element** on the canvas (Canvas Editing epic, 86ajq6j2q): a
+/// positioned, opacity-blended, z-ordered item composited over the background. Additive,
+/// internally-tagged enum — the `Image` (needs the S8-6 decode) and `Text` (free text
+/// box) kinds land in the dependent stories without a wire break.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Element {
+    /// A decorative shape — a fill rect + optional border, at a per-mille rect, blended at
+    /// `opacity`, ordered by `z` relative to the text (`z < 0` = behind, `z >= 0` = in
+    /// front). Generalises [`Band`] to an arbitrary, arrangeable element. All-scalar, so
+    /// `Element` is `Copy`; the `Vec<Element>` on the [`Theme`] is what makes it non-`Copy`.
+    Shape {
+        x_permille: u16,
+        y_permille: u16,
+        w_permille: u16,
+        h_permille: u16,
+        fill: Rgba,
+        border: Rgba,
+        /// Border thickness as per-mille of frame HEIGHT (`0` = no border).
+        border_permille: u16,
+        /// Whole-shape opacity, `0..=255`, multiplied into the fill + border alpha.
+        opacity: u8,
+        /// Draw order relative to the text regions: `< 0` behind the text, `>= 0` in front.
+        z: i16,
+    },
+}
+
+/// Upper bound on a theme's element list (86ajq6j2q) so the design can't grow without
+/// limit (no-leak). A canvas rarely needs more; the compositor + persistence are bounded.
+pub const MAX_ELEMENTS: usize = 64;
+
+impl Element {
+    /// Draw order relative to the text regions: `< 0` = behind the text, `>= 0` = in front.
+    pub fn z(&self) -> i16 {
+        match self {
+            Element::Shape { z, .. } => *z,
+        }
+    }
+}
+
 /// The audience-output theme: a solid background + a **title/reference** region and
 /// a **body** region. One theme renders both a scripture (title = the reference
 /// line) and a song (title = the song title) consistently. Per-role templates +
 /// per-item override are S8-3d.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// NOTE: `Theme` is `Clone` but NOT `Copy` (it carries a `Vec<Element>` for the Canvas
+/// Editing epic, 86ajq6j2q). `RegionStyle`/`Band`/`FontName`/`Element` stay `Copy`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Theme {
     pub background: Rgba,
     pub title: RegionStyle,
@@ -143,9 +186,15 @@ pub struct Theme {
     /// bundled default (Noto Sans) — deterministic, cross-OS-identical. `Some` selects a
     /// SYSTEM font on the render machine (a missing family falls back to the bundled
     /// font). Additive (`skip_serializing_if` → a default-font theme's JSON is unchanged,
-    /// so pinned theme fixtures stay byte-stable). Keeps `Theme` a fixed-size `Copy` POD.
+    /// so pinned theme fixtures stay byte-stable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font: Option<FontName>,
+    /// Layered design elements composited over the background (Canvas Editing, 86ajq6j2q):
+    /// each positioned + opacity-blended + z-ordered relative to the text. Additive
+    /// (`skip_serializing_if` empty → a default theme's JSON is byte-identical). Bounded
+    /// by [`MAX_ELEMENTS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub elements: Vec<Element>,
 }
 
 const AMBER: Rgba = Rgba {
@@ -198,6 +247,7 @@ impl Theme {
             },
             band: None,
             font: None,
+            elements: Vec::new(),
         }
     }
 
@@ -234,6 +284,7 @@ impl Theme {
             },
             band: None,
             font: None,
+            elements: Vec::new(),
         }
     }
 
@@ -294,6 +345,7 @@ impl Theme {
                 border_permille: 5,
             }),
             font: None,
+            elements: Vec::new(),
         }
     }
 

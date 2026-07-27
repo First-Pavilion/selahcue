@@ -127,7 +127,7 @@ impl Presenter {
             return false;
         }
         self.live_slide = Some(slide);
-        self.live_theme = self.staged_theme;
+        self.live_theme = self.staged_theme.clone();
         true
     }
 
@@ -187,7 +187,7 @@ impl Presenter {
 
     /// The `main` audience screen's per-screen theme, if one is set.
     pub fn main_screen_theme(&self) -> Option<Theme> {
-        self.main_screen_theme
+        self.main_screen_theme.clone()
     }
 
     /// Compose the current LIVE content for a SECONDARY audience screen (lower-third /
@@ -209,7 +209,7 @@ impl Presenter {
 
     /// The active global audience theme.
     pub fn theme(&self) -> Theme {
-        self.theme
+        self.theme.clone()
     }
 
     /// Change the LIVE surface's per-item theme override in place and recompose it from
