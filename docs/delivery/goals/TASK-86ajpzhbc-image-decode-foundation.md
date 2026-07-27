@@ -94,6 +94,6 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajpzhbc-image-decode-foundation.md --require-complete`
 - Validator result: PASS (6/6 mandatory criteria PASS)
-- Independent verification result: adversarial Workflow review `wf_d771a8fa-354` (5 lenses, 12 agents) — 2 confirmed (same `draw_placeholder` overflow defect) / 5 refuted; fixed + regression-tested; re-verified `make ci` ALL GREEN. See `docs/delivery/CODE-REVIEW-batch-image-decode.md`.
+- Independent verification result: adversarial Workflow review `wf_d771a8fa-354` (5 lenses, 12 agents) — 2 confirmed (same `draw_placeholder` overflow defect) / 5 refuted; fixed + regression-tested; re-verified `make ci` ALL GREEN. See `docs/delivery/CODE-REVIEW-batch-image-decode.md`. **3-OS CI run `30241768078` (commit `b2e2455`): SUCCESS** — rust + operator shell on macOS/Ubuntu/Windows (test_parity determinism gate holds on all three), **dependency audit (RustSec) + supply chain (licenses + SBOM) green** (NFR-027 — the new `png`/`fdeflate` deps clean), launch-smoke green; Flutter correctly skipped (Rust-only change).
 - Terminal state: GATE_REVIEW (verifiable work complete; paused at the /build user gate)
 - ClickUp final evidence comment: posted on 86ajpzhbc (→ qa) + BUILD CONTROL 86ajnx548
