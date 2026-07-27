@@ -738,14 +738,18 @@ fn an_image_element_is_additive_serde_and_round_trips() {
     let mut t = Theme::classic();
     t.elements.push(full_image(img.path(), 128, -1));
     let json = serde_json::to_string(&t).unwrap();
+    // Assert the kind tag + that a `source` field is emitted. (Do NOT substring-match the
+    // raw path against the JSON: on Windows the path's backslashes are escaped as `\\`, so
+    // the raw path is not a substring — the round-trip equality below proves the source
+    // value persisted losslessly, cross-OS, regardless of the path separator.)
     assert!(
-        json.contains("\"kind\":\"image\"") && json.contains(img.path().to_str().unwrap()),
-        "an image element serializes with its kind tag + source: {json}"
+        json.contains("\"kind\":\"image\"") && json.contains("\"source\":"),
+        "an image element serializes with its kind tag + source field: {json}"
     );
     assert_eq!(
         serde_json::from_str::<Theme>(&json).unwrap(),
         t,
-        "an image element round-trips"
+        "an image element round-trips (source value preserved)"
     );
     // A no-image-element theme is still byte-stable (no elements field).
     assert!(!serde_json::to_string(&Theme::classic())
