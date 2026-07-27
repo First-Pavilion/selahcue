@@ -6,8 +6,9 @@
 //! wgpu backend renders the *same* [`Frame`]; cross-GPU parity is asserted
 //! perceptually (SSIM ≥ 0.99), not by byte-equality.
 
+use crate::media::{self, DecodedImage};
 use crate::scene::FontName;
-use crate::scene::{Frame, Layer, Rect, Rgba, TextAlign};
+use crate::scene::{Frame, Layer, MediaRef, Rect, Rgba, TextAlign};
 use cosmic_text::{
     Attrs, Buffer, Color as CtColor, Family, FontSystem, Metrics, Shaping, SwashCache,
 };
@@ -370,9 +371,110 @@ pub fn render(frame: &Frame) -> FrameBuffer {
                 align,
                 font,
             } => draw_text(&mut fb, *rect, text, *px, *color, *align, font.as_ref()),
+            Layer::Image {
+                rect,
+                source,
+                opacity,
+            } => draw_image(&mut fb, *rect, source, *opacity),
         }
     }
     fb
+}
+
+/// Draw a [`Layer::Image`](crate::scene::Layer::Image): resolve `source` through the
+/// bounded decode cache and blit the decoded image scaled into `rect` at `opacity`; on a
+/// missing / corrupt / unsupported / over-budget source, draw the missing-media
+/// placeholder instead (FR-070) — never a blank rect, never a crash.
+fn draw_image(fb: &mut FrameBuffer, rect: Rect, source: &MediaRef, opacity: u8) {
+    media::with_resolved(source, |resolved| match resolved {
+        Some(img) => blit_image(fb, rect, img, opacity),
+        None => draw_placeholder(fb, rect, opacity),
+    });
+}
+
+/// Multiply a whole-layer `opacity` into a colour's alpha (same rounding as [`blend`]).
+fn scale_alpha(color: Rgba, opacity: u8) -> Rgba {
+    Rgba::new(
+        color.r,
+        color.g,
+        color.b,
+        ((color.a as u32 * opacity as u32 + 127) / 255) as u8,
+    )
+}
+
+/// Blit `img` scaled into `rect` with **integer nearest-neighbour** sampling (a pure
+/// integer function → deterministic, cross-OS byte-identical; no bilinear divergence),
+/// each source pixel alpha-composited (src-over) at the whole-layer `opacity`. Clipped to
+/// the on-screen intersection of `rect` and the frame, exactly like [`fill_rect`].
+fn blit_image(fb: &mut FrameBuffer, rect: Rect, img: &DecodedImage, opacity: u8) {
+    if rect.w == 0 || rect.h == 0 || img.width() == 0 || img.height() == 0 || opacity == 0 {
+        return;
+    }
+    let x0 = rect.x.max(0) as u32;
+    let y0 = rect.y.max(0) as u32;
+    let x1 = ((rect.x as i64) + rect.w as i64).clamp(0, fb.width as i64) as u32;
+    let y1 = ((rect.y as i64) + rect.h as i64).clamp(0, fb.height as i64) as u32;
+    let (iw, ih) = (img.width() as u64, img.height() as u64);
+    let (rw, rh) = (rect.w as u64, rect.h as u64);
+    for y in y0..y1 {
+        // Destination offset within the rect (≥ 0 across the clipped span).
+        let dy = (y as i64 - rect.y as i64).max(0) as u64;
+        let sy = ((dy * ih) / rh).min(ih - 1) as u32;
+        for x in x0..x1 {
+            let dx = (x as i64 - rect.x as i64).max(0) as u64;
+            let sx = ((dx * iw) / rw).min(iw - 1) as u32;
+            fb.blend(x, y, scale_alpha(img.sample(sx, sy), opacity));
+        }
+    }
+}
+
+/// The distinct, non-black "media missing / failed" placeholder (FR-070). Deterministic
+/// (drawn from fills), so a missing/corrupt image is HONEST — never a blank rect, never a
+/// crash. A muted purple-grey panel with a lighter border and a diagonal slash.
+fn draw_placeholder(fb: &mut FrameBuffer, rect: Rect, opacity: u8) {
+    if rect.w == 0 || rect.h == 0 || opacity == 0 {
+        return;
+    }
+    let base = scale_alpha(Rgba::rgb(64, 54, 74), opacity); // clearly not black
+    let mark = scale_alpha(Rgba::rgb(150, 130, 170), opacity); // lighter accent
+                                                               // Base panel — `fill_rect` clips the (unvalidated) rect safely in i64.
+    fill_rect(fb, rect, base);
+
+    // Border + diagonal are decoration ON TOP of the base. The layer rect is NOT
+    // validated (only `frame.width/height` pass through the engine boundary — a scene
+    // can carry any i32/u32 rect from a hand-edited/IPC theme), so every coordinate here
+    // is derived from the ON-SCREEN clipped span (≤ frame dimension ≤ MAX_DIMENSION) and
+    // computed in i64/i128 — no raw i32 rect arithmetic can overflow-panic (matching the
+    // overflow-safe pattern of `fill_rect`/`blit_image`/`draw_text`).
+    let x0 = rect.x.max(0) as u32;
+    let y0 = rect.y.max(0) as u32;
+    let x1 = ((rect.x as i64) + rect.w as i64).clamp(0, fb.width as i64) as u32;
+    let y1 = ((rect.y as i64) + rect.h as i64).clamp(0, fb.height as i64) as u32;
+    if x0 >= x1 || y0 >= y1 {
+        return; // nothing of the rect is on-screen
+    }
+    // Border thickness ∝ the smaller side (≥ 1). Rect edges in i64 (i32 + u32 fits i64).
+    let bt = (rect.w.min(rect.h) / 16).max(1) as i64;
+    let left = rect.x as i64;
+    let right = left + rect.w as i64; // exclusive
+    let top = rect.y as i64;
+    let bottom = top + rect.h as i64; // exclusive
+                                      // Diagonal-slash metric in i128 so `u*rh` can never i64-overflow for extreme rects.
+    let (rw, rh) = (rect.w as i128, rect.h as i128);
+    let tol = (rw + rh) * (bt as i128);
+    for py in y0..y1 {
+        let yy = py as i64; // in [0, fb.height) → bounded
+        let v = yy - top; // ≥ 0 within the span; bounded by the frame dimension
+        for px in x0..x1 {
+            let xx = px as i64; // in [0, fb.width) → bounded
+            let u = xx - left; // ≥ 0 within the span
+            let near_border = u < bt || (right - 1 - xx) < bt || v < bt || (bottom - 1 - yy) < bt;
+            let on_diagonal = ((u as i128) * rh - (v as i128) * rw).abs() <= tol;
+            if near_border || on_diagonal {
+                fb.blend(px, py, mark);
+            }
+        }
+    }
 }
 
 /// The shaped pixel width of `text` at cell height `px` — using the SAME font sizing

@@ -108,6 +108,87 @@ pub enum Layer {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         font: Option<FontName>,
     },
+    /// A decoded still image (S8-6) drawn scaled into `rect`, alpha-composited over
+    /// what is beneath it at whole-layer `opacity` (0 = hidden, 255 = opaque). The
+    /// PIXELS are **not** carried here — `source` is a bounded reference the CPU
+    /// rasterizer resolves through a size-capped decode cache
+    /// ([`media`](crate::media)), so the scene stays small + serde-cheap and a decoded
+    /// image never rides the IPC `Frame` (no-leak). A missing / corrupt / unsupported /
+    /// over-budget source draws the missing-media placeholder (FR-070) — never a blank
+    /// rect and never a crash. Additive (internally-tagged enum + `skip_serializing_if`
+    /// on `opacity`); the wgpu backend SKIPS this layer for now (GPU-native images are a
+    /// later batch, exactly as `Text` is CPU-composited today).
+    Image {
+        rect: Rect,
+        source: MediaRef,
+        #[serde(default = "opacity_opaque", skip_serializing_if = "is_opaque")]
+        opacity: u8,
+    },
+}
+
+/// The serde default for [`Layer::Image::opacity`]: fully opaque (a scene without an
+/// explicit opacity means "show the image at full strength").
+fn opacity_opaque() -> u8 {
+    255
+}
+
+/// Skip serializing an opaque opacity so the common case yields the minimal JSON.
+fn is_opaque(o: &u8) -> bool {
+    *o == 255
+}
+
+/// A bounded, validated reference to an external media file (a host-local path) for a
+/// [`Layer::Image`] (S8-6). NOT the pixels — the decoded RGBA lives in a size-capped
+/// in-process cache in [`media`](crate::media), never in the serde [`Frame`], so the
+/// scene stays small + byte-stable and memory stays bounded (no-leak). A reference that
+/// is empty / whitespace-only / over [`MediaRef::CAP`] bytes / contains a NUL is rejected
+/// on BOTH the constructor AND deserialization (the [`FontName`] pattern), so a
+/// hand-edited or wire-supplied theme JSON cannot smuggle an unbounded or malformed
+/// reference.
+///
+/// Seam: this batch decodes the reference AS GIVEN (host-local). Import-path
+/// canonicalization + media-root confinement (FR-138) belong to the story that first
+/// accepts an untrusted path from a user or peer (the theme image element, 86ajq6j49).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaRef(String);
+
+impl MediaRef {
+    /// Maximum reference length in bytes (a generous host-path bound).
+    pub const CAP: usize = 1024;
+
+    /// A media reference from a trimmed, non-empty, ≤[`CAP`](Self::CAP)-byte,
+    /// NUL-free string; `None` otherwise.
+    pub fn new(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.is_empty() || s.len() > Self::CAP || s.contains('\0') {
+            return None;
+        }
+        Some(MediaRef(s.to_string()))
+    }
+
+    /// The reference as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl serde::Serialize for MediaRef {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for MediaRef {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // Route through the constructor so the wire enforces the SAME invariant
+        // (trim + reject empty / over-long / NUL) — never a pass-through.
+        let s = String::deserialize(d)?;
+        MediaRef::new(&s).ok_or_else(|| {
+            serde::de::Error::custom(
+                "empty, whitespace-only, over-long, or NUL-bearing media reference",
+            )
+        })
+    }
 }
 
 /// A bounded, `Copy` font-family name (86ajq6fxt). A fixed-capacity stack string (not a

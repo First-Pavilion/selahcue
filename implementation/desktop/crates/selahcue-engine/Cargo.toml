@@ -19,9 +19,20 @@ arrayvec = { version = "0.7", features = ["serde"] }
 # font (system fonts disabled) so output text shapes IDENTICALLY on every OS
 # (NFR-014) with a memory-safe parser (FR-173). std-only, no C FFI.
 cosmic-text = { version = "0.12", default-features = false, features = ["std", "swash"] }
+# Bounded, pure-Rust, deterministic still-image decode (PNG) for `Layer::Image` — the
+# S8-6 image foundation. A memory-safe pure-Rust parser (FR-173); PNG is lossless so the
+# decoded RGBA8 is byte-identical on every OS (NFR-014), unlike a platform/HW decoder.
+# Decode runs IN-PROCESS with hard size/dimension limits (decompression-bomb-safe); the
+# out-of-process sandbox (ADR-0016) is the deferred end-state (ADR-0018). PNG only this
+# batch — other formats degrade to the missing-media placeholder (FR-070).
+png = "0.17"
 
 [dev-dependencies]
 serde_json = "1"
+# Tests generate known PNG fixtures with the encoder to exercise `decode_png` +
+# `Layer::Image` (already a normal dependency; listed here so the integration-test
+# crate can build fixtures directly).
+png = "0.17"
 
 [lints]
 workspace = true
