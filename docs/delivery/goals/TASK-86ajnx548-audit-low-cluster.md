@@ -48,7 +48,7 @@ Verified: `recent_refs: VecDeque<String>` (detection.rs:365) capped in `remember
 |---|---|---|---|---|---|---|
 | C-001 | yes | L1: `recent_dedup_len()` accessor + a flood test that ingests > cap distinct refs and asserts the ring stays == `RECENT_DEDUP_WINDOW` (fails without the cap) | `cargo test -p selahcue-core` | ring capped; test pins it | test_detection (`recent_dedup_ring_is_bounded_under_many_distinct_references`); core 76/0 | PASS |
 | C-002 | yes | L3: the designer loads lazily on first activation (not at boot); the plan/console are unaffected; the headless gate opens the designer + asserts not-loaded-at-boot → loaded-after-open | operator `node --check` + committed headless gate | lazy; gate green with the new checks | app.js once-guard + harness; node --check OK; headless 66/0 (+2 L3) | PASS |
-| C-003 | yes | Gate: #11-doc added; independent adversarial review, findings fixed; `make ci` + 3-OS CI green (verified by run conclusion + the runner log) | Workflow review + make ci + CI | all green; review clean | CODE-REVIEW doc; CI run | PENDING |
+| C-003 | yes | Gate: #11-doc added; independent adversarial review, findings fixed; `make ci` + 3-OS CI green (verified by run conclusion + the runner log) | Workflow review + make ci + CI | all green; review clean | CODE-REVIEW-batch-audit-low-cluster.md; CI 30663004635 (success; log `66 checks, 0 FAIL` + L3) | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -70,7 +70,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajnx548-audit-low-cluster.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending — MCP rate-limited; closes audit report §4 L1/L3 + #11-doc)
+- Validator result: PASS (run below)
+- Independent verification result: adversarial review `wf_bc870aca-45b` (L1-test-quality + L3-lazy-safety) — **all INFO, 0 findings**; the L1 test confirmed non-vacuous (fails without the cap), L3 lazy-init verified safe across all four risk points. See `CODE-REVIEW-batch-audit-low-cluster.md`.
+- Terminal state: **VERIFIED_COMPLETE** — L1 (recent_refs bounded-tested) + L3 (Theme Designer lazy-init) + #11-doc; **3-OS CI `30663004635` GREEN (completed→success)** verified by conclusion + the runner log (`66 checks, 0 FAIL`, L3 checks pass). Larger LOWs stay tracked (#8, #10, #11-poll).
+- ClickUp final evidence comment: (queued — MCP rate-limited; closes audit report §4 L1/L3 + #11-doc; BUILD CONTROL `86ajnx548` update queued)
