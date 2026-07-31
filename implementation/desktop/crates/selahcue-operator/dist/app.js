@@ -22,7 +22,19 @@
         syncDetections(view);
         // Never clobber an open editor or a pending delete-confirm, and skip
         // identical re-renders (the 1s poll must not eat in-flight clicks).
-        const key = JSON.stringify(view);
+        // The key is scoped to EXACTLY the fields the plan build below reads:
+        // plan_name (39), items (incl. per-item is_live/is_staged/theme/slide, 44+),
+        // themes + saved_themes (the per-row picker options, 132/139). `view.timer`
+        // is deliberately EXCLUDED — like the console-render sig (below) — so a running
+        // countdown (which advances the timer every second) does NOT tear down and
+        // rebuild the whole plan list every poll; transcript/detections likewise have
+        // their own change-keyed syncs above (audit M1).
+        const key = JSON.stringify([
+          view.plan_name,
+          view.items,
+          view.themes,
+          view.saved_themes,
+        ]);
         if (editing !== null || confirmDelete !== null) return;
         // Never yank an OPEN per-item theme picker out from under the operator: the 1s
         // poll would otherwise rebuild the plan (a running timer changes the view every

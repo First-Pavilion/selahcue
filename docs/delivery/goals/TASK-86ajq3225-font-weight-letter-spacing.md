@@ -51,7 +51,7 @@ Verified from code:
 | C-001 | yes | Engine: `Layer::Text` gains `weight`/`letter_spacing_px` (additive, Eq, skip-if-default → a Regular/0 layer is byte-identical); `draw_text` renders BOLD with more ink than Regular, positive letter-spacing widens the glyph spread, deterministically + bounded (no panic on extreme spacing) | `cargo test -p selahcue-engine` | weight+spacing render; deterministic; additive | test_scene/test_raster | PASS |
 | C-002 | yes | Present: `Theme` gains `weight`/`letter_spacing_permille` (additive, default JSON byte-identical); `compose_slide` flows them into every `Layer::Text` (per-mille→px) | `cargo test -p selahcue-present -p selahcue-app -p selahcue-lan -p selahcue-data -p selahcue-gpu` | flows; no drift; parity unchanged | test_compose/test_controller | PASS |
 | C-003 | yes | Designer: `#td-weight` + `#td-letter` enabled + wired (theme preview + save); operator + workspace compile; clippy clean | operator `node --check` + headless | fields set the theme + re-preview | headless test | PASS |
-| C-004 | yes | Gate: make ci + operator build/fmt/clippy/deny clean; determinism + pinned fixtures green; independent Workflow review, findings fixed; 3-OS CI green | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-font-weight.md; CI run | PASS (pending only 3-OS CI green) |
+| C-004 | yes | Gate: make ci + operator build/fmt/clippy/deny clean; determinism + pinned fixtures green; independent Workflow review, findings fixed; 3-OS CI green | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-font-weight.md; CI 30642394688 | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
