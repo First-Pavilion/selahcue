@@ -154,6 +154,13 @@ pub fn load(db: &Database, plan_id: i64) -> Result<ServicePlan> {
 
     let mut items = Vec::new();
     for row in rows {
+        // Bound the reload (audit M2 no-leak rule): never materialize more than
+        // MAX_PLAN_ITEMS rows into memory, even if a corrupt/oversized row set was
+        // persisted — mirrors the controller's remote-AddItem cap. `query_map` is lazy,
+        // so breaking stops fetching the rest.
+        if items.len() >= selahcue_core::plan::MAX_PLAN_ITEMS {
+            break;
+        }
         let (item_id, kind_tag, title, planned, owner, content, theme) = row?;
         let kind = ItemKind::from_tag(&kind_tag)
             .ok_or_else(|| DataError::Corrupt(format!("unknown item kind '{kind_tag}'")))?;

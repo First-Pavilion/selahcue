@@ -12,7 +12,7 @@ use crate::protocol::{
     ServerMessage,
 };
 use crate::rbac::{authorize, Role};
-use crate::session::{DeviceId, SessionRegistry, SessionToken};
+use crate::session::{DeviceId, PairingError, SessionRegistry, SessionToken};
 use crate::tls::{server_config, SelfSigned, TransportError};
 use crate::wire::{recv_json, send_json};
 use futures_util::future::BoxFuture;
@@ -339,7 +339,12 @@ impl ControlServer {
                 .await?;
                 Ok(role)
             }
-            Err(_) => reject(ws, DenyReason::Unauthenticated, "code expired").await,
+            // A cap rejection (audit M3) is not an auth failure — tell the operator why so a
+            // stale session can be revoked; other errors stay a generic invalid/expired reject.
+            Err(PairingError::TooManySessions) => {
+                reject(ws, DenyReason::Unauthenticated, "too many active sessions").await
+            }
+            Err(_) => reject(ws, DenyReason::Unauthenticated, "code invalid or expired").await,
         }
     }
 

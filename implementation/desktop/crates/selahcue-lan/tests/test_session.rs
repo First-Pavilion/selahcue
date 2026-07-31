@@ -306,3 +306,70 @@ fn withdrawing_an_offer_kills_the_code_immediately() {
     assert!(!reg.withdraw("CODE1234"), "second withdraw is a no-op");
     assert_eq!(reg.pending_count(), 0);
 }
+
+#[test]
+fn active_sessions_are_hard_capped() {
+    // Audit M3: the active-session map must not grow without bound. Pairing MAX_ACTIVE_SESSIONS
+    // distinct devices fills it; a further NEW device is refused with TooManySessions (its
+    // single-use code is still consumed, so pending never grows); re-pairing an already-active
+    // device still works (replaces, no growth); freeing a slot (revoke) + a fresh code lets a
+    // new device in.
+    use selahcue_lan::session::MAX_ACTIVE_SESSIONS;
+    let now = Instant::now();
+    let ttl = Duration::from_secs(300);
+    let mut reg = SessionRegistry::new();
+    for i in 0..MAX_ACTIVE_SESSIONS {
+        let code = format!("code-{i}");
+        reg.offer_pairing(&code, Role::Producer, now, ttl);
+        reg.redeem(
+            &code,
+            dev(&format!("dev-{i}")),
+            SessionToken::new(format!("tok-{i}")),
+            now,
+        )
+        .expect("under the cap");
+    }
+    assert_eq!(reg.active_count(), MAX_ACTIVE_SESSIONS);
+    assert_eq!(reg.pending_count(), 0, "every offer consumed");
+
+    // A NEW device is refused, the map stays capped, and the single-use code is still consumed.
+    reg.offer_pairing("overflow", Role::Producer, now, ttl);
+    assert_eq!(
+        reg.redeem(
+            "overflow",
+            dev("dev-new"),
+            SessionToken::new("tok-new"),
+            now
+        ),
+        Err(PairingError::TooManySessions)
+    );
+    assert_eq!(reg.active_count(), MAX_ACTIVE_SESSIONS, "still capped");
+    assert!(
+        !reg.code_valid("overflow", now),
+        "the single-use code is consumed even on a cap rejection (pending never grows)"
+    );
+
+    // Re-pairing an ALREADY-active device is allowed at the cap (replaces, no growth).
+    reg.offer_pairing("repair", Role::Producer, now, ttl);
+    assert!(reg
+        .redeem("repair", dev("dev-0"), SessionToken::new("tok-0b"), now)
+        .is_ok());
+    assert_eq!(
+        reg.active_count(),
+        MAX_ACTIVE_SESSIONS,
+        "re-pair does not grow"
+    );
+
+    // Freeing a slot (revoke) + a fresh code lets a new device in.
+    assert!(reg.revoke(&dev("dev-1")));
+    reg.offer_pairing("after-revoke", Role::Producer, now, ttl);
+    assert!(reg
+        .redeem(
+            "after-revoke",
+            dev("dev-new2"),
+            SessionToken::new("tok-new2"),
+            now
+        )
+        .is_ok());
+    assert_eq!(reg.active_count(), MAX_ACTIVE_SESSIONS);
+}

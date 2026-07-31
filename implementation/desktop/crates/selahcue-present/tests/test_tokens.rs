@@ -153,6 +153,25 @@ fn operator_webview_is_pinned_to_the_canonical_tokens() {
     }
 }
 
+/// Audit M4: the transcript log is CLIENT-capped so `#transcript-log` stays bounded even if a
+/// host ever returned an untailed transcript (defence-in-depth atop the host
+/// `OPERATOR_TRANSCRIPT_TAIL=60`). The operator webview has no JS test runner in CI, so this
+/// pins the cap by CONTENT — a committed, CI-gated guard that fails if the slice is ever
+/// silently dropped. (The BEHAVIOURAL check — feed >120 segments → ≤120 DOM rows, newest kept
+/// — is a dev-time headless harness; a follow-up tracks real operator JS/jsdom CI infra.)
+#[test]
+fn operator_transcript_log_is_client_capped() {
+    let js = operator_dist("app.js");
+    assert!(
+        js.contains("MAX_TRANSCRIPT_ROWS = 120"),
+        "the transcript DOM cap constant (audit M4) is missing from app.js"
+    );
+    assert!(
+        js.contains("slice(-MAX_TRANSCRIPT_ROWS)"),
+        "syncTranscript must slice to the newest MAX_TRANSCRIPT_ROWS (audit M4) before the prune/append"
+    );
+}
+
 /// The app menu + Screens surface (86ajq321f) are present and the emergency
 /// footer stays OUTSIDE the surface router (so it persists on every surface).
 #[test]

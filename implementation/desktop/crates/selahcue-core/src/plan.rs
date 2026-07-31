@@ -120,6 +120,15 @@ pub fn stanzas_to_text(stanzas: &[Stanza]) -> String {
         .join("\n\n")
 }
 
+/// Hard cap on the number of items in a service plan (audit M1/M2 no-leak rule).
+/// Far above any real run sheet (a large conference order is well under ~100 items),
+/// so legitimate use never hits it — it only stops a buggy/hostile client loop of
+/// remote `AddItem`s (or a corrupt/oversized persisted plan reloaded) from growing the
+/// `items` Vec without bound. Enforced at the untrusted ingress (the controller's
+/// `AddItem` handler) and on persistence load; the infallible domain `add_item`/
+/// `insert_item` stay uncapped for trusted seeding/tests.
+pub const MAX_PLAN_ITEMS: usize = 500;
+
 /// An ordered run sheet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServicePlan {

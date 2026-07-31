@@ -59,6 +59,12 @@ pub struct Session {
     token: SessionToken,
 }
 
+/// Hard cap on concurrent active (paired) sessions (audit M3 no-leak rule). Far above any
+/// realistic setup (a handful of volunteer devices + the loopback operator shell), so it
+/// never fires in legitimate use — it only stops the `active` map from accumulating one
+/// permanent entry per distinct device without bound when stale sessions are never revoked.
+pub const MAX_ACTIVE_SESSIONS: usize = 256;
+
 /// Why redeeming a pairing code failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairingError {
@@ -66,6 +72,11 @@ pub enum PairingError {
     UnknownCode,
     /// The code existed but its time window has passed.
     ExpiredCode,
+    /// The active-session registry is at `MAX_ACTIVE_SESSIONS` and this is a NEW device.
+    /// The single-use code is still consumed; the operator frees a slot (revokes a stale
+    /// session) and offers a fresh code. (Re-pairing an already-active device is always
+    /// allowed — it replaces, no growth.)
+    TooManySessions,
 }
 
 struct PendingPairing {
@@ -132,8 +143,26 @@ impl SessionRegistry {
                 Err(PairingError::ExpiredCode)
             }
             Some(p) => {
+                // Single-use: consume the code on redeem WHATEVER the outcome, so `pending`
+                // strictly shrinks and the code can never be replayed (even a cap rejection
+                // below burns it).
                 let role = p.role;
                 self.pending.remove(code);
+                // Bound the active-session map (audit M3): a NEW `device_id` can only pair
+                // when there is room. Re-pairing an ALREADY-active `device_id` overwrites its
+                // entry (no growth) and is always allowed — but note this only helps callers
+                // that present a STABLE id: the loopback operator shell reuses the host device
+                // id, whereas the remote WS server (`server.rs`) mints a fresh random id per
+                // pairing, so a remote re-pair takes a NEW slot. `active` is an in-memory map
+                // reset on restart and reclaimed by `revoke`, so the cap bounds concurrent (not
+                // lifetime) sessions; past it a new device is refused (fail-closed) and the
+                // operator frees a slot by revoking a stale session. A stable-remote-id or an
+                // idle-TTL that lets remote re-pairs replace / self-reclaim is a tracked
+                // follow-up.
+                if !self.active.contains_key(&device_id) && self.active.len() >= MAX_ACTIVE_SESSIONS
+                {
+                    return Err(PairingError::TooManySessions);
+                }
                 self.active.insert(
                     device_id.clone(),
                     Session {

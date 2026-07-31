@@ -2300,8 +2300,16 @@
       let transcriptKey = "";
       let detectionsKey = "";
 
+      // Defensive client cap on the transcript DOM (audit M4): the host already tails the
+      // transcript (OPERATOR_TRANSCRIPT_TAIL=60), but #transcript-log must stay bounded even
+      // if a Remote/older/newer host ever returned an untailed list — slice to the newest N
+      // (2x the host tail, generous headroom) BEFORE the prune/append so the DOM can never
+      // grow 1:1 with the sermon. The prune below drops rows not in this sliced set.
+      const MAX_TRANSCRIPT_ROWS = 120;
       function syncTranscript(view) {
-        const segs = Array.isArray(view.transcript) ? view.transcript : [];
+        const all = Array.isArray(view.transcript) ? view.transcript : [];
+        const segs =
+          all.length > MAX_TRANSCRIPT_ROWS ? all.slice(-MAX_TRANSCRIPT_ROWS) : all;
         const key = JSON.stringify(segs.map((s) => [s.id, s.text]));
         if (key === transcriptKey) return; // poll-safe: skip identical re-renders
         transcriptKey = key;

@@ -2795,3 +2795,40 @@ fn scripture_stage_to_live_latency_is_measured() {
         "stage->live median {median:?} exceeds the {ceiling:?} sanity ceiling"
     );
 }
+
+#[test]
+fn plan_is_bounded_under_add_item_flood() {
+    // Audit M2: a remote AddItem loop must not grow the plan without bound. Flood well past
+    // the cap; the plan must never exceed MAX_PLAN_ITEMS and every add past it is denied.
+    use selahcue_core::plan::MAX_PLAN_ITEMS;
+    let (mut c, _ids) = controller(); // starts with 3 items
+    let mut denied = 0usize;
+    for i in 0..(MAX_PLAN_ITEMS + 50) {
+        let reply = c.apply(&Command::AddItem {
+            kind: "song".into(),
+            title: format!("Song {i}"),
+            content: None,
+        });
+        if reply == ControllerReply::Deny(DenyReason::BadRequest) {
+            denied += 1;
+        }
+    }
+    assert_eq!(
+        c.plan().len(),
+        MAX_PLAN_ITEMS,
+        "plan capped at MAX_PLAN_ITEMS"
+    );
+    assert!(
+        denied >= 50,
+        "adds past the cap are denied (denied={denied})"
+    );
+    // A further add is still denied (not silently accepted).
+    assert_eq!(
+        c.apply(&Command::AddItem {
+            kind: "song".into(),
+            title: "one more".into(),
+            content: None,
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+}

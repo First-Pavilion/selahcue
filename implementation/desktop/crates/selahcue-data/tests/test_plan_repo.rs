@@ -286,3 +286,23 @@ fn a_pre_v6_row_with_null_content_loads_as_a_title_only_item() {
     assert_eq!(loaded.items()[0].slide_count(), 1);
     assert_eq!(loaded.items()[0].title, "Old Song");
 }
+
+#[test]
+fn load_is_bounded_to_max_plan_items() {
+    // Audit M2: a corrupt/oversized persisted plan must not materialize an unbounded number
+    // of rows on reload. Persist MAX_PLAN_ITEMS + extra (via the trusted, uncapped domain
+    // add_item), then assert the reload stops at the cap.
+    use selahcue_core::plan::MAX_PLAN_ITEMS;
+    let db = db();
+    let mut p = ServicePlan::new("Oversized");
+    for i in 0..(MAX_PLAN_ITEMS + 25) {
+        p.add_item(ItemKind::Song, format!("Item {i}"));
+    }
+    let id = insert(&db, &p).unwrap();
+    let loaded = load(&db, id).unwrap();
+    assert_eq!(
+        loaded.len(),
+        MAX_PLAN_ITEMS,
+        "reload is capped at MAX_PLAN_ITEMS"
+    );
+}

@@ -1412,6 +1412,13 @@ impl LiveController {
                 if title.is_empty() {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 }
+                // Bound the plan (audit M2 no-leak rule): refuse a remote AddItem once the
+                // run sheet is at MAX_PLAN_ITEMS so a buggy/hostile authenticated client loop
+                // cannot grow `items` without limit. Far above any real plan, so this never
+                // fires in legitimate use.
+                if self.plan.len() >= selahcue_core::plan::MAX_PLAN_ITEMS {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
                 let id = self.plan.add_item(kind, title);
                 // Optional stanza content (S8-1): the PD-hymn plain-text format,
                 // stanzas separated by blank lines. Parsing is total.
