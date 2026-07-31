@@ -70,5 +70,5 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-audit-memory-perf-latency.md --require-complete`
 - Validator result: (run below)
 - Independent verification result: The audit IS the independent verification pass. The Workflow lenses read the code independently; HIGH findings would have been adversarially verified (0 raised); the two headline findings were additionally hand-verified. No product code changed, so no separate review gate applies — only the timing test + report were added.
-- Terminal state: **VERIFIED_COMPLETE** — read-only audit + one committed timing test; C-001..C-004 all PASS; 0 release-blocking defect; 5 MEDIUM + 4 LOW follow-ups queued.
+- Terminal state: **VERIFIED_COMPLETE** — read-only audit + one committed timing test; C-001..C-004 all PASS; 0 release-blocking defect; 5 MEDIUM + 4 LOW follow-ups queued. The timing test's ceiling was profile-scaled in `962fe8b` after the flat 150ms first cut reddened CI on slow debug runners; **3-OS CI `30647000326` GREEN**.
 - ClickUp final evidence comment: (queued — MCP rate-limited; §4 of the report holds the tickets + a BUILD CONTROL `86ajnx548` update to post on recovery)

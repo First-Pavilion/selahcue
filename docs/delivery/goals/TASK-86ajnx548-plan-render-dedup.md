@@ -66,5 +66,5 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajnx548-plan-render-dedup.md --require-complete`
 - Validator result: PASS (run below)
 - Independent verification result: adversarial review `wf_856f033b-706` (completeness + regression, refute-by-default) — 6 findings, all INFO, 0 defects; the narrowed key is complete + regression-sound.
-- Terminal state: **VERIFIED_COMPLETE** — operator-webview-only dedup narrowing; C-001/C-002 PASS; headless 61/61; 0 review defects; pending only the 3-OS CI run (this push).
+- Terminal state: **VERIFIED_COMPLETE** — operator-webview-only dedup narrowing; C-001/C-002 PASS; headless 61/61; 0 review defects; **3-OS CI `30647000326` GREEN** (the green run also carries the audit latency-ceiling fix `962fe8b`).
 - ClickUp final evidence comment: (queued — MCP rate-limited; audit report §4 ticket #4 closed by this commit; BUILD CONTROL `86ajnx548` update queued)
