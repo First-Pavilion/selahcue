@@ -2733,3 +2733,52 @@ fn follow_scripture_rejects_an_unknown_translation() {
         ControllerReply::Deny(DenyReason::BadRequest)
     );
 }
+
+// --- AUDIT: scripture → output latency (host-side compose + render) ---
+
+#[test]
+fn scripture_stage_to_live_latency_is_measured() {
+    use std::time::{Duration, Instant};
+    // Measure at the REAL audience resolution (1920x1080) — compose + raster::render scale with
+    // pixel count, so the test helper's 320x180 would under-report the on-air latency.
+    let mut plan = ServicePlan::new("Service");
+    plan.add_item(ItemKind::Scripture, "Romans 8:28");
+    let mut c = LiveController::new(plan, 1920, 1080, Theme::dark());
+    let refs = [
+        "John 3:16",
+        "Romans 8:28",
+        "Psalm 23:1",
+        "Genesis 1:1",
+        "Isaiah 40:31",
+    ];
+    for r in &refs {
+        c.apply(&Command::StageScripture {
+            reference: (*r).into(),
+            translation: None,
+        });
+        c.apply(&Command::GoLive); // warm-up (glyph cache, buffers) -> time steady state
+    }
+    let mut durs: Vec<Duration> = Vec::new();
+    for i in 0..25usize {
+        let r = refs[i % refs.len()];
+        let t0 = Instant::now();
+        c.apply(&Command::StageScripture {
+            reference: r.into(),
+            translation: None,
+        });
+        c.apply(&Command::GoLive);
+        let _ = c.presenter().live_output().bytes().len(); // force the frame to materialize
+        durs.push(t0.elapsed());
+    }
+    durs.sort();
+    let median = durs[durs.len() / 2];
+    let p90 = durs[(durs.len() * 9) / 10];
+    let max = *durs.last().unwrap();
+    println!(
+        "[AUDIT] scripture stage->live compose+render @1920x1080: median={median:?} p90={p90:?} max={max:?} (n=25)"
+    );
+    assert!(
+        median < Duration::from_millis(150),
+        "stage->live median {median:?} exceeds the 150ms sanity ceiling"
+    );
+}
