@@ -284,24 +284,45 @@
         if (l) l.classList.toggle("has-render", on);
       }
       function drawConsoleFrame(canvasId, frame) {
-        if (!frame || !frame.rgba || !frame.w || !frame.h) return false;
+        if (!frame || !frame.rgba || !frame.w || !frame.h) {
+          console.warn("[SelahCue] drawConsoleFrame bad frame", canvasId, frame && { w: frame.w, h: frame.h, hasRgba: !!frame.rgba });
+          return false;
+        }
         const cv = document.getElementById(canvasId);
         if (!cv) return false;
         let bytes;
         try {
           bytes = Uint8Array.from(atob(frame.rgba), (c) => c.charCodeAt(0));
         } catch (e) {
+          console.warn("[SelahCue] drawConsoleFrame atob failed", canvasId, e);
           return false;
         }
-        if (bytes.length !== frame.w * frame.h * 4) return false; // guard a malformed payload
-        cv.width = frame.w;
-        cv.height = frame.h;
-        cv.getContext("2d").putImageData(
-          new ImageData(new Uint8ClampedArray(bytes), frame.w, frame.h),
-          0,
-          0
-        );
+        if (bytes.length !== frame.w * frame.h * 4) {
+          console.warn("[SelahCue] drawConsoleFrame length mismatch", canvasId, bytes.length, "!=", frame.w * frame.h * 4);
+          return false; // guard a malformed payload
+        }
+        try {
+          cv.width = frame.w;
+          cv.height = frame.h;
+          cv.getContext("2d").putImageData(
+            new ImageData(new Uint8ClampedArray(bytes), frame.w, frame.h),
+            0,
+            0
+          );
+        } catch (e) {
+          console.warn("[SelahCue] drawConsoleFrame putImageData failed", canvasId, frame.w, frame.h, e);
+          return false;
+        }
         return true;
+      }
+      // Surface a render-console DIAGNOSTIC into the panels (visible in a screenshot) + the
+      // devtools console, so a real-app render failure can be pinpointed without the GUI here.
+      function renderDiag(msg) {
+        console.warn("[SelahCue] render_console:", msg);
+        const pt = document.getElementById("preview-title");
+        const lt = document.getElementById("live-title");
+        if (pt) pt.textContent = "⚠ " + msg;
+        if (lt) lt.textContent = "⚠ " + msg;
       }
       async function renderConsole() {
         // Only when the Live Console surface is visible — skip the host round-trip + payload
@@ -317,16 +338,31 @@
         try {
           res = await invoke("render_console", { maxW: w, maxH: h });
         } catch (e) {
-          setConsoleRender(false); // command missing (older host) → keep the text placeholder
+          setConsoleRender(false);
+          renderDiag("command error: " + (e && e.message ? e.message : String(e)));
           return;
         }
+        try {
+          console.log("[SelahCue] render_console ->", JSON.stringify({
+            available: res && res.available,
+            pv: res && res.preview && { w: res.preview.w, h: res.preview.h, len: (res.preview.rgba || "").length },
+            lv: res && res.live && { w: res.live.w, h: res.live.h, len: (res.live.rgba || "").length },
+          }));
+        } catch (e2) { /* logging only */ }
         if (!res || !res.available) {
-          setConsoleRender(false); // Remote host: pixels are not on the wire → text fallback
+          setConsoleRender(false);
+          renderDiag("available=false (remote host / no local pixels)");
           return;
         }
         const okP = drawConsoleFrame("preview-canvas", res.preview);
         const okL = drawConsoleFrame("live-canvas", res.live);
         setConsoleRender(okP || okL);
+        if (!(okP || okL)) {
+          renderDiag(
+            "decode failed pv=" +
+              JSON.stringify(res.preview && { w: res.preview.w, h: res.preview.h, len: (res.preview.rgba || "").length })
+          );
+        }
       }
 
       // OUTPUTS panel (FR-040/151): role -> display, assignment picker, health dot.
