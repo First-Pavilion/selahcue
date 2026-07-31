@@ -420,15 +420,25 @@ fn preview_theme(theme_json: String) -> Result<serde_json::Value, String> {
 /// are CLAMPED to a bounded ceiling so a hostile/huge size can't over-allocate or bloat the
 /// IPC payload. A REMOTE host returns `{available:false}` (its pixels are not on the control
 /// wire — a streaming seam), and the UI keeps its accessible text fallback.
+///
+/// **Async** (not sync) — matching every other command in this shell: a sync `#[tauri::command]`
+/// that takes `State` ran on the WebView event thread and did not surface its result, so the
+/// panels stayed on the text fallback (owner QA, refine #7-fix); an async command runs off that
+/// thread and resolves normally. The body is still synchronous + read-only (`console_thumbnails`
+/// returns owned frames — no lock is held across an await, because there is no await).
 #[tauri::command]
-fn render_console(max_w: u32, max_h: u32, state: State<'_, AppState>) -> serde_json::Value {
+async fn render_console(
+    max_w: u32,
+    max_h: u32,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
     use base64::Engine;
     // Bound the thumbnail (the true output is up to 1920×1080) so the IPC payload + the
     // allocation stay small regardless of the requested panel size — 480×270 matches the
     // Theme Designer preview and is ample for a console monitor.
     let max_w = max_w.clamp(1, 480);
     let max_h = max_h.clamp(1, 270);
-    match state.backend.console_thumbnails(max_w, max_h) {
+    Ok(match state.backend.console_thumbnails(max_w, max_h) {
         Some((preview, live)) => {
             let enc = |fb: &FrameBuffer| {
                 serde_json::json!({
@@ -440,7 +450,7 @@ fn render_console(max_w: u32, max_h: u32, state: State<'_, AppState>) -> serde_j
             serde_json::json!({ "available": true, "preview": enc(&preview), "live": enc(&live) })
         }
         None => serde_json::json!({ "available": false }),
-    }
+    })
 }
 #[tauri::command]
 async fn blackout(on: bool, state: State<'_, AppState>) -> Result<OperatorView, String> {

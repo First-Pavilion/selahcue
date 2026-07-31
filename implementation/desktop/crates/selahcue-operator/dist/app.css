@@ -205,7 +205,10 @@
       /* Each zone stacks its panels vertically and never overflows the row. */
       .zone { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
       /* OBS studio mode: Preview and Live sit side by side, each a 16:9 monitor. */
-      .obs-row { display: flex; gap: 10px; flex: none; }
+      /* align-items: flex-start (NOT the default stretch) so each panel's aspect-ratio:16/9
+         governs its height — a stretched flex item gets an explicit cross-size that OVERRIDES
+         aspect-ratio, collapsing the panel to a short strip (owner refine #7-fix). */
+      .obs-row { display: flex; gap: 10px; flex: none; align-items: flex-start; }
       .obs-row .outpanel { flex: 1; min-width: 0; }
       /* Forward-looking panels (transcript, detections) — fed by R3/R4 later. */
       .fwd-panel {
@@ -251,6 +254,9 @@
       .item .kind {
         font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
         color: var(--muted);
+        /* Truncate like .title — otherwise a long kind ("ANNOUNCEMENT") overflows the
+           flex-squeezed .main and renders UNDER the theme dropdown (owner refine #6-regression). */
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
       /* Edit tools appear on hover / keyboard focus — rows stay compact. Hidden
          with opacity (NOT display:none) so the buttons keep their tab-order and
@@ -344,6 +350,10 @@
       .outpanel {
         flex: none; display: flex; flex-direction: column; aspect-ratio: 16 / 9;
         border-radius: 10px; overflow: hidden; border: 1px solid var(--line);
+        /* Cap the height so a very wide window can't make the 16:9 panels overflow the
+           viewport (pushing the scriptures below the fold); the canvas is object-fit:contain
+           so any residual letterbox is clean. */
+        max-height: 32vh;
       }
       .outpanel .head {
         color: #fff; font-size: 11px; font-weight: 800; letter-spacing: .06em;
