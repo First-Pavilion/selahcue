@@ -51,7 +51,7 @@ Verified from code:
 | C-001 | yes | Protocol + RBAC: `Command::FollowScripture` serde round-trip, ADDITIVE (VERSION 2, existing fixtures byte-stable); `FollowScripture => GoLive` (Producer+ allowed, Assistant/Viewer denied) | `cargo test -p selahcue-lan` | round-trips; additive; GoLive-gated | test_protocol/test_rbac | PASS |
 | C-002 | yes | Controller: `FollowScripture` while a scripture is live advances BOTH Preview + Live to the new verse; while nothing/non-scripture is live it stages Preview ONLY (Live byte-identical); blackout preserved; bad translation denied | `cargo test -p selahcue-app` | follows only when already live; isolation held | test_controller | PASS |
 | C-003 | yes | Operator: `follow_scripture` command wired end-to-end (Local + Remote); the scriptures-browser verse navigation sends `follow_scripture`; operator + workspace compile; clippy clean | `cargo build`/`test` + `node --check` | compiles; verse-nav follows | build/headless | PASS |
-| C-004 | yes | Gate: `make ci` (fmt/clippy/test + `--features server`) + operator build/fmt/clippy/deny clean; determinism + pinned fixtures green; independent Workflow review, findings fixed; 3-OS CI green | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-scripture-follow.md; CI run | PENDING |
+| C-004 | yes | Gate: `make ci` (fmt/clippy/test + `--features server`) + operator build/fmt/clippy/deny clean; determinism + pinned fixtures green; independent Workflow review, findings fixed; 3-OS CI green | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-scripture-follow.md; CI run 30636699454 | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -74,10 +74,10 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajtwq2b-scripture-live-follow.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending — MCP rate-limited; queued)
+- Validator result: PASS (4/4 mandatory).
+- Independent verification result: adversarial Workflow review `wf_b1b56a81-932` (3 lenses → refute-by-default) → **2 raised, 0 confirmed, 2 refuted**; finding #1 acted on as the follow/preview verse-nav split. Commit `6370fa6` → **3-OS CI run 30636699454 GREEN** (rust ×3 OS, operator-shell ×3 OS, launch-smoke ×2, RustSec, licenses+SBOM; flutter skipped). Local: fmt/clippy (+ `--features server`) + `cargo test --workspace`/`--features server` green; operator gate + headless 53/53.
+- Terminal state: `GATE_REVIEW` (verifiable work complete; awaiting the `/build` user gate).
+- ClickUp final evidence comment: **queued (MCP rate-limited ~21h)** — post `86ajtwq2b` → qa (list-form QA steps) + BUILD CONTROL `86ajnx548` on recovery.
 
 ## Pending ClickUp updates (MCP rate-limited — post on recovery)
 
