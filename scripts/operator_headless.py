@@ -10,9 +10,16 @@ behavioural regression fails CI rather than only a dev-time check.
 
 Runs on macOS (dev) and Linux CI. Chrome is resolved via CHROME_BIN, then PATH
 (google-chrome/chromium), then the macOS app bundle. If Chrome is absent this
-exits 0 with a SKIP notice so `make ci` on a Chrome-less box still passes — UNLESS
-SELAHCUE_HEADLESS_REQUIRE=1 (set in CI), which turns a missing Chrome into a hard
-failure so the gate can never silently no-op.
+exits 0 with a LOUD SKIP notice so `make ci` on a Chrome-less box still passes —
+UNLESS SELAHCUE_HEADLESS_REQUIRE=1 (set in CI), which turns a missing Chrome into a
+hard failure so the gate can never silently no-op.
+
+FIDELITY NOTE (known gap): this drives Blink (headless Chrome), NOT the engine Tauri
+actually ships on — WebKitGTK (Linux), WKWebView (macOS), WebView2 (Windows). It is
+therefore a gate for BROWSER-PORTABLE DOM/JS LOGIC (the behaviours asserted here:
+render/dedup/cap/wiring), not for engine-specific CSS/canvas quirks. A WebKit/WKWebView-
+driven smoke would be a stronger fidelity check; tracked as an audit follow-up. The real
+Tauri webview stays owner-run / dev-time.
 """
 import shutil
 import subprocess, tempfile, os, re, sys
@@ -26,8 +33,9 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 )
 
 # Floor on the number of checks the driver must run — so a driver regression that
-# silently runs FEWER checks (and thus reports 0 FAIL) still fails. Bump when adding
-# checks; never lower it to mask a lost one.
+# silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
+# real load-bearing count (no tautologies), so any single dropped check trips exit 4.
+# Bump when adding checks; never lower it to mask a lost one.
 EXPECTED_MIN_CHECKS = 63
 
 
@@ -62,7 +70,13 @@ if CHROME is None:
     if require:
         print("FAIL: SELAHCUE_HEADLESS_REQUIRE=1 but " + msg)
         sys.exit(3)
-    print("SKIP: operator headless check — " + msg)
+    # LOUD skip so it is never misread as "the webview gate passed" (e.g. under `make ci`,
+    # whose final ALL-GREEN banner covers only the gates that actually ran). CI sets
+    # SELAHCUE_HEADLESS_REQUIRE=1, so this graceful path is dev-box-only.
+    print("=" * 68)
+    print("!! WEBVIEW BEHAVIOURAL GATE SKIPPED — " + msg)
+    print("!! (install Chrome or set CHROME_BIN to run it; CI runs it with REQUIRE=1)")
+    print("=" * 68)
     sys.exit(0)
 
 html = open(os.path.join(DIST, "index.html")).read()
@@ -258,14 +272,14 @@ DRIVER = r"""
       document.querySelector('#td-region button[data-region="body"]').click(); // select the large Body region
       ok(el("td-el-inspector").hidden, "#3 region selected — element inspector hidden");
       var br=box.getBoundingClientRect();
-      if (br.width>10) {
-        // The Body region box overlays the shape centre; a click there must re-hit-test to the shape.
-        var cx=br.left+br.width*0.5, cy=br.top+br.height*0.5;
-        el("td-sel").dispatchEvent(new PointerEvent("pointerdown",{clientX:cx,clientY:cy,button:0,bubbles:true,pointerId:1}));
-        ok(!el("td-el-inspector").hidden, "#3 clicking an element UNDER the region box selects it");
-      } else {
-        ok(true, "#3 click-select — layout unavailable headlessly; hit-test logic covered (verify in-app)");
-      }
+      // The forced position:fixed;width:400px MUST yield real viewport geometry (Chrome does
+      // layout); assert it as a precondition so the hit-test below can never be silently
+      // skipped by a vacuous fallback (adversarial review, audit #9).
+      ok(br.width>10, "#3 canvas box has real layout geometry (width=" + Math.round(br.width) + ")");
+      // The Body region box overlays the shape centre; a click there must re-hit-test to the shape.
+      var cx=br.left+br.width*0.5, cy=br.top+br.height*0.5;
+      el("td-sel").dispatchEvent(new PointerEvent("pointerdown",{clientX:cx,clientY:cy,button:0,bubbles:true,pointerId:1}));
+      ok(!el("td-el-inspector").hidden, "#3 clicking an element UNDER the region box selects it");
 
       // C-004 shape PICKER: each geometry adds an element with the right variant + the
       // corner-radius control appears only for a rounded rectangle.
@@ -340,9 +354,8 @@ DRIVER = r"""
       var segIds = Array.from(logEl.children).map(function (r) { return r.dataset.segId; });
       ok(segIds.indexOf("199") >= 0 && segIds.indexOf("0") < 0,
          "M4 keeps the NEWEST 120 (id 199 present, id 0 pruned)");
-
-      // Bounded: Add is a no-op past 64 (enforced host-side + UI).
-      ok(true, "bounded guard present (MAX 64 enforced host-side + UI)");
+      // (The Theme-Designer's MAX_ELEMENTS=64 cap is enforced + tested host-side in Rust —
+      // engine/present tests — so it is not re-asserted here as a tautology.)
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
     el("__r").textContent = "RESULTS\n"+R.join("\n")+"\nDONE("+R.length+")";
   }
@@ -366,15 +379,23 @@ html = html.replace("<head>", '<head><base href="file://' + DIST + '/">', 1)
 html = html.replace("</head>", STUB + "</head>", 1)
 html = html.replace("</body>", DRIVER + "</body>", 1)
 
-with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, dir="/tmp") as f:
+with tempfile.NamedTemporaryFile(
+    "w", suffix=".html", delete=False, dir=tempfile.gettempdir()
+) as f:
     f.write(html)
     path = f.name
 
 try:
-    out = subprocess.run(
-        [CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
-         "--virtual-time-budget=6000", "--dump-dom", "file://" + path],
-        capture_output=True, text=True, timeout=90).stdout
+    try:
+        out = subprocess.run(
+            [CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
+             "--virtual-time-budget=6000", "--dump-dom", "file://" + path],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=90).stdout
+    except subprocess.TimeoutExpired:
+        # A hung Chrome is an INFRA failure (exit 2), distinct from a check FAIL (exit 1).
+        print("FAIL: headless Chrome timed out (infra) — no RESULTS produced")
+        sys.exit(2)
     m = re.search(r"RESULTS\n(.*?)\nDONE\((\d+)\)", out, re.S)
     if not m:
         print("NO RESULTS BLOCK — dom head:\n", out[:1500]); sys.exit(2)
