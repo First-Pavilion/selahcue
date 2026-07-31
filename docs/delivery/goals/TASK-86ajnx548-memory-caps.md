@@ -53,7 +53,7 @@ Verified from code:
 | C-001 | yes | M2: `MAX_PLAN_ITEMS` caps the plan — the controller denies `AddItem` past it AND `plan_repo::load` stops past it; a bounded-memory test pins both | `cargo test -p selahcue-app -p selahcue-data -p selahcue-core` | flood → capped + deny; load → capped | test_controller/test_plan_repo | PASS |
 | C-002 | yes | M3: `MAX_ACTIVE_SESSIONS` caps the active map — `redeem` refuses a new device when full (re-pair still works) via `TooManySessions`; a bounded-memory test pins it | `cargo test -p selahcue-lan` | > cap distinct → capped + TooManySessions; re-pair ok | test_session | PASS |
 | C-003 | yes | M4: `syncTranscript` slices to the newest 120 so `#transcript-log` stays bounded regardless of the host; pinned by a COMMITTED CI-gated content guard + a dev-time behavioural headless check | `cargo test -p selahcue-present` (content guard, CI-gated) + dev-time headless | guard asserts the slice present; headless: >120 segs → ≤120 rows (newest) | test_tokens::operator_transcript_log_is_client_capped + headless | PASS |
-| C-004 | yes | Gate: make ci + operator gate green; independent adversarial Workflow review, findings fixed; 3-OS CI green (verified by run conclusion) | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-memory-caps.md; CI run (review done + all local green; awaiting 3-OS CI by conclusion) | PENDING |
+| C-004 | yes | Gate: make ci + operator gate green; independent adversarial Workflow review, findings fixed; 3-OS CI green (verified by run conclusion) | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-memory-caps.md; CI 30651447222 (completed→success, 11/11) | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -79,5 +79,5 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajnx548-memory-caps.md --require-complete`
 - Validator result: PASS (run below)
 - Independent verification result: adversarial review `wf_8c8761f2-1eb` + behaviour-safety re-run `wf_3ec5695a-894` — 2 above-INFO findings, both addressed (M4 committed guard added + evidence corrected; M3 comment corrected + follow-up queued); cap-correctness all-INFO. See `CODE-REVIEW-batch-memory-caps.md`.
-- Terminal state: **VERIFIED_COMPLETE** (pending only the 3-OS CI run, verified by conclusion) — M2/M3/M4 hard-capped + bounded-tested; no release-blocking defect; 2 LOW/MEDIUM follow-ups queued (#8 M3 remote re-pair/idle-TTL, #9 operator JS CI infra).
+- Terminal state: **VERIFIED_COMPLETE** — M2/M3/M4 hard-capped + bounded-tested; **3-OS CI `30651447222` GREEN (completed→success, 11/11 jobs)**, verified by run conclusion; no release-blocking defect; 2 LOW/MEDIUM follow-ups queued (#8 M3 remote re-pair/idle-TTL, #9 operator JS CI infra).
 - ClickUp final evidence comment: (queued — MCP rate-limited; closes audit follow-ups M2/M3/M4 in the report §4; adds §4 items #8/#9; BUILD CONTROL `86ajnx548` update queued)
