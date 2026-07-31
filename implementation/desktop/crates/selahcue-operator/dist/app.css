@@ -89,6 +89,11 @@
       .td-save-name { width: 100%; }
       .td-save-row-actions { display: flex; gap: 6px; }
       .td-save-row-actions button { flex: 1 1 0; }
+      /* Shape picker (86ajtwq24): a row of geometry choices; the [hidden] guard is the
+         shared .td-save-row[hidden] rule above (wins over the flex display in WKWebView). */
+      .td-shape-label { font-size: 12px; color: var(--muted, #9fb4ab); }
+      .td-shape-picker { display: flex; flex-wrap: wrap; gap: 6px; }
+      .td-shape-picker button { flex: 1 1 40%; font-size: 12px; padding: 5px 8px; }
       .td-hint { font-size: 11px; margin-top: 10px; }
       /* Center stage: the preview canvas fills the middle column. */
       .td-stage { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }

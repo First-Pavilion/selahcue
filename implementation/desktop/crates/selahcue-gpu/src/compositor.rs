@@ -3,8 +3,9 @@
 //! it can be compared against the CPU rasterizer for cross-backend parity
 //! (ADR-0015).
 //!
-//! This pipeline renders only [`Layer::Fill`] and **silently skips
-//! [`Layer::Text`]** (GPU-native glyphs are a later batch). The desktop shell today
+//! This pipeline renders only [`Layer::Fill`] and **silently skips [`Layer::Text`],
+//! [`Layer::Image`], and [`Layer::Shape`]** (GPU-native glyphs / images / parametric
+//! shapes are later batches — the CPU raster fills them today). The desktop shell today
 //! does **not** use this compositor for the screen — it CPU-composites via
 //! `selahcue-present` and blits the resulting framebuffer to its own surface, so
 //! text renders. This pipeline must gain glyph rendering before it can drive an

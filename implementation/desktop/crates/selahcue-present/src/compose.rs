@@ -8,7 +8,7 @@
 
 use crate::slide::Slide;
 use crate::theme::{Band, Element, Fit, RegionStyle, Theme, VAlign};
-use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, TextAlign};
+use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, ShapeKind, TextAlign};
 
 /// Lay out `lines` into a themed [`RegionStyle`] — per-region cell size, line
 /// height, colour, and H+V alignment, resolution-independent. The text block is
@@ -247,6 +247,8 @@ fn element_layers(element: &Element, width: u32, height: u32) -> Vec<Layer> {
             border_permille,
             opacity,
             z: _,
+            variant,
+            corner_permille,
         } => {
             let map = |dim: u32, permille: u16| (dim as u64 * permille as u64 / 1000) as u32;
             let rect = Rect::new(
@@ -258,36 +260,78 @@ fn element_layers(element: &Element, width: u32, height: u32) -> Vec<Layer> {
             // Multiply the whole-shape opacity into each colour's alpha (0 = fully hidden).
             let apply =
                 |c: Rgba| Rgba::new(c.r, c.g, c.b, ((c.a as u16 * *opacity as u16) / 255) as u8);
-            let mut layers = Vec::new();
-            let f = apply(*fill);
-            if f.a > 0 {
-                layers.push(Layer::Fill { rect, color: f });
-            }
-            let bt = if *border_permille == 0 {
-                0
-            } else {
-                (height as u64 * *border_permille as u64 / 1000).max(1) as i32
-            };
-            let b = apply(*border);
-            if bt > 0 && b.a > 0 {
-                let (x, y, w, h) = (rect.x, rect.y, rect.w as i32, rect.h as i32);
-                let bt = bt.min(w).min(h);
-                let edge = |x: i32, y: i32, w: i32, h: i32| Layer::Fill {
-                    rect: Rect::new(x, y, w.max(0) as u32, h.max(0) as u32),
-                    color: b,
+            if variant.is_rect() {
+                // RECTANGLE — the historical path, UNCHANGED (fill rect + 4 border edges), so
+                // an existing rectangle shape renders + serialises byte-identically (NFR-014).
+                let mut layers = Vec::new();
+                let f = apply(*fill);
+                if f.a > 0 {
+                    layers.push(Layer::Fill { rect, color: f });
+                }
+                let bt = if *border_permille == 0 {
+                    0
+                } else {
+                    (height as u64 * *border_permille as u64 / 1000).max(1) as i32
                 };
-                // Left/right span the FULL height and own the four corners; top/bottom
-                // cover only the interior width (w - 2*bt) so no pixel is painted by two
-                // edges. Overlapping edges are idempotent for an OPAQUE border, but this
-                // batch multiplies the shape opacity into the border alpha — a translucent
-                // border would double-blend (brighter) at the corners without this split.
-                let iw = (w - 2 * bt).max(0); // interior width (0 when the border fills the box)
-                layers.push(edge(x, y, bt, h)); // left (full height)
-                layers.push(edge(x + w - bt, y, bt, h)); // right (full height)
-                layers.push(edge(x + bt, y, iw, bt)); // top (interior)
-                layers.push(edge(x + bt, y + h - bt, iw, bt)); // bottom (interior)
+                let b = apply(*border);
+                if bt > 0 && b.a > 0 {
+                    let (x, y, w, h) = (rect.x, rect.y, rect.w as i32, rect.h as i32);
+                    let bt = bt.min(w).min(h);
+                    let edge = |x: i32, y: i32, w: i32, h: i32| Layer::Fill {
+                        rect: Rect::new(x, y, w.max(0) as u32, h.max(0) as u32),
+                        color: b,
+                    };
+                    // Left/right span the FULL height and own the four corners; top/bottom
+                    // cover only the interior width (w - 2*bt) so no pixel is painted by two
+                    // edges. Overlapping edges are idempotent for an OPAQUE border, but this
+                    // batch multiplies the shape opacity into the border alpha — a translucent
+                    // border would double-blend (brighter) at the corners without this split.
+                    let iw = (w - 2 * bt).max(0); // interior width (0 when the border fills the box)
+                    layers.push(edge(x, y, bt, h)); // left (full height)
+                    layers.push(edge(x + w - bt, y, bt, h)); // right (full height)
+                    layers.push(edge(x + bt, y, iw, bt)); // top (interior)
+                    layers.push(edge(x + bt, y + h - bt, iw, bt)); // bottom (interior)
+                }
+                layers
+            } else {
+                // ELLIPSE / ROUNDED-RECT / TRIANGLE → one additive `Layer::Shape` the engine
+                // fills per-kind with deterministic integer per-pixel tests + an inset-ring
+                // border. Opacity is folded into the fill/border alpha here (as for a rect);
+                // the GPU SKIPS `Layer::Shape` (a documented seam, like `Text`/`Image`).
+                let f = apply(*fill);
+                let b = apply(*border);
+                let min_side = rect.w.min(rect.h) as u64;
+                // Clamp the border ring + corner radius to half the shorter side so neither
+                // can invert the shape on a tiny rect (the raster clamps too; belt-and-braces).
+                let bt = if *border_permille == 0 {
+                    0
+                } else {
+                    (height as u64 * *border_permille as u64 / 1000).max(1)
+                };
+                let border_px = if b.a == 0 {
+                    0
+                } else {
+                    bt.min(min_side / 2) as u32
+                };
+                let corner_px = if *variant == ShapeKind::RoundedRect {
+                    (min_side * *corner_permille as u64 / 1000).min(min_side / 2) as u32
+                } else {
+                    0
+                };
+                if f.a == 0 && border_px == 0 {
+                    // Fully transparent (invisible interior + no border) → nothing to draw.
+                    Vec::new()
+                } else {
+                    vec![Layer::Shape {
+                        rect,
+                        kind: *variant,
+                        fill: f,
+                        border: b,
+                        border_px,
+                        corner_px,
+                    }]
+                }
             }
-            layers
         }
         Element::Image {
             x_permille,

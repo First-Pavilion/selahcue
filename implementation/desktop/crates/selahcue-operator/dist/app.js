@@ -864,6 +864,19 @@
           const bw = Number.isFinite(el.border_permille) ? el.border_permille : 0;
           document.getElementById("td-el-bw").value = bw;
           document.getElementById("td-el-bw-v").textContent = (bw / 10).toFixed(1);
+          // Corner radius is meaningful only for a rounded rectangle (86ajtwq24).
+          const variant = TD_SHAPE_LABELS[el.variant] ? el.variant : "rect";
+          const cornerRow = document.getElementById("td-el-corner-row");
+          cornerRow.hidden = variant !== "rounded_rect";
+          if (variant === "rounded_rect") {
+            const cp = Number.isFinite(el.corner_permille) ? el.corner_permille : 0;
+            const cpPct = Math.round(cp / 10);
+            document.getElementById("td-el-corner").value = cpPct;
+            document.getElementById("td-el-corner-v").textContent = cpPct;
+          }
+          // Name the specific geometry in the head (e.g. "Ellipse — 2 of 3").
+          document.getElementById("td-el-head").textContent =
+            TD_SHAPE_LABELS[variant] + " — " + pos + " of " + tdEls().length;
         } else {
           document.getElementById("td-el-src").textContent = el.source || "(no file chosen)";
         }
@@ -1180,25 +1193,33 @@
         else if (e.key === "Escape") { e.preventDefault(); tdCloseSaveRow(); }
       });
       // --- Add content + element inspector (86ajq6j4p) ---
-      function tdAddDefaults(kind) {
+      // The four shape geometries (86ajtwq24). `rect` is the default and is left OFF the
+      // element (the host skips serialising it) so a rectangle's JSON stays byte-identical.
+      const TD_SHAPE_LABELS = { rect: "Rectangle", ellipse: "Ellipse", rounded_rect: "Rounded rectangle", triangle: "Triangle" };
+      function tdAddDefaults(kind, variant) {
         const maxZ = tdEls().reduce((m, e) => Math.max(m, tdZ(e)), -1);
         const base = { x_permille: 350, y_permille: 400, w_permille: 300, h_permille: 200, opacity: 255, z: maxZ + 1 };
         if (kind === "image") return Object.assign(base, { kind: "image", source: "" });
         // A visible default fill (neutral panel) + no border, so a new shape is never invisible.
-        return Object.assign(base, { kind: "shape", fill: { r: 58, g: 65, b: 80, a: 255 }, border: { r: 0, g: 0, b: 0, a: 0 }, border_permille: 0 });
+        const el = Object.assign(base, { kind: "shape", fill: { r: 58, g: 65, b: 80, a: 255 }, border: { r: 0, g: 0, b: 0, a: 0 }, border_permille: 0 });
+        const v = TD_SHAPE_LABELS[variant] ? variant : "rect";
+        if (v !== "rect") el.variant = v; // omit for a rectangle → byte-identical JSON
+        if (v === "rounded_rect") el.corner_permille = 150; // a sensible default radius (15%)
+        return el;
       }
-      function tdAddElement(kind, source) {
+      function tdAddElement(kind, source, variant) {
         if (!tdTheme) { tdStatus("Load or start a theme first."); return; }
         if (!Array.isArray(tdTheme.elements)) tdTheme.elements = [];
         if (tdTheme.elements.length >= 64) { tdStatus("Maximum 64 elements per theme."); return; }
-        const el = tdAddDefaults(kind);
+        const el = tdAddDefaults(kind, variant);
         if (kind === "image") el.source = source || "";
         tdTheme.elements.push(el);
         tdSelEl = tdTheme.elements.length - 1;
         tdSync();
         tdPreview();
         tdSel.focus();
-        tdAnnounce((kind === "image" ? "Image" : "Shape") + " added, selected");
+        const what = kind === "image" ? "Image" : (TD_SHAPE_LABELS[el.variant || "rect"] || "Shape");
+        tdAnnounce(what + " added, selected");
       }
 
       // Add / Replace an image via a host-local PATH (the native OS file-picker + FR-138
@@ -1266,10 +1287,27 @@
         if (e.key === "Enter") { e.preventDefault(); tdDoImg(); }
         else if (e.key === "Escape") { e.preventDefault(); tdCloseImgRow(); }
       });
+      // Add Shape → a shape picker (86ajtwq24): choose the geometry, then add the element.
+      const tdShapeRow = document.getElementById("td-shape-row");
+      const tdCloseShapeRow = () => { tdShapeRow.hidden = true; };
+      const tdOpenShapeRow = () => {
+        if (!tdTheme) { tdStatus("Load or start a theme first."); return; }
+        if (tdEls().length >= 64) { tdStatus("Maximum 64 elements per theme."); return; }
+        tdShapeRow.hidden = false;
+        const first = tdShapeRow.querySelector("[data-shape]");
+        if (first) first.focus();
+      };
+      tdShapeRow.querySelectorAll("[data-shape]").forEach((b) => {
+        b.onclick = () => { const v = b.dataset.shape; tdCloseShapeRow(); tdAddElement("shape", null, v); };
+      });
+      document.getElementById("td-shape-cancel").onclick = () => { tdCloseShapeRow(); tdStatus("Add shape cancelled."); };
+      tdShapeRow.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") { e.preventDefault(); tdCloseShapeRow(); tdStatus("Add shape cancelled."); }
+      });
       document.querySelectorAll("#surface-theme-designer .td-addbar button[data-add]").forEach((b) => {
         if (b.disabled) return; // Text / Scripture — a later increment
         b.onclick = () => {
-          if (b.dataset.add === "shape") tdAddElement("shape");
+          if (b.dataset.add === "shape") tdOpenShapeRow();
           else if (b.dataset.add === "image") tdPickImage(false);
         };
       });
@@ -1352,6 +1390,13 @@
         if (el.border_permille > 0 && (!el.border || el.border.a === 0)) el.border = { r: 255, g: 255, b: 255, a: 255 };
         document.getElementById("td-el-bw-v").textContent = (+e.target.value / 10).toFixed(1);
         tdSyncEl();
+        tdPreview();
+      };
+      // Corner radius (rounded-rect only, 86ajtwq24): slider % of the shorter side → per-mille.
+      document.getElementById("td-el-corner").oninput = (e) => {
+        if (!tdActiveIsEl()) return;
+        tdActive().corner_permille = Math.round(+e.target.value * 10);
+        document.getElementById("td-el-corner-v").textContent = e.target.value;
         tdPreview();
       };
 

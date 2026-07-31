@@ -5,7 +5,7 @@
 use selahcue_app::{ControllerReply, LiveController};
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_lan::protocol::{Command, DenyReason, ServerMessage};
-use selahcue_present::{Element, MediaRef, Rgba, Theme, MAX_ELEMENTS};
+use selahcue_present::{Element, MediaRef, Rgba, ShapeKind, Theme, MAX_ELEMENTS};
 
 fn controller() -> (LiveController, Vec<u64>) {
     let mut plan = ServicePlan::new("Sunday");
@@ -1756,6 +1756,8 @@ fn saved_theme_library_is_bounded_and_load_drops_bad_entries() {
             border_permille: 0,
             opacity: 255,
             z: 0,
+            variant: ShapeKind::Rect,
+            corner_permille: 0,
         });
     }
     assert!(over_cap.elements.len() > MAX_ELEMENTS);
@@ -2222,6 +2224,8 @@ fn a_custom_theme_with_elements_applies_recovers_and_is_bounded() {
         border_permille: 0,
         opacity: 255,
         z,
+        variant: ShapeKind::Rect,
+        corner_permille: 0,
     };
     // A custom theme with a full-frame opaque red shape IN FRONT (z=1).
     let mut theme = Theme::high_contrast();
@@ -2274,6 +2278,71 @@ fn a_custom_theme_with_elements_applies_recovers_and_is_bounded() {
         }),
         ControllerReply::Deny(DenyReason::BadRequest),
         "an over-cap element list is rejected"
+    );
+}
+
+#[test]
+fn a_custom_theme_with_an_ellipse_element_applies_and_recovers() {
+    use std::time::Instant;
+    let t0 = Instant::now();
+    // A full-frame red ELLIPSE in front of the text (86ajtwq24). It routes through the new
+    // Layer::Shape path; the live output must show the fill AND leave the corners as the
+    // theme background (proving it is an ellipse, not a rect), and recover byte-identically.
+    let ellipse = Element::Shape {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 1000,
+        h_permille: 1000,
+        fill: Rgba::rgb(220, 20, 20),
+        border: Rgba::new(0, 0, 0, 0),
+        border_permille: 0,
+        opacity: 255,
+        z: 1,
+        variant: ShapeKind::Ellipse,
+        corner_permille: 0,
+    };
+    let mut theme = Theme::classic(); // dark background
+    theme.elements.push(ellipse);
+    let json = serde_json::to_string(&theme).unwrap();
+    assert!(
+        json.contains("\"variant\":\"ellipse\""),
+        "the ellipse variant persists: {json}"
+    );
+
+    let (mut a, _) = controller();
+    a.apply(&Command::Next);
+    a.apply(&Command::GoLive);
+    assert_eq!(
+        a.apply(&Command::SetCustomTheme {
+            theme_json: json.clone()
+        }),
+        ControllerReply::Ack
+    );
+    let out = a.presenter().live_output();
+    let (w, h) = (out.width(), out.height());
+    assert!(
+        out.bytes()
+            .chunks_exact(4)
+            .any(|p| p[0] > 200 && p[1] < 60 && p[2] < 60),
+        "the ellipse fill renders on the live output"
+    );
+    // The top-left CORNER is outside the inscribed ellipse → the dark background, not red.
+    let corner = out.pixel(1, 1).unwrap();
+    assert!(
+        corner.r < 80,
+        "the ellipse leaves the frame corner as the dark background, got {corner:?} ({w}x{h})"
+    );
+
+    // Persist + recover: the ellipse survives a restart (recovered output is identical).
+    let snap = a.snapshot(t0);
+    let live = a.presenter().live_output().bytes().to_vec();
+    let (mut b, _) = controller();
+    b.restore(&snap);
+    b.tick(t0);
+    assert_eq!(
+        b.presenter().live_output().bytes(),
+        live.as_slice(),
+        "a custom theme + its ellipse element recover after a restart"
     );
 }
 

@@ -8,7 +8,7 @@
 
 use crate::media::{self, DecodedImage};
 use crate::scene::FontName;
-use crate::scene::{Frame, Layer, MediaRef, Rect, Rgba, TextAlign};
+use crate::scene::{Frame, Layer, MediaRef, Rect, Rgba, ShapeKind, TextAlign};
 use cosmic_text::{
     Attrs, Buffer, Color as CtColor, Family, FontSystem, Metrics, Shaping, SwashCache,
 };
@@ -353,6 +353,120 @@ fn fill_rect(fb: &mut FrameBuffer, rect: Rect, color: Rgba) {
     }
 }
 
+/// Fixed-point precision for the ellipse inside-test — a power of two so the
+/// division is exact-integer and identical on every platform (NFR-014), chosen so
+/// `nx*nx + ny*ny` always stays inside `i64` for any `u32` extent (overflow-proof).
+const SHAPE_FP: i64 = 1 << 15;
+
+/// Whether pixel-local `(lx, ly)` is inside an **ellipse** inscribed in the `w×h`
+/// box (centre `(w/2, h/2)`). Tested in fixed point (`nx² + ny² ≤ 1`, scaled by
+/// [`SHAPE_FP`]) so it never overflows for any `u32` extent and is byte-identical
+/// cross-OS — a degree-4 exact test would overflow even `i128` near `u32::MAX`.
+fn ellipse_inside(lx: i64, ly: i64, w: i64, h: i64) -> bool {
+    if w <= 0 || h <= 0 {
+        return false;
+    }
+    let dx = 2 * lx + 1 - w; // 2·(pixel-centre − centre_x)
+    let dy = 2 * ly + 1 - h;
+    let cap = SHAPE_FP + 1; // a magnitude whose square already exceeds SHAPE_FP²
+    let nx = (dx * SHAPE_FP / w).clamp(-cap, cap);
+    let ny = (dy * SHAPE_FP / h).clamp(-cap, cap);
+    nx * nx + ny * ny <= SHAPE_FP * SHAPE_FP
+}
+
+/// Whether `(lx, ly)` is inside an **isosceles triangle** (apex top-centre, base on
+/// the bottom edge) inscribed in `w×h`. Exact integer test in `i128` — the half-width
+/// grows linearly from the apex, i.e. `2·h·|Δx| ≤ w·(2y+1)` (overflow-proof for any
+/// `u32` extent: the product is degree-2 in the extents).
+fn triangle_inside(lx: i64, ly: i64, w: i64, h: i64) -> bool {
+    if w <= 0 || h <= 0 {
+        return false;
+    }
+    let dx = (2 * lx + 1 - w) as i128; // 2·(x − centre_x)
+    let ty = (2 * ly + 1) as i128; // 2·y, apex (top edge) = 0
+    2 * (h as i128) * dx.abs() <= (w as i128) * ty
+}
+
+/// Whether `(lx, ly)` is inside a **rounded rectangle** in `w×h` with corner radius
+/// `r` px (clamped to half the shorter side). Clamp-SDF corner test in `i128`
+/// (doubled coordinates so the pixel centre is integral): the point is inside iff it
+/// is within `r` of the rectangle inset by `r` on every side.
+fn rounded_inside(lx: i64, ly: i64, w: i64, h: i64, r: i64) -> bool {
+    if w <= 0 || h <= 0 {
+        return false;
+    }
+    let r = r.clamp(0, w.min(h) / 2);
+    if r == 0 {
+        return true; // a plain rectangle (no corners cut)
+    }
+    let x = (2 * lx + 1) as i128;
+    let y = (2 * ly + 1) as i128;
+    let (w2, h2, r2) = (2 * w as i128, 2 * h as i128, 2 * r as i128);
+    let ddx = x - x.clamp(r2, w2 - r2); // 0 along the straight edges
+    let ddy = y - y.clamp(r2, h2 - r2);
+    ddx * ddx + ddy * ddy <= r2 * r2
+}
+
+/// Whether `(lx, ly)` is inside shape `kind` inscribed in `w×h` (corner radius `r`
+/// px for rounded). `Rect` is the plain box (used for the inset ring; a real `Rect`
+/// element composes to [`Layer::Fill`], never here).
+fn shape_inside(kind: ShapeKind, lx: i64, ly: i64, w: i64, h: i64, r: i64) -> bool {
+    match kind {
+        ShapeKind::Rect => lx >= 0 && ly >= 0 && lx < w && ly < h,
+        ShapeKind::Ellipse => ellipse_inside(lx, ly, w, h),
+        ShapeKind::RoundedRect => rounded_inside(lx, ly, w, h, r),
+        ShapeKind::Triangle => triangle_inside(lx, ly, w, h),
+    }
+}
+
+/// Draw a [`Layer::Shape`](crate::scene::Layer::Shape): fill the parametric shape
+/// (`kind`) inscribed in `rect` with `fill`, outlined by an inset ring of `border`
+/// `border_px` px thick; `corner_px` is the rounded-rect radius. Pure integer
+/// per-pixel tests over the ON-SCREEN clipped span — bounded exactly like
+/// [`fill_rect`] (the layer rect is UNVALIDATED, so every coordinate is derived from
+/// the clipped span in `i64`; no raw i32 arithmetic can overflow-panic) and
+/// deterministic (NFR-014). Any layer opacity is already folded into `fill`/`border`
+/// alpha by `compose`, so this just src-over blends.
+fn draw_shape(
+    fb: &mut FrameBuffer,
+    rect: Rect,
+    kind: ShapeKind,
+    fill: Rgba,
+    border: Rgba,
+    border_px: u32,
+    corner_px: u32,
+) {
+    let x0 = rect.x.max(0) as u32;
+    let y0 = rect.y.max(0) as u32;
+    let x1 = ((rect.x as i64) + rect.w as i64).clamp(0, fb.width as i64) as u32;
+    let y1 = ((rect.y as i64) + rect.h as i64).clamp(0, fb.height as i64) as u32;
+    if x0 >= x1 || y0 >= y1 {
+        return; // nothing of the shape is on-screen
+    }
+    let (w, h) = (rect.w as i64, rect.h as i64);
+    let b = border_px as i64;
+    let r = corner_px as i64;
+    // The inner (fill) shape is the outer shrunk by `border_px` on every side; when
+    // the border is thick enough to swallow the interior, everything drawn is border.
+    let (iw, ih, ir) = (w - 2 * b, h - 2 * b, (r - b).max(0));
+    let has_border = b > 0;
+    for y in y0..y1 {
+        let ly = y as i64 - rect.y as i64; // ∈ [0, h) within the clipped span
+        for x in x0..x1 {
+            let lx = x as i64 - rect.x as i64; // ∈ [0, w) within the clipped span
+            if !shape_inside(kind, lx, ly, w, h, r) {
+                continue; // outside the shape → leave the background untouched
+            }
+            let paint = if has_border && !shape_inside(kind, lx - b, ly - b, iw, ih, ir) {
+                border
+            } else {
+                fill
+            };
+            fb.blend(x, y, paint);
+        }
+    }
+}
+
 /// Render a scene to an RGBA8 framebuffer — deterministic and GPU-free.
 pub fn render(frame: &Frame) -> FrameBuffer {
     if frame.blackout {
@@ -376,6 +490,16 @@ pub fn render(frame: &Frame) -> FrameBuffer {
                 source,
                 opacity,
             } => draw_image(&mut fb, *rect, source, *opacity),
+            Layer::Shape {
+                rect,
+                kind,
+                fill,
+                border,
+                border_px,
+                corner_px,
+            } => draw_shape(
+                &mut fb, *rect, *kind, *fill, *border, *border_px, *corner_px,
+            ),
         }
     }
     fb

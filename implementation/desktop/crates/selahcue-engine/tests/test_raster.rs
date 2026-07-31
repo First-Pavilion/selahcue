@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_engine::raster::{render, system_font_families, MAX_SYSTEM_FONTS};
-use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, TextAlign};
+use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, ShapeKind, TextAlign};
 
 fn red_frame_with_blue_box() -> Frame {
     let mut f = Frame::new(32, 32).with_background(Rgba::rgb(255, 0, 0));
@@ -495,5 +495,197 @@ fn themed_font_rendering_is_bounded_over_many_renders() {
     for _ in 0..5000u32 {
         let out = render_text(Some(font));
         assert_eq!(out.len(), first.len(), "frame size stays constant");
+    }
+}
+
+// --- Layer::Shape: parametric shape rasterization (86ajtwq24) ---
+
+/// A single centred `Layer::Shape` of `kind` (fill white, no border) on a black frame.
+fn shape_frame(kind: ShapeKind, w: u32, h: u32) -> Frame {
+    let mut f = Frame::new(w, h).with_background(Rgba::BLACK);
+    f.push(Layer::Shape {
+        rect: Rect::new(0, 0, w, h),
+        kind,
+        fill: Rgba::WHITE,
+        border: Rgba::new(0, 0, 0, 0),
+        border_px: 0,
+        corner_px: 0,
+    });
+    f
+}
+
+/// Whether the pixel is (near) white — the shape fill; the background is black.
+fn is_fill(fb: &selahcue_engine::FrameBuffer, x: u32, y: u32) -> bool {
+    fb.pixel(x, y).unwrap().r > 200
+}
+
+#[test]
+fn ellipse_is_round_not_the_bounding_square() {
+    // A 40×40 ellipse (= circle): the CENTRE is filled but every CORNER of the bounding
+    // box is background — the discriminating property vs a rectangle fill.
+    let fb = render(&shape_frame(ShapeKind::Ellipse, 40, 40));
+    assert!(is_fill(&fb, 20, 20), "centre is filled");
+    assert!(is_fill(&fb, 20, 1), "top-middle is filled");
+    assert!(is_fill(&fb, 1, 20), "left-middle is filled");
+    // All four corners are OUTSIDE the inscribed circle → background.
+    for (x, y) in [(1, 1), (38, 1), (1, 38), (38, 38)] {
+        assert!(!is_fill(&fb, x, y), "corner ({x},{y}) is background");
+    }
+}
+
+#[test]
+fn triangle_apex_is_narrow_and_base_is_wide() {
+    // Isosceles triangle, apex top-centre, base along the bottom. The top row's corners
+    // are background (narrow apex) while the bottom row's corners are filled (wide base).
+    let fb = render(&shape_frame(ShapeKind::Triangle, 41, 40));
+    assert!(is_fill(&fb, 20, 1), "apex column near the top is filled");
+    assert!(!is_fill(&fb, 1, 1), "top-left corner is outside the apex");
+    assert!(!is_fill(&fb, 39, 1), "top-right corner is outside the apex");
+    assert!(is_fill(&fb, 2, 38), "bottom-left is inside the wide base");
+    assert!(is_fill(&fb, 38, 38), "bottom-right is inside the wide base");
+}
+
+#[test]
+fn rounded_rect_cuts_the_corners_only() {
+    // A rounded rectangle with a large radius: the extreme corner pixel is cut (background)
+    // but the straight-edge midpoints and the centre are filled.
+    let mut f = Frame::new(40, 40).with_background(Rgba::BLACK);
+    f.push(Layer::Shape {
+        rect: Rect::new(0, 0, 40, 40),
+        kind: ShapeKind::RoundedRect,
+        fill: Rgba::WHITE,
+        border: Rgba::new(0, 0, 0, 0),
+        border_px: 0,
+        corner_px: 12,
+    });
+    let fb = render(&f);
+    assert!(is_fill(&fb, 20, 20), "centre is filled");
+    assert!(is_fill(&fb, 20, 0), "top-edge midpoint is filled");
+    assert!(is_fill(&fb, 0, 20), "left-edge midpoint is filled");
+    assert!(!is_fill(&fb, 0, 0), "the extreme corner is rounded away");
+    // A zero-radius rounded rect is a PLAIN rectangle — every corner filled.
+    let mut f0 = Frame::new(40, 40).with_background(Rgba::BLACK);
+    f0.push(Layer::Shape {
+        rect: Rect::new(0, 0, 40, 40),
+        kind: ShapeKind::RoundedRect,
+        fill: Rgba::WHITE,
+        border: Rgba::new(0, 0, 0, 0),
+        border_px: 0,
+        corner_px: 0,
+    });
+    let fb0 = render(&f0);
+    assert!(
+        is_fill(&fb0, 0, 0),
+        "radius 0 → the corner stays filled (a plain rect)"
+    );
+}
+
+#[test]
+fn shape_border_rings_the_edge_and_fill_sits_inside() {
+    // An ellipse with a thick border: a pixel on the outline reads the BORDER colour (red)
+    // while the centre reads the FILL colour (white).
+    let mut f = Frame::new(40, 40).with_background(Rgba::BLACK);
+    f.push(Layer::Shape {
+        rect: Rect::new(0, 0, 40, 40),
+        kind: ShapeKind::Ellipse,
+        fill: Rgba::WHITE,
+        border: Rgba::rgb(255, 0, 0),
+        border_px: 5,
+        corner_px: 0,
+    });
+    let fb = render(&f);
+    let centre = fb.pixel(20, 20).unwrap();
+    assert!(
+        centre.r > 200 && centre.g > 200 && centre.b > 200,
+        "centre is fill white"
+    );
+    // Just inside the left edge of the ellipse (on the outline band) → red border.
+    let edge = fb.pixel(20, 1).unwrap();
+    assert!(
+        edge.r > 200 && edge.g < 60 && edge.b < 60,
+        "outline is border red, got {edge:?}"
+    );
+}
+
+#[test]
+fn shape_opacity_blends_and_render_is_deterministic() {
+    // The compositor folds opacity into the fill alpha; a 50%-white ellipse over black
+    // reads as a mid grey at the centre, and the render is byte-identical across runs.
+    let mut f = Frame::new(30, 30).with_background(Rgba::BLACK);
+    f.push(Layer::Shape {
+        rect: Rect::new(0, 0, 30, 30),
+        kind: ShapeKind::Ellipse,
+        fill: Rgba::new(255, 255, 255, 128), // 50% alpha
+        border: Rgba::new(0, 0, 0, 0),
+        border_px: 0,
+        corner_px: 0,
+    });
+    let centre = render(&f).pixel(15, 15).unwrap();
+    assert!(
+        (100..=160).contains(&centre.r),
+        "50% white over black → mid grey, got {centre:?}"
+    );
+    assert_eq!(
+        render(&f).bytes(),
+        render(&f).bytes(),
+        "shape rasterization is deterministic (byte-identical)"
+    );
+}
+
+#[test]
+fn a_fill_layer_renders_unchanged_alongside_shapes() {
+    // The Fill arm is untouched by the new Shape arm: a plain fill still paints its exact rect.
+    let mut f = Frame::new(16, 16).with_background(Rgba::BLACK);
+    f.push(Layer::Fill {
+        rect: Rect::new(4, 4, 8, 8),
+        color: Rgba::rgb(0, 0, 255),
+    });
+    let fb = render(&f);
+    assert_eq!(
+        fb.pixel(8, 8).unwrap(),
+        Rgba::rgb(0, 0, 255),
+        "inside the fill rect"
+    );
+    assert_eq!(
+        fb.pixel(0, 0).unwrap(),
+        Rgba::BLACK,
+        "outside stays background"
+    );
+}
+
+#[test]
+fn shapes_are_bounded_on_extreme_rects_without_panic() {
+    // The layer rect is UNVALIDATED (a hand-edited/IPC scene can carry any i32/u32). Every
+    // kind must CLIP to the framebuffer and never overflow-panic, even at the extremes of
+    // the coordinate range (this test would abort on any arithmetic overflow in debug).
+    for kind in [
+        ShapeKind::Ellipse,
+        ShapeKind::RoundedRect,
+        ShapeKind::Triangle,
+        ShapeKind::Rect,
+    ] {
+        for rect in [
+            Rect::new(i32::MIN, i32::MIN, u32::MAX, u32::MAX),
+            Rect::new(i32::MAX, i32::MAX, u32::MAX, u32::MAX),
+            Rect::new(-5, -5, 10, 10), // straddles the top-left corner
+            Rect::new(0, 0, 0, 0),     // degenerate
+            Rect::new(30, 30, u32::MAX, 1),
+        ] {
+            let mut f = Frame::new(32, 32).with_background(Rgba::BLACK);
+            f.push(Layer::Shape {
+                rect,
+                kind,
+                fill: Rgba::WHITE,
+                border: Rgba::rgb(255, 0, 0),
+                border_px: u32::MAX, // an absurd border must not invert or panic
+                corner_px: u32::MAX,
+            });
+            let fb = render(&f); // must not panic
+            assert_eq!(
+                fb.bytes().len(),
+                32 * 32 * 4,
+                "frame stays bounded to its size"
+            );
+        }
     }
 }

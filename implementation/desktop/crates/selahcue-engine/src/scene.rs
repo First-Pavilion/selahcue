@@ -124,6 +124,48 @@ pub enum Layer {
         #[serde(default = "opacity_opaque", skip_serializing_if = "is_opaque")]
         opacity: u8,
     },
+    /// A parametric **shape** (86ajtwq24) — an ellipse / rounded-rectangle / triangle drawn
+    /// within `rect`, filled with `fill` and outlined with `border` (an inset ring of
+    /// `border_px` px); `corner_px` is the rounded-rect corner radius (px). A plain
+    /// rectangle does NOT use this variant (it composes to [`Fill`](Layer::Fill)), so `kind`
+    /// is never `Rect` here in practice. Rasterized by deterministic integer per-pixel tests
+    /// (NFR-014); the wgpu backend SKIPS this layer for now (GPU-native shapes are a later
+    /// batch, exactly as `Text`/`Image` are today).
+    Shape {
+        rect: Rect,
+        kind: ShapeKind,
+        fill: Rgba,
+        border: Rgba,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        border_px: u32,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        corner_px: u32,
+    },
+}
+
+/// The geometry of a [`Layer::Shape`] / `Element::Shape` (86ajtwq24). `Rect` is the default
+/// (a plain rectangle composites to [`Layer::Fill`], so it never reaches `Layer::Shape`);
+/// `Ellipse`/`RoundedRect`/`Triangle` are the parametric kinds the CPU raster fills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ShapeKind {
+    #[default]
+    Rect,
+    Ellipse,
+    RoundedRect,
+    Triangle,
+}
+
+impl ShapeKind {
+    /// Whether this is the plain rectangle (the default; composites to `Fill`, not `Shape`).
+    pub fn is_rect(&self) -> bool {
+        matches!(self, ShapeKind::Rect)
+    }
+}
+
+/// serde `skip_serializing_if` for a `u32` that is zero (an absent border/corner).
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 /// The serde default for [`Layer::Image::opacity`]: fully opaque (a scene without an

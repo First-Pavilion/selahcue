@@ -200,6 +200,17 @@
                 <button id="td-img-cancel">Cancel</button>
               </div>
             </div>
+            <!-- Add Shape: pick the geometry (86ajtwq24). WKWebView-safe inline picker (no
+                 native menu), keyboard-operable, closes on Esc. -->
+            <div class="td-save-row" id="td-shape-row" hidden role="group" aria-label="Choose a shape to add">
+              <span class="td-shape-label">Add a shape:</span>
+              <div class="td-shape-picker">
+                <button data-shape="rect" title="Rectangle">▭ Rectangle</button><button data-shape="ellipse" title="Ellipse">◯ Ellipse</button><button data-shape="rounded_rect" title="Rounded rectangle">▢ Rounded</button><button data-shape="triangle" title="Triangle">△ Triangle</button>
+              </div>
+              <div class="td-save-row-actions">
+                <button id="td-shape-cancel">Cancel</button>
+              </div>
+            </div>
             <div class="td-canvas-label">Canvas <span id="td-status" class="coming-soon" role="status" aria-live="polite"></span></div>
             <!-- The preview fills the center. The overlay hosts the safe-area guide
                  and the selected region's move/resize handles, mapped from its rect%. -->
@@ -251,6 +262,11 @@
                 <input type="color" id="td-el-border" />
                 <label for="td-el-bw">Border width — <span id="td-el-bw-v"></span>%</label>
                 <input type="range" id="td-el-bw" min="0" max="50" step="1" aria-label="Shape border width, percent of height" />
+                <!-- Corner radius — shown only for a rounded rectangle (86ajtwq24). -->
+                <div id="td-el-corner-row" hidden>
+                  <label for="td-el-corner">Corner radius — <span id="td-el-corner-v"></span>%</label>
+                  <input type="range" id="td-el-corner" min="0" max="50" step="1" aria-label="Rounded-rectangle corner radius, percent of the shorter side" />
+                </div>
               </div>
               <div id="td-el-image" hidden>
                 <label>Image file (on this machine)</label>

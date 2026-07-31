@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_engine::raster::{render, FrameBuffer};
-use selahcue_present::{compose_slide, Element, FontName, Rgba, Slide, Theme};
+use selahcue_present::{compose_slide, Element, FontName, Rgba, ShapeKind, Slide, Theme};
 
 /// A full-frame opaque shape element at draw order `z`.
 fn full_shape(fill: Rgba, opacity: u8, z: i16) -> Element {
@@ -17,6 +17,8 @@ fn full_shape(fill: Rgba, opacity: u8, z: i16) -> Element {
         border_permille: 0,
         opacity,
         z,
+        variant: ShapeKind::Rect,
+        corner_permille: 0,
     }
 }
 
@@ -493,6 +495,8 @@ fn a_shape_element_opacity_blends_over_what_is_beneath() {
         border_permille: 0,
         opacity: 128, // 50%
         z: 1,
+        variant: ShapeKind::Rect,
+        corner_permille: 0,
     });
     let fb = render(&compose_slide(&slide, &theme, 200, 100));
     // Inside the shape (top-left): 50% white over the dark bg → a mid grey, not full white.
@@ -526,6 +530,8 @@ fn a_translucent_element_border_paints_its_corners_uniformly() {
         border_permille: 50, // 5px thick at 100px
         opacity: 128,        // 50% → border alpha 128
         z: 1,
+        variant: ShapeKind::Rect,
+        corner_permille: 0,
     });
     let fb = render(&compose_slide(&slide, &theme, 200, 100));
     let corner = fb.pixel(1, 1).unwrap(); // top-left corner square
@@ -755,4 +761,144 @@ fn an_image_element_is_additive_serde_and_round_trips() {
     assert!(!serde_json::to_string(&Theme::classic())
         .unwrap()
         .contains("\"elements\""));
+}
+
+// --- Shape kinds: routing + backward-compatibility (86ajtwq24) ---
+
+/// A centred shape element of `variant` (full-frame, opaque white) at draw order `z`.
+fn kind_shape(variant: ShapeKind, corner_permille: u16, z: i16) -> Element {
+    Element::Shape {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 1000,
+        h_permille: 1000,
+        fill: Rgba::WHITE,
+        border: Rgba::new(0, 0, 0, 0),
+        border_permille: 0,
+        opacity: 255,
+        z,
+        variant,
+        corner_permille,
+    }
+}
+
+#[test]
+fn a_rect_shape_composes_to_fill_layers_not_a_shape_layer() {
+    use selahcue_engine::scene::Layer;
+    // A RECTANGLE element routes to the UNCHANGED Layer::Fill path — never Layer::Shape —
+    // so its output is byte-identical to before this batch.
+    let slide = Slide::new("R", ["B"]);
+    let mut theme = Theme::classic();
+    theme.elements.push(kind_shape(ShapeKind::Rect, 0, 1));
+    let frame = compose_slide(&slide, &theme, 64, 64);
+    assert!(
+        frame.layers.iter().any(|l| matches!(l, Layer::Fill { .. })),
+        "a rectangle element emits a Fill layer"
+    );
+    assert!(
+        !frame
+            .layers
+            .iter()
+            .any(|l| matches!(l, Layer::Shape { .. })),
+        "a rectangle element emits NO Shape layer (unchanged path)"
+    );
+}
+
+#[test]
+fn non_rect_shapes_compose_to_a_single_shape_layer_with_their_kind() {
+    use selahcue_engine::scene::Layer;
+    for (variant, corner) in [
+        (ShapeKind::Ellipse, 0),
+        (ShapeKind::RoundedRect, 200),
+        (ShapeKind::Triangle, 0),
+    ] {
+        let slide = Slide::new("R", ["B"]);
+        let mut theme = Theme::classic();
+        theme.elements.push(kind_shape(variant, corner, 1));
+        let frame = compose_slide(&slide, &theme, 64, 64);
+        let shapes: Vec<_> = frame
+            .layers
+            .iter()
+            .filter_map(|l| match l {
+                Layer::Shape { kind, .. } => Some(*kind),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shapes,
+            vec![variant],
+            "{variant:?} → exactly one Shape layer of its kind"
+        );
+    }
+}
+
+#[test]
+fn an_ellipse_element_leaves_the_corners_as_background() {
+    // End-to-end (compose + raster): a full-frame ellipse element fills the centre but the
+    // frame corners stay the dark background — the routing genuinely reaches draw_shape.
+    let slide = Slide::new("R", ["B"]);
+    let mut theme = Theme::classic(); // dark background
+    theme.elements.push(kind_shape(ShapeKind::Ellipse, 0, 5)); // in front of the text
+    let fb = render(&compose_slide(&slide, &theme, 80, 80));
+    let centre = fb.pixel(40, 40).unwrap();
+    assert!(
+        centre.r > 200,
+        "ellipse centre is filled white, got {centre:?}"
+    );
+    let corner = fb.pixel(1, 1).unwrap();
+    assert!(
+        corner.r < 80,
+        "the frame corner stays the dark background, got {corner:?}"
+    );
+}
+
+#[test]
+fn a_rect_shape_element_json_is_byte_identical_to_before() {
+    // Backward-compat: a rectangle Element::Shape omits BOTH new fields (skip_serializing_if
+    // default), so its JSON matches the pre-batch encoding exactly — no drift, no migration.
+    let rect = Element::Shape {
+        x_permille: 100,
+        y_permille: 200,
+        w_permille: 300,
+        h_permille: 400,
+        fill: Rgba::WHITE,
+        border: Rgba::BLACK,
+        border_permille: 10,
+        opacity: 255,
+        z: 2,
+        variant: ShapeKind::Rect,
+        corner_permille: 0,
+    };
+    let json = serde_json::to_string(&rect).unwrap();
+    assert!(
+        !json.contains("variant"),
+        "a Rect shape omits `variant`: {json}"
+    );
+    assert!(
+        !json.contains("corner_permille"),
+        "a Rect shape omits `corner_permille`: {json}"
+    );
+    // And it round-trips back to the same value (Rect is the serde default).
+    assert_eq!(serde_json::from_str::<Element>(&json).unwrap(), rect);
+
+    // A non-rect shape DOES carry its variant, and round-trips.
+    let ell = Element::Shape {
+        x_permille: 100,
+        y_permille: 200,
+        w_permille: 300,
+        h_permille: 400,
+        fill: Rgba::WHITE,
+        border: Rgba::BLACK,
+        border_permille: 10,
+        opacity: 255,
+        z: 2,
+        variant: ShapeKind::Ellipse,
+        corner_permille: 0,
+    };
+    let j2 = serde_json::to_string(&ell).unwrap();
+    assert!(
+        j2.contains("\"variant\":\"ellipse\""),
+        "an ellipse serialises its variant: {j2}"
+    );
+    assert_eq!(serde_json::from_str::<Element>(&j2).unwrap(), ell);
 }

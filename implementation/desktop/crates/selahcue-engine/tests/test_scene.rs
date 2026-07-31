@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_engine::scene::{Frame, Layer, MediaRef, Rect, Rgba};
+use selahcue_engine::scene::{Frame, Layer, MediaRef, Rect, Rgba, ShapeKind};
 
 #[test]
 fn luminance_extremes() {
@@ -73,6 +73,75 @@ fn image_layer_is_additive_and_tag_stable() {
     let j2 = serde_json::to_string(&translucent).unwrap();
     assert!(j2.contains(r#""opacity":128"#), "got {j2}");
     assert_eq!(serde_json::from_str::<Layer>(&j2).unwrap(), translucent);
+}
+
+#[test]
+fn shape_layer_is_additive_and_tag_stable() {
+    // Adding `Layer::Shape` (86ajtwq24) is additive: the existing Fill encoding is
+    // byte-unchanged (internally-tagged enum), the new variant tags `"layer":"shape"`,
+    // its `kind` serialises snake_case, and a zero border/corner is skipped.
+    let fill = Layer::Fill {
+        rect: Rect::new(0, 0, 1, 1),
+        color: Rgba::BLACK,
+    };
+    assert_eq!(
+        serde_json::to_string(&fill).unwrap(),
+        r#"{"layer":"fill","rect":{"x":0,"y":0,"w":1,"h":1},"color":{"r":0,"g":0,"b":0,"a":255}}"#
+    );
+
+    let ellipse = Layer::Shape {
+        rect: Rect::new(2, 3, 40, 30),
+        kind: ShapeKind::Ellipse,
+        fill: Rgba::WHITE,
+        border: Rgba::new(0, 0, 0, 0),
+        border_px: 0,
+        corner_px: 0,
+    };
+    let json = serde_json::to_string(&ellipse).unwrap();
+    assert!(json.contains(r#""layer":"shape""#), "got {json}");
+    assert!(json.contains(r#""kind":"ellipse""#), "got {json}");
+    // Zero border/corner are the defaults → skipped (minimal JSON).
+    assert!(
+        !json.contains("border_px"),
+        "zero border_px skipped: {json}"
+    );
+    assert!(
+        !json.contains("corner_px"),
+        "zero corner_px skipped: {json}"
+    );
+    assert_eq!(serde_json::from_str::<Layer>(&json).unwrap(), ellipse);
+
+    // A rounded-rect with a border DOES serialise both, and round-trips (Eq preserved).
+    let rounded = Layer::Shape {
+        rect: Rect::new(0, 0, 20, 20),
+        kind: ShapeKind::RoundedRect,
+        fill: Rgba::WHITE,
+        border: Rgba::BLACK,
+        border_px: 2,
+        corner_px: 5,
+    };
+    let j2 = serde_json::to_string(&rounded).unwrap();
+    assert!(j2.contains(r#""kind":"rounded_rect""#), "got {j2}");
+    assert!(j2.contains(r#""border_px":2"#), "got {j2}");
+    assert!(j2.contains(r#""corner_px":5"#), "got {j2}");
+    assert_eq!(serde_json::from_str::<Layer>(&j2).unwrap(), rounded);
+}
+
+#[test]
+fn shape_kind_default_is_rect_and_serde_snake_case() {
+    assert_eq!(ShapeKind::default(), ShapeKind::Rect);
+    assert!(ShapeKind::Rect.is_rect());
+    assert!(!ShapeKind::Triangle.is_rect());
+    for (kind, tag) in [
+        (ShapeKind::Rect, "\"rect\""),
+        (ShapeKind::Ellipse, "\"ellipse\""),
+        (ShapeKind::RoundedRect, "\"rounded_rect\""),
+        (ShapeKind::Triangle, "\"triangle\""),
+    ] {
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(json, tag);
+        assert_eq!(serde_json::from_str::<ShapeKind>(&json).unwrap(), kind);
+    }
 }
 
 #[test]

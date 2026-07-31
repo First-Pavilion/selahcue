@@ -11,7 +11,7 @@
 //! and real H+V alignment + per-region size/colour. Gradient/image backgrounds,
 //! per-role templates + per-item override, and multi-weight fonts are later slices.
 
-use selahcue_engine::scene::{FontName, MediaRef, Rect, Rgba, TextAlign};
+use selahcue_engine::scene::{FontName, MediaRef, Rect, Rgba, ShapeKind, TextAlign};
 use serde::{Deserialize, Serialize};
 
 /// Vertical alignment of a region's text block within the region rect.
@@ -151,6 +151,18 @@ pub enum Element {
         opacity: u8,
         /// Draw order relative to the text regions: `< 0` behind the text, `>= 0` in front.
         z: i16,
+        /// The shape geometry (86ajtwq24): rectangle (the default), ellipse, rounded-rect,
+        /// or triangle. Additive (`skip_serializing_if` → a plain rectangle OMITS the field,
+        /// so an existing rectangle shape's JSON is byte-identical to before this batch, and
+        /// it still composes to the unchanged [`Layer::Fill`](selahcue_engine::scene::Layer)
+        /// path).
+        #[serde(default, skip_serializing_if = "ShapeKind::is_rect")]
+        variant: ShapeKind,
+        /// Rounded-rectangle corner radius as per-mille of the SHORTER side (`0` = square
+        /// corners; ignored for non-rounded kinds). Additive (`skip_serializing_if` → omitted
+        /// when unset, keeping older/rectangle JSON byte-identical).
+        #[serde(default, skip_serializing_if = "is_zero_u16")]
+        corner_permille: u16,
     },
     /// A raster **image** (86ajq6j49) at a per-mille rect, blended at `opacity`, ordered by
     /// `z` relative to the text (`z < 0` = behind, `z >= 0` = in front). `source` is a
@@ -171,6 +183,12 @@ pub enum Element {
         /// Draw order relative to the text regions: `< 0` behind the text, `>= 0` in front.
         z: i16,
     },
+}
+
+/// serde `skip_serializing_if` for a `u16` that is zero (an absent corner radius) — keeps a
+/// rectangle/older shape's JSON byte-identical (no `corner_permille` key emitted).
+fn is_zero_u16(v: &u16) -> bool {
+    *v == 0
 }
 
 /// Upper bound on a theme's element list (86ajq6j2q) so the design can't grow without
