@@ -42,7 +42,7 @@ Verified from code (`dist/app.js`): `drawConsoleFrame` (L304-335) decodes at L31
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
 | C-001 | yes | Both decode sites use the `b64ToBytes` tight-loop helper; the console render still draws + the decoded pixels are byte-exact (a readback check pins them) | operator `node --check` + committed headless gate | render draws; pixels match the stub bytes | app.js diff + harness pixel check | PASS |
-| C-002 | yes | Gate: independent adversarial review (byte-identity / edge cases), findings fixed; the committed headless gate + 3-OS CI green (verified by run conclusion + the runner log) | Workflow review + `python3 scripts/operator_headless.py` + CI | byte-identical; review clean; CI green | CODE-REVIEW doc; CI run | PENDING |
+| C-002 | yes | Gate: independent adversarial review (byte-identity / edge cases), findings fixed; the committed headless gate + 3-OS CI green (verified by run conclusion + the runner log) | Workflow review + `python3 scripts/operator_headless.py` + CI | byte-identical; review clean; CI green | CODE-REVIEW-batch-console-decode-perf.md; CI 30655511386 (success; log `64 checks, 0 FAIL` + M5 byte-exact) | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -62,7 +62,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajtwq28-console-decode-perf.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending — MCP rate-limited; closes audit report §4 #5)
+- Validator result: PASS (run below)
+- Independent verification result: adversarial review `wf_095ae627-3a7` — **SOUND, 0 findings** (byte-identity confirmed; both sites; guards + gating preserved). Byte-exactness additionally pinned by the committed headless pixel-readback check (CI-gated). See `CODE-REVIEW-batch-console-decode-perf.md`.
+- Terminal state: **VERIFIED_COMPLETE** — both decodes on the tight-loop helper, output byte-identical; **3-OS CI `30655511386` GREEN (completed→success)** verified by conclusion + the runner log (`64 checks, 0 FAIL`, M5 pixel check byte-exact). No follow-up beyond the noted off-thread-decode seam.
+- ClickUp final evidence comment: (queued — MCP rate-limited; closes audit report §4 #5; BUILD CONTROL `86ajnx548` update queued)
