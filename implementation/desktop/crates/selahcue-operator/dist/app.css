@@ -160,6 +160,18 @@
       .td-el-src { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); word-break: break-all; margin: 2px 0 6px; }
       .td-el-del { width: 100%; margin-top: 12px; color: #fca5a5; border-color: rgba(248,113,113,.4); }
       .td-el-del:hover { background: rgba(248,113,113,.12); }
+      /* Right-click context menu (#4) */
+      .td-ctx { position: fixed; z-index: 1000; min-width: 168px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.45); display: flex; flex-direction: column; gap: 1px; }
+      /* An author `display` otherwise defeats the [hidden] attribute in WKWebView — the menu
+         is shown/hidden via `hidden`, so this guard is required (cf. .td-save-row[hidden]). */
+      .td-ctx[hidden] { display: none; }
+      .td-ctx button { display: flex; justify-content: space-between; gap: 16px; align-items: center; text-align: left; background: none; border: none; padding: 6px 10px; font-size: 12px; border-radius: 5px; color: var(--text); }
+      .td-ctx button:hover, .td-ctx button:focus-visible { background: var(--accent); color: #fff; outline: none; }
+      .td-ctx button:disabled { opacity: .4; }
+      .td-ctx button.danger { color: #fca5a5; }
+      .td-ctx button.danger:hover, .td-ctx button.danger:focus-visible { background: rgba(248,113,113,.2); color: #fca5a5; }
+      .td-ctx-key { font-size: 10px; color: var(--muted); }
+      .td-ctx button:hover .td-ctx-key, .td-ctx button:focus-visible .td-ctx-key { color: rgba(255,255,255,.8); }
       .nav-item .nav-key {
         margin-left: auto; font-size: 10px; color: var(--muted);
         border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-weight: 600;
@@ -248,7 +260,9 @@
       .badge.live { background: var(--live); }
       .badge.preview { background: var(--preview); }
       /* Per-item theme picker (S8-3d): subtle by default; an active override is tinted. */
-      .item .item-theme { flex: none; font-size: 10px; padding: 1px 2px; max-width: 92px; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; }
+      /* Fixed width (not max-width) so every row's dropdown is the SAME size and aligns —
+         a per-item theme name (e.g. "classic") no longer widens the select vs "◈ theme". */
+      .item .item-theme { flex: none; box-sizing: border-box; width: 104px; font-size: 10px; padding: 1px 4px; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; text-overflow: ellipsis; }
       .item .item-theme.on { color: var(--text); border-color: var(--accent); }
       .item.is-live { border-color: var(--live-ink); }
       .item.is-staged { border-color: var(--preview-ink); }

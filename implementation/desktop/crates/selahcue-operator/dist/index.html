@@ -219,7 +219,16 @@
             </div>
             <div class="td-actions">
               <button id="td-apply" class="golive">Apply to audience output</button>
-              <span class="coming-soon td-note">Live preview · drag to move · handles to resize · amber dashed = safe area (5%)</span>
+              <span class="coming-soon td-note">Live preview · click to select · drag to move · handles to resize · right-click for actions · amber dashed = safe area (5%)</span>
+            </div>
+            <!-- WKWebView-safe custom context menu (the native menu is blocked); positioned
+                 at the cursor, keyboard-operable, closes on Esc / click-away (#4). -->
+            <div id="td-ctx" class="td-ctx" role="menu" aria-label="Element actions" hidden>
+              <button role="menuitem" data-ctx="copy">Copy <span class="td-ctx-key">⌘C</span></button>
+              <button role="menuitem" data-ctx="paste">Paste <span class="td-ctx-key">⌘V</span></button>
+              <button role="menuitem" data-ctx="front">Bring to front</button>
+              <button role="menuitem" data-ctx="back">Send to back</button>
+              <button role="menuitem" data-ctx="delete" class="danger">Delete</button>
             </div>
           </div>
           <aside class="td-inspector" aria-label="Inspector">

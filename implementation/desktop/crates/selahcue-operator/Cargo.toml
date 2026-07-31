@@ -22,6 +22,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Native OS file picker for the Add-Image flow (86ajq6j4p/86ajq6j49) — the official
+# Tauri v2 dialog plugin (permissive-licensed, same org as tauri). Used ONLY host-side
+# via a `pick_image` command; the chosen path becomes an Element::Image source.
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"

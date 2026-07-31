@@ -370,6 +370,23 @@ fn builtin_themes() -> Vec<serde_json::Value> {
 fn system_fonts() -> Vec<String> {
     selahcue_present::system_font_families()
 }
+/// Open the native OS file picker for a PNG image and return the chosen absolute path
+/// (86ajq6j4p / 86ajq6j49 frontend). Host-local + user-initiated; the path becomes an
+/// `Element::Image` source (validated by `MediaRef` host-side). FR-138 import-path
+/// canonicalization / media-root confinement remains the deferred hardening. `None` = the
+/// user cancelled. **Must be `async`** so Tauri spawns it OFF the main thread: `blocking_pick_file`
+/// enqueues the dialog onto the main event loop and waits on it, so running it ON the main
+/// thread would deadlock/freeze the whole operator (the plugin documents this footgun).
+#[tauri::command]
+async fn pick_image(app: tauri::AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    app.dialog()
+        .file()
+        .add_filter("Images (PNG)", &["png"])
+        .blocking_pick_file()
+        .and_then(|fp| fp.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+}
 /// Render a Theme-Designer theme as a sample slide and return it as base64 RGBA8
 /// (+ dimensions) — the webview draws it to a <canvas> via ImageData for an ACCURATE
 /// preview (same compositor as the audience output). A pure function of the theme;
@@ -577,6 +594,7 @@ fn demo_shell() -> OperatorShell {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Connect on the Tauri runtime so the client is bound to the same reactor the
             // async commands run on.
@@ -612,7 +630,8 @@ fn main() {
             set_screen_theme,
             preview_theme,
             builtin_themes,
-            system_fonts
+            system_fonts,
+            pick_image
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");

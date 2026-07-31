@@ -1,0 +1,33 @@
+# Code Review — Batch: Theme Designer canvas refine (86ajq6j4p-refine)
+
+- **Scope:** owner refine cluster on the canvas authoring UI (`86ajq6j4p`) — **#3** click an element on canvas → select it (a defect: the selection box overlaid the canvas and blocked the hit-test); **#6** align the per-item theme dropdown on the service plan (CSS); **#4** a right-click **context menu** (Copy · Paste · Delete · Send-to-back · Bring-to-front); **#1** a **native OS image picker** replacing the host-path input. Executed via `/goal` (`TASK-86ajq6j4p-canvas-refine.md`, validator PASS 4/4). Client-side (`selahcue-operator/dist/{app.js,index.html,app.css}`) + a small host command (`src/main.rs` `pick_image` + `tauri-plugin-dialog`). No engine/wire/migration change.
+- **Method:** an adversarial Workflow review (`wf_05171980-00b`, 3 independent lenses → per-finding adversarial verify, **8 agents**). Lenses: hit-test/regression · context-menu/a11y/WKWebView-safety · picker-command/deny/no-drift. Default REFUTED; no self-approval.
+- **Outcome:** **5 raised → 4 CONFIRMED → all fixed; 1 refuted.** **2 HIGH** + 1 MEDIUM + 1 LOW. The two HIGHs were exactly what the local checks could not catch — the headless stub bypassed the real `pick_image`, and the headless test checked the `hidden` *attribute*, not the computed CSS.
+
+## What shipped
+
+- **#3 click-select (`app.js`):** `tdHitTest(clientX,clientY)`; `tdPointerDown` re-hit-tests the topmost element on pointerdown so clicking an element BENEATH the region/selection box selects it; the `tdBox` handler reuses `tdHitTest` + starts a grab-move; both drag paths guard `e.button !== 0` (right-click → menu).
+- **#6 alignment (`app.css`):** `.item-theme` given a fixed `width:104px` (was only `max-width`) so every row's dropdown is the same size + aligns.
+- **#4 context menu (`app.js`/`index.html`/`app.css`):** a WKWebView-safe custom `#td-ctx` menu — Copy (`tdClip` deep-clone), Paste (offset clone, bounded 64, fresh z), Delete, Bring-to-front, Send-to-back; opens on `contextmenu` (native suppressed), positioned + clamped, keyboard-operable (arrow nav, Esc/click-away close) + `Cmd/Ctrl+C`/`V`; announced.
+- **#1 native picker (`main.rs`/`Cargo.toml`/`app.js`):** `tauri-plugin-dialog` + an **`async` `pick_image()`** command (PNG filter); Add Image / Replace call `tdPickImage` → the dialog → the chosen path (validated like `MediaRef`) → `Element::Image.source`; the manual path row remains a fallback.
+
+## Findings and dispositions
+
+| # | Lens | Sev | Finding | Disposition |
+|---|------|-----|---------|-------------|
+| 1 | ctxmenu | **HIGH** | **The context menu could never hide.** `.td-ctx { display:flex }` (author origin) beats the UA `[hidden]{display:none}`, so `tdMenu.hidden = true` had no visual effect — the menu showed as a stray on the Theme Designer surface and stayed stuck (its live buttons blocking canvas clicks) after Esc/click-item/click-away. The codebase already knew this WKWebView footgun (`.td-save-row[hidden]` with a comment). Neither the headless test (checked the `hidden` attribute) nor `node --check` catches a CSS-cascade bug. | **Fixed:** added `.td-ctx[hidden] { display: none; }`. Regression: the headless test now asserts the menu's **computed** display (`none` after close). |
+| 2 | picker | **HIGH** | **`pick_image` deadlocked the whole operator.** It was a SYNC `#[tauri::command]` → Tauri runs it inline on the main/event-loop thread; `blocking_pick_file` enqueues the dialog onto that same loop and `rx.recv()`-waits — so the main thread blocks on a closure it can't pump → permanent freeze on every Add-Image/Replace click (no next/clear/blackout either), needing a force-kill. The plugin documents this exact footgun and uses `async` for its own dialog command. The build compiled (sync is valid Rust) + the headless test stubbed `pick_image`, so nothing local caught it. | **Fixed:** made it **`async fn pick_image`** (Tauri spawns async commands off the main thread, freeing the loop to present the dialog). Rebuild clean. |
+| 3 | hit-test | MEDIUM | **The re-hit-test let an overlapping element steal a drag.** Because `tdPointerDown` always re-selected the topmost element under the cursor, a selected element (or a region) couldn't be drag-moved wherever another element overlapped the grab point. | **Fixed:** grab is **sticky for a selected ELEMENT** — grabbing inside its own rect keeps + moves it (an overlap can't steal); a REGION still re-hit-tests, so #3 (click an element over the region selects it) holds. (Moving a region *through* a covering element is intentional topmost-wins behaviour; the region picker + numeric fields remain.) |
+| 4 | hit-test | LOW | **A dismiss click had a side effect.** A left-click to close the open menu also ran the pointerdown select/grab/deselect path (the document close-handler fires after the target handlers). | **Fixed:** a click while the menu is open **just dismisses it** (guard in `tdPointerDown` + the `tdBox` handler). Regression-tested (the dismiss click changes no element). |
+
+### Refuted (verified NOT real — 1)
+
+- **`tdPickImage` omits `MediaRef`'s trim/empty-after-trim rule on the picked path.** Refuted: the OS returns a real, non-empty path; the host `MediaRef` trims on deserialize anyway, so no invalid theme can result. (The client already rejects over-1024-byte / NUL paths.)
+
+## Verification
+
+- **Headless interaction check (Chrome + `window.__TAURI__` stub): 33/33** — all prior canvas regressions + #1 (picker adds the chosen image, no manual row) + #3 (clicking an element under the region box selects it) + #4 (menu open/close, **computed display none after close**, Copy→Paste + Cmd+C/V clone, menu Delete, **left-click dismiss with no side effect**). `node --check` clean.
+- **Operator gate:** `cargo build` clean (`async pick_image` compiles), `cargo fmt --check` clean, `clippy -D warnings` clean, **`cargo deny check` = bans/licenses/sources OK** (the new `tauri-plugin-dialog` + `rfd` + `tauri-plugin-fs` tree is policy-conformant). No Rust change beyond the one command + plugin registration; no wire/migration change.
+- **Invariants:** editing stays preview-only (only the explicit Apply calls `set_custom_theme`); the menu actions mutate only the in-memory theme + preview; emergency Clear/Blackout chrome untouched; WKWebView-safe (native contextmenu suppressed, no `window.prompt`).
+- **Follow-ups recorded:** #2 more shapes → `86ajtwq24`; #7 real Preview/Live render → `86ajtwq28`; #8 scripture live-follow (owner's "only when already live") → `86ajtwq2b`; #5 font weight/letter noted on `86ajq3225`.
+- **CI:** the operator-shell job (macOS/Ubuntu/Windows) + audit + SBOM + **deny** is the gate this batch (the picker adds a dependency); pending this push.

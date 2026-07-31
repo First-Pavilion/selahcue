@@ -725,6 +725,33 @@
           .map((_, i) => i)
           .sort((a, b) => tdZ(tdEls()[a]) - tdZ(tdEls()[b]) || a - b);
       }
+      // The topmost ELEMENT index at a client point (front-to-back paint order), or -1.
+      function tdHitTest(clientX, clientY) {
+        const box = tdBox.getBoundingClientRect();
+        const xp = ((clientX - box.left) / (box.width || 1)) * 1000;
+        const yp = ((clientY - box.top) / (box.height || 1)) * 1000;
+        const order = tdPaintOrder();
+        for (let k = order.length - 1; k >= 0; k--) {
+          const el = tdEls()[order[k]];
+          if (
+            xp >= el.x_permille && xp <= el.x_permille + el.w_permille &&
+            yp >= el.y_permille && yp <= el.y_permille + el.h_permille
+          ) {
+            return order[k];
+          }
+        }
+        return -1;
+      }
+      // Whether a client point falls within a per-mille rect (region or element).
+      function tdPointInRect(cx, cy, r) {
+        const box = tdBox.getBoundingClientRect();
+        const xp = ((cx - box.left) / (box.width || 1)) * 1000;
+        const yp = ((cy - box.top) / (box.height || 1)) * 1000;
+        return (
+          xp >= r.x_permille && xp <= r.x_permille + r.w_permille &&
+          yp >= r.y_permille && yp <= r.y_permille + r.h_permille
+        );
+      }
       // Screen-reader announcement (reuses the aria-live #td-status region).
       function tdAnnounce(msg) {
         const s = document.getElementById("td-status");
@@ -910,7 +937,25 @@
       // on the selection box, so a drag that starts on a handle still tracks. ---
       let tdDrag = null;
       function tdPointerDown(e) {
-        if (!tdTheme) return;
+        if (!tdTheme || e.button !== 0) return; // primary button only (right-click → context menu)
+        if (!tdMenu.hidden) { tdCloseCtx(); return; } // a click dismisses the open menu — nothing else
+        // Re-hit-test on pointerdown (#3): the topmost element under the cursor may differ from
+        // the current selection because the selection box overlays the canvas — select it so
+        // clicking an element BENEATH the box (e.g. under the large Body region) works. Skip when
+        // grabbing a resize handle. EXCEPTION: keep a selected ELEMENT when the grab is inside its
+        // own rect (a sticky grab-to-move, so an overlapping element can't steal the drag); a
+        // region always re-hit-tests (so clicking an element over it still selects the element).
+        if (!e.target.dataset.h) {
+          const grabbingCurrent = tdActiveIsEl() && tdPointInRect(e.clientX, e.clientY, tdActive());
+          if (!grabbingCurrent) {
+            const hit = tdHitTest(e.clientX, e.clientY);
+            if (hit >= 0 && hit !== tdSelEl) {
+              tdSelEl = hit;
+              tdSync();
+              tdAnnounce((tdEls()[hit].kind === "image" ? "Image" : "Shape") + " selected");
+            }
+          }
+        }
         const r = tdActive();
         if (!r) return;
         const box = tdBox.getBoundingClientRect();
@@ -919,7 +964,7 @@
           sx: e.clientX, sy: e.clientY, bw: box.width || 1, bh: box.height || 1,
           x: r.x_permille, y: r.y_permille, w: r.w_permille, h: r.h_permille,
         };
-        tdSel.setPointerCapture(e.pointerId);
+        try { tdSel.setPointerCapture(e.pointerId); } catch (_) {} // WKWebView pointer quirk-safe
         e.preventDefault();
       }
       function tdPointerMove(e) {
@@ -1022,30 +1067,31 @@
       // Click-to-select an element: pointerdown on the canvas box (NOT on the selection box,
       // which handles its own drag) hit-tests the element rects in FRONT-to-back paint order.
       tdBox.addEventListener("pointerdown", (e) => {
-        if (!tdTheme || tdSel.contains(e.target)) return;
-        const box = tdBox.getBoundingClientRect();
-        const xp = ((e.clientX - box.left) / (box.width || 1)) * 1000;
-        const yp = ((e.clientY - box.top) / (box.height || 1)) * 1000;
-        const order = tdPaintOrder();
-        for (let k = order.length - 1; k >= 0; k--) {
-          const el = tdEls()[order[k]];
-          if (
-            xp >= el.x_permille && xp <= el.x_permille + el.w_permille &&
-            yp >= el.y_permille && yp <= el.y_permille + el.h_permille
-          ) {
-            tdSelEl = order[k];
-            tdSync();
-            tdSel.focus();
-            const front = tdZ(el) >= 0;
-            tdAnnounce(
-              (el.kind === "image" ? "Image" : "Shape") +
-                " selected, " + (front ? "in front of" : "behind") + " the text",
-            );
-            return;
-          }
+        if (!tdTheme || e.button !== 0 || tdSel.contains(e.target)) return; // primary button; on-box → tdPointerDown
+        if (!tdMenu.hidden) { tdCloseCtx(); return; } // a click dismisses the open menu — nothing else
+        const hit = tdHitTest(e.clientX, e.clientY);
+        if (hit >= 0) {
+          tdSelEl = hit;
+          tdSync();
+          tdSel.focus();
+          const el = tdEls()[hit];
+          // Start dragging the newly-selected element in the SAME gesture (grab-and-move).
+          const box = tdBox.getBoundingClientRect();
+          tdDrag = {
+            handle: null,
+            sx: e.clientX, sy: e.clientY, bw: box.width || 1, bh: box.height || 1,
+            x: el.x_permille, y: el.y_permille, w: el.w_permille, h: el.h_permille,
+          };
+          try { tdSel.setPointerCapture(e.pointerId); } catch (_) {}
+          const front = tdZ(el) >= 0;
+          tdAnnounce(
+            (el.kind === "image" ? "Image" : "Shape") +
+              " selected, " + (front ? "in front of" : "behind") + " the text",
+          );
+          return;
         }
-        // Clicked empty canvas (no element hit) while an element was selected → deselect back
-        // to region editing, so the Body/Reference region controls are reachable again.
+        // Clicked empty canvas (no element) while an element was selected → deselect back to
+        // region editing, so the Body/Reference region controls are reachable again.
         if (tdActiveIsEl()) {
           tdSelEl = -1;
           tdSync();
@@ -1187,6 +1233,33 @@
           tdAddElement("image", path);
         }
       };
+      // Native OS file picker (#1): the primary Add-Image / Replace path. Falls back to the
+      // manual path row if the picker command is unavailable. The chosen path (validated like
+      // MediaRef) becomes an Element::Image source.
+      async function tdPickImage(replace) {
+        if (!tdTheme) { tdStatus("Load or start a theme first."); return; }
+        if (!replace && tdEls().length >= 64) { tdStatus("Maximum 64 elements per theme."); return; }
+        let path;
+        try {
+          path = await invoke("pick_image");
+        } catch (e) {
+          tdOpenImgRow(replace); // no native dialog → the manual path row
+          return;
+        }
+        if (!path) return; // the user cancelled
+        if (path.indexOf("\0") !== -1 || tdNameBytes(path) > 1024) {
+          tdStatus("That image path is not valid (too long or contains an invalid character).");
+          return;
+        }
+        if (replace && tdActiveIsEl()) {
+          tdActive().source = path;
+          tdSyncEl();
+          tdPreview();
+          tdAnnounce("Image source replaced");
+        } else {
+          tdAddElement("image", path);
+        }
+      }
       document.getElementById("td-img-add").onclick = tdDoImg;
       document.getElementById("td-img-cancel").onclick = () => { tdCloseImgRow(); tdStatus("Add image cancelled."); };
       tdImgPath.addEventListener("keydown", (e) => {
@@ -1197,7 +1270,7 @@
         if (b.disabled) return; // Text / Scripture — a later increment
         b.onclick = () => {
           if (b.dataset.add === "shape") tdAddElement("shape");
-          else if (b.dataset.add === "image") tdOpenImgRow(false);
+          else if (b.dataset.add === "image") tdPickImage(false);
         };
       });
 
@@ -1260,7 +1333,7 @@
         tdAnnounce("Element deleted");
       }
       document.getElementById("td-el-del").onclick = tdDeleteEl;
-      document.getElementById("td-el-replace").onclick = () => tdOpenImgRow(true);
+      document.getElementById("td-el-replace").onclick = () => tdPickImage(true);
 
       // Per-element controls: opacity (the single alpha) + shape fill/border/border-width.
       document.getElementById("td-el-op").oninput = (e) => {
@@ -1281,6 +1354,94 @@
         tdSyncEl();
         tdPreview();
       };
+
+      // --- Right-click context menu (#4): Copy / Paste / Delete / Send-to-back / Bring-to-front ---
+      let tdClip = null; // session clipboard: a deep-cloned element
+      const tdMenu = document.getElementById("td-ctx"); // (tdCtx is the canvas 2D context)
+      const tdCloseCtx = () => { tdMenu.hidden = true; };
+      function tdOpenCtx(x, y) {
+        const hasEl = tdActiveIsEl();
+        const q = (a) => tdMenu.querySelector('[data-ctx="' + a + '"]');
+        ["copy", "delete", "front", "back"].forEach((a) => (q(a).disabled = !hasEl));
+        q("paste").disabled = !tdClip || tdEls().length >= 64;
+        tdMenu.hidden = false;
+        const w = tdMenu.offsetWidth || 168, h = tdMenu.offsetHeight || 180;
+        tdMenu.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 6)) + "px";
+        tdMenu.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 6)) + "px";
+        const first = Array.from(tdMenu.querySelectorAll("button")).find((b) => !b.disabled);
+        if (first) first.focus();
+      }
+      function tdCopy() {
+        if (!tdActiveIsEl()) return;
+        tdClip = JSON.parse(JSON.stringify(tdActive()));
+        tdAnnounce("Element copied");
+      }
+      function tdPaste() {
+        if (!tdClip || !tdTheme) return;
+        if (!Array.isArray(tdTheme.elements)) tdTheme.elements = [];
+        if (tdTheme.elements.length >= 64) { tdStatus("Maximum 64 elements per theme."); return; }
+        const clone = JSON.parse(JSON.stringify(tdClip));
+        // Offset so the paste is visibly distinct + on top (a fresh max z).
+        clone.x_permille = tdClamp((clone.x_permille || 0) + 30, 0, 1000 - (clone.w_permille || 20));
+        clone.y_permille = tdClamp((clone.y_permille || 0) + 30, 0, 1000 - (clone.h_permille || 20));
+        clone.z = tdEls().reduce((m, el) => Math.max(m, tdZ(el)), -1) + 1;
+        tdTheme.elements.push(clone);
+        tdSelEl = tdTheme.elements.length - 1;
+        tdSync();
+        tdPreview();
+        tdSel.focus();
+        tdAnnounce((clone.kind === "image" ? "Image" : "Shape") + " pasted, selected");
+      }
+      function tdCtxDelete() {
+        if (!tdActiveIsEl()) return;
+        const i = tdSelEl;
+        tdEls().splice(i, 1);
+        tdSelEl = tdEls().length ? Math.min(i, tdEls().length - 1) : -1;
+        tdSync();
+        tdPreview();
+        tdAnnounce("Element deleted");
+      }
+      tdMenu.querySelectorAll("button").forEach((b) => (b.onclick = () => {
+        const a = b.dataset.ctx;
+        tdCloseCtx();
+        if (a === "copy") tdCopy();
+        else if (a === "paste") tdPaste();
+        else if (a === "front") tdArrange("front");
+        else if (a === "back") tdArrange("back");
+        else if (a === "delete") tdCtxDelete();
+        tdSel.focus();
+      }));
+      tdMenu.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") { e.preventDefault(); tdCloseCtx(); tdSel.focus(); return; }
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          const items = Array.from(tdMenu.querySelectorAll("button")).filter((b) => !b.disabled);
+          const idx = items.indexOf(document.activeElement);
+          const n = e.key === "ArrowDown" ? (idx + 1) % items.length : (idx - 1 + items.length) % items.length;
+          if (items[n]) items[n].focus();
+        }
+      });
+      // Right-click on the canvas opens the menu (selecting the element under the cursor first).
+      tdBox.addEventListener("contextmenu", (e) => {
+        if (!tdTheme) return;
+        e.preventDefault();
+        const hit = tdHitTest(e.clientX, e.clientY);
+        if (hit >= 0 && hit !== tdSelEl) { tdSelEl = hit; tdSync(); }
+        tdOpenCtx(e.clientX, e.clientY);
+      });
+      // Close the menu on any pointerdown outside it (cheap no-op while hidden).
+      document.addEventListener("pointerdown", (e) => { if (!tdMenu.hidden && !tdMenu.contains(e.target)) tdCloseCtx(); });
+      // Keyboard: Cmd/Ctrl+C copy, Cmd/Ctrl+V paste; ContextMenu / Shift+F10 opens the menu.
+      tdSel.addEventListener("keydown", (e) => {
+        if ((e.metaKey || e.ctrlKey) && (e.key === "c" || e.key === "C") && tdActiveIsEl()) { e.preventDefault(); tdCopy(); }
+        else if ((e.metaKey || e.ctrlKey) && (e.key === "v" || e.key === "V")) { e.preventDefault(); tdPaste(); }
+        else if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+          e.preventDefault();
+          const r = tdSel.getBoundingClientRect();
+          tdOpenCtx(r.left + r.width / 2, r.top + r.height / 2);
+        }
+      });
+
       document.getElementById("td-apply").onclick = () => {
         if (!tdTheme) return;
         const s = document.getElementById("td-status");
