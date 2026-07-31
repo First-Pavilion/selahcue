@@ -459,3 +459,78 @@ async fn remote_adjust_timer_extends_the_running_countdown() {
         t.remaining_secs
     );
 }
+
+/// Live transcript + scripture detection over the wire (R3/R4). A Producer ingests a
+/// spoken reference; the host detects it and surfaces it in the operator view; approving
+/// stages the verse on the host's Preview.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_transcription_detects_and_approves_over_the_wire() {
+    let (addr, pin, controller) = setup().await;
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "producer", "tok-prod")
+        .await
+        .unwrap();
+
+    let v = op
+        .ingest_transcript("please turn to John chapter 3 verse 16", 0, 2_000)
+        .await
+        .unwrap();
+    assert_eq!(v.transcript.len(), 1, "the utterance streamed to the host");
+    assert_eq!(v.detections.len(), 1);
+    assert_eq!(v.detections[0].reference, "John 3:16");
+    assert!(
+        v.detections[0].text.to_lowercase().contains("god so loved"),
+        "the detection carries verse text: {:?}",
+        v.detections[0].text
+    );
+    let id = v.detections[0].id;
+
+    let v = op.approve_detection(id).await.unwrap();
+    assert_eq!(
+        v.staged_scripture.as_deref(),
+        Some("John 3:16"),
+        "approve staged the verse on the host Preview"
+    );
+    assert!(v.detections.is_empty(), "the queue drained on approval");
+    assert_eq!(
+        controller.lock().unwrap().live_index(),
+        None,
+        "the host Live output was never touched by the AI path"
+    );
+}
+
+/// RBAC over the wire: transcription ingestion needs the `Transcribe` permission. An
+/// Assistant is denied ingest (the denial is not an error — the view simply shows no
+/// transcript), but MAY approve/dismiss a detection a Producer created.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn assistant_cannot_ingest_but_can_action_detections_over_the_wire() {
+    let (addr, pin, _controller) = setup().await;
+
+    // Assistant's ingest is denied → no transcript, no detection appears.
+    let mut asst = RemoteOperator::connect(addr, "localhost", pin, "assistant", "tok-asst")
+        .await
+        .unwrap();
+    let v = asst
+        .ingest_transcript("First Corinthians 13", 0, 1_000)
+        .await
+        .unwrap();
+    assert!(
+        v.transcript.is_empty() && v.detections.is_empty(),
+        "an Assistant lacks the Transcribe permission — ingest is refused"
+    );
+
+    // A Producer ingests; the detection is now on the host.
+    let mut prod = RemoteOperator::connect(addr, "localhost", pin, "producer", "tok-prod")
+        .await
+        .unwrap();
+    let v = prod
+        .ingest_transcript("First Corinthians 13", 0, 1_000)
+        .await
+        .unwrap();
+    assert_eq!(v.detections.len(), 1);
+    let id = v.detections[0].id;
+
+    // The Assistant (who CAN stage scripture) may approve it — staging Preview.
+    let v = asst.approve_detection(id).await.unwrap();
+    assert_eq!(v.staged_scripture.as_deref(), Some("1 Corinthians 13"));
+    assert!(v.detections.is_empty());
+}

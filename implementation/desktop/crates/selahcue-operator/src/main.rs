@@ -259,6 +259,44 @@ impl Backend {
             Backend::Local(s) => Ok(s.scripture_search(&query, translation.as_deref())),
         }
     }
+    async fn ingest_transcript(
+        &self,
+        text: String,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .ingest_transcript(&text, start_ms, end_ms)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.ingest_transcript(&text, start_ms, end_ms)),
+        }
+    }
+    async fn approve_detection(&self, detection_id: u64) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .approve_detection(detection_id)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.approve_detection(detection_id)),
+        }
+    }
+    async fn dismiss_detection(&self, detection_id: u64) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .dismiss_detection(detection_id)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.dismiss_detection(detection_id)),
+        }
+    }
     async fn identify_outputs(&self) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
@@ -564,6 +602,37 @@ async fn scripture_search(
 ) -> Result<Vec<selahcue_lan::protocol::ScriptureHitView>, String> {
     state.backend.scripture_search(query, translation).await
 }
+/// Feed one live-transcript segment (R3). The default STT provider is operator/host
+/// injected text; this is the webview's inject channel and the same path a real
+/// on-device engine would drive. Runs scripture detection and returns the fresh view.
+#[tauri::command]
+async fn ingest_transcript(
+    text: String,
+    start_ms: u64,
+    end_ms: u64,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state
+        .backend
+        .ingest_transcript(text, start_ms, end_ms)
+        .await
+}
+/// Approve a queued scripture detection (R4): stage its verse in Preview.
+#[tauri::command]
+async fn approve_detection(
+    detection_id: u64,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.approve_detection(detection_id).await
+}
+/// Dismiss a queued scripture detection without staging it.
+#[tauri::command]
+async fn dismiss_detection(
+    detection_id: u64,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.dismiss_detection(detection_id).await
+}
 #[tauri::command]
 async fn identify_outputs(state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.identify_outputs().await
@@ -671,6 +740,9 @@ fn main() {
             stage_scripture,
             scripture_search,
             get_chapter,
+            ingest_transcript,
+            approve_detection,
+            dismiss_detection,
             identify_outputs,
             assign_output,
             set_theme,

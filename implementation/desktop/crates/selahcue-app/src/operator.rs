@@ -8,7 +8,8 @@
 
 use crate::controller::LiveController;
 use selahcue_lan::protocol::{
-    Command, OperatorStateView, PlanItemView, SavedThemeView, ScreenThemeView, TimerSnapshot,
+    Command, DetectionView, OperatorStateView, PlanItemView, SavedThemeView, ScreenThemeView,
+    TimerSnapshot, TranscriptSegmentView,
 };
 use selahcue_present::FrameBuffer;
 use serde::Serialize;
@@ -75,6 +76,11 @@ pub struct OperatorView {
     /// The per-SCREEN theme map (86ajq321k): each Audience screen and its assigned theme,
     /// so the Screens page shows a distinct theme per screen.
     pub screen_themes: Vec<ScreenThemeView>,
+    /// The recent live-transcript segments (bounded tail, oldest first) — the transcript
+    /// panel (R3).
+    pub transcript: Vec<TranscriptSegmentView>,
+    /// The pending scripture-detection approval queue (R4) — candidates to one-click stage.
+    pub detections: Vec<DetectionView>,
 }
 
 /// An ergonomic, UI-facing wrapper over the shared [`LiveController`]. Each action
@@ -220,6 +226,26 @@ impl OperatorShell {
         })
     }
 
+    /// Feed one live-transcript segment (the STT-provider ingestion channel — the
+    /// default provider is operator/host-injected text). Runs scripture detection.
+    pub fn ingest_transcript(&self, text: &str, start_ms: u64, end_ms: u64) -> OperatorView {
+        self.act(&Command::IngestTranscript {
+            text: text.into(),
+            start_ms: Some(start_ms),
+            end_ms: Some(end_ms),
+        })
+    }
+
+    /// Approve a queued scripture detection by id: stage its verse in Preview.
+    pub fn approve_detection(&self, detection_id: u64) -> OperatorView {
+        self.act(&Command::ApproveDetection { detection_id })
+    }
+
+    /// Dismiss a queued scripture detection by id without staging it.
+    pub fn dismiss_detection(&self, detection_id: u64) -> OperatorView {
+        self.act(&Command::DismissDetection { detection_id })
+    }
+
     /// Show the identify overlay on every physical output.
     pub fn identify_outputs(&self) -> OperatorView {
         self.act(&Command::IdentifyOutputs)
@@ -344,6 +370,8 @@ impl From<OperatorView> for OperatorStateView {
             themes: v.themes,
             saved_themes: v.saved_themes,
             screen_themes: v.screen_themes,
+            transcript: v.transcript,
+            detections: v.detections,
         }
     }
 }
@@ -367,6 +395,8 @@ impl From<OperatorStateView> for OperatorView {
             themes: v.themes,
             saved_themes: v.saved_themes,
             screen_themes: v.screen_themes,
+            transcript: v.transcript,
+            detections: v.detections,
         }
     }
 }
@@ -517,6 +547,38 @@ impl RemoteOperator {
             translation: translation.map(Into::into),
         })
         .await
+    }
+
+    /// Feed one live-transcript segment into the host's transcript stream (runs
+    /// scripture detection on the host).
+    pub async fn ingest_transcript(
+        &mut self,
+        text: &str,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::IngestTranscript {
+            text: text.into(),
+            start_ms: Some(start_ms),
+            end_ms: Some(end_ms),
+        })
+        .await
+    }
+
+    /// Approve a queued scripture detection on the host (stages its verse in Preview).
+    pub async fn approve_detection(
+        &mut self,
+        detection_id: u64,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::ApproveDetection { detection_id }).await
+    }
+
+    /// Dismiss a queued scripture detection on the host without staging it.
+    pub async fn dismiss_detection(
+        &mut self,
+        detection_id: u64,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::DismissDetection { detection_id }).await
     }
 
     /// Show the identify overlay on the host's physical outputs.

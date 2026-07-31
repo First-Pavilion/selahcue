@@ -10,12 +10,17 @@
 //! - [`scripture`] — Bible reference parsing (FR-027).
 //! - [`plan`] — the service-plan domain model (FR-001/002).
 //! - [`timer`] — monotonic-clock timers with a TIME UP state (FR-054/065, NFR-022).
+//! - [`transcript`] — bounded, timestamped transcript segments + the STT provider seam
+//!   (R3; ADR-0010).
+//! - [`detection`] — scripture-reference detection over the transcript stream (R4).
 
 #![forbid(unsafe_code)]
 // The `unwrap_used` lint guards the library's runtime paths (which are
 // panic-free); tests legitimately unwrap known-good values.
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod detection;
 pub mod plan;
 pub mod scripture;
 pub mod timer;
+pub mod transcript;

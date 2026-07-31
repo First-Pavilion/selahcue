@@ -178,6 +178,40 @@ fn viewer_can_only_monitor() {
 }
 
 #[test]
+fn transcription_ingest_is_producer_and_up_not_assistant() {
+    // Feeding the transcript stream needs the `Transcribe` permission (Operator +
+    // Producer). An Assistant prepares content but does not drive live transcription;
+    // a Viewer only monitors.
+    let ingest = Command::IngestTranscript {
+        text: "John chapter 3 verse 16".into(),
+        start_ms: None,
+        end_ms: None,
+    };
+    assert!(authorize(Role::Operator, &ingest), "operator ingest");
+    assert!(authorize(Role::Producer, &ingest), "producer ingest");
+    assert!(
+        !authorize(Role::Assistant, &ingest),
+        "assistant must NOT ingest transcript"
+    );
+    assert!(!authorize(Role::Viewer, &ingest), "viewer must not ingest");
+}
+
+#[test]
+fn approving_or_dismissing_a_detection_is_scripture_staging_privilege() {
+    // Approving stages a scripture candidate; dismissing drops one — both are the
+    // SearchScripture privilege (Assistant and up), never GoLive.
+    for cmd in [
+        Command::ApproveDetection { detection_id: 1 },
+        Command::DismissDetection { detection_id: 1 },
+    ] {
+        assert!(authorize(Role::Operator, &cmd), "operator {cmd:?}");
+        assert!(authorize(Role::Producer, &cmd), "producer {cmd:?}");
+        assert!(authorize(Role::Assistant, &cmd), "assistant {cmd:?}");
+        assert!(!authorize(Role::Viewer, &cmd), "viewer {cmd:?}");
+    }
+}
+
+#[test]
 fn every_role_can_get_state() {
     for role in all_roles() {
         assert!(

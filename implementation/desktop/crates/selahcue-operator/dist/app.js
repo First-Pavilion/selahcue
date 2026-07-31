@@ -14,6 +14,12 @@
         // the built-ins have loaded (tdList needs them). This runs before the plan's
         // early-returns so the library stays live even with an open plan editor.
         syncSavedThemes(view);
+        // Live transcript (R3) + scripture detection queue (R4). Run before the plan
+        // early-returns (like the saved-theme sync) so they stay live with an open plan
+        // editor; each gates on its own change-key so the 1s poll neither thrashes the
+        // DOM nor eats an in-flight Stage/Dismiss click.
+        syncTranscript(view);
+        syncDetections(view);
         // Never clobber an open editor or a pending delete-confirm, and skip
         // identical re-renders (the 1s poll must not eat in-flight clicks).
         const key = JSON.stringify(view);
@@ -2245,6 +2251,125 @@
       grabFocus();
       window.addEventListener("focus", grabFocus);
       document.addEventListener("focusout", () => setTimeout(grabFocus, 0));
+
+      // --- Live transcript (R3) + scripture detection approval queue (R4) ----------
+      // Both render from the host-authoritative view (`view.transcript` /
+      // `view.detections`). All host/verse text is placed via textContent — never
+      // innerHTML — because transcript and detected text are untrusted.
+      let transcriptKey = "";
+      let detectionsKey = "";
+
+      function syncTranscript(view) {
+        const segs = Array.isArray(view.transcript) ? view.transcript : [];
+        const key = JSON.stringify(segs.map((s) => [s.id, s.text]));
+        if (key === transcriptKey) return; // poll-safe: skip identical re-renders
+        transcriptKey = key;
+        const log = document.getElementById("transcript-log");
+        const empty = document.getElementById("transcript-empty");
+        if (!log || !empty) return;
+        log.innerHTML = "";
+        empty.style.display = segs.length ? "none" : "";
+        for (const s of segs) {
+          const row = document.createElement("div");
+          row.className = "seg";
+          const t = document.createElement("span");
+          t.className = "seg-time";
+          t.textContent = fmtClock(Math.floor((s.start_ms || 0) / 1000));
+          const txt = document.createElement("span");
+          txt.className = "seg-text";
+          txt.textContent = s.text; // untrusted → textContent, never innerHTML
+          row.appendChild(t);
+          row.appendChild(txt);
+          log.appendChild(row);
+        }
+        log.scrollTop = log.scrollHeight; // keep the newest line in view
+      }
+
+      function syncDetections(view) {
+        const dets = Array.isArray(view.detections) ? view.detections : [];
+        const key = JSON.stringify(dets.map((d) => [d.id, d.reference, d.text]));
+        if (key === detectionsKey) return;
+        detectionsKey = key;
+        const list = document.getElementById("detections-list");
+        const empty = document.getElementById("detections-empty");
+        if (!list || !empty) return;
+        list.innerHTML = "";
+        empty.style.display = dets.length ? "none" : "";
+        for (const d of dets) {
+          const row = document.createElement("div");
+          row.className = "detection";
+          row.setAttribute("role", "listitem");
+
+          const head = document.createElement("div");
+          head.className = "detection-head";
+          const ref = document.createElement("span");
+          ref.className = "ref";
+          ref.textContent = d.reference;
+          head.appendChild(ref);
+          head.appendChild(badge("preview", "DETECTED"));
+          row.appendChild(head);
+
+          if (d.text) {
+            const snip = document.createElement("div");
+            snip.className = "snippet";
+            snip.textContent = d.text; // untrusted verse text → textContent
+            row.appendChild(snip);
+          }
+
+          const actions = document.createElement("div");
+          actions.className = "detection-actions";
+          const approve = document.createElement("button");
+          approve.className = "golive";
+          approve.type = "button";
+          approve.textContent = "Stage";
+          approve.setAttribute("aria-label", "Stage " + d.reference + " in preview");
+          approve.onclick = () =>
+            act(() => invoke("approve_detection", { detectionId: d.id }));
+          const dismiss = document.createElement("button");
+          dismiss.type = "button";
+          dismiss.textContent = "Dismiss";
+          dismiss.setAttribute("aria-label", "Dismiss " + d.reference);
+          dismiss.onclick = () =>
+            act(() => invoke("dismiss_detection", { detectionId: d.id }));
+          actions.appendChild(approve);
+          actions.appendChild(dismiss);
+          row.appendChild(actions);
+
+          list.appendChild(row);
+        }
+      }
+
+      // The manual transcript feed — the default injected-text STT provider (on-device
+      // whisper/Vosk plugs in behind the same host seam). Timestamps are ms from a
+      // session origin so segments order deterministically on the host.
+      const transcriptOrigin = Date.now();
+      (function wireTranscriptInput() {
+        const form = document.getElementById("transcript-form");
+        const input = document.getElementById("transcript-input");
+        const status = document.getElementById("transcript-status");
+        if (!form || !input) return;
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const text = input.value.trim();
+          if (!text) return;
+          const now = Date.now() - transcriptOrigin;
+          input.value = "";
+          if (status) status.textContent = "Sending…";
+          try {
+            render(
+              await invoke("ingest_transcript", {
+                text,
+                startMs: now,
+                endMs: now + 2000,
+              })
+            );
+            if (status) status.textContent = "";
+          } catch (err) {
+            console.error(err);
+            if (status) status.textContent = "Could not send that line.";
+          }
+        });
+      })();
 
       act(() => invoke("view"));
       // Poll so a running countdown ticks in the UI (the host advances it each frame).

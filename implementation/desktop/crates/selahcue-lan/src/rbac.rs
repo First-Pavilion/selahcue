@@ -40,8 +40,13 @@ pub enum Permission {
     Blackout,
     /// Drive timers on the live output.
     Timer,
-    /// Search and stage scripture (does not itself push live).
+    /// Search and stage scripture (does not itself push live). Also gates approving or
+    /// dismissing an auto-detected scripture (both merely stage / drop a candidate).
     SearchScripture,
+    /// Drive live transcription: feed transcript segments into the stream (the STT
+    /// ingestion channel). Distinct from `SearchScripture` so transcription can be
+    /// granted (or withheld) independently of scripture staging.
+    Transcribe,
     /// Observe live/preview state.
     Monitor,
     /// Edit the service plan (add/remove/move/rename items) — never the live output.
@@ -64,6 +69,7 @@ impl Role {
                 Blackout,
                 Timer,
                 SearchScripture,
+                Transcribe,
                 Monitor,
                 ManageDevices,
                 EditPlan,
@@ -76,6 +82,7 @@ impl Role {
                 Blackout,
                 Timer,
                 SearchScripture,
+                Transcribe,
                 Monitor,
             ],
             Role::Assistant => &[SearchScripture, Navigate, Monitor],
@@ -101,6 +108,10 @@ pub fn required_permission(cmd: &Command) -> Permission {
         Command::ScriptureSearch { .. }
         | Command::StageScripture { .. }
         | Command::GetChapter { .. } => SearchScripture,
+        // Approving / dismissing a detection merely stages or drops a scripture
+        // candidate — the same privilege as staging scripture, not going live.
+        Command::ApproveDetection { .. } | Command::DismissDetection { .. } => SearchScripture,
+        Command::IngestTranscript { .. } => Transcribe,
         Command::GetState | Command::GetOperatorState => Monitor,
         Command::AddItem { .. }
         | Command::RemoveItem { .. }

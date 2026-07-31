@@ -228,6 +228,34 @@
       .fwd-empty .fwd-icon { font-size: 22px; opacity: 0.8; }
       .fwd-empty .fwd-msg { font-size: 12px; color: var(--text); }
       .fwd-empty .fwd-sub { font-size: 11px; }
+      /* Live transcript (R3) + scripture detection queue (R4) */
+      .stream {
+        flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+        gap: 4px; padding: 2px 0;
+      }
+      .stream:empty { display: none; }
+      .seg { display: flex; gap: 8px; align-items: baseline; font-size: 12px; line-height: 1.35; }
+      .seg-time { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 10px; }
+      .seg-text { color: var(--text); word-break: break-word; }
+      .stream-input { display: flex; gap: 6px; margin-top: 8px; }
+      .stream-input input {
+        flex: 1; min-width: 0; padding: 6px 8px; font-size: 12px; color: var(--text);
+        background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+      }
+      .stream-input button { flex: none; padding: 6px 10px; }
+      .stream-note { margin: 4px 0 0; font-size: 11px; color: var(--muted); min-height: 14px; }
+      .detection {
+        display: flex; flex-direction: column; gap: 6px; padding: 8px;
+        border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+      }
+      .detection-head { display: flex; align-items: center; gap: 8px; }
+      .detection-head .ref { color: var(--warn-ink); font-weight: 700; flex: 1; }
+      .detection .snippet {
+        font-size: 11px; color: var(--muted); line-height: 1.4;
+        display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+      }
+      .detection-actions { display: flex; gap: 6px; }
+      .detection-actions button { flex: 1; padding: 6px; font-size: 12px; }
       #plan-wrap {
         display: flex; flex-direction: column; min-height: 0; flex: 2;
         border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
