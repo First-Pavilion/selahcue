@@ -206,3 +206,21 @@ fn engine_ingest_is_bounded_and_deterministic() {
     let refs_b: Vec<_> = b.detections().pending().map(|d| &d.reference).collect();
     assert_eq!(refs_a, refs_b);
 }
+
+#[test]
+fn recent_dedup_ring_is_bounded_under_many_distinct_references() {
+    // Audit L1: the cross-segment dedup ring (recent_refs) is capped at RECENT_DEDUP_WINDOW
+    // in code; pin it directly. Ingest FAR more than the window's worth of DISTINCT references
+    // and assert the ring stays at exactly the cap (it fills to the cap and stops growing).
+    use selahcue_core::detection::RECENT_DEDUP_WINDOW;
+    let mut e = TranscriptEngine::new();
+    for i in 0..200u64 {
+        let text = format!("reading Psalm {} verse {}", (i % 150) + 1, (i % 20) + 1);
+        e.ingest(&text, i * 10, i * 10 + 5);
+    }
+    assert_eq!(
+        e.recent_dedup_len(),
+        RECENT_DEDUP_WINDOW,
+        "the cross-segment dedup ring must stay bounded to RECENT_DEDUP_WINDOW"
+    );
+}

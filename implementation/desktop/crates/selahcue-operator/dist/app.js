@@ -617,7 +617,20 @@
         navItems.forEach((it, j) => { it.tabIndex = j === i ? 0 : -1; });
         navItems[i].focus();
       }
+      // Lazy-init the Theme Designer on FIRST activation (audit L3): its built-ins + the full
+      // system-font list (300–800 <option> nodes + 2 host round-trips) are otherwise built at
+      // boot even for operators who never open it. Only the designer surface reads them — the
+      // plan's per-row theme picker uses the host `view.themes`, and `syncSavedThemes`/`tdList`
+      // already no-op until the built-ins exist — so deferring is safe for the console/plan.
+      let tdLoaded = false;
+      function ensureThemeDesignerLoaded() {
+        if (tdLoaded) return;
+        tdLoaded = true;
+        tdLoadBuiltins();
+        tdLoadFonts();
+      }
       function showSurface(name) {
+        if (name === "theme-designer") ensureThemeDesignerLoaded();
         APP_SURFACES.forEach((s) => {
           const el = document.getElementById("surface-" + s);
           if (el) el.classList.toggle("active", s === name);
@@ -1672,8 +1685,8 @@
           .then((v) => { s.textContent = "Applied to the audience output."; return v; })
           .catch((e) => { s.textContent = "Couldn't apply the theme — the audience output is unchanged."; throw e; }));
       };
-      tdLoadBuiltins();
-      tdLoadFonts();
+      // (Theme Designer built-ins + fonts load lazily on first activation — see
+      // ensureThemeDesignerLoaded / showSurface, audit L3. Not loaded at boot.)
 
       function miniBtn(label, onclick) {
         const b = document.createElement("button");

@@ -230,6 +230,10 @@ jobs:
       # portable DOM behaviour; Chrome path/availability varies on macOS/Windows
       # runners). REQUIRE=1 turns a missing Chrome into a hard fail so the gate can
       # never silently no-op.
+      # Chrome version (audit #11): this uses the runner's pre-installed google-chrome-stable
+      # (currently 120+; the harness needs `--headless=new`, i.e. Chrome ≥ 112). The gate fails
+      # CLOSED on a Chrome change (spurious RED, never a false green); if a bump ever breaks it,
+      # pin a version here or switch the boot-render wait from a fixed sleep to a poll (#11).
       - name: Webview behavioural check (Linux, headless Chrome)
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}

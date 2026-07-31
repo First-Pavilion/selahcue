@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 64
+EXPECTED_MIN_CHECKS = 66
 
 
 def find_chrome():
@@ -166,6 +166,14 @@ DRIVER = r"""
       await sleep(180);
       ok(!el("preview-panel").querySelector(".surface").classList.contains("has-render"), "#7 available:false → text fallback (no canvas)");
       window.__renderAvailable = true; // restore for the rest of the run
+
+      // === audit L3: the Theme Designer loads LAZILY on first activation, not at boot ===
+      ok(!window.__calls.some(function(c){return c.cmd==="builtin_themes";}),
+         "L3 designer NOT loaded at boot (no builtin_themes before it is opened)");
+      document.querySelector('.nav-item[data-surface="theme-designer"]').click(); // triggers the lazy load
+      await sleep(80); // let the async builtin_themes / system_fonts resolve + build the designer
+      ok(window.__calls.some(function(c){return c.cmd==="builtin_themes";}),
+         "L3 designer loads on FIRST activation (builtin_themes fired after opening it)");
 
       // C-001: Add Shape → an element on tdTheme.elements, inspector shows, selection is element.
       addShape();
@@ -365,13 +373,15 @@ DRIVER = r"""
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
     el("__r").textContent = "RESULTS\n"+R.join("\n")+"\nDONE("+R.length+")";
   }
-  // Wait for the async builtin load, then run once the designer is ready.
+  // Wait until app.js has BOOTED (a host call fired + the designer DOM exists), then run.
+  // The designer built-ins now load lazily on first activation (audit L3), so the driver
+  // opens the designer itself — we no longer gate readiness on `builtin_themes`.
   var tries=0;
   var iv=setInterval(function(){
     tries++;
-    var loaded = window.__calls.some(function(c){return c.cmd==="builtin_themes";}) && document.getElementById("td-bg");
-    if (loaded){ clearInterval(iv); setTimeout(run, 50); }
-    else if (tries>60){ clearInterval(iv); el("__r").textContent="RESULTS\nFAIL: theme never loaded\nDONE(1)"; }
+    var booted = window.__calls.length > 0 && document.getElementById("td-bg");
+    if (booted){ clearInterval(iv); setTimeout(run, 50); }
+    else if (tries>60){ clearInterval(iv); el("__r").textContent="RESULTS\nFAIL: app never booted\nDONE(1)"; }
   }, 30);
 </script>
 """

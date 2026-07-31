@@ -399,6 +399,13 @@ impl TranscriptEngine {
         }
     }
 
+    /// Current size of the cross-segment dedup ring — exposed so a bounded-memory test can
+    /// assert it stays ≤ [`RECENT_DEDUP_WINDOW`] under a flood of distinct references (the
+    /// same pattern as `DetectionQueue::len` and the session `active_count`/`pending_count`).
+    pub fn recent_dedup_len(&self) -> usize {
+        self.recent_refs.len()
+    }
+
     /// Approve a queued detection (the operator staged it): removes and returns it.
     pub fn approve(&mut self, id: u64) -> Option<DetectedReference> {
         self.queue.approve(id)
