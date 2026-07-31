@@ -224,6 +224,18 @@ jobs:
         run: |
           cargo check
           cargo clippy -- -D warnings
+      # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
+      # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
+      # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-
+      # portable DOM behaviour; Chrome path/availability varies on macOS/Windows
+      # runners). REQUIRE=1 turns a missing Chrome into a hard fail so the gate can
+      # never silently no-op.
+      - name: Webview behavioural check (Linux, headless Chrome)
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: python3 scripts/operator_headless.py
 
   flutter:
     name: flutter controller
