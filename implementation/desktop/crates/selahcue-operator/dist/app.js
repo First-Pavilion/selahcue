@@ -301,6 +301,18 @@
         if (p) p.classList.toggle("has-render", on);
         if (l) l.classList.toggle("has-render", on);
       }
+      // Decode base64 RGBA into a preallocated typed array with a TIGHT indexed loop
+      // (audit M5). `Uint8Array.from(atob(s), c => c.charCodeAt(0))` invokes a JS closure
+      // PER BYTE — V8's slow path — for ~0.9MB frames on the main thread; a plain indexed
+      // loop is JIT-friendly and byte-identical. `atob` throws on malformed input (callers
+      // guard with try/catch).
+      function b64ToBytes(b64) {
+        const bin = atob(b64);
+        const n = bin.length;
+        const bytes = new Uint8Array(n);
+        for (let i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i);
+        return bytes;
+      }
       function drawConsoleFrame(canvasId, frame) {
         if (!frame || !frame.rgba || !frame.w || !frame.h) {
           console.warn("[SelahCue] drawConsoleFrame bad frame", canvasId, frame && { w: frame.w, h: frame.h, hasRgba: !!frame.rgba });
@@ -310,7 +322,7 @@
         if (!cv) return false;
         let bytes;
         try {
-          bytes = Uint8Array.from(atob(frame.rgba), (c) => c.charCodeAt(0));
+          bytes = b64ToBytes(frame.rgba);
         } catch (e) {
           console.warn("[SelahCue] drawConsoleFrame atob failed", canvasId, e);
           return false;
@@ -1031,7 +1043,7 @@
         tdTimer = setTimeout(async () => {
           try {
             const p = await invoke("preview_theme", { themeJson: JSON.stringify(tdTheme) });
-            const bytes = Uint8Array.from(atob(p.rgba), (c) => c.charCodeAt(0));
+            const bytes = b64ToBytes(p.rgba); // tight decode (audit M5)
             tdCanvas.width = p.w; tdCanvas.height = p.h;
             tdCtx.putImageData(new ImageData(new Uint8ClampedArray(bytes), p.w, p.h), 0, 0);
           } catch (e) { console.error(e); }

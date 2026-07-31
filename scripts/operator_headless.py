@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 63
+EXPECTED_MIN_CHECKS = 64
 
 
 def find_chrome():
@@ -144,6 +144,12 @@ DRIVER = r"""
       ok(el("preview-panel").querySelector(".surface").classList.contains("has-render"), "#7-fix Preview panel shows the true render on boot");
       ok(el("live-panel").querySelector(".surface").classList.contains("has-render"), "#7-fix Live panel shows the true render on boot");
       ok(el("preview-canvas").width===2 && el("preview-canvas").height===1, "#7 preview canvas drawn at the frame size");
+      // M5: the tight-loop base64 decode (b64ToBytes) must be BYTE-EXACT — read the preview
+      // canvas back and assert the two known stub pixels (red, then green).
+      var pd = el("preview-canvas").getContext("2d").getImageData(0, 0, 2, 1).data;
+      ok(pd[0]===255 && pd[1]===0 && pd[2]===0 && pd[3]===255 &&
+         pd[4]===0 && pd[5]===255 && pd[6]===0 && pd[7]===255,
+         "M5 tight base64 decode is byte-exact (preview pixels: " + Array.from(pd).join(",") + ")");
       // #1 the panels are 16:9-ish, NOT a collapsed strip (align-items:flex-start lets aspect-ratio apply).
       var pp = el("preview-panel");
       var ratio = pp.offsetWidth > 0 ? pp.offsetHeight / pp.offsetWidth : 0;
