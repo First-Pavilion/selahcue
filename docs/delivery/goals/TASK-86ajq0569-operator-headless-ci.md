@@ -43,10 +43,10 @@ Verified: the scratchpad harness (`td_headless.py`) injects a `window.__TAURI__`
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | The committed `scripts/operator_headless.py` runs the behavioural checks portably (repo-relative dist, Chrome auto-detect) and reproduces 63/0 locally; missing Chrome + REQUIRE=1 fails, without it skips (exit 0) | `python3 scripts/operator_headless.py` (+ a REQUIRE/skip check) | 63 checks / 0 FAIL locally; require-fail + skip both correct | harness run | PENDING |
-| C-002 | yes | `make ci` invokes the harness (graceful skip if Chrome absent); the `ci` target still passes end-to-end | `make operator-headless` + review `ci` target | wired; local ci gate green | Makefile diff | PENDING |
-| C-003 | yes | The CI `operator` job runs the harness on Linux with REQUIRE=1; 3-OS CI green (verified by run CONCLUSION) with the operator-Linux log showing the harness ran (`N checks, 0 FAIL`) | push + `gh run view --json conclusion` + job log | operator-Linux runs the harness; overall success | CI run | PENDING |
-| C-004 | yes | A mutation check proves the gate BITES: temporarily breaking a pinned behaviour (locally) makes the harness FAIL non-zero; independent adversarial review, findings fixed | local mutation + Workflow review | harness fails on a regression; review clean | mutation note; review | PENDING |
+| C-001 | yes | The committed `scripts/operator_headless.py` runs the behavioural checks portably (repo-relative dist, Chrome auto-detect) and reproduces 63/0 locally; missing Chrome + REQUIRE=1 fails, without it skips (exit 0) | `python3 scripts/operator_headless.py` (+ a REQUIRE/skip check) | 63 checks / 0 FAIL locally; require-fail + skip both correct | harness run (63/0); find_chrome None→require:3/skip:0 | PASS |
+| C-002 | yes | `make ci` invokes the harness (graceful skip if Chrome absent); the `ci` target still passes end-to-end | `make operator-headless` + review `ci` target | wired; local ci gate green | Makefile `operator-headless` target + `ci` call; `make operator-headless`→63/0 | PASS |
+| C-003 | yes | The CI `operator` job runs the harness on Linux with REQUIRE=1; 3-OS CI green (verified by run CONCLUSION) with the operator-Linux log showing the harness ran (`N checks, 0 FAIL`) | push + `gh run view --json conclusion` + job log | operator-Linux runs the harness; overall success | CI 30654485427 (completed→success; log: `63 checks, 0 FAIL`) | PASS |
+| C-004 | yes | A mutation check proves the gate BITES: temporarily breaking a pinned behaviour (locally) makes the harness FAIL non-zero; independent adversarial review, findings fixed | local mutation + Workflow review | harness fails on a regression; review clean | mutation (M4 slice→exit1; floor→exit4); CODE-REVIEW doc | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -71,7 +71,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajq0569-operator-headless-ci.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending — MCP rate-limited; closes audit report §4 #9)
+- Validator result: PASS (run below)
+- Independent verification result: adversarial review `wf_1d8e9056-4da` (anti-stub re-run) — NO false-pass path; 6 findings all fixed/dispositioned (4 fixed, 1 refuted, 1 documented); see `CODE-REVIEW-batch-operator-headless-ci.md`. Empirical: mutation-bite (M4 slice→exit1) + shrink-guard (floor→exit4) + the CI runner log (`63 checks, 0 FAIL`).
+- Terminal state: **VERIFIED_COMPLETE** — the webview behavioural harness is committed + CI-gated (Linux, REQUIRE=1) + proven to run on the runner; **3-OS CI `30654485427` GREEN (completed→success)** verified by conclusion; 2 LOW DEVOPS follow-ups queued (#10 WebKit fidelity, #11 Chrome-pin/poll).
+- ClickUp final evidence comment: (queued — MCP rate-limited; closes audit report §4 #9; adds #10/#11; BUILD CONTROL `86ajnx548` update queued)
