@@ -6,7 +6,7 @@
 - Parent goal ID: NONE (standalone R3/R4 vertical slice, isolated worktree)
 - Title: Live transcript panel + scripture auto-detection approval queue (end-to-end vertical slice)
 - Role: backend-engineer (core engine + wire/controller) + frontend-engineer (operator webview panel)
-- Status: IN_PROGRESS
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajtxuwr
 - Created: 2026-07-31
@@ -87,7 +87,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-003 | yes | Wire+RBAC additive/VERSION-stable: `Command::{IngestTranscript,ApproveDetection,DismissDetection}` + `Permission::Transcribe` mapped; `OperatorStateView` gains `transcript`/`detections` (`skip_serializing_if`); VERSION==2 unchanged; existing pinned wire fixtures still pass byte-identical; unauthorised role denied ingest | `cargo test -p selahcue-lan --features server` + `cargo test -p selahcue-app --features server` | additive; fixtures byte-stable; RBAC enforced; no VERSION bump | test_protocol/test_rbac | PASS |
 | C-004 | yes | Controller+shell E2E: ingest → segment appears in `operator_view().transcript`; a spoken ref appears in `.detections`; `ApproveDetection` stages that verse into Preview (`staged_scripture` set) and removes it from the queue; `DismissDetection` removes without staging; `OperatorShell` + `RemoteOperator` expose all three; AI path never blanks Live | `cargo test -p selahcue-app` + `-p selahcue-app --features server` | full ingest→detect→approve→stage flow green over both local and remote surfaces | test_controller/test_operator/test_operator_remote | PASS |
 | C-005 | yes | Frontend: `#transcript` streams `view.transcript` (empty/loading/error states + manual inject seam), `#detections` renders `view.detections` with Approve→stage / Dismiss, escape-safe (`.textContent`), poll-safe; Tauri commands registered; WKWebView-safe | `node --check dist/app.js` + `cargo check`/`clippy -D warnings` (operator crate) + code read | JS parses; operator crate compiles+lints; panels wired; text never via innerHTML | dist/app.js, dist/index.html, operator main.rs | PASS |
-| C-006 | yes | Gate + review: whole `make ci` gate (fmt/clippy `-D warnings` +server, workspace tests +server, operator fmt/clippy/check) green; `cargo deny` clean if deps changed; independent adversarial Workflow review run over the diff (lenses: engine determinism/bounded · wire additive/RBAC · frontend a11y/escaping), CONFIRMED findings fixed; ADR recorded | make-ci commands + Workflow + validator `--require-complete` | all gates green; review findings resolved; ADR present | terminal command output + review notes in this ledger + docs/architecture/adr | PENDING |
+| C-006 | yes | Gate + review: whole `make ci` gate (fmt/clippy `-D warnings` +server, workspace tests +server, operator fmt/clippy/check) green; `cargo deny` clean if deps changed; independent adversarial Workflow review run over the diff (lenses: engine determinism/bounded · wire additive/RBAC · frontend a11y/escaping), CONFIRMED findings fixed; ADR recorded | make-ci commands + Workflow + validator `--require-complete` | all gates green; review findings resolved; ADR present | terminal command output + review notes in this ledger + docs/architecture/adr | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -122,9 +122,20 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ### Iteration 3 — C-005 (Tauri commands + webview panels)
 
 - Target criterion: C-005 frontend.
-- Hypothesis: (pending)
-- Change or investigation: (pending)
-- Decision: iterate
+- Change: operator `main.rs` — Backend Local/Remote arms + `#[tauri::command]` `ingest_transcript`/`approve_detection`/`dismiss_detection` registered in `generate_handler!`. `dist/index.html` — `#transcript` streaming log + manual-inject form + honest empty state; `#detections` approval-queue list + empty state. `dist/app.js` — `syncTranscript`/`syncDetections` (change-keyed, poll-safe, `textContent`-escaped) called before the plan early-returns, manual-inject form handler, Stage/Dismiss wiring. `dist/app.css` — stream/segment/detection styles reusing tokens. Updated `selahcue-present::test_tokens` pinned needles for the now-FUNCTIONAL-but-honest panels.
+- Verifier executed: `node --check dist/app.js`; `cargo fmt --check` (operator); `cargo clippy` (operator, `-D warnings`); `cargo test -p selahcue-present --test test_tokens`.
+- Result: JS OK; operator crate compiles + lints clean; token test green (10/10). Panels wired; untrusted text via `textContent` only.
+- Decision: iterate → C-006 (gate + review + ADR).
+
+### Iteration 4 — C-006 (full gate + ADR + independent adversarial review)
+
+- Target criterion: C-006.
+- Change: ADR-0019 recorded (transcript-provider seam + on-device-STT follow-up disposition + in-memory persistence deferral). Ran the full `make ci`-equivalent Rust gate; committed the slice (`f73dede`); dispatched two independent adversarial reviewers (Rust engine/wire/RBAC; frontend/bridge) refute-by-default.
+- Verifier executed: fmt/clippy/test across workspace (+server) + operator crate + node --check (all green, recorded in C-006 evidence); adversarial Workflow review.
+- Result: **Two independent adversarial reviewers** (refute-by-default). RUST engine/wire/RBAC/determinism/bounded/panics lens → **NO CONFIRMED FINDINGS** (all cleared with evidence; one non-defect note that the `state_dirty` default `_ => true` is fail-safe over-persist). FRONTEND/bridge lens → **2 LOW confirmed** (XSS/Tauri-args/registration/states all cleared): (1) manual transcript input cleared before the ingest await → text lost on error; (2) `#transcript-log` aria-live region cleared+rebuilt → whole transcript re-announced per segment. **Both fixed** in commit `bf52085` (clear-on-success only; append-only-by-id render), re-verified: `node --check` OK, `test_tokens` 10/10.
+- Decision: complete.
+
+Full gate re-run evidence (C-006): `cargo fmt --check` (workspace + operator) clean; `cargo clippy --workspace --all-targets -D warnings` + `-p selahcue-lan/-p selahcue-app --features server` + operator `cargo clippy -D warnings` clean; `cargo test --workspace` clean; `cargo test -p selahcue-lan --features server` / `-p selahcue-app --features server` / `-p selahcue-data --features encryption` / `-p selahcue-desktop --features encryption` clean; `node --check dist/app.js` OK. No dependency/manifest change → `cargo deny` N/A. Mobile untouched.
 
 ## Risks and rollback
 
@@ -140,8 +151,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajtxuwr-live-transcript-scripture-detection.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- Remaining failed or blocked criteria: (pending)
-- ClickUp final evidence comment: (pending)
+- Validator result: PASS (all 6 mandatory criteria PASS).
+- Independent verification result: two independent adversarial reviewers ran refute-by-default over the diff; Rust lens NO CONFIRMED FINDINGS; frontend lens 2 LOW confirmed → both fixed (`bf52085`) + re-verified.
+- Terminal state: **VERIFIED_COMPLETE**.
+- Remaining failed or blocked criteria: none.
+- ClickUp final evidence comment: posted to 86ajtxuwr.
