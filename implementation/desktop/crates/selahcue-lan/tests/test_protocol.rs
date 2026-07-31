@@ -4,7 +4,7 @@
 
 use selahcue_lan::protocol::{
     from_json, to_json, AuthRequest, AuthResponse, Command, DenyReason, Request, ServerMessage,
-    VerseView, VERSION,
+    ThumbView, VerseView, VERSION,
 };
 use selahcue_lan::rbac::Role;
 
@@ -20,6 +20,49 @@ fn command_tag_encoding_is_stable() {
         to_json(&Command::SelectItem { item_id: 7 }).unwrap(),
         r#"{"cmd":"select_item","item_id":7}"#
     );
+}
+
+#[test]
+fn console_thumbnails_round_trip_and_additive() {
+    // 86ajtwq28: the command + reply serde round-trip with stable tags, and the addition is
+    // ADDITIVE — VERSION is unchanged and existing messages encode byte-identically.
+    assert_eq!(
+        to_json(&Command::GetConsoleThumbnails {
+            max_w: 480,
+            max_h: 270
+        })
+        .unwrap(),
+        r#"{"cmd":"get_console_thumbnails","max_w":480,"max_h":270}"#
+    );
+    // ThumbView base64-encodes the raw RGBA (8 bytes → 12 base64 chars).
+    let thumb = ThumbView::from_rgba(2, 1, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!((thumb.w, thumb.h), (2, 1));
+    assert_eq!(
+        thumb.rgba.len(),
+        12,
+        "8 RGBA bytes → 12 base64 chars: {}",
+        thumb.rgba
+    );
+
+    let msg = ServerMessage::ConsoleThumbnails {
+        preview: Some(thumb.clone()),
+        live: None,
+    };
+    let json = to_json(&msg).unwrap();
+    assert!(json.contains(r#""event":"console_thumbnails""#), "{json}");
+    assert!(
+        json.contains(r#""w":2"#) && json.contains(r#""rgba":"#),
+        "{json}"
+    );
+    assert!(
+        !json.contains("\"live\""),
+        "a None live surface is skipped: {json}"
+    );
+    assert_eq!(from_json::<ServerMessage>(&json).unwrap(), msg);
+
+    // Additive: the wire VERSION is unchanged and a pre-existing command is byte-identical.
+    assert_eq!(VERSION, 2);
+    assert_eq!(to_json(&Command::GoLive).unwrap(), r#"{"cmd":"go_live"}"#);
 }
 
 #[test]

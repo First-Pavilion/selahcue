@@ -101,7 +101,9 @@ pub fn required_permission(cmd: &Command) -> Permission {
         Command::ScriptureSearch { .. }
         | Command::StageScripture { .. }
         | Command::GetChapter { .. } => SearchScripture,
-        Command::GetState | Command::GetOperatorState => Monitor,
+        Command::GetState | Command::GetOperatorState | Command::GetConsoleThumbnails { .. } => {
+            Monitor
+        }
         Command::AddItem { .. }
         | Command::RemoveItem { .. }
         | Command::MoveItem { .. }

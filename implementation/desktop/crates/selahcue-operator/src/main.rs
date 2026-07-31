@@ -285,17 +285,6 @@ impl Backend {
             Backend::Local(s) => Ok(s.assign_output(&role, &display_key)),
         }
     }
-
-    /// Downscaled Preview + Live thumbnails for the console monitors (86ajtwq28). `None` for
-    /// the REMOTE backend — the true pixels live on the remote host and are not carried on
-    /// the control wire (streaming them is a later seam), so the UI keeps its text fallback.
-    /// Read-only: applies no command, so it never changes what is on air.
-    fn console_thumbnails(&self, max_w: u32, max_h: u32) -> Option<(FrameBuffer, FrameBuffer)> {
-        match self {
-            Backend::Remote(_) => None,
-            Backend::Local(s) => Some(s.console_thumbnails(max_w, max_h)),
-        }
-    }
 }
 
 struct AppState {
@@ -438,19 +427,40 @@ async fn render_console(
     // Theme Designer preview and is ample for a console monitor.
     let max_w = max_w.clamp(1, 480);
     let max_h = max_h.clamp(1, 270);
-    Ok(match state.backend.console_thumbnails(max_w, max_h) {
-        Some((preview, live)) => {
-            let enc = |fb: &FrameBuffer| {
-                serde_json::json!({
-                    "w": fb.width(),
-                    "h": fb.height(),
-                    "rgba": base64::engine::general_purpose::STANDARD.encode(fb.bytes()),
-                })
-            };
-            serde_json::json!({ "available": true, "preview": enc(&preview), "live": enc(&live) })
+    // A local FrameBuffer readback → the webview JSON shape.
+    let fb_json = |fb: &FrameBuffer| {
+        serde_json::json!({
+            "w": fb.width(),
+            "h": fb.height(),
+            "rgba": base64::engine::general_purpose::STANDARD.encode(fb.bytes()),
+        })
+    };
+    // A host ThumbView (already base64) → the same shape; `None` (no host frame) → JSON null.
+    let thumb_json = |t: Option<selahcue_lan::protocol::ThumbView>| match t {
+        Some(t) => serde_json::json!({ "w": t.w, "h": t.h, "rgba": t.rgba }),
+        None => serde_json::Value::Null,
+    };
+    match &state.backend {
+        // Standalone (demo) — the operator has the composited frames locally.
+        Backend::Local(s) => {
+            let (preview, live) = s.console_thumbnails(max_w, max_h);
+            Ok(
+                serde_json::json!({ "available": true, "preview": fb_json(&preview), "live": fb_json(&live) }),
+            )
         }
-        None => serde_json::json!({ "available": false }),
-    })
+        // Driving the output app over the loopback link (86ajtwq28): the composited pixels
+        // live in the OUTPUT-APP process, so ask it for the Preview/Live thumbnails over the
+        // same link (a read — never changes what is on air). A transport error (e.g. a
+        // pre-feature host that can't parse the command) → `available:false` → text fallback.
+        Backend::Remote(m) => match m.lock().await.console_thumbnails(max_w, max_h).await {
+            Ok((preview, live)) => Ok(serde_json::json!({
+                "available": true,
+                "preview": thumb_json(preview),
+                "live": thumb_json(live),
+            })),
+            Err(e) => Ok(serde_json::json!({ "available": false, "error": e.to_string() })),
+        },
+    }
 }
 #[tauri::command]
 async fn blackout(on: bool, state: State<'_, AppState>) -> Result<OperatorView, String> {

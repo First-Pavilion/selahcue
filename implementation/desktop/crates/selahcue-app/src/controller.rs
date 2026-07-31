@@ -11,7 +11,7 @@ use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{
     Command, DenyReason, DisplayView, OutputStatusView, SavedThemeView, ScreenThemeView,
-    ServerMessage, TimerSnapshot, VerseView,
+    ServerMessage, ThumbView, TimerSnapshot, VerseView,
 };
 use selahcue_present::{
     FrameBuffer, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView, MAX_ELEMENTS,
@@ -1043,6 +1043,7 @@ impl LiveController {
         match command {
             Command::GetState
             | Command::GetOperatorState
+            | Command::GetConsoleThumbnails { .. }
             | Command::ScriptureSearch { .. }
             | Command::GetChapter { .. } => {}
             _ => self.state_dirty = true,
@@ -1265,6 +1266,20 @@ impl LiveController {
             Command::GetOperatorState => ControllerReply::Message(ServerMessage::OperatorState {
                 view: self.operator_view().into(),
             }),
+            Command::GetConsoleThumbnails { max_w, max_h } => {
+                // A READ: downscale the host's current Preview + Live output to thumbnails so a
+                // remote operator's console monitors show the TRUE composited pixels. No state
+                // change, no tick — the audience output is untouched. Size clamped host-side so
+                // the payload stays bounded regardless of the requested panel size.
+                let mw = (*max_w).clamp(1, 480);
+                let mh = (*max_h).clamp(1, 270);
+                let pv = self.presenter().preview_output().thumbnail(mw, mh);
+                let lv = self.presenter().live_output().thumbnail(mw, mh);
+                ControllerReply::Message(ServerMessage::ConsoleThumbnails {
+                    preview: Some(ThumbView::from_rgba(pv.width(), pv.height(), pv.bytes())),
+                    live: Some(ThumbView::from_rgba(lv.width(), lv.height(), lv.bytes())),
+                })
+            }
             Command::IdentifyOutputs => {
                 self.identify_pending = true;
                 ControllerReply::Ack

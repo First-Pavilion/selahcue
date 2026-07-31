@@ -636,6 +636,34 @@ impl RemoteOperator {
         }
     }
 
+    /// Fetch the host's current Preview + Live output as downscaled thumbnails (86ajtwq28),
+    /// so the operator console monitors show the TRUE composited pixels the audience sees
+    /// (not a text placeholder) when driving the output over the loopback link. A **read** —
+    /// never changes what is on air.
+    pub async fn console_thumbnails(
+        &mut self,
+        max_w: u32,
+        max_h: u32,
+    ) -> Result<
+        (
+            Option<selahcue_lan::protocol::ThumbView>,
+            Option<selahcue_lan::protocol::ThumbView>,
+        ),
+        selahcue_lan::TransportError,
+    > {
+        use selahcue_lan::protocol::ServerMessage;
+        match self
+            .client
+            .command(Command::GetConsoleThumbnails { max_w, max_h })
+            .await?
+        {
+            ServerMessage::ConsoleThumbnails { preview, live } => Ok((preview, live)),
+            other => Err(selahcue_lan::TransportError::Protocol(format!(
+                "expected console_thumbnails, got: {other:?}"
+            ))),
+        }
+    }
+
     /// Send a mutating command, then read back the fresh authoritative view. A command
     /// the host denies (RBAC/app) is **not** an error — the returned view simply shows
     /// the unchanged state, which the UI reflects.

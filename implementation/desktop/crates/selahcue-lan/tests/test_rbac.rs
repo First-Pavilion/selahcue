@@ -188,6 +188,24 @@ fn every_role_can_get_state() {
 }
 
 #[test]
+fn every_role_can_fetch_console_thumbnails() {
+    // GetConsoleThumbnails is a READ (Monitor capability), like GetState/GetOperatorState —
+    // a remote operator's console monitors show the true output regardless of role (86ajtwq28).
+    for role in all_roles() {
+        assert!(
+            authorize(
+                role,
+                &Command::GetConsoleThumbnails {
+                    max_w: 480,
+                    max_h: 270
+                }
+            ),
+            "{role:?} cannot fetch console thumbnails"
+        );
+    }
+}
+
+#[test]
 fn navigate_is_denied_only_to_viewer() {
     for cmd in navigate_cmds() {
         assert!(authorize(Role::Operator, &cmd));

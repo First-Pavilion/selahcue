@@ -2420,3 +2420,52 @@ fn a_custom_theme_with_an_image_element_applies_recovers_and_is_bounded() {
         "an over-cap image element list is rejected"
     );
 }
+
+// --- Remote console thumbnails: the host serves its true Preview/Live pixels (86ajtwq28) ---
+
+#[test]
+fn get_console_thumbnails_returns_bounded_frames_and_is_read_only() {
+    // A remote operator fetches the host's Preview + Live output as thumbnails so its console
+    // monitors show the TRUE composited pixels. It MUST be a read — the audience (live) output
+    // pixels and the operator view are byte-identical before/after.
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    let live_before = c.presenter().live_output().bytes().to_vec();
+    let view_before = c.operator_view();
+
+    let reply = c.apply(&Command::GetConsoleThumbnails {
+        max_w: 160,
+        max_h: 90,
+    });
+    match reply {
+        ControllerReply::Message(ServerMessage::ConsoleThumbnails { preview, live }) => {
+            let pv = preview.expect("a preview thumbnail");
+            let lv = live.expect("a live thumbnail");
+            assert!(
+                pv.w <= 160 && pv.h <= 90 && !pv.rgba.is_empty(),
+                "preview within the bound + non-empty: {}x{}",
+                pv.w,
+                pv.h
+            );
+            assert!(
+                lv.w <= 160 && lv.h <= 90 && !lv.rgba.is_empty(),
+                "live within the bound + non-empty: {}x{}",
+                lv.w,
+                lv.h
+            );
+        }
+        other => panic!("expected ConsoleThumbnails, got {other:?}"),
+    }
+    // Read-only: fetching the thumbnails changed NEITHER the on-air output NOR the view.
+    assert_eq!(
+        c.presenter().live_output().bytes(),
+        live_before.as_slice(),
+        "GetConsoleThumbnails must not change the on-air (live) output"
+    );
+    assert_eq!(
+        c.operator_view(),
+        view_before,
+        "GetConsoleThumbnails must not change the operator view"
+    );
+}

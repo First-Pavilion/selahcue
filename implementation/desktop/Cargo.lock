@@ -2217,6 +2217,7 @@ dependencies = [
 name = "selahcue-lan"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "futures-util",
  "rcgen",
  "ring",

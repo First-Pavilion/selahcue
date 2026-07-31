@@ -27,6 +27,8 @@ server = [
 selahcue-core = { path = "../selahcue-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Base64 for the console-thumbnail RGBA carried in `ThumbView` over the JSON wire (86ajtwq28).
+base64 = "0.22"
 # Constant-time comparison of bearer tokens (defends against timing side channels).
 subtle = "2"
 

@@ -72,6 +72,11 @@ pub enum Command {
     /// Request the full operator view (plan + per-item live/preview flags + blackout),
     /// so a remote operator UI can render authoritative state from the host.
     GetOperatorState,
+    /// Request the host's current **Preview + Live output** as downscaled RGBA thumbnails
+    /// (86ajtwq28), so a remote operator's console monitors show the TRUE composited pixels
+    /// (not a text placeholder) when the operator drives the output over the loopback link.
+    /// A **read** (RBAC `Monitor`) — never changes what is on air. The host clamps the size.
+    GetConsoleThumbnails { max_w: u32, max_h: u32 },
     /// Append a plan item (plan editing — Operator only). `kind` is the stable
     /// item-kind tag (e.g. `"song"`); unknown tags are rejected.
     AddItem {
@@ -193,8 +198,42 @@ pub enum ServerMessage {
     },
     /// The full operator view (reply to [`Command::GetOperatorState`]).
     OperatorState { view: OperatorStateView },
+    /// Reply to [`Command::GetConsoleThumbnails`] (86ajtwq28): the host's current Preview +
+    /// Live output as downscaled RGBA thumbnails, so a remote operator's console monitors
+    /// render the TRUE composited pixels. `None` for a surface the host has no frame for.
+    ConsoleThumbnails {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview: Option<ThumbView>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        live: Option<ThumbView>,
+    },
     /// A protocol-level or transport-level error not tied to a single request.
     Error { message: String },
+}
+
+/// A single downscaled output thumbnail (86ajtwq28): `w×h` RGBA8 pixels, the bytes carried
+/// **base64**-encoded so they ride the JSON wire compactly. Built by [`ThumbView::from_rgba`]
+/// on the host from a [`FrameBuffer::thumbnail`](selahcue_present::FrameBuffer) readback; the
+/// operator forwards `rgba` straight to its `<canvas>` (the webview `atob`-decodes it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThumbView {
+    pub w: u32,
+    pub h: u32,
+    /// Base64 (standard) of the row-major RGBA8 bytes (`4·w·h` before encoding).
+    pub rgba: String,
+}
+
+impl ThumbView {
+    /// Build a thumbnail from raw row-major RGBA8 `bytes` (`4·w·h`), base64-encoding them for
+    /// the JSON wire. The wire crate owns this encoding so the host + operator agree exactly.
+    pub fn from_rgba(w: u32, h: u32, bytes: &[u8]) -> Self {
+        use base64::Engine;
+        ThumbView {
+            w,
+            h,
+            rgba: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }
+    }
 }
 
 /// One plan item as the operator UI renders it — the wire form of an item view.

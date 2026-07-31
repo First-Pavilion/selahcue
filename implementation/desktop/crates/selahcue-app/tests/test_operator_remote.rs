@@ -118,6 +118,44 @@ async fn remote_operator_drives_the_host_and_sees_authoritative_state() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_operator_fetches_the_hosts_console_thumbnails() {
+    // 86ajtwq28: the owner's real setup — the operator drives the output app over the loopback
+    // link (multi-monitor, one machine, no network). Its console monitors fetch the host's
+    // Preview + Live output as thumbnails (the TRUE composited pixels) over that same link.
+    // A READ — the host's on-air state is unchanged. This exercises the exact path that showed
+    // only the reference text before this fix.
+    let (addr, pin, controller) = setup().await;
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "producer", "tok-prod")
+        .await
+        .unwrap();
+    op.next().await.unwrap();
+    op.go_live().await.unwrap(); // real content on the host's Preview + Live
+
+    let (preview, live) = op.console_thumbnails(160, 90).await.unwrap();
+    let pv = preview.expect("a preview thumbnail from the host");
+    let lv = live.expect("a live thumbnail from the host");
+    assert!(
+        pv.w <= 160 && pv.h <= 90 && !pv.rgba.is_empty(),
+        "preview within the bound + non-empty: {}x{}",
+        pv.w,
+        pv.h
+    );
+    assert!(
+        lv.w <= 160 && lv.h <= 90 && !lv.rgba.is_empty(),
+        "live within the bound + non-empty: {}x{}",
+        lv.w,
+        lv.h
+    );
+
+    // Read-only: fetching the thumbnails did not change the host's on-air (Live) state.
+    assert_eq!(
+        controller.lock().unwrap().live_index(),
+        Some(0),
+        "the thumbnail fetch must not change what is on air"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_start_timer_is_reflected_after_a_host_tick() {
     let (addr, pin, controller) = setup().await;
     let mut op = RemoteOperator::connect(addr, "localhost", pin, "producer", "tok-prod")
