@@ -2267,11 +2267,23 @@
         const log = document.getElementById("transcript-log");
         const empty = document.getElementById("transcript-empty");
         if (!log || !empty) return;
-        log.innerHTML = "";
         empty.style.display = segs.length ? "none" : "";
+        // APPEND-ONLY by segment id: the log is an aria-live region, so clearing and
+        // rebuilding it would make assistive tech re-announce the WHOLE transcript on
+        // every new line. Instead drop rows that scrolled out of the bounded tail and
+        // append only genuinely new segments, so only the newest line is announced.
+        const wanted = new Set(segs.map((s) => String(s.id)));
+        for (const row of Array.from(log.children)) {
+          if (!wanted.has(row.dataset.segId)) log.removeChild(row);
+        }
+        const present = new Set(
+          Array.from(log.children).map((r) => r.dataset.segId)
+        );
         for (const s of segs) {
+          if (present.has(String(s.id))) continue;
           const row = document.createElement("div");
           row.className = "seg";
+          row.dataset.segId = String(s.id);
           const t = document.createElement("span");
           t.className = "seg-time";
           t.textContent = fmtClock(Math.floor((s.start_ms || 0) / 1000));
@@ -2353,7 +2365,6 @@
           const text = input.value.trim();
           if (!text) return;
           const now = Date.now() - transcriptOrigin;
-          input.value = "";
           if (status) status.textContent = "Sending…";
           try {
             render(
@@ -2363,6 +2374,9 @@
                 endMs: now + 2000,
               })
             );
+            // Clear ONLY after the host accepted the line — on an RBAC denial, host
+            // error, or disconnect the operator's text is preserved to retry.
+            input.value = "";
             if (status) status.textContent = "";
           } catch (err) {
             console.error(err);
