@@ -1,0 +1,36 @@
+# Code Review — Batch: Theme Designer element authoring UI (86ajq6j4p)
+
+- **Scope:** story `86ajq6j4p` (Canvas Editing epic) — the **on-canvas element authoring UI**: add / select / move / 8-handle resize / **arrange (send-to-back etc.)** / delete + a per-element inspector (X/Y/W/H · opacity · shape fill/border · image source), generalising the existing single-**region** drag/resize (S8-3c) to arbitrary **elements**. Also the `86ajq6j49` image-frontend add/edit (minus the native picker). Built from `CANVAS-EDITING-spec.md` against the already-shipped engine model. Executed via `/goal` (`TASK-86ajq6j4p-canvas-interactions.md`, validator PASS 4/4). **Client-side only** (`selahcue-operator/dist/{app.js,index.html,app.css}`) — **no host change, no new dependency, no engine/wire/migration change.**
+- **Method:** an adversarial Workflow review (`wf_dba0dc46-65a`, 3 independent lenses → per-finding adversarial verify, **15 agents**). Lenses: interaction-correctness/z-order · a11y/console-invariants/WKWebView-safety · state-sync/persist/bounded. Every finding independently confirmed-or-refuted (default REFUTED). No self-approval.
+- **Outcome:** **12 raised → 11 CONFIRMED → all fixed; 1 refuted.** 0 HIGH; 4 MEDIUM (2 pairs of same-defect-from-two-lenses); 7 LOW. Verified via a headless (Chrome + `window.__TAURI__` stub) interaction check: **22/22**.
+
+## What shipped
+
+- **Active-target model:** `tdRegion` generalised to `tdSelEl` (−1 = a region, else an element index); `tdActive()`/`tdActiveIsEl()`/`tdEls()`/`tdPaintOrder()`. `tdDrawSel`/`tdSyncLayout`/`tdSetRect`/the X/Y/W/H handler/the pointer + keyboard handlers all resolve the active target — so the **region drag/resize is unchanged** and the same 8-handle machinery now edits elements.
+- **Add / persist:** **Add Shape** (visible default fill, `z:=max+1`, auto-select) + **Add Image** via a host-path row; disabled at 64. Persist rides the existing `SetCustomTheme`/`SaveTheme` (`JSON.stringify(tdTheme)` already carries `elements`); the preview auto-composites via `render_sample` — **no host change**.
+- **Interactions:** click hit-test (front-to-back paint order) → select; move (drag + Arrow), 8-handle resize, two-click delete; **arrange** (Send-to-back/backward/forward/Bring-to-front + `Cmd/Ctrl+]`/`[`) that **rewrites the `z` value** per spec §2a (compose sorts by z — a list-reorder would be a no-op), with the behind/in-front chip. Per-element inspector (opacity ↔ u8, fill/border RGB, border-width, image source).
+- **a11y / invariants:** ARIA on the handles, `#td-status` announcements (select/arrange/add/delete), Escape/empty-canvas deselect; editing is **preview-only** (Apply stays the explicit path to Live); emergency chrome untouched; WKWebView-safe (inline path row, no `window.prompt`).
+
+## Findings and dispositions
+
+| # | Lens(es) | Sev | Finding | Disposition |
+|---|------|-----|---------|-------------|
+| 1 | interaction · state | **MED** | **Two-click delete arm leaked across selection changes.** `tdElDelArm` was a global flag; arming a delete on shape A then selecting B left it armed, so the next single click deleted B **unconfirmed** (the saved-theme delete guards this; the element path didn't). | **Fixed:** `tdSyncEl` (runs on every selection change) now resets `tdElDelArm` + the button label + clears the timer. Regression in the headless check. |
+| 2 | interaction · a11y | **MED** | **No way to deselect back to region editing.** Once an element was selected the region controls were `display:none` with no path back except deleting the element or reloading a template (which discards all edits) — a hard trap, keyboard users included. | **Fixed:** **Escape** (on `#td-sel`) and an **empty-canvas click** both deselect (`tdSelEl=-1`), restoring the region controls + focusing the region picker. Regression-tested. |
+| 3 | a11y | **MED** | **The armed delete wasn't announced to assistive tech** — pressing Delete (focus on `#td-sel`) silently relabelled `#td-el-del` off-focus; a screen-reader user got no feedback. | **Fixed:** `tdAnnounce("Press Delete again…")` on arm (mirrors the saved-theme delete's `tdStatus`). |
+| 4 | state · interaction | **MED/LOW** | **Image path validated in UTF-16 units + NUL not rejected** — `path.length > 1024` disagreed with `MediaRef` (CAP = 1024 **bytes**, NUL-rejected), so a long non-ASCII or NUL-bearing path passed the client gate then poisoned the whole theme at `set_custom_theme`. | **Fixed:** use `tdNameBytes` (TextEncoder byte count) against 1024 + reject NUL before add/replace — the client now rejects exactly what the host rejects. |
+| 5 | interaction | LOW | **Arrange forward/backward no-op'd on equal-z ties** (an externally-authored theme with equal `z`), and unbounded front/back could in principle overflow `i16`. | **Fixed:** step past the **paint-order** neighbour (z-then-index), stepping the `z` by ±1 on a tie so it always moves; front/back clamped to the `i16` range. |
+| 6 | a11y | LOW | **The 8 handles carried no ARIA; `#td-sel` + the X/Y/W/H inputs were labelled "Region"** even when editing an element. | **Fixed:** handles `aria-hidden` (pointer-only; keyboard resize is element-level `Cmd/Ctrl+Arrow`); `#td-sel`'s `aria-label` is set per region/element in JS; the shared X/Y/W/H labels made element-neutral. |
+| 7 | a11y | LOW | **Arrange announced "Moved…" even when nothing changed** (e.g. Bring-to-front on the frontmost element) and never conveyed the new stacking position. | **Fixed:** announce **only when `z` actually changed**, including "n of m". |
+
+### Refuted (verified NOT real — 1)
+
+- **Arrange grows `z` without bound → i16 overflow.** Refuted: reaching `i16::MAX` needs ~32k arrange clicks (impractical), and the host would reject an out-of-range `z` anyway. (An `i16` clamp was added regardless, as cheap defensive polish.)
+
+## Verification
+
+- **Headless interaction check (Chrome `--headless=new` + a `window.__TAURI__` stub):** **22/22** — Add Shape/Image + serialization (`kind`/z/opacity), the inspector-mode toggle, arrange (`z` rewrite: back=min−1, front=max+1) + the behind/in-front chip, opacity 50%→u8 128, numeric X sync on the active element, keyboard nudge, two-click delete, image-add-via-path, **empty-canvas + Escape deselect**, **delete-arm reset on selection change**, and the region regression. `node --check dist/app.js` clean.
+- **No Rust change** (only `dist/{app.js,index.html,app.css}`): the operator crate's Rust build/clippy/fmt are unaffected — `cargo fmt --check` clean; the operator-shell CI job embeds the assets + confirms no drift. No engine/wire/migration change → no determinism/parity concern.
+- **Invariants:** editing is preview-only (only the explicit Apply calls `set_custom_theme`); the emergency Clear/Blackout chrome is untouched; WKWebView-safe (no `window.prompt/alert/confirm`).
+- **Deferred with seams (contract non-goals):** the **native OS file-picker** + **FR-138** media-root confinement (offline-blocked dialog dep) → the `86ajq6j49`-frontend follow-up; multi-select + group transform; align/distribute + rotation (R2); the **Text** element (`86ajq6j64`); aspect-preserving image **Fit**; undo/redo; richer snapping.
+- **CI:** the operator-shell job (macOS/Ubuntu/Windows) is the gate this batch; pending this push.

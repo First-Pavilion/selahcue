@@ -149,6 +149,17 @@
       /* Honest 'later' affordances: present (design fidelity) but visibly not-yet-live. */
       .td-later { opacity: .55; }
       .td-later[disabled], .td-later :disabled { cursor: not-allowed; }
+      /* Canvas element editing (86ajq6j4p) — a teal selection distinguishes an ELEMENT
+         from a region (indigo --accent); handles reuse the same 8-handle machinery. */
+      .td-sel.is-element { border-color: #2dd4bf; background: rgba(45,212,191,.12); }
+      .td-sel.is-element .td-h { background: #2dd4bf; }
+      .td-el-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 2px 0 8px; font-weight: 600; font-size: 13px; }
+      .td-chip { font-size: 10px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+      .td-chip.front { color: #34d399; border-color: rgba(52,211,153,.5); }
+      .td-chip.behind { color: #a5b4fc; border-color: rgba(165,180,252,.5); }
+      .td-el-src { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); word-break: break-all; margin: 2px 0 6px; }
+      .td-el-del { width: 100%; margin-top: 12px; color: #fca5a5; border-color: rgba(248,113,113,.4); }
+      .td-el-del:hover { background: rgba(248,113,113,.12); }
       .nav-item .nav-key {
         margin-left: auto; font-size: 10px; color: var(--muted);
         border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-weight: 600;

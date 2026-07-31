@@ -527,6 +527,9 @@
       let tdSavedKey = ""; // change-detect so the 1s poll only rebuilds the list on a real change
       let tdTheme = null; // the theme being edited
       let tdRegion = "body";
+      let tdSelEl = -1; // selected element index into tdTheme.elements, or -1 = a region (86ajq6j4p)
+      let tdElDelArm = false; // two-click element-delete arm (reset on every selection change)
+      let tdElDelTimer = null;
       let tdSelected = ""; // the selected TEMPLATE name (built-in or saved), "" = a new/unsaved theme
       let tdSelectedKind = ""; // "builtin" | "saved" | "" — disambiguates a saved theme that shares a built-in's name
       let tdConfirmDel = null; // saved-theme name in the two-click delete-confirm state
@@ -605,6 +608,7 @@
         tdSelected = tdOrder[0] || "";
         tdSelectedKind = tdSelected ? "builtin" : "";
         tdTheme = tdSelected ? JSON.parse(JSON.stringify(TD_BUILTINS[tdSelected])) : null;
+        tdSelEl = -1; // clear any element selection when the theme changes
         tdList();
         tdSync();
         tdPreview();
@@ -631,6 +635,7 @@
             tdSelected = name;
             tdSelectedKind = "builtin";
             tdTheme = JSON.parse(JSON.stringify(TD_BUILTINS[name]));
+            tdSelEl = -1;
             tdSync();
             tdPreview();
             tdList();
@@ -662,6 +667,7 @@
             tdSelected = name;
             tdSelectedKind = "saved";
             tdTheme = parsed;
+            tdSelEl = -1;
             tdSync();
             tdPreview();
             tdList();
@@ -702,11 +708,40 @@
         });
       }
 
-      // Position the on-canvas selection box from the region's rect% (per-mille → %).
+      // --- Canvas ELEMENT editing (86ajq6j4p): the active target is a REGION or an ELEMENT.
+      // The rect fields (x/y/w/h_permille) are identical, so the region drag/resize machinery
+      // generalises by resolving the active target instead of a hard-coded `tdTheme[tdRegion]`.
+      // (tdSelEl is declared with the theme state above: -1 = a region is the active target.)
+      function tdEls() { return tdTheme && Array.isArray(tdTheme.elements) ? tdTheme.elements : []; }
+      function tdActiveIsEl() { return tdSelEl >= 0 && tdSelEl < tdEls().length; }
+      // The active rect-bearing object: the selected element, else the selected region.
+      function tdActive() { return tdActiveIsEl() ? tdEls()[tdSelEl] : tdTheme ? tdTheme[tdRegion] : null; }
+      const tdZ = (e) => (e && Number.isFinite(e.z) ? e.z : 0);
+      const tdOpacity = (e) => (e && Number.isFinite(e.opacity) ? e.opacity : 255);
+      // Element indices in composite PAINT order (compose_slide stable-sorts by z, THEN list
+      // index; z is the sole determinant, the index only breaks ties). Back-to-front.
+      function tdPaintOrder() {
+        return tdEls()
+          .map((_, i) => i)
+          .sort((a, b) => tdZ(tdEls()[a]) - tdZ(tdEls()[b]) || a - b);
+      }
+      // Screen-reader announcement (reuses the aria-live #td-status region).
+      function tdAnnounce(msg) {
+        const s = document.getElementById("td-status");
+        if (s) s.textContent = msg;
+      }
+
+      // Position the on-canvas selection box from the active target's rect% (per-mille → %).
       function tdDrawSel() {
-        if (!tdTheme) { tdSel.style.display = "none"; return; }
-        const r = tdTheme[tdRegion];
-        tdSel.style.display = r.visible ? "block" : "none";
+        const r = tdActive();
+        if (!tdTheme || !r) {
+          tdSel.style.display = "none";
+          return;
+        }
+        // A region gates on `.visible`; an element always shows its selection box.
+        const show = tdActiveIsEl() ? true : r.visible;
+        tdSel.style.display = show ? "block" : "none";
+        tdSel.classList.toggle("is-element", tdActiveIsEl());
         tdSel.style.left = r.x_permille / 10 + "%";
         tdSel.style.top = r.y_permille / 10 + "%";
         tdSel.style.width = r.w_permille / 10 + "%";
@@ -715,8 +750,8 @@
 
       // Update just the Layout fields + the selection box (called on every drag frame).
       function tdSyncLayout() {
-        if (!tdTheme) return;
-        const r = tdTheme[tdRegion];
+        const r = tdActive();
+        if (!r) return;
         // Never rewrite a field the user is actively typing in (numeric entry commits
         // on `change`; a concurrent drag must not clobber a focused field mid-keystroke).
         const set = (id, val) => { const el = document.getElementById(id); if (el !== document.activeElement) el.value = val; };
@@ -729,8 +764,27 @@
 
       function tdSync() {
         if (!tdTheme) return;
+        const isEl = tdActiveIsEl();
+        // Toggle inspector mode: region controls (region picker / align / text) hide when an
+        // element is selected; the element inspector shows. Layout (X/Y/W/H) + Theme
+        // background are shared/always-visible.
+        const showReg = (id) => {
+          const el = document.getElementById(id);
+          if (el) el.style.display = isEl ? "none" : "";
+        };
+        showReg("td-lbl-region");
+        showReg("td-region");
+        showReg("td-region-align");
+        showReg("td-region-text");
+        document.getElementById("td-el-inspector").hidden = !isEl;
+        document.getElementById("td-bg").value = tdHex(tdTheme.background); // theme-level, always
+        if (isEl) {
+          tdSyncEl();
+          tdSyncLayout();
+          return;
+        }
+        tdSel.setAttribute("aria-label", "Selected region — drag to move, handles to resize");
         const r = tdTheme[tdRegion];
-        document.getElementById("td-bg").value = tdHex(tdTheme.background);
         document.getElementById("td-color").value = tdHex(r.color);
         document.getElementById("td-size").value = r.size_permille;
         document.getElementById("td-size-v").textContent = (r.size_permille / 10).toFixed(1);
@@ -748,6 +802,46 @@
         tdSyncLayout();
       }
 
+      // Bind the element inspector (opacity / arrange / per-kind controls) from the selection.
+      function tdSyncEl() {
+        const el = tdActive();
+        if (!el) return;
+        // Reset the two-click delete arm on any selection change (never leak across elements).
+        tdElDelArm = false;
+        clearTimeout(tdElDelTimer);
+        const delBtn = document.getElementById("td-el-del");
+        if (delBtn) delBtn.textContent = "Delete element";
+        // Reflect the selection class in the group's accessible name (was "Selected region").
+        tdSel.setAttribute(
+          "aria-label",
+          (el.kind === "image" ? "Selected image element" : "Selected shape element") +
+            " — drag to move, handles to resize",
+        );
+        const kind = el.kind === "image" ? "image" : "shape";
+        const order = tdPaintOrder();
+        const pos = order.indexOf(tdSelEl) + 1;
+        document.getElementById("td-el-head").textContent =
+          (kind === "image" ? "Image" : "Shape") + " — " + pos + " of " + tdEls().length;
+        const front = tdZ(el) >= 0;
+        const chip = document.getElementById("td-el-zchip");
+        chip.textContent = front ? "In front of text" : "Behind text";
+        chip.className = "td-chip " + (front ? "front" : "behind");
+        const opPct = Math.round((tdOpacity(el) * 100) / 255);
+        document.getElementById("td-el-op").value = opPct;
+        document.getElementById("td-el-op-v").textContent = opPct;
+        document.getElementById("td-el-shape").hidden = kind !== "shape";
+        document.getElementById("td-el-image").hidden = kind !== "image";
+        if (kind === "shape") {
+          document.getElementById("td-el-fill").value = tdHex(el.fill || { r: 58, g: 65, b: 80 });
+          document.getElementById("td-el-border").value = tdHex(el.border || { r: 0, g: 0, b: 0 });
+          const bw = Number.isFinite(el.border_permille) ? el.border_permille : 0;
+          document.getElementById("td-el-bw").value = bw;
+          document.getElementById("td-el-bw-v").textContent = (bw / 10).toFixed(1);
+        } else {
+          document.getElementById("td-el-src").textContent = el.source || "(no file chosen)";
+        }
+      }
+
       let tdTimer = null;
       function tdPreview() {
         if (!tdTheme) return;
@@ -762,10 +856,11 @@
         }, 120);
       }
 
-      // Apply a rect patch to the selected region, clamped to the frame (0..1000)
-      // with a minimum size so a region can never invert or leave the canvas.
-      function tdSetRect(region, patch) {
-        const r = tdTheme[region];
+      // Apply a rect patch to the ACTIVE target (region or element), clamped to the frame
+      // (0..1000) with a minimum size so it can never invert or leave the canvas.
+      function tdSetRect(patch) {
+        const r = tdActive();
+        if (!r) return;
         Object.assign(r, patch);
         r.w_permille = tdClamp(Math.round(r.w_permille), 20, 1000);
         r.h_permille = tdClamp(Math.round(r.h_permille), 20, 1000);
@@ -794,7 +889,8 @@
         document.getElementById(id).onchange = (e) => {
           if (!tdTheme) return;
           const pm = Math.round(parseFloat(e.target.value) * 10);
-          const r = tdTheme[tdRegion];
+          const r = tdActive();
+          if (!r) return;
           if (!Number.isFinite(pm)) { tdSyncLayout(); return; }
           if (key === "w_permille") r.w_permille = tdClamp(pm, 20, 1000 - r.x_permille);
           else if (key === "h_permille") r.h_permille = tdClamp(pm, 20, 1000 - r.y_permille);
@@ -804,7 +900,7 @@
           tdPreview();
         };
       });
-      document.querySelectorAll("#td-region button").forEach((b) => (b.onclick = () => { tdRegion = b.dataset.region; tdSync(); }));
+      document.querySelectorAll("#td-region button").forEach((b) => (b.onclick = () => { tdSelEl = -1; tdRegion = b.dataset.region; tdSync(); }));
       document.querySelectorAll("#td-align button").forEach((b) => (b.onclick = () => { if (!tdTheme) return; tdTheme[tdRegion].align_h = b.dataset.a; tdSeg("td-align", b.dataset.a, "a"); tdPreview(); }));
       document.querySelectorAll("#td-valign button").forEach((b) => (b.onclick = () => { if (!tdTheme) return; tdTheme[tdRegion].align_v = b.dataset.v; tdSeg("td-valign", b.dataset.v, "v"); tdPreview(); }));
       document.querySelectorAll("#td-fit button").forEach((b) => (b.onclick = () => { if (!tdTheme) return; tdTheme[tdRegion].fit = b.dataset.f; tdSeg("td-fit", b.dataset.f, "f"); tdPreview(); }));
@@ -815,7 +911,8 @@
       let tdDrag = null;
       function tdPointerDown(e) {
         if (!tdTheme) return;
-        const r = tdTheme[tdRegion];
+        const r = tdActive();
+        if (!r) return;
         const box = tdBox.getBoundingClientRect();
         tdDrag = {
           handle: e.target.dataset.h || null, // a resize handle, or null = move
@@ -832,7 +929,7 @@
         const hh = tdDrag.handle;
         if (!hh) {
           // Move: keep the size, clamp the origin into the frame.
-          tdSetRect(tdRegion, { x_permille: tdDrag.x + dxp, y_permille: tdDrag.y + dyp });
+          tdSetRect({ x_permille: tdDrag.x + dxp, y_permille: tdDrag.y + dyp });
         } else {
           // Resize: move ONLY the dragged edge(s). The opposite edge stays anchored, and
           // the dragged edge stops at the frame / a 20‰ minimum — it never jumps the anchor.
@@ -857,7 +954,7 @@
             left = Math.max(0, left);
             right = Math.min(1000, right);
           }
-          const r = tdTheme[tdRegion];
+          const r = tdActive();
           r.x_permille = Math.round(left);
           r.y_permille = Math.round(top);
           r.w_permille = Math.round(right - left);
@@ -881,18 +978,79 @@
       // anchored at the origin so a resize at the frame edge doesn't shift the top-left.
       tdSel.addEventListener("keydown", (e) => {
         if (!tdTheme) return;
+        // Escape deselects an element back to region editing (keyboard path — the region
+        // buttons are hidden in element mode, so Escape is how a keyboard user returns).
+        if (e.key === "Escape" && tdActiveIsEl()) {
+          e.preventDefault();
+          tdSelEl = -1;
+          tdSync();
+          const rb = document.getElementById("td-region-body");
+          if (rb) rb.focus();
+          tdAnnounce("Deselected — editing regions");
+          return;
+        }
+        // Arrange (element only): Cmd/Ctrl+] forward / [ backward, +Shift = front/back.
+        if ((e.metaKey || e.ctrlKey) && (e.key === "]" || e.key === "[")) {
+          if (tdActiveIsEl()) {
+            e.preventDefault();
+            const fwd = e.key === "]";
+            tdArrange(e.shiftKey ? (fwd ? "front" : "back") : fwd ? "forward" : "backward");
+          }
+          return;
+        }
+        // Delete the selected element.
+        if ((e.key === "Delete" || e.key === "Backspace") && tdActiveIsEl()) {
+          e.preventDefault();
+          tdDeleteEl();
+          return;
+        }
         const d = { ArrowLeft: [-10, 0], ArrowRight: [10, 0], ArrowUp: [0, -10], ArrowDown: [0, 10] }[e.key];
         if (!d) return;
         e.preventDefault();
-        const r = tdTheme[tdRegion];
+        const r = tdActive();
+        if (!r) return;
         if (e.shiftKey) {
           r.w_permille = tdClamp(r.w_permille + d[0], 20, 1000 - r.x_permille);
           r.h_permille = tdClamp(r.h_permille + d[1], 20, 1000 - r.y_permille);
         } else {
-          tdSetRect(tdRegion, { x_permille: r.x_permille + d[0], y_permille: r.y_permille + d[1] });
+          tdSetRect({ x_permille: r.x_permille + d[0], y_permille: r.y_permille + d[1] });
         }
         tdSyncLayout();
         tdPreview();
+      });
+
+      // Click-to-select an element: pointerdown on the canvas box (NOT on the selection box,
+      // which handles its own drag) hit-tests the element rects in FRONT-to-back paint order.
+      tdBox.addEventListener("pointerdown", (e) => {
+        if (!tdTheme || tdSel.contains(e.target)) return;
+        const box = tdBox.getBoundingClientRect();
+        const xp = ((e.clientX - box.left) / (box.width || 1)) * 1000;
+        const yp = ((e.clientY - box.top) / (box.height || 1)) * 1000;
+        const order = tdPaintOrder();
+        for (let k = order.length - 1; k >= 0; k--) {
+          const el = tdEls()[order[k]];
+          if (
+            xp >= el.x_permille && xp <= el.x_permille + el.w_permille &&
+            yp >= el.y_permille && yp <= el.y_permille + el.h_permille
+          ) {
+            tdSelEl = order[k];
+            tdSync();
+            tdSel.focus();
+            const front = tdZ(el) >= 0;
+            tdAnnounce(
+              (el.kind === "image" ? "Image" : "Shape") +
+                " selected, " + (front ? "in front of" : "behind") + " the text",
+            );
+            return;
+          }
+        }
+        // Clicked empty canvas (no element hit) while an element was selected → deselect back
+        // to region editing, so the Body/Reference region controls are reachable again.
+        if (tdActiveIsEl()) {
+          tdSelEl = -1;
+          tdSync();
+          tdAnnounce("Deselected — editing regions");
+        }
       });
 
       const tdStatus = (msg) => { document.getElementById("td-status").textContent = msg; };
@@ -975,8 +1133,154 @@
         if (e.key === "Enter") { e.preventDefault(); tdDoSave(); }
         else if (e.key === "Escape") { e.preventDefault(); tdCloseSaveRow(); }
       });
-      document.querySelectorAll("#surface-theme-designer .td-addbar button[data-add]").forEach((b) =>
-        (b.onclick = () => tdStatus("Adding a " + b.dataset.add + " element on the canvas arrives with on-canvas editing.")));
+      // --- Add content + element inspector (86ajq6j4p) ---
+      function tdAddDefaults(kind) {
+        const maxZ = tdEls().reduce((m, e) => Math.max(m, tdZ(e)), -1);
+        const base = { x_permille: 350, y_permille: 400, w_permille: 300, h_permille: 200, opacity: 255, z: maxZ + 1 };
+        if (kind === "image") return Object.assign(base, { kind: "image", source: "" });
+        // A visible default fill (neutral panel) + no border, so a new shape is never invisible.
+        return Object.assign(base, { kind: "shape", fill: { r: 58, g: 65, b: 80, a: 255 }, border: { r: 0, g: 0, b: 0, a: 0 }, border_permille: 0 });
+      }
+      function tdAddElement(kind, source) {
+        if (!tdTheme) { tdStatus("Load or start a theme first."); return; }
+        if (!Array.isArray(tdTheme.elements)) tdTheme.elements = [];
+        if (tdTheme.elements.length >= 64) { tdStatus("Maximum 64 elements per theme."); return; }
+        const el = tdAddDefaults(kind);
+        if (kind === "image") el.source = source || "";
+        tdTheme.elements.push(el);
+        tdSelEl = tdTheme.elements.length - 1;
+        tdSync();
+        tdPreview();
+        tdSel.focus();
+        tdAnnounce((kind === "image" ? "Image" : "Shape") + " added, selected");
+      }
+
+      // Add / Replace an image via a host-local PATH (the native OS file-picker + FR-138
+      // media-root confinement are a later increment — no dialog crate in the offline build).
+      const tdImgRow = document.getElementById("td-img-row");
+      const tdImgPath = document.getElementById("td-img-path");
+      let tdImgReplace = false;
+      const tdOpenImgRow = (replace) => {
+        if (!tdTheme) { tdStatus("Load or start a theme first."); return; }
+        if (!replace && tdEls().length >= 64) { tdStatus("Maximum 64 elements per theme."); return; }
+        tdImgReplace = !!replace;
+        tdImgPath.value = replace && tdActiveIsEl() ? tdActive().source || "" : "";
+        tdImgRow.hidden = false;
+        tdImgPath.focus();
+        tdImgPath.select();
+      };
+      const tdCloseImgRow = () => { tdImgRow.hidden = true; tdImgPath.value = ""; };
+      const tdDoImg = () => {
+        const path = tdImgPath.value.trim();
+        if (!path) { tdStatus("Paste an image file path on this machine."); tdImgPath.focus(); return; }
+        // Match MediaRef's host-side validation exactly (CAP = 1024 BYTES, NUL rejected) so the
+        // client never emits a theme JSON the host would reject (which would poison the theme).
+        if (path.indexOf("\0") !== -1) { tdStatus("That path contains an invalid character."); tdImgPath.focus(); return; }
+        if (tdNameBytes(path) > 1024) { tdStatus("That path is too long (max 1024 bytes)."); tdImgPath.focus(); return; }
+        tdCloseImgRow();
+        if (tdImgReplace && tdActiveIsEl()) {
+          tdActive().source = path;
+          tdSyncEl();
+          tdPreview();
+          tdAnnounce("Image source replaced");
+        } else {
+          tdAddElement("image", path);
+        }
+      };
+      document.getElementById("td-img-add").onclick = tdDoImg;
+      document.getElementById("td-img-cancel").onclick = () => { tdCloseImgRow(); tdStatus("Add image cancelled."); };
+      tdImgPath.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); tdDoImg(); }
+        else if (e.key === "Escape") { e.preventDefault(); tdCloseImgRow(); }
+      });
+      document.querySelectorAll("#surface-theme-designer .td-addbar button[data-add]").forEach((b) => {
+        if (b.disabled) return; // Text / Scripture — a later increment
+        b.onclick = () => {
+          if (b.dataset.add === "shape") tdAddElement("shape");
+          else if (b.dataset.add === "image") tdOpenImgRow(false);
+        };
+      });
+
+      // Arrange (z-order) per CANVAS-EDITING-spec §2a: compose sorts by z, so arrange
+      // rewrites the z VALUE (never the array order) and keeps z values distinct.
+      function tdArrange(op) {
+        if (!tdActiveIsEl()) return;
+        const els = tdEls();
+        const el = els[tdSelEl];
+        const before = tdZ(el);
+        const zs = els.map(tdZ);
+        // i16 clamp so repeated front/back can never overflow the host's z: i16.
+        if (op === "front") el.z = Math.min(Math.max(...zs) + 1, 32767);
+        else if (op === "back") el.z = Math.max(Math.min(...zs) - 1, -32768);
+        else if (op === "forward" || op === "backward") {
+          // Step past the neighbour in composite PAINT order (z then index) — this handles
+          // equal-z ties (an externally-authored theme) that a "nearest strictly-higher z"
+          // swap would no-op on.
+          const order = tdPaintOrder();
+          const j = op === "forward" ? order[order.indexOf(tdSelEl) + 1] : order[order.indexOf(tdSelEl) - 1];
+          if (j !== undefined) {
+            const zj = tdZ(els[j]);
+            if (zj === before) el.z = op === "forward" ? before + 1 : before - 1; // tie → step past
+            else { els[j].z = before; el.z = zj; } // distinct z → swap
+          }
+        }
+        tdSync();
+        tdPreview();
+        // Announce only when the stacking actually changed, and convey the new position.
+        if (tdZ(el) !== before) {
+          const npos = tdPaintOrder().indexOf(tdSelEl) + 1;
+          tdAnnounce(
+            "Moved " + (tdZ(el) >= 0 ? "in front of the text" : "behind the text") +
+              " — " + npos + " of " + els.length,
+          );
+        }
+      }
+      document.querySelectorAll("#td-el-z button").forEach((b) => (b.onclick = () => tdArrange(b.dataset.z)));
+
+      // Delete an element (two-click confirm, mirroring the saved-theme delete pattern).
+      function tdDeleteEl() {
+        if (!tdActiveIsEl()) return;
+        const btn = document.getElementById("td-el-del");
+        if (!tdElDelArm) {
+          tdElDelArm = true;
+          btn.textContent = "Click again to delete";
+          tdAnnounce("Press Delete again to remove this element.");
+          clearTimeout(tdElDelTimer);
+          tdElDelTimer = setTimeout(() => { tdElDelArm = false; btn.textContent = "Delete element"; }, 3000);
+          return;
+        }
+        clearTimeout(tdElDelTimer);
+        tdElDelArm = false;
+        btn.textContent = "Delete element";
+        const i = tdSelEl;
+        tdEls().splice(i, 1);
+        tdSelEl = tdEls().length ? Math.min(i, tdEls().length - 1) : -1;
+        tdSync();
+        tdPreview();
+        tdAnnounce("Element deleted");
+      }
+      document.getElementById("td-el-del").onclick = tdDeleteEl;
+      document.getElementById("td-el-replace").onclick = () => tdOpenImgRow(true);
+
+      // Per-element controls: opacity (the single alpha) + shape fill/border/border-width.
+      document.getElementById("td-el-op").oninput = (e) => {
+        if (!tdActiveIsEl()) return;
+        tdActive().opacity = Math.round((+e.target.value * 255) / 100);
+        document.getElementById("td-el-op-v").textContent = e.target.value;
+        tdPreview();
+      };
+      document.getElementById("td-el-fill").oninput = (e) => { if (tdActiveIsEl()) { tdActive().fill = tdRgb(e.target.value); tdPreview(); } };
+      document.getElementById("td-el-border").oninput = (e) => { if (tdActiveIsEl()) { tdActive().border = tdRgb(e.target.value); tdPreview(); } };
+      document.getElementById("td-el-bw").oninput = (e) => {
+        if (!tdActiveIsEl()) return;
+        const el = tdActive();
+        el.border_permille = +e.target.value;
+        // A border width with a fully-transparent border colour draws nothing — make it visible.
+        if (el.border_permille > 0 && (!el.border || el.border.a === 0)) el.border = { r: 255, g: 255, b: 255, a: 255 };
+        document.getElementById("td-el-bw-v").textContent = (+e.target.value / 10).toFixed(1);
+        tdSyncEl();
+        tdPreview();
+      };
       document.getElementById("td-apply").onclick = () => {
         if (!tdTheme) return;
         const s = document.getElementById("td-status");

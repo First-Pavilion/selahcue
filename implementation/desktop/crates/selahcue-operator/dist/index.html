@@ -186,8 +186,19 @@
             <!-- Add-content toolbar (Figma) — honest 'later' (on-canvas element editing). -->
             <div class="td-addbar" aria-label="Add content">
               <span class="td-addbar-label">Add content</span>
-              <button class="td-later" data-add="text">Text</button><button class="td-later" data-add="scripture">Scripture</button><button class="td-later" data-add="shape">Shape</button><button class="td-later" data-add="image">Image</button>
-              <span class="coming-soon td-addbar-note">arrives with on-canvas editing</span>
+              <button class="td-later" data-add="text" disabled title="Text elements arrive later (86ajq6j64)">Text</button><button class="td-later" data-add="scripture" disabled title="Scripture is the intrinsic Body region">Scripture</button><button data-add="shape">Shape</button><button data-add="image">Image</button>
+              <span class="coming-soon td-addbar-note" id="td-addbar-note"></span>
+            </div>
+            <!-- Add Image: a host-local path (the native OS file-picker + FR-138 media-root
+                 confinement are a later increment — the offline build has no dialog crate). -->
+            <div class="td-save-row" id="td-img-row" hidden>
+              <label for="td-img-path" class="sr-only">Image file path on this machine (PNG)</label>
+              <input type="text" id="td-img-path" placeholder="Paste an image file path on this machine (PNG)…"
+                     autocomplete="off" autocorrect="off" spellcheck="false" />
+              <div class="td-save-row-actions">
+                <button id="td-img-add" class="golive">Add</button>
+                <button id="td-img-cancel">Cancel</button>
+              </div>
             </div>
             <div class="td-canvas-label">Canvas <span id="td-status" class="coming-soon" role="status" aria-live="polite"></span></div>
             <!-- The preview fills the center. The overlay hosts the safe-area guide
@@ -196,10 +207,13 @@
               <canvas id="td-preview" width="480" height="270" aria-label="Live theme preview"></canvas>
               <div class="td-overlay" id="td-overlay">
                 <div class="td-safe" aria-hidden="true"></div>
+                <!-- Selection group: aria-label is updated per region/element in JS. The 8
+                     handles are pointer affordances (aria-hidden); keyboard resize is
+                     element-level (Cmd/Ctrl+Arrow on this group). -->
                 <div class="td-sel" id="td-sel" role="group" aria-label="Selected region — drag to move, handles to resize" tabindex="0">
-                  <span class="td-h nw" data-h="nw"></span><span class="td-h n" data-h="n"></span><span class="td-h ne" data-h="ne"></span>
-                  <span class="td-h w" data-h="w"></span><span class="td-h e" data-h="e"></span>
-                  <span class="td-h sw" data-h="sw"></span><span class="td-h s" data-h="s"></span><span class="td-h se" data-h="se"></span>
+                  <span class="td-h nw" data-h="nw" aria-hidden="true"></span><span class="td-h n" data-h="n" aria-hidden="true"></span><span class="td-h ne" data-h="ne" aria-hidden="true"></span>
+                  <span class="td-h w" data-h="w" aria-hidden="true"></span><span class="td-h e" data-h="e" aria-hidden="true"></span>
+                  <span class="td-h sw" data-h="sw" aria-hidden="true"></span><span class="td-h s" data-h="s" aria-hidden="true"></span><span class="td-h se" data-h="se" aria-hidden="true"></span>
                 </div>
               </div>
             </div>
@@ -209,6 +223,35 @@
             </div>
           </div>
           <aside class="td-inspector" aria-label="Inspector">
+            <!-- Element inspector (shown when a canvas ELEMENT is selected; 86ajq6j4p). -->
+            <div id="td-el-inspector" hidden>
+              <div class="td-el-head">
+                <span id="td-el-head">Element</span>
+                <span id="td-el-zchip" class="td-chip" aria-live="polite"></span>
+              </div>
+              <label for="td-el-op">Opacity — <span id="td-el-op-v"></span>%</label>
+              <input type="range" id="td-el-op" min="0" max="100" step="1" aria-label="Element opacity, percent" />
+              <label id="td-lbl-el-z">Arrange (z-order)</label>
+              <div class="seg td-icons" id="td-el-z" role="group" aria-labelledby="td-lbl-el-z">
+                <button data-z="back" aria-label="Send to back" title="Send to back">⤓⤓</button><button data-z="backward" aria-label="Send backward" title="Send backward">⤓</button><button data-z="forward" aria-label="Bring forward" title="Bring forward">⤒</button><button data-z="front" aria-label="Bring to front" title="Bring to front">⤒⤒</button>
+              </div>
+              <div id="td-el-shape" hidden>
+                <label for="td-el-fill">Fill colour</label>
+                <input type="color" id="td-el-fill" />
+                <label for="td-el-border">Border colour</label>
+                <input type="color" id="td-el-border" />
+                <label for="td-el-bw">Border width — <span id="td-el-bw-v"></span>%</label>
+                <input type="range" id="td-el-bw" min="0" max="50" step="1" aria-label="Shape border width, percent of height" />
+              </div>
+              <div id="td-el-image" hidden>
+                <label>Image file (on this machine)</label>
+                <p class="td-el-src" id="td-el-src"></p>
+                <button id="td-el-replace">Replace…</button>
+              </div>
+              <button id="td-el-del" class="td-el-del">Delete element</button>
+              <p class="td-hint coming-soon">Drag to move · handles to resize · Arrange sends it behind / in front of the text · a missing image shows the placeholder. The native file-picker + image Fit modes arrive later.</p>
+            </div>
+
             <label id="td-lbl-region">Region</label>
             <div class="seg" id="td-region" role="group" aria-labelledby="td-lbl-region">
               <button id="td-region-body" data-region="body" class="on" aria-pressed="true">Body</button>
@@ -217,7 +260,7 @@
 
             <div class="td-sub">Layout</div>
             <span id="td-lbl-align" class="sr-only">Horizontal alignment</span>
-            <div class="td-align-grid">
+            <div class="td-align-grid" id="td-region-align">
               <div class="seg td-icons" id="td-align" role="group" aria-labelledby="td-lbl-align">
                 <button data-a="left" aria-label="Align left" aria-pressed="false">⇤</button><button data-a="center" aria-label="Align centre" aria-pressed="false">⇔</button><button data-a="right" aria-label="Align right" aria-pressed="false">⇥</button>
               </div>
@@ -227,11 +270,11 @@
             </div>
             <div class="td-grid4">
               <label for="td-x">X %</label><label for="td-w">W %</label>
-              <input type="number" id="td-x" min="0" max="100" step="0.1" aria-label="Region X position, percent" />
-              <input type="number" id="td-w" min="1" max="100" step="0.1" aria-label="Region width, percent" />
+              <input type="number" id="td-x" min="0" max="100" step="0.1" aria-label="X position, percent" />
+              <input type="number" id="td-w" min="1" max="100" step="0.1" aria-label="Width, percent" />
               <label for="td-y">Y %</label><label for="td-h">H %</label>
-              <input type="number" id="td-y" min="0" max="100" step="0.1" aria-label="Region Y position, percent" />
-              <input type="number" id="td-h" min="1" max="100" step="0.1" aria-label="Region height, percent" />
+              <input type="number" id="td-y" min="0" max="100" step="0.1" aria-label="Y position, percent" />
+              <input type="number" id="td-h" min="1" max="100" step="0.1" aria-label="Height, percent" />
             </div>
             <div class="td-grid2 td-lockrow">
               <label class="td-check"><input type="checkbox" id="td-lock" /> Lock aspect</label>
@@ -240,9 +283,11 @@
               </label>
             </div>
 
-            <div class="td-sub">Text</div>
-            <label for="td-bg">Background colour</label>
+            <label for="td-bg">Theme background</label>
             <input type="color" id="td-bg" />
+
+            <div id="td-region-text">
+            <div class="td-sub">Text</div>
             <label for="td-color">Text colour</label>
             <input type="color" id="td-color" />
             <label for="td-font">Font</label>
@@ -261,6 +306,7 @@
               <button data-f="shrink_to_fit" aria-pressed="false">Shrink to fit</button><button data-f="paginate" aria-pressed="false">Paginate</button><button data-f="clip" aria-pressed="false">Clip</button>
             </div>
             <p class="td-hint coming-soon">Font family = any font installed on this machine (a themed font renders per-machine; the default Noto Sans is cross-OS-identical). Weight / letter-spacing / reference-gap arrive later (86ajq3225).</p>
+            </div><!-- /#td-region-text -->
           </aside>
         </div>
       </section>
