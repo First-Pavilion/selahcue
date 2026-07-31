@@ -6,12 +6,13 @@
 //! **Live** output. `Clear`/`Blackout` act on Live.
 
 use crate::operator::{ItemView, OperatorView};
+use selahcue_core::detection::TranscriptEngine;
 use selahcue_core::plan::{ItemId, ServicePlan};
 use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{
-    Command, DenyReason, DisplayView, OutputStatusView, SavedThemeView, ScreenThemeView,
-    ServerMessage, ThumbView, TimerSnapshot, VerseView,
+    Command, DenyReason, DetectionView, DisplayView, OutputStatusView, SavedThemeView,
+    ScreenThemeView, ServerMessage, ThumbView, TimerSnapshot, TranscriptSegmentView, VerseView,
 };
 use selahcue_present::{
     FrameBuffer, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView, MAX_ELEMENTS,
@@ -163,7 +164,17 @@ pub struct LiveController {
     /// Bounded to [`AUDIENCE_SCREENS`]. Persisted separately (like `saved_themes`).
     screen_themes: std::collections::BTreeMap<String, String>,
     screen_themes_dirty: bool,
+    /// The live-transcript + scripture-detection engine (R3/R4; ADR-0010). Runs
+    /// out-of-band from the render/output path — it is fed transcript segments and
+    /// surfaces bounded transcript + a detection approval queue in the operator view,
+    /// but never blocks or blanks Live (FR-083). In-memory only this slice (encrypted
+    /// persistence + retention is a documented follow-up seam).
+    transcript: TranscriptEngine,
 }
+
+/// How many recent transcript segments the operator view carries (a bounded tail of the
+/// already-capped log — keeps the view payload small on the 1 s poll).
+pub const OPERATOR_TRANSCRIPT_TAIL: usize = 60;
 
 /// Upper bounds on the saved-theme library so it cannot grow without limit (no-leak):
 /// a sane cap on the count and each name's length. Each theme's JSON is the canonical
@@ -290,7 +301,22 @@ impl LiveController {
             saved_themes_dirty: false,
             screen_themes: std::collections::BTreeMap::new(),
             screen_themes_dirty: false,
+            transcript: TranscriptEngine::new(),
         }
+    }
+
+    /// Ingest one live-transcript segment (the STT-provider ingestion path) and run
+    /// scripture detection over it. Host-facing: the desktop's transcription provider
+    /// pumps segments here directly (out-of-band from render); the same path backs the
+    /// `IngestTranscript` wire command. Returns the number of NEW detections queued.
+    pub fn ingest_transcript(&mut self, text: &str, start_ms: u64, end_ms: u64) -> usize {
+        self.transcript.ingest(text, start_ms, end_ms).len()
+    }
+
+    /// The live-transcript + detection engine (read-only), for the desktop host to pump
+    /// a [`TranscriptProvider`](selahcue_core::transcript::TranscriptProvider) into.
+    pub fn transcript_engine(&self) -> &TranscriptEngine {
+        &self.transcript
     }
 
     /// Switch the audience theme by built-in name, restyling Preview + Live with no
@@ -992,6 +1018,35 @@ impl LiveController {
                     theme: theme.clone(),
                 })
                 .collect(),
+            // The bounded recent transcript tail (oldest first) — the log is already
+            // capped; this trims the wire payload further.
+            transcript: self
+                .transcript
+                .transcript()
+                .recent(OPERATOR_TRANSCRIPT_TAIL)
+                .into_iter()
+                .map(|s| TranscriptSegmentView {
+                    id: s.id,
+                    start_ms: s.start_ms,
+                    end_ms: s.end_ms,
+                    text: s.text.clone(),
+                })
+                .collect(),
+            // The pending detection queue, each with its verse text (default translation)
+            // so the operator sees WHAT they would stage before approving.
+            detections: self
+                .transcript
+                .detections()
+                .pending()
+                .map(|d| DetectionView {
+                    id: d.id,
+                    reference: d.reference.clone(),
+                    text: scripture::parse_one(&d.reference)
+                        .ok()
+                        .and_then(|r| selahcue_scripture::passage_text(&r))
+                        .unwrap_or_default(),
+                })
+                .collect(),
         }
     }
 
@@ -1045,7 +1100,13 @@ impl LiveController {
             | Command::GetOperatorState
             | Command::GetConsoleThumbnails { .. }
             | Command::ScriptureSearch { .. }
-            | Command::GetChapter { .. } => {}
+            | Command::GetChapter { .. }
+            // Transcript ingest + dismissing a detection change the operator VIEW but
+            // not the persisted LIVE session, so they do not trigger an autosave (the
+            // transcript is in-memory only this slice). Approving a detection stages a
+            // scripture (a real Preview change), so it falls through to `state_dirty`.
+            | Command::IngestTranscript { .. }
+            | Command::DismissDetection { .. } => {}
             _ => self.state_dirty = true,
         }
         let len = self.plan.len();
@@ -1450,6 +1511,41 @@ impl LiveController {
             Command::SaveTheme { name, theme_json } => self.save_theme(name, theme_json),
             Command::DeleteTheme { name } => self.delete_theme(name),
             Command::SetScreenTheme { screen, name } => self.set_screen_theme(screen, name),
+            // --- Live transcript + scripture detection (R3/R4; ADR-0010). Assistive:
+            // never touches the render/output path directly — ingestion feeds the
+            // out-of-band engine; approving stages to Preview (operator Goes Live). ---
+            Command::IngestTranscript {
+                text,
+                start_ms,
+                end_ms,
+            } => {
+                let start = start_ms.unwrap_or(0);
+                // A missing/backwards end clamps to start inside the engine.
+                let end = end_ms.unwrap_or(start);
+                self.transcript.ingest(text, start, end);
+                ControllerReply::Ack
+            }
+            Command::ApproveDetection { detection_id } => {
+                // Approving stages the detected verse in Preview (never auto-live,
+                // FR-115) exactly as a manual StageScripture would, then drops it from
+                // the queue. An unknown/stale id is a bad request.
+                match self.transcript.approve(*detection_id) {
+                    Some(detected) => {
+                        self.presenter.stage(scripture_slide(&detected.reference));
+                        self.staged_idx = None; // a scripture slide is not a plan index
+                        self.staged_scripture = Some(detected.reference);
+                        ControllerReply::Ack
+                    }
+                    None => ControllerReply::Deny(DenyReason::BadRequest),
+                }
+            }
+            Command::DismissDetection { detection_id } => {
+                if self.transcript.dismiss(*detection_id) {
+                    ControllerReply::Ack
+                } else {
+                    ControllerReply::Deny(DenyReason::BadRequest)
+                }
+            }
         }
     }
 

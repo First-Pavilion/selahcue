@@ -47,15 +47,38 @@
               placeholder="Song lyrics — blank line between stanzas (each stanza = one slide)"></textarea>
           </div>
         </section>
-        <!-- Forward-looking: fed by on-device transcription (R3). Honest empty
-             state — no fabricated transcript is ever shown as if it were real. -->
+        <!-- Live transcript (R3). Segments stream from the host's transcript engine.
+             The default provider is injected text (the field below); on-device STT
+             (whisper/Vosk) plugs in behind the same seam. No fabricated transcript is
+             ever shown — the stream is empty until the host reports real segments. -->
         <section id="transcript" class="fwd-panel" aria-label="Live transcript">
           <h2>Live transcript</h2>
-          <div class="fwd-empty">
+          <div
+            id="transcript-log"
+            class="stream"
+            role="log"
+            aria-live="polite"
+            aria-label="Live sermon transcript"
+          ></div>
+          <div id="transcript-empty" class="fwd-empty">
             <span class="fwd-icon" aria-hidden="true">🎙</span>
-            <span class="fwd-msg">On-device transcription arrives with R3.</span>
-            <span class="fwd-sub">The live sermon transcript will stream here.</span>
+            <span class="fwd-msg">Listening for the sermon…</span>
+            <span class="fwd-sub"
+              >On-device transcription (R3) plugs in here; meanwhile you can feed lines
+              below.</span
+            >
           </div>
+          <form id="transcript-form" class="stream-input" aria-label="Add a transcript line">
+            <input
+              id="transcript-input"
+              type="text"
+              placeholder="Type or dictate a line…"
+              autocomplete="off"
+              aria-label="Transcript line"
+            />
+            <button id="transcript-send" type="submit" class="key">Send</button>
+          </form>
+          <p id="transcript-status" class="stream-note" role="status" aria-live="polite"></p>
         </section>
       </div>
       <!-- CENTER zone: OBS studio-mode Preview | Live, the GO LIVE transition,
@@ -128,14 +151,26 @@
           </div>
           <span class="timer-note">Shown on the stage output only</span>
         </aside>
-        <!-- Forward-looking: fed by scripture intelligence (R4). Honest empty
-             state — no fabricated detections are ever shown as if they were real. -->
-        <section id="detections" class="fwd-panel" aria-label="Recent detections">
-          <h2>Recent detections</h2>
-          <div class="fwd-empty">
+        <!-- Scripture detection approval queue (R4). Candidates detected in the
+             transcript surface here; the operator approves (stages the verse in
+             Preview) or dismisses. Detections never auto-display (operator-confirmed,
+             FR-115). No fabricated detections — the list is empty until the host
+             reports real candidates. -->
+        <section id="detections" class="fwd-panel" aria-label="Detected scriptures">
+          <h2>Detected scriptures</h2>
+          <div
+            id="detections-list"
+            class="stream"
+            role="list"
+            aria-label="Scripture detection approval queue"
+          ></div>
+          <div id="detections-empty" class="fwd-empty">
             <span class="fwd-icon" aria-hidden="true">✨</span>
-            <span class="fwd-msg">Auto-detected scriptures arrive with R4.</span>
-            <span class="fwd-sub">Scriptures spoken aloud will surface here to stage in one tap.</span>
+            <span class="fwd-msg">No scriptures detected yet.</span>
+            <span class="fwd-sub"
+              >Scriptures spoken aloud surface here to stage in one tap. Automatic
+              on-device detection (R4) plugs in behind the transcript.</span
+            >
           </div>
         </section>
       </div><!-- /zone-right -->

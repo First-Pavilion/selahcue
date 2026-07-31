@@ -137,12 +137,17 @@ fn operator_webview_is_pinned_to_the_canonical_tokens() {
         "zone-center",
         "zone-right",
         "obs-row",
-        // Forward-looking panels — present but HONEST: they carry an explicit
-        // "arrives with R3/R4" empty state, never fabricated transcript/detections.
+        // Live transcript (R3) + scripture-detection approval queue (R4): FUNCTIONAL
+        // but HONEST — they stream REAL host data (never fabricated), keep an honest
+        // empty state that discloses the on-device STT (R3) / detection (R4) seam, and
+        // wire the manual transcript feed + one-tap Stage approval.
         "id=\"transcript\"",
+        "id=\"transcript-log\"",
+        "id=\"transcript-form\"",
+        "transcription (R3)",
         "id=\"detections\"",
-        "arrives with R3",
-        "arrive with R4",
+        "id=\"detections-list\"",
+        "detection (R4)",
     ] {
         assert!(html.contains(needle), "webview missing {needle:?}");
     }

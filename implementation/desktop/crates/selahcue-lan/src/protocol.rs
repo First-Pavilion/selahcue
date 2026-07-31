@@ -122,6 +122,26 @@ pub enum Command {
     /// or a saved-library name. Each screen renders the same live content under its own
     /// theme. An unknown screen or unresolvable name is rejected. Operator-only.
     SetScreenTheme { screen: String, name: String },
+    /// Feed one segment into the live-transcript stream (R3). This is the
+    /// STT-provider ingestion channel — the default provider is operator/host-injected
+    /// text; a real on-device engine feeds the same path. The detection engine scans
+    /// the text for spoken scripture references. `start_ms`/`end_ms` are optional
+    /// session-relative timestamps; omitted keeps the pinned fixtures byte-identical.
+    /// Requires the `Transcribe` permission.
+    IngestTranscript {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end_ms: Option<u64>,
+    },
+    /// Approve a queued scripture detection by id (R4): stage its verse in Preview (the
+    /// operator Goes Live when ready — detections never auto-display, FR-115) and remove
+    /// it from the queue. Requires `SearchScripture` (stages scripture).
+    ApproveDetection { detection_id: u64 },
+    /// Dismiss a queued scripture detection by id without staging it. Requires
+    /// `SearchScripture`.
+    DismissDetection { detection_id: u64 },
 }
 
 /// A controller → operator request frame.
@@ -329,6 +349,43 @@ pub struct OperatorStateView {
     /// empty so the pinned v2 fixtures stay byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub screen_themes: Vec<ScreenThemeView>,
+    /// The recent live-transcript segments (a bounded tail, oldest first) for the
+    /// operator's transcript panel (R3). Omitted when empty so the pinned v2 fixtures
+    /// stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transcript: Vec<TranscriptSegmentView>,
+    /// The pending scripture-detection approval queue (R4) — candidates the operator
+    /// one-click stages. Omitted when empty so the pinned v2 fixtures stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detections: Vec<DetectionView>,
+}
+
+/// One live-transcript segment as the operator UI renders it (wire form of a
+/// `selahcue_core::transcript::TranscriptSegment`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptSegmentView {
+    /// Stable segment id (monotonic within the session).
+    pub id: u64,
+    /// Utterance start, in ms from the session origin.
+    pub start_ms: u64,
+    /// Utterance end, in ms from the session origin.
+    pub end_ms: u64,
+    /// The recognised text (already length-bounded by the core).
+    pub text: String,
+}
+
+/// One queued scripture detection awaiting operator approval (the approval queue row).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetectionView {
+    /// Queue id — echoed back by [`Command::ApproveDetection`] / [`Command::DismissDetection`].
+    pub id: u64,
+    /// The canonical, parseable reference (e.g. `"Romans 8:28"`) — stages directly.
+    pub reference: String,
+    /// The verse text for the reference in the host's default translation, so the
+    /// operator sees WHAT they would stage. Omitted when the host cannot resolve it
+    /// (e.g. an older host, or a reference outside the bundle).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
 }
 
 /// One saved (named custom) theme in the library (86ajq4xmy).

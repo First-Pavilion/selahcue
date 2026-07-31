@@ -2469,3 +2469,132 @@ fn get_console_thumbnails_returns_bounded_frames_and_is_read_only() {
         "GetConsoleThumbnails must not change the operator view"
     );
 }
+
+// --- Live transcript + scripture detection (R3/R4; ADR-0010) ---------------------
+
+#[test]
+fn ingesting_transcript_streams_segments_and_detects_scripture() {
+    let (mut c, _) = controller();
+    assert_eq!(
+        c.apply(&Command::IngestTranscript {
+            text: "please turn with me to John chapter 3 verse 16".into(),
+            start_ms: Some(0),
+            end_ms: Some(2_500),
+        }),
+        ControllerReply::Ack
+    );
+    let view = c.operator_view();
+    assert_eq!(view.transcript.len(), 1, "the utterance is transcribed");
+    assert_eq!(
+        view.transcript[0].text,
+        "please turn with me to John chapter 3 verse 16"
+    );
+    assert_eq!(view.detections.len(), 1, "the spoken reference is detected");
+    assert_eq!(view.detections[0].reference, "John 3:16");
+    assert!(
+        view.detections[0]
+            .text
+            .to_lowercase()
+            .contains("god so loved"),
+        "the detection carries the verse text to stage: {:?}",
+        view.detections[0].text
+    );
+}
+
+#[test]
+fn approving_a_detection_stages_the_verse_in_preview_not_live() {
+    let (mut c, _) = controller();
+    c.apply(&Command::IngestTranscript {
+        text: "first Corinthians 13".into(),
+        start_ms: None,
+        end_ms: None,
+    });
+    let id = c.operator_view().detections[0].id;
+    assert_eq!(
+        c.apply(&Command::ApproveDetection { detection_id: id }),
+        ControllerReply::Ack
+    );
+    let view = c.operator_view();
+    assert_eq!(
+        view.staged_scripture.as_deref(),
+        Some("1 Corinthians 13"),
+        "approve stages the verse in Preview"
+    );
+    assert!(
+        view.detections.is_empty(),
+        "the approved detection leaves the queue"
+    );
+    assert_eq!(c.live_index(), None, "approve never pushes Live (FR-115)");
+    assert!(
+        live_is_black(&c),
+        "the audience output is untouched by an approval"
+    );
+    // A stale/second approve of the same id is a bad request.
+    assert_eq!(
+        c.apply(&Command::ApproveDetection { detection_id: id }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+}
+
+#[test]
+fn dismissing_a_detection_removes_it_without_staging() {
+    let (mut c, _) = controller();
+    c.apply(&Command::IngestTranscript {
+        text: "Romans eight twenty eight".into(),
+        start_ms: None,
+        end_ms: None,
+    });
+    let id = c.operator_view().detections[0].id;
+    assert_eq!(
+        c.apply(&Command::DismissDetection { detection_id: id }),
+        ControllerReply::Ack
+    );
+    let view = c.operator_view();
+    assert!(view.detections.is_empty());
+    assert_eq!(view.staged_scripture, None, "dismiss stages nothing");
+    assert_eq!(
+        c.apply(&Command::DismissDetection { detection_id: id }),
+        ControllerReply::Deny(DenyReason::BadRequest),
+        "dismissing an unknown id is a bad request"
+    );
+}
+
+#[test]
+fn transcription_never_blanks_the_live_output() {
+    // The AI-assist invariant (FR-083/NFR-024): ingesting transcript — even a flood —
+    // must never disturb what is on the audience output.
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    assert_eq!(c.live_index(), Some(0));
+    assert!(!live_is_black(&c), "content is live");
+    let live_before = c.presenter().live_output().bytes().to_vec();
+    for i in 0..500 {
+        c.apply(&Command::IngestTranscript {
+            text: format!(
+                "word {i} and Psalm {} verse {}",
+                (i % 150) + 1,
+                (i % 20) + 1
+            ),
+            start_ms: Some(i),
+            end_ms: Some(i + 1),
+        });
+    }
+    assert_eq!(
+        c.live_index(),
+        Some(0),
+        "Live item unchanged by transcription"
+    );
+    assert_eq!(
+        c.presenter().live_output().bytes(),
+        live_before.as_slice(),
+        "the audience pixels are byte-identical — AI never touches Live"
+    );
+    // Bounded (no-leak): the flood cannot grow the operator view without limit.
+    let view = c.operator_view();
+    assert!(
+        view.transcript.len() <= 60,
+        "transcript view is a bounded tail"
+    );
+    assert!(view.detections.len() <= 32, "detection queue is bounded");
+}

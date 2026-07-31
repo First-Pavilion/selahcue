@@ -140,6 +140,19 @@ fn every_command_round_trips() {
             screen: "main".into(),
             name: String::new(),
         },
+        // Live transcript + scripture detection (R3/R4). Timestamps skip-serialize when None.
+        Command::IngestTranscript {
+            text: "turn to John chapter 3 verse 16".into(),
+            start_ms: Some(1_500),
+            end_ms: Some(3_200),
+        },
+        Command::IngestTranscript {
+            text: "no timestamps".into(),
+            start_ms: None,
+            end_ms: None,
+        },
+        Command::ApproveDetection { detection_id: 7 },
+        Command::DismissDetection { detection_id: 7 },
     ];
     for c in cmds {
         let json = to_json(&c).unwrap();
@@ -164,6 +177,68 @@ fn every_command_round_trips() {
         .unwrap(),
         r#"{"cmd":"set_item_theme","item_id":5}"#
     );
+    // IngestTranscript: timestamps skip-serialize when absent (additive, lean peers).
+    assert_eq!(
+        to_json(&Command::IngestTranscript {
+            text: "hi".into(),
+            start_ms: None,
+            end_ms: None,
+        })
+        .unwrap(),
+        r#"{"cmd":"ingest_transcript","text":"hi"}"#
+    );
+    assert_eq!(
+        to_json(&Command::ApproveDetection { detection_id: 3 }).unwrap(),
+        r#"{"cmd":"approve_detection","detection_id":3}"#
+    );
+}
+
+/// The transcript + detection view fields are additive: empty omits them entirely
+/// (pinned bytes above unchanged), non-empty serializes under these exact names the
+/// operator webview reads.
+#[test]
+fn transcript_and_detection_view_fields_are_additive() {
+    use selahcue_lan::protocol::{DetectionView, OperatorStateView, TranscriptSegmentView};
+    let view = OperatorStateView {
+        plan_name: "Sunday".into(),
+        items: vec![],
+        live_index: None,
+        staged_index: None,
+        blackout: false,
+        timer: None,
+        staged_scripture: None,
+        live_scripture: None,
+        live_free_text: None,
+        outputs: vec![],
+        displays: vec![],
+        translations: vec![],
+        theme: String::new(),
+        themes: vec![],
+        saved_themes: vec![],
+        screen_themes: vec![],
+        transcript: vec![TranscriptSegmentView {
+            id: 0,
+            start_ms: 0,
+            end_ms: 1_500,
+            text: "turn to John 3:16".into(),
+        }],
+        detections: vec![DetectionView {
+            id: 4,
+            reference: "John 3:16".into(),
+            text: "For God so loved the world".into(),
+        }],
+    };
+    assert_eq!(
+        to_json(&ServerMessage::OperatorState { view }).unwrap(),
+        r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"transcript":[{"id":0,"start_ms":0,"end_ms":1500,"text":"turn to John 3:16"}],"detections":[{"id":4,"reference":"John 3:16","text":"For God so loved the world"}]}}"#
+    );
+    // A detection with no resolved verse text omits `text` (skip-if-empty).
+    let bare = DetectionView {
+        id: 1,
+        reference: "Jude 3".into(),
+        text: String::new(),
+    };
+    assert_eq!(to_json(&bare).unwrap(), r#"{"id":1,"reference":"Jude 3"}"#);
 }
 
 #[test]
@@ -328,6 +403,8 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         themes: vec![],
         saved_themes: vec![],
         screen_themes: vec![],
+        transcript: vec![],
+        detections: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -365,6 +442,8 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         themes: vec![],
         saved_themes: vec![],
         screen_themes: vec![],
+        transcript: vec![],
+        detections: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -402,6 +481,8 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         ],
         saved_themes: vec![],
         screen_themes: vec![],
+        transcript: vec![],
+        detections: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: themed }).unwrap(),
@@ -430,6 +511,8 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
             theme_json: r#"{"background":{"r":1,"g":2,"b":3,"a":255}}"#.into(),
         }],
         screen_themes: vec![],
+        transcript: vec![],
+        detections: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: library }).unwrap(),
@@ -464,6 +547,8 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
                 theme: "lower-third".into(),
             },
         ],
+        transcript: vec![],
+        detections: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: screens }).unwrap(),

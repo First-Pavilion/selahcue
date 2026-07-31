@@ -159,3 +159,30 @@ fn console_thumbnails_return_the_bounded_frames_and_never_touch_on_air() {
         "a console render did not change the live output"
     );
 }
+
+#[test]
+fn shell_ingest_detect_approve_stage_flow() {
+    let s = shell();
+    // Ingest a spoken reference — the transcript panel and detection queue populate.
+    let view = s.ingest_transcript("open to John chapter 3 verse 16", 0, 2_000);
+    assert_eq!(view.transcript.len(), 1);
+    assert_eq!(view.detections.len(), 1);
+    assert_eq!(view.detections[0].reference, "John 3:16");
+    let id = view.detections[0].id;
+
+    // Approve → the verse stages in Preview; the queue empties; Live is untouched.
+    let after = s.approve_detection(id);
+    assert_eq!(after.staged_scripture.as_deref(), Some("John 3:16"));
+    assert!(after.detections.is_empty());
+    assert_eq!(after.live_index, None, "approve stages Preview, never Live");
+}
+
+#[test]
+fn shell_dismiss_removes_the_detection() {
+    let s = shell();
+    let view = s.ingest_transcript("as First Corinthians 13 says", 0, 1_000);
+    let id = view.detections[0].id;
+    let after = s.dismiss_detection(id);
+    assert!(after.detections.is_empty());
+    assert_eq!(after.staged_scripture, None, "dismiss stages nothing");
+}
