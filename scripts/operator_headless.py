@@ -25,6 +25,11 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
     _REPO, "implementation", "desktop", "crates", "selahcue-operator", "dist"
 )
 
+# Floor on the number of checks the driver must run — so a driver regression that
+# silently runs FEWER checks (and thus reports 0 FAIL) still fails. Bump when adding
+# checks; never lower it to mask a lost one.
+EXPECTED_MIN_CHECKS = 63
+
 
 def find_chrome():
     """Locate a Chrome/Chromium binary across dev (macOS) and CI (Linux)."""
@@ -374,9 +379,19 @@ try:
     if not m:
         print("NO RESULTS BLOCK — dom head:\n", out[:1500]); sys.exit(2)
     body = m.group(1)
+    count = int(m.group(2))
     print(body)
-    fails = [l for l in body.splitlines() if l.startswith("FAIL")]
-    print("\n=== %d checks, %d FAIL ===" % (len(body.splitlines()), len(fails)))
+    fails = [line for line in body.splitlines() if line.startswith("FAIL")]
+    print("\n=== %d checks, %d FAIL ===" % (count, len(fails)))
+    # Guard against the suite silently SHRINKING: a driver regression / early return that
+    # runs FEWER checks would otherwise report 0 FAIL and pass. Bump EXPECTED_MIN_CHECKS
+    # when you add checks; never lower it to hide a lost one.
+    if count < EXPECTED_MIN_CHECKS:
+        print(
+            "FAIL: only %d checks ran; expected >= %d (the suite must not silently shrink)"
+            % (count, EXPECTED_MIN_CHECKS)
+        )
+        sys.exit(4)
     sys.exit(1 if fails else 0)
 finally:
     os.unlink(path)
