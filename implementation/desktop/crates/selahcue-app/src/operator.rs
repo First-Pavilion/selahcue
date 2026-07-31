@@ -10,6 +10,7 @@ use crate::controller::LiveController;
 use selahcue_lan::protocol::{
     Command, OperatorStateView, PlanItemView, SavedThemeView, ScreenThemeView, TimerSnapshot,
 };
+use selahcue_present::FrameBuffer;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 
@@ -118,6 +119,22 @@ impl OperatorShell {
         self.with(|c| {
             c.tick(std::time::Instant::now());
             c.operator_view()
+        })
+    }
+
+    /// Downscaled **thumbnails of the current Preview and Live outputs** (86ajtwq28 — the
+    /// operator console monitors), each fitted within `max_w × max_h`. A **read-only
+    /// readback**: it applies NO command and does NOT tick, so it cannot change what is on
+    /// air (rendering the preview must never affect the live output). The frames are
+    /// whatever the last action/refresh composited — the true pixels the audience sees,
+    /// including blackout / timer / the live scene.
+    pub fn console_thumbnails(&self, max_w: u32, max_h: u32) -> (FrameBuffer, FrameBuffer) {
+        self.with(|c| {
+            let p = c.presenter();
+            (
+                p.preview_output().thumbnail(max_w, max_h),
+                p.live_output().thumbnail(max_w, max_h),
+            )
         })
     }
 

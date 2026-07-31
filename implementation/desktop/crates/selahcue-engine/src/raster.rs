@@ -235,6 +235,67 @@ impl FrameBuffer {
         })
     }
 
+    /// A **downscaled thumbnail** that fits within `max_w × max_h` while preserving the
+    /// source aspect ratio (86ajtwq28 — the operator console preview/live monitors). Each
+    /// destination pixel is the **box-average** (integer mean) of the source block it
+    /// covers, so it is a deterministic, byte-identical-cross-OS still of the true output
+    /// (NFR-014) that keeps thin text/borders visible where nearest-neighbour would drop
+    /// them. Never UPSCALES: a buffer already within the bound is returned unchanged.
+    /// Bounded + total: `max_w`/`max_h` are clamped to `1..=MAX_DIMENSION`, so it never
+    /// panics or over-allocates on a degenerate or hostile size.
+    pub fn thumbnail(&self, max_w: u32, max_h: u32) -> FrameBuffer {
+        let max_w = max_w.clamp(1, MAX_DIMENSION);
+        let max_h = max_h.clamp(1, MAX_DIMENSION);
+        // Never upscale — a buffer already within the bound is faithful as-is.
+        if self.width <= max_w && self.height <= max_h {
+            return self.clone();
+        }
+        // The largest (tw, th) within the bound that keeps the SOURCE aspect ratio.
+        let (w, h) = (self.width as u64, self.height as u64);
+        let (mw, mh) = (max_w as u64, max_h as u64);
+        let (tw, th) = if w * mh <= h * mw {
+            (((w * mh) / h).max(1), mh) // height binds
+        } else {
+            (mw, ((h * mw) / w).max(1)) // width binds
+        };
+        let (tw, th) = (tw.min(mw).max(1), th.min(mh).max(1));
+        let mut pixels = Vec::with_capacity((tw * th) as usize * 4);
+        for ty in 0..th {
+            let sy0 = (ty * h / th) as u32;
+            let sy1 = (((ty + 1) * h / th) as u32).max(sy0 + 1).min(self.height);
+            for tx in 0..tw {
+                let sx0 = (tx * w / tw) as u32;
+                let sx1 = (((tx + 1) * w / tw) as u32).max(sx0 + 1).min(self.width);
+                // Box-average the covered source block. `u64` sums: a 1×1 target covers the
+                // whole image, so a per-channel sum can exceed `u32`.
+                let (mut r, mut g, mut b, mut a, mut n) = (0u64, 0u64, 0u64, 0u64, 0u64);
+                for sy in sy0..sy1 {
+                    let row = sy as usize * self.width as usize;
+                    for sx in sx0..sx1 {
+                        let i = (row + sx as usize) * 4;
+                        r += self.pixels[i] as u64;
+                        g += self.pixels[i + 1] as u64;
+                        b += self.pixels[i + 2] as u64;
+                        a += self.pixels[i + 3] as u64;
+                        n += 1;
+                    }
+                }
+                let n = n.max(1);
+                pixels.extend_from_slice(&[
+                    (r / n) as u8,
+                    (g / n) as u8,
+                    (b / n) as u8,
+                    (a / n) as u8,
+                ]);
+            }
+        }
+        FrameBuffer {
+            width: tw as u32,
+            height: th as u32,
+            pixels,
+        }
+    }
+
     /// Alpha-composite `color` over the pixel at `(x, y)` (src-over, integer math).
     fn blend(&mut self, x: u32, y: u32, color: Rgba) {
         let Some(i) = self.index(x, y) else {

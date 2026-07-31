@@ -20,7 +20,7 @@
 use selahcue_app::{LiveController, OperatorShell, OperatorView, RemoteOperator};
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_lan::CertPin;
-use selahcue_present::Theme;
+use selahcue_present::{FrameBuffer, Theme};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
@@ -285,6 +285,17 @@ impl Backend {
             Backend::Local(s) => Ok(s.assign_output(&role, &display_key)),
         }
     }
+
+    /// Downscaled Preview + Live thumbnails for the console monitors (86ajtwq28). `None` for
+    /// the REMOTE backend — the true pixels live on the remote host and are not carried on
+    /// the control wire (streaming them is a later seam), so the UI keeps its text fallback.
+    /// Read-only: applies no command, so it never changes what is on air.
+    fn console_thumbnails(&self, max_w: u32, max_h: u32) -> Option<(FrameBuffer, FrameBuffer)> {
+        match self {
+            Backend::Remote(_) => None,
+            Backend::Local(s) => Some(s.console_thumbnails(max_w, max_h)),
+        }
+    }
 }
 
 struct AppState {
@@ -400,6 +411,36 @@ fn preview_theme(theme_json: String) -> Result<serde_json::Value, String> {
     let fb = selahcue_present::render_sample(&theme, w, h);
     let rgba = base64::engine::general_purpose::STANDARD.encode(fb.bytes());
     Ok(serde_json::json!({ "w": w, "h": h, "rgba": rgba }))
+}
+
+/// Render the CURRENT Preview + Live outputs to base64 RGBA8 thumbnails for the console
+/// monitors (86ajtwq28) — the true composited pixels the audience preview and live show
+/// (including blackout / timer / the live scene). A **read-only** readback: it drives no
+/// command, so it never changes what is on air. `max_w`/`max_h` (the panel's pixel size)
+/// are CLAMPED to a bounded ceiling so a hostile/huge size can't over-allocate or bloat the
+/// IPC payload. A REMOTE host returns `{available:false}` (its pixels are not on the control
+/// wire — a streaming seam), and the UI keeps its accessible text fallback.
+#[tauri::command]
+fn render_console(max_w: u32, max_h: u32, state: State<'_, AppState>) -> serde_json::Value {
+    use base64::Engine;
+    // Bound the thumbnail (the true output is up to 1920×1080) so the IPC payload + the
+    // allocation stay small regardless of the requested panel size — 480×270 matches the
+    // Theme Designer preview and is ample for a console monitor.
+    let max_w = max_w.clamp(1, 480);
+    let max_h = max_h.clamp(1, 270);
+    match state.backend.console_thumbnails(max_w, max_h) {
+        Some((preview, live)) => {
+            let enc = |fb: &FrameBuffer| {
+                serde_json::json!({
+                    "w": fb.width(),
+                    "h": fb.height(),
+                    "rgba": base64::engine::general_purpose::STANDARD.encode(fb.bytes()),
+                })
+            };
+            serde_json::json!({ "available": true, "preview": enc(&preview), "live": enc(&live) })
+        }
+        None => serde_json::json!({ "available": false }),
+    }
 }
 #[tauri::command]
 async fn blackout(on: bool, state: State<'_, AppState>) -> Result<OperatorView, String> {
@@ -629,6 +670,7 @@ fn main() {
             delete_theme,
             set_screen_theme,
             preview_theme,
+            render_console,
             builtin_themes,
             system_fonts,
             pick_image

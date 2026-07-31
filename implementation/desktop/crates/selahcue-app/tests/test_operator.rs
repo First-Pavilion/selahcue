@@ -117,3 +117,45 @@ fn shell_clones_share_one_controller() {
     // b sees a's change — they share the same controller.
     assert_eq!(b.view().live_index, Some(0));
 }
+
+// --- console thumbnails: the true Preview/Live pixels, read-only (86ajtwq28) ---
+
+#[test]
+fn console_thumbnails_return_the_bounded_frames_and_never_touch_on_air() {
+    let s = shell(); // 320x180 output
+    s.next();
+    s.go_live(); // put a real slide on Live so the frame is non-trivial
+
+    // The full-resolution Live readback BEFORE any thumbnail render (320x180 >= bound -> no
+    // downscale, so this IS the true live frame).
+    let live_before = s.console_thumbnails(320, 180).1.bytes().to_vec();
+
+    // A console refresh at monitor size: both frames fit within the bound.
+    let (pv, lv) = s.console_thumbnails(160, 90);
+    assert!(
+        pv.width() <= 160 && pv.height() <= 90,
+        "preview thumbnail within the bound"
+    );
+    assert!(
+        lv.width() <= 160 && lv.height() <= 90,
+        "live thumbnail within the bound"
+    );
+    assert_eq!(
+        (lv.width(), lv.height()),
+        (160, 90),
+        "16:9 source -> 160x90"
+    );
+
+    // Read-only: rendering the thumbnails changed NEITHER the on-air view-model NOR the
+    // true live output pixels (rendering the preview must never affect what is on air).
+    assert_eq!(
+        s.view().live_index,
+        Some(0),
+        "Live selection unchanged by a console render"
+    );
+    let live_after = s.console_thumbnails(320, 180).1.bytes().to_vec();
+    assert_eq!(
+        live_before, live_after,
+        "a console render did not change the live output"
+    );
+}

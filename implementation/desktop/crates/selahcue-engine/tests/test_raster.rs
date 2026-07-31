@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_engine::raster::{render, system_font_families, MAX_SYSTEM_FONTS};
+use selahcue_engine::raster::{render, system_font_families, FrameBuffer, MAX_SYSTEM_FONTS};
 use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, ShapeKind, TextAlign};
 
 fn red_frame_with_blue_box() -> Frame {
@@ -650,6 +650,89 @@ fn a_fill_layer_renders_unchanged_alongside_shapes() {
         fb.pixel(0, 0).unwrap(),
         Rgba::BLACK,
         "outside stays background"
+    );
+}
+
+// --- FrameBuffer::thumbnail: deterministic box-average downscale (86ajtwq28) ---
+
+#[test]
+fn thumbnail_box_averages_a_known_frame() {
+    // A 2x2 frame with four distinct colours downscaled to 1x1 = the mean of all four.
+    let mut f = Frame::new(2, 2).with_background(Rgba::BLACK);
+    // Overwrite each pixel via 1x1 fills.
+    f.push(Layer::Fill {
+        rect: Rect::new(0, 0, 1, 1),
+        color: Rgba::rgb(0, 0, 0),
+    });
+    f.push(Layer::Fill {
+        rect: Rect::new(1, 0, 1, 1),
+        color: Rgba::rgb(100, 100, 100),
+    });
+    f.push(Layer::Fill {
+        rect: Rect::new(0, 1, 1, 1),
+        color: Rgba::rgb(200, 40, 0),
+    });
+    f.push(Layer::Fill {
+        rect: Rect::new(1, 1, 1, 1),
+        color: Rgba::rgb(40, 60, 80),
+    });
+    let thumb = render(&f).thumbnail(1, 1);
+    assert_eq!(thumb.width(), 1);
+    assert_eq!(thumb.height(), 1);
+    // Mean per channel: r=(0+100+200+40)/4=85, g=(0+100+40+60)/4=50, b=(0+100+0+80)/4=45.
+    let p = thumb.pixel(0, 0).unwrap();
+    assert_eq!(
+        (p.r, p.g, p.b),
+        (85, 50, 45),
+        "1x1 thumbnail is the box-average, got {p:?}"
+    );
+}
+
+#[test]
+fn thumbnail_preserves_aspect_within_the_bound_and_is_deterministic() {
+    let fb = render(&red_frame_with_blue_box()); // 32x32
+    let t = fb.thumbnail(16, 8); // height binds (32/32 aspect) -> 8x8
+    assert_eq!(
+        (t.width(), t.height()),
+        (8, 8),
+        "aspect preserved within the bound"
+    );
+    assert!(t.width() <= 16 && t.height() <= 8, "fits within the bound");
+    // A landscape source keeps its aspect (width binds).
+    let wide = FrameBuffer::filled(40, 10, Rgba::WHITE).thumbnail(20, 20);
+    assert_eq!(
+        (wide.width(), wide.height()),
+        (20, 5),
+        "40x10 -> 20x5 (width binds)"
+    );
+    // Deterministic: byte-identical across calls.
+    assert_eq!(fb.thumbnail(16, 16).bytes(), fb.thumbnail(16, 16).bytes());
+}
+
+#[test]
+fn thumbnail_never_upscales_and_is_bounded() {
+    // Already within the bound -> returned unchanged (no upscale).
+    let small = render(&red_frame_with_blue_box()); // 32x32
+    let t = small.thumbnail(100, 100);
+    assert_eq!(
+        t.bytes(),
+        small.bytes(),
+        "a frame within the bound is unchanged"
+    );
+    // Degenerate + hostile sizes must not panic and stay bounded.
+    let one = FrameBuffer::filled(1, 1, Rgba::WHITE).thumbnail(0, 0); // clamps to 1x1
+    assert_eq!((one.width(), one.height()), (1, 1));
+    let big = FrameBuffer::filled(64, 64, Rgba::WHITE).thumbnail(u32::MAX, u32::MAX);
+    assert_eq!(
+        (big.width(), big.height()),
+        (64, 64),
+        "huge max -> no upscale, no panic"
+    );
+    let tiny = FrameBuffer::filled(1000, 1000, Rgba::rgb(10, 20, 30)).thumbnail(1, 1);
+    assert_eq!(
+        tiny.pixel(0, 0).unwrap(),
+        Rgba::rgb(10, 20, 30),
+        "uniform frame averages to itself"
     );
 }
 

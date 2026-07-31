@@ -244,6 +244,89 @@
         b.setAttribute("aria-pressed", view.blackout ? "true" : "false");
         document.getElementById("blackout-state").textContent = view.blackout ? "ON" : "";
         document.getElementById("live-panel").classList.toggle("blackout", view.blackout);
+
+        // Draw the TRUE composited Preview/Live output (86ajtwq28) — a debounced, read-only
+        // host readback (rendering never changes what is on air). Only re-render when a
+        // render-affecting field changed (the 1 s poll must not re-fetch an identical frame);
+        // switching TO the console always renders (showSurface), so this dedup is safe.
+        // `items` is included so a WITHIN-item change that keeps the same live/staged index —
+        // advancing a slide in a multi-slide song (slide_index) or a per-item theme override —
+        // still refreshes the panels; the scriptures/free-text/blackout/theme/screens cover
+        // the non-plan output states. `view.timer` is deliberately EXCLUDED: the countdown is
+        // a speaker aid composited onto the stage/confidence monitor only, NOT the audience
+        // preview/live output (controller.rs `tick`), so a running timer must not force an
+        // identical re-render every second on the console.
+        const sig = JSON.stringify([
+          view.items, view.staged_index, view.staged_scripture, view.live_index,
+          view.live_scripture, view.live_free_text, view.blackout, view.theme,
+          view.screen_themes,
+        ]);
+        if (sig !== lastConsoleSig) {
+          lastConsoleSig = sig;
+          scheduleConsoleRender();
+        }
+      }
+
+      // --- Preview/Live TRUE render (86ajtwq28): the real composited pixels the audience
+      // preview + live show, drawn to a <canvas> per console panel. The title/caption text
+      // stays as the accessible label AND the fallback when no frame is available (a Remote
+      // host has no local pixels; an older host lacks the command). Read-only readback. ---
+      let consoleRenderTimer = null;
+      let lastConsoleSig = null; // last render-affecting view signature (poll dedup)
+      function scheduleConsoleRender() {
+        clearTimeout(consoleRenderTimer);
+        consoleRenderTimer = setTimeout(renderConsole, 120);
+      }
+      function setConsoleRender(on) {
+        const p = document.querySelector("#preview-panel .surface");
+        const l = document.querySelector("#live-panel .surface");
+        if (p) p.classList.toggle("has-render", on);
+        if (l) l.classList.toggle("has-render", on);
+      }
+      function drawConsoleFrame(canvasId, frame) {
+        if (!frame || !frame.rgba || !frame.w || !frame.h) return false;
+        const cv = document.getElementById(canvasId);
+        if (!cv) return false;
+        let bytes;
+        try {
+          bytes = Uint8Array.from(atob(frame.rgba), (c) => c.charCodeAt(0));
+        } catch (e) {
+          return false;
+        }
+        if (bytes.length !== frame.w * frame.h * 4) return false; // guard a malformed payload
+        cv.width = frame.w;
+        cv.height = frame.h;
+        cv.getContext("2d").putImageData(
+          new ImageData(new Uint8ClampedArray(bytes), frame.w, frame.h),
+          0,
+          0
+        );
+        return true;
+      }
+      async function renderConsole() {
+        // Only when the Live Console surface is visible — skip the host round-trip + payload
+        // while another surface (Theme Designer, Settings, …) is up.
+        const surf = document.getElementById("surface-console");
+        if (!surf || !surf.classList.contains("active")) return;
+        const box = document.getElementById("preview-panel");
+        const dpr = window.devicePixelRatio || 1;
+        const base = box && box.clientWidth ? box.clientWidth : 480;
+        const w = Math.max(160, Math.min(640, Math.round(base * dpr)));
+        const h = Math.round((w * 9) / 16);
+        let res;
+        try {
+          res = await invoke("render_console", { maxW: w, maxH: h });
+        } catch (e) {
+          setConsoleRender(false); // command missing (older host) → keep the text placeholder
+          return;
+        }
+        if (!res || !res.available) {
+          setConsoleRender(false); // Remote host: pixels are not on the wire → text fallback
+          return;
+        }
+        const okP = drawConsoleFrame("preview-canvas", res.preview);
+        const okL = drawConsoleFrame("live-canvas", res.live);
+        setConsoleRender(okP || okL);
       }
 
       // OUTPUTS panel (FR-040/151): role -> display, assignment picker, health dot.
@@ -484,6 +567,8 @@
         if (surf) { surf.tabIndex = -1; surf.focus(); }
         document.getElementById("route-status").textContent =
           "Now on: " + (SURFACE_LABEL[name] || name);
+        // Refresh the true Preview/Live render when returning to the console (86ajtwq28).
+        if (name === "console") scheduleConsoleRender();
       }
       function openAppMenu() {
         appMenu.classList.add("open");

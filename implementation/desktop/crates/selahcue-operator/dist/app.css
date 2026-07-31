@@ -356,11 +356,30 @@
       .outpanel .surface {
         flex: 1; background: #000; display: flex; flex-direction: column;
         align-items: center; justify-content: center; gap: 8px; padding: 16px;
-        text-align: center;
+        text-align: center; position: relative;
       }
       .outpanel .surface .big { font-size: 15px; font-weight: 700; }
       .outpanel .surface .cap { color: var(--muted); font-size: 11px; }
       .outpanel .surface.idle .big { color: var(--muted); font-weight: 500; font-size: 15px; }
+      /* The true composited output (86ajtwq28): the canvas fills the 16:9 surface and is
+         shown only once a frame is drawn (a Remote host / error keeps the text placeholder).
+         When shown, the title/caption collapse to a compact OBS-style label overlay so the
+         real pixels dominate but the reference/title stays readable. */
+      .out-canvas {
+        position: absolute; inset: 0; width: 100%; height: 100%;
+        object-fit: contain; background: #000; display: none; z-index: 0;
+      }
+      .outpanel .surface.has-render .out-canvas { display: block; }
+      .outpanel .surface.has-render #live-black { position: absolute; top: 8px; z-index: 2; }
+      .outpanel .surface.has-render .big,
+      .outpanel .surface.has-render .cap {
+        position: absolute; left: 8px; bottom: 8px; margin: 0; z-index: 2;
+        max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap; background: rgba(0, 0, 0, .55); color: #fff;
+        padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
+      }
+      .outpanel .surface.has-render .cap { left: auto; right: 8px; color: var(--muted); }
+      .outpanel .surface.has-render .cap:empty { display: none; }
       #live-black {
         display: none; color: #fff; font-size: 12px; font-weight: 800;
         letter-spacing: .08em; border: 1px solid var(--live-ink);

@@ -64,7 +64,11 @@
         <div class="obs-row">
           <div class="outpanel" id="preview-panel">
             <div class="head">PREVIEW · STAGED</div>
+            <!-- The TRUE composited Preview output (86ajtwq28) — the same pixels the audience
+                 preview shows. Drawn by render_console; aria-hidden (the title/cap below carry
+                 the accessible text). Hidden until a frame is available (Remote host / error). -->
             <div class="surface idle">
+              <canvas class="out-canvas" id="preview-canvas" aria-hidden="true"></canvas>
               <span class="big" id="preview-title">Nothing staged</span>
               <span class="cap" id="preview-cap"></span>
             </div>
@@ -72,6 +76,7 @@
           <div class="outpanel" id="live-panel">
             <div class="head">● LIVE · ON AIR</div>
             <div class="surface idle" aria-live="polite">
+              <canvas class="out-canvas" id="live-canvas" aria-hidden="true"></canvas>
               <span id="live-black">BLACKOUT — OUTPUT DARK</span>
               <span class="big" id="live-title">Output idle</span>
               <span class="cap" id="live-cap"></span>
