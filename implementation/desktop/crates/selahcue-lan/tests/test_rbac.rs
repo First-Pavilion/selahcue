@@ -118,6 +118,24 @@ fn only_privileged_roles_can_go_live() {
 }
 
 #[test]
+fn follow_scripture_is_go_live_privilege_not_search() {
+    // 86ajtwq2b: FollowScripture can advance the LIVE output, so it needs the GoLive
+    // permission (Producer+) — NEVER the Assistant-level SearchScripture, or an Assistant
+    // could escalate to Live via the follow path. (Assistants keep Preview-only staging.)
+    let follow = Command::FollowScripture {
+        reference: "John 3:16".into(),
+        translation: None,
+    };
+    assert!(authorize(Role::Operator, &follow), "operator follows");
+    assert!(authorize(Role::Producer, &follow), "producer follows");
+    assert!(
+        !authorize(Role::Assistant, &follow),
+        "an assistant must NOT change Live via follow"
+    );
+    assert!(!authorize(Role::Viewer, &follow), "viewer cannot follow");
+}
+
+#[test]
 fn blackout_timer_and_clear_are_producer_and_up() {
     // Clear wipes the live output — an Assistant (who cannot push live) must not
     // be able to clear it (DEC-002 revised).

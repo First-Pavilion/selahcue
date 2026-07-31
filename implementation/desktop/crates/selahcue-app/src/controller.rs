@@ -1282,6 +1282,40 @@ impl LiveController {
                 self.staged_scripture = Some(reference.clone());
                 ControllerReply::Ack
             }
+            Command::FollowScripture {
+                reference,
+                translation,
+            } => {
+                let t = match translation.as_deref() {
+                    None => selahcue_scripture::Translation::default(),
+                    Some(code) => match selahcue_scripture::Translation::from_code(code) {
+                        Some(t) => t,
+                        None => return ControllerReply::Deny(DenyReason::BadRequest),
+                    },
+                };
+                // Always stage the verse in Preview (identical to StageScripture).
+                self.presenter.stage(scripture_slide_in(t, reference));
+                self.staged_idx = None;
+                self.staged_scripture = Some(reference.clone());
+                // FOLLOW (owner refine #8): advance the LIVE output to the same verse ONLY
+                // when a scripture is ALREADY live — never promotes non-live / non-scripture
+                // content, so preview⟂live isolation holds when nothing is on air.
+                if self.live_scripture.is_some() && self.presenter.go_live() {
+                    self.live_idx = None; // a scripture is not a plan index
+                    self.live_slide = self.staged_slide;
+                    self.live_scripture = Some(reference.clone());
+                    self.live_free_text = None;
+                    self.live_free_body = Vec::new();
+                    // Following updates the live CONTENT, not the blackout state (unlike
+                    // GoLive, which reveals). `go_live()` re-issues SetScene on Live, which
+                    // reveals the engine — so re-assert blackout to preserve it (theme ⟂
+                    // blackout; same pattern as the recompose handlers).
+                    if self.blackout {
+                        self.presenter.blackout(true);
+                    }
+                }
+                ControllerReply::Ack
+            }
             Command::GetChapter {
                 reference,
                 translation,

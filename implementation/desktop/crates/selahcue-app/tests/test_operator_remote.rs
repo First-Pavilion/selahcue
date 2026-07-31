@@ -156,6 +156,62 @@ async fn remote_operator_fetches_the_hosts_console_thumbnails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_follow_scripture_advances_live_only_when_already_live() {
+    // 86ajtwq2b over the loopback link (the owner's setup): a Producer stages a scripture,
+    // goes live, then scrolling to the next verse (follow) advances BOTH Preview and Live;
+    // but following with nothing live only previews (preview⟂live isolation).
+    let (addr, pin, _controller) = setup().await;
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "producer", "tok-prod")
+        .await
+        .unwrap();
+
+    // Nothing live yet → follow previews only.
+    let v = op.follow_scripture("John 3:16", None).await.unwrap();
+    assert_eq!(
+        v.staged_scripture.as_deref(),
+        Some("John 3:16"),
+        "preview staged"
+    );
+    assert_eq!(v.live_scripture, None, "nothing promoted to Live");
+
+    // Put it live, then follow to the next verse → Live follows.
+    op.go_live().await.unwrap();
+    let v = op.follow_scripture("John 3:17", None).await.unwrap();
+    assert_eq!(
+        v.staged_scripture.as_deref(),
+        Some("John 3:17"),
+        "preview follows"
+    );
+    assert_eq!(
+        v.live_scripture.as_deref(),
+        Some("John 3:17"),
+        "Live follows the scrolled verse (already live)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_assistant_cannot_follow_scripture_to_live() {
+    // RBAC over the wire: an Assistant (SearchScripture, no GoLive) is DENIED FollowScripture,
+    // so it cannot escalate to Live via the follow path. A denied command is not an error —
+    // the returned view simply shows the unchanged (idle) state.
+    let (addr, pin, controller) = setup().await;
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "assistant", "tok-asst")
+        .await
+        .unwrap();
+    let v = op.follow_scripture("John 3:16", None).await.unwrap();
+    assert_eq!(
+        v.staged_scripture, None,
+        "an assistant's follow is denied — nothing staged"
+    );
+    assert_eq!(v.live_scripture, None, "and certainly nothing on Live");
+    assert_eq!(
+        controller.lock().unwrap().live_index(),
+        None,
+        "host Live untouched"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_start_timer_is_reflected_after_a_host_tick() {
     let (addr, pin, controller) = setup().await;
     let mut op = RemoteOperator::connect(addr, "localhost", pin, "producer", "tok-prod")

@@ -244,6 +244,21 @@ impl Backend {
             Backend::Local(s) => Ok(s.stage_scripture(&reference, translation.as_deref())),
         }
     }
+    async fn follow_scripture(
+        &self,
+        reference: String,
+        translation: Option<String>,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .follow_scripture(&reference, translation.as_deref())
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.follow_scripture(&reference, translation.as_deref())),
+        }
+    }
     async fn scripture_search(
         &self,
         query: String,
@@ -557,6 +572,16 @@ async fn stage_scripture(
 ) -> Result<OperatorView, String> {
     state.backend.stage_scripture(reference, translation).await
 }
+/// Stage a verse in Preview and — only when a scripture is already live — advance Live to it
+/// (86ajtwq2b, refine #8: scrolling verses follows the audience once a scripture is live).
+#[tauri::command]
+async fn follow_scripture(
+    reference: String,
+    translation: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.follow_scripture(reference, translation).await
+}
 
 /// One chapter for the browser (local bundle — identical text on host and
 /// shell). `translation` is a bundled code; omitted = the KJV default.
@@ -748,6 +773,7 @@ fn main() {
             move_item,
             rename_item,
             stage_scripture,
+            follow_scripture,
             scripture_search,
             get_chapter,
             ingest_transcript,

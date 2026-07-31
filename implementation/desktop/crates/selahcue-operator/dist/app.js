@@ -1832,7 +1832,12 @@
       // stage on the final verse instead of a wire burst per repeat.
       let stageTimer = null;
       let dblclickBusy = false; // no debounced stage may land mid double-click
-      function setCursor(i, stage) {
+      // `follow` = true only for verse NAVIGATION within the open chapter (arrow-scroll /
+      // clicking a verse) — refine #8 (86ajtwq2b): moving through the reading advances Live
+      // too, but only when a scripture is already live (the host gates it). A chapter LOAD
+      // (search / hit / prev-next / translation change) passes `follow` falsy → Preview-only
+      // (stage_scripture), so deliberately opening a NEW passage never jumps the audience.
+      function setCursor(i, stage, follow) {
         if (!currentChapter || !currentChapter.verses.length) return;
         verseCursor = Math.max(0, Math.min(i, currentChapter.verses.length - 1));
         const list = document.getElementById("verse-list");
@@ -1846,9 +1851,10 @@
           setStatus("");
           clearTimeout(stageTimer);
           const ref = verseRef(verseCursor);
+          const cmd = follow ? "follow_scripture" : "stage_scripture";
           stageTimer = setTimeout(() => {
             act(() =>
-              invoke("stage_scripture", {
+              invoke(cmd, {
                 reference: ref,
                 translation: currentTranslation,
               })
@@ -1875,7 +1881,7 @@
           t.textContent = text;
           row.appendChild(n);
           row.appendChild(t);
-          row.onclick = () => setCursor(i, true);
+          row.onclick = () => setCursor(i, true, true);
           // Double-click = straight to live (owner request 86ajpwcxc): the
           // explicit double gesture is the confirmation, bypassing Preview.
           // VERIFIED at each step — a denied stage must never commit whatever
@@ -2192,7 +2198,7 @@
         // highlighted verse (Enter then goes live via the canonical map).
         if ((e.key === "ArrowUp" || e.key === "ArrowDown") && currentChapter) {
           e.preventDefault();
-          setCursor(verseCursor + (e.key === "ArrowDown" ? 1 : -1), true);
+          setCursor(verseCursor + (e.key === "ArrowDown" ? 1 : -1), true, true);
           return;
         }
         switch (e.key) {

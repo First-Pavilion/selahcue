@@ -66,6 +66,30 @@ fn console_thumbnails_round_trip_and_additive() {
 }
 
 #[test]
+fn follow_scripture_round_trips_and_is_additive() {
+    // 86ajtwq2b: the follow command round-trips with a stable tag; additive (VERSION 2, a
+    // pre-existing command byte-identical); skip-if-none translation keeps fixtures lean.
+    assert_eq!(
+        to_json(&Command::FollowScripture {
+            reference: "John 3:16".into(),
+            translation: None
+        })
+        .unwrap(),
+        r#"{"cmd":"follow_scripture","reference":"John 3:16"}"#
+    );
+    let with_t = Command::FollowScripture {
+        reference: "Ps 23:1".into(),
+        translation: Some("WEB".into()),
+    };
+    assert_eq!(
+        from_json::<Command>(&to_json(&with_t).unwrap()).unwrap(),
+        with_t
+    );
+    assert_eq!(VERSION, 2);
+    assert_eq!(to_json(&Command::GoLive).unwrap(), r#"{"cmd":"go_live"}"#);
+}
+
+#[test]
 fn request_round_trips_and_stamps_version() {
     let req = Request::new(
         42,

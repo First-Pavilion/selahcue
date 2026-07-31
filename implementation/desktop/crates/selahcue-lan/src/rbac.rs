@@ -100,7 +100,9 @@ impl Role {
 pub fn required_permission(cmd: &Command) -> Permission {
     use Permission::*;
     match cmd {
-        Command::GoLive => GoLive,
+        // FollowScripture can advance the LIVE output (only when a scripture is already
+        // live), so it requires GoLive — never SearchScripture (no escalation, 86ajtwq2b).
+        Command::GoLive | Command::FollowScripture { .. } => GoLive,
         Command::Next | Command::Previous | Command::SelectItem { .. } => Navigate,
         Command::Clear => ClearLive,
         Command::Blackout { .. } => Blackout,

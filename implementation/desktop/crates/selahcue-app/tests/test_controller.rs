@@ -2598,3 +2598,138 @@ fn transcription_never_blanks_the_live_output() {
     );
     assert!(view.detections.len() <= 32, "detection queue is bounded");
 }
+
+// --- Scripture live-follow: verses follow Live only when a scripture is already live (86ajtwq2b) ---
+
+#[test]
+fn follow_scripture_advances_both_preview_and_live_when_a_scripture_is_live() {
+    let (mut c, _) = controller();
+    // Put a scripture live: stage John 3:16 then Go Live.
+    c.apply(&Command::StageScripture {
+        reference: "John 3:16".into(),
+        translation: None,
+    });
+    assert_eq!(c.apply(&Command::GoLive), ControllerReply::Ack);
+    assert_eq!(
+        c.operator_view().live_scripture.as_deref(),
+        Some("John 3:16")
+    );
+
+    // Now FOLLOW to the next verse — both Preview AND Live advance to it.
+    assert_eq!(
+        c.apply(&Command::FollowScripture {
+            reference: "John 3:17".into(),
+            translation: None,
+        }),
+        ControllerReply::Ack
+    );
+    let v = c.operator_view();
+    assert_eq!(
+        v.staged_scripture.as_deref(),
+        Some("John 3:17"),
+        "Preview follows"
+    );
+    assert_eq!(
+        v.live_scripture.as_deref(),
+        Some("John 3:17"),
+        "Live follows (already live)"
+    );
+    assert!(!live_is_black(&c), "the live verse is showing");
+}
+
+#[test]
+fn follow_scripture_stages_preview_only_when_nothing_is_live() {
+    // preview⟂live isolation: with nothing on air, follow behaves like StageScripture.
+    let (mut c, _) = controller();
+    assert!(live_is_black(&c), "nothing live");
+    assert_eq!(
+        c.apply(&Command::FollowScripture {
+            reference: "John 3:16".into(),
+            translation: None,
+        }),
+        ControllerReply::Ack
+    );
+    let v = c.operator_view();
+    assert_eq!(
+        v.staged_scripture.as_deref(),
+        Some("John 3:16"),
+        "Preview staged"
+    );
+    assert_eq!(v.live_scripture, None, "Live NOT promoted");
+    assert!(live_is_black(&c), "the audience output stays idle");
+}
+
+#[test]
+fn follow_scripture_never_disturbs_non_scripture_live_content() {
+    // A plan item is live; following a verse must NOT change the audience output.
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    assert_eq!(c.apply(&Command::GoLive), ControllerReply::Ack);
+    assert_eq!(c.live_index(), Some(0), "a plan item is live");
+    assert!(!live_is_black(&c));
+    let live_before = c.presenter().live_output().bytes().to_vec();
+
+    assert_eq!(
+        c.apply(&Command::FollowScripture {
+            reference: "John 3:16".into(),
+            translation: None,
+        }),
+        ControllerReply::Ack
+    );
+    let v = c.operator_view();
+    assert_eq!(
+        v.staged_scripture.as_deref(),
+        Some("John 3:16"),
+        "Preview staged the verse"
+    );
+    assert_eq!(c.live_index(), Some(0), "the live plan item is unchanged");
+    assert_eq!(v.live_scripture, None, "no scripture is claimed live");
+    assert_eq!(
+        c.presenter().live_output().bytes(),
+        live_before.as_slice(),
+        "the audience pixels are byte-identical — follow never touched non-scripture Live"
+    );
+}
+
+#[test]
+fn follow_scripture_preserves_blackout() {
+    // Following updates the live CONTENT, not the blackout state.
+    let (mut c, _) = controller();
+    c.apply(&Command::StageScripture {
+        reference: "John 3:16".into(),
+        translation: None,
+    });
+    c.apply(&Command::GoLive);
+    c.apply(&Command::Blackout { on: true });
+    assert!(c.is_blackout() && live_is_black(&c), "blacked out");
+
+    assert_eq!(
+        c.apply(&Command::FollowScripture {
+            reference: "John 3:17".into(),
+            translation: None,
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.operator_view().live_scripture.as_deref(),
+        Some("John 3:17"),
+        "live content followed"
+    );
+    assert!(c.is_blackout(), "blackout flag preserved");
+    assert!(
+        live_is_black(&c),
+        "the output stays dark — follow did not reveal"
+    );
+}
+
+#[test]
+fn follow_scripture_rejects_an_unknown_translation() {
+    let (mut c, _) = controller();
+    assert_eq!(
+        c.apply(&Command::FollowScripture {
+            reference: "John 3:16".into(),
+            translation: Some("ZZ".into()),
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+}

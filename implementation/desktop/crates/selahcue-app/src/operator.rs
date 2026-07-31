@@ -226,6 +226,16 @@ impl OperatorShell {
         })
     }
 
+    /// Stage a scripture verse in Preview AND advance Live to it **only when a scripture is
+    /// already live** (86ajtwq2b — scrolling verses follows the audience). Preview-only when
+    /// nothing / a non-scripture item is live.
+    pub fn follow_scripture(&self, reference: &str, translation: Option<&str>) -> OperatorView {
+        self.act(&Command::FollowScripture {
+            reference: reference.into(),
+            translation: translation.map(Into::into),
+        })
+    }
+
     /// Feed one live-transcript segment (the STT-provider ingestion channel — the
     /// default provider is operator/host-injected text). Runs scripture detection.
     pub fn ingest_transcript(&self, text: &str, start_ms: u64, end_ms: u64) -> OperatorView {
@@ -543,6 +553,20 @@ impl RemoteOperator {
         translation: Option<&str>,
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::StageScripture {
+            reference: reference.into(),
+            translation: translation.map(Into::into),
+        })
+        .await
+    }
+
+    /// Stage a scripture verse in Preview AND advance the host's Live to it **only when a
+    /// scripture is already live** (86ajtwq2b). Preview-only otherwise. Requires `GoLive`.
+    pub async fn follow_scripture(
+        &mut self,
+        reference: &str,
+        translation: Option<&str>,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::FollowScripture {
             reference: reference.into(),
             translation: translation.map(Into::into),
         })

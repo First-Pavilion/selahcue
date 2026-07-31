@@ -53,6 +53,19 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         translation: Option<String>,
     },
+    /// Stage a scripture verse in Preview AND — **only when a scripture is already live** —
+    /// advance the Live output to the same verse (86ajtwq2b, owner refine #8: scrolling
+    /// through verses follows the audience once a scripture is live). When nothing (or a
+    /// non-scripture item) is live, it behaves exactly like [`StageScripture`] (Preview only),
+    /// so preview⟂live isolation holds. Blackout + non-scripture live content are untouched.
+    /// Because it can change Live, it requires the `GoLive` permission (never `SearchScripture`
+    /// — a separate command so a lower role cannot escalate to Live via a flag). Skip-if-none
+    /// `translation` keeps the pinned fixtures byte-identical.
+    FollowScripture {
+        reference: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        translation: Option<String>,
+    },
     /// Fetch a whole chapter's numbered verses (read-only; does NOT push live)
     /// so a remote controller can render the verse list the desktop browser
     /// holds locally. `reference` is any parseable ref (`"Romans 8"`, `"gen 1 1"`
