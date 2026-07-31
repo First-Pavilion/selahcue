@@ -10,7 +10,7 @@ use crate::media::{self, DecodedImage};
 use crate::scene::FontName;
 use crate::scene::{Frame, Layer, MediaRef, Rect, Rgba, ShapeKind, TextAlign};
 use cosmic_text::{
-    Attrs, Buffer, Color as CtColor, Family, FontSystem, Metrics, Shaping, SwashCache,
+    Attrs, Buffer, Color as CtColor, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
 };
 use std::cell::RefCell;
 
@@ -123,11 +123,15 @@ impl TextCtx {
 
 /// The cosmic-text `Attrs` for `font`: the default (bundled) family, or a named system
 /// family. A tiny helper so `draw_text` + `measure_line_width` agree exactly.
-fn attrs_for(font: Option<&FontName>) -> Attrs<'_> {
-    match font {
+fn attrs_for(font: Option<&FontName>, weight: u16) -> Attrs<'_> {
+    let base = match font {
         None => Attrs::new(),
         Some(f) => Attrs::new().family(Family::Name(f.as_str())),
-    }
+    };
+    // The numeric font weight (86ajq3225): cosmic-text/swash synthesizes a heavier weight for
+    // the single-weight bundled font (a deterministic embolden) or selects a real bold face of
+    // a system font. Weight 400 is Regular (the historical path).
+    base.weight(Weight(weight))
 }
 
 thread_local! {
@@ -545,7 +549,21 @@ pub fn render(frame: &Frame) -> FrameBuffer {
                 color,
                 align,
                 font,
-            } => draw_text(&mut fb, *rect, text, *px, *color, *align, font.as_ref()),
+                style,
+            } => {
+                let s = style.unwrap_or_default();
+                draw_text(
+                    &mut fb,
+                    *rect,
+                    text,
+                    *px,
+                    *color,
+                    *align,
+                    font.as_ref(),
+                    s.weight,
+                    s.letter_spacing_px,
+                );
+            }
             Layer::Image {
                 rect,
                 source,
@@ -669,13 +687,13 @@ fn draw_placeholder(fb: &mut FrameBuffer, rect: Rect, opacity: u8) {
 /// right. Uses the SAME font as `draw_text` (`font`: `None` = bundled default; `Some` =
 /// the per-theme system font) so the width matches what is drawn. Returns `0.0` for
 /// empty/zero input.
-pub fn measure_line_width(text: &str, px: u32, font: Option<&FontName>) -> f32 {
+pub fn measure_line_width(text: &str, px: u32, font: Option<&FontName>, weight: u16) -> f32 {
     if px == 0 || text.is_empty() {
         return 0.0;
     }
     let line_h = (px as f32).max(1.0);
     let font_size = (line_h * FONT_TO_LINE).max(1.0);
-    let attrs = attrs_for(font);
+    let attrs = attrs_for(font, weight);
     TEXT.with(|cell| {
         let ctx = &mut *cell.borrow_mut();
         ctx.tick();
@@ -711,10 +729,29 @@ fn draw_text(
     color: Rgba,
     align: TextAlign,
     font: Option<&FontName>,
+    weight: u16,
+    letter_spacing_px: i32,
 ) {
     if px == 0 || rect.w == 0 || rect.h == 0 || text.is_empty() {
         return;
     }
+    // Bound the tracking so a hostile/extreme value can't invert the left-to-right glyph
+    // cull (which assumes monotonically increasing pen positions) or blow up the layout;
+    // ±2 line-boxes per glyph is far beyond any real typographic tracking. The bound is
+    // computed in i64 and saturated to i32 so a pathological `px` (u32, straight from a
+    // crafted/deserialized `Layer::Text.px`) can't overflow the multiply here — `draw_text`
+    // must never panic on any input, even before the `px == 0` guard's cousins downstream.
+    let bound = ((px as i64) * 2).min(i32::MAX as i64) as i32;
+    let ls = letter_spacing_px.clamp(-bound, bound);
+    // Faux-bold amount for the BUNDLED font (86ajq3225): its single Regular face can't
+    // render a real bold, so a heavier `weight` thickens each glyph by this many px (a
+    // deterministic smear). A SYSTEM font (font.is_some()) uses its real weight face instead
+    // — the Attrs weight in `attrs_for` — so it is not smeared. 700→1 px, ~850+→2 px.
+    let embolden: i32 = if font.is_none() && weight > 550 {
+        ((weight.saturating_sub(550) / 300) as i32 + 1).min(2)
+    } else {
+        0
+    };
     // Clip to the on-screen intersection of the layer rect and the frame.
     let clip_right = rect.x.saturating_add(rect.w as i32).min(fb.width as i32);
     let clip_bottom = rect.y.saturating_add(rect.h as i32).min(fb.height as i32);
@@ -726,7 +763,7 @@ fn draw_text(
     let line_h = (px as f32).min(fb.height as f32).max(1.0);
     let font_size = (line_h * FONT_TO_LINE).max(1.0);
 
-    let attrs = attrs_for(font);
+    let attrs = attrs_for(font, weight);
     TEXT.with(|cell| {
         let ctx = &mut *cell.borrow_mut();
         ctx.tick();
@@ -754,23 +791,32 @@ fn draw_text(
         let ink = CtColor::rgba(color.r, color.g, color.b, color.a);
         for run in buffer.layout_runs() {
             let base_y = rect.y.saturating_add(run.line_y as i32);
+            // Letter-spacing (86ajq3225) is applied per glyph as `i·ls` (tracking between
+            // glyphs, none after the last), so the line's total added width is
+            // `(glyphs−1)·ls` — fold that into the alignment so centre/right stay correct.
+            let extra = (run.glyphs.len().saturating_sub(1) as i32).saturating_mul(ls);
             // Horizontal alignment: offset the whole line by its measured shaped
-            // width (`line_w`) within the rect. Clamped ≥ 0 so an over-wide line
-            // still starts at the left edge (then the clip trims the overflow).
+            // width (`line_w` + the tracking) within the rect. Clamped ≥ 0 so an over-wide
+            // line still starts at the left edge (then the clip trims the overflow).
+            let line_w = run.line_w + extra as f32;
             let align_x = match align {
                 TextAlign::Left => 0,
-                TextAlign::Center => (((rect.w as f32) - run.line_w) * 0.5).max(0.0) as i32,
-                TextAlign::Right => ((rect.w as f32) - run.line_w).max(0.0) as i32,
+                TextAlign::Center => (((rect.w as f32) - line_w) * 0.5).max(0.0) as i32,
+                TextAlign::Right => ((rect.w as f32) - line_w).max(0.0) as i32,
             };
             let origin_x = rect.x.saturating_add(align_x);
-            for glyph in run.glyphs.iter() {
+            for (gi, glyph) in run.glyphs.iter().enumerate() {
                 let pg = glyph.physical((0.0, 0.0), 1.0);
-                let pen_x = origin_x.saturating_add(pg.x);
+                let pen_x = origin_x
+                    .saturating_add(pg.x)
+                    .saturating_add((gi as i32).saturating_mul(ls));
                 // Glyphs are laid out left-to-right: once one starts at/after the
                 // clip, every later glyph does too — stop. This bounds the work
                 // to the VISIBLE glyphs, not the whole line (a long/pasted line
                 // must not stall the frame — the old bitmap path broke here too).
-                if pen_x >= clip_right {
+                // Only valid when pen positions are monotonic (ls ≥ 0); NEGATIVE tracking
+                // moves later glyphs LEFT, so fall back to the per-glyph clip below.
+                if ls >= 0 && pen_x >= clip_right {
                     break;
                 }
                 // A glyph spans at most ~one em; skip those wholly left of the rect.
@@ -785,12 +831,23 @@ fn draw_text(
                     }
                     // Saturating so an extreme rect origin + glyph offset can
                     // never i32-overflow-panic (the clip below discards them).
-                    let x = pen_x.saturating_add(ox);
+                    let x0 = pen_x.saturating_add(ox);
                     let y = base_y.saturating_add(pg.y).saturating_add(oy);
-                    if x < rect.x || x >= clip_right || y < rect.y || y >= clip_bottom {
-                        return; // clip to the layer rect + frame (protects the safe margin)
+                    if y < rect.y || y >= clip_bottom {
+                        return;
                     }
-                    fb.blend(x as u32, y as u32, Rgba::new(c.r(), c.g(), c.b(), a));
+                    // Faux-bold (86ajq3225): the single-weight BUNDLED font has no bold face
+                    // (cosmic-text/swash does not synthesise one here), so a heavier weight
+                    // smears each glyph `embolden` px to the right — a deterministic integer
+                    // horizontal thickening. A SYSTEM font uses its real weight face (via the
+                    // Attrs weight above), so it is NOT double-emboldened.
+                    for dx in 0..=embolden {
+                        let x = x0.saturating_add(dx);
+                        if x < rect.x || x >= clip_right {
+                            continue; // clip to the layer rect + frame (protects the safe margin)
+                        }
+                        fb.blend(x as u32, y as u32, Rgba::new(c.r(), c.g(), c.b(), a));
+                    }
                 });
             }
         }

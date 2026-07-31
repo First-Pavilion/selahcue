@@ -117,7 +117,7 @@ fn stage_current_region_auto_fits_a_long_verse_without_truncation_or_clip() {
     // ...every line fits the region width (no horizontal clip)...
     for (t, px, _, rw) in &texts {
         assert!(
-            measure_line_width(t, *px, None) <= *rw as f32 + 1.0,
+            measure_line_width(t, *px, None, 400) <= *rw as f32 + 1.0,
             "stage line clips the region width: {t:?}"
         );
     }

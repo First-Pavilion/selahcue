@@ -187,8 +187,10 @@ pub fn compose_stage(
             px,
             color: theme.text,
             align: selahcue_engine::scene::TextAlign::Left,
-            // The confidence monitor always uses the bundled default font (deterministic).
+            // The confidence monitor always uses the bundled default font + default typography
+            // (deterministic; it is the speaker's view, not the themed audience output).
             font: None,
+            style: None,
         });
     }
 
@@ -246,6 +248,8 @@ fn push_region(
         theme.text,
         Fit::ShrinkToFit,
         None, // the confidence monitor always uses the bundled default font
+        400,  // + default weight / no letter-spacing (the speaker's view, not the audience theme)
+        0,
     ) {
         frame.push(layer);
     }

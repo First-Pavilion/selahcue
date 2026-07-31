@@ -357,10 +357,15 @@
             <input type="color" id="td-color" />
             <label for="td-font">Font</label>
             <select id="td-font" aria-label="Font family (system fonts on this machine; default = bundled Noto Sans)"><option value="">Noto Sans (default)</option></select>
-            <div class="td-grid2 td-later">
-              <label for="td-weight">Weight</label><label for="td-letter">Letter</label>
-              <select id="td-weight" disabled><option>Regular</option></select>
-              <input id="td-letter" type="text" value="0 em" disabled aria-label="Letter spacing (arrives later)" />
+            <div class="td-grid2">
+              <label for="td-weight">Weight</label><label for="td-letter">Letter spacing (em)</label>
+              <select id="td-weight" aria-label="Font weight">
+                <option value="400">Regular</option>
+                <option value="600">Semibold</option>
+                <option value="700">Bold</option>
+                <option value="900">Black</option>
+              </select>
+              <input id="td-letter" type="number" min="-0.2" max="1" step="0.01" value="0" aria-label="Letter spacing, em (tracking between glyphs)" />
             </div>
             <label for="td-size">Text size — <span id="td-size-v"></span>% of height</label>
             <input type="range" id="td-size" min="20" max="140" step="1" />
@@ -370,7 +375,7 @@
             <div class="seg" id="td-fit" role="group" aria-labelledby="td-lbl-fit">
               <button data-f="shrink_to_fit" aria-pressed="false">Shrink to fit</button><button data-f="paginate" aria-pressed="false">Paginate</button><button data-f="clip" aria-pressed="false">Clip</button>
             </div>
-            <p class="td-hint coming-soon">Font family = any font installed on this machine (a themed font renders per-machine; the default Noto Sans is cross-OS-identical). Weight / letter-spacing / reference-gap arrive later (86ajq3225).</p>
+            <p class="td-hint coming-soon">Weight + letter-spacing apply to ALL of the theme's text. Bold on the default Noto Sans is a deterministic faux-bold; a system font uses its real bold face. Font family = any font installed on this machine (themed = per-machine; default Noto Sans = cross-OS-identical).</p>
             </div><!-- /#td-region-text -->
           </aside>
         </div>

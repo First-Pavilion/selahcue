@@ -953,6 +953,9 @@
         // entry) so it is faithfully reflected + preserved, not silently blanked/cleared.
         tdEnsureFontOption(tdTheme.font);
         document.getElementById("td-font").value = tdTheme.font || "";
+        // Reflect the theme-level weight + letter-spacing (86ajq3225); em = permille/1000.
+        document.getElementById("td-weight").value = String(tdTheme.weight || 400);
+        document.getElementById("td-letter").value = String((tdTheme.letter_spacing_permille || 0) / 1000);
         tdSyncLayout();
       }
 
@@ -1041,6 +1044,26 @@
         if (!tdTheme) return;
         const fam = e.target.value;
         if (fam) tdTheme.font = fam; else delete tdTheme.font;
+        tdPreview();
+      };
+      // Theme-level font weight (86ajq3225): 400 (Regular) = the default, dropped from the
+      // JSON so it stays byte-stable; a heavier weight is a real bold face (system font) or a
+      // deterministic faux-bold (bundled default).
+      document.getElementById("td-weight").onchange = (e) => {
+        if (!tdTheme) return;
+        const w = +e.target.value || 400;
+        if (w === 400) delete tdTheme.weight; else tdTheme.weight = w;
+        tdPreview();
+      };
+      // Letter-spacing in em → per-mille of the font size (bounded); 0 = none (dropped).
+      document.getElementById("td-letter").onchange = (e) => {
+        if (!tdTheme) return;
+        const em = Number(e.target.value);
+        const permille = Number.isFinite(em)
+          ? Math.round(Math.max(-0.2, Math.min(1, em)) * 1000)
+          : 0;
+        if (permille === 0) delete tdTheme.letter_spacing_permille;
+        else tdTheme.letter_spacing_permille = permille;
         tdPreview();
       };
       document.getElementById("td-bg").oninput = (e) => { if (!tdTheme) return; tdTheme.background = tdRgb(e.target.value); tdPreview(); };

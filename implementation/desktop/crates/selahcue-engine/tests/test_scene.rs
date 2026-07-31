@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_engine::scene::{Frame, Layer, MediaRef, Rect, Rgba, ShapeKind};
+use selahcue_engine::scene::{Frame, Layer, MediaRef, Rect, Rgba, ShapeKind, TextAlign, TextStyle};
 
 #[test]
 fn luminance_extremes() {
@@ -171,4 +171,43 @@ fn media_ref_validates_on_construction_and_deserialization() {
         .is_err(),
         "empty ref rejected on the wire"
     );
+}
+
+#[test]
+fn text_style_is_additive_and_default_skipped() {
+    // 86ajq3225: a Text layer with no style (the historical case) omits `style` entirely, so
+    // its JSON is byte-identical to before; a default-valued TextStyle serialises to `{}`.
+    let plain = Layer::Text {
+        rect: Rect::new(0, 0, 10, 10),
+        text: "Hi".into(),
+        px: 8,
+        color: Rgba::WHITE,
+        align: TextAlign::Left,
+        font: None,
+        style: None,
+    };
+    let json = serde_json::to_string(&plain).unwrap();
+    assert!(!json.contains("style"), "a None style is omitted: {json}");
+    assert_eq!(serde_json::from_str::<Layer>(&json).unwrap(), plain);
+    assert_eq!(serde_json::to_string(&TextStyle::default()).unwrap(), "{}");
+
+    // A weighted + spaced style serialises its fields and round-trips (Eq preserved).
+    let styled = Layer::Text {
+        rect: Rect::new(0, 0, 10, 10),
+        text: "Hi".into(),
+        px: 8,
+        color: Rgba::WHITE,
+        align: TextAlign::Left,
+        font: None,
+        style: Some(TextStyle {
+            weight: 700,
+            letter_spacing_px: 3,
+        }),
+    };
+    let j2 = serde_json::to_string(&styled).unwrap();
+    assert!(
+        j2.contains(r#""weight":700"#) && j2.contains(r#""letter_spacing_px":3"#),
+        "{j2}"
+    );
+    assert_eq!(serde_json::from_str::<Layer>(&j2).unwrap(), styled);
 }

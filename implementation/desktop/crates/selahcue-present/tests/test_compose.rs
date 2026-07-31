@@ -263,7 +263,7 @@ fn auto_fit_wraps_a_long_paragraph_to_the_region_and_keeps_every_word() {
     // EVERY wrapped line fits the region width (nothing clips on the right)...
     for (text, px, _) in &body {
         assert!(
-            measure_line_width(text, *px, None) <= region.w as f32 + 1.0,
+            measure_line_width(text, *px, None, 400) <= region.w as f32 + 1.0,
             "wrapped line wider than the region: {text:?}"
         );
     }
@@ -311,9 +311,9 @@ fn auto_fit_shrinks_an_unbreakable_token_to_fit_the_width() {
         })
         .expect("the token renders");
     assert!(
-        measure_line_width(&text, px, None) <= region.w as f32 + 1.0,
+        measure_line_width(&text, px, None, 400) <= region.w as f32 + 1.0,
         "the unbreakable token must shrink to fit the region width, not clip: {}px > {}px",
-        measure_line_width(&text, px, None),
+        measure_line_width(&text, px, None, 400),
         region.w
     );
     // It shrank below the design size (proving the WIDTH path engaged, not just height).
@@ -901,4 +901,104 @@ fn a_rect_shape_element_json_is_byte_identical_to_before() {
         "an ellipse serialises its variant: {j2}"
     );
     assert_eq!(serde_json::from_str::<Element>(&j2).unwrap(), ell);
+}
+
+#[test]
+fn theme_weight_and_letter_spacing_flow_into_text_layers() {
+    use selahcue_engine::scene::Layer;
+    let slide = Slide::new("Reference", ["Body line one"]);
+
+    // Default theme: text layers carry NO style (byte-stable Layer::Text JSON).
+    let mut theme = Theme::classic();
+    let frame = compose_slide(&slide, &theme, 400, 300);
+    let text_styles =
+        |f: &selahcue_engine::scene::Frame| -> Vec<Option<selahcue_present::TextStyle>> {
+            f.layers
+                .iter()
+                .filter_map(|l| match l {
+                    Layer::Text { style, .. } => Some(*style),
+                    _ => None,
+                })
+                .collect()
+        };
+    let s0 = text_styles(&frame);
+    assert!(!s0.is_empty(), "the slide has text");
+    assert!(
+        s0.iter().all(|s| s.is_none()),
+        "a default theme emits no text style"
+    );
+
+    // Weighted + spaced theme: every text layer carries weight 700 + a size-scaled tracking.
+    theme.weight = 700;
+    theme.letter_spacing_permille = 100; // 0.1 em
+    let frame = compose_slide(&slide, &theme, 400, 300);
+    let styles = text_styles(&frame);
+    assert!(
+        styles.iter().all(Option::is_some),
+        "styled theme sets every text layer's style"
+    );
+    for s in styles.into_iter().flatten() {
+        assert_eq!(s.weight, 700, "theme weight flows to the layer");
+        assert!(
+            s.letter_spacing_px > 0,
+            "letter-spacing per-mille scaled to px: {}",
+            s.letter_spacing_px
+        );
+    }
+}
+
+#[test]
+fn tracked_text_fits_its_region_no_right_clip() {
+    // Regression (font batch review, 86ajq3225): the auto-fit wrap/fit MUST budget for
+    // letter-spacing. `draw_text` widens each drawn line by `(glyphs−1)·ls_px`, so if the
+    // wrap measured only the untracked width, a tracked near-full-width line would fit here
+    // yet clip on the right at render — breaking the zero-content-loss invariant (FR-010).
+    // Assert every emitted body line's TRACKED width fits its region for realistic tracking.
+    use selahcue_engine::raster::measure_line_width;
+    use selahcue_engine::scene::Layer;
+    let long =
+        "For God so loved the world that he gave his only begotten Son that whosoever believeth";
+    let mut theme = Theme::classic();
+    theme.letter_spacing_permille = 100; // 0.1 em — an ordinary tracking, well within the UI range
+    let (w, h) = (960u32, 540u32);
+    let region = theme.body.rect(w, h);
+    let frame = compose_slide(&Slide::new("John 3:16", [long]), &theme, w, h);
+
+    let mut body_lines = 0usize;
+    let mut joined = String::new();
+    for l in &frame.layers {
+        if let Layer::Text {
+            text,
+            px,
+            style,
+            rect,
+            ..
+        } = l
+        {
+            if text.contains("John 3:16") {
+                continue;
+            }
+            body_lines += 1;
+            if !joined.is_empty() {
+                joined.push(' ');
+            }
+            joined.push_str(text);
+            let ls_px = style.map(|s| s.letter_spacing_px).unwrap_or(0);
+            assert!(ls_px > 0, "the tracked theme must carry per-glyph spacing");
+            // The DRAWN width == shaped width + tracking between glyphs (draw_text).
+            let glyphs = text.chars().count() as i32;
+            let tracked = measure_line_width(text, *px, None, theme.weight)
+                + ((glyphs - 1).max(0) * ls_px) as f32;
+            assert!(
+                tracked <= rect.w as f32 + 1.0,
+                "tracked line {text:?} is {tracked}px — wider than its {}px region (would clip right)",
+                rect.w
+            );
+            assert!(rect.w as f32 <= region.w as f32 + 1.0);
+        }
+    }
+    assert!(body_lines > 1, "the long verse wrapped into multiple lines");
+    for word in long.split_whitespace() {
+        assert!(joined.contains(word), "auto-fit dropped the word {word:?}");
+    }
 }

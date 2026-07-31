@@ -107,6 +107,11 @@ pub enum Layer {
         /// family falls back to the bundled font). Additive (`skip_serializing_if`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         font: Option<FontName>,
+        /// Typography styling (86ajq3225): font weight + letter-spacing. `None` = the
+        /// defaults (Regular 400, no tracking) — the historical path, so a styled-default
+        /// layer's JSON is byte-identical to before. Additive (`skip_serializing_if`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        style: Option<TextStyle>,
     },
     /// A decoded still image (S8-6) drawn scaled into `rect`, alpha-composited over
     /// what is beneath it at whole-layer `opacity` (0 = hidden, 255 = opaque). The
@@ -165,6 +170,44 @@ impl ShapeKind {
 
 /// serde `skip_serializing_if` for a `u32` that is zero (an absent border/corner).
 fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+/// Text typography styling (86ajq3225) — carried by [`Layer::Text`]. `weight` is a CSS-style
+/// numeric font weight (400 = Regular, 700 = Bold); cosmic-text/swash synthesizes a heavier
+/// weight for the single-weight bundled font (a deterministic embolden → byte-identical
+/// cross-OS) or uses a real bold face of a system font. `letter_spacing_px` is the tracking
+/// added between glyphs (may be negative for tighter set). Both default to the historical
+/// look (Regular, no tracking), which serialises to `{}` and is skipped on `Layer::Text`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextStyle {
+    #[serde(default = "weight_normal", skip_serializing_if = "is_weight_normal")]
+    pub weight: u16,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub letter_spacing_px: i32,
+}
+
+impl Default for TextStyle {
+    fn default() -> Self {
+        TextStyle {
+            weight: 400,
+            letter_spacing_px: 0,
+        }
+    }
+}
+
+/// The serde default for [`TextStyle::weight`]: 400 (Regular).
+fn weight_normal() -> u16 {
+    400
+}
+
+/// serde `skip_serializing_if` for the default (Regular 400) weight.
+fn is_weight_normal(w: &u16) -> bool {
+    *w == 400
+}
+
+/// serde `skip_serializing_if` for a zero `i32` (no letter-spacing).
+fn is_zero_i32(v: &i32) -> bool {
     *v == 0
 }
 

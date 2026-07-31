@@ -191,6 +191,19 @@ fn is_zero_u16(v: &u16) -> bool {
     *v == 0
 }
 
+/// The serde default for [`Theme::weight`]: 400 (Regular) — keeps a default-weight theme's
+/// JSON byte-stable (no `weight` key emitted).
+fn weight_normal() -> u16 {
+    400
+}
+fn is_weight_normal(w: &u16) -> bool {
+    *w == 400
+}
+/// serde `skip_serializing_if` for a zero `i16` (no letter-spacing).
+fn is_zero_i16(v: &i16) -> bool {
+    *v == 0
+}
+
 /// Upper bound on a theme's element list (86ajq6j2q) so the design can't grow without
 /// limit (no-leak). A canvas rarely needs more; the compositor + persistence are bounded.
 pub const MAX_ELEMENTS: usize = 64;
@@ -230,6 +243,16 @@ pub struct Theme {
     /// so pinned theme fixtures stay byte-stable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font: Option<FontName>,
+    /// Font weight for ALL of this theme's text (86ajq3225): a CSS-style numeric weight
+    /// (400 = Regular, the default). Heavier weights render as a real bold FACE for a system
+    /// `font`, or a deterministic faux-bold smear for the single-weight bundled default.
+    /// Additive (`skip_serializing_if` = 400 → a default-weight theme's JSON is byte-stable).
+    #[serde(default = "weight_normal", skip_serializing_if = "is_weight_normal")]
+    pub weight: u16,
+    /// Letter-spacing (tracking) as per-mille of the font SIZE (86ajq3225); `0` = none, may be
+    /// negative for tighter set. Scales with the text size. Additive (`skip_serializing_if`).
+    #[serde(default, skip_serializing_if = "is_zero_i16")]
+    pub letter_spacing_permille: i16,
     /// Layered design elements composited over the background (Canvas Editing, 86ajq6j2q):
     /// each positioned + opacity-blended + z-ordered relative to the text. Additive
     /// (`skip_serializing_if` empty → a default theme's JSON is byte-identical). Bounded
@@ -288,6 +311,8 @@ impl Theme {
             },
             band: None,
             font: None,
+            weight: 400,
+            letter_spacing_permille: 0,
             elements: Vec::new(),
         }
     }
@@ -325,6 +350,8 @@ impl Theme {
             },
             band: None,
             font: None,
+            weight: 400,
+            letter_spacing_permille: 0,
             elements: Vec::new(),
         }
     }
@@ -386,6 +413,8 @@ impl Theme {
                 border_permille: 5,
             }),
             font: None,
+            weight: 400,
+            letter_spacing_permille: 0,
             elements: Vec::new(),
         }
     }

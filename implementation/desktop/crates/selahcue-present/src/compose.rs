@@ -8,7 +8,7 @@
 
 use crate::slide::Slide;
 use crate::theme::{Band, Element, Fit, RegionStyle, Theme, VAlign};
-use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, ShapeKind, TextAlign};
+use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, ShapeKind, TextAlign, TextStyle};
 
 /// Lay out `lines` into a themed [`RegionStyle`] — per-region cell size, line
 /// height, colour, and H+V alignment, resolution-independent. The text block is
@@ -44,6 +44,8 @@ pub(crate) fn autofit_layers(
     color: Rgba,
     fit: Fit,
     font: Option<FontName>,
+    weight: u16,
+    letter_spacing_permille: i16,
 ) -> Vec<Layer> {
     let non_empty: Vec<&str> = lines
         .iter()
@@ -67,11 +69,22 @@ pub(crate) fn autofit_layers(
     let line_cap = rect.h as usize + 1;
     let max_w = rect.w as f32;
     let wrap_at = |cell: u32| -> (Vec<String>, bool) {
+        // Letter-spacing widens the DRAWN line by `(glyphs−1)·ls_px` (see `draw_text`), so the
+        // wrap/fit MUST budget for it or a tracked line fits the untracked width here yet clips
+        // on the right at render (breaking the zero-content-loss invariant, 86ajq3225). `ls_px`
+        // matches the per-mille→px the layer will carry (`(cell·permille)/1000`); only POSITIVE
+        // tracking is added (negative tightens, which can only make the line narrower → still
+        // fits), and it is charged once per glyph AND once per inter-word space so the estimate
+        // is conservative (never under the drawn width) while staying O(words).
+        let ls_add =
+            ((cell as i32).saturating_mul(letter_spacing_permille as i32) / 1000).max(0) as f32;
         // Space advance at this cell (shaping trims a bare " ", so difference it out);
         // floored so an under-measured space can't over-pack a line into a clip.
-        let space_w = (selahcue_engine::raster::measure_line_width("x x", cell, font.as_ref())
-            - selahcue_engine::raster::measure_line_width("xx", cell, font.as_ref()))
-        .max((cell as f32) * 0.15);
+        let space_w =
+            (selahcue_engine::raster::measure_line_width("x x", cell, font.as_ref(), weight)
+                - selahcue_engine::raster::measure_line_width("xx", cell, font.as_ref(), weight))
+            .max((cell as f32) * 0.15)
+                + ls_add;
         let mut memo: std::collections::HashMap<&str, f32> = std::collections::HashMap::new();
         let mut out: Vec<String> = Vec::new();
         let mut fits_w = true;
@@ -85,7 +98,8 @@ pub(crate) fn autofit_layers(
                 }
                 budget -= 1;
                 let ww = *memo.entry(word).or_insert_with(|| {
-                    selahcue_engine::raster::measure_line_width(word, cell, font.as_ref())
+                    selahcue_engine::raster::measure_line_width(word, cell, font.as_ref(), weight)
+                        + (word.chars().count() as f32) * ls_add
                 });
                 if ww > max_w {
                     fits_w = false; // an unbreakable token wider than the region
@@ -161,6 +175,18 @@ pub(crate) fn autofit_layers(
         VAlign::Middle => (free / 2) as i32,
         VAlign::Bottom => free as i32,
     };
+    // Typography style (86ajq3225): letter-spacing is per-mille of the font size (≈ the
+    // chosen `cell`), so it scales with the auto-fit. `None` for the default (Regular, no
+    // tracking) so a default-typography theme's `Layer::Text` JSON is byte-identical.
+    let letter_spacing_px = (cell as i32).saturating_mul(letter_spacing_permille as i32) / 1000;
+    let style = if weight == 400 && letter_spacing_px == 0 {
+        None
+    } else {
+        Some(TextStyle {
+            weight,
+            letter_spacing_px,
+        })
+    };
     let mut layers = Vec::with_capacity(n);
     for (i, line) in display.iter().take(n).enumerate() {
         let y = rect.y + offset + (i as u32 * advance) as i32;
@@ -171,6 +197,7 @@ pub(crate) fn autofit_layers(
             color,
             align: align_h,
             font,
+            style,
         });
     }
     layers
@@ -178,12 +205,15 @@ pub(crate) fn autofit_layers(
 
 /// Lay out `lines` into a themed [`RegionStyle`] region (the audience output) — a thin
 /// wrapper over [`autofit_layers`] that derives the geometry/typography from the theme.
+#[allow(clippy::too_many_arguments)]
 fn layout_region(
     lines: &[&str],
     style: &RegionStyle,
     width: u32,
     height: u32,
     font: Option<FontName>,
+    weight: u16,
+    letter_spacing_permille: i16,
 ) -> Vec<Layer> {
     autofit_layers(
         lines,
@@ -195,6 +225,8 @@ fn layout_region(
         style.color,
         style.fit,
         font,
+        weight,
+        letter_spacing_permille,
     )
 }
 
@@ -396,7 +428,15 @@ pub fn compose_slide(slide: &Slide, theme: &Theme, width: u32, height: u32) -> F
         // content, so it renders large + centred in the BODY region — not as a
         // small header. (This matches the pre-theme "big centred title" behaviour.)
         if theme.body.visible && !title.is_empty() {
-            for layer in layout_region(&[title], &theme.body, width, height, theme.font) {
+            for layer in layout_region(
+                &[title],
+                &theme.body,
+                width,
+                height,
+                theme.font,
+                theme.weight,
+                theme.letter_spacing_permille,
+            ) {
                 frame.push(layer);
             }
         }
@@ -404,12 +444,28 @@ pub fn compose_slide(slide: &Slide, theme: &Theme, width: u32, height: u32) -> F
         // Content slide: the title is the reference/heading (title region) and the
         // body lines fill the body region.
         if theme.title.visible && !title.is_empty() {
-            for layer in layout_region(&[title], &theme.title, width, height, theme.font) {
+            for layer in layout_region(
+                &[title],
+                &theme.title,
+                width,
+                height,
+                theme.font,
+                theme.weight,
+                theme.letter_spacing_permille,
+            ) {
                 frame.push(layer);
             }
         }
         if theme.body.visible {
-            for layer in layout_region(&body, &theme.body, width, height, theme.font) {
+            for layer in layout_region(
+                &body,
+                &theme.body,
+                width,
+                height,
+                theme.font,
+                theme.weight,
+                theme.letter_spacing_permille,
+            ) {
                 frame.push(layer);
             }
         }

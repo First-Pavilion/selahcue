@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_engine::raster::{render, system_font_families, FrameBuffer, MAX_SYSTEM_FONTS};
-use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, ShapeKind, TextAlign};
+use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, ShapeKind, TextAlign, TextStyle};
 
 fn red_frame_with_blue_box() -> Frame {
     let mut f = Frame::new(32, 32).with_background(Rgba::rgb(255, 0, 0));
@@ -87,6 +87,7 @@ fn text_layer_renders_glyphs_within_its_rect() {
         color: Rgba::WHITE,
         align: TextAlign::Left,
         font: None,
+        style: None,
     });
     let fb = render(&f);
     // Antialiased glyph ink appears inside the text rect (partial-coverage greys,
@@ -122,6 +123,7 @@ fn oversized_text_is_bounded_by_the_framebuffer() {
         color: Rgba::WHITE,
         align: TextAlign::Left,
         font: None,
+        style: None,
     });
     let fb = render(&f);
     assert_eq!(fb.width(), 64);
@@ -142,6 +144,7 @@ fn glyphs_are_not_mirrored() {
         color: Rgba::WHITE,
         align: TextAlign::Left,
         font: None,
+        style: None,
     });
     let fb = render(&f);
     let ink = |x: u32, y: u32| fb.pixel(x, y).map(|p| p.r as u32).unwrap_or(0);
@@ -173,6 +176,7 @@ fn text_is_clipped_to_its_rect() {
         color: Rgba::WHITE,
         align: TextAlign::Left,
         font: None,
+        style: None,
     });
     let fb = render(&f);
     // No glyph pixels beyond the 32px-wide rect.
@@ -228,6 +232,7 @@ fn text_frame(text: &str) -> Frame {
         color: Rgba::WHITE,
         align: TextAlign::Left,
         font: None,
+        style: None,
     });
     f
 }
@@ -288,6 +293,7 @@ fn offscreen_glyphs_are_culled_so_work_is_frame_bounded() {
             color: Rgba::WHITE,
             align: TextAlign::Left,
             font: None,
+            style: None,
         });
         render(&f)
     };
@@ -313,6 +319,7 @@ fn descenders_and_dot_below_marks_are_not_cropped() {
         color: Rgba::WHITE,
         align: TextAlign::Left,
         font: None,
+        style: None,
     });
     let fb = render(&f);
     // There is ink in the LOWER portion of the cell (below the x-height band) —
@@ -342,6 +349,7 @@ fn text_caches_stay_bounded_over_many_renders() {
             color: Rgba::WHITE,
             align: TextAlign::Left,
             font: None,
+            style: None,
         });
         let _ = render(&f);
     }
@@ -354,6 +362,7 @@ fn text_caches_stay_bounded_over_many_renders() {
         color: Rgba::WHITE,
         align: TextAlign::Left,
         font: None,
+        style: None,
     });
     assert_eq!(render(&f).bytes(), render(&f).bytes());
 }
@@ -372,6 +381,7 @@ fn text_alignment_offsets_the_line_within_its_rect() {
             color: Rgba::WHITE,
             align,
             font: None,
+            style: None,
         });
         render(&f)
     };
@@ -422,6 +432,7 @@ fn render_text(font: Option<FontName>) -> Vec<u8> {
         color: Rgba::WHITE,
         align: TextAlign::Left,
         font,
+        style: None,
     });
     render(&f).bytes().to_vec()
 }
@@ -769,6 +780,147 @@ fn shapes_are_bounded_on_extreme_rects_without_panic() {
                 32 * 32 * 4,
                 "frame stays bounded to its size"
             );
+        }
+    }
+}
+
+// --- Font weight + letter-spacing (86ajq3225) ---
+
+fn styled_text_frame(text: &str, w: u32, style: Option<TextStyle>) -> Frame {
+    let mut f = Frame::new(w, 40).with_background(Rgba::BLACK);
+    f.push(Layer::Text {
+        rect: Rect::new(4, 4, w - 8, 32),
+        text: text.into(),
+        px: 28,
+        color: Rgba::WHITE,
+        align: TextAlign::Left,
+        font: None,
+        style,
+    });
+    f
+}
+fn total_ink(fb: &FrameBuffer) -> u64 {
+    let mut t = 0u64;
+    for y in 0..fb.height() {
+        for x in 0..fb.width() {
+            t += fb.pixel(x, y).unwrap().r as u64;
+        }
+    }
+    t
+}
+fn rightmost_ink_x(fb: &FrameBuffer) -> u32 {
+    let mut rm = 0;
+    for y in 0..fb.height() {
+        for x in 0..fb.width() {
+            if fb.pixel(x, y).unwrap().r > 40 {
+                rm = rm.max(x);
+            }
+        }
+    }
+    rm
+}
+
+#[test]
+fn bold_weight_renders_more_ink_than_regular() {
+    let regular = total_ink(&render(&styled_text_frame("HELLO", 200, None)));
+    let bold = total_ink(&render(&styled_text_frame(
+        "HELLO",
+        200,
+        Some(TextStyle {
+            weight: 700,
+            letter_spacing_px: 0,
+        }),
+    )));
+    assert!(
+        bold > regular,
+        "BOLD (700) inks more than Regular (400): bold={bold} regular={regular}"
+    );
+    assert_eq!(
+        render(&styled_text_frame(
+            "HELLO",
+            200,
+            Some(TextStyle {
+                weight: 700,
+                letter_spacing_px: 0
+            })
+        ))
+        .bytes(),
+        render(&styled_text_frame(
+            "HELLO",
+            200,
+            Some(TextStyle {
+                weight: 700,
+                letter_spacing_px: 0
+            })
+        ))
+        .bytes(),
+    );
+}
+
+#[test]
+fn letter_spacing_widens_and_default_is_byte_identical() {
+    let tight = rightmost_ink_x(&render(&styled_text_frame("HELLO", 300, None)));
+    let spaced = rightmost_ink_x(&render(&styled_text_frame(
+        "HELLO",
+        300,
+        Some(TextStyle {
+            weight: 400,
+            letter_spacing_px: 6,
+        }),
+    )));
+    assert!(
+        spaced > tight,
+        "letter-spacing widens the line: spaced={spaced} tight={tight}"
+    );
+    assert_eq!(
+        render(&styled_text_frame("HELLO", 200, None)).bytes(),
+        render(&styled_text_frame("HELLO", 200, Some(TextStyle::default()))).bytes(),
+        "default TextStyle renders identically to no style"
+    );
+}
+
+#[test]
+fn extreme_letter_spacing_is_bounded_no_panic() {
+    for ls in [i32::MIN, i32::MAX, -100_000, 100_000] {
+        let fb = render(&styled_text_frame(
+            "SELAHCUE",
+            120,
+            Some(TextStyle {
+                weight: 700,
+                letter_spacing_px: ls,
+            }),
+        ));
+        assert_eq!(fb.bytes().len(), 120 * 40 * 4, "frame stays bounded");
+    }
+}
+
+#[test]
+fn extreme_px_text_does_not_overflow_panic() {
+    // A crafted/deserialized Text layer can carry any u32 `px`. The letter-spacing clamp
+    // derives its bound from `px`; that bound MUST be computed in wide/saturating arithmetic
+    // so `px` near/above 2^30 cannot overflow i32 (a regression the font batch introduced and
+    // this pins). `draw_text`'s contract is bounded/no-panic for ANY input — even the default
+    // style (ls == 0) hit the panic because the bound is evaluated unconditionally.
+    for px in [1_073_741_824u32, 1_500_000_000, u32::MAX] {
+        for style in [
+            None,
+            Some(TextStyle {
+                weight: 700,
+                letter_spacing_px: 40,
+            }),
+        ] {
+            let mut f = Frame::new(64, 64);
+            f.push(Layer::Text {
+                rect: Rect::new(0, 0, 200_000, 200_000),
+                text: "ABCDEFGH".into(),
+                px,
+                color: Rgba::WHITE,
+                align: TextAlign::Left,
+                font: None,
+                style,
+            });
+            let fb = render(&f); // must not panic
+            assert_eq!(fb.bytes().len(), 64 * 64 * 4, "frame stays bounded");
         }
     }
 }
