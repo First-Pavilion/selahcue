@@ -24,7 +24,7 @@
 
 - **Workspace:** `cargo test --workspace` **504/0** (+9: 4 engine gradient/lerp/extreme-rect, 4 present background, 1 controller); the gradient is deterministic + byte-identical; `test_parity` unchanged (the GPU skips `Layer::Gradient`); an existing solid-background theme + the byte-pinned wire fixtures are unchanged; `--features server` green; fmt/clippy clean (workspace + operator).
 - **Operator gates (run on the CI runner):** committed Chrome headless **99/99** (+9: bg type-switch, gradient from/to/direction, image picker + manual path, solid bare-colour, the malformed-source regression) + WebKit smoke **5/5**.
-- **3-OS CI:** `<pending — verified by run conclusion>`.
+- **3-OS CI:** run `30699848062` `completed → success` (verified by conclusion) — rust + operator on macOS/Windows/Linux all green; the operator-Linux logs show `=== 99 checks, 0 FAIL ===` (Chrome) + `=== WebKit smoke: 5 checks, 0 FAIL ===`.
 - **Owner on-device QA (optional):** the definitive "a vertical gradient / a photo behind the verse looks right on the real Tauri app" is owner-run; the headless + Rust assertions are the strongest short of the GUI.
 
 ## Follow-ups

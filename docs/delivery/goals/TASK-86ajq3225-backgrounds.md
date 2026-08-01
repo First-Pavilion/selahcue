@@ -6,7 +6,7 @@
 - Parent goal ID: BUILD-selahcue (Presentation & Slides — theme enhancements 86ajq3225)
 - Title: GRADIENT + IMAGE backgrounds — the theme background becomes an additive `Background` enum
 - Role: backend-engineer (engine gradient primitive + `Background` model + compose) + frontend-engineer (Theme Designer background editor)
-- Status: IN_PROGRESS
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: story `86ajq3225` (Theme engine enhancements R-later, EPIC Presentation & Slides 86ajp07ce) — the backgrounds part; confirm/record at finalization.
 - Created: 2026-08-01
@@ -47,7 +47,7 @@ Verified from code: `Theme.background: Rgba` (theme.rs) is the ONLY `Theme`-leve
 | C-002 | yes | Present: `Background` enum (Solid/Gradient/Image); a **Solid** background is byte-identical to before (additive); a gradient composes + renders a ramp; an image composes to a full-frame `Layer::Image`; a blank slide shows the bg | `cargo test -p selahcue-present` | solid byte-stable; gradient + image compose | test_compose +4 (`a_solid_background_is_byte_identical_to_before`, `each_background_kind_round_trips_untagged`, `a_gradient_background_composes_a_ramp…`, `an_image_background_fills_the_frame…`); present green | PASS |
 | C-003 | yes | Controller: a custom theme with a gradient AND an image background applies + recovers identically (bounded `MediaRef`) | `cargo test -p selahcue-app` | applies + recovers | test_controller `a_custom_theme_with_a_gradient_or_image_background_applies_and_recovers` (missing image → deterministic placeholder); app green | PASS |
 | C-004 | yes | Operator: the Theme Designer background editor switches Solid/Gradient/Image + serialises the right `background` shape; `node --check` + the committed headless gate assert it | operator `node --check` + headless | editor switches + serialises | `node --check` OK; headless **97/97** (+7 bg: type-switch, gradient from/to/dir, image picker, solid bare-colour) + WebKit 5/5 | PASS |
-| C-005 | yes | Gate: make ci + operator gate green; independent adversarial Workflow review, findings fixed; 3-OS CI green (verified by run conclusion) | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW doc; CI run | PENDING |
+| C-005 | yes | Gate: make ci + operator gate green; independent adversarial Workflow review, findings fixed; 3-OS CI green (verified by run conclusion) | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-backgrounds.md (3 confirmed findings fixed; serde lens clean); CI `30699848062` `completed → success` (operator-Linux `=== 99 checks, 0 FAIL ===` + `WebKit smoke: 5 checks, 0 FAIL`) | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -71,7 +71,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajq3225-backgrounds.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending — story 86ajq3225, Presentation epic 86ajp07ce)
+- Validator result: PASS (5/5 mandatory criteria PASS)
+- Independent verification result: adversarial review `wf_881ab350-9c2` (3 lenses → per-finding refute-by-default, 9 agents) — 3 raised, all confirmed (2 MEDIUM + 1 LOW) fixed; the untagged-serde/bounded lens found nothing; + the committed Chrome 99/99 + WebKit 5/5 CI gates run on the runner.
+- Terminal state: GATE_REVIEW (verifiable work complete; paused for the `/build` user gate).
+- ClickUp final evidence comment: POSTED — STORY `86ajq3225` → QA under EPIC Presentation & Slides `86ajp07ce`; BUILD CONTROL `86ajnx548` gate comment.
