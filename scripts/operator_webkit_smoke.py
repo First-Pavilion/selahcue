@@ -22,18 +22,22 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 )
 REQUIRE = os.environ.get("SELAHCUE_WEBKIT_REQUIRE") == "1"
 
-try:
-    from playwright.sync_api import sync_playwright
-except ImportError:
-    _msg = "Playwright not installed (pip install playwright && playwright install webkit)"
+def skip_or_fail(msg):
+    """A missing WebKit engine is a hard fail under REQUIRE (CI), else a loud dev-box skip."""
     if REQUIRE:
-        print("FAIL: SELAHCUE_WEBKIT_REQUIRE=1 but " + _msg)
+        print("FAIL: SELAHCUE_WEBKIT_REQUIRE=1 but " + msg)
         sys.exit(3)
     print("=" * 68)
-    print("!! WEBKIT SMOKE SKIPPED — " + _msg)
+    print("!! WEBKIT SMOKE SKIPPED — " + msg)
     print("!! (CI runs it with SELAHCUE_WEBKIT_REQUIRE=1)")
     print("=" * 68)
     sys.exit(0)
+
+
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    skip_or_fail("Playwright not installed (pip install playwright && playwright install webkit)")
 
 # The same __TAURI__ stub the Chrome harness uses, so app.js boots + the render path runs.
 STUB = r"""
@@ -68,7 +72,13 @@ HAS_RENDER = (
 def main():
     errors = []
     with sync_playwright() as p:
-        browser = p.webkit.launch()
+        try:
+            browser = p.webkit.launch()
+        except Exception as e:  # noqa: BLE001 — the WebKit browser binary is not installed
+            skip_or_fail(
+                "WebKit browser not installed (run: playwright install webkit) — "
+                + str(e).splitlines()[0]
+            )
         page = browser.new_page()
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.add_init_script(STUB)

@@ -195,6 +195,9 @@ jobs:
     name: operator shell (${{ matrix.os }})
     needs: changes
     if: needs.changes.outputs.desktop == 'true'
+    # Cap the job (like launch-smoke) so a wedged Playwright/apt install step fails in minutes,
+    # not GitHub's 6h default (audit #11 review).
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -248,8 +251,12 @@ jobs:
       - name: Install Playwright WebKit (Linux)
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
+        # Pinned so the WebKit engine under test is reproducible (bump deliberately); the
+        # runner ships whatever WebKit that release bundles. `--break-system-packages` keeps the
+        # `--user` install working on a PEP 668 externally-managed runner image (Ubuntu 24.04+),
+        # where a plain `pip install --user` would otherwise refuse (audit #11 review).
         run: |
-          python3 -m pip install --user playwright
+          python3 -m pip install --user --break-system-packages playwright==1.60.0
           python3 -m playwright install --with-deps webkit
       - name: Webview WebKit-engine smoke (Linux, Playwright WebKit)
         if: runner.os == 'Linux'
