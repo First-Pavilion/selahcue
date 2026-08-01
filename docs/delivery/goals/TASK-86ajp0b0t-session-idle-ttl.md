@@ -44,7 +44,7 @@ Verified from code: `Session { device_id, role, token }` (session.rs:56) — no 
 | C-001 | yes | `Session.last_seen` + `touch` + `prune_idle` + `SESSION_IDLE_TTL`: `prune_idle` reclaims sessions idle > ttl, keeps fresher/touched ones; a bounded/behaviour test pins it (clock-injected) | `cargo test -p selahcue-lan` | idle reclaimed; fresh kept; touch refreshes | test_session (`prune_idle_reclaims_idle_sessions_and_keeps_touched_ones`); 21/0 | PASS |
 | C-002 | yes | The cap + idle-TTL interact correctly: a full registry of all-idle sessions accepts a NEW device after `prune_idle`; a recently-touched full registry still rejects (`TooManySessions`) | `cargo test -p selahcue-lan` (+ `--features server`) | prune frees a slot; active stays capped | test_session (`idle_ttl_frees_cap_slots_but_recently_active_sessions_still_reject`) | PASS |
 | C-003 | yes | Wired: handshake `authenticate` touches; the pairing housekeeping + pre-redeem prune idle; desktop housekeeping prunes idle; `-p selahcue-lan --features server` + the loopback E2E green | `cargo test --features server` + build | wired; server E2E green | server.rs/main.rs diff; `--features server` green | PASS |
-| C-004 | yes | Gate: make ci + independent adversarial review (TTL correctness / no-panic / no active-session prune / additive), findings fixed; 3-OS CI green (verified by run conclusion) | make-ci + Workflow + CI | all green; review fixed | CODE-REVIEW doc; CI run | PENDING |
+| C-004 | yes | Gate: make ci + independent adversarial review (TTL correctness / no-panic / no active-session prune / additive), findings fixed; 3-OS CI green (verified by run conclusion) | make-ci + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-session-idle-ttl.md; CI 72c8dc0 (completed→success) | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -66,7 +66,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajp0b0t-session-idle-ttl.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending — MCP rate-limited; closes audit report §4 #8)
+- Validator result: PASS (run below)
+- Independent verification result: adversarial review (correctness `wf_0fb192c5-064` **SOUND**; safety-wiring `wf_1cb8548c-a17` — one MEDIUM→verified LOW, **fixed** with a pin). See `CODE-REVIEW-batch-session-idle-ttl.md`.
+- Terminal state: **VERIFIED_COMPLETE** — idle-TTL + host-local pin; the cap now bounds recently-active devices; **3-OS CI `2ec4762` + `72c8dc0` GREEN** (verified by conclusion). No follow-up (the stable-remote-id option stays a non-goal).
+- ClickUp final evidence comment: (queued — MCP rate-limited; closes audit report §4 #8)
