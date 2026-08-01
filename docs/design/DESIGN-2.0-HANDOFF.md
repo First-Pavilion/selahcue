@@ -331,7 +331,8 @@ high-contrast, glanceable). Each design is a standalone frame:
 ## 6. Accessibility annotations
 
 - **Contrast**: re-audit required (§3.2). Target AA (≥4.5:1 text, ≥3:1 large/UI). Bright inks on `*-soft` tints
-  and on `base/surface` must be measured; the amber warn ink on warn-soft is the tightest pair — verify.
+  and on `base/surface` are measured by `design2_palette_meets_wcag_aa`; the tightest same-hue status pair is
+  **live ink on live-soft (~5.31:1)**, not warn (~7.56:1) — all clear AA.
 - **Never colour alone (1.4.1)**: LIVE/PREVIEW/ON-AIR/STAGED always carry a text label + often a shape (dot/frame).
   Status icons (✓ ⚠ ✕) accompany status colour on every check row and detection card.
 - **Keyboard**: every action has a chord (see `336:124`); focus order follows visual order; ⌘K reachable

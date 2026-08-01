@@ -105,6 +105,6 @@ Status (ink / soft / border): `live #ff4d4d / #2a1416 / #5a2327` · `preview #35
 
 Bright status inks, gold, and body/secondary text clear **AA (4.5:1)** on `base` + `surface`
 and on the same-hue soft tints; white clears AA on the `primary` button (4.72:1). **`text-muted`
-(#6b7383)** is ~3.98:1 on `base` / ~3.78:1 on `surface` — it clears **AA-large (3:1)** but NOT
+(#6b7383)** is ~4.08:1 on `base` / ~3.78:1 on `surface` — it clears **AA-large (3:1)** but NOT
 AA-normal, so it is **tertiary/label-only** and must not carry essential small body text. This
 is enforced by the audit (`text-muted` gated at 3.0) and flagged in DESIGN-2.0-HANDOFF §6.

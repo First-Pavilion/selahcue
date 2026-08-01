@@ -420,11 +420,24 @@ fn design2_palette_is_pinned_across_surfaces() {
         // Operator webview CSS custom property, exact.
         let css_needle = format!("--sc-{name}: {}", sw.hex);
         assert!(css.contains(&css_needle), "app.css missing {css_needle:?}");
-        // Flutter const colour literal, exact (#0b0d12 -> 0xFF0B0D12).
-        let dart_needle = format!("0xFF{}", sw.hex[1..].to_uppercase());
+        // Flutter const, NAME-bound (not a bare hex): `d2<Camel> = Color(0xFF<HEX>)`.
+        // A value-only match would let a dropped/transposed const hide behind a
+        // same-hex sibling (gold-soft & warn-soft both carry #2a2415) — so bind the
+        // name to the value, mirroring the CSS `--sc-{name}: {hex}` above.
+        let camel: String = name
+            .split('-')
+            .map(|p| {
+                let mut ch = p.chars();
+                match ch.next() {
+                    Some(f) => f.to_uppercase().collect::<String>() + ch.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect();
+        let dart_needle = format!("d2{camel} = Color(0xFF{})", sw.hex[1..].to_uppercase());
         assert!(
             dart.contains(&dart_needle),
-            "design_tokens.dart missing {dart_needle} ({name})"
+            "design_tokens.dart missing `{dart_needle}` ({name})"
         );
     }
 }
@@ -467,17 +480,27 @@ fn design2_palette_meets_wcag_aa() {
             assert!(c >= AA_TEXT, "{n} on {bg:?} = {c:.2} < {AA_TEXT}");
         }
     }
-    // Status inks on their own same-hue soft tint (the Design 2.0 chip pattern).
+    // Status inks + gold on their own same-hue soft tint (the Design 2.0 chip pattern).
     for (n, ink, soft) in [
         ("preview", d2::PREVIEW, d2::PREVIEW_SOFT),
         ("live", d2::LIVE, d2::LIVE_SOFT),
         ("warn", d2::WARN, d2::WARN_SOFT),
         ("info", d2::INFO, d2::INFO_SOFT),
+        ("gold", d2::GOLD, d2::GOLD_SOFT),
     ] {
         let c = contrast_ratio(ink.rgba, soft.rgba);
         assert!(c >= AA_TEXT, "{n} on its soft tint = {c:.2} < {AA_TEXT}");
     }
-    // White label on the primary button.
+    // White label on the flat primary button (4.72:1, AA).
     let p = contrast_ratio(Rgba::WHITE, d2::PRIMARY.rgba);
     assert!(p >= AA_TEXT, "white on primary = {p:.2} < {AA_TEXT}");
+    // Constraint: white on the primary GRADIENT TOP (primary-hover) is only ~3.78:1 —
+    // AA-large, NOT AA-normal. So the primary gradient/hover must not carry small white
+    // body text; small white labels sit on the flat `primary`. Pinned as AA-large here
+    // so a future darkening of primary-hover can't silently drop below AA-large either.
+    let ph = contrast_ratio(Rgba::WHITE, d2::PRIMARY_HOVER.rgba);
+    assert!(
+        ph >= AA_LARGE,
+        "white on primary-hover = {ph:.2} < AA-large {AA_LARGE}"
+    );
 }

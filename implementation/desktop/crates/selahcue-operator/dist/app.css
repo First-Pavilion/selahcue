@@ -337,7 +337,7 @@
         border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px;
         cursor: pointer; background: var(--bg);
       }
-      .item:hover { border-color: #35404f; background: #1c1f28; }
+      .item:hover { border-color: #363b47; background: #1c1f28; }
       /* Two-line row (Figma): title above, kind below; title never wraps. */
       .item .main {
         flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
