@@ -6,6 +6,12 @@
 //! deterministic, and good enough for speech VAD/recognition; a higher-quality resampler
 //! is a drop-in later. The function is pure — same input, same output — so it is exhaustively
 //! unit-testable with no audio hardware.
+//!
+//! Limitation: each chunk is resampled **independently** — the interpolation phase resets at
+//! every chunk boundary and the per-chunk rounding can drift the total 16 kHz sample count
+//! slightly over a long stream. This is acceptable for the current bounded, provisional use
+//! (it affects only the coarse transcript timeline, not correctness); a stateful cross-chunk
+//! resampler that carries the fractional phase is a later refinement.
 
 use crate::TARGET_SAMPLE_RATE;
 
@@ -18,10 +24,12 @@ use crate::TARGET_SAMPLE_RATE;
 pub fn resample_to_16k_mono(samples: &[f32], in_rate: u32, channels: u16) -> Vec<f32> {
     let channels = channels.max(1) as usize;
     let mono = downmix(samples, channels);
-    let in_rate = if in_rate == 0 {
-        TARGET_SAMPLE_RATE
-    } else {
-        in_rate
+    // Clamp the source rate: 0 → target (mono pass-through); any absurdly-low nonzero rate
+    // up to a 4 kHz floor so a bogus rate (e.g. a misconfigured `sample_rate == 1`) cannot
+    // inflate `out_len` into a multi-GB allocation. Real device rates (≥ 8 kHz) are untouched.
+    let in_rate = match in_rate {
+        0 => TARGET_SAMPLE_RATE,
+        r => r.max(4_000),
     };
     resample_linear(&mono, in_rate, TARGET_SAMPLE_RATE)
 }
@@ -97,7 +105,8 @@ mod tests {
         let input: Vec<f32> = (0..320).map(|i| (i as f32) / 320.0).collect();
         let out = resample_to_16k_mono(&input, 32_000, 1);
         assert!((out.len() as i64 - 160).abs() <= 1, "len was {}", out.len());
-        // Endpoints preserved.
+        // Start endpoint preserved (out[0] == input[0]); under decimation the final input
+        // sample is dropped, so the end point is not preserved.
         assert!((out[0] - 0.0).abs() < 1e-4);
     }
 
@@ -110,5 +119,18 @@ mod tests {
     fn zero_channels_treated_as_mono() {
         let s = vec![0.5, 0.5];
         assert_eq!(resample_to_16k_mono(&s, TARGET_SAMPLE_RATE, 0), s);
+    }
+
+    #[test]
+    fn absurdly_low_rate_is_clamped_not_amplified() {
+        // A bogus 1 Hz rate must NOT expand 10 samples to ~160_000 (10 × 16000). The 4 kHz
+        // floor caps the ratio at 4×, so the output stays small and bounded.
+        let input = vec![0.1_f32; 10];
+        let out = resample_to_16k_mono(&input, 1, 1);
+        assert!(
+            out.len() <= 10 * 4 + 1,
+            "len was {} (amplification leak)",
+            out.len()
+        );
     }
 }

@@ -166,18 +166,31 @@ impl HardwareProbe {
         }
     }
 
-    /// Select the largest whisper variant that fits the ≤2 GB budget and is appropriate for
-    /// the host. On an accelerated backend or a well-provisioned CPU (≥4 threads) we choose
-    /// large-v3 Turbo (real-time capable, FR-101); leaner hosts step down. Thread count for
+    /// Select a whisper variant appropriate for the host, **enforcing** the ≤2 GB resident
+    /// budget (FR-101). On an accelerated backend or a well-provisioned CPU (≥4 threads) we
+    /// prefer large-v3 Turbo (real-time capable); leaner hosts step down. The preferred
+    /// model is then filtered through [`MAX_MODEL_RESIDENT_BYTES`] as defence in depth, so
+    /// the budget is enforced by the selector itself — not merely asserted by a test — and a
+    /// future footprint bump can never silently ship an over-budget model. Thread count for
     /// decoding is capped so we never oversubscribe.
     pub fn select_model(&self) -> ModelSelection {
-        let model = if self.backend != Backend::Cpu || self.threads >= 4 {
+        let preferred = if self.backend != Backend::Cpu || self.threads >= 4 {
             WhisperModel::LargeV3Turbo
         } else if self.threads >= 2 {
             WhisperModel::Small
         } else {
             WhisperModel::Base
         };
+        // Step down (Turbo → Medium → Small → Base) until the resident budget is satisfied.
+        let model = [
+            preferred,
+            WhisperModel::Medium,
+            WhisperModel::Small,
+            WhisperModel::Base,
+        ]
+        .into_iter()
+        .find(|m| m.approx_resident_bytes() <= MAX_MODEL_RESIDENT_BYTES)
+        .unwrap_or(WhisperModel::Base);
         // Leave one core for capture/host; clamp to a sane decoding range.
         let threads = self.threads.saturating_sub(1).clamp(1, 8);
         ModelSelection {

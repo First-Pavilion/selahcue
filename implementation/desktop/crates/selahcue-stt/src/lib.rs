@@ -44,7 +44,7 @@ pub use guard::FeedbackGuard;
 pub use model::{verify_model, Backend, HardwareProbe, ModelError, ModelSelection, WhisperModel};
 pub use provider::{SttProvider, MAX_PENDING_SEGMENTS};
 pub use pump::pump;
-pub use recognizer::{FakeRecognizer, RecognizedSegment, Recognizer, Utterance};
+pub use recognizer::{FakeRecognizer, RecognizedSegment, Recognizer};
 pub use resample::resample_to_16k_mono;
 pub use vad::{EnergyVad, Vad, VadConfig};
 

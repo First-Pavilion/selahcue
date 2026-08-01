@@ -23,8 +23,11 @@ pub struct VadConfig {
     /// RMS energy above which a frame is considered voiced. Speech RMS is typically well
     /// above room-tone; 0.01 (~ -40 dBFS) is a conservative default.
     pub energy_threshold: f32,
-    /// Minimum zero-crossing rate (fraction of samples). Guards against a steady DC/hum
-    /// offset registering as speech on energy alone.
+    /// Minimum zero-crossing rate (fraction of adjacent-sample sign changes). Rejects a
+    /// steady DC offset or a very-low-frequency hum/feedback tone that clears the energy
+    /// floor but barely oscillates — such a frame is not speech. The default (0.02) is a
+    /// conservative floor that passes ordinary speech; the exact value is a VAD-accuracy
+    /// tuning concern carried by the spike (S8/S11).
     pub min_zero_crossing_rate: f32,
 }
 
@@ -32,7 +35,7 @@ impl Default for VadConfig {
     fn default() -> Self {
         VadConfig {
             energy_threshold: 0.01,
-            min_zero_crossing_rate: 0.0,
+            min_zero_crossing_rate: 0.02,
         }
     }
 }
@@ -126,5 +129,21 @@ mod tests {
     #[test]
     fn empty_frame_is_not_speech() {
         assert!(!EnergyVad::new().is_speech(&[]));
+    }
+
+    #[test]
+    fn loud_dc_offset_is_not_speech() {
+        // A constant (DC) frame clears the energy floor (RMS 0.5 ≫ 0.01) but has zero
+        // crossings — the ZCR guard must reject it (FR-102), so the recognizer never runs
+        // on a hum/feedback offset. This exercises the ZCR dimension of the gate.
+        let vad = EnergyVad::new();
+        assert!(!vad.is_speech(&vec![0.5; FRAME_SAMPLES]));
+    }
+
+    #[test]
+    fn oscillating_speech_passes_the_zcr_floor() {
+        // An alternating (max-ZCR) loud frame is speech under the default ZCR floor.
+        let vad = EnergyVad::new();
+        assert!(vad.is_speech(&tone(FRAME_SAMPLES, 0.5)));
     }
 }

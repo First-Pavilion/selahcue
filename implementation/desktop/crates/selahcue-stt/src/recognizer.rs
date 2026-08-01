@@ -5,30 +5,8 @@
 //! implementation for tests (and any no-model run). [`WhisperRecognizer`] (feature
 //! `whisper`) is the real whisper.cpp backend. The engine calls `transcribe` once per
 //! closed utterance, off the host thread, so a slow recognition never blocks the render
-//! path.
-
-/// One bracketed span of speech to be recognized: 16 kHz mono `f32` plus its position in
-/// the session (ms from the session origin, derived from the sample clock — no wall clock).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Utterance {
-    /// 16 kHz mono samples for this utterance.
-    pub samples: Vec<f32>,
-    /// Utterance start, ms from the session origin.
-    pub start_ms: u64,
-    /// Utterance end, ms from the session origin (`>= start_ms`).
-    pub end_ms: u64,
-}
-
-impl Utterance {
-    /// Build an utterance, clamping `end_ms` to be `>= start_ms`.
-    pub fn new(samples: Vec<f32>, start_ms: u64, end_ms: u64) -> Self {
-        Utterance {
-            samples,
-            start_ms,
-            end_ms: end_ms.max(start_ms),
-        }
-    }
-}
+//! path. `transcribe` borrows the samples (it never takes ownership) so the engine can
+//! reuse its utterance buffer across calls (no per-utterance re-allocation).
 
 /// A recognized span of text with its timing and whether it is a committed final.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,16 +30,19 @@ impl RecognizedSegment {
     }
 }
 
-/// The recognition seam. Given a closed utterance, return zero or more recognized segments.
-/// Deterministic implementations (the fake) return exactly their canned output.
+/// The recognition seam. Given one closed utterance's 16 kHz mono samples and its span
+/// (ms from the session origin), return zero or more recognized segments. The samples are
+/// borrowed, never consumed. Deterministic implementations (the fake) return exactly their
+/// canned output.
 pub trait Recognizer {
     /// A stable, human-readable engine name for honest disclosure (FR-120), e.g.
     /// `"whisper-large-v3-turbo"` or `"fake"`.
     fn label(&self) -> &str;
 
-    /// Recognize one utterance. Empty text results are the recognizer's own concern to
-    /// suppress; the engine additionally drops empties defensively.
-    fn transcribe(&mut self, utterance: &Utterance) -> Vec<RecognizedSegment>;
+    /// Recognize one utterance (`samples` = 16 kHz mono `f32`). Empty text results are the
+    /// recognizer's own concern to suppress; the engine additionally drops empties.
+    fn transcribe(&mut self, samples: &[f32], start_ms: u64, end_ms: u64)
+        -> Vec<RecognizedSegment>;
 }
 
 /// A deterministic recognizer that returns pre-supplied text, one canned line per utterance.
@@ -100,13 +81,14 @@ impl Recognizer for FakeRecognizer {
         "fake"
     }
 
-    fn transcribe(&mut self, utterance: &Utterance) -> Vec<RecognizedSegment> {
+    fn transcribe(
+        &mut self,
+        _samples: &[f32],
+        start_ms: u64,
+        end_ms: u64,
+    ) -> Vec<RecognizedSegment> {
         match self.scripts.pop_front() {
-            Some(text) => vec![RecognizedSegment::final_text(
-                text,
-                utterance.start_ms,
-                utterance.end_ms,
-            )],
+            Some(text) => vec![RecognizedSegment::final_text(text, start_ms, end_ms)],
             None => Vec::new(),
         }
     }
@@ -121,15 +103,14 @@ mod whisper_backend {
     //! `whisper` feature so the default build needs no native toolchain or model file.
     //! Accuracy/latency are spike-gated (S8/S11) and not asserted by this crate's tests.
 
-    use super::{RecognizedSegment, Recognizer, Utterance};
-    use crate::model::ModelSelection;
+    use super::{RecognizedSegment, Recognizer};
+    use crate::model::{verify_model, ModelSelection};
     use std::path::Path;
 
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
     /// whisper.cpp-backed recognizer. Holds a loaded model context and transcribes each
-    /// utterance with greedy decoding. Construct it only after the model file has been
-    /// integrity-verified ([`crate::model::verify_model`]).
+    /// utterance with greedy decoding.
     pub struct WhisperRecognizer {
         ctx: WhisperContext,
         label: String,
@@ -137,11 +118,17 @@ mod whisper_backend {
     }
 
     impl WhisperRecognizer {
-        /// Load a verified model from `model_path` using the given hardware `selection`.
-        ///
-        /// The caller MUST have verified the model's integrity first (FR-156); this method
-        /// only loads. Returns an error string on load failure rather than panicking.
-        pub fn load(model_path: &Path, selection: &ModelSelection) -> Result<Self, String> {
+        /// Verify (FR-156) then load a model from `model_path`. The model is SHA-256-checked
+        /// against `expected_sha256` **before** it is handed to whisper.cpp — a mismatch
+        /// refuses to load (integrity is enforced here, not left to the caller). Returns an
+        /// error string on verification or load failure rather than panicking.
+        pub fn load(
+            model_path: &Path,
+            expected_sha256: &str,
+            selection: &ModelSelection,
+        ) -> Result<Self, String> {
+            // FR-156 / ADR-0012: integrity gate before load.
+            verify_model(model_path, expected_sha256).map_err(|e| e.to_string())?;
             let path = model_path
                 .to_str()
                 .ok_or_else(|| "model path is not valid UTF-8".to_string())?;
@@ -160,7 +147,12 @@ mod whisper_backend {
             &self.label
         }
 
-        fn transcribe(&mut self, utterance: &Utterance) -> Vec<RecognizedSegment> {
+        fn transcribe(
+            &mut self,
+            samples: &[f32],
+            start_ms: u64,
+            end_ms: u64,
+        ) -> Vec<RecognizedSegment> {
             let mut state = match self.ctx.create_state() {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
@@ -172,7 +164,7 @@ mod whisper_backend {
             params.set_print_progress(false);
             params.set_print_realtime(false);
             params.set_print_timestamps(false);
-            if state.full(params, &utterance.samples).is_err() {
+            if state.full(params, samples).is_err() {
                 return Vec::new();
             }
             let n = state.full_n_segments().unwrap_or(0);
@@ -181,11 +173,7 @@ mod whisper_backend {
                 if let Ok(text) = state.full_get_segment_text(i) {
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
-                        out.push(RecognizedSegment::final_text(
-                            trimmed,
-                            utterance.start_ms,
-                            utterance.end_ms,
-                        ));
+                        out.push(RecognizedSegment::final_text(trimmed, start_ms, end_ms));
                     }
                 }
             }
@@ -201,10 +189,10 @@ mod tests {
     #[test]
     fn fake_returns_scripted_lines_in_order() {
         let mut r = FakeRecognizer::with_script(["hello", "world"]);
-        let u = Utterance::new(vec![0.0; 320], 0, 20);
-        assert_eq!(r.transcribe(&u)[0].text, "hello");
-        assert_eq!(r.transcribe(&u)[0].text, "world");
-        assert!(r.transcribe(&u).is_empty());
+        let frame = vec![0.0_f32; 320];
+        assert_eq!(r.transcribe(&frame, 0, 20)[0].text, "hello");
+        assert_eq!(r.transcribe(&frame, 20, 40)[0].text, "world");
+        assert!(r.transcribe(&frame, 40, 60).is_empty());
     }
 
     #[test]

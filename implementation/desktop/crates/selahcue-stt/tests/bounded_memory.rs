@@ -100,11 +100,16 @@ fn bounded_utterance_accumulator_force_closes_continuous_speech() {
     engine.process(&AudioChunk::new(long_speech, 16_000, 1));
     engine.flush();
 
-    // Force-closing produced multiple bounded segments (≈ 200 / 4), and the queue stayed capped.
+    // Force-close on the sample cap must chop 200 frames of unbroken speech into MANY
+    // bounded utterances (≈ 200 / 4 = 50). This lower bound is what makes the test
+    // non-vacuous: if a regression removed the `max_utterance_samples` guard, the whole 200
+    // frames would stay in ONE utterance closed only by `flush()` → exactly 1 segment → this
+    // assertion fails. (A count-only `!is_empty()` check would pass either way.)
     let out = provider.poll();
     assert!(
-        !out.is_empty(),
-        "continuous speech must still produce segments"
+        out.len() >= 40,
+        "expected the sample cap to force-close many segments (~50), got {} — cap not enforced?",
+        out.len()
     );
     assert!(out.len() <= MAX_PENDING_SEGMENTS);
 }

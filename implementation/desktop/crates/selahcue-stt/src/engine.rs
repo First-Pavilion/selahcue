@@ -7,15 +7,20 @@
 //! *processed* frame, so a segment's `start_ms`/`end_ms` come from the audio position, not
 //! wall time. Audio dropped by the feedback guard does not advance the transcript clock
 //! (nothing was transcribed then), keeping the timeline aligned to real speech.
+//!
+//! Buffers are reused, not reallocated: `frame_buf` is a `VecDeque` (O(1) front-pop, so a
+//! large catch-up chunk is O(n), never O(n²)), and both the per-frame scratch and the
+//! utterance accumulator keep their capacity across utterances — no per-frame or
+//! per-utterance heap churn on the steady-state hot path.
 
-use std::mem;
+use std::collections::VecDeque;
 
 use selahcue_core::transcript::ProviderSegment;
 
 use crate::audio::AudioChunk;
 use crate::guard::FeedbackGuard;
 use crate::provider::{SegmentSink, SttProvider};
-use crate::recognizer::{Recognizer, Utterance};
+use crate::recognizer::Recognizer;
 use crate::resample::resample_to_16k_mono;
 use crate::vad::{Vad, FRAME_SAMPLES};
 use crate::TARGET_SAMPLE_RATE;
@@ -30,8 +35,11 @@ pub struct EngineConfig {
     pub hangover_frames: usize,
     /// Minimum voiced frames for an utterance to be worth recognizing (drops lone blips).
     pub min_utterance_frames: usize,
-    /// Hard cap on an utterance's samples; a monologue with no pause is force-closed here so
-    /// the accumulator can never grow without bound (no-leak).
+    /// Hard cap on an utterance's samples; unbroken speech is force-closed here so the
+    /// accumulator can never grow without bound (no-leak) AND so a sustained monologue still
+    /// produces transcript within a bounded delay. Default 10 s balances the ≤2 s latency
+    /// target (streaming interims to get fully under 2 s are a spike-gated follow-up, S8/S11)
+    /// against giving the recognizer enough context.
     pub max_utterance_samples: usize,
 }
 
@@ -40,7 +48,7 @@ impl Default for EngineConfig {
         EngineConfig {
             hangover_frames: 15,     // ~300 ms of trailing silence closes an utterance
             min_utterance_frames: 3, // ~60 ms of speech minimum
-            max_utterance_samples: 30 * TARGET_SAMPLE_RATE as usize, // 30 s force-close
+            max_utterance_samples: 10 * TARGET_SAMPLE_RATE as usize, // 10 s force-close
         }
     }
 }
@@ -55,10 +63,12 @@ pub struct SttEngine {
     sink: SegmentSink,
     config: EngineConfig,
 
-    // --- pipeline state ---
+    // --- pipeline state (all buffers are reused across calls; see the module docs) ---
     /// 16 kHz mono samples not yet formed into a full VAD frame (carried across calls).
-    frame_buf: Vec<f32>,
-    /// The current utterance's accumulated 16 kHz samples.
+    frame_buf: VecDeque<f32>,
+    /// Reusable scratch for the current VAD frame (avoids a per-frame allocation).
+    frame_scratch: Vec<f32>,
+    /// The current utterance's accumulated 16 kHz samples (capacity retained across closes).
     utterance: Vec<f32>,
     in_speech: bool,
     silence_run: usize,
@@ -68,6 +78,13 @@ pub struct SttEngine {
     /// Frame index at which the current utterance started.
     utt_start_frame: u64,
 }
+
+// The engine is designed to run on a host worker thread; make that a compile-time
+// guarantee so a future non-Send field is caught here, not at the host's spawn site.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<SttEngine>();
+};
 
 impl SttEngine {
     /// Build an engine and its paired [`SttProvider`], sharing one bounded segment queue.
@@ -86,7 +103,8 @@ impl SttEngine {
             guard,
             sink: sink.clone(),
             config,
-            frame_buf: Vec::new(),
+            frame_buf: VecDeque::new(),
+            frame_scratch: Vec::with_capacity(FRAME_SAMPLES),
             utterance: Vec::new(),
             in_speech: false,
             silence_run: 0,
@@ -105,31 +123,39 @@ impl SttEngine {
         }
     }
 
-    /// Process one device chunk: downmix/resample to 16 kHz mono, then VAD-frame it. While
-    /// the feedback guard suppresses (app audio on a shared output, FR-172), the chunk is
-    /// dropped and any open utterance is flushed — SelahCue never transcribes itself.
+    /// Process one device chunk. While the feedback guard suppresses (app audio on a shared
+    /// output, FR-172), the chunk is dropped *before* any work — SelahCue never transcribes
+    /// itself — and any open utterance is flushed. Otherwise downmix/resample to 16 kHz mono
+    /// and VAD-frame it.
     pub fn process(&mut self, chunk: &AudioChunk) {
-        let mono = resample_to_16k_mono(&chunk.samples, chunk.sample_rate, chunk.channels);
         if self.guard.is_suppressed() {
             // Close any real speech captured before suppression, then discard this audio and
             // any partial frame — do not advance the clock across suppressed (untranscribed)
-            // time.
+            // time. Skip the resample entirely (no wasted work while suppressed).
             self.close_utterance();
             self.frame_buf.clear();
             return;
         }
-        self.frame_buf.extend_from_slice(&mono);
+        let mono = resample_to_16k_mono(&chunk.samples, chunk.sample_rate, chunk.channels);
+        self.frame_buf.extend(mono);
         while self.frame_buf.len() >= FRAME_SAMPLES {
-            // Take one frame; the remainder stays buffered for the next call.
-            let frame: Vec<f32> = self.frame_buf.drain(..FRAME_SAMPLES).collect();
-            self.process_frame(&frame);
+            // Pop one frame into the reused scratch (O(1) front-pops — no O(n) memmove).
+            self.frame_scratch.clear();
+            for _ in 0..FRAME_SAMPLES {
+                match self.frame_buf.pop_front() {
+                    Some(s) => self.frame_scratch.push(s),
+                    None => break,
+                }
+            }
+            self.process_current_frame();
         }
     }
 
-    /// Advance one VAD frame, updating utterance state.
-    fn process_frame(&mut self, frame: &[f32]) {
+    /// Advance one VAD frame (held in `self.frame_scratch`), updating utterance state and
+    /// closing the utterance on end-of-speech hangover or the hard sample cap.
+    fn process_current_frame(&mut self) {
         self.frame_index += 1;
-        let speech = self.vad.is_speech(frame);
+        let speech = self.vad.is_speech(&self.frame_scratch);
         if speech {
             if !self.in_speech {
                 self.in_speech = true;
@@ -137,39 +163,44 @@ impl SttEngine {
                 self.utterance.clear();
                 self.speech_frames = 0;
             }
-            self.utterance.extend_from_slice(frame);
+            self.utterance.extend_from_slice(&self.frame_scratch);
             self.speech_frames += 1;
             self.silence_run = 0;
-            if self.utterance.len() >= self.config.max_utterance_samples {
-                self.close_utterance();
-            }
         } else if self.in_speech {
             // Trailing silence is part of the utterance span until the hangover elapses.
-            self.utterance.extend_from_slice(frame);
+            self.utterance.extend_from_slice(&self.frame_scratch);
             self.silence_run += 1;
-            if self.silence_run >= self.config.hangover_frames {
-                self.close_utterance();
-            }
+        }
+        // Close on hangover OR the hard sample cap (checked after any append, so the
+        // accumulator is bounded regardless of which branch grew it — no-leak).
+        if self.in_speech
+            && (self.silence_run >= self.config.hangover_frames
+                || self.utterance.len() >= self.config.max_utterance_samples)
+        {
+            self.close_utterance();
         }
     }
 
     /// Close the open utterance: recognize it (if long enough) and push its finals to the
-    /// sink, then reset speech state. A no-op when not in speech.
+    /// sink, then reset speech state, retaining the accumulator's capacity. No-op when not
+    /// in speech.
     fn close_utterance(&mut self) {
         if !self.in_speech {
             return;
         }
         let long_enough = self.speech_frames >= self.config.min_utterance_frames;
-        let samples = mem::take(&mut self.utterance);
         let start_ms = self.utt_start_frame * MS_PER_FRAME;
         let end_ms = self.frame_index * MS_PER_FRAME;
-        // Reset before recognizing so state is clean even if the recognizer is re-entrant.
+        // Reset before recognizing so state is clean even if the recognizer re-enters.
         self.in_speech = false;
         self.silence_run = 0;
         self.speech_frames = 0;
         if long_enough {
-            let utt = Utterance::new(samples, start_ms, end_ms);
-            for seg in self.recognizer.transcribe(&utt) {
+            // Borrow the accumulator (never move it) so its capacity survives for reuse.
+            for seg in self
+                .recognizer
+                .transcribe(&self.utterance, start_ms, end_ms)
+            {
                 if seg.text.trim().is_empty() {
                     continue; // never surface an empty transcript line
                 }
@@ -181,6 +212,7 @@ impl SttEngine {
                 });
             }
         }
+        self.utterance.clear(); // keep capacity — the next utterance reuses it (no re-alloc)
     }
 
     /// Force-close any open utterance (e.g. on stop). Recognizes and flushes what's buffered.
@@ -256,7 +288,7 @@ mod tests {
         let (mut engine, mut provider) = SttEngine::build(
             EngineConfig::default(),
             Box::new(EnergyVad::new()),
-            Box::new(FakeRecognizer::with_script(["should-not-appear"])),
+            Box::new(FakeRecognizer::with_script(["after-resume"])),
             guard.clone(),
         );
         guard.set_output_active(true); // app audio on shared output
@@ -270,6 +302,8 @@ mod tests {
         guard.set_output_active(false);
         engine.process(&speech_chunk(10));
         engine.process(&silence_chunk(20));
-        assert_eq!(provider.poll().len(), 1);
+        let out = provider.poll();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text, "after-resume");
     }
 }
