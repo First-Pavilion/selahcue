@@ -26,7 +26,7 @@
 
 - **Workspace:** `cargo test --workspace` **488/0** (+12 over baseline: wire round-trip + RBAC, 6 registry-invariant tests, migration + screen_repo, the console-live-monitor test); `--features server` green; fmt/clippy clean (workspace + operator).
 - **Operator gates (run on the CI runner):** committed Chrome headless **81/81** (incl. the 3 fix regressions — reject-reverts, focus-restore, and the 9 registry-UI checks) + WebKit smoke **5/5**.
-- **3-OS CI:** `<pending — verified by run conclusion>`.
+- **3-OS CI:** run `30695958783` `completed → success` (verified by conclusion) — rust + operator on macOS/Windows/Linux all green; the operator-Linux logs show `=== 81 checks, 0 FAIL ===` (Chrome) + `=== WebKit smoke: 5 checks, 0 FAIL ===`.
 - **Owner on-device QA (optional):** the definitive "disable the lower-third mid-service; add a second stream; the muted main window is black" is owner-run on the real Tauri app; the headless + Rust assertions are the strongest short of the GUI.
 
 ## Follow-ups

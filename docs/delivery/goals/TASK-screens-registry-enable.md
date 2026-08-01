@@ -6,7 +6,7 @@
 - Parent goal ID: BUILD-selahcue (Stage 8 — Screens page: dynamic screen registry)
 - Title: A bounded, persisted SCREEN REGISTRY — enable/disable each screen + add/delete VIRTUAL audience screens (the Enable toggle + "+ Add screen" of NAV-IA-spec §3)
 - Role: backend-engineer (registry + wire + controller + data) + frontend-engineer (Screens-page toggle/add/delete)
-- Status: IN_PROGRESS
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: ⚠ MCP rate-limited (~76 min cooldown) — QUEUED: create a linked STORY "Screens page — dynamic screen registry (enable/add/delete virtual)" under EPIC Accessibility & Design System `86ajp08bx`, related to `86ajq321f` (App menu + Screens page IMPLEMENTATION, in QA); record goal id here on BUILD CONTROL `86ajnx548`.
 - Created: 2026-08-01
@@ -57,7 +57,7 @@ Verified from code (+ scout `wf_53f75761-aa1`):
 | C-002 | yes | Registry: bounded cap + deterministic order + delete-virtual-only (built-in delete rejected) + enable/disable + disabled→black compose + add-virtual + remove-drops-theme | `cargo test -p selahcue-app` | all registry invariants hold | test_controller +6 (`registry_seeds…`, `disabling…blacks…`, `add_virtual…`, `delete_is_virtual_only…`, `registry_is_bounded_to_max_screens`, `registry_from_persisted_recovers_and_bounds`); 83/0 | PASS |
 | C-003 | yes | Data: migration v13 round-trips; a corrupt/oversized registry recovers to the default; cap enforced on load | `cargo test -p selahcue-data` | round-trip + recovery + cap | test_db `a_pre_registry_database_upgrades_and_gains_the_screen_table` + test_screen_repo (round-trip/replace/single-row); recovery pinned by `registry_from_persisted_recovers_and_bounds`; data 10+3 green | PASS |
 | C-004 | yes | Operator: Screens page Enable toggle + Add + delete-on-virtual via the 3 commands; `node --check` + the committed headless gate assert toggle/add/delete + a built-in row has no delete | operator `node --check` + headless | actions work; built-in undeletable | `node --check` OK; operator build/fmt/clippy clean; headless **79/79** (+9 registry) + WebKit 5/5 | PASS |
-| C-005 | yes | Gate: make ci + operator gate green; independent adversarial Workflow review, findings fixed; 3-OS CI green (verified by run conclusion) | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW doc; CI run | PENDING |
+| C-005 | yes | Gate: make ci + operator gate green; independent adversarial Workflow review, findings fixed; 3-OS CI green (verified by run conclusion) | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-screens-registry.md (3 confirmed findings fixed, 1 refuted); CI `30695958783` `completed → success` (operator-Linux log `=== 81 checks, 0 FAIL ===` + `WebKit smoke: 5 checks, 0 FAIL`) | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -81,7 +81,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-screens-registry-enable.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending — MCP rate-limited; queued for the new registry story + BUILD CONTROL 86ajnx548)
+- Validator result: PASS (5/5 mandatory criteria PASS)
+- Independent verification result: adversarial review `wf_4b25b9c4-6ff` (4 lenses → per-finding refute-by-default, 12 agents) — 4 raised, 3 confirmed (1 HIGH + 2 MEDIUM) all fixed + regression-tested, 1 refuted; + the committed Chrome 81/81 + WebKit 5/5 CI gates run on the runner.
+- Terminal state: GATE_REVIEW (verifiable work complete; paused for the `/build` user gate).
+- ClickUp final evidence comment: pending — MCP rate-limited this session; QUEUED: create STORY "Screens page — dynamic screen registry" under EPIC Accessibility & Design System 86ajp08bx (related to 86ajq321f), + BUILD CONTROL 86ajnx548 gate update. Retried at finalization.
