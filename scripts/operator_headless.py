@@ -136,10 +136,17 @@ DRIVER = r"""
   }
   function el(id){ return document.getElementById(id); }
   var sleep=(ms)=>new Promise(function(r){setTimeout(r,ms);});
+  // Poll a predicate up to `tries`×20ms of virtual time instead of a fixed sleep (audit #11):
+  // the gate then waits exactly as long as the boot render needs and stays deterministic
+  // (bounded) — a fixed sleep would spuriously RED the gate if app.js boot timing ever grew.
+  var waitFor=async function(pred, tries){ tries=tries||150; for(var i=0;i<tries;i++){ if(pred()) return true; await sleep(20); } return pred(); };
+  var hasRender=function(id){ var s=el(id) && el(id).querySelector(".surface"); return !!(s && s.classList.contains("has-render")); };
   async function run(){
     try {
       // === #7-FIX Preview/Live TRUE render (86ajtwq28) — must fire on BOOT (no nav-click) ===
-      await sleep(260); // rely PURELY on the boot render path (act->render->syncChrome->renderConsole)
+      // Poll for the boot render to COMPLETE (panels reach has-render) rather than a fixed
+      // sleep (audit #11); if it never fires, the poll times out and the checks below FAIL.
+      await waitFor(function(){ return hasRender("preview-panel") && hasRender("live-panel"); });
       ok(window.__calls.some(function(c){return c.cmd==="render_console";}), "#7-fix render_console fires on BOOT (no nav-click crutch)");
       ok(el("preview-panel").querySelector(".surface").classList.contains("has-render"), "#7-fix Preview panel shows the true render on boot");
       ok(el("live-panel").querySelector(".surface").classList.contains("has-render"), "#7-fix Live panel shows the true render on boot");
@@ -163,7 +170,7 @@ DRIVER = r"""
       // available:false (a Remote host / older host) → text fallback, no canvas.
       window.__renderAvailable = false;
       document.querySelector('.nav-item[data-surface="console"]').click(); // re-schedule a render
-      await sleep(180);
+      await waitFor(function(){ return !hasRender("preview-panel"); }); // poll for the fallback (audit #11)
       ok(!el("preview-panel").querySelector(".surface").classList.contains("has-render"), "#7 available:false → text fallback (no canvas)");
       window.__renderAvailable = true; // restore for the rest of the run
 

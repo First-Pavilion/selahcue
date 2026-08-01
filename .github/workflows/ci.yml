@@ -240,6 +240,23 @@ jobs:
         env:
           SELAHCUE_HEADLESS_REQUIRE: "1"
         run: python3 scripts/operator_headless.py
+      # Engine-fidelity smoke (audit #10): the Blink gate above covers browser-portable DOM/JS
+      # logic; this boot-smokes the SAME dist/ on WebKit (Playwright's WebKit = the JavaScript
+      # Core/WebCore core Tauri ships on — WebKitGTK/WKWebView), catching an engine-specific JS
+      # break Blink can't. Playwright bundles its own WebKit (self-contained; no GTK-version
+      # coupling). REQUIRE=1 makes a missing engine a hard fail, never a silent no-op.
+      - name: Install Playwright WebKit (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m pip install --user playwright
+          python3 -m playwright install --with-deps webkit
+      - name: Webview WebKit-engine smoke (Linux, Playwright WebKit)
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        env:
+          SELAHCUE_WEBKIT_REQUIRE: "1"
+        run: python3 scripts/operator_webkit_smoke.py
 
   flutter:
     name: flutter controller
