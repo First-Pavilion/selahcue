@@ -563,7 +563,14 @@ impl LiveController {
     /// pumps segments here directly (out-of-band from render); the same path backs the
     /// `IngestTranscript` wire command. Returns the number of NEW detections queued.
     pub fn ingest_transcript(&mut self, text: &str, start_ms: u64, end_ms: u64) -> usize {
-        self.transcript.ingest(text, start_ms, end_ms).len()
+        // Exact reference detection PLUS the fuzzy quote/paraphrase rung (R4): the corpus
+        // matcher lives in selahcue-scripture (the pure core cannot see the corpus), so its
+        // most-likely-verse suggestion for a spoken quotation is enqueued alongside exact
+        // hits, deduped, for operator confirmation (never auto-live, FR-115).
+        let quotes = selahcue_scripture::match_quote(text);
+        self.transcript
+            .ingest_with_quotes(text, start_ms, end_ms, &quotes)
+            .len()
     }
 
     /// The live-transcript + detection engine (read-only), for the desktop host to pump

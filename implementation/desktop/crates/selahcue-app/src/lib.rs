@@ -9,6 +9,7 @@
 mod controller;
 pub mod keymap;
 mod operator;
+pub mod transcript_pump;
 
 pub use controller::{
     ControllerReply, ControllerSnapshot, LiveController, Screen, ScreenRegistry, ScreenRole,
@@ -16,6 +17,7 @@ pub use controller::{
 };
 pub use keymap::{CanonicalAction, KeyPress, Keymap};
 pub use operator::{ItemView, OperatorShell, OperatorView};
+pub use transcript_pump::pump_transcript;
 
 #[cfg(feature = "server")]
 pub use controller::handler_for;

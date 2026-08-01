@@ -25,6 +25,10 @@ use selahcue_core::scripture::Reference;
 use std::io::Read;
 use std::sync::OnceLock;
 
+/// Fuzzy quote/paraphrase detection (R4 "fuzzy" rung) — match spoken text against the corpus.
+pub mod quote_match;
+pub use quote_match::{match_quote, match_quote_in};
+
 /// One verse of the bundled translation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verse {

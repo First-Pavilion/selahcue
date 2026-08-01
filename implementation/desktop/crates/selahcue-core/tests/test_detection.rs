@@ -224,3 +224,74 @@ fn recent_dedup_ring_is_bounded_under_many_distinct_references() {
         "the cross-segment dedup ring must stay bounded to RECENT_DEDUP_WINDOW"
     );
 }
+
+// ---- Fuzzy quote candidates injected alongside exact detection (R4 fuzzy rung) ----
+
+#[test]
+fn engine_ingest_with_quotes_enqueues_injected_candidates() {
+    // A spoken quote whose reference is NOT named: the exact detector finds nothing, but the
+    // caller's fuzzy matcher supplies the most-likely verse, which is queued for approval.
+    let mut e = TranscriptEngine::new();
+    let quotes = vec!["John 3:16".to_string()];
+    let new = e.ingest_with_quotes("for God so loved the world", 0, 2_000, &quotes);
+    assert_eq!(new.len(), 1);
+    let pending: Vec<_> = e.detections().pending().collect();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].reference, "John 3:16");
+    assert_eq!(
+        pending[0].source_segment, 0,
+        "quote candidate carries provenance"
+    );
+}
+
+#[test]
+fn engine_ingest_with_quotes_dedups_quote_against_exact_hit() {
+    // The same verse is BOTH spoken as a reference and matched as a quote → one detection,
+    // not two (exact is enqueued first; the duplicate quote candidate is dropped).
+    let mut e = TranscriptEngine::new();
+    let quotes = vec!["John 3:16".to_string()];
+    let new = e.ingest_with_quotes(
+        "John chapter 3 verse 16 — for God so loved the world",
+        0,
+        2_000,
+        &quotes,
+    );
+    assert_eq!(
+        new.len(),
+        1,
+        "exact + duplicate quote collapse to one detection"
+    );
+    assert_eq!(e.detections().len(), 1);
+}
+
+#[test]
+fn engine_ingest_with_quotes_is_bounded_under_a_flood_of_candidates() {
+    // A flood of DISTINCT injected quote candidates cannot grow the queue past its cap.
+    let mut e = TranscriptEngine::new();
+    for i in 0..(MAX_DETECTIONS * 10) {
+        let quotes = vec![format!("Psalms {}:1", (i % 150) + 1)];
+        e.ingest_with_quotes("a spoken quotation", i as u64, i as u64 + 1, &quotes);
+    }
+    assert!(e.detections().len() <= MAX_DETECTIONS);
+}
+
+#[test]
+fn engine_ingest_with_no_quotes_matches_plain_ingest() {
+    // `ingest` delegates to `ingest_with_quotes(&[])` — behaviour is identical (regression).
+    let mut a = TranscriptEngine::new();
+    let mut b = TranscriptEngine::new();
+    let ta = a.ingest("please turn to John chapter 3 verse 16", 0, 2_000);
+    let tb = b.ingest_with_quotes("please turn to John chapter 3 verse 16", 0, 2_000, &[]);
+    assert_eq!(ta.len(), tb.len());
+    let ra: Vec<_> = a
+        .detections()
+        .pending()
+        .map(|d| d.reference.clone())
+        .collect();
+    let rb: Vec<_> = b
+        .detections()
+        .pending()
+        .map(|d| d.reference.clone())
+        .collect();
+    assert_eq!(ra, rb);
+}

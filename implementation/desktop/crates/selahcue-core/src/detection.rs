@@ -374,22 +374,49 @@ impl TranscriptEngine {
         }
     }
 
-    /// Ingest one transcript segment: append it to the (bounded) log, detect references,
-    /// and enqueue any that are neither still-pending nor within the recent-dedup window.
-    /// Returns the ids of the newly enqueued detections (empty when nothing new).
+    /// Ingest one transcript segment: append it to the (bounded) log, detect explicit
+    /// references, and enqueue any that are neither still-pending nor within the recent-dedup
+    /// window. Returns the ids of the newly enqueued detections (empty when nothing new).
     pub fn ingest(&mut self, text: &str, start_ms: u64, end_ms: u64) -> Vec<u64> {
+        self.ingest_with_quotes(text, start_ms, end_ms, &[])
+    }
+
+    /// Like [`ingest`](Self::ingest), but also enqueues `quote_refs` — canonical references
+    /// produced by an external **fuzzy quote/paraphrase matcher** the caller runs over the
+    /// scripture corpus (the pure core cannot see the corpus, so the candidates are injected).
+    /// Explicit references (from [`detect`]) are enqueued first, so an explicitly-spoken
+    /// "John 3:16" takes precedence over a fuzzy quote match for the same verse via the
+    /// recent-dedup + still-pending dedup below; a quote candidate that duplicates one is
+    /// dropped. Both share the same `source_segment` and flow through the same bounded queue.
+    /// Deterministic: `quote_refs` are enqueued in the caller-supplied order.
+    pub fn ingest_with_quotes(
+        &mut self,
+        text: &str,
+        start_ms: u64,
+        end_ms: u64,
+        quote_refs: &[String],
+    ) -> Vec<u64> {
         let segment_id = self.log.push(text, start_ms, end_ms);
         let mut new_ids = Vec::new();
         for reference in detect(text) {
-            if self.recent_refs.iter().any(|r| r == &reference) {
-                continue;
-            }
-            if let Some(id) = self.queue.enqueue(reference.clone(), segment_id) {
-                self.remember(reference);
-                new_ids.push(id);
-            }
+            self.try_enqueue(reference, segment_id, &mut new_ids);
+        }
+        for reference in quote_refs {
+            self.try_enqueue(reference.clone(), segment_id, &mut new_ids);
         }
         new_ids
+    }
+
+    /// Enqueue one candidate reference unless it is within the recent-dedup window or already
+    /// pending; on success, remember it and record the new id.
+    fn try_enqueue(&mut self, reference: String, segment_id: u64, new_ids: &mut Vec<u64>) {
+        if self.recent_refs.iter().any(|r| r == &reference) {
+            return;
+        }
+        if let Some(id) = self.queue.enqueue(reference.clone(), segment_id) {
+            self.remember(reference);
+            new_ids.push(id);
+        }
     }
 
     fn remember(&mut self, reference: String) {
