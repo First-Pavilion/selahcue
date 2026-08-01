@@ -1099,6 +1099,7 @@ impl LiveController {
             Command::GetState
             | Command::GetOperatorState
             | Command::GetConsoleThumbnails { .. }
+            | Command::GetScreenFrame { .. }
             | Command::ScriptureSearch { .. }
             | Command::GetChapter { .. }
             // Transcript ingest + dismissing a detection change the operator VIEW but
@@ -1373,6 +1374,26 @@ impl LiveController {
                 ControllerReply::Message(ServerMessage::ConsoleThumbnails {
                     preview: Some(ThumbView::from_rgba(pv.width(), pv.height(), pv.bytes())),
                     live: Some(ThumbView::from_rgba(lv.width(), lv.height(), lv.bytes())),
+                })
+            }
+            Command::GetScreenFrame {
+                screen,
+                max_w,
+                max_h,
+            } => {
+                // A READ (86ajq321k): compose the current LIVE content for the named Audience
+                // screen under ITS per-screen theme + downscale, so the operator Screens page can
+                // preview each screen's design (the secondaries have no physical output yet). No
+                // state change, no tick — the audience output is untouched. Size clamped host-side.
+                let mw = (*max_w).clamp(1, 480);
+                let mh = (*max_h).clamp(1, 270);
+                let frame = self.compose_screen(screen).map(|fb| {
+                    let t = fb.thumbnail(mw, mh);
+                    ThumbView::from_rgba(t.width(), t.height(), t.bytes())
+                });
+                ControllerReply::Message(ServerMessage::ScreenFrame {
+                    screen: screen.clone(),
+                    frame,
                 })
             }
             Command::IdentifyOutputs => {

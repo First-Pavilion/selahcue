@@ -90,6 +90,16 @@ pub enum Command {
     /// (not a text placeholder) when the operator drives the output over the loopback link.
     /// A **read** (RBAC `Monitor`) — never changes what is on air. The host clamps the size.
     GetConsoleThumbnails { max_w: u32, max_h: u32 },
+    /// Request the current LIVE content composed for one Audience-class `screen`
+    /// (`main`/`lower-third`/`stream`) under ITS per-screen theme (86ajq321k), as a downscaled
+    /// RGBA thumbnail — so the operator's Screens page can PREVIEW each screen's own design
+    /// (the secondaries have no physical output yet; this is the only way to see them). A
+    /// **read** (RBAC `Monitor`) — never changes what is on air. The host clamps the size.
+    GetScreenFrame {
+        screen: String,
+        max_w: u32,
+        max_h: u32,
+    },
     /// Append a plan item (plan editing — Operator only). `kind` is the stable
     /// item-kind tag (e.g. `"song"`); unknown tags are rejected.
     AddItem {
@@ -239,6 +249,15 @@ pub enum ServerMessage {
         preview: Option<ThumbView>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         live: Option<ThumbView>,
+    },
+    /// Reply to [`Command::GetScreenFrame`] (86ajq321k): the named Audience `screen`'s current
+    /// LIVE content rendered under its own per-screen theme, as a downscaled RGBA thumbnail —
+    /// so the operator Screens page can preview each screen's design. `None` for an unknown
+    /// screen id (`frame` also `None` if the host has no live content).
+    ScreenFrame {
+        screen: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        frame: Option<ThumbView>,
     },
     /// A protocol-level or transport-level error not tied to a single request.
     Error { message: String },

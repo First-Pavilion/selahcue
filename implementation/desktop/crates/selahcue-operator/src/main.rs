@@ -515,6 +515,46 @@ async fn render_console(
         },
     }
 }
+
+/// Fetch one Audience `screen`'s LIVE content rendered under ITS per-screen theme, as a
+/// downscaled thumbnail (86ajq321k) — for the operator Screens-page preview, so each screen's
+/// design is visible (the secondaries have no physical output yet). Read-only, same shape +
+/// off-thread handling as `render_console`. `available:false` on a transport error.
+#[tauri::command]
+async fn render_screen(
+    screen: String,
+    max_w: u32,
+    max_h: u32,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    use base64::Engine;
+    let max_w = max_w.clamp(1, 480);
+    let max_h = max_h.clamp(1, 270);
+    let fb_json = |fb: &FrameBuffer| {
+        serde_json::json!({
+            "w": fb.width(),
+            "h": fb.height(),
+            "rgba": base64::engine::general_purpose::STANDARD.encode(fb.bytes()),
+        })
+    };
+    match &state.backend {
+        Backend::Local(s) => match s.screen_frame(&screen, max_w, max_h) {
+            Some(fb) => Ok(serde_json::json!({ "available": true, "frame": fb_json(&fb) })),
+            None => Ok(serde_json::json!({ "available": true, "frame": serde_json::Value::Null })),
+        },
+        Backend::Remote(m) => match m.lock().await.screen_frame(&screen, max_w, max_h).await {
+            Ok(Some(t)) => Ok(serde_json::json!({
+                "available": true,
+                "frame": { "w": t.w, "h": t.h, "rgba": t.rgba },
+            })),
+            Ok(None) => {
+                Ok(serde_json::json!({ "available": true, "frame": serde_json::Value::Null }))
+            }
+            Err(e) => Ok(serde_json::json!({ "available": false, "error": e.to_string() })),
+        },
+    }
+}
+
 #[tauri::command]
 async fn blackout(on: bool, state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.blackout(on).await
@@ -789,6 +829,7 @@ fn main() {
             set_screen_theme,
             preview_theme,
             render_console,
+            render_screen,
             builtin_themes,
             system_fonts,
             pick_image

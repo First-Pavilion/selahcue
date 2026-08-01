@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 66
+EXPECTED_MIN_CHECKS = 70
 
 
 def find_chrome():
@@ -89,7 +89,9 @@ STUB = r"""
   // exactly as in the app — the prior null stub masked the #7 render never firing on launch.
   var V = { plan_name:"Svc", items:[{id:1,kind:"scripture",title:"Genesis 1:13",is_live:true,is_staged:true}],
     live_index:0, staged_index:0, blackout:false, timer:null, staged_scripture:"Genesis 1:13",
-    live_scripture:"Genesis 1:13", live_free_text:null, outputs:[], displays:[], translations:["KJV"],
+    live_scripture:"Genesis 1:13", live_free_text:null,
+    outputs:[{role:"main", assigned:true, assigned_key:"d1", display:"Main", width:1920, height:1080}],
+    displays:[{key:"d1", name:"Main", width:1920, height:1080}], translations:["KJV"],
     theme:"classic", themes:["classic"], saved_themes:[], screen_themes:[] };
   var T = {
     background:{r:8,g:10,b:20,a:255},
@@ -109,6 +111,13 @@ STUB = r"""
            preview:{w:2,h:1,rgba:btoa("\xff\x00\x00\xff\x00\xff\x00\xff")},
            live:{w:2,h:1,rgba:btoa("\x00\x00\xff\xff\xff\xff\x00\xff")}}
         : {available:false});
+    if (cmd === "render_screen") {
+      // A distinct 2x1 RGBA frame per audience screen (86ajq321k), so the previews differ.
+      var px = { "main": "\xff\x00\x00\xff\x00\x00\x00\xff",
+                 "lower-third": "\x00\xff\x00\xff\x00\x00\x00\xff",
+                 "stream": "\x00\x00\xff\xff\x00\x00\x00\xff" };
+      return Promise.resolve({available:true, frame:{w:2, h:1, rgba: btoa(px[args.screen] || "\x33\x33\x33\xff\x00\x00\x00\xff")}});
+    }
     if (cmd === "set_custom_theme") return Promise.resolve({});
     if (cmd === "save_theme") return Promise.resolve({saved_themes:[{name:args.name, theme_json:args.themeJson}]});
     if (cmd === "operator_state" || cmd === "state") return Promise.resolve({});
@@ -377,6 +386,25 @@ DRIVER = r"""
          "M4 keeps the NEWEST 120 (id 199 present, id 0 pruned)");
       // (The Theme-Designer's MAX_ELEMENTS=64 cap is enforced + tested host-side in Rust —
       // engine/present tests — so it is not re-asserted here as a tautology.)
+
+      // === per-screen PREVIEW (86ajq321k): the Screens page shows each Audience screen's own
+      // themed output via render_screen; the three previews render + differ ===
+      document.querySelector('.nav-item[data-surface="screens"]').click();
+      await waitFor(function(){
+        var cs = document.querySelectorAll('#screens-list canvas.screen-preview');
+        return cs.length >= 3 && Array.from(cs).every(function(c){ return c.classList.contains("has-render"); });
+      });
+      var previews = document.querySelectorAll('#screens-list canvas.screen-preview');
+      ok(previews.length === 3, "per-screen: 3 preview canvases render (main/lower-third/stream, got " + previews.length + ")");
+      var byScreen = {};
+      Array.from(previews).forEach(function(c){ byScreen[c.dataset.screen] = c; });
+      ok(!!byScreen["main"] && !!byScreen["lower-third"] && !!byScreen["stream"],
+         "per-screen: a preview canvas for each of main / lower-third / stream");
+      var pixel = function(c){ return Array.from(c.getContext("2d").getImageData(0,0,1,1).data).join(","); };
+      ok(pixel(byScreen["main"]) === "255,0,0,255", "per-screen: main preview shows its own themed frame (red)");
+      ok(pixel(byScreen["main"]) !== pixel(byScreen["lower-third"]) &&
+         pixel(byScreen["lower-third"]) !== pixel(byScreen["stream"]),
+         "per-screen: the three screens render DIFFERENT designs at once");
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
     el("__r").textContent = "RESULTS\n"+R.join("\n")+"\nDONE("+R.length+")";
   }

@@ -2832,3 +2832,71 @@ fn plan_is_bounded_under_add_item_flood() {
         ControllerReply::Deny(DenyReason::BadRequest)
     );
 }
+
+#[test]
+fn get_screen_frame_command_returns_a_themed_thumbnail_per_screen() {
+    // 86ajq321k preview: the GetScreenFrame command exposes compose_screen over the wire so the
+    // operator Screens page can PREVIEW each audience screen's own design (read-only, bounded).
+    use selahcue_lan::protocol::ThumbView;
+    fn thumb(c: &mut LiveController, screen: &str) -> Option<ThumbView> {
+        match c.apply(&Command::GetScreenFrame {
+            screen: screen.into(),
+            max_w: 96,
+            max_h: 54,
+        }) {
+            ControllerReply::Message(ServerMessage::ScreenFrame { screen: s, frame }) => {
+                assert_eq!(s, screen, "the reply echoes the requested screen");
+                frame
+            }
+            other => panic!("expected ScreenFrame, got {other:?}"),
+        }
+    }
+    let mut c = controller_live();
+    c.apply(&Command::SetScreenTheme {
+        screen: "lower-third".into(),
+        name: "lower-third".into(),
+    });
+    c.apply(&Command::SetScreenTheme {
+        screen: "stream".into(),
+        name: "high-contrast".into(),
+    });
+
+    let main = thumb(&mut c, "main").expect("main frame");
+    let lower = thumb(&mut c, "lower-third").expect("lower frame");
+    let stream = thumb(&mut c, "stream").expect("stream frame");
+    // Bounded (host-clamped) thumbnail.
+    assert!(
+        main.w > 0 && main.w <= 96 && main.h > 0 && main.h <= 54,
+        "thumbnail is clamped to the requested size"
+    );
+    // Three distinct designs at once (distinct base64 pixel payloads).
+    assert_ne!(main.rgba, lower.rgba, "main != lower-third");
+    assert_ne!(lower.rgba, stream.rgba, "lower-third != stream");
+    // An unknown screen has no frame.
+    assert!(
+        thumb(&mut c, "disco").is_none(),
+        "unknown screen -> no frame"
+    );
+    // Read-only: fetching a preview never changes the audience output.
+    let live_before = c.presenter().live_output().bytes().to_vec();
+    let _ = thumb(&mut c, "main");
+    assert_eq!(
+        c.presenter().live_output().bytes(),
+        live_before.as_slice(),
+        "a screen preview never changes the audience output"
+    );
+    // Blackout blacks EVERY screen -> the three previews are identical (black) + differ from themed.
+    c.apply(&Command::Blackout { on: true });
+    let mb = thumb(&mut c, "main").unwrap();
+    let lb = thumb(&mut c, "lower-third").unwrap();
+    let sb = thumb(&mut c, "stream").unwrap();
+    assert_eq!(
+        mb.rgba, lb.rgba,
+        "blackout: main == lower-third (both black)"
+    );
+    assert_eq!(
+        lb.rgba, sb.rgba,
+        "blackout: lower-third == stream (both black)"
+    );
+    assert_ne!(mb.rgba, main.rgba, "blackout differs from the themed frame");
+}

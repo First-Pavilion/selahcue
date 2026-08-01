@@ -114,9 +114,10 @@ pub fn required_permission(cmd: &Command) -> Permission {
         // candidate — the same privilege as staging scripture, not going live.
         Command::ApproveDetection { .. } | Command::DismissDetection { .. } => SearchScripture,
         Command::IngestTranscript { .. } => Transcribe,
-        Command::GetState | Command::GetOperatorState | Command::GetConsoleThumbnails { .. } => {
-            Monitor
-        }
+        Command::GetState
+        | Command::GetOperatorState
+        | Command::GetConsoleThumbnails { .. }
+        | Command::GetScreenFrame { .. } => Monitor,
         Command::AddItem { .. }
         | Command::RemoveItem { .. }
         | Command::MoveItem { .. }

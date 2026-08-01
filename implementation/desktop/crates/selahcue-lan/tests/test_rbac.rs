@@ -180,6 +180,23 @@ fn assistant_can_navigate_and_search_but_not_go_live() {
 #[test]
 fn viewer_can_only_monitor() {
     assert!(authorize(Role::Viewer, &Command::GetState));
+    // Monitor-class reads are allowed for a Viewer — incl. the console thumbnails + the
+    // per-screen preview (86ajq321k), which must be read-only (no write escalation).
+    assert!(authorize(
+        Role::Viewer,
+        &Command::GetConsoleThumbnails {
+            max_w: 96,
+            max_h: 54
+        }
+    ));
+    assert!(authorize(
+        Role::Viewer,
+        &Command::GetScreenFrame {
+            screen: "main".into(),
+            max_w: 96,
+            max_h: 54
+        }
+    ));
     // Everything else is denied.
     for cmd in navigate_cmds() {
         assert!(!authorize(Role::Viewer, &cmd), "viewer nav {cmd:?}");

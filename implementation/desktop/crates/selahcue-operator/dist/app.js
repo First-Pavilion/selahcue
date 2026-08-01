@@ -282,6 +282,7 @@
         if (sig !== lastConsoleSig) {
           lastConsoleSig = sig;
           scheduleConsoleRender();
+          scheduleScreenPreviews(); // the live content / theme changed → refresh per-screen previews too (86ajq321k)
         }
       }
 
@@ -313,24 +314,17 @@
         for (let i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i);
         return bytes;
       }
-      function drawConsoleFrame(canvasId, frame) {
-        if (!frame || !frame.rgba || !frame.w || !frame.h) {
-          console.warn("[SelahCue] drawConsoleFrame bad frame", canvasId, frame && { w: frame.w, h: frame.h, hasRgba: !!frame.rgba });
-          return false;
-        }
-        const cv = document.getElementById(canvasId);
-        if (!cv) return false;
+      // Blit a base64 RGBA `frame` ({w,h,rgba}) into a canvas ELEMENT (shared by the console
+      // panels and the per-screen previews, 86ajq321k). Returns whether it drew.
+      function blitFrame(cv, frame) {
+        if (!cv || !frame || !frame.rgba || !frame.w || !frame.h) return false;
         let bytes;
         try {
           bytes = b64ToBytes(frame.rgba);
         } catch (e) {
-          console.warn("[SelahCue] drawConsoleFrame atob failed", canvasId, e);
           return false;
         }
-        if (bytes.length !== frame.w * frame.h * 4) {
-          console.warn("[SelahCue] drawConsoleFrame length mismatch", canvasId, bytes.length, "!=", frame.w * frame.h * 4);
-          return false; // guard a malformed payload
-        }
+        if (bytes.length !== frame.w * frame.h * 4) return false; // guard a malformed payload
         try {
           cv.width = frame.w;
           cv.height = frame.h;
@@ -340,10 +334,46 @@
             0
           );
         } catch (e) {
-          console.warn("[SelahCue] drawConsoleFrame putImageData failed", canvasId, frame.w, frame.h, e);
           return false;
         }
         return true;
+      }
+      function drawConsoleFrame(canvasId, frame) {
+        if (!frame || !frame.rgba || !frame.w || !frame.h) {
+          console.warn("[SelahCue] drawConsoleFrame bad frame", canvasId, frame && { w: frame.w, h: frame.h, hasRgba: !!frame.rgba });
+          return false;
+        }
+        return blitFrame(document.getElementById(canvasId), frame);
+      }
+
+      // --- Per-screen PREVIEW (86ajq321k): each Audience screen (main/lower-third/stream)
+      // renders its OWN theme from the same live content; the secondaries have no physical
+      // output yet, so this small canvas is the only way to SEE each screen's design. A read
+      // (render_screen), debounced + gated on the Screens surface being active (like the
+      // console render), so it never fetches while another surface is up or per-poll spuriously. ---
+      let screenPreviewTimer = null;
+      function scheduleScreenPreviews() {
+        clearTimeout(screenPreviewTimer);
+        screenPreviewTimer = setTimeout(renderScreenPreviews, 120);
+      }
+      async function renderScreenPreviews() {
+        const surf = document.getElementById("surface-screens");
+        if (!surf || !surf.classList.contains("active")) return; // skip while another surface is up
+        const canvases = Array.from(
+          document.querySelectorAll("#screens-list canvas.screen-preview")
+        );
+        for (const cv of canvases) {
+          let res;
+          try {
+            res = await invoke("render_screen", { screen: cv.dataset.screen, maxW: 192, maxH: 108 });
+          } catch (e) {
+            continue; // a Remote/older host without the command → leave the placeholder
+          }
+          if (res && res.available && res.frame) {
+            blitFrame(cv, res.frame);
+            cv.classList.add("has-render");
+          }
+        }
       }
       // Surface a render-console DIAGNOSTIC into the panels (visible in a screenshot) + the
       // devtools console, so a real-app render failure can be pinpointed without the GUI here.
@@ -469,6 +499,22 @@
           return frag;
         };
 
+        // A small LIVE preview of THIS screen's own themed output (86ajq321k) — filled by
+        // renderScreenPreviews via render_screen. Each Audience screen shows a different design.
+        const screenPreviewFor = (screen) => {
+          const wrap = document.createElement("div");
+          wrap.className = "screen-preview-wrap";
+          const cap = document.createElement("label");
+          cap.textContent = "Preview";
+          wrap.appendChild(cap);
+          const cv = document.createElement("canvas");
+          cv.className = "screen-preview";
+          cv.dataset.screen = screen;
+          cv.setAttribute("aria-label", "Live preview of the " + screen + " screen's themed output");
+          wrap.appendChild(cv);
+          return wrap;
+        };
+
         // --- Full Screens list (per-screen: role → content control) ---
         list.innerHTML = "";
         if (!outs.length) {
@@ -535,6 +581,7 @@
           const cf = document.createElement("div");
           if (audience) {
             cf.appendChild(themePickerFor("main"));
+            cf.appendChild(screenPreviewFor("main"));
           } else {
             const cl = document.createElement("label"); cl.textContent = "Stage layout"; cf.appendChild(cl);
             const chips = document.createElement("div"); chips.className = "stage-chips";
@@ -577,6 +624,7 @@
             // Theme — REAL per-screen theme (composed now; shown on the output when delivery lands).
             const cf = document.createElement("div");
             cf.appendChild(themePickerFor(v.screen));
+            cf.appendChild(screenPreviewFor(v.screen));
             fields.appendChild(cf);
             row.appendChild(fields);
             list.appendChild(row);
@@ -589,6 +637,7 @@
         note.textContent =
           "Each Audience screen now carries its OWN theme (86ajq321k). Physical NDI/stream OUTPUT delivery for the lower-third/stream screens, plus enable/disable and add/delete a virtual screen, arrive next.";
         list.appendChild(note);
+        scheduleScreenPreviews(); // fill each screen's preview canvas (86ajq321k)
       }
 
       document.getElementById("screens-list").addEventListener("focusout", () => {
@@ -648,6 +697,7 @@
           "Now on: " + (SURFACE_LABEL[name] || name);
         // Refresh the true Preview/Live render when returning to the console (86ajtwq28).
         if (name === "console") scheduleConsoleRender();
+        if (name === "screens") scheduleScreenPreviews(); // refresh the per-screen previews (86ajq321k)
       }
       function openAppMenu() {
         appMenu.classList.add("open");

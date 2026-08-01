@@ -66,6 +66,40 @@ fn console_thumbnails_round_trip_and_additive() {
 }
 
 #[test]
+fn screen_frame_round_trips_and_is_additive() {
+    // 86ajq321k: the GetScreenFrame command + ScreenFrame reply round-trip with stable tags;
+    // additive (VERSION unchanged); a None frame is skipped.
+    assert_eq!(
+        to_json(&Command::GetScreenFrame {
+            screen: "lower-third".into(),
+            max_w: 96,
+            max_h: 54
+        })
+        .unwrap(),
+        r#"{"cmd":"get_screen_frame","screen":"lower-third","max_w":96,"max_h":54}"#
+    );
+    let thumb = ThumbView::from_rgba(2, 1, &[9, 8, 7, 6, 5, 4, 3, 2]);
+    let msg = ServerMessage::ScreenFrame {
+        screen: "stream".into(),
+        frame: Some(thumb.clone()),
+    };
+    let json = to_json(&msg).unwrap();
+    assert!(json.contains(r#""event":"screen_frame""#), "{json}");
+    assert!(json.contains(r#""screen":"stream""#), "{json}");
+    assert!(json.contains(r#""rgba":"#), "{json}");
+    assert_eq!(from_json::<ServerMessage>(&json).unwrap(), msg);
+    // A None frame is skipped on the wire.
+    let empty = ServerMessage::ScreenFrame {
+        screen: "main".into(),
+        frame: None,
+    };
+    let ej = to_json(&empty).unwrap();
+    assert!(!ej.contains("\"frame\""), "a None frame is skipped: {ej}");
+    assert_eq!(from_json::<ServerMessage>(&ej).unwrap(), empty);
+    assert_eq!(VERSION, 2);
+}
+
+#[test]
 fn follow_scripture_round_trips_and_is_additive() {
     // 86ajtwq2b: the follow command round-trips with a stable tag; additive (VERSION 2, a
     // pre-existing command byte-identical); skip-if-none translation keeps fixtures lean.

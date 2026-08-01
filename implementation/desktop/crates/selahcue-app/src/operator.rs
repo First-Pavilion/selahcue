@@ -144,6 +144,16 @@ impl OperatorShell {
         })
     }
 
+    /// The named Audience `screen`'s current LIVE content composed under ITS per-screen theme,
+    /// downscaled — for the operator Screens-page preview (86ajq321k). `None` for an unknown
+    /// screen id. A read — never changes the audience output.
+    pub fn screen_frame(&self, screen: &str, max_w: u32, max_h: u32) -> Option<FrameBuffer> {
+        self.with(|c| {
+            c.compose_screen(screen)
+                .map(|fb| fb.thumbnail(max_w, max_h))
+        })
+    }
+
     /// Stage the next plan item in Preview.
     pub fn next(&self) -> OperatorView {
         self.act(&Command::Next)
@@ -746,6 +756,32 @@ impl RemoteOperator {
             ServerMessage::ConsoleThumbnails { preview, live } => Ok((preview, live)),
             other => Err(selahcue_lan::TransportError::Protocol(format!(
                 "expected console_thumbnails, got: {other:?}"
+            ))),
+        }
+    }
+
+    /// Fetch a named Audience screen's LIVE content rendered under its per-screen theme, as a
+    /// downscaled thumbnail (86ajq321k) — for the operator Screens-page preview. `None` for an
+    /// unknown screen (or no live content). A read (RBAC `Monitor`).
+    pub async fn screen_frame(
+        &mut self,
+        screen: &str,
+        max_w: u32,
+        max_h: u32,
+    ) -> Result<Option<selahcue_lan::protocol::ThumbView>, selahcue_lan::TransportError> {
+        use selahcue_lan::protocol::ServerMessage;
+        match self
+            .client
+            .command(Command::GetScreenFrame {
+                screen: screen.to_string(),
+                max_w,
+                max_h,
+            })
+            .await?
+        {
+            ServerMessage::ScreenFrame { frame, .. } => Ok(frame),
+            other => Err(selahcue_lan::TransportError::Protocol(format!(
+                "expected screen_frame, got: {other:?}"
             ))),
         }
     }
