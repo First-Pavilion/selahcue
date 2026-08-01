@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SelahCue Operator — Settings (review copy)</title>
+    <link rel="stylesheet" href="../../../implementation/desktop/crates/selahcue-operator/dist/app.css" />
+    <!--
+      REVIEW COPY — NOT wired into the app. Markup is sliced verbatim from
+      dist/index.html by docs/review/split_screens.py. Do not hand-edit; edit
+      index.html and regenerate. No app.js: this is static markup for review,
+      so JS-populated regions (plan list, transcript, canvases) render empty.
+    -->
+  </head>
+  <body>
+    <header>
+      <button id="app-menu-btn" aria-haspopup="menu" aria-expanded="false"
+        aria-controls="app-menu" aria-label="Open the app menu (F10)">☰ SelahCue ▾</button>
+      <div id="app-menu" role="menu" aria-label="Go to">
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" accesskey="1">◉ Live Console<span class="nav-key">1</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="theme-designer" accesskey="2">✎ Theme Designer<span class="nav-key">2</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="screens" accesskey="3">▤ Screens<span class="nav-key">3</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="plan" accesskey="4">☰ Plan / Library<span class="nav-key">4</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="settings" aria-current="page" accesskey="5">⚙ Settings<span class="nav-key">5</span></button>
+      </div>
+      <span id="route-status" class="sr-only" aria-live="polite"></span>
+      <h1 id="plan-name">SelahCue Operator</h1>
+      <span class="sub" id="plan-sub"></span>
+      <span id="live-chip">● LIVE</span>
+      <span id="clock"></span>
+    </header>
+    <main>
+      <section id="surface-settings" class="surface-page active surface-pad" aria-label="Settings">
+        <h1>Settings</h1>
+        <p class="coming-soon">Application settings arrive later.</p>
+      </section>
+    </main>
+    <footer id="emergency" role="toolbar" aria-label="Emergency controls">
+      <button id="blackout" aria-pressed="false" aria-label="Blackout the audience output">■ BLACKOUT<span id="blackout-state"></span><span class="key">B</span></button>
+      <button id="clear-all" aria-label="Clear all live layers">✕ CLEAR ALL<span class="key">Esc Esc</span></button>
+      <span class="note">Always reachable · pierces any dialog</span>
+      <span class="hints">Space Next · ⏎ Go Live · ← Prev</span>
+    </footer>
+  </body>
+</html>

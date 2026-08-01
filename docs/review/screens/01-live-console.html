@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SelahCue Operator — Live Console (review copy)</title>
+    <link rel="stylesheet" href="../../../implementation/desktop/crates/selahcue-operator/dist/app.css" />
+    <!--
+      REVIEW COPY — NOT wired into the app. Markup is sliced verbatim from
+      dist/index.html by docs/review/split_screens.py. Do not hand-edit; edit
+      index.html and regenerate. No app.js: this is static markup for review,
+      so JS-populated regions (plan list, transcript, canvases) render empty.
+    -->
+  </head>
+  <body>
+    <header>
+      <button id="app-menu-btn" aria-haspopup="menu" aria-expanded="false"
+        aria-controls="app-menu" aria-label="Open the app menu (F10)">☰ SelahCue ▾</button>
+      <div id="app-menu" role="menu" aria-label="Go to">
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" aria-current="page" accesskey="1">◉ Live Console<span class="nav-key">1</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="theme-designer" accesskey="2">✎ Theme Designer<span class="nav-key">2</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="screens" accesskey="3">▤ Screens<span class="nav-key">3</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="plan" accesskey="4">☰ Plan / Library<span class="nav-key">4</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="settings" accesskey="5">⚙ Settings<span class="nav-key">5</span></button>
+      </div>
+      <span id="route-status" class="sr-only" aria-live="polite"></span>
+      <h1 id="plan-name">SelahCue Operator</h1>
+      <span class="sub" id="plan-sub"></span>
+      <span id="live-chip">● LIVE</span>
+      <span id="clock"></span>
+    </header>
+    <main>
+      <div id="surface-console" class="surface-page active active">
+      <!-- LEFT zone: the service plan (top) + the live transcript (bottom).
+           Figma 165:124 layout; every element id is preserved from the prior
+           console so the whole <script> keeps working unchanged. -->
+      <div class="zone zone-left">
+        <section id="plan-wrap" aria-label="Service plan">
+          <h2>Service plan</h2>
+          <div id="plan"></div>
+          <div class="add-row">
+            <select id="add-kind">
+              <option value="song">Song</option>
+              <option value="scripture">Scripture</option>
+              <option value="announcement">Announcement</option>
+              <option value="section">Section</option>
+            </select>
+            <input id="add-title" placeholder="New item title" />
+            <button id="add-item">+ Add</button>
+          </div>
+        </section>
+        <!-- Live transcript (R3). Segments stream from the host's transcript engine.
+             The default provider is injected text (the field below); on-device STT
+             (whisper/Vosk) plugs in behind the same seam. No fabricated transcript is
+             ever shown — the stream is empty until the host reports real segments. -->
+        <section id="transcript" class="fwd-panel" aria-label="Live transcript">
+          <h2>Live transcript</h2>
+          <div
+            id="transcript-log"
+            class="stream"
+            role="log"
+            aria-live="polite"
+            aria-label="Live sermon transcript"
+          ></div>
+          <div id="transcript-empty" class="fwd-empty">
+            <span class="fwd-icon" aria-hidden="true">🎙</span>
+            <span class="fwd-msg">Listening for the sermon…</span>
+            <span class="fwd-sub"
+              >On-device transcription (R3) plugs in here; meanwhile you can feed lines
+              below.</span
+            >
+          </div>
+          <form id="transcript-form" class="stream-input" aria-label="Add a transcript line">
+            <input
+              id="transcript-input"
+              type="text"
+              placeholder="Type or dictate a line…"
+              autocomplete="off"
+              aria-label="Transcript line"
+            />
+            <button id="transcript-send" type="submit" class="key">Send</button>
+          </form>
+          <p id="transcript-status" class="stream-note" role="status" aria-live="polite"></p>
+        </section>
+      </div>
+      <!-- CENTER zone: OBS studio-mode Preview | Live, the GO LIVE transition,
+           and the scriptures browser directly beneath. -->
+      <div class="zone zone-center">
+        <div class="obs-row">
+          <div class="outpanel" id="preview-panel">
+            <div class="head">PREVIEW · STAGED</div>
+            <!-- The TRUE composited Preview output (86ajtwq28) — the same pixels the audience
+                 preview shows. Drawn by render_console; aria-hidden (the title/cap below carry
+                 the accessible text). Hidden until a frame is available (Remote host / error). -->
+            <div class="surface idle">
+              <canvas class="out-canvas" id="preview-canvas" aria-hidden="true"></canvas>
+              <span class="big" id="preview-title">Nothing staged</span>
+              <span class="cap" id="preview-cap"></span>
+            </div>
+          </div>
+          <div class="outpanel" id="live-panel">
+            <div class="head">● LIVE · ON AIR</div>
+            <div class="surface idle" aria-live="polite">
+              <canvas class="out-canvas" id="live-canvas" aria-hidden="true"></canvas>
+              <span id="live-black">BLACKOUT — OUTPUT DARK</span>
+              <span class="big" id="live-title">Output idle</span>
+              <span class="cap" id="live-cap"></span>
+            </div>
+          </div>
+        </div>
+        <div class="golive-row">
+          <button id="prev" aria-label="Previous — stage the previous plan item">◀<span class="key">←</span></button>
+          <button id="golive" class="golive">GO LIVE<span class="key">⏎ Enter</span></button>
+          <button id="next" aria-label="Next — stage the next plan item">▶<span class="key">Space</span></button>
+        </div>
+        <section id="scriptures" aria-label="Scriptures">
+          <div class="scrip-head">
+            <h2>Scriptures</h2>
+            <select id="translation" aria-label="Bible translation"></select>
+            <input id="scripture-q" placeholder="Reference or keywords — e.g. Genesis 1" aria-label="Search scripture" />
+          </div>
+          <div id="scripture-hits" role="listbox" aria-label="Scripture results"></div>
+          <div class="chapter-nav">
+            <button id="ch-prev" aria-label="Previous chapter">‹</button>
+            <span id="chapter-ref">Type a reference to open a chapter</span>
+            <button id="ch-next" aria-label="Next chapter">›</button>
+          </div>
+          <div id="verse-list" role="listbox" aria-label="Chapter verses"></div>
+          <span id="scrip-status" role="status" aria-live="polite"></span>
+          <span class="scrip-note">↑ ↓ move &amp; stage · ⏎ Enter sends it live · double-click a verse for instant live</span>
+        </section>
+      </div>
+      <!-- RIGHT zone: the service timer (top), recent detections, and outputs. -->
+      <div class="zone zone-right">
+        <aside class="side-panel" aria-label="Service timer">
+          <h2>Service timer</h2>
+          <div id="timer-big">–:––</div>
+          <div class="timer-row">
+            <button id="timer-5">⏱ 5:00</button>
+            <button id="timer-10">⏱ 10:00</button>
+          </div>
+          <div class="timer-row">
+            <input id="timer-mins" type="number" min="1" max="999" placeholder="min"
+                   aria-label="Countdown length in minutes" />
+            <button id="timer-start-custom">Start</button>
+          </div>
+          <div class="timer-row">
+            <button id="timer-minus" disabled aria-label="Subtract one minute from the running timer">−1:00</button>
+            <button id="timer-plus" disabled aria-label="Add one minute to the running timer">+1:00</button>
+          </div>
+          <div class="timer-row">
+            <button id="timer-stop">Stop</button>
+          </div>
+          <span class="timer-note">Shown on the stage output only</span>
+        </aside>
+        <!-- Scripture detection approval queue (R4). Candidates detected in the
+             transcript surface here; the operator approves (stages the verse in
+             Preview) or dismisses. Detections never auto-display (operator-confirmed,
+             FR-115). No fabricated detections — the list is empty until the host
+             reports real candidates. -->
+        <section id="detections" class="fwd-panel" aria-label="Detected scriptures">
+          <h2>Detected scriptures</h2>
+          <div
+            id="detections-list"
+            class="stream"
+            role="list"
+            aria-label="Scripture detection approval queue"
+          ></div>
+          <div id="detections-empty" class="fwd-empty">
+            <span class="fwd-icon" aria-hidden="true">✨</span>
+            <span class="fwd-msg">No scriptures detected yet.</span>
+            <span class="fwd-sub"
+              >Scriptures spoken aloud surface here to stage in one tap. Automatic
+              on-device detection (R4) plugs in behind the transcript.</span
+            >
+          </div>
+        </section>
+      </div><!-- /zone-right -->
+      </div><!-- /surface-console -->
+    </main>
+    <footer id="emergency" role="toolbar" aria-label="Emergency controls">
+      <button id="blackout" aria-pressed="false" aria-label="Blackout the audience output">■ BLACKOUT<span id="blackout-state"></span><span class="key">B</span></button>
+      <button id="clear-all" aria-label="Clear all live layers">✕ CLEAR ALL<span class="key">Esc Esc</span></button>
+      <span class="note">Always reachable · pierces any dialog</span>
+      <span class="hints">Space Next · ⏎ Go Live · ← Prev</span>
+    </footer>
+  </body>
+</html>
