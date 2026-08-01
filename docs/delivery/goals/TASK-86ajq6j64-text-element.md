@@ -6,7 +6,7 @@
 - Parent goal ID: BUILD-selahcue (Canvas Editing epic 86ajq6j01)
 - Title: The TEXT element — a free text box on the slide canvas (the last missing `Element` kind)
 - Role: backend-engineer (engine `Element::Text` + compose) + frontend-engineer (Theme Designer text authoring)
-- Status: IN_PROGRESS
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: story `86ajq6j64` (Canvas Editing epic 86ajq6j01) — confirm/record at finalization (MCP was rate-limited earlier; recovering).
 - Created: 2026-08-01
@@ -46,7 +46,7 @@ Verified from code: `Element` is an internally-tagged `#[serde(tag="kind", snake
 | C-001 | yes | Engine: `Element::Text` added (additive — a no-Text theme's JSON byte-identical); it rasterizes wrapped/auto-fit text in its rect with opacity folded into alpha + z-order; deterministic; bounded (`MAX_TEXT_ELEMENT_LEN`); `test_parity` unchanged | `cargo test -p selahcue-present` (+ `-p selahcue-engine`) | text renders; byte-stable; parity green | test_compose +6 (`a_text_element_renders_its_own_text`, `…opacity_folds…`, `…participates_in_z_ordering`, `…is_deterministic`, `…round_trips_serde…`, `…content_is_bounded`); present 36/0 + engine 21/0 incl. test_parity | PASS |
 | C-002 | yes | Controller: a custom theme with a Text element applies + recovers; an over-cap Text element is rejected at every ingress (`elements_bounded`) | `cargo test -p selahcue-app` | applies + recovers; over-cap rejected | test_controller `a_custom_theme_with_a_text_element_applies_recovers_and_is_bounded` (set_custom_theme + save_theme reject over-cap); app green | PASS |
 | C-003 | yes | Operator: the Theme Designer "Text" add button is enabled + adds a Text element; the inspector edits its content; `node --check` + the committed headless gate assert add + edit | operator `node --check` + headless | text element added + editable | `node --check` OK; operator build/fmt/clippy clean; headless **89/89** (+8 text) + WebKit 5/5 | PASS |
-| C-004 | yes | Gate: make ci + operator gate green; independent adversarial Workflow review, findings fixed; 3-OS CI green (verified by run conclusion) | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW doc; CI run | PENDING |
+| C-004 | yes | Gate: make ci + operator gate green; independent adversarial Workflow review, findings fixed; 3-OS CI green (verified by run conclusion) | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-text-element.md (2 confirmed findings fixed; engine/serde lenses clean); CI `30697973164` `completed → success` (operator-Linux `=== 90 checks, 0 FAIL ===` + `WebKit smoke: 5 checks, 0 FAIL`) | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -69,7 +69,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajq6j64-text-element.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending — story 86ajq6j64, Canvas Editing epic 86ajq6j01)
+- Validator result: PASS (4/4 mandatory criteria PASS)
+- Independent verification result: adversarial review `wf_027265e3-52b` (3 lenses → per-finding refute-by-default, 7 agents) — 2 raised, both confirmed (1 MEDIUM + 1 LOW) fixed at the root; engine + serde/bounded lenses found nothing; + the committed Chrome 90/90 + WebKit 5/5 CI gates run on the runner.
+- Terminal state: GATE_REVIEW (verifiable work complete; paused for the `/build` user gate).
+- ClickUp final evidence comment: POSTED — STORY `86ajq6j64` → QA (comment `90130299946857`) under EPIC Canvas Editing `86ajq6j01`; BUILD CONTROL `86ajnx548` gate comment to follow.
