@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 90
+EXPECTED_MIN_CHECKS = 99
 
 
 def find_chrome():
@@ -213,6 +213,37 @@ DRIVER = r"""
       await sleep(80); // let the async builtin_themes / system_fonts resolve + build the designer
       ok(window.__calls.some(function(c){return c.cmd==="builtin_themes";}),
          "L3 designer loads on FIRST activation (builtin_themes fired after opening it)");
+
+      // 86ajq3225: the background editor — the type selector switches solid / gradient / image.
+      ok(el("td-bg-type").value==="solid" && !el("td-bg-solid").hidden,
+         "bg: defaults to Solid with the colour picker shown");
+      el("td-bg-type").value = "gradient"; el("td-bg-type").dispatchEvent(new Event("change"));
+      ok(!el("td-bg-gradient").hidden && el("td-bg-solid").hidden, "bg: Gradient shows the gradient controls");
+      var bgG = applied().background;
+      ok(!!bgG.from && !!bgG.to && bgG.direction==="vertical", "bg: the background serialises as a gradient {from,to,direction}");
+      el("td-bg-dir").value = "horizontal"; el("td-bg-dir").dispatchEvent(new Event("change"));
+      el("td-bg-to").value = "#ff0000"; el("td-bg-to").dispatchEvent(new Event("input"));
+      var bgG2 = applied().background;
+      ok(bgG2.direction==="horizontal" && bgG2.to.r===255 && bgG2.to.g===0, "bg: direction + to-colour update the gradient");
+      el("td-bg-type").value = "image"; el("td-bg-type").dispatchEvent(new Event("change"));
+      ok(!el("td-bg-image").hidden, "bg: Image shows the image control");
+      el("td-bg-img-pick").click();
+      await sleep(30);
+      ok(applied().background.source==="/tmp/picked.png", "bg: the image picker sets the background source");
+      el("td-bg-type").value = "solid"; el("td-bg-type").dispatchEvent(new Event("change"));
+      el("td-bg").value = "#0a141e"; el("td-bg").dispatchEvent(new Event("input"));
+      var bgS = applied().background;
+      ok(typeof bgS.r==="number" && typeof bgS.from==="undefined" && typeof bgS.source==="undefined",
+         "bg: Solid is a bare {r,g,b,a} colour (byte-compatible)");
+      // Review MEDIUM fix: switching to Image must NOT write a malformed {source:""} — the
+      // stored background stays a VALID shape (the previous solid) until a real source commits.
+      el("td-bg-type").value = "image"; el("td-bg-type").dispatchEvent(new Event("change"));
+      var bgNoSrc = applied().background;
+      ok(typeof bgNoSrc.source==="undefined" && typeof bgNoSrc.r==="number",
+         "bg: switching to Image with no source keeps the valid solid bg (no malformed {source:''})");
+      // The manual path field commits an image source (the no-native-dialog fallback, LOW fix).
+      el("td-bg-img-path").value = "/host/bg.png"; el("td-bg-img-path").dispatchEvent(new Event("change"));
+      ok(applied().background.source==="/host/bg.png", "bg: the manual path field commits an image source");
 
       // C-001: Add Shape → an element on tdTheme.elements, inspector shows, selection is element.
       addShape();

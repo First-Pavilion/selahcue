@@ -363,8 +363,36 @@
               </label>
             </div>
 
-            <label for="td-bg">Theme background</label>
-            <input type="color" id="td-bg" />
+            <!-- Theme background (86ajq3225): a solid colour, a two-stop gradient, or an image. -->
+            <label for="td-bg-type">Theme background</label>
+            <select id="td-bg-type" aria-label="Background type">
+              <option value="solid">Solid colour</option>
+              <option value="gradient">Gradient</option>
+              <option value="image">Image</option>
+            </select>
+            <div id="td-bg-solid">
+              <label for="td-bg">Colour</label>
+              <input type="color" id="td-bg" />
+            </div>
+            <div id="td-bg-gradient" hidden>
+              <label for="td-bg-from">From colour</label>
+              <input type="color" id="td-bg-from" />
+              <label for="td-bg-to">To colour</label>
+              <input type="color" id="td-bg-to" />
+              <label for="td-bg-dir">Direction</label>
+              <select id="td-bg-dir" aria-label="Gradient direction">
+                <option value="vertical">Vertical (top → bottom)</option>
+                <option value="horizontal">Horizontal (left → right)</option>
+                <option value="diagonal_down">Diagonal ↘</option>
+                <option value="diagonal_up">Diagonal ↗</option>
+              </select>
+            </div>
+            <div id="td-bg-image" hidden>
+              <label for="td-bg-img-path">Background image path (on this machine)</label>
+              <input type="text" id="td-bg-img-path" placeholder="/path/to/image.png" aria-label="Background image path" />
+              <button id="td-bg-img-pick" type="button">Choose image…</button>
+              <p class="td-el-src" id="td-bg-img-src"></p>
+            </div>
 
             <div id="td-region-text">
             <div class="td-sub">Text</div>

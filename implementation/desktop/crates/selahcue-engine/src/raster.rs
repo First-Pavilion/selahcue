@@ -8,7 +8,7 @@
 
 use crate::media::{self, DecodedImage};
 use crate::scene::FontName;
-use crate::scene::{Frame, Layer, MediaRef, Rect, Rgba, ShapeKind, TextAlign};
+use crate::scene::{Frame, GradientDirection, Layer, MediaRef, Rect, Rgba, ShapeKind, TextAlign};
 use cosmic_text::{
     Attrs, Buffer, Color as CtColor, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
 };
@@ -579,9 +579,59 @@ pub fn render(frame: &Frame) -> FrameBuffer {
             } => draw_shape(
                 &mut fb, *rect, *kind, *fill, *border, *border_px, *corner_px,
             ),
+            Layer::Gradient {
+                rect,
+                from,
+                to,
+                direction,
+            } => draw_gradient(&mut fb, *rect, *from, *to, *direction),
         }
     }
     fb
+}
+
+/// Draw a [`Layer::Gradient`](crate::scene::Layer::Gradient): a deterministic two-stop linear
+/// ramp filling `rect` (clipped to the frame). The parameter `t` runs `0..=1000` along
+/// `direction` (measured over the LAYER rect so it is stable regardless of clipping); each
+/// pixel is `from.lerp(to, t)`, alpha-composited src-over (a translucent stop blends over what
+/// is beneath). Pure integer → byte-identical cross-OS (NFR-014).
+fn draw_gradient(
+    fb: &mut FrameBuffer,
+    rect: Rect,
+    from: Rgba,
+    to: Rgba,
+    direction: GradientDirection,
+) {
+    // Clip to the buffer in i64 — the layer rect is UNVALIDATED, so every coordinate is derived
+    // in i64 (mirrors `fill_rect`/`draw_shape`); no raw i32 arithmetic can overflow-panic or
+    // mis-clip on an extreme rect reaching the public `render`.
+    let x0 = rect.x.max(0) as u32;
+    let y0 = rect.y.max(0) as u32;
+    let x1 = ((rect.x as i64) + rect.w as i64).clamp(0, fb.width() as i64) as u32;
+    let y1 = ((rect.y as i64) + rect.h as i64).clamp(0, fb.height() as i64) as u32;
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    // Ramp spans measured over the LAYER rect (i64), guarded `>= 1` (a 1px rect → t=0).
+    let w = (rect.w as i64).max(1);
+    let h = (rect.h as i64).max(1);
+    let span_v = (h - 1).max(1);
+    let span_h = (w - 1).max(1);
+    let span_d = (w + h - 2).max(1);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            // Position within the LAYER rect (i64, clamped), so the ramp is clip-stable.
+            let lx = ((x as i64) - rect.x as i64).clamp(0, w - 1);
+            let ly = ((y as i64) - rect.y as i64).clamp(0, h - 1);
+            let t = match direction {
+                GradientDirection::Vertical => (ly * 1000 / span_v) as u32,
+                GradientDirection::Horizontal => (lx * 1000 / span_h) as u32,
+                GradientDirection::DiagonalDown => ((lx + ly) * 1000 / span_d) as u32,
+                GradientDirection::DiagonalUp => ((lx + (h - 1 - ly)) * 1000 / span_d) as u32,
+            };
+            fb.blend(x, y, from.lerp(to, t));
+        }
+    }
 }
 
 /// Draw a [`Layer::Image`](crate::scene::Layer::Image): resolve `source` through the

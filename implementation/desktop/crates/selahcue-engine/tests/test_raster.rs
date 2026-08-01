@@ -924,3 +924,131 @@ fn extreme_px_text_does_not_overflow_panic() {
         }
     }
 }
+
+// ---- Gradient layer (86ajq3225): a deterministic two-stop linear ramp ----
+
+#[test]
+fn rgba_lerp_is_deterministic_integer_interpolation() {
+    let a = Rgba::new(0, 0, 0, 255);
+    let b = Rgba::new(100, 200, 40, 255);
+    assert_eq!(a.lerp(b, 0), a, "t=0 is the from colour");
+    assert_eq!(a.lerp(b, 1000), b, "t=1000 is the to colour");
+    assert_eq!(a.lerp(b, 2000), b, "t clamps to 1000");
+    // Midpoint: exact integer half.
+    assert_eq!(a.lerp(b, 500), Rgba::new(50, 100, 20, 255));
+    // A downward ramp (to < from) is exact too.
+    assert_eq!(
+        Rgba::new(200, 0, 0, 255).lerp(Rgba::new(0, 0, 0, 255), 500),
+        Rgba::new(100, 0, 0, 255)
+    );
+}
+
+#[test]
+fn a_vertical_gradient_renders_a_black_to_white_ramp() {
+    use selahcue_engine::scene::GradientDirection;
+    let (w, h) = (16u32, 64u32);
+    let mut f = Frame::new(w, h).with_background(Rgba::BLACK);
+    f.push(Layer::Gradient {
+        rect: Rect::new(0, 0, w, h),
+        from: Rgba::BLACK,
+        to: Rgba::WHITE,
+        direction: GradientDirection::Vertical,
+    });
+    let fb = render(&f);
+    let lum = |y: u32| fb.pixel(w / 2, y).unwrap().r as u32;
+    // Top is black, bottom is white, and it increases monotonically down the frame.
+    assert_eq!(lum(0), 0, "top row is the from colour (black)");
+    assert_eq!(lum(h - 1), 255, "bottom row is the to colour (white)");
+    assert!(
+        lum(h / 2) > 100 && lum(h / 2) < 160,
+        "middle is mid-grey, got {}",
+        lum(h / 2)
+    );
+    for y in 1..h {
+        assert!(
+            lum(y) >= lum(y - 1),
+            "the vertical ramp is monotonic non-decreasing at row {y}"
+        );
+    }
+    // A horizontal sample row is constant (the vertical ramp does not vary across x).
+    let row_mid = fb.pixel(0, h / 2).unwrap();
+    assert_eq!(
+        fb.pixel(w - 1, h / 2).unwrap(),
+        row_mid,
+        "a vertical ramp is constant across a row"
+    );
+
+    // Deterministic: two renders are byte-identical.
+    let fb2 = render(&f);
+    assert_eq!(
+        fb.bytes(),
+        fb2.bytes(),
+        "a gradient renders byte-identically"
+    );
+}
+
+#[test]
+fn a_horizontal_gradient_ramps_across_x() {
+    use selahcue_engine::scene::GradientDirection;
+    let (w, h) = (64u32, 16u32);
+    let mut f = Frame::new(w, h).with_background(Rgba::BLACK);
+    f.push(Layer::Gradient {
+        rect: Rect::new(0, 0, w, h),
+        from: Rgba::BLACK,
+        to: Rgba::WHITE,
+        direction: GradientDirection::Horizontal,
+    });
+    let fb = render(&f);
+    assert_eq!(fb.pixel(0, h / 2).unwrap().r, 0, "left is from (black)");
+    assert_eq!(
+        fb.pixel(w - 1, h / 2).unwrap().r,
+        255,
+        "right is to (white)"
+    );
+    // A vertical sample column is constant (the horizontal ramp does not vary across y).
+    let col = fb.pixel(w / 2, 0).unwrap();
+    assert_eq!(
+        fb.pixel(w / 2, h - 1).unwrap(),
+        col,
+        "a horizontal ramp is constant down a column"
+    );
+}
+
+#[test]
+fn a_gradient_is_bounded_on_extreme_rects_without_panic() {
+    use selahcue_engine::scene::GradientDirection;
+    // An UNVALIDATED Layer::Gradient rect (via the public `render`) must not overflow-panic —
+    // the clip is derived in i64, mirroring fill_rect/draw_shape (86ajq3225 review fix).
+    for rect in [
+        Rect::new(i32::MAX, i32::MAX, u32::MAX, u32::MAX),
+        Rect::new(1_200_000_000, 0, 1_200_000_000, 10),
+        Rect::new(-5, -5, u32::MAX, u32::MAX),
+        Rect::new(0, 0, 3_000_000_000, 20),
+    ] {
+        let mut f = Frame::new(32, 24).with_background(Rgba::BLACK);
+        f.push(Layer::Gradient {
+            rect,
+            from: Rgba::BLACK,
+            to: Rgba::WHITE,
+            direction: GradientDirection::Horizontal,
+        });
+        let fb = render(&f); // must not panic
+        assert_eq!((fb.width(), fb.height()), (32, 24));
+    }
+    // A rect wider than i32::MAX must still FILL the visible frame (the i64 clip), not be
+    // silently dropped by an i32 cast going negative. `from` is red (≠ the black background),
+    // so a drawn frame reads red near the from-edge; a dropped one would stay black.
+    let mut f = Frame::new(64, 8).with_background(Rgba::BLACK);
+    f.push(Layer::Gradient {
+        rect: Rect::new(0, 0, 3_000_000_000, 8),
+        from: Rgba::rgb(255, 0, 0),
+        to: Rgba::WHITE,
+        direction: GradientDirection::Horizontal,
+    });
+    let fb = render(&f);
+    let p = fb.pixel(0, 4).unwrap();
+    assert!(
+        p.r > 200 && p.g < 40,
+        "an oversized (w > i32::MAX) gradient still fills the frame, not silently dropped: {p:?}"
+    );
+}

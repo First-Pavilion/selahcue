@@ -25,14 +25,17 @@ pub use qr::{compose_qr, qr_modules};
 pub use slide::Slide;
 pub use stage::{compose_identify, compose_stage, StageDisplay, StageTheme, TimerView};
 pub use theme::{
-    Band, Element, Fit, RegionStyle, Theme, VAlign, MAX_ELEMENTS, MAX_TEXT_ELEMENT_LEN,
+    Background, Band, Element, Fit, GradientBackground, ImageBackground, RegionStyle, Theme,
+    VAlign, MAX_ELEMENTS, MAX_TEXT_ELEMENT_LEN,
 };
 pub use tokens::{contrast_ratio, SemanticToken, LIVE, NEUTRAL, PREVIEW, WARN};
 
 /// Re-exported so consumers can name the output pixel buffer (and its pixel colour)
 /// without depending on `selahcue-engine` directly.
 pub use selahcue_engine::raster::{system_font_families, FrameBuffer};
-pub use selahcue_engine::scene::{FontName, MediaRef, Rgba, ShapeKind, TextAlign, TextStyle};
+pub use selahcue_engine::scene::{
+    FontName, GradientDirection, MediaRef, Rgba, ShapeKind, TextAlign, TextStyle,
+};
 
 /// Render a canonical **sample scripture slide** with `theme` into a `width×height`
 /// [`FrameBuffer`] (RGBA8) — a pure function used by the Theme Designer to preview a

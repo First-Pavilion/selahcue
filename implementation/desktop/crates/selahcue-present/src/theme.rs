@@ -11,7 +11,9 @@
 //! and real H+V alignment + per-region size/colour. Gradient/image backgrounds,
 //! per-role templates + per-item override, and multi-weight fonts are later slices.
 
-use selahcue_engine::scene::{FontName, MediaRef, Rect, Rgba, ShapeKind, TextAlign};
+use selahcue_engine::scene::{
+    FontName, GradientDirection, MediaRef, Rect, Rgba, ShapeKind, TextAlign,
+};
 use serde::{Deserialize, Serialize};
 
 /// Vertical alignment of a region's text block within the region rect.
@@ -278,17 +280,66 @@ impl Element {
     }
 }
 
-/// The audience-output theme: a solid background + a **title/reference** region and
-/// a **body** region. One theme renders both a scripture (title = the reference
-/// line) and a song (title = the song title) consistently. Per-role templates +
-/// per-item override are S8-3d.
+/// A two-stop linear **gradient background** (86ajq3225): the colour ramps from `from` to
+/// `to` along `direction`. Rendered deterministically by the CPU raster (a full-frame
+/// [`Layer::Gradient`](selahcue_engine::scene::Layer)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GradientBackground {
+    pub from: Rgba,
+    pub to: Rgba,
+    #[serde(default)]
+    pub direction: GradientDirection,
+}
+
+/// A full-frame **image background** (86ajq3225): the `source` image FILLS the frame (behind
+/// everything). A bounded, validated [`MediaRef`] resolved through the engine's size-capped
+/// decode cache — the decoded pixels never ride the theme JSON; a missing/corrupt/unsupported
+/// source draws the missing-media placeholder (FR-070), never a blank frame or a crash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageBackground {
+    pub source: MediaRef,
+}
+
+/// The theme **background** (86ajq3225): a solid colour (the default), a two-stop gradient, or
+/// a full-frame image. An **untagged** enum whose `Solid` serialises as the bare `{r,g,b,a}`
+/// colour — so an existing solid-background theme's JSON is **byte-identical** (backward
+/// compatible; pinned fixtures stay stable). The three shapes are disjoint (a solid
+/// `{r,g,b,a}`, a gradient `{from,to,direction}`, an image `{source}`), so the untagged
+/// discrimination is unambiguous.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Background {
+    /// A solid colour — serialises as the bare `{r,g,b,a}` (the historical shape).
+    Solid(Rgba),
+    /// A two-stop linear gradient.
+    Gradient(GradientBackground),
+    /// A full-frame image.
+    Image(ImageBackground),
+}
+
+impl Background {
+    /// The base/fallback colour: the solid colour, the gradient's `from`, or black behind an
+    /// image. Used as the frame clear colour (the GPU clear + the CPU base fill).
+    pub fn base_color(&self) -> Rgba {
+        match self {
+            Background::Solid(c) => *c,
+            Background::Gradient(g) => g.from,
+            Background::Image(_) => Rgba::BLACK,
+        }
+    }
+}
+
+/// The audience-output theme: a **background** (solid / gradient / image, 86ajq3225) + a
+/// **title/reference** region and a **body** region. One theme renders both a scripture
+/// (title = the reference line) and a song (title = the song title) consistently. Per-role
+/// templates + per-item override are S8-3d.
 ///
 /// NOTE: `Theme` is `Clone` but NOT `Copy` (it carries a `Vec<Element>` for the Canvas
 /// Editing epic, 86ajq6j2q). `RegionStyle`/`Band`/`FontName` stay `Copy`; `Element` is
 /// `Clone` (its `Image` kind carries a heap-backed `MediaRef`, 86ajq6j49).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Theme {
-    pub background: Rgba,
+    pub background: Background,
     pub title: RegionStyle,
     pub body: RegionStyle,
     /// An optional decorative band behind the text (the lower-third bar). Additive and
@@ -348,7 +399,7 @@ impl Theme {
     /// Alias for the default design (its stable built-in name is `"classic"`).
     pub fn classic() -> Self {
         Theme {
-            background: Rgba::rgb(8, 10, 20),
+            background: Background::Solid(Rgba::rgb(8, 10, 20)),
             title: RegionStyle {
                 x_permille: 60,
                 y_permille: 150,
@@ -390,7 +441,7 @@ impl Theme {
     /// margins (a low-vision / glare-resistant design, NFR-020).
     pub fn high_contrast() -> Self {
         Theme {
-            background: Rgba::rgb(0, 0, 0),
+            background: Background::Solid(Rgba::rgb(0, 0, 0)),
             title: RegionStyle {
                 x_permille: 40,
                 y_permille: 130,
@@ -438,7 +489,7 @@ impl Theme {
         Theme {
             // Dark backdrop stands in for the keyed video on opaque outputs + the
             // Designer preview; true NDI alpha-keying is a later slice.
-            background: Rgba::rgb(4, 12, 9),
+            background: Background::Solid(Rgba::rgb(4, 12, 9)),
             title: RegionStyle {
                 x_permille: 55,
                 y_permille: 688,

@@ -3301,3 +3301,50 @@ fn a_custom_theme_with_a_text_element_applies_recovers_and_is_bounded() {
         "save_theme rejects an over-cap text element"
     );
 }
+
+/// A custom theme with a GRADIENT or an IMAGE background (86ajq3225) applies, does not crash
+/// on a missing image (the placeholder is deterministic), and re-renders identically after
+/// recovery.
+#[test]
+fn a_custom_theme_with_a_gradient_or_image_background_applies_and_recovers() {
+    use selahcue_present::{Background, GradientBackground, GradientDirection, ImageBackground};
+    use std::time::Instant;
+    let t0 = Instant::now();
+    for bg in [
+        Background::Gradient(GradientBackground {
+            from: Rgba::rgb(10, 20, 40),
+            to: Rgba::rgb(200, 120, 40),
+            direction: GradientDirection::DiagonalDown,
+        }),
+        // A missing image resolves to the deterministic missing-media placeholder (FR-070),
+        // so apply + recover still render identically (no crash, no blank).
+        Background::Image(ImageBackground {
+            source: MediaRef::new("/no/such/background.png").unwrap(),
+        }),
+    ] {
+        let mut theme = Theme::classic();
+        theme.background = bg;
+        let json = serde_json::to_string(&theme).unwrap();
+
+        let (mut a, _) = controller();
+        a.apply(&Command::Next);
+        a.apply(&Command::GoLive);
+        assert_eq!(
+            a.apply(&Command::SetCustomTheme {
+                theme_json: json.clone()
+            }),
+            ControllerReply::Ack
+        );
+        let live = a.presenter().live_output().bytes().to_vec();
+
+        let snap = a.snapshot(t0);
+        let (mut b, _) = controller();
+        b.restore(&snap);
+        b.tick(t0);
+        assert_eq!(
+            b.presenter().live_output().bytes(),
+            live.as_slice(),
+            "the gradient/image background re-renders identically after recovery"
+        );
+    }
+}

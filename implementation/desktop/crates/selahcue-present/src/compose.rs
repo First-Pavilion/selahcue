@@ -7,7 +7,7 @@
 //! under a different theme restyles it without loss.
 
 use crate::slide::Slide;
-use crate::theme::{Band, Element, Fit, RegionStyle, Theme, VAlign};
+use crate::theme::{Background, Band, Element, Fit, RegionStyle, Theme, VAlign};
 use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, ShapeKind, TextAlign, TextStyle};
 
 /// Lay out `lines` into a themed [`RegionStyle`] — per-region cell size, line
@@ -451,10 +451,36 @@ fn element_layers(element: &Element, width: u32, height: u32) -> Vec<Layer> {
     }
 }
 
+/// Push the theme's full-frame background LAYER behind everything else (86ajq3225). `Solid`
+/// needs none (the base `with_background` fill IS the background); `Gradient` adds a
+/// deterministic full-frame [`Layer::Gradient`]; `Image` adds a full-frame [`Layer::Image`]
+/// (resolved through the bounded decode cache; a missing source → the placeholder). Pushed
+/// FIRST so the band, elements, and text all render on top.
+fn push_background(frame: &mut Frame, bg: &Background, width: u32, height: u32) {
+    let full = Rect::new(0, 0, width.max(1), height.max(1));
+    match bg {
+        Background::Solid(_) => {}
+        Background::Gradient(g) => frame.push(Layer::Gradient {
+            rect: full,
+            from: g.from,
+            to: g.to,
+            direction: g.direction,
+        }),
+        Background::Image(img) => frame.push(Layer::Image {
+            rect: full,
+            source: img.source.clone(),
+            opacity: 255,
+        }),
+    }
+}
+
 pub fn compose_slide(slide: &Slide, theme: &Theme, width: u32, height: u32) -> Frame {
-    let mut frame = Frame::new(width, height).with_background(theme.background);
+    // The background base colour is the frame clear (the GPU clear + the CPU base fill); a
+    // gradient/image background (86ajq3225) adds a full-frame layer BEHIND everything.
+    let mut frame = Frame::new(width, height).with_background(theme.background.base_color());
+    push_background(&mut frame, &theme.background, width, height);
     if slide.is_blank() {
-        return frame; // background only
+        return frame; // background only (solid / gradient / image)
     }
     // A decorative band (e.g. the lower-third bar) sits behind everything else.
     if let Some(band) = &theme.band {

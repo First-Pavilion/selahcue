@@ -1092,7 +1092,8 @@
         showReg("td-region-align");
         showReg("td-region-text");
         document.getElementById("td-el-inspector").hidden = !isEl;
-        document.getElementById("td-bg").value = tdHex(tdTheme.background); // theme-level, always
+        tdBgResync = true; // a full render snaps the bg type selector to the stored bg type
+        tdSyncBg(); // theme background editor (solid / gradient / image, 86ajq3225)
         if (isEl) {
           tdSyncEl();
           tdSyncLayout();
@@ -1236,7 +1237,87 @@
         else tdTheme.letter_spacing_permille = permille;
         tdPreview();
       };
-      document.getElementById("td-bg").oninput = (e) => { if (!tdTheme) return; tdTheme.background = tdRgb(e.target.value); tdPreview(); };
+      // --- Theme background editor (86ajq3225): solid colour / gradient / image ---
+      // The background is an untagged shape: {r,g,b,a} solid, {from,to,direction} gradient,
+      // or {source} image. `tdBgType` discriminates by the present fields.
+      let tdBgResync = true; // when true, tdSyncBg snaps the type selector to the stored bg type
+      function tdBgType(bg) {
+        if (bg && typeof bg === "object") {
+          if (typeof bg.source !== "undefined") return "image";
+          if (bg.from && bg.to) return "gradient";
+        }
+        return "solid";
+      }
+      // The selector value is the user's chosen type (the UI intent); the STORED background is
+      // only ever a VALID Background. Switching to Image shows the image panel but does NOT
+      // write a malformed {source:""} (the host rejects an empty MediaRef, breaking preview +
+      // save) — the background becomes an image only when a real source is picked/typed. On a
+      // full designer render, tdBgResync snaps the selector back to the stored type.
+      function tdSyncBg() {
+        if (!tdTheme) return;
+        const bg = tdTheme.background || { r: 0, g: 0, b: 0, a: 255 };
+        const stored = tdBgType(bg);
+        const sel = document.getElementById("td-bg-type");
+        if (tdBgResync) { sel.value = stored; tdBgResync = false; }
+        const type = sel.value;
+        document.getElementById("td-bg-solid").hidden = type !== "solid";
+        document.getElementById("td-bg-gradient").hidden = type !== "gradient";
+        document.getElementById("td-bg-image").hidden = type !== "image";
+        if (type === "solid") {
+          document.getElementById("td-bg").value = tdHex(stored === "solid" ? bg : { r: 0, g: 0, b: 0 });
+        } else if (type === "gradient") {
+          const g = stored === "gradient" ? bg : { from: { r: 0, g: 0, b: 0 }, to: { r: 255, g: 255, b: 255 }, direction: "vertical" };
+          document.getElementById("td-bg-from").value = tdHex(g.from);
+          document.getElementById("td-bg-to").value = tdHex(g.to);
+          document.getElementById("td-bg-dir").value = g.direction || "vertical";
+        } else {
+          const src = stored === "image" ? (bg.source || "") : "";
+          document.getElementById("td-bg-img-path").value = src;
+          document.getElementById("td-bg-img-src").textContent =
+            src ? ("Using: " + src) : "Pick or type an image path to use it as the background.";
+        }
+      }
+      // Commit an image background from a validated, NON-EMPTY path; an empty path leaves the
+      // current (valid) background unchanged — so the theme is never malformed.
+      function tdCommitBgImage(path) {
+        if (!tdTheme) return;
+        path = (path || "").trim();
+        if (!path) return;
+        if (path.indexOf("\0") !== -1 || tdNameBytes(path) > 1024) { tdStatus("That image path is not valid."); return; }
+        tdTheme.background = { source: path };
+        tdSyncBg();
+        tdPreview();
+      }
+      document.getElementById("td-bg-type").onchange = (e) => {
+        if (!tdTheme) return;
+        const cur = tdTheme.background;
+        const curType = tdBgType(cur);
+        const solid = curType === "solid" ? cur : (curType === "gradient" ? cur.from : { r: 0, g: 0, b: 0, a: 255 });
+        if (e.target.value === "gradient") {
+          tdTheme.background = { from: solid, to: { r: 255, g: 255, b: 255, a: 255 }, direction: "vertical" };
+          tdPreview();
+        } else if (e.target.value === "solid") {
+          tdTheme.background = solid;
+          tdPreview();
+        }
+        // "image": show the panel but do NOT commit until a real source is chosen (no {source:""}).
+        tdSyncBg();
+      };
+      document.getElementById("td-bg").oninput = (e) => { if (tdTheme) { tdTheme.background = tdRgb(e.target.value); tdPreview(); } };
+      document.getElementById("td-bg-from").oninput = (e) => { if (tdTheme && tdBgType(tdTheme.background) === "gradient") { tdTheme.background.from = tdRgb(e.target.value); tdPreview(); } };
+      document.getElementById("td-bg-to").oninput = (e) => { if (tdTheme && tdBgType(tdTheme.background) === "gradient") { tdTheme.background.to = tdRgb(e.target.value); tdPreview(); } };
+      document.getElementById("td-bg-dir").onchange = (e) => { if (tdTheme && tdBgType(tdTheme.background) === "gradient") { tdTheme.background.direction = e.target.value; tdPreview(); } };
+      document.getElementById("td-bg-img-path").onchange = (e) => { tdCommitBgImage(e.target.value); };
+      document.getElementById("td-bg-img-pick").onclick = async () => {
+        if (!tdTheme) { tdStatus("Load or start a theme first."); return; }
+        let path;
+        try { path = await invoke("pick_image"); }
+        catch (e) { tdStatus("No native picker — type the image path in the field above."); document.getElementById("td-bg-img-path").focus(); return; }
+        if (!path) return; // cancelled
+        document.getElementById("td-bg-img-path").value = path;
+        tdCommitBgImage(path);
+        tdAnnounce("Background image set");
+      };
       document.getElementById("td-color").oninput = (e) => { if (!tdTheme) return; tdTheme[tdRegion].color = tdRgb(e.target.value); tdPreview(); };
       document.getElementById("td-size").oninput = (e) => { if (!tdTheme) return; tdTheme[tdRegion].size_permille = +e.target.value; document.getElementById("td-size-v").textContent = (e.target.value / 10).toFixed(1); tdPreview(); };
       document.getElementById("td-lh").oninput = (e) => { if (!tdTheme) return; tdTheme[tdRegion].line_height_permille = +e.target.value; document.getElementById("td-lh-v").textContent = (e.target.value / 1000).toFixed(2); tdPreview(); };

@@ -29,4 +29,6 @@ pub use engine::{Engine, EngineCommand, EngineEvent, IPC_VERSION};
 pub use fault::Fault;
 pub use media::{decode_png, DecodeError, DecodeLimits, DecodedImage};
 pub use raster::{render, FrameBuffer};
-pub use scene::{Frame, Layer, MediaRef, Rect, Rgba, ShapeKind, TextAlign, TextStyle};
+pub use scene::{
+    Frame, GradientDirection, Layer, MediaRef, Rect, Rgba, ShapeKind, TextAlign, TextStyle,
+};

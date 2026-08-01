@@ -40,6 +40,23 @@ impl Rgba {
         Rgba { r, g, b, a }
     }
 
+    /// Linear interpolation from `self` (t=0) to `other` (t=1000‰), per channel, with
+    /// **deterministic integer** rounding — the basis for a two-stop [`Layer::Gradient`]
+    /// (86ajq3225). `t_permille` is clamped to `0..=1000`; cross-OS byte-identical (NFR-014).
+    pub fn lerp(self, other: Rgba, t_permille: u32) -> Rgba {
+        let t = t_permille.min(1000);
+        let mix = |a: u8, b: u8| -> u8 {
+            // a + (b - a) * t / 1000, done in i32 so a downward ramp (b < a) is exact too.
+            (a as i32 + (b as i32 - a as i32) * t as i32 / 1000) as u8
+        };
+        Rgba {
+            r: mix(self.r, other.r),
+            g: mix(self.g, other.g),
+            b: mix(self.b, other.b),
+            a: mix(self.a, other.a),
+        }
+    }
+
     /// Relative luminance in `0.0..=1.0` (Rec. 709 coefficients) — the basis for
     /// the seizure-safe flash analysis (FR-175).
     pub fn luminance(self) -> f64 {
@@ -146,6 +163,18 @@ pub enum Layer {
         #[serde(default, skip_serializing_if = "is_zero_u32")]
         corner_px: u32,
     },
+    /// A **linear two-stop gradient** filling `rect` (86ajq3225) — the colour ramps from
+    /// `from` to `to` along `direction`. Drawn by the CPU raster with deterministic integer
+    /// per-pixel interpolation (NFR-014, byte-identical cross-OS); the wgpu backend SKIPS this
+    /// layer for now (GPU-native gradients are a later batch, exactly as `Text`/`Image`/`Shape`
+    /// are today). Used for a gradient theme background (pushed full-frame, behind everything).
+    Gradient {
+        rect: Rect,
+        from: Rgba,
+        to: Rgba,
+        #[serde(default)]
+        direction: GradientDirection,
+    },
 }
 
 /// The geometry of a [`Layer::Shape`] / `Element::Shape` (86ajtwq24). `Rect` is the default
@@ -159,6 +188,22 @@ pub enum ShapeKind {
     Ellipse,
     RoundedRect,
     Triangle,
+}
+
+/// The direction of a linear [`Layer::Gradient`] / gradient background (86ajq3225): which way
+/// the two-stop colour ramp runs across the rect. `Vertical` (top→bottom) is the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GradientDirection {
+    /// Top (`from`) → bottom (`to`).
+    #[default]
+    Vertical,
+    /// Left (`from`) → right (`to`).
+    Horizontal,
+    /// Top-left (`from`) → bottom-right (`to`).
+    DiagonalDown,
+    /// Bottom-left (`from`) → top-right (`to`).
+    DiagonalUp,
 }
 
 impl ShapeKind {

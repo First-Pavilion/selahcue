@@ -4,8 +4,8 @@
 
 use selahcue_engine::raster::{render, FrameBuffer};
 use selahcue_present::{
-    compose_slide, Element, Fit, FontName, Rgba, ShapeKind, Slide, TextAlign, Theme, VAlign,
-    MAX_TEXT_ELEMENT_LEN,
+    compose_slide, Background, Element, Fit, FontName, GradientBackground, GradientDirection,
+    ImageBackground, Rgba, ShapeKind, Slide, TextAlign, Theme, VAlign, MAX_TEXT_ELEMENT_LEN,
 };
 
 /// A full-frame opaque shape element at draw order `z`.
@@ -45,7 +45,7 @@ fn blank_slide_is_background_only() {
     let fb = render(&compose_slide(&Slide::title(""), &theme, 64, 36));
     for y in [0u32, 18, 35] {
         for x in [0u32, 32, 63] {
-            assert_eq!(fb.pixel(x, y).unwrap(), theme.background);
+            assert_eq!(fb.pixel(x, y).unwrap(), theme.background.base_color());
         }
     }
 }
@@ -57,7 +57,7 @@ fn title_only_slide_renders_centred_in_the_body_region() {
     let theme = Theme::dark(); // classic: centred white body over a dark bg
     let fb = render(&compose_slide(&Slide::title("HELLO"), &theme, 200, 100));
     // Background shows in the corner (outside any region).
-    assert_eq!(fb.pixel(2, 2).unwrap(), theme.background);
+    assert_eq!(fb.pixel(2, 2).unwrap(), theme.background.base_color());
     // Ink appears in the body region (classic body ≈ x[12..188], y[28..84]),
     // and around the horizontal centre (centre alignment), not hugging the left.
     assert!(
@@ -80,8 +80,8 @@ fn text_stays_within_the_frame() {
     );
     let fb = render(&compose_slide(&slide, &theme, 128, 72));
     // Corners remain background (safe-area inset respected; nothing overflowed).
-    assert_eq!(fb.pixel(127, 71).unwrap(), theme.background);
-    assert_eq!(fb.pixel(0, 0).unwrap(), theme.background);
+    assert_eq!(fb.pixel(127, 71).unwrap(), theme.background.base_color());
+    assert_eq!(fb.pixel(0, 0).unwrap(), theme.background.base_color());
 }
 
 #[test]
@@ -1212,5 +1212,107 @@ fn a_text_element_content_is_bounded() {
     assert!(
         !theme.elements_bounded(),
         "a theme with an over-cap text box is rejected"
+    );
+}
+
+// ---- Backgrounds (86ajq3225): solid (byte-stable) / gradient / image ----
+
+#[test]
+fn a_solid_background_is_byte_identical_to_before() {
+    // Additive serde: the untagged `Background::Solid` serialises as the bare {r,g,b,a}, so an
+    // existing solid-background theme's JSON is unchanged (no "type"/"solid" wrapper).
+    let json = serde_json::to_string(&Theme::classic()).unwrap();
+    assert!(
+        json.contains("\"background\":{\"r\":8,\"g\":10,\"b\":20,\"a\":255}"),
+        "solid background serialises as the bare colour: {json}"
+    );
+    // And it round-trips back to Solid.
+    let back: Theme = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, Theme::classic());
+    assert!(matches!(back.background, Background::Solid(_)));
+    // Old JSON (a bare colour) still deserialises → Solid.
+    let old = serde_json::json!({
+        "background": {"r":1,"g":2,"b":3,"a":255},
+        "title": serde_json::from_str::<serde_json::Value>(&serde_json::to_string(&Theme::classic().title).unwrap()).unwrap(),
+        "body": serde_json::from_str::<serde_json::Value>(&serde_json::to_string(&Theme::classic().body).unwrap()).unwrap(),
+    });
+    let t: Theme = serde_json::from_value(old).unwrap();
+    assert_eq!(t.background, Background::Solid(Rgba::new(1, 2, 3, 255)));
+}
+
+#[test]
+fn each_background_kind_round_trips_untagged() {
+    let grad = GradientBackground {
+        from: Rgba::BLACK,
+        to: Rgba::WHITE,
+        direction: GradientDirection::Horizontal,
+    };
+    let g = Background::Gradient(grad);
+    let gj = serde_json::to_string(&g).unwrap();
+    assert!(
+        gj.contains("\"from\"")
+            && gj.contains("\"to\"")
+            && gj.contains("\"direction\":\"horizontal\""),
+        "{gj}"
+    );
+    assert_eq!(serde_json::from_str::<Background>(&gj).unwrap(), g);
+
+    let img = temp_image(2, 2, Rgba::WHITE);
+    let i = Background::Image(ImageBackground {
+        source: MediaRef::new(img.path().to_str().unwrap()).unwrap(),
+    });
+    let ij = serde_json::to_string(&i).unwrap();
+    assert!(ij.contains("\"source\""), "{ij}");
+    assert_eq!(serde_json::from_str::<Background>(&ij).unwrap(), i);
+}
+
+#[test]
+fn a_gradient_background_composes_a_ramp_visible_on_a_blank_slide() {
+    let mut theme = Theme::classic();
+    theme.background = Background::Gradient(GradientBackground {
+        from: Rgba::rgb(0, 0, 0),
+        to: Rgba::rgb(255, 255, 255),
+        direction: GradientDirection::Vertical,
+    });
+    // A BLANK slide shows the gradient background (the layer is pushed before the blank return).
+    let fb = render(&compose_slide(&Slide::title(""), &theme, 32, 64));
+    let top = fb.pixel(16, 0).unwrap().r as u32;
+    let bottom = fb.pixel(16, 63).unwrap().r as u32;
+    assert!(top < 10, "gradient top is dark, got {top}");
+    assert!(bottom > 245, "gradient bottom is light, got {bottom}");
+    assert!(bottom > top, "the background ramps from dark to light");
+    // Determinism.
+    let fb2 = render(&compose_slide(&Slide::title(""), &theme, 32, 64));
+    assert_eq!(
+        fb.bytes(),
+        fb2.bytes(),
+        "a gradient-background render is byte-identical"
+    );
+}
+
+#[test]
+fn an_image_background_fills_the_frame_behind_the_text() {
+    let img = temp_image(4, 4, Rgba::rgb(0, 180, 0)); // a distinct green image
+    let mut theme = Theme::classic();
+    theme.background = Background::Image(ImageBackground {
+        source: MediaRef::new(img.path().to_str().unwrap()).unwrap(),
+    });
+    // A blank slide shows the image background: a corner (outside any region) is the green image.
+    let fb = render(&compose_slide(&Slide::title(""), &theme, 64, 36));
+    let p = fb.pixel(2, 2).unwrap();
+    assert!(
+        p.r < 60 && p.g > 140 && p.b < 60,
+        "the image background fills the frame, got {p:?}"
+    );
+    // The slide text still renders ON TOP of the image background.
+    let themed = render(&compose_slide(
+        &Slide::new("Ref", ["Body text here"]),
+        &theme,
+        200,
+        100,
+    ));
+    assert!(
+        has_ink_in(&themed, 12, 28, 188, 84),
+        "the slide text renders over the image background"
     );
 }
