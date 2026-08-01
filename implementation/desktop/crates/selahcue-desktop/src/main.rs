@@ -1573,6 +1573,10 @@ async fn run_server(
             now,
         )
         .map_err(|e| format!("pairing: {e:?}"))?;
+        // Pin the host-local operator credential so the idle-TTL (audit #8) never reclaims it:
+        // it is held over one long-lived loopback connection (never re-authenticated, so `touch`
+        // does not refresh it) and reuses the fixed endpoint token with no re-pair path.
+        reg.pin(&DeviceId(device.to_string()));
     }
 
     // Host confirmation (FR-086): raise a Y/N prompt for the winit thread; one pending

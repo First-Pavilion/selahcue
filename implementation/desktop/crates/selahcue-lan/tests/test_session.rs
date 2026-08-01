@@ -465,3 +465,34 @@ fn idle_ttl_frees_cap_slots_but_recently_active_sessions_still_reject() {
     );
     assert_eq!(reg.active_count(), 1);
 }
+
+#[test]
+fn pinned_session_is_exempt_from_idle_reclamation() {
+    // Audit #8: the pinned host-local operator credential must NEVER idle out, even past the
+    // TTL — it is held over one long connection (never touched) with no re-pair path.
+    let t0 = Instant::now();
+    let ttl = Duration::from_secs(300);
+    let mut reg = SessionRegistry::new();
+    reg.offer_pairing("host", Role::Operator, t0, Duration::from_secs(60));
+    reg.redeem("host", dev("operator-shell"), SessionToken::new("k"), t0)
+        .unwrap();
+    reg.offer_pairing("dev1", Role::Producer, t0, Duration::from_secs(60));
+    reg.redeem("dev1", dev("d1"), SessionToken::new("t1"), t0)
+        .unwrap();
+    assert!(reg.pin(&dev("operator-shell")));
+    assert!(
+        !reg.pin(&dev("ghost")),
+        "pin on an unknown device is a no-op"
+    );
+    // Both are idle far past the TTL; only the un-pinned one is reclaimed.
+    let now = t0 + ttl + Duration::from_secs(1);
+    assert_eq!(reg.prune_idle(now, ttl), 1);
+    assert!(
+        reg.authenticate(&dev("operator-shell"), "k").is_some(),
+        "the pinned host session survives idle pruning"
+    );
+    assert!(
+        reg.authenticate(&dev("d1"), "t1").is_none(),
+        "the un-pinned idle session is reclaimed"
+    );
+}

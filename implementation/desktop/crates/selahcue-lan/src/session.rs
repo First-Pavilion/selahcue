@@ -62,6 +62,11 @@ pub struct Session {
     /// [`prune_idle`](SessionRegistry::prune_idle) so the active-session cap (audit M3) bounds
     /// *recently-active* devices, not lifetime pairings (audit #8).
     last_seen: Instant,
+    /// A PINNED session is exempt from idle reclamation — the trusted host-local operator
+    /// session (pre-seeded once at startup with a fixed endpoint token, held over a single
+    /// long-lived loopback connection so `touch` never refreshes it, and with no re-pair path)
+    /// must never be idled out from under the host (audit #8). Remote pairings are never pinned.
+    pinned: bool,
 }
 
 /// Hard cap on concurrent active (paired) sessions (audit M3 no-leak rule). Far above any
@@ -182,6 +187,7 @@ impl SessionRegistry {
                         role,
                         token,
                         last_seen: now,
+                        pinned: false,
                     },
                 );
                 Ok(role)
@@ -228,14 +234,27 @@ impl SessionRegistry {
         }
     }
 
+    /// Pin a session so it is exempt from idle reclamation — for the trusted host-local operator
+    /// credential (pre-seeded once, held over one long-lived loopback connection so `touch` never
+    /// refreshes it, and with no re-pair path); it must never idle out from under the host
+    /// (audit #8). Returns whether a session was pinned.
+    pub fn pin(&mut self, device_id: &DeviceId) -> bool {
+        if let Some(session) = self.active.get_mut(device_id) {
+            session.pinned = true;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Reclaim active sessions idle (no re-authentication) for longer than `ttl` — housekeeping
     /// so the active-session cap (audit M3) bounds *recently-active* devices, not lifetime
-    /// pairings (audit #8). `saturating_duration_since` never panics if a clock ran backwards.
-    /// Returns the number of sessions reclaimed.
+    /// pairings (audit #8). PINNED sessions (the host-local operator) are never reclaimed.
+    /// `saturating_duration_since` never panics if a clock ran backwards. Returns the count reclaimed.
     pub fn prune_idle(&mut self, now: Instant, ttl: Duration) -> usize {
         let before = self.active.len();
         self.active
-            .retain(|_, s| now.saturating_duration_since(s.last_seen) <= ttl);
+            .retain(|_, s| s.pinned || now.saturating_duration_since(s.last_seen) <= ttl);
         before - self.active.len()
     }
 
