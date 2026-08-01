@@ -6,7 +6,7 @@
 - Parent goal ID: EPIC 86ajp08rm (R4 · Scripture Intelligence)
 - Title: Fuzzy quote/paraphrase detection — spoken quotation of a verse → most-likely verse, wired to STT
 - Role: backend-engineer
-- Status: IN_PROGRESS
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajp08rm (R4 epic — no dedicated story; owner elected to track under this Goal Contract)
 - Created: 2026-08-01
@@ -89,18 +89,18 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | `match_quote` returns the correct verse for a near-verbatim quote (e.g. John 3:16 from "for God so loved the world…") | `cargo test -p selahcue-scripture --test test_quote_match quote` | test passes | test output | PENDING |
-| C-002 | yes | `match_quote` returns nothing for ordinary (non-scripture) speech — precision over recall (FR-121) | `cargo test -p selahcue-scripture --test test_quote_match precision` | test passes | test output | PENDING |
-| C-003 | yes | `match_quote` is deterministic (same input → same output; canonical tie-break) | `cargo test -p selahcue-scripture --test test_quote_match determin` | test passes | test output | PENDING |
-| C-004 | yes | A near-verbatim quote with a minor word omitted/changed still matches (fuzzy tolerance) | `cargo test -p selahcue-scripture --test test_quote_match fuzzy` | test passes | test output | PENDING |
-| C-005 | yes | The matcher index is built once and bounded (idempotent init; no unbounded growth) | `cargo test -p selahcue-scripture --test test_quote_match bounded` | test passes | test output | PENDING |
-| C-006 | yes | `TranscriptEngine::ingest_with_quotes` enqueues quote candidates alongside exact detections, deduped + bounded; a quote duplicating an exact/recent ref does not double-enqueue | `cargo test -p selahcue-core --test test_detection quote` | test passes | test output | PENDING |
-| C-007 | yes | Existing exact-detection behaviour is unchanged (`ingest` == `ingest_with_quotes(…&[])`) — regression | `cargo test -p selahcue-core --test test_detection` | all existing tests pass | test output | PENDING |
-| C-008 | yes | App `ingest_transcript` runs BOTH exact + quote: injecting a spoken quote surfaces the verse in the detection queue | `cargo test -p selahcue-app --test test_quote_detection ingest` | test passes | test output | PENDING |
-| C-009 | yes | `pump_transcript` drives a `TranscriptProvider` (ManualProvider) end-to-end into the detection queue (STT↔detection wiring) | `cargo test -p selahcue-app --test test_quote_detection pump` | test passes | test output | PENDING |
-| C-010 | yes | No wire/view change and no new dependencies: the detection wire model is untouched; no crate gains a dependency | review: my staged diff touches no `selahcue-lan` file and no `[dependencies]` line | confirmed | staged diff | PENDING |
-| C-011 | yes | fmt + clippy clean on the changed crates | `cargo fmt -p selahcue-core -p selahcue-scripture -p selahcue-app -- --check && cargo clippy -p selahcue-core -p selahcue-scripture -p selahcue-app -- -D warnings` | no diffs, no warnings | command output | PENDING |
-| C-012 | yes | Independent review passes with evidence; findings addressed | code-reviewer subagent | no unresolved high/critical findings | review report | PENDING |
+| C-001 | yes | `match_quote` returns the correct verse for a near-verbatim quote (e.g. John 3:16 from "for God so loved the world…") | `cargo test -p selahcue-scripture --test test_quote_match quote` | test passes | test output | PASS |
+| C-002 | yes | `match_quote` returns nothing for ordinary (non-scripture) speech — precision over recall (FR-121) | `cargo test -p selahcue-scripture --test test_quote_match precision` | test passes | test output | PASS |
+| C-003 | yes | `match_quote` is deterministic (same input → same output; canonical tie-break) | `cargo test -p selahcue-scripture --test test_quote_match determin` | test passes | test output | PASS |
+| C-004 | yes | A near-verbatim quote with a minor word omitted/changed still matches (fuzzy tolerance) | `cargo test -p selahcue-scripture --test test_quote_match fuzzy` | test passes | test output | PASS |
+| C-005 | yes | The matcher index is built once and bounded (idempotent init; no unbounded growth) | `cargo test -p selahcue-scripture --test test_quote_match bounded` | test passes | test output | PASS |
+| C-006 | yes | `TranscriptEngine::ingest_with_quotes` enqueues quote candidates alongside exact detections, deduped + bounded; a quote duplicating an exact/recent ref does not double-enqueue | `cargo test -p selahcue-core --test test_detection quote` | test passes | test output | PASS |
+| C-007 | yes | Existing exact-detection behaviour is unchanged (`ingest` == `ingest_with_quotes(…&[])`) — regression | `cargo test -p selahcue-core --test test_detection` | all existing tests pass | test output | PASS |
+| C-008 | yes | App `ingest_transcript` runs BOTH exact + quote: injecting a spoken quote surfaces the verse in the detection queue | `cargo test -p selahcue-app --test test_quote_detection ingest` | test passes | test output | PASS |
+| C-009 | yes | `pump_transcript` drives a `TranscriptProvider` (ManualProvider) end-to-end into the detection queue (STT↔detection wiring) | `cargo test -p selahcue-app --test test_quote_detection pump` | test passes | test output | PASS |
+| C-010 | yes | No wire/view change and no new dependencies: the detection wire model is untouched; no crate gains a dependency | review: my staged diff touches no `selahcue-lan` file and no `[dependencies]` line | confirmed | staged diff | PASS |
+| C-011 | yes | fmt + clippy clean on the changed crates | `cargo fmt -p selahcue-core -p selahcue-scripture -p selahcue-app -- --check && cargo clippy -p selahcue-core -p selahcue-scripture -p selahcue-app -- -D warnings` | no diffs, no warnings | command output | PASS |
+| C-012 | yes | Independent review passes with evidence; findings addressed | code-reviewer subagent | no unresolved high/critical findings | review report | PASS |
 
 ## Verification plan
 
@@ -111,14 +111,22 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 ## Iteration ledger
 
-### Iteration 1
+### Iteration 1 — implement matcher + wiring (C-001..C-011)
 
 - Target criteria: C-001..C-011.
-- Hypothesis: an IDF-weighted token-overlap matcher over the KJV index, precision-gated, recovers near-verbatim quotes while ordinary speech stays silent; wired additively into the detection engine + STT pump with no wire/UI change.
-- Change or investigation: (pending)
-- Verifier executed: (pending)
-- Result: (pending)
-- Decision: iterate
+- Change: `quote_match` (scripture) + additive `ingest_with_quotes` (core) + `ingest_transcript` wiring & `pump_transcript` (app); tuned thresholds so near-verbatim quotes hit and ordinary speech stays silent.
+- Verifiers executed: matcher/core/app tests, fmt, clippy -D, no-lan/no-dep check — all green.
+- Evidence: commit `fddded7`.
+- Decision: handoff to independent review (C-012).
+
+### Iteration 2 — independent review + precision fix (C-012)
+
+- Target criterion: C-012.
+- Investigation: independent reviewer confirmed determinism/boundedness/seam/no-wire-change, but **empirically reproduced a HIGH precision gap** — devotional/praise speech ("we give thanks and praise to almighty God") falsely matched verses because `DF_CAP` admitted religious words as discriminative. Also: vacuous bounded test, loose Psalm assertion, determinism-by-margin, unguarded `t as usize`.
+- Change: domain STOPWORD list (excludes devotional words from candidate generation; kept in coverage scoring) + the reviewer's exact false-positives as a regression test; determinism by construction (precomputed verse mass + sorted mass sums); real candidate-cap bounded test; pinned Psalm assertion; const-assert coupling the OnceLock array to `Translation::ALL.len()`.
+- Verifiers executed: 10 matcher + 25 core + 5 app tests, fmt, clippy -D — green; the three reviewed false positives now return nothing; legit quotes still match.
+- Evidence: commit `f9c4295`.
+- Decision: complete (all mandatory criteria PASS).
 
 ## Risks and rollback
 
@@ -131,9 +139,10 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 ## Final evaluation
 
-- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-r4-fuzzy-quote-detection.md`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- Remaining failed or blocked criteria: (pending)
-- ClickUp final evidence comment: (pending)
+- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-r4-fuzzy-quote-detection.md --require-complete`
+- Validator result: PASS (all 12 mandatory criteria PASS).
+- Independent verification result: reviewer found a HIGH precision gap (devotional false positives) + lesser issues; **all addressed** in `f9c4295` with regression tests. No blocker; determinism/boundedness/seam/no-wire-change confirmed.
+- Terminal state: **VERIFIED_COMPLETE**. Commits on `main`: `fddded7` (feature) + `f9c4295` (review fixes).
+- Remaining failed or blocked criteria: none.
+- Open follow-ups (non-blocking): thresholds + stopword list are provisional, spike-gated (S11 — recall/precision on live ASR); real desktop hookup of the whisper `SttEngine` worker → `pump_transcript` (thin host wiring); confidence-% in the detection model/wire/operator UI (deferred scope); routine-liturgy verses (Aaronic blessing, etc.) legitimately fire and will add queue volume — a UX/product call (mode/mute), not a matcher bug.
+- ClickUp final evidence comment: posted to the R4 epic 86ajp08rm.
