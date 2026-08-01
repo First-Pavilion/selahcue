@@ -130,47 +130,7 @@
             }
           });
 
-          // Per-item theme override (S8-3d): a small picker on each row. Blank = the
-          // global theme; a built-in OR a saved-library theme (86ajq69ft) renders THIS
-          // item on that template.
-          const themeSel = document.createElement("select");
-          themeSel.className = "item-theme";
-          themeSel.title = "Item theme (blank = follow the global theme)";
-          themeSel.onclick = (e) => e.stopPropagation();
-          const optGlobal = document.createElement("option");
-          optGlobal.value = "";
-          optGlobal.textContent = "◈ theme";
-          themeSel.appendChild(optGlobal);
-          (view.themes || []).forEach((name) => {
-            const o = document.createElement("option");
-            o.value = name;
-            o.textContent = name;
-            themeSel.appendChild(o);
-          });
-          // Saved (named custom) themes from the library, in a labelled group.
-          const savedNames = (view.saved_themes || []).map((t) => t.name);
-          if (savedNames.length) {
-            const grp = document.createElement("optgroup");
-            grp.label = "Saved";
-            savedNames.forEach((name) => {
-              const o = document.createElement("option");
-              o.value = name;
-              o.textContent = name;
-              grp.appendChild(o);
-            });
-            themeSel.appendChild(grp);
-          }
-          themeSel.value = it.theme || "";
-          if (it.theme) themeSel.classList.add("on");
-          themeSel.onchange = (e) => {
-            e.stopPropagation();
-            const v = e.target.value;
-            act(() => invoke("set_item_theme", { itemId: it.id, theme: v || null }));
-          };
-
           row.appendChild(main);
-          // Outside `tools` (which hides until hover) so an ACTIVE override stays visible.
-          row.appendChild(themeSel);
           tools.appendChild(ren);
           tools.appendChild(up);
           tools.appendChild(down);
@@ -2383,29 +2343,10 @@
         const title = document.getElementById("add-title").value.trim();
         const kind = document.getElementById("add-kind").value;
         if (title) {
-          // Songs may carry stanza lyrics (S8-1): plain text, stanzas
-          // separated by blank lines — each stanza becomes one slide.
-          const lyricsEl = document.getElementById("add-lyrics");
-          const lyrics = kind === "song" ? lyricsEl.value.trim() : "";
-          act(() =>
-            invoke("add_item", {
-              kind,
-              title,
-              content: lyrics ? lyrics : null,
-            })
-          );
+          act(() => invoke("add_item", { kind, title, content: null }));
           document.getElementById("add-title").value = "";
-          lyricsEl.value = "";
         }
       };
-      // The lyrics box only makes sense for songs — show it per kind.
-      const addKindSel = document.getElementById("add-kind");
-      const syncLyricsVisibility = () => {
-        document.getElementById("add-lyrics").style.display =
-          addKindSel.value === "song" ? "" : "none";
-      };
-      addKindSel.onchange = syncLyricsVisibility;
-      syncLyricsVisibility();
 
       // Top-bar clock (Figma console) — local time, ticks independently.
       const tickClock = () => {
