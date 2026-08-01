@@ -12,7 +12,8 @@ use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{
     Command, DenyReason, DetectionView, DisplayView, OutputStatusView, SavedThemeView,
-    ScreenThemeView, ServerMessage, ThumbView, TimerSnapshot, TranscriptSegmentView, VerseView,
+    ScreenThemeView, ScreenView, ServerMessage, ThumbView, TimerSnapshot, TranscriptSegmentView,
+    VerseView,
 };
 use selahcue_present::{
     FrameBuffer, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView, MAX_ELEMENTS,
@@ -164,6 +165,13 @@ pub struct LiveController {
     /// Bounded to [`AUDIENCE_SCREENS`]. Persisted separately (like `saved_themes`).
     screen_themes: std::collections::BTreeMap<String, String>,
     screen_themes_dirty: bool,
+    /// The SCREEN REGISTRY (Screens page — dynamic registry): every managed screen
+    /// (built-in + virtual) with its role, enable state, and deletability. Supersedes the
+    /// fixed [`AUDIENCE_SCREENS`] set — a disabled screen composes safe-black, a virtual
+    /// screen can be added/deleted. Bounded by [`MAX_SCREENS`]. Persisted separately (like
+    /// `screen_themes`); `screen_themes`' keys stay a subset of the registry's ids.
+    screen_registry: ScreenRegistry,
+    screen_registry_dirty: bool,
     /// The live-transcript + scripture-detection engine (R3/R4; ADR-0010). Runs
     /// out-of-band from the render/output path — it is fed transcript segments and
     /// surfaces bounded transcript + a detection approval queue in the operator view,
@@ -188,6 +196,251 @@ pub const MAX_THEME_NAME_LEN: usize = 64;
 /// Screens-page follow-up); the `stage` confidence monitor is NOT here — it keeps its
 /// stage layout, not an audience theme. The per-screen theme map is bounded to these ids.
 pub const AUDIENCE_SCREENS: [&str; 3] = ["main", "lower-third", "stream"];
+
+/// The hard cap on the number of screens in the registry (no-leak): the built-ins plus
+/// any virtual screens the operator adds. Small — a church stage has a handful of outputs
+/// — so `AddScreen` cannot grow the registry without limit (the exact reason
+/// [`AUDIENCE_SCREENS`] was a fixed const before the registry).
+pub const MAX_SCREENS: usize = 16;
+
+/// A screen's role in the registry (Screens page — dynamic registry). Audience-class
+/// roles (`Main`/`LowerThird`/`Stream`) render the live content under a per-screen theme
+/// ([`LiveController::compose_screen`]); `Stage` is the confidence monitor (a stage
+/// layout, not a theme).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenRole {
+    Main,
+    LowerThird,
+    Stream,
+    Stage,
+}
+
+impl ScreenRole {
+    /// The stable wire/persist tag.
+    pub fn as_tag(self) -> &'static str {
+        match self {
+            ScreenRole::Main => "main",
+            ScreenRole::LowerThird => "lower-third",
+            ScreenRole::Stream => "stream",
+            ScreenRole::Stage => "stage",
+        }
+    }
+
+    /// Parse a wire/persist tag; `None` for an unknown role (a corrupt persisted row).
+    pub fn from_tag(tag: &str) -> Option<ScreenRole> {
+        match tag {
+            "main" => Some(ScreenRole::Main),
+            "lower-third" => Some(ScreenRole::LowerThird),
+            "stream" => Some(ScreenRole::Stream),
+            "stage" => Some(ScreenRole::Stage),
+            _ => None,
+        }
+    }
+
+    /// Audience-class screens render a themed frame; the stage confidence monitor does not.
+    pub fn is_audience(self) -> bool {
+        matches!(
+            self,
+            ScreenRole::Main | ScreenRole::LowerThird | ScreenRole::Stream
+        )
+    }
+
+    /// Whether a VIRTUAL screen of this role may be added — only the secondary audience
+    /// feeds (`main` and `stage` are singleton built-ins).
+    pub fn is_addable(self) -> bool {
+        matches!(self, ScreenRole::LowerThird | ScreenRole::Stream)
+    }
+}
+
+/// One entry in the [`ScreenRegistry`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Screen {
+    pub id: String,
+    pub role: ScreenRole,
+    pub enabled: bool,
+    /// True only for virtual screens the operator added — a built-in may be DISABLED but
+    /// never DELETED.
+    pub deletable: bool,
+}
+
+/// Why [`ScreenRegistry::add_virtual`] refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddScreenError {
+    /// The role is not addable (only the `lower-third`/`stream` secondary feeds).
+    BadRole,
+    /// The registry is already at [`MAX_SCREENS`].
+    Full,
+}
+
+/// The outcome of [`ScreenRegistry::remove`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveOutcome {
+    /// The screen was removed.
+    Removed,
+    /// The id names a built-in — never deletable (a caller maps this to a denial).
+    NotDeletable,
+    /// No screen with that id (an idempotent delete — a caller acks).
+    Absent,
+}
+
+/// A bounded, deterministically-ordered registry of managed screens (Screens page —
+/// dynamic registry). Built-ins (`main`/`lower-third`/`stream`/`stage`) are seeded first
+/// and never deletable; virtual audience screens append in add order. Bounded by
+/// [`MAX_SCREENS`] (no-leak). A `Vec` (not a `HashMap`) so iteration / compose / preview
+/// order is stable and reproducible (determinism).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenRegistry {
+    screens: Vec<Screen>,
+}
+
+impl Default for ScreenRegistry {
+    fn default() -> Self {
+        Self::with_builtins()
+    }
+}
+
+impl ScreenRegistry {
+    /// The default registry: the four built-in screens, all enabled, none deletable.
+    pub fn with_builtins() -> Self {
+        Self {
+            screens: vec![
+                Screen {
+                    id: "main".into(),
+                    role: ScreenRole::Main,
+                    enabled: true,
+                    deletable: false,
+                },
+                Screen {
+                    id: "lower-third".into(),
+                    role: ScreenRole::LowerThird,
+                    enabled: true,
+                    deletable: false,
+                },
+                Screen {
+                    id: "stream".into(),
+                    role: ScreenRole::Stream,
+                    enabled: true,
+                    deletable: false,
+                },
+                Screen {
+                    id: "stage".into(),
+                    role: ScreenRole::Stage,
+                    enabled: true,
+                    deletable: false,
+                },
+            ],
+        }
+    }
+
+    /// Rebuild a registry from persisted rows `(id, role_tag, enabled, deletable)`,
+    /// RECOVERING robustly: always start from the built-in default (so the four built-ins
+    /// are never lost), apply each built-in's persisted `enabled` flag, and append only
+    /// valid VIRTUAL rows (a deletable, addable-role, non-duplicate id) up to
+    /// [`MAX_SCREENS`]. A corrupt row (unknown role) or an over-cap row is dropped, never
+    /// a crash — so a tampered/oversized store degrades to a sane registry.
+    pub fn from_persisted<I>(rows: I) -> Self
+    where
+        I: IntoIterator<Item = (String, String, bool, bool)>,
+    {
+        let mut reg = Self::with_builtins();
+        for (id, role_tag, enabled, deletable) in rows {
+            let Some(role) = ScreenRole::from_tag(&role_tag) else {
+                continue; // corrupt role — drop
+            };
+            if let Some(existing) = reg.screens.iter_mut().find(|s| s.id == id) {
+                // A built-in (or an already-restored id): restore its enable state only —
+                // never flip a built-in's role/deletable.
+                existing.enabled = enabled;
+                continue;
+            }
+            // A virtual screen: only a deletable, addable-role entry, within the cap.
+            if deletable && role.is_addable() && reg.screens.len() < MAX_SCREENS {
+                reg.screens.push(Screen {
+                    id,
+                    role,
+                    enabled,
+                    deletable: true,
+                });
+            }
+        }
+        reg
+    }
+
+    /// Deterministic iteration order (built-ins first, then virtuals in add order).
+    pub fn iter(&self) -> impl Iterator<Item = &Screen> {
+        self.screens.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.screens.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.screens.is_empty()
+    }
+
+    pub fn get(&self, id: &str) -> Option<&Screen> {
+        self.screens.iter().find(|s| s.id == id)
+    }
+
+    /// Whether the screen `id` is enabled. An UNKNOWN id defaults to `true`: a caller
+    /// gating a physical window must not black it merely because the registry lacks the
+    /// row (e.g. an older persisted registry) — only an explicit `enabled = false` mutes.
+    pub fn is_enabled(&self, id: &str) -> bool {
+        self.get(id).map(|s| s.enabled).unwrap_or(true)
+    }
+
+    /// Set a screen's enabled flag. Returns `true` if the id existed.
+    pub fn set_enabled(&mut self, id: &str, enabled: bool) -> bool {
+        match self.screens.iter_mut().find(|s| s.id == id) {
+            Some(s) => {
+                s.enabled = enabled;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Add a virtual screen of `role`, minting a stable id (`role-N`, the smallest `N >= 2`
+    /// whose id is free — deterministic). `Err` if the role is not addable or the cap is
+    /// reached.
+    pub fn add_virtual(&mut self, role: ScreenRole) -> Result<String, AddScreenError> {
+        if !role.is_addable() {
+            return Err(AddScreenError::BadRole);
+        }
+        if self.screens.len() >= MAX_SCREENS {
+            return Err(AddScreenError::Full);
+        }
+        let base = role.as_tag();
+        let mut n = 2usize;
+        loop {
+            let candidate = format!("{base}-{n}");
+            if self.get(&candidate).is_none() {
+                self.screens.push(Screen {
+                    id: candidate.clone(),
+                    role,
+                    enabled: true,
+                    deletable: true,
+                });
+                return Ok(candidate);
+            }
+            n += 1;
+        }
+    }
+
+    /// Remove a screen by id — only a deletable (virtual) screen. A built-in yields
+    /// [`RemoveOutcome::NotDeletable`]; an absent id yields [`RemoveOutcome::Absent`].
+    pub fn remove(&mut self, id: &str) -> RemoveOutcome {
+        match self.screens.iter().position(|s| s.id == id) {
+            Some(i) if self.screens[i].deletable => {
+                self.screens.remove(i);
+                RemoveOutcome::Removed
+            }
+            Some(_) => RemoveOutcome::NotDeletable,
+            None => RemoveOutcome::Absent,
+        }
+    }
+}
 
 /// Resolve a theme NAME to a `Theme`: a built-in (classic/high-contrast/lower-third)
 /// first, else a SAVED-library name (its canonical JSON). `None` for an unknown name
@@ -301,6 +554,8 @@ impl LiveController {
             saved_themes_dirty: false,
             screen_themes: std::collections::BTreeMap::new(),
             screen_themes_dirty: false,
+            screen_registry: ScreenRegistry::with_builtins(),
+            screen_registry_dirty: false,
             transcript: TranscriptEngine::new(),
         }
     }
@@ -536,7 +791,13 @@ impl LiveController {
     /// cached copy on the physical `main` output is kept fresh by [`resync_theme_overrides`]
     /// when the library changes.
     fn set_screen_theme(&mut self, screen: &str, name: &str) -> ControllerReply {
-        if !AUDIENCE_SCREENS.contains(&screen) {
+        // A theme applies to any Audience-class screen in the registry (a built-in OR a
+        // virtual feed) — never the stage confidence monitor or an unknown id.
+        if !self
+            .screen_registry
+            .get(screen)
+            .is_some_and(|s| s.role.is_audience())
+        {
             return ControllerReply::Deny(DenyReason::BadRequest);
         }
         if name.is_empty() {
@@ -570,11 +831,16 @@ impl LiveController {
     /// prove simultaneous multi-theme output. Blackout blacks every screen (audience-wide
     /// emergency). `None` for an unknown screen id.
     pub fn compose_screen(&self, screen: &str) -> Option<FrameBuffer> {
-        if !AUDIENCE_SCREENS.contains(&screen) {
+        // Only an Audience-class registry screen composes a themed frame — the stage
+        // confidence monitor (its own surface) and an unknown id yield `None`.
+        let sc = self.screen_registry.get(screen)?;
+        if !sc.role.is_audience() {
             return None;
         }
         let out = self.presenter.live_output();
-        if self.blackout {
+        // A DISABLED screen (a per-screen mute) or a global blackout blacks this screen —
+        // reuse the existing safe all-black path (no new None/panic).
+        if !sc.enabled || self.blackout {
             return Some(FrameBuffer::filled(
                 out.width(),
                 out.height(),
@@ -607,11 +873,16 @@ impl LiveController {
     /// screens with a known built-in theme name (so a stale/removed name is dropped,
     /// never crashes), applies `main` to the Presenter, and does not dirty.
     pub fn load_screen_themes(&mut self, themes: impl IntoIterator<Item = (String, String)>) {
+        // Keep only a theme whose screen is an Audience-class registry screen (built-in or
+        // a restored virtual feed) with a resolvable name. Load the registry BEFORE the
+        // per-screen themes so a virtual screen's theme survives; a theme for an
+        // absent/deleted screen is dropped, never a crash.
         let saved = &self.saved_themes;
+        let registry = &self.screen_registry;
         self.screen_themes = themes
             .into_iter()
             .filter(|(screen, name)| {
-                AUDIENCE_SCREENS.contains(&screen.as_str())
+                registry.get(screen).is_some_and(|s| s.role.is_audience())
                     && resolve_theme_name(name, saved).is_some()
             })
             .collect();
@@ -626,6 +897,87 @@ impl LiveController {
             self.presenter.set_main_screen_theme(Some(theme));
             self.presenter.blackout(self.blackout);
         }
+    }
+
+    /// Enable or disable a screen by id (Screens page — dynamic registry). A disabled
+    /// screen composes safe all-black (a per-screen mute); the desktop also blacks the
+    /// physical `main`/`stage` windows via [`Self::is_screen_enabled`]. An unknown id is
+    /// rejected. Marks the registry for persistence.
+    fn set_screen_enabled(&mut self, screen: &str, enabled: bool) -> ControllerReply {
+        if self.screen_registry.set_enabled(screen, enabled) {
+            self.screen_registry_dirty = true;
+            ControllerReply::Ack
+        } else {
+            ControllerReply::Deny(DenyReason::BadRequest)
+        }
+    }
+
+    /// Add a VIRTUAL Audience-class screen (`role` is `lower-third`/`stream`), minting a
+    /// stable id. Rejected for a bad role or at the bounded [`MAX_SCREENS`] cap. Marks the
+    /// registry for persistence.
+    fn add_screen(&mut self, role: &str) -> ControllerReply {
+        let Some(role) = ScreenRole::from_tag(role) else {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        };
+        match self.screen_registry.add_virtual(role) {
+            Ok(_id) => {
+                self.screen_registry_dirty = true;
+                ControllerReply::Ack
+            }
+            Err(_) => ControllerReply::Deny(DenyReason::BadRequest),
+        }
+    }
+
+    /// Remove a screen by id — ONLY a deletable (virtual) screen; a built-in is rejected
+    /// server-side. Also drops the screen's per-screen theme override. Idempotent for an
+    /// already-absent id. Marks the registry (and theme map, if changed) for persistence.
+    fn remove_screen(&mut self, screen: &str) -> ControllerReply {
+        match self.screen_registry.remove(screen) {
+            RemoveOutcome::Removed => {
+                self.screen_registry_dirty = true;
+                if self.screen_themes.remove(screen).is_some() {
+                    self.screen_themes_dirty = true;
+                }
+                ControllerReply::Ack
+            }
+            // Deleting a built-in is a client bug (the UI hides the control) — deny.
+            RemoveOutcome::NotDeletable => ControllerReply::Deny(DenyReason::BadRequest),
+            // Idempotent: an already-absent id acks (a double-delete is not an error).
+            RemoveOutcome::Absent => ControllerReply::Ack,
+        }
+    }
+
+    /// The screen registry (for the operator view + persistence).
+    pub fn screen_registry(&self) -> &ScreenRegistry {
+        &self.screen_registry
+    }
+
+    /// Whether a screen is enabled — the desktop consults this to gate the physical
+    /// `main`/`stage` windows (a disabled screen shows black). An unknown id defaults to
+    /// enabled (see [`ScreenRegistry::is_enabled`]).
+    pub fn is_screen_enabled(&self, id: &str) -> bool {
+        self.screen_registry.is_enabled(id)
+    }
+
+    /// Whether the screen registry changed since the last check (persist signal).
+    pub fn take_screen_registry_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.screen_registry_dirty)
+    }
+
+    /// Re-arm the registry persist signal (a failed write must be retried).
+    pub fn mark_screen_registry_dirty(&mut self) {
+        self.screen_registry_dirty = true;
+    }
+
+    /// Load the screen registry at startup from persisted rows `(id, role_tag, enabled,
+    /// deletable)` — recovers robustly to the built-in default (see
+    /// [`ScreenRegistry::from_persisted`]). Does not dirty.
+    pub fn load_screen_registry<I>(&mut self, rows: I)
+    where
+        I: IntoIterator<Item = (String, String, bool, bool)>,
+    {
+        self.screen_registry = ScreenRegistry::from_persisted(rows);
+        self.screen_registry_dirty = false;
     }
 
     /// A persistable snapshot of the live session at `now` (injected clock, so the
@@ -1018,6 +1370,24 @@ impl LiveController {
                     theme: theme.clone(),
                 })
                 .collect(),
+            // The screen registry (Screens page — dynamic registry): every managed screen
+            // with its role, enable state, deletability, and theme (Audience-class only),
+            // in deterministic registry order.
+            screens: self
+                .screen_registry
+                .iter()
+                .map(|s| ScreenView {
+                    screen: s.id.clone(),
+                    role: s.role.as_tag().to_string(),
+                    enabled: s.enabled,
+                    deletable: s.deletable,
+                    theme: if s.role.is_audience() {
+                        self.screen_themes.get(&s.id).cloned()
+                    } else {
+                        None
+                    },
+                })
+                .collect(),
             // The bounded recent transcript tail (oldest first) — the log is already
             // capped; this trims the wire payload further.
             transcript: self
@@ -1370,7 +1740,17 @@ impl LiveController {
                 let mw = (*max_w).clamp(1, 480);
                 let mh = (*max_h).clamp(1, 270);
                 let pv = self.presenter().preview_output().thumbnail(mw, mh);
-                let lv = self.presenter().live_output().thumbnail(mw, mh);
+                // The Live monitor IS the `main` audience output — a disabled `main` screen
+                // mutes it to black (matching the physical main window + the Screens preview),
+                // so the operator never sees "airing" content while main is muted. (Preview is
+                // the STAGED feed, unaffected by a per-screen main disable.)
+                let lv = if self.is_screen_enabled("main") {
+                    self.presenter().live_output().thumbnail(mw, mh)
+                } else {
+                    let out = self.presenter().live_output();
+                    FrameBuffer::filled(out.width(), out.height(), selahcue_present::Rgba::BLACK)
+                        .thumbnail(mw, mh)
+                };
                 ControllerReply::Message(ServerMessage::ConsoleThumbnails {
                     preview: Some(ThumbView::from_rgba(pv.width(), pv.height(), pv.bytes())),
                     live: Some(ThumbView::from_rgba(lv.width(), lv.height(), lv.bytes())),
@@ -1573,6 +1953,11 @@ impl LiveController {
             Command::SaveTheme { name, theme_json } => self.save_theme(name, theme_json),
             Command::DeleteTheme { name } => self.delete_theme(name),
             Command::SetScreenTheme { screen, name } => self.set_screen_theme(screen, name),
+            Command::SetScreenEnabled { screen, enabled } => {
+                self.set_screen_enabled(screen, *enabled)
+            }
+            Command::AddScreen { role } => self.add_screen(role),
+            Command::RemoveScreen { screen } => self.remove_screen(screen),
             // --- Live transcript + scripture detection (R3/R4; ADR-0010). Assistive:
             // never touches the render/output path directly — ingestion feeds the
             // out-of-band engine; approving stages to Preview (operator Goes Live). ---

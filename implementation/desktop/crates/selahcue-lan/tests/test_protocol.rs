@@ -3,8 +3,8 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_lan::protocol::{
-    from_json, to_json, AuthRequest, AuthResponse, Command, DenyReason, Request, ServerMessage,
-    ThumbView, VerseView, VERSION,
+    from_json, to_json, AuthRequest, AuthResponse, Command, DenyReason, Request, ScreenView,
+    ServerMessage, ThumbView, VerseView, VERSION,
 };
 use selahcue_lan::rbac::Role;
 
@@ -96,6 +96,72 @@ fn screen_frame_round_trips_and_is_additive() {
     let ej = to_json(&empty).unwrap();
     assert!(!ej.contains("\"frame\""), "a None frame is skipped: {ej}");
     assert_eq!(from_json::<ServerMessage>(&ej).unwrap(), empty);
+    assert_eq!(VERSION, 2);
+}
+
+#[test]
+fn screen_registry_commands_round_trip_and_are_additive() {
+    // Screens page — dynamic registry: the three management commands + the ScreenView
+    // registry entry round-trip with stable snake_case tags; additive (VERSION unchanged).
+    assert_eq!(
+        to_json(&Command::SetScreenEnabled {
+            screen: "lower-third".into(),
+            enabled: false,
+        })
+        .unwrap(),
+        r#"{"cmd":"set_screen_enabled","screen":"lower-third","enabled":false}"#
+    );
+    assert_eq!(
+        to_json(&Command::AddScreen {
+            role: "stream".into()
+        })
+        .unwrap(),
+        r#"{"cmd":"add_screen","role":"stream"}"#
+    );
+    assert_eq!(
+        to_json(&Command::RemoveScreen {
+            screen: "stream-2".into()
+        })
+        .unwrap(),
+        r#"{"cmd":"remove_screen","screen":"stream-2"}"#
+    );
+    for cmd in [
+        Command::SetScreenEnabled {
+            screen: "main".into(),
+            enabled: true,
+        },
+        Command::AddScreen {
+            role: "lower-third".into(),
+        },
+        Command::RemoveScreen { screen: "x".into() },
+    ] {
+        let json = to_json(&cmd).unwrap();
+        assert_eq!(from_json::<Command>(&json).unwrap(), cmd, "{json}");
+    }
+
+    // ScreenView (the registry entry in OperatorStateView.screens) round-trips; the theme
+    // is skipped when None so a stage/global-following screen stays compact.
+    let audience = ScreenView {
+        screen: "lower-third".into(),
+        role: "lower-third".into(),
+        enabled: true,
+        deletable: false,
+        theme: Some("high-contrast".into()),
+    };
+    let aj = to_json(&audience).unwrap();
+    assert!(aj.contains(r#""deletable":false"#), "{aj}");
+    assert!(aj.contains(r#""theme":"high-contrast""#), "{aj}");
+    assert_eq!(from_json::<ScreenView>(&aj).unwrap(), audience);
+    let stage = ScreenView {
+        screen: "stage".into(),
+        role: "stage".into(),
+        enabled: false,
+        deletable: false,
+        theme: None,
+    };
+    let sj = to_json(&stage).unwrap();
+    assert!(!sj.contains("\"theme\""), "a None theme is skipped: {sj}");
+    assert_eq!(from_json::<ScreenView>(&sj).unwrap(), stage);
     assert_eq!(VERSION, 2);
 }
 
@@ -274,6 +340,7 @@ fn transcript_and_detection_view_fields_are_additive() {
         themes: vec![],
         saved_themes: vec![],
         screen_themes: vec![],
+        screens: vec![],
         transcript: vec![TranscriptSegmentView {
             id: 0,
             start_ms: 0,
@@ -461,6 +528,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         themes: vec![],
         saved_themes: vec![],
         screen_themes: vec![],
+        screens: vec![],
         transcript: vec![],
         detections: vec![],
     };
@@ -500,6 +568,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         themes: vec![],
         saved_themes: vec![],
         screen_themes: vec![],
+        screens: vec![],
         transcript: vec![],
         detections: vec![],
     };
@@ -539,6 +608,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         ],
         saved_themes: vec![],
         screen_themes: vec![],
+        screens: vec![],
         transcript: vec![],
         detections: vec![],
     };
@@ -569,6 +639,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
             theme_json: r#"{"background":{"r":1,"g":2,"b":3,"a":255}}"#.into(),
         }],
         screen_themes: vec![],
+        screens: vec![],
         transcript: vec![],
         detections: vec![],
     };
@@ -605,6 +676,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
                 theme: "lower-third".into(),
             },
         ],
+        screens: vec![],
         transcript: vec![],
         detections: vec![],
     };

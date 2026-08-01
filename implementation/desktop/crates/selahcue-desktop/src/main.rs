@@ -25,7 +25,8 @@ use selahcue_app::{
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_data::session_repo::SessionState;
 use selahcue_data::{
-    output_repo, plan_repo, saved_theme_repo, screen_theme_repo, session_repo, DataError, Database,
+    output_repo, plan_repo, saved_theme_repo, screen_repo, screen_theme_repo, session_repo,
+    DataError, Database,
 };
 use selahcue_engine::raster::FrameBuffer;
 use selahcue_lan::protocol::{Command, DisplayView, OutputStatusView, PairingInvite};
@@ -469,6 +470,37 @@ impl SessionStore {
         }
     }
 
+    /// The persisted screen registry (`(screen, role, enabled, deletable)`), if any
+    /// (Screens page — dynamic registry). The controller recovers to the built-in default
+    /// when this is empty/corrupt.
+    fn load_screens(&self) -> Vec<(String, String, bool, bool)> {
+        self.db
+            .as_ref()
+            .and_then(|db| match screen_repo::load_all(db) {
+                Ok(rows) => Some(rows),
+                Err(e) => {
+                    eprintln!("SelahCue: could not read the screen registry ({e}).");
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    /// Persist the whole screen registry (reported, never fatal). Returns whether the
+    /// write succeeded so the caller can re-arm the dirty flag on failure.
+    fn save_screens(&self, screens: &[(String, String, bool, bool)]) -> bool {
+        let Some(db) = self.db.as_ref() else {
+            return true;
+        };
+        match screen_repo::save_all(db, screens) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("SelahCue: could not persist the screen registry ({e}).");
+                false
+            }
+        }
+    }
+
     /// Persist the (edited) plan: update in place, or insert on the first save.
     /// Returns whether the write succeeded (the caller re-arms the retry).
     fn save_plan(&mut self, plan: &ServicePlan) -> bool {
@@ -883,6 +915,10 @@ impl App {
             // applies `main` (a no-op recompose while nothing is staged) so `restore()`
             // then composes the restored content with every override in place.
             c.load_saved_themes(store.load_saved_themes());
+            // The screen registry loads BEFORE the per-screen theme map, so a virtual
+            // screen's theme survives (`load_screen_themes` keeps only themes for a screen
+            // in the registry). An empty/corrupt registry recovers to the built-ins.
+            c.load_screen_registry(store.load_screens());
             c.load_screen_themes(store.load_screen_themes());
             match &restored {
                 Some(snap) => {
@@ -1107,6 +1143,25 @@ impl App {
                 .collect();
             if !self.store.save_screen_themes(&themes) {
                 c.mark_screen_themes_dirty(); // failed write: retry next frame
+            }
+        }
+        // The screen registry (Screens page — dynamic registry) persists on any
+        // enable/add/delete, so the operator's screen set survives a restart.
+        if c.take_screen_registry_dirty() {
+            let screens: Vec<(String, String, bool, bool)> = c
+                .screen_registry()
+                .iter()
+                .map(|s| {
+                    (
+                        s.id.clone(),
+                        s.role.as_tag().to_string(),
+                        s.enabled,
+                        s.deletable,
+                    )
+                })
+                .collect();
+            if !self.store.save_screens(&screens) {
+                c.mark_screen_registry_dirty(); // failed write: retry next frame
             }
         }
         // Plan edits persist immediately (rare, operator-driven actions) — and the
@@ -1378,11 +1433,25 @@ impl ApplicationHandler for App {
                     return;
                 };
                 // Each window presents its own surface from the same shared live state.
+                // A DISABLED screen (Screens page — dynamic registry) shows black: a
+                // per-screen mute distinct from global blackout.
                 if self.main.as_ref().is_some_and(|r| r.window.id() == id) {
+                    let live = c.presenter().live_output();
+                    let black;
+                    let main_out = if c.is_screen_enabled("main") {
+                        live
+                    } else {
+                        black = FrameBuffer::filled(
+                            live.width(),
+                            live.height(),
+                            selahcue_present::Rgba::BLACK,
+                        );
+                        &black
+                    };
                     let presented = self
                         .main
                         .as_mut()
-                        .map(|r| r.render(c.presenter().live_output()))
+                        .map(|r| r.render(main_out))
                         .unwrap_or(false);
                     // Smoke mode (86ajpevzp): the main window produced a real frame —
                     // report time-to-first-frame (from App init) and exit cleanly (0).
@@ -1394,8 +1463,22 @@ impl ApplicationHandler for App {
                         );
                         event_loop.exit();
                     }
-                } else if let Some(r) = self.stage.as_mut() {
-                    r.render(c.stage_output());
+                } else if self.stage.is_some() {
+                    let stage_live = c.stage_output();
+                    let black;
+                    let stage_out = if c.is_screen_enabled("stage") {
+                        stage_live
+                    } else {
+                        black = FrameBuffer::filled(
+                            stage_live.width(),
+                            stage_live.height(),
+                            selahcue_present::Rgba::BLACK,
+                        );
+                        &black
+                    };
+                    if let Some(r) = self.stage.as_mut() {
+                        r.render(stage_out);
+                    }
                 }
             }
             WindowEvent::KeyboardInput {
@@ -1850,6 +1933,21 @@ fn main() {
                     .map(|(s, t)| (s.clone(), t.clone()))
                     .collect();
                 app.store.save_screen_themes(&themes);
+            }
+            if c.take_screen_registry_dirty() {
+                let screens: Vec<(String, String, bool, bool)> = c
+                    .screen_registry()
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.id.clone(),
+                            s.role.as_tag().to_string(),
+                            s.enabled,
+                            s.deletable,
+                        )
+                    })
+                    .collect();
+                app.store.save_screens(&screens);
             }
             app.store.save_session(&c.snapshot(Instant::now()));
         }

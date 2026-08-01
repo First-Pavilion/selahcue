@@ -145,6 +145,23 @@ pub enum Command {
     /// or a saved-library name. Each screen renders the same live content under its own
     /// theme. An unknown screen or unresolvable name is rejected. Operator-only.
     SetScreenTheme { screen: String, name: String },
+    /// Enable or disable a SCREEN by id (Screens page — dynamic registry). A disabled
+    /// screen composes safe all-black (a per-screen MUTE, distinct from global
+    /// [`Command::Blackout`]) and its preview goes black; re-enabling restores it. Any
+    /// registry screen (built-in or virtual) may be enabled/disabled. An unknown screen
+    /// is rejected. Operator-only (`ConfigureOutputs`).
+    SetScreenEnabled { screen: String, enabled: bool },
+    /// Add a VIRTUAL Audience-class screen to the registry (Screens page): `role` is
+    /// `lower-third` or `stream` (never `main`/`stage` — those are built-in). The host
+    /// mints a stable id (e.g. `stream-2`), enabled + deletable. Rejected at the bounded
+    /// screen cap. Physical NDI/SDI/stream DELIVERY is a later affordance — a virtual
+    /// screen composes + previews on-demand but does not stream yet. Operator-only.
+    AddScreen { role: String },
+    /// Remove a screen from the registry by id (Screens page). ONLY a `deletable`
+    /// (virtual) screen — a built-in (`main`/`lower-third`/`stream`/`stage`) is rejected
+    /// server-side. Also drops that screen's per-screen theme override. Idempotent for an
+    /// already-absent id. Operator-only (`ConfigureOutputs`).
+    RemoveScreen { screen: String },
     /// Feed one segment into the live-transcript stream (R3). This is the
     /// STT-provider ingestion channel — the default provider is operator/host-injected
     /// text; a real on-device engine feeds the same path. The detection engine scans
@@ -381,6 +398,13 @@ pub struct OperatorStateView {
     /// empty so the pinned v2 fixtures stay byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub screen_themes: Vec<ScreenThemeView>,
+    /// The SCREEN REGISTRY (Screens page — dynamic registry): every managed screen
+    /// (built-in + virtual) with its role, enable state, deletability, and theme. Drives
+    /// the Screens page rows, the Enable toggle, and the delete-on-virtual affordance.
+    /// Omitted when empty (an older/non-desktop host) so the pinned v2 fixtures stay
+    /// byte-identical; the shell falls back to `screen_themes` when this is absent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screens: Vec<ScreenView>,
     /// The recent live-transcript segments (a bounded tail, oldest first) for the
     /// operator's transcript panel (R3). Omitted when empty so the pinned v2 fixtures
     /// stay byte-identical.
@@ -435,6 +459,28 @@ pub struct ScreenThemeView {
     pub screen: String,
     /// The assigned theme name (a built-in or a saved-library name).
     pub theme: String,
+}
+
+/// One entry in the SCREEN REGISTRY (Screens page — dynamic registry): a screen the
+/// operator manages, with its role, enable state, and whether it may be deleted. The
+/// registry supersedes the fixed audience-screen set — built-ins (`main`/`lower-third`/
+/// `stream`/`stage`) plus any virtual screens the operator added.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenView {
+    /// The screen id (`main` / `lower-third` / `stream` / `stage`, or a minted virtual id).
+    pub screen: String,
+    /// Stable role tag: `main` / `lower-third` / `stream` (Audience-class) or `stage`.
+    pub role: String,
+    /// Whether the screen is currently enabled (a disabled screen composes safe-black).
+    pub enabled: bool,
+    /// Whether the operator may DELETE this screen (true only for virtual screens;
+    /// built-ins may be disabled but never deleted).
+    pub deletable: bool,
+    /// The screen's assigned theme name (Audience-class only), if any. `None` for the
+    /// `stage` screen (it renders a stage layout, not a theme) or a screen following the
+    /// global theme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 /// One output role (main/stage) and where it currently renders.

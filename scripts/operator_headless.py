@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 70
+EXPECTED_MIN_CHECKS = 81
 
 
 def find_chrome():
@@ -92,7 +92,13 @@ STUB = r"""
     live_scripture:"Genesis 1:13", live_free_text:null,
     outputs:[{role:"main", assigned:true, assigned_key:"d1", display:"Main", width:1920, height:1080}],
     displays:[{key:"d1", name:"Main", width:1920, height:1080}], translations:["KJV"],
-    theme:"classic", themes:["classic"], saved_themes:[], screen_themes:[] };
+    theme:"classic", themes:["classic"], saved_themes:[], screen_themes:[],
+    screens:[
+      {screen:"main", role:"main", enabled:true, deletable:false, theme:null},
+      {screen:"lower-third", role:"lower-third", enabled:true, deletable:false, theme:null},
+      {screen:"stream", role:"stream", enabled:true, deletable:false, theme:null},
+      {screen:"stage", role:"stage", enabled:true, deletable:false, theme:null}
+    ] };
   var T = {
     background:{r:8,g:10,b:20,a:255},
     title:{x_permille:60,y_permille:150,w_permille:880,h_permille:110,align_h:"center",align_v:"middle",size_permille:48,line_height_permille:1200,color:{r:242,g:181,b:60,a:255},fit:"shrink_to_fit",visible:true},
@@ -117,6 +123,23 @@ STUB = r"""
                  "lower-third": "\x00\xff\x00\xff\x00\x00\x00\xff",
                  "stream": "\x00\x00\xff\xff\x00\x00\x00\xff" };
       return Promise.resolve({available:true, frame:{w:2, h:1, rgba: btoa(px[args.screen] || "\x33\x33\x33\xff\x00\x00\x00\xff")}});
+    }
+    if (cmd === "set_screen_enabled") {
+      // Simulate an RBAC-denied / older-host rejection to exercise the no-lie revert.
+      if (window.__rejectSetEnabled) return Promise.reject("denied");
+      V.screens.forEach(function(s){ if (s.screen === args.screen) s.enabled = args.enabled; });
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
+    if (cmd === "add_screen") {
+      // Mint role-N (smallest N>=2 free), mirroring the host registry.
+      var ids = V.screens.map(function(s){ return s.screen; });
+      var n = 2; while (ids.indexOf(args.role + "-" + n) >= 0) n++;
+      V.screens.push({screen: args.role + "-" + n, role: args.role, enabled:true, deletable:true, theme:null});
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
+    if (cmd === "remove_screen") {
+      V.screens = V.screens.filter(function(s){ return !(s.screen === args.screen && s.deletable); });
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
     }
     if (cmd === "set_custom_theme") return Promise.resolve({});
     if (cmd === "save_theme") return Promise.resolve({saved_themes:[{name:args.name, theme_json:args.themeJson}]});
@@ -405,6 +428,64 @@ DRIVER = r"""
       ok(pixel(byScreen["main"]) !== pixel(byScreen["lower-third"]) &&
          pixel(byScreen["lower-third"]) !== pixel(byScreen["stream"]),
          "per-screen: the three screens render DIFFERENT designs at once");
+
+      // === Screens page — dynamic registry: enable/disable + add/delete virtual ===
+      var rowFor = function(id){ return document.querySelector('#screens-list .screen-row[data-screen="'+id+'"]'); };
+      ok(!!rowFor("main") && !!rowFor("lower-third") && !!rowFor("stream") && !!rowFor("stage"),
+         "registry: the four built-in screen rows render (main/lower-third/stream/stage)");
+      ok(!!rowFor("main").querySelector('.screen-enable-toggle') && !rowFor("main").querySelector('.screen-delete'),
+         "registry: a built-in row has an enable toggle but NO delete control");
+
+      // Disabling a screen invokes set_screen_enabled(false) and dims the row.
+      var beforeToggle = window.__calls.length;
+      rowFor("lower-third").querySelector('.screen-enable-toggle').click();
+      await waitFor(function(){ var r = rowFor("lower-third"); return r && r.classList.contains("screen-disabled"); });
+      var disableCall = window.__calls.slice(beforeToggle).filter(function(c){ return c.cmd === "set_screen_enabled"; })[0];
+      ok(disableCall && disableCall.args.screen === "lower-third" && disableCall.args.enabled === false,
+         "registry: toggling a screen invokes set_screen_enabled(enabled=false)");
+      ok(rowFor("lower-third").classList.contains("screen-disabled"),
+         "registry: a disabled screen row is dimmed");
+
+      // '+ Add screen' (role=stream) creates a virtual, DELETABLE row.
+      document.getElementById("screen-add-role").value = "stream";
+      document.getElementById("screen-add-btn").click();
+      await waitFor(function(){ return !!rowFor("stream-2"); });
+      ok(!!rowFor("stream-2"), "registry: '+ Add screen' creates a virtual stream-2 row");
+      ok(!!rowFor("stream-2").querySelector('.screen-delete'),
+         "registry: a virtual row HAS a delete control (unlike a built-in)");
+      ok(window.__calls.some(function(c){ return c.cmd === "add_screen" && c.args.role === "stream"; }),
+         "registry: add_screen invoked with role=stream");
+
+      // Deleting the virtual screen invokes remove_screen and removes its row.
+      rowFor("stream-2").querySelector('.screen-delete').click();
+      await waitFor(function(){ return !rowFor("stream-2"); });
+      ok(!rowFor("stream-2"), "registry: deleting a virtual screen removes its row");
+      ok(window.__calls.some(function(c){ return c.cmd === "remove_screen" && c.args.screen === "stream-2"; }),
+         "registry: remove_screen invoked for the virtual screen");
+
+      // A REJECTED enable-toggle (RBAC-denied / older host) must revert to authoritative,
+      // never leave the checkbox lying (review HIGH fix).
+      window.__rejectSetEnabled = true;
+      var streamCb = rowFor("stream").querySelector('.screen-enable-toggle');
+      var wasChecked = streamCb.checked; // true (enabled)
+      streamCb.click(); // attempt to disable — the stub rejects
+      await new Promise(function(r){ setTimeout(r, 80); });
+      var streamRow = rowFor("stream");
+      ok(streamRow.querySelector('.screen-enable-toggle').checked === wasChecked &&
+         !streamRow.classList.contains("screen-disabled"),
+         "registry: a REJECTED enable-toggle reverts to authoritative (no permanent desync)");
+      window.__rejectSetEnabled = false;
+
+      // Keyboard focus survives the destructive rebuild (a11y fix): focus a toggle, activate
+      // it, and focus is restored to the rebuilt equivalent control.
+      var mainCb = rowFor("main").querySelector('.screen-enable-toggle');
+      mainCb.focus();
+      mainCb.click(); // disable main (succeeds) → full rebuild
+      await waitFor(function(){ var r = rowFor("main"); return r && r.classList.contains("screen-disabled"); });
+      var active = document.activeElement;
+      ok(active && active.classList.contains("screen-enable-toggle") &&
+         active.closest('.screen-row') && active.closest('.screen-row').dataset.screen === "main",
+         "registry: keyboard focus is restored to the toggle after the rebuild (a11y)");
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
     el("__r").textContent = "RESULTS\n"+R.join("\n")+"\nDONE("+R.length+")";
   }

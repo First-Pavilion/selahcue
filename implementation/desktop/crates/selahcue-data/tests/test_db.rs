@@ -19,7 +19,7 @@ fn schema_version_is_pinned() {
     // accidental reorder/removal is caught. v8 = session_state.theme (S8-3b);
     // v9 = session_state.custom_theme (S8-3c); v10 = plan_item.theme (S8-3d);
     // v11 = saved_theme library table (86ajq4xmy); v12 = screen_theme table (86ajq321k).
-    assert_eq!(migrations::target_version(), 12);
+    assert_eq!(migrations::target_version(), 13);
 }
 
 #[test]
@@ -35,6 +35,7 @@ fn a_pre_saved_theme_database_upgrades_and_gains_the_saved_theme_table() {
         conn.execute_batch(
             "DROP TABLE saved_theme;
              DROP TABLE screen_theme;
+             DROP TABLE screen;
              PRAGMA user_version = 10;",
         )
         .unwrap();
@@ -42,8 +43,8 @@ fn a_pre_saved_theme_database_upgrades_and_gains_the_saved_theme_table() {
     let db = Database::open(&path).unwrap();
     assert_eq!(
         db.schema_version().unwrap(),
-        12,
-        "re-ran the v11 + v12 migrations"
+        migrations::target_version(),
+        "re-ran the v11 + v12 + v13 migrations"
     );
     let present: i64 = db
         .conn()
@@ -59,21 +60,27 @@ fn a_pre_saved_theme_database_upgrades_and_gains_the_saved_theme_table() {
 #[test]
 fn a_pre_screen_theme_database_upgrades_and_gains_the_screen_theme_table() {
     // A v11 DB (no screen_theme table) must upgrade cleanly to v12 — a fresh table, so
-    // existing data survives and the per-screen map starts empty. Dropping the table
-    // + resetting to v11 forces the v11->v12 migration to re-run.
+    // existing data survives and the per-screen map starts empty. Dropping the tables
+    // added after v11 (screen_theme at v12, screen at v13) + resetting to v11 forces the
+    // v11->v12->v13 migrations to re-run.
     let file = tempfile::NamedTempFile::new().unwrap();
     let path = file.path().to_path_buf();
     {
         let _ = Database::open(&path).unwrap();
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(
-            "DROP TABLE screen_theme;
+            "DROP TABLE screen;
+             DROP TABLE screen_theme;
              PRAGMA user_version = 11;",
         )
         .unwrap();
     }
     let db = Database::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), 12, "re-ran the v12 migration");
+    assert_eq!(
+        db.schema_version().unwrap(),
+        migrations::target_version(),
+        "re-ran the migrations up to target"
+    );
     let present: i64 = db
         .conn()
         .query_row(
@@ -83,6 +90,42 @@ fn a_pre_screen_theme_database_upgrades_and_gains_the_screen_theme_table() {
         )
         .unwrap();
     assert_eq!(present, 1, "screen_theme table present after upgrade");
+}
+
+#[test]
+fn a_pre_registry_database_upgrades_and_gains_the_screen_table() {
+    // A v12 DB (screen_theme but no screen-registry table) must upgrade cleanly to v13 —
+    // a fresh `screen` table, so existing data survives and the registry starts empty
+    // (the controller recovers to the four built-in screens). Dropping `screen` + resetting
+    // to v12 forces the v12->v13 migration to re-run.
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_path_buf();
+    {
+        let _ = Database::open(&path).unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "DROP TABLE screen;
+             PRAGMA user_version = 12;",
+        )
+        .unwrap();
+    }
+    let db = Database::open(&path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), 13, "re-ran the v13 migration");
+    let present: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'screen'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(present, 1, "screen registry table present after upgrade");
+    // The registry starts empty — the controller seeds the built-ins on load.
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM screen", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0, "the registry table starts empty");
 }
 
 #[test]
@@ -98,6 +141,7 @@ fn a_pre_per_item_theme_database_upgrades_and_gains_the_plan_item_theme_column()
             "ALTER TABLE plan_item DROP COLUMN theme;
              DROP TABLE saved_theme;
              DROP TABLE screen_theme;
+             DROP TABLE screen;
              PRAGMA user_version = 9;",
         )
         .unwrap();
@@ -105,8 +149,8 @@ fn a_pre_per_item_theme_database_upgrades_and_gains_the_plan_item_theme_column()
     let db = Database::open(&path).unwrap();
     assert_eq!(
         db.schema_version().unwrap(),
-        12,
-        "re-ran the v10 + v11 + v12 migrations"
+        migrations::target_version(),
+        "re-ran the v10 + v11 + v12 + v13 migrations"
     );
     let present: i64 = db
         .conn()
@@ -135,6 +179,7 @@ fn a_pre_theme_database_upgrades_and_gains_the_theme_columns() {
              ALTER TABLE plan_item DROP COLUMN theme;
              DROP TABLE saved_theme;
              DROP TABLE screen_theme;
+             DROP TABLE screen;
              PRAGMA user_version = 7;",
         )
         .unwrap();
@@ -142,8 +187,8 @@ fn a_pre_theme_database_upgrades_and_gains_the_theme_columns() {
     let db = Database::open(&path).unwrap();
     assert_eq!(
         db.schema_version().unwrap(),
-        12,
-        "re-ran the v8 + v9 + v10 + v11 + v12 migrations"
+        migrations::target_version(),
+        "re-ran the v8 + v9 + v10 + v11 + v12 + v13 migrations"
     );
     for col in ["theme", "custom_theme"] {
         let present: i64 = db

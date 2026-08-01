@@ -121,6 +121,21 @@ const MIGRATIONS: &[&str] = &[
         theme_name TEXT NOT NULL
     );
     "#,
+    // v12 -> v13: the SCREEN REGISTRY (Screens page — dynamic registry). Each managed
+    // screen (built-in `main`/`lower-third`/`stream`/`stage` plus any virtual feed the
+    // operator added), its role, enable state, deletability, and a stable ordering. A
+    // fresh table, so an older database opens unchanged and simply starts with an empty
+    // registry — the controller recovers to the default four built-ins when it loads an
+    // empty/corrupt set (`ScreenRegistry::from_persisted`).
+    r#"
+    CREATE TABLE screen (
+        screen    TEXT PRIMARY KEY,
+        role      TEXT NOT NULL,
+        enabled   INTEGER NOT NULL,
+        deletable INTEGER NOT NULL,
+        ordering  INTEGER NOT NULL
+    );
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

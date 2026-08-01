@@ -9,7 +9,7 @@
 use crate::controller::LiveController;
 use selahcue_lan::protocol::{
     Command, DetectionView, OperatorStateView, PlanItemView, SavedThemeView, ScreenThemeView,
-    TimerSnapshot, TranscriptSegmentView,
+    ScreenView, TimerSnapshot, TranscriptSegmentView,
 };
 use selahcue_present::FrameBuffer;
 use serde::Serialize;
@@ -76,6 +76,10 @@ pub struct OperatorView {
     /// The per-SCREEN theme map (86ajq321k): each Audience screen and its assigned theme,
     /// so the Screens page shows a distinct theme per screen.
     pub screen_themes: Vec<ScreenThemeView>,
+    /// The screen registry (Screens page — dynamic registry): every managed screen with
+    /// its role, enable state, deletability, and theme — drives the Enable toggle and the
+    /// delete-on-virtual affordance.
+    pub screens: Vec<ScreenView>,
     /// The recent live-transcript segments (bounded tail, oldest first) — the transcript
     /// panel (R3).
     pub transcript: Vec<TranscriptSegmentView>,
@@ -137,10 +141,18 @@ impl OperatorShell {
     pub fn console_thumbnails(&self, max_w: u32, max_h: u32) -> (FrameBuffer, FrameBuffer) {
         self.with(|c| {
             let p = c.presenter();
-            (
-                p.preview_output().thumbnail(max_w, max_h),
-                p.live_output().thumbnail(max_w, max_h),
-            )
+            let preview = p.preview_output().thumbnail(max_w, max_h);
+            // The Live monitor IS the `main` audience output — a disabled `main` screen mutes
+            // it to black here too (matching the physical main window + the Screens preview),
+            // so the local operator never sees "airing" content while main is muted.
+            let live = if c.is_screen_enabled("main") {
+                p.live_output().thumbnail(max_w, max_h)
+            } else {
+                let out = p.live_output();
+                FrameBuffer::filled(out.width(), out.height(), selahcue_present::Rgba::BLACK)
+                    .thumbnail(max_w, max_h)
+            };
+            (preview, live)
         })
     }
 
@@ -316,6 +328,26 @@ impl OperatorShell {
         })
     }
 
+    /// Enable or disable a screen by id (Screens page — dynamic registry).
+    pub fn set_screen_enabled(&self, screen: &str, enabled: bool) -> OperatorView {
+        self.act(&Command::SetScreenEnabled {
+            screen: screen.into(),
+            enabled,
+        })
+    }
+
+    /// Add a virtual Audience-class screen (`role` is `lower-third`/`stream`).
+    pub fn add_screen(&self, role: &str) -> OperatorView {
+        self.act(&Command::AddScreen { role: role.into() })
+    }
+
+    /// Remove a virtual screen by id (a built-in is rejected by the controller).
+    pub fn remove_screen(&self, screen: &str) -> OperatorView {
+        self.act(&Command::RemoveScreen {
+            screen: screen.into(),
+        })
+    }
+
     /// Search scripture: reference parse first, then keyword search over the
     /// bundled translation. Each hit carries its verse text (stage by reference).
     pub fn scripture_search(
@@ -390,6 +422,7 @@ impl From<OperatorView> for OperatorStateView {
             themes: v.themes,
             saved_themes: v.saved_themes,
             screen_themes: v.screen_themes,
+            screens: v.screens,
             transcript: v.transcript,
             detections: v.detections,
         }
@@ -415,6 +448,7 @@ impl From<OperatorStateView> for OperatorView {
             themes: v.themes,
             saved_themes: v.saved_themes,
             screen_themes: v.screen_themes,
+            screens: v.screens,
             transcript: v.transcript,
             detections: v.detections,
         }
@@ -690,6 +724,38 @@ impl RemoteOperator {
         self.act(Command::SetScreenTheme {
             screen: screen.into(),
             name: name.into(),
+        })
+        .await
+    }
+
+    /// Enable or disable a screen by id on the host (Screens page — dynamic registry).
+    pub async fn set_screen_enabled(
+        &mut self,
+        screen: &str,
+        enabled: bool,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetScreenEnabled {
+            screen: screen.into(),
+            enabled,
+        })
+        .await
+    }
+
+    /// Add a virtual Audience-class screen on the host (`role` is `lower-third`/`stream`).
+    pub async fn add_screen(
+        &mut self,
+        role: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::AddScreen { role: role.into() }).await
+    }
+
+    /// Remove a virtual screen by id on the host (a built-in is rejected).
+    pub async fn remove_screen(
+        &mut self,
+        screen: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::RemoveScreen {
+            screen: screen.into(),
         })
         .await
     }

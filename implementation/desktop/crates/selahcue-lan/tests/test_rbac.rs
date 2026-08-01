@@ -101,6 +101,19 @@ fn set_theme_is_operator_only_output_config() {
             screen: "lower-third".into(),
             name: "lower-third".into(),
         },
+        // The dynamic screen-registry management commands are the SAME output-config
+        // permission — Operator-only, and in particular DENIED for a Monitor-only Viewer
+        // (a disable/add/delete is a write, never a read).
+        Command::SetScreenEnabled {
+            screen: "lower-third".into(),
+            enabled: false,
+        },
+        Command::AddScreen {
+            role: "stream".into(),
+        },
+        Command::RemoveScreen {
+            screen: "stream-2".into(),
+        },
     ] {
         assert!(authorize(Role::Operator, &cmd), "operator {cmd:?}");
         assert!(!authorize(Role::Producer, &cmd), "producer {cmd:?}");

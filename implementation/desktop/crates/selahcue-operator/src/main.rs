@@ -141,6 +141,43 @@ impl Backend {
             Backend::Local(s) => Ok(s.set_screen_theme(&screen, &name)),
         }
     }
+    async fn set_screen_enabled(
+        &self,
+        screen: String,
+        enabled: bool,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_screen_enabled(&screen, enabled)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_screen_enabled(&screen, enabled)),
+        }
+    }
+    async fn add_screen(&self, role: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .add_screen(&role)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.add_screen(&role)),
+        }
+    }
+    async fn remove_screen(&self, screen: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .remove_screen(&screen)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.remove_screen(&screen)),
+        }
+    }
     async fn select(&self, item_id: u64) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
@@ -402,6 +439,22 @@ async fn set_screen_theme(
     state: State<'_, AppState>,
 ) -> Result<OperatorView, String> {
     state.backend.set_screen_theme(screen, name).await
+}
+#[tauri::command]
+async fn set_screen_enabled(
+    screen: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_screen_enabled(screen, enabled).await
+}
+#[tauri::command]
+async fn add_screen(role: String, state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.add_screen(role).await
+}
+#[tauri::command]
+async fn remove_screen(screen: String, state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.remove_screen(screen).await
 }
 /// The built-in themes as `[{ name, theme }]` (theme = the serialized `Theme`) so the
 /// Theme Designer edits/previews the REAL built-ins from `theme.rs` — no hand-mirrored
@@ -827,6 +880,9 @@ fn main() {
             save_theme,
             delete_theme,
             set_screen_theme,
+            set_screen_enabled,
+            add_screen,
+            remove_screen,
             preview_theme,
             render_console,
             render_screen,

@@ -2900,3 +2900,329 @@ fn get_screen_frame_command_returns_a_themed_thumbnail_per_screen() {
     );
     assert_ne!(mb.rgba, main.rgba, "blackout differs from the themed frame");
 }
+
+// ---- Screens page: dynamic screen registry (enable/disable + add/delete virtual) ----
+
+/// The operator view exposes the four built-in screens (main/lower-third/stream/stage),
+/// all enabled, none deletable — the default registry.
+#[test]
+fn registry_seeds_the_four_builtins_none_deletable() {
+    let c = controller_live();
+    let screens = c.operator_view().screens;
+    let ids: Vec<&str> = screens.iter().map(|s| s.screen.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["main", "lower-third", "stream", "stage"],
+        "order stable"
+    );
+    for s in &screens {
+        assert!(s.enabled, "{} enabled by default", s.screen);
+        assert!(!s.deletable, "{} is a built-in (not deletable)", s.screen);
+    }
+    // Roles are the stable tags; only the stage carries no theme slot.
+    let stage = screens.iter().find(|s| s.screen == "stage").unwrap();
+    assert_eq!(stage.role, "stage");
+    assert_eq!(stage.theme, None);
+}
+
+/// Disabling a screen composes safe all-black (a per-screen mute); re-enabling restores
+/// the themed frame. `is_screen_enabled` mirrors the state for the desktop window gate.
+#[test]
+fn disabling_a_screen_blacks_its_frame_and_reenabling_restores() {
+    // RGB-black test (BLACK is opaque — the alpha byte is 255, so check the RGB triplets).
+    let rgb_black = |fb: &selahcue_present::FrameBuffer| {
+        fb.bytes()
+            .chunks_exact(4)
+            .all(|px| px[0] == 0 && px[1] == 0 && px[2] == 0)
+    };
+    let mut c = controller_live();
+    let themed = c.compose_screen("lower-third").unwrap().bytes().to_vec();
+    assert!(
+        themed
+            .chunks_exact(4)
+            .any(|px| px[0] != 0 || px[1] != 0 || px[2] != 0),
+        "the themed lower-third frame has visible (non-black) content"
+    );
+
+    assert_eq!(
+        c.apply(&Command::SetScreenEnabled {
+            screen: "lower-third".into(),
+            enabled: false,
+        }),
+        ControllerReply::Ack
+    );
+    assert!(!c.is_screen_enabled("lower-third"));
+    let disabled = c.compose_screen("lower-third").unwrap();
+    assert!(rgb_black(&disabled), "a disabled screen composes all-black");
+    // An enabled sibling is unaffected (per-screen, not global blackout).
+    assert!(!rgb_black(&c.compose_screen("main").unwrap()));
+    assert!(c.is_screen_enabled("main"));
+
+    assert_eq!(
+        c.apply(&Command::SetScreenEnabled {
+            screen: "lower-third".into(),
+            enabled: true,
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.compose_screen("lower-third").unwrap().bytes(),
+        themed.as_slice(),
+        "re-enabling restores the exact themed frame"
+    );
+    // An unknown screen cannot be toggled.
+    assert_eq!(
+        c.apply(&Command::SetScreenEnabled {
+            screen: "disco".into(),
+            enabled: false,
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+}
+
+/// Adding a virtual audience screen mints a stable id, composes like a built-in, and can
+/// carry its own theme; a bad/singleton role is rejected.
+#[test]
+fn add_virtual_screen_mints_a_composable_audience_feed() {
+    let mut c = controller_live();
+    assert_eq!(
+        c.apply(&Command::AddScreen {
+            role: "stream".into()
+        }),
+        ControllerReply::Ack
+    );
+    let screens = c.operator_view().screens;
+    let added = screens
+        .iter()
+        .find(|s| s.screen == "stream-2")
+        .expect("stream-2 minted");
+    assert_eq!(added.role, "stream");
+    assert!(added.enabled && added.deletable);
+    // The virtual feed composes the live content (follows global until themed).
+    assert!(c.compose_screen("stream-2").is_some());
+    // It can carry its own theme (Audience-class).
+    assert_eq!(
+        c.apply(&Command::SetScreenTheme {
+            screen: "stream-2".into(),
+            name: "high-contrast".into(),
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.screen_themes().get("stream-2").map(String::as_str),
+        Some("high-contrast")
+    );
+
+    // A second stream feed gets the next free id, deterministically.
+    assert_eq!(
+        c.apply(&Command::AddScreen {
+            role: "stream".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert!(c
+        .operator_view()
+        .screens
+        .iter()
+        .any(|s| s.screen == "stream-3"));
+    // A lower-third virtual feed is independent.
+    assert_eq!(
+        c.apply(&Command::AddScreen {
+            role: "lower-third".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert!(c
+        .operator_view()
+        .screens
+        .iter()
+        .any(|s| s.screen == "lower-third-2"));
+
+    // Singleton / unknown roles cannot be added.
+    for bad in ["main", "stage", "bogus"] {
+        assert_eq!(
+            c.apply(&Command::AddScreen { role: bad.into() }),
+            ControllerReply::Deny(DenyReason::BadRequest),
+            "role {bad} is not addable"
+        );
+    }
+}
+
+/// Only a virtual screen can be deleted; a built-in delete is rejected server-side, an
+/// absent id is idempotent, and deleting a screen drops its per-screen theme.
+#[test]
+fn delete_is_virtual_only_and_drops_the_theme() {
+    let mut c = controller_live();
+    c.apply(&Command::AddScreen {
+        role: "stream".into(),
+    });
+    c.apply(&Command::SetScreenTheme {
+        screen: "stream-2".into(),
+        name: "classic".into(),
+    });
+    assert!(c.screen_themes().get("stream-2").is_some());
+
+    // A built-in is never deletable — even though it exists.
+    for builtin in ["main", "lower-third", "stream", "stage"] {
+        assert_eq!(
+            c.apply(&Command::RemoveScreen {
+                screen: builtin.into()
+            }),
+            ControllerReply::Deny(DenyReason::BadRequest),
+            "built-in {builtin} may be disabled but never deleted"
+        );
+        assert!(
+            c.screen_registry().get(builtin).is_some(),
+            "{builtin} still present"
+        );
+    }
+
+    // The virtual screen deletes, and its theme override goes with it.
+    assert_eq!(
+        c.apply(&Command::RemoveScreen {
+            screen: "stream-2".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert!(c.screen_registry().get("stream-2").is_none());
+    assert!(
+        c.screen_themes().get("stream-2").is_none(),
+        "theme dropped with the screen"
+    );
+    assert!(
+        c.compose_screen("stream-2").is_none(),
+        "a deleted screen no longer composes"
+    );
+
+    // A double-delete (already absent) is idempotent, not an error.
+    assert_eq!(
+        c.apply(&Command::RemoveScreen {
+            screen: "stream-2".into()
+        }),
+        ControllerReply::Ack
+    );
+}
+
+/// The registry is bounded: `AddScreen` is refused at `MAX_SCREENS`, and the registry
+/// never grows past the cap however many adds are attempted (no-leak).
+#[test]
+fn registry_is_bounded_to_max_screens() {
+    let mut c = controller_live();
+    let start = c.screen_registry().len();
+    // Hammer far more adds than the cap allows.
+    let mut acks = 0usize;
+    for _ in 0..(selahcue_app::MAX_SCREENS * 4) {
+        if c.apply(&Command::AddScreen {
+            role: "stream".into(),
+        }) == ControllerReply::Ack
+        {
+            acks += 1;
+        }
+    }
+    assert_eq!(
+        c.screen_registry().len(),
+        selahcue_app::MAX_SCREENS,
+        "the registry is capped at MAX_SCREENS regardless of add pressure"
+    );
+    assert_eq!(
+        acks,
+        selahcue_app::MAX_SCREENS - start,
+        "only cap-minus-builtins adds succeeded"
+    );
+    // Further adds keep being denied (bounded, deterministic).
+    assert_eq!(
+        c.apply(&Command::AddScreen {
+            role: "stream".into()
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+}
+
+/// `from_persisted` recovers robustly: the four built-ins are always present, a corrupt
+/// (unknown-role) row and an over-cap row are dropped, and built-in enable flags restore.
+#[test]
+fn registry_from_persisted_recovers_and_bounds() {
+    use selahcue_app::ScreenRegistry;
+    // A tampered store: main disabled, one valid virtual, a corrupt role, and a bogus
+    // "virtual" claiming a built-in id — plus far more rows than the cap.
+    let mut rows: Vec<(String, String, bool, bool)> = vec![
+        ("main".into(), "main".into(), false, false), // built-in, disabled
+        ("stream-2".into(), "stream".into(), true, true), // valid virtual
+        ("evil".into(), "not-a-role".into(), true, true), // corrupt role → dropped
+        ("stage".into(), "stage".into(), false, false), // built-in stage, disabled
+    ];
+    for i in 0..100 {
+        rows.push((format!("stream-{}", i + 10), "stream".into(), true, true));
+    }
+    let reg = ScreenRegistry::from_persisted(rows);
+    assert!(reg.len() <= selahcue_app::MAX_SCREENS, "bounded on load");
+    // The four built-ins survive exactly once each, in order.
+    for b in ["main", "lower-third", "stream", "stage"] {
+        assert_eq!(
+            reg.iter().filter(|s| s.id == b).count(),
+            1,
+            "built-in {b} recovered exactly once (no clone)"
+        );
+    }
+    assert!(
+        !reg.is_enabled("main"),
+        "built-in enable flag restored (disabled)"
+    );
+    assert!(
+        !reg.is_enabled("stage"),
+        "stage enable flag restored (disabled)"
+    );
+    assert!(reg.get("stream-2").is_some(), "the valid virtual restored");
+    assert!(reg.get("evil").is_none(), "the corrupt-role row dropped");
+    // An empty store still yields the safe default (never empty / crash).
+    let empty = ScreenRegistry::from_persisted(std::iter::empty());
+    assert_eq!(empty.len(), 4, "empty store recovers to the four built-ins");
+}
+
+/// Review fix (registry lens): the operator console LIVE monitor is the `main` audience
+/// output, so a disabled `main` screen mutes it to black there too — matching the physical
+/// window + the Screens preview. The Preview monitor (the staged feed) is unaffected.
+#[test]
+fn disabling_main_blacks_the_console_live_monitor_not_preview() {
+    let console = |c: &mut LiveController| -> (String, String) {
+        match c.apply(&Command::GetConsoleThumbnails {
+            max_w: 64,
+            max_h: 36,
+        }) {
+            ControllerReply::Message(ServerMessage::ConsoleThumbnails { preview, live }) => {
+                (preview.unwrap().rgba, live.unwrap().rgba)
+            }
+            other => panic!("expected ConsoleThumbnails, got {other:?}"),
+        }
+    };
+    let mut c = controller_live();
+    let (pv_before, lv_before) = console(&mut c);
+
+    // Disable main: the LIVE monitor blacks, the PREVIEW monitor is unchanged.
+    c.apply(&Command::SetScreenEnabled {
+        screen: "main".into(),
+        enabled: false,
+    });
+    let (pv_after, lv_after) = console(&mut c);
+    assert_eq!(
+        pv_before, pv_after,
+        "Preview (the staged feed) is unaffected by a main disable"
+    );
+    assert_ne!(
+        lv_before, lv_after,
+        "the Live monitor changed when main was disabled"
+    );
+
+    // Prove it is BLACK: it must equal the Live thumbnail produced under a global blackout
+    // (the presenter's all-black frame) — same dims, same all-black pixels.
+    c.apply(&Command::SetScreenEnabled {
+        screen: "main".into(),
+        enabled: true,
+    });
+    c.apply(&Command::Blackout { on: true });
+    let (_pv_bo, lv_blackout) = console(&mut c);
+    assert_eq!(
+        lv_after, lv_blackout,
+        "a disabled-main Live monitor equals the blackout (all-black) frame"
+    );
+}

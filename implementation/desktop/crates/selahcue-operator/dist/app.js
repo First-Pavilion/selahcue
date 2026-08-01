@@ -437,12 +437,23 @@
         // absent from the map follows the global; the picker shows that as its selection.
         const screenThemes = {};
         (view.screen_themes || []).forEach((st) => { screenThemes[st.screen] = st.theme; });
-        const key = JSON.stringify([outs, displays, themes, activeTheme, view.screen_themes || [], view.saved_themes || []]);
+        // The SCREEN REGISTRY (Screens page — dynamic registry): the authoritative managed
+        // screen list with role/enabled/deletable. An older host that doesn't send it falls
+        // back to the four built-ins (all enabled, none deletable) so the page still works.
+        const registry = (view.screens && view.screens.length) ? view.screens : [
+          { screen: "main", role: "main", enabled: true, deletable: false },
+          { screen: "lower-third", role: "lower-third", enabled: true, deletable: false },
+          { screen: "stream", role: "stream", enabled: true, deletable: false },
+          { screen: "stage", role: "stage", enabled: true, deletable: false },
+        ];
+        const key = JSON.stringify([outs, displays, themes, activeTheme, view.screen_themes || [], view.saved_themes || [], registry]);
         if (key === outputsKey) return; // pickers are interactive: rebuild only on change
         const list = document.getElementById("screens-list");
-        // Never yank a picker out from under the operator: an open/focused
-        // select survives; the fresh data renders when focus leaves the surface.
-        if (list.contains(document.activeElement)) {
+        // Never yank an OPEN PICKER out from under the operator: a focused <select>
+        // survives, and the fresh data renders when focus leaves it. A toggle/button
+        // click is a completed action, so it does NOT defer — the row updates at once.
+        const ae = document.activeElement;
+        if (ae && list.contains(ae) && ae.tagName === "SELECT") {
           outputsPending = view;
           return;
         }
@@ -515,36 +526,101 @@
           return wrap;
         };
 
-        // --- Full Screens list (per-screen: role → content control) ---
-        list.innerHTML = "";
-        if (!outs.length) {
-          const p = document.createElement("p");
-          p.className = "coming-soon";
-          p.textContent = "No outputs detected — connect a display or start the output window.";
-          list.appendChild(p);
-          return;
+        // --- Full Screens list (registry-driven: per-screen role → content control) ---
+        // Physical output (display assignment + format) is keyed by role for main/stage.
+        const outByRole = {};
+        outs.forEach((o) => { outByRole[o.role] = o; });
+        const displayName = (s) => {
+          if (s.screen === "main") return "Main Screen";
+          if (s.screen === "stage") return "Stage Display";
+          if (s.screen === "lower-third") return "Lower Third";
+          if (s.screen === "stream") return "Stream";
+          // A virtual feed: "Stream 2" / "Lower Third 2" from its role + numeric suffix.
+          const base = s.role === "lower-third" ? "Lower Third" : s.role === "stream" ? "Stream" : s.role;
+          const m = /-(\d+)$/.exec(s.screen);
+          return m ? base + " " + m[1] : base;
+        };
+        const badgeText = (role) =>
+          role === "main" ? "Audience" : role === "stage" ? "Stage"
+            : role === "lower-third" ? "Lower-third" : "Stream";
+
+        // Preserve KEYBOARD focus across the destructive innerHTML rebuild (a11y): a toggle
+        // or button (unlike a <select>, handled above) is destroyed by the rebuild, dropping
+        // focus to <body>. Remember which control was focused so we can re-focus its
+        // equivalent after the rows are rebuilt (a still-existing control; a deleted row's
+        // control simply can't be restored, which is expected).
+        const focused = document.activeElement;
+        let refocusSel = null;
+        if (focused && list.contains(focused)) {
+          if (focused.id === "screen-add-btn" || focused.id === "screen-add-role") {
+            refocusSel = "#" + focused.id;
+          } else {
+            const fr = focused.closest(".screen-row");
+            const fsid = fr && fr.dataset.screen;
+            if (fsid && focused.classList.contains("screen-enable-toggle")) {
+              refocusSel = '.screen-row[data-screen="' + fsid + '"] .screen-enable-toggle';
+            } else if (fsid && focused.classList.contains("screen-delete")) {
+              refocusSel = '.screen-row[data-screen="' + fsid + '"] .screen-delete';
+            }
+          }
         }
-        outs.forEach((o) => {
-          const audience = o.role === "main";
-          const row = document.createElement("div"); row.className = "screen-row";
+        list.innerHTML = "";
+        registry.forEach((s) => {
+          const isStage = s.role === "stage";
+          const audience = !isStage; // main / lower-third / stream are Audience-class
+          const isMain = s.role === "main";
+          const o = outByRole[s.role]; // the physical output for main/stage (if any)
+          const row = document.createElement("div");
+          row.className = "screen-row" + (s.enabled ? "" : " screen-disabled");
+          row.dataset.screen = s.screen;
+
           const head = document.createElement("div"); head.className = "screen-head";
           const name = document.createElement("strong");
-          name.style.fontSize = "17px";
-          name.textContent = audience ? "Main Screen" : "Stage Display";
+          name.style.fontSize = "17px"; name.textContent = displayName(s);
           const rb = document.createElement("span"); rb.className = "role-badge";
-          rb.textContent = audience ? "Audience" : "Stage";
-          const rc = audience ? "var(--accent)" : "var(--warn-ink)";
+          rb.textContent = badgeText(s.role);
+          const rc = isStage ? "var(--warn-ink)" : "var(--accent)";
           rb.style.color = rc; rb.style.borderColor = rc;
           head.appendChild(name); head.appendChild(rb);
+
+          // Right-aligned controls: the Enable toggle + (virtual only) Delete.
+          const controls = document.createElement("div"); controls.className = "screen-controls";
+          const toggle = document.createElement("label"); toggle.className = "screen-enable";
+          const cb = document.createElement("input");
+          cb.type = "checkbox"; cb.checked = s.enabled;
+          cb.className = "screen-enable-toggle"; cb.dataset.screen = s.screen;
+          cb.setAttribute("aria-label", (s.enabled ? "Disable" : "Enable") + " the " + displayName(s) + " screen");
+          cb.onchange = () => {
+            // Revert the optimistic native flip to the authoritative value BEFORE the round
+            // trip (like the assign-output <select>): a SUCCESS re-renders the row with the
+            // new state, while a REJECTED call (RBAC-denied / older host / transport) leaves
+            // the checkbox showing the true, unchanged state instead of a permanent lie.
+            const want = cb.checked;
+            cb.checked = s.enabled;
+            act(() => invoke("set_screen_enabled", { screen: s.screen, enabled: want }));
+          };
+          const tl = document.createElement("span"); tl.className = "screen-enable-label";
+          tl.textContent = s.enabled ? "On" : "Off";
+          toggle.appendChild(cb); toggle.appendChild(tl);
+          controls.appendChild(toggle);
+          if (s.deletable) {
+            const del = document.createElement("button");
+            del.type = "button"; del.className = "screen-delete"; del.dataset.screen = s.screen;
+            del.textContent = "Delete";
+            del.setAttribute("aria-label", "Delete the " + displayName(s) + " screen");
+            del.onclick = () => act(() => invoke("remove_screen", { screen: s.screen }));
+            controls.appendChild(del);
+          }
+          head.appendChild(controls);
           row.appendChild(head);
 
           const fields = document.createElement("div"); fields.className = "screen-fields";
-          // Output assignment
+          // Output: main/stage bind a physical display; the secondaries are an honest seam.
           const of = document.createElement("div");
           const ol = document.createElement("label"); ol.textContent = "Output"; of.appendChild(ol);
-          if (displays.length) {
+          if ((isMain || isStage) && displays.length && o) {
             const sel = document.createElement("select");
-            sel.setAttribute("aria-label", "Assign the " + o.role + " output to a display");
+            sel.setAttribute("aria-label", "Assign the " + s.role + " output to a display");
             if (!o.assigned) sel.classList.add("mismatch");
             const none = document.createElement("option");
             none.value = "";
@@ -561,27 +637,33 @@
               const chosen = sel.value;
               if (chosen) {
                 sel.value = o.assigned_key || "";
-                act(() => invoke("assign_output", { role: o.role, displayKey: chosen }));
+                act(() => invoke("assign_output", { role: s.role, displayKey: chosen }));
               }
             };
             of.appendChild(sel);
-          } else {
+          } else if (isMain || isStage) {
             const f = document.createElement("div"); f.className = "field";
-            f.textContent = o.display || "No displays found";
+            f.textContent = (o && o.display) || "No displays found";
+            of.appendChild(f);
+          } else {
+            const f = document.createElement("div"); f.className = "field coming-soon";
+            f.textContent = "NDI / stream — delivery arrives later";
             of.appendChild(f);
           }
           fields.appendChild(of);
-          // Format (read-only for now)
-          const ff = document.createElement("div");
-          const fl = document.createElement("label"); fl.textContent = "Format"; ff.appendChild(fl);
-          const fv = document.createElement("div"); fv.className = "field";
-          fv.textContent = o.width + " × " + o.height;
-          ff.appendChild(fv); fields.appendChild(ff);
-          // Content — role-driven: Audience → per-screen Theme; Stage → layout chips.
+          // Format (read-only) — only a physical output reports one.
+          if ((isMain || isStage) && o) {
+            const ff = document.createElement("div");
+            const fl = document.createElement("label"); fl.textContent = "Format"; ff.appendChild(fl);
+            const fv = document.createElement("div"); fv.className = "field";
+            fv.textContent = o.width + " × " + o.height;
+            ff.appendChild(fv); fields.appendChild(ff);
+          }
+          // Content — role-driven: Audience → per-screen Theme + preview; Stage → chips.
           const cf = document.createElement("div");
           if (audience) {
-            cf.appendChild(themePickerFor("main"));
-            cf.appendChild(screenPreviewFor("main"));
+            cf.appendChild(themePickerFor(s.screen));
+            cf.appendChild(screenPreviewFor(s.screen));
           } else {
             const cl = document.createElement("label"); cl.textContent = "Stage layout"; cf.appendChild(cl);
             const chips = document.createElement("div"); chips.className = "stage-chips";
@@ -596,47 +678,37 @@
           list.appendChild(row);
         });
 
-        // Virtual Audience-class screens (86ajq321k): lower-third + stream. Each carries
-        // its OWN per-screen theme now (real); their physical NDI/stream OUTPUT delivery
-        // is the honest remaining seam. Rendered only when the main output exists.
-        if (outs.length) {
-          [
-            { screen: "lower-third", name: "Lower Third", badge: "Lower-third" },
-            { screen: "stream", name: "Stream", badge: "Stream" },
-          ].forEach((v) => {
-            const row = document.createElement("div"); row.className = "screen-row";
-            const head = document.createElement("div"); head.className = "screen-head";
-            const name = document.createElement("strong");
-            name.style.fontSize = "17px"; name.textContent = v.name;
-            const rb = document.createElement("span"); rb.className = "role-badge";
-            rb.textContent = v.badge;
-            rb.style.color = "var(--accent)"; rb.style.borderColor = "var(--accent)";
-            head.appendChild(name); head.appendChild(rb);
-            row.appendChild(head);
+        // "+ Add screen": mint a VIRTUAL Audience-class feed (lower-third / stream). The
+        // host caps the registry, so this is refused (harmlessly) at the bound.
+        const add = document.createElement("div"); add.className = "screen-add";
+        const al = document.createElement("label"); al.textContent = "Add a virtual screen";
+        al.setAttribute("for", "screen-add-role"); add.appendChild(al);
+        const arow = document.createElement("div"); arow.className = "screen-add-row";
+        const roleSel = document.createElement("select"); roleSel.id = "screen-add-role";
+        roleSel.setAttribute("aria-label", "Role for the new virtual screen");
+        [["stream", "Stream"], ["lower-third", "Lower Third"]].forEach(([v, t]) => {
+          const opt = document.createElement("option"); opt.value = v; opt.textContent = t;
+          roleSel.appendChild(opt);
+        });
+        const addBtn = document.createElement("button");
+        addBtn.type = "button"; addBtn.className = "screen-add-btn"; addBtn.id = "screen-add-btn";
+        addBtn.textContent = "+ Add screen";
+        addBtn.onclick = () => act(() => invoke("add_screen", { role: roleSel.value }));
+        arow.appendChild(roleSel); arow.appendChild(addBtn); add.appendChild(arow);
+        list.appendChild(add);
 
-            const fields = document.createElement("div"); fields.className = "screen-fields";
-            // Output — an honest seam: NDI/stream delivery arrives later.
-            const of = document.createElement("div");
-            const ol = document.createElement("label"); ol.textContent = "Output"; of.appendChild(ol);
-            const f = document.createElement("div"); f.className = "field coming-soon";
-            f.textContent = "NDI / stream — delivery arrives later";
-            of.appendChild(f); fields.appendChild(of);
-            // Theme — REAL per-screen theme (composed now; shown on the output when delivery lands).
-            const cf = document.createElement("div");
-            cf.appendChild(themePickerFor(v.screen));
-            cf.appendChild(screenPreviewFor(v.screen));
-            fields.appendChild(cf);
-            row.appendChild(fields);
-            list.appendChild(row);
-          });
-        }
-
-        // Honest seam: physical multi-output delivery + enable/disable + add/delete.
+        // Honest seam: physical NDI/SDI/stream DELIVERY for the secondary feeds is later;
+        // enable/disable + add/delete are live now.
         const note = document.createElement("p");
         note.className = "coming-soon"; note.style.fontSize = "11px";
         note.textContent =
-          "Each Audience screen now carries its OWN theme (86ajq321k). Physical NDI/stream OUTPUT delivery for the lower-third/stream screens, plus enable/disable and add/delete a virtual screen, arrive next.";
+          "Enable/disable and add/delete a virtual screen are live. Physical NDI/SDI/stream OUTPUT delivery for the lower-third/stream feeds arrives later.";
         list.appendChild(note);
+        // Restore keyboard focus to the rebuilt equivalent control (a11y — see above).
+        if (refocusSel) {
+          const rf = list.querySelector(refocusSel);
+          if (rf) rf.focus();
+        }
         scheduleScreenPreviews(); // fill each screen's preview canvas (86ajq321k)
       }
 
