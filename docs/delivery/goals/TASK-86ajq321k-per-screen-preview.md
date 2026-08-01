@@ -6,7 +6,7 @@
 - Parent goal ID: BUILD-selahcue (Stage 8 — per-screen theme follow-up)
 - Title: Make the per-screen themed renders VISIBLE — a GetScreenFrame wire command + a Screens-page per-screen preview
 - Role: backend-engineer (wire + controller) + frontend-engineer (Screens preview)
-- Status: IN_PROGRESS
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: BUILD CONTROL 86ajnx548 (⚠ ClickUp MCP rate-limited — story 86ajq321k follow-up)
 - Created: 2026-08-01
@@ -45,7 +45,7 @@ Verified from code: `LiveController::compose_screen(screen) -> Option<FrameBuffe
 | C-001 | yes | Wire: `GetScreenFrame`/`ScreenFrame` added (additive, `Monitor` RBAC); a round-trip + an RBAC-denied test pass; VERSION unchanged | `cargo test -p selahcue-lan` (+ `--features server`) | round-trip ok; denied for < Monitor | test_protocol (`screen_frame_round_trips_and_is_additive`) + test_rbac (viewer Monitor) | PASS |
 | C-002 | yes | Controller: `apply(GetScreenFrame)` returns a themed thumbnail per screen (distinct for distinct themes; blackout blacks all; unknown → None), read-only | `cargo test -p selahcue-app` | per-screen frames; read-only | test_controller (`get_screen_frame_command_returns_a_themed_thumbnail_per_screen`) | PASS |
 | C-003 | yes | Operator: the Screens page shows a per-screen preview via `GetScreenFrame`; `node --check` + the committed headless gate assert 3 per-screen previews render | operator `node --check` + headless | previews render; screens differ | `node --check` OK; headless **70/70** (+4 per-screen: 3 canvases, one per screen, main red, three differ) | PASS |
-| C-004 | yes | Gate: make ci + operator gate green; independent adversarial Workflow review, findings fixed; 3-OS CI green (verified by run conclusion) | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW doc; CI run | PENDING |
+| C-004 | yes | Gate: make ci + operator gate green; independent adversarial Workflow review, findings fixed; 3-OS CI green (verified by run conclusion) | make-ci + operator + Workflow + CI | all green; review fixed | CODE-REVIEW-batch-per-screen-preview.md (3 lenses SOUND, 0 findings); CI `30689037612` `completed → success` (operator log `=== 70 checks, 0 FAIL ===` + `WebKit smoke: 5 checks, 0 FAIL`) | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -59,6 +59,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Iter 0 (C-001/C-002, backend): additive wire — `Command::GetScreenFrame { screen, max_w, max_h }` + `ServerMessage::ScreenFrame { screen, frame: Option<ThumbView> }` (`protocol.rs`, skip-if-none frame, VERSION unchanged); RBAC `GetScreenFrame => Monitor` (exhaustive, read). Controller `apply(GetScreenFrame)` → the EXISTING `compose_screen(screen)` → host-clamped thumbnail → `ThumbView::from_rgba` (mirrors the console read; added to the read-only command list so it never dirties state). `OperatorShell::screen_frame` (Local) + `RemoteOperator::screen_frame` (wire) + a `render_screen` Tauri command (Local FrameBuffer→base64 / Remote ThumbView), registered. Tests: `screen_frame_round_trips_and_is_additive` (round-trip + skip-if-none + VERSION 2), `viewer_can_only_monitor` extended (a Viewer CAN GetScreenFrame — a Monitor read), `get_screen_frame_command_returns_a_themed_thumbnail_per_screen` (3 distinct themed thumbnails; blackout blacks all → identical; unknown→None; read-only — the audience output never changes). Result: PASS.
 - Iter 1 (C-003, frontend): `dist/app.js` — refactored `drawConsoleFrame` to share `blitFrame(cv, frame)`; added `renderScreenPreviews`/`scheduleScreenPreviews` (fetch `render_screen` per audience screen, debounced 120ms, gated on the Screens surface being active) + `screenPreviewFor(screen)` canvas in `renderOutputs` for main/lower-third/stream; triggered from `showSurface("screens")`, the end of `renderOutputs`, and the live-content/theme change signal. `dist/app.css` — a 16:9 `.screen-preview`. Evidence: `node --check` OK; operator build/fmt/clippy clean; committed headless **70/70** (+4: 3 preview canvases render with `has-render`, one per main/lower-third/stream, main shows its red themed frame, the three DIFFER). Result: PASS.
 - Gate prep: full workspace + `--features server`/`encryption` test + independent adversarial review (`wf_0e5dc9b9-0cb`, read-only + additive-rbac + frontend lenses) running.
+- Iter 2 (C-004, gate): workspace `cargo test` 476/0 (+`server`/`encryption`); fmt/clippy clean; operator build/`node --check` clean; committed Chrome headless **70/70** + WebKit smoke **5/5**. Independent review: the read-only + frontend lenses returned **SOUND** from `wf_0e5dc9b9-0cb`; the additive/RBAC lens errored twice on the workflow harness's StructuredOutput retry cap (`wf_bad5a7b6-636`) so it was performed **directly** — VERSION stays 2 (`protocol.rs:15`, asserted by `screen_frame_round_trips_and_is_additive`); `GetScreenFrame`/`ScreenFrame` additive serde variants with skip-if-none `frame`; `required_permission` exhaustive with **no wildcard** and `GetScreenFrame { .. } => Monitor` (`rbac.rs:120`, pinned by `viewer_can_only_monitor` + the clean build); `RemoteOperator::screen_frame` rejects a non-`ScreenFrame` reply (`operator.rs:789`). **3 lenses SOUND — 0 findings**; nothing to fix. 3-OS CI `30689037612` `completed → success` (verified by conclusion; operator log `=== 70 checks, 0 FAIL ===` + `WebKit smoke: 5 checks, 0 FAIL`). Result: PASS. Deliverable: `docs/delivery/CODE-REVIEW-batch-per-screen-preview.md`.
 
 ## Risks and rollback
 
@@ -67,7 +68,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajq321k-per-screen-preview.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending — MCP rate-limited; story 86ajq321k follow-up)
+- Validator result: PASS (4/4 mandatory criteria PASS)
+- Independent verification result: 3 adversarial lenses (read-only · additive/RBAC · frontend) SOUND — 0 findings (2 via `wf_0e5dc9b9-0cb`, the additive/RBAC lens direct after the harness errored twice); + the committed Chrome 70/70 + WebKit 5/5 CI gates on the runner.
+- Terminal state: GATE_REVIEW (verifiable work complete; paused for the `/build` user gate).
+- ClickUp final evidence comment: pending — MCP rate-limited (~21h) all session; queued for BUILD CONTROL 86ajnx548 + story 86ajq321k follow-up.
