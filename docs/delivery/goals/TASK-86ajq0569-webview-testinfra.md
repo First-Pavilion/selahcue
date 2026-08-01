@@ -45,8 +45,8 @@ Verified: `scripts/operator_headless.py` (audit #9) runs the real `dist/` under 
 |---|---|---|---|---|---|---|
 | C-001 | yes | #11: the Chrome harness polls for the boot render (bounded timeout) instead of a fixed sleep; still 66/0 locally; fails if the render never fires | `python3 scripts/operator_headless.py` (+ a no-render mutation) | 66/0; polls; fails-closed on no render | harness (`waitFor`); 66/0; mutation (no has-render) → times out → 2 FAIL exit 1 (no hang) | PASS |
 | C-002 | yes | #10: `operator_webkit_smoke.py` loads the real dist/ under Playwright-WebKit and asserts boot (no JS error) + render path ran; passes locally; a mutation (inject a JS error) makes it FAIL; missing WebKit + REQUIRE=1 fails, else skips | `python3 scripts/operator_webkit_smoke.py` (+ mutation + skip check) | boot smoke passes; bites on a JS error; require/skip correct | smoke 5/5 on real WebKit; JS-error mutation → 5 FAIL exit 1 (WebKit-specific error); ImportError → require:3/skip:0 | PASS |
-| C-003 | yes | Both wired into the CI operator job (Linux, REQUIRE=1); 3-OS CI green (verified by conclusion + both runner logs show the gates ran) | push + `gh run view --json conclusion` + logs | both gates run on Linux; overall success | CI run | PENDING |
-| C-004 | yes | Gate: independent adversarial review (does each gate actually bite / no false-pass / determinism), findings fixed | Workflow review | review clean/fixed | CODE-REVIEW doc | PENDING |
+| C-003 | yes | Both wired into the CI operator job (Linux, REQUIRE=1); 3-OS CI green (verified by conclusion + both runner logs show the gates ran) | push + `gh run view --json conclusion` + logs | both gates run on Linux; overall success | CI 30686139914 + 30686662690 (success); logs `66 checks, 0 FAIL` (Chrome) + `WebKit smoke: 5 checks, 0 FAIL` | PASS |
+| C-004 | yes | Gate: independent adversarial review (does each gate actually bite / no false-pass / determinism), findings fixed | Workflow review | review clean/fixed | CODE-REVIEW-batch-webview-testinfra.md; wf_9095cf04-439 (INFO×2 sound + MEDIUM/2×LOW fixed) | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -69,7 +69,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajq0569-webview-testinfra.md --require-complete`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- ClickUp final evidence comment: (pending — MCP rate-limited; closes audit report §4 #10 + #11)
+- Validator result: PASS (run below)
+- Independent verification result: adversarial review `wf_9095cf04-439` — bite-falsepass **INFO×2 (both gates hard-bounded + fail-closed, no false-pass)**; ci-wiring 1 MEDIUM + 2 LOW (all CI-durability) + 1 INFO — **all fixed** (`--break-system-packages`, pin `1.60.0`, `timeout-minutes: 25`, `skip_or_fail` for a missing WebKit binary). Both gates empirically proven to run on the CI runner + to bite. See `CODE-REVIEW-batch-webview-testinfra.md`.
+- Terminal state: **VERIFIED_COMPLETE** — #11 poll + #10 WebKit smoke; both gate on CI (Chrome 66/0 + WebKit 5/0 on the Linux runner); **3-OS CI `30686139914` + `30686662690` GREEN** (verified by conclusion). Closes the last two audit follow-ups.
+- ClickUp final evidence comment: (queued — MCP rate-limited; closes audit report §4 #10 + #11)

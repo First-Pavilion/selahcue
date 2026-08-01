@@ -575,3 +575,19 @@ Commit `0e91f55` → **3-OS CI `30651447222` GREEN** (completed→success, 11/11
 - **Independent review** (`wf_0fb192c5-064` correctness + `wf_1cb8548c-a17` safety-wiring re-run): correctness **SOUND (INFO×4)**; safety raised one **MEDIUM→verified LOW** — the pre-seeded host-local operator session could idle out with no re-pair path (fail-closed, narrow) → **fixed** by pinning it (`prune_idle` skips pinned; remote pairings never pinned). Tests: `prune_idle_reclaims_idle_sessions_and_keeps_touched_ones`, `idle_ttl_frees_cap_slots_but_recently_active_sessions_still_reject`, `pinned_session_is_exempt_from_idle_reclamation`. **Verification:** `cargo test --workspace` 473/0 → `test_session` **22/0**; `--features server` green; fmt/clippy clean. Commits `2ec4762` + `72c8dc0` → **3-OS CI GREEN** (verified by conclusion). See `CODE-REVIEW-batch-session-idle-ttl.md`.
 
 **⚠ ClickUp rate-limited** — closes audit report §4 **#8**. **Remaining audit follow-ups: #10 (WebKit smoke) + #11-poll — in the `webview-testinfra` batch (in flight).**
+
+## Stage 8 → Quality — webview test-infra: WebKit smoke (#10) + boot-render poll (#11) (86ajq0569) (2026-08-01)
+
+**Audit follow-ups #10 + #11** — the last two, on the operator-webview test harness. Handled per `/build` `devops-engineer` + `/goal` (`TASK-86ajq0569-webview-testinfra.md`, validator PASS 4/4 `--require-complete`). Test-only tooling; no product change.
+- **#11 (durability):** the Chrome harness (`operator_headless.py`) polls for the boot render (`waitFor`, bounded 150×20ms) instead of a fixed `sleep(260)` — deterministic + fails-closed. 66/0; mutation-proven (broken render → poll times out → FAIL, no hang).
+- **#10 (engine fidelity):** `operator_webkit_smoke.py` boot-smokes the SAME `dist/` on **WebKit** (Playwright's WebKit = the JavaScriptCore/WebCore core Tauri ships on — WebKitGTK/WKWebView), catching an engine-specific JS break Blink can't. Asserts no `pageerror` + the boot/render path ran + the canvas drew on WebKit. `SELAHCUE_WEBKIT_REQUIRE=1` → hard fail if missing, else loud skip. 5/5 on real WebKit; mutation-proven (a JS error → 5 FAIL with WebKit's own message). Wired into the CI operator job (Linux): install Playwright+WebKit + run required.
+- **Independent review** (`wf_9095cf04-439`, bite-falsepass + ci-wiring): both gates **sound, no false-pass, hard-bounded**; ci-wiring raised 1 MEDIUM + 2 LOW (CI durability) + 1 INFO — **all fixed** (`--break-system-packages` for PEP 668, pin `playwright==1.60.0`, `timeout-minutes: 25`, `skip_or_fail` for a missing WebKit binary). **Verification:** CI `30686139914` + `30686662690` **GREEN** — the operator-Linux logs show `=== 66 checks, 0 FAIL ===` (Chrome+poll) AND `=== WebKit smoke: 5 checks, 0 FAIL ===` (real WebKit). See `CODE-REVIEW-batch-webview-testinfra.md`.
+
+**⚠ ClickUp rate-limited** — closes audit report §4 **#10 + #11**.
+
+## 🎯 CODE AUDIT FULLY CLOSED (2026-08-01)
+
+Every finding from `docs/quality/AUDIT-memory-perf-latency.md` is now resolved and CI-verified:
+- **MEDIUM:** M1 plan-dedup · M2 plan-items cap · M3 session cap · M4 transcript-DOM cap · M5 console decode · #9 operator webview CI gate.
+- **LOW / follow-ups:** L1 recent_refs test · L3 lazy Theme Designer · #8 session idle-TTL (+ host-local pin) · #10 WebKit-engine smoke · #11 boot-render poll · #11-doc Chrome-pin note.
+Latency measured (118ms local / 247ms CI, raster-dominated) + guarded by a profile-scaled test. No release-blocking defect remains from the audit.
