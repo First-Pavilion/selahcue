@@ -391,6 +391,63 @@ fn element_layers(element: &Element, width: u32, height: u32) -> Vec<Layer> {
                 opacity: *opacity,
             }]
         }
+        Element::Text {
+            x_permille,
+            y_permille,
+            w_permille,
+            h_permille,
+            text,
+            color,
+            size_permille,
+            line_height_permille,
+            align_h,
+            align_v,
+            fit,
+            opacity,
+            z: _,
+            font,
+            weight,
+            letter_spacing_permille,
+        } => {
+            // Per-mille → pixel rect (same mapping as Shape/Image/Band).
+            let map = |dim: u32, permille: u16| (dim as u64 * permille as u64 / 1000) as u32;
+            let rect = Rect::new(
+                map(width, *x_permille) as i32,
+                map(height, *y_permille) as i32,
+                map(width, *w_permille).max(1),
+                map(height, *h_permille).max(1),
+            );
+            // Fold the whole-element opacity into the text-colour alpha (0 → nothing to draw).
+            let c = Rgba::new(
+                color.r,
+                color.g,
+                color.b,
+                ((color.a as u16 * *opacity as u16) / 255) as u8,
+            );
+            if c.a == 0 {
+                Vec::new()
+            } else {
+                // The design cell (font) size in px — per-mille of frame height, as RegionStyle.
+                let cell = (height as u64 * *size_permille as u64 / 1000).max(1) as u32;
+                // Blank lines separate paragraphs; the auto-fit wraps each to the rect width and
+                // shrinks the cell so the WHOLE text shows (zero content loss) — the SAME path
+                // the title/body regions use, so a text box has audience-parity typography.
+                let lines: Vec<&str> = text.lines().collect();
+                autofit_layers(
+                    &lines,
+                    rect,
+                    cell,
+                    *line_height_permille as f64 / 1000.0,
+                    *align_h,
+                    *align_v,
+                    c,
+                    *fit,
+                    *font,
+                    *weight,
+                    *letter_spacing_permille,
+                )
+            }
+        }
     }
 }
 

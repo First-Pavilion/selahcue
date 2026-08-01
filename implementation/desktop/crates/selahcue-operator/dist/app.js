@@ -820,6 +820,8 @@
       let tdSelectedKind = ""; // "builtin" | "saved" | "" — disambiguates a saved theme that shares a built-in's name
       let tdConfirmDel = null; // saved-theme name in the two-click delete-confirm state
       const tdHex = (c) => "#" + [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("");
+      // A human label for an element's kind (announcements / heads). Text is 86ajq6j64.
+      const tdElLabel = (el) => (el && el.kind === "image") ? "Image" : (el && el.kind === "text") ? "Text" : "Shape";
       const tdRgb = (h) => ({ r: parseInt(h.slice(1, 3), 16), g: parseInt(h.slice(3, 5), 16), b: parseInt(h.slice(5, 7), 16), a: 255 });
       const tdClamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
       const tdSeg = (id, val, attr) =>
@@ -1128,16 +1130,17 @@
         const delBtn = document.getElementById("td-el-del");
         if (delBtn) delBtn.textContent = "Delete element";
         // Reflect the selection class in the group's accessible name (was "Selected region").
+        const kind = el.kind === "image" ? "image" : el.kind === "text" ? "text" : "shape";
+        const kindLabel = kind === "image" ? "image" : kind === "text" ? "text" : "shape";
         tdSel.setAttribute(
           "aria-label",
-          (el.kind === "image" ? "Selected image element" : "Selected shape element") +
-            " — drag to move, handles to resize",
+          "Selected " + kindLabel + " element — drag to move, handles to resize",
         );
-        const kind = el.kind === "image" ? "image" : "shape";
         const order = tdPaintOrder();
         const pos = order.indexOf(tdSelEl) + 1;
+        const headKind = kind === "image" ? "Image" : kind === "text" ? "Text" : "Shape";
         document.getElementById("td-el-head").textContent =
-          (kind === "image" ? "Image" : "Shape") + " — " + pos + " of " + tdEls().length;
+          headKind + " — " + pos + " of " + tdEls().length;
         const front = tdZ(el) >= 0;
         const chip = document.getElementById("td-el-zchip");
         chip.textContent = front ? "In front of text" : "Behind text";
@@ -1147,6 +1150,7 @@
         document.getElementById("td-el-op-v").textContent = opPct;
         document.getElementById("td-el-shape").hidden = kind !== "shape";
         document.getElementById("td-el-image").hidden = kind !== "image";
+        document.getElementById("td-el-text").hidden = kind !== "text";
         if (kind === "shape") {
           document.getElementById("td-el-fill").value = tdHex(el.fill || { r: 58, g: 65, b: 80 });
           document.getElementById("td-el-border").value = tdHex(el.border || { r: 0, g: 0, b: 0 });
@@ -1166,6 +1170,13 @@
           // Name the specific geometry in the head (e.g. "Ellipse — 2 of 3").
           document.getElementById("td-el-head").textContent =
             TD_SHAPE_LABELS[variant] + " — " + pos + " of " + tdEls().length;
+        } else if (kind === "text") {
+          document.getElementById("td-el-text-content").value = el.text || "";
+          document.getElementById("td-el-text-color").value = tdHex(el.color || { r: 255, g: 255, b: 255 });
+          const sz = Number.isFinite(el.size_permille) ? el.size_permille : 80;
+          document.getElementById("td-el-text-size").value = Math.round(sz / 10);
+          document.getElementById("td-el-text-size-v").textContent = Math.round(sz / 10);
+          document.getElementById("td-el-text-align").value = el.align_h || "center";
         } else {
           document.getElementById("td-el-src").textContent = el.source || "(no file chosen)";
         }
@@ -1274,7 +1285,7 @@
             if (hit >= 0 && hit !== tdSelEl) {
               tdSelEl = hit;
               tdSync();
-              tdAnnounce((tdEls()[hit].kind === "image" ? "Image" : "Shape") + " selected");
+              tdAnnounce(tdElLabel(tdEls()[hit]) + " selected");
             }
           }
         }
@@ -1407,7 +1418,7 @@
           try { tdSel.setPointerCapture(e.pointerId); } catch (_) {}
           const front = tdZ(el) >= 0;
           tdAnnounce(
-            (el.kind === "image" ? "Image" : "Shape") +
+            tdElLabel(el) +
               " selected, " + (front ? "in front of" : "behind") + " the text",
           );
           return;
@@ -1509,6 +1520,16 @@
         const maxZ = tdEls().reduce((m, e) => Math.max(m, tdZ(e)), -1);
         const base = { x_permille: 350, y_permille: 400, w_permille: 300, h_permille: 200, opacity: 255, z: maxZ + 1 };
         if (kind === "image") return Object.assign(base, { kind: "image", source: "" });
+        if (kind === "text") return Object.assign(base, {
+          kind: "text",
+          text: "Text",
+          color: { r: 255, g: 255, b: 255, a: 255 },
+          size_permille: 80,
+          line_height_permille: 1150,
+          align_h: "center",
+          align_v: "middle",
+          fit: "shrink_to_fit",
+        });
         // A visible default fill (neutral panel) + no border, so a new shape is never invisible.
         const el = Object.assign(base, { kind: "shape", fill: { r: 58, g: 65, b: 80, a: 255 }, border: { r: 0, g: 0, b: 0, a: 0 }, border_permille: 0 });
         const v = TD_SHAPE_LABELS[variant] ? variant : "rect";
@@ -1527,7 +1548,7 @@
         tdSync();
         tdPreview();
         tdSel.focus();
-        const what = kind === "image" ? "Image" : (TD_SHAPE_LABELS[el.variant || "rect"] || "Shape");
+        const what = kind === "image" ? "Image" : kind === "text" ? "Text" : (TD_SHAPE_LABELS[el.variant || "rect"] || "Shape");
         tdAnnounce(what + " added, selected");
       }
 
@@ -1618,6 +1639,7 @@
         b.onclick = () => {
           if (b.dataset.add === "shape") tdOpenShapeRow();
           else if (b.dataset.add === "image") tdPickImage(false);
+          else if (b.dataset.add === "text") tdAddElement("text"); // 86ajq6j64
         };
       });
 
@@ -1708,6 +1730,36 @@
         document.getElementById("td-el-corner-v").textContent = e.target.value;
         tdPreview();
       };
+      // Text-box controls (86ajq6j64): content / colour / size / alignment on the selected
+      // Text element. Bound the content on the CLIENT to the host cap (MAX_TEXT_ELEMENT_LEN)
+      // so the UI can never author a theme the host would reject (which would make Apply
+      // falsely report success / Save misdiagnose the failure). The auto-fit shrinks it to
+      // the rect. `maxlength` guards typed/pasted input; this slice also guards a programmatic
+      // set, and keeps the textarea + model in sync when a paste is truncated.
+      const TD_MAX_TEXT = 2000;
+      document.getElementById("td-el-text-content").oninput = (e) => {
+        if (!tdActiveIsEl()) return;
+        let v = e.target.value;
+        if (v.length > TD_MAX_TEXT) {
+          v = v.slice(0, TD_MAX_TEXT);
+          e.target.value = v;
+          tdStatus("Text box capped at " + TD_MAX_TEXT + " characters.");
+        }
+        tdActive().text = v;
+        tdPreview();
+      };
+      document.getElementById("td-el-text-color").oninput = (e) => {
+        if (tdActiveIsEl()) { tdActive().color = tdRgb(e.target.value); tdPreview(); }
+      };
+      document.getElementById("td-el-text-size").oninput = (e) => {
+        if (!tdActiveIsEl()) return;
+        tdActive().size_permille = Math.round(+e.target.value * 10);
+        document.getElementById("td-el-text-size-v").textContent = e.target.value;
+        tdPreview();
+      };
+      document.getElementById("td-el-text-align").onchange = (e) => {
+        if (tdActiveIsEl()) { tdActive().align_h = e.target.value; tdPreview(); }
+      };
 
       // --- Right-click context menu (#4): Copy / Paste / Delete / Send-to-back / Bring-to-front ---
       let tdClip = null; // session clipboard: a deep-cloned element
@@ -1744,7 +1796,7 @@
         tdSync();
         tdPreview();
         tdSel.focus();
-        tdAnnounce((clone.kind === "image" ? "Image" : "Shape") + " pasted, selected");
+        tdAnnounce(tdElLabel(clone) + " pasted, selected");
       }
       function tdCtxDelete() {
         if (!tdActiveIsEl()) return;

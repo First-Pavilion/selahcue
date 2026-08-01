@@ -3,7 +3,10 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_engine::raster::{render, FrameBuffer};
-use selahcue_present::{compose_slide, Element, FontName, Rgba, ShapeKind, Slide, Theme};
+use selahcue_present::{
+    compose_slide, Element, Fit, FontName, Rgba, ShapeKind, Slide, TextAlign, Theme, VAlign,
+    MAX_TEXT_ELEMENT_LEN,
+};
 
 /// A full-frame opaque shape element at draw order `z`.
 fn full_shape(fill: Rgba, opacity: u8, z: i16) -> Element {
@@ -1001,4 +1004,213 @@ fn tracked_text_fits_its_region_no_right_clip() {
     for word in long.split_whitespace() {
         assert!(joined.contains(word), "auto-fit dropped the word {word:?}");
     }
+}
+
+// ---- Text element (86ajq6j64): the free text box ----
+
+/// A full-frame TEXT element drawing `text` (white, centred, shrink-to-fit) at `opacity`/`z`.
+fn full_text(text: &str, opacity: u8, z: i16) -> Element {
+    Element::Text {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 1000,
+        h_permille: 1000,
+        text: text.to_string(),
+        color: Rgba::WHITE,
+        size_permille: 120,
+        line_height_permille: 1150,
+        align_h: TextAlign::Center,
+        align_v: VAlign::Middle,
+        fit: Fit::ShrinkToFit,
+        opacity,
+        z,
+        font: None,
+        weight: 400,
+        letter_spacing_permille: 0,
+    }
+}
+
+/// A TEXT element in the BOTTOM band (y 86%..100%) — a region the classic theme's title/
+/// body leave EMPTY, so any ink there is the text box's (isolates it from the slide text).
+fn bottom_text(text: &str, opacity: u8, z: i16) -> Element {
+    Element::Text {
+        x_permille: 0,
+        y_permille: 860,
+        w_permille: 1000,
+        h_permille: 140,
+        text: text.to_string(),
+        color: Rgba::WHITE,
+        size_permille: 90,
+        line_height_permille: 1150,
+        align_h: TextAlign::Center,
+        align_v: VAlign::Middle,
+        fit: Fit::ShrinkToFit,
+        opacity,
+        z,
+        font: None,
+        weight: 400,
+        letter_spacing_permille: 0,
+    }
+}
+
+#[test]
+fn a_text_element_renders_its_own_text() {
+    // A Text element renders on a NON-blank slide (like Shape/Image — a blank slide is
+    // background-only). Isolate the text-box ink in the bottom band (rows 90..100), which
+    // the classic theme's regions leave EMPTY, so any ink there is the text box's.
+    let slide = Slide::new("Ref", ["Body"]);
+    let baseline = render(&compose_slide(&slide, &Theme::classic(), 200, 100));
+    assert!(
+        !has_ink_in(&baseline, 0, 90, 200, 100),
+        "classic leaves the bottom band empty"
+    );
+
+    let mut theme = Theme::classic();
+    theme.elements.push(bottom_text("HELLO", 255, 1));
+    let fb = render(&compose_slide(&slide, &theme, 200, 100));
+    assert!(
+        has_ink_in(&fb, 0, 90, 200, 100),
+        "a text element draws its glyphs in its rect"
+    );
+
+    // An empty/whitespace text box draws nothing there.
+    let mut blank_box = Theme::classic();
+    blank_box.elements.push(bottom_text("   ", 255, 1));
+    let fb2 = render(&compose_slide(&slide, &blank_box, 200, 100));
+    assert!(
+        !has_ink_in(&fb2, 0, 90, 200, 100),
+        "an empty/whitespace text element draws nothing"
+    );
+}
+
+#[test]
+fn a_text_element_opacity_folds_into_the_alpha() {
+    let slide = Slide::new("Ref", ["Body"]);
+    // opacity 0 → the text colour alpha is 0 → nothing drawn in the bottom band.
+    let mut hidden = Theme::classic();
+    hidden.elements.push(bottom_text("HELLO", 0, 1));
+    let fb0 = render(&compose_slide(&slide, &hidden, 200, 100));
+    assert!(
+        !has_ink_in(&fb0, 0, 90, 200, 100),
+        "a fully-transparent text element draws nothing"
+    );
+
+    // A translucent text element adds LESS ink than an opaque one, but more than none.
+    let band_ink = |fb: &FrameBuffer| -> u64 {
+        let mut s = 0u64;
+        for y in 90..100 {
+            for x in 0..200 {
+                if let Some(p) = fb.pixel(x, y) {
+                    s += p.r as u64 + p.g as u64 + p.b as u64;
+                }
+            }
+        }
+        s
+    };
+    let base_ink = band_ink(&render(&compose_slide(&slide, &Theme::classic(), 200, 100)));
+    let mut opaque = Theme::classic();
+    opaque.elements.push(bottom_text("HELLO", 255, 1));
+    let mut dim = Theme::classic();
+    dim.elements.push(bottom_text("HELLO", 96, 1));
+    let opaque_ink = band_ink(&render(&compose_slide(&slide, &opaque, 200, 100)));
+    let dim_ink = band_ink(&render(&compose_slide(&slide, &dim, 200, 100)));
+    assert!(
+        base_ink < dim_ink && dim_ink < opaque_ink,
+        "translucent adds ink but less than opaque (base {base_ink} < dim {dim_ink} < opaque {opaque_ink})"
+    );
+}
+
+#[test]
+fn a_text_element_participates_in_z_ordering() {
+    // A text box BEHIND an opaque full-frame shape is occluded (the shape covers the whole
+    // frame, incl. the slide text); IN FRONT it shows over the shape.
+    let slide = Slide::new("Ref", ["Body"]);
+    let mut behind = Theme::classic();
+    behind.elements.push(bottom_text("HELLO", 255, -1)); // behind the slide text
+    behind.elements.push(full_shape(Rgba::rgb(0, 0, 0), 255, 0)); // opaque black shape on top of all
+    let fb_behind = render(&compose_slide(&slide, &behind, 200, 100));
+    assert!(
+        !has_ink_in(&fb_behind, 0, 0, 200, 100),
+        "a text box behind an opaque full-frame shape is occluded"
+    );
+
+    let mut front = Theme::classic();
+    front.elements.push(full_shape(Rgba::rgb(0, 0, 0), 255, 0)); // shape below (z 0)
+    front.elements.push(bottom_text("HELLO", 255, 1)); // text in front (z 1)
+    let fb_front = render(&compose_slide(&slide, &front, 200, 100));
+    assert!(
+        has_ink_in(&fb_front, 0, 90, 200, 100),
+        "a text box in front of a shape shows over it"
+    );
+}
+
+#[test]
+fn a_text_element_is_deterministic() {
+    let slide = Slide::new("Ref", ["Body"]);
+    let mut theme = Theme::classic();
+    theme.elements.push(full_text(
+        "A longer text box that wraps across lines",
+        200,
+        1,
+    ));
+    let a = render(&compose_slide(&slide, &theme, 320, 180));
+    let b = render(&compose_slide(&slide, &theme, 320, 180));
+    assert_eq!(
+        a.bytes(),
+        b.bytes(),
+        "a text element renders byte-identically"
+    );
+}
+
+#[test]
+fn a_text_element_round_trips_serde_and_default_typography_is_skipped() {
+    // A Text element round-trips; its default typography (weight 400, no font, no
+    // letter-spacing) is OMITTED so the JSON stays compact (additive, byte-stable defaults).
+    let mut theme = Theme::classic();
+    theme.elements.push(full_text("Hi", 255, 0));
+    let json = serde_json::to_string(&theme).unwrap();
+    assert!(json.contains("\"kind\":\"text\""), "tagged as text: {json}");
+    assert!(
+        !json.contains("\"weight\""),
+        "default weight omitted: {json}"
+    );
+    assert!(!json.contains("\"font\""), "no font omitted: {json}");
+    assert!(
+        !json.contains("letter_spacing"),
+        "zero letter-spacing omitted: {json}"
+    );
+    let back: Theme = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, theme, "a text element round-trips");
+
+    // A theme with NO text element is byte-identical to before (the additive `elements`
+    // vec is skip-if-empty).
+    let plain = Theme::classic();
+    let plain_json = serde_json::to_string(&plain).unwrap();
+    assert!(
+        !plain_json.contains("elements") && !plain_json.contains("\"kind\""),
+        "a no-element theme omits the elements field: {plain_json}"
+    );
+}
+
+#[test]
+fn a_text_element_content_is_bounded() {
+    // within_bounds caps a Text box's content (no-leak); a Shape is always ok.
+    let ok = full_text(&"x".repeat(MAX_TEXT_ELEMENT_LEN), 255, 0);
+    assert!(ok.within_bounds(), "a text box at the cap is in bounds");
+    let over = full_text(&"x".repeat(MAX_TEXT_ELEMENT_LEN + 1), 255, 0);
+    assert!(
+        !over.within_bounds(),
+        "an over-cap text box is out of bounds"
+    );
+    assert!(
+        full_shape(Rgba::WHITE, 255, 0).within_bounds(),
+        "a shape is always in bounds"
+    );
+    // A theme carrying an over-cap text element is not bounded.
+    let mut theme = Theme::classic();
+    theme.elements.push(over);
+    assert!(
+        !theme.elements_bounded(),
+        "a theme with an over-cap text box is rejected"
+    );
 }

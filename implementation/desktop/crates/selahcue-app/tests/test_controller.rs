@@ -5,7 +5,10 @@
 use selahcue_app::{ControllerReply, LiveController};
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_lan::protocol::{Command, DenyReason, ServerMessage};
-use selahcue_present::{Element, MediaRef, Rgba, ShapeKind, Theme, MAX_ELEMENTS};
+use selahcue_present::{
+    Element, Fit, MediaRef, Rgba, ShapeKind, TextAlign, Theme, VAlign, MAX_ELEMENTS,
+    MAX_TEXT_ELEMENT_LEN,
+};
 
 fn controller() -> (LiveController, Vec<u64>) {
     let mut plan = ServicePlan::new("Sunday");
@@ -3224,5 +3227,77 @@ fn disabling_main_blacks_the_console_live_monitor_not_preview() {
     assert_eq!(
         lv_after, lv_blackout,
         "a disabled-main Live monitor equals the blackout (all-black) frame"
+    );
+}
+
+/// A custom theme carrying a TEXT element (86ajq6j64) applies, survives recovery, and is
+/// bounded — an over-cap Text box is rejected at every theme ingress (no unbounded growth).
+#[test]
+fn a_custom_theme_with_a_text_element_applies_recovers_and_is_bounded() {
+    use std::time::Instant;
+    let t0 = Instant::now();
+    let text_box = |text: String, z: i16| Element::Text {
+        x_permille: 100,
+        y_permille: 700,
+        w_permille: 800,
+        h_permille: 200,
+        text,
+        color: Rgba::WHITE,
+        size_permille: 80,
+        line_height_permille: 1150,
+        align_h: TextAlign::Center,
+        align_v: VAlign::Middle,
+        fit: Fit::ShrinkToFit,
+        opacity: 255,
+        z,
+        font: None,
+        weight: 400,
+        letter_spacing_permille: 0,
+    };
+    let mut theme = Theme::classic();
+    theme.elements.push(text_box("LIVE".into(), 1));
+    let json = serde_json::to_string(&theme).unwrap();
+
+    let (mut a, _) = controller();
+    a.apply(&Command::Next);
+    a.apply(&Command::GoLive);
+    assert_eq!(
+        a.apply(&Command::SetCustomTheme {
+            theme_json: json.clone()
+        }),
+        ControllerReply::Ack
+    );
+
+    // Persist + recover: the text element re-renders identically.
+    let snap = a.snapshot(t0);
+    let (mut b, _) = controller();
+    b.restore(&snap);
+    b.tick(t0);
+    assert_eq!(
+        b.presenter().live_output().bytes(),
+        a.presenter().live_output().bytes(),
+        "a text element re-renders identically after recovery"
+    );
+
+    // An over-cap text element is rejected at BOTH set_custom_theme + save_theme (no-leak).
+    let mut over = Theme::classic();
+    over.elements
+        .push(text_box("x".repeat(MAX_TEXT_ELEMENT_LEN + 1), 0));
+    assert!(!over.elements_bounded(), "the over-cap theme is unbounded");
+    let over_json = serde_json::to_string(&over).unwrap();
+    assert_eq!(
+        a.apply(&Command::SetCustomTheme {
+            theme_json: over_json.clone()
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest),
+        "set_custom_theme rejects an over-cap text element"
+    );
+    assert_eq!(
+        a.apply(&Command::SaveTheme {
+            name: "big-text".into(),
+            theme_json: over_json,
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest),
+        "save_theme rejects an over-cap text element"
     );
 }

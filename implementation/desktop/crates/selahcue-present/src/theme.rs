@@ -183,7 +183,56 @@ pub enum Element {
         /// Draw order relative to the text regions: `< 0` behind the text, `>= 0` in front.
         z: i16,
     },
+    /// A free **text box** (86ajq6j64): the operator's own `text`, wrapped + auto-fit into a
+    /// per-mille rect exactly like the theme's title/body regions (same [`autofit_layers`]
+    /// path — word-wrap, shrink-to-fit, letter-spacing, weight), blended at `opacity`, ordered
+    /// by `z` relative to the slide text (`z < 0` = behind, `z >= 0` = in front). The last
+    /// `Element` kind — the ProPresenter-style "add a text box". Bounded by
+    /// [`MAX_TEXT_ELEMENT_LEN`]. Renders to `Layer::Text`, which the GPU skips (a documented
+    /// seam, like `Shape`/`Image`), so the deterministic CPU raster is the real render path and
+    /// the parity oracle is untouched.
+    Text {
+        x_permille: u16,
+        y_permille: u16,
+        w_permille: u16,
+        h_permille: u16,
+        /// The text content (plain; blank lines separate paragraphs — the auto-fit wraps each
+        /// to the rect width). Bounded by [`MAX_TEXT_ELEMENT_LEN`].
+        text: String,
+        /// Text colour (the whole-element `opacity` multiplies its alpha).
+        color: Rgba,
+        /// Design cell (font) size as per-mille of frame HEIGHT; the auto-fit shrinks it so the
+        /// WHOLE text shows (zero content loss) when `fit` is `ShrinkToFit`.
+        size_permille: u16,
+        /// Line-height multiplier in per-mille (1000 = 1.0x).
+        line_height_permille: u16,
+        /// Horizontal alignment of each wrapped line.
+        align_h: TextAlign,
+        /// Vertical alignment of the text block within the rect.
+        align_v: VAlign,
+        /// Overflow policy — `ShrinkToFit` (the UI default) shows the whole text.
+        fit: Fit,
+        /// Whole-element opacity, `0..=255`, multiplied into the text-colour alpha.
+        opacity: u8,
+        /// Draw order relative to the text regions: `< 0` behind the slide text, `>= 0` in front.
+        z: i16,
+        /// Optional SYSTEM font (`None` = the bundled default, Noto Sans — deterministic). A
+        /// missing family falls back to the bundled font. Additive (`skip_serializing_if`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        font: Option<FontName>,
+        /// Font weight (400 = Regular, the default). Additive (`skip_serializing_if`).
+        #[serde(default = "weight_normal", skip_serializing_if = "is_weight_normal")]
+        weight: u16,
+        /// Letter-spacing as per-mille of the font size (`0` = none, may be negative). Additive.
+        #[serde(default, skip_serializing_if = "is_zero_i16")]
+        letter_spacing_permille: i16,
+    },
 }
+
+/// Upper bound on a single [`Element::Text`] box's content length (chars) so a design cannot
+/// carry an unbounded string (no-leak). Generous for a slide text box; the auto-fit render is
+/// separately bounded (`MAX_WRAP_WORDS`), and the persisted/snapshotted theme stays small.
+pub const MAX_TEXT_ELEMENT_LEN: usize = 2000;
 
 /// serde `skip_serializing_if` for a `u16` that is zero (an absent corner radius) — keeps a
 /// rectangle/older shape's JSON byte-identical (no `corner_permille` key emitted).
@@ -214,6 +263,17 @@ impl Element {
         match self {
             Element::Shape { z, .. } => *z,
             Element::Image { z, .. } => *z,
+            Element::Text { z, .. } => *z,
+        }
+    }
+
+    /// Whether this element is within its per-element content bounds (no-leak): a
+    /// [`Text`](Element::Text) box's content is capped at [`MAX_TEXT_ELEMENT_LEN`]; a
+    /// `Shape`/`Image` is all-scalar (a `MediaRef` is separately bounded) and always ok.
+    pub fn within_bounds(&self) -> bool {
+        match self {
+            Element::Text { text, .. } => text.chars().count() <= MAX_TEXT_ELEMENT_LEN,
+            Element::Shape { .. } | Element::Image { .. } => true,
         }
     }
 }
@@ -269,6 +329,15 @@ const AMBER: Rgba = Rgba {
 };
 
 impl Theme {
+    /// Whether the design element list is within bounds (no-leak): the COUNT is capped by
+    /// [`MAX_ELEMENTS`] and each [`Text`](Element::Text) box's content by
+    /// [`MAX_TEXT_ELEMENT_LEN`]. Callers ingesting an (Operator-authored) theme JSON reject a
+    /// theme that fails this, so a hand-edited/hostile payload cannot grow the design without
+    /// limit.
+    pub fn elements_bounded(&self) -> bool {
+        self.elements.len() <= MAX_ELEMENTS && self.elements.iter().all(Element::within_bounds)
+    }
+
     /// **Classic** — the default worship design: a dark navy background, an amber
     /// reference/title centred near the top, and white body text centred in the
     /// middle. (`dark()` keeps the historical constructor name callers use.)

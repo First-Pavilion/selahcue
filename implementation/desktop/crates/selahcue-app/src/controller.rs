@@ -15,9 +15,7 @@ use selahcue_lan::protocol::{
     ScreenThemeView, ScreenView, ServerMessage, ThumbView, TimerSnapshot, TranscriptSegmentView,
     VerseView,
 };
-use selahcue_present::{
-    FrameBuffer, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView, MAX_ELEMENTS,
-};
+use selahcue_present::{FrameBuffer, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView};
 use std::time::{Duration, Instant};
 
 /// Seconds-remaining threshold at which the countdown enters its amber "warning" state.
@@ -598,8 +596,9 @@ impl LiveController {
             return false;
         };
         // Bound the element list (Canvas Editing, 86ajq6j2q) so a hostile/hand-edited
-        // theme JSON cannot grow the design without limit (no-leak).
-        if theme.elements.len() > MAX_ELEMENTS {
+        // theme JSON cannot grow the design without limit (no-leak): the COUNT and each
+        // Text box's content length (86ajq6j64).
+        if !theme.elements_bounded() {
             return false;
         }
         // Persist the CANONICAL re-serialized theme, not the raw input. `Theme` is a
@@ -634,8 +633,9 @@ impl LiveController {
         let Ok(theme) = serde_json::from_str::<Theme>(theme_json) else {
             return ControllerReply::Deny(DenyReason::BadRequest);
         };
-        // Bound the element list (Canvas Editing, 86ajq6j2q) — no unbounded design growth.
-        if theme.elements.len() > MAX_ELEMENTS {
+        // Bound the element list (Canvas Editing, 86ajq6j2q) — no unbounded design growth
+        // (the COUNT + each Text box's content length, 86ajq6j64).
+        if !theme.elements_bounded() {
             return ControllerReply::Deny(DenyReason::BadRequest);
         }
         // A NEW name must fit under the cap; overwriting an existing one always may.
@@ -691,7 +691,7 @@ impl LiveController {
                     // version-skewed store row is the one ingress that could otherwise smuggle
                     // an unbounded element Vec straight into compose. Drop it defensively.
                     && serde_json::from_str::<Theme>(json)
-                        .map(|t| t.elements.len() <= MAX_ELEMENTS)
+                        .map(|t| t.elements_bounded())
                         .unwrap_or(false)
             })
             .take(MAX_SAVED_THEMES)

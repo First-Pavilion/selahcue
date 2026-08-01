@@ -825,7 +825,14 @@ fn draw_text(
                 }
                 let gcolor = glyph.color_opt.unwrap_or(ink);
                 cache.with_pixels(fs, pg.cache_key, gcolor, |ox, oy, c| {
-                    let a = c.a();
+                    // Fold the layer text-colour ALPHA into the glyph COVERAGE (`c.a()` is the
+                    // antialiasing coverage; the glyph cache tints RGB but does not apply the
+                    // ink alpha). Opaque text (`color.a == 255`) is byte-identical (·255/255,
+                    // integer-exact), so every existing region render is unchanged; a
+                    // TRANSLUCENT text Element (its `opacity` folded into `color.a`, 86ajq6j64)
+                    // dims uniformly. Determinism preserved (pure integer, same rounding as
+                    // `blend`/`scale_alpha`); the GPU skips `Layer::Text` so parity is untouched.
+                    let a = ((c.a() as u32 * color.a as u32 + 127) / 255) as u8;
                     if a == 0 {
                         return;
                     }

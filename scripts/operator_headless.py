@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 81
+EXPECTED_MIN_CHECKS = 90
 
 
 def find_chrome():
@@ -258,6 +258,34 @@ DRIVER = r"""
       var ti = applied();
       ok(el("td-img-row").hidden, "#1 Add Image uses the native picker (no manual path row)");
       ok(ti.elements.some(function(e){return e.kind==="image" && e.source==="/tmp/picked.png";}), "#1 native picker adds an image with the chosen path");
+
+      // 86ajq6j64: the TEXT add button is ENABLED and adds a text element; the inspector edits it.
+      var textBtn = document.querySelector('.td-addbar button[data-add="text"]');
+      ok(textBtn && !textBtn.disabled, "the Text add button is enabled (86ajq6j64)");
+      textBtn.click();
+      await sleep(30);
+      var last = function(){ var e = applied().elements; return e[e.length-1]; };
+      var txt = last();
+      ok(txt && txt.kind==="text" && txt.text==="Text", "Add Text adds a text element with default content");
+      ok(!el("td-el-text").hidden, "the text inspector shows for a text element");
+      ok(el("td-el-shape").hidden && el("td-el-image").hidden, "shape/image inspectors hidden for a text element");
+      ok(el("td-el-head").textContent.indexOf("Text")>=0, "the inspector head names it 'Text'");
+      // Edit the content via the inspector.
+      el("td-el-text-content").value = "Hello world";
+      el("td-el-text-content").dispatchEvent(new Event("input"));
+      ok(last().text==="Hello world", "the inspector edits the text content");
+      // Size + alignment controls update the element.
+      el("td-el-text-size").value = 12; el("td-el-text-size").dispatchEvent(new Event("input"));
+      ok(last().size_permille===120, "size 12% → size_permille=120");
+      el("td-el-text-align").value = "left"; el("td-el-text-align").dispatchEvent(new Event("change"));
+      ok(last().align_h==="left", "the alignment select sets align_h");
+      // Review fix: the content is CLIENT-bounded to the host cap (2000), so the UI can never
+      // author a theme the host would reject (no false-success on Apply).
+      el("td-el-text-content").value = "x".repeat(3000);
+      el("td-el-text-content").dispatchEvent(new Event("input"));
+      ok(last().text.length===2000, "an over-cap paste is truncated to 2000 chars on the client");
+      // Clean up the text element so later element-count assertions are unaffected.
+      el("td-el-del").click(); el("td-el-del").click();
 
       // FIX: click empty canvas deselects back to region editing.
       var bx = el("td-canvas-box").getBoundingClientRect();

@@ -226,7 +226,7 @@
             <!-- Add-content toolbar (Figma) — honest 'later' (on-canvas element editing). -->
             <div class="td-addbar" aria-label="Add content">
               <span class="td-addbar-label">Add content</span>
-              <button class="td-later" data-add="text" disabled title="Text elements arrive later (86ajq6j64)">Text</button><button class="td-later" data-add="scripture" disabled title="Scripture is the intrinsic Body region">Scripture</button><button data-add="shape">Shape</button><button data-add="image">Image</button>
+              <button data-add="text" title="Add a text box">Text</button><button class="td-later" data-add="scripture" disabled title="Scripture is the intrinsic Body region">Scripture</button><button data-add="shape">Shape</button><button data-add="image">Image</button>
               <span class="coming-soon td-addbar-note" id="td-addbar-note"></span>
             </div>
             <!-- Add Image: a host-local path (the native OS file-picker + FR-138 media-root
@@ -312,6 +312,21 @@
                 <label>Image file (on this machine)</label>
                 <p class="td-el-src" id="td-el-src"></p>
                 <button id="td-el-replace">Replace…</button>
+              </div>
+              <!-- Text-box controls (shown when a TEXT element is selected; 86ajq6j64). -->
+              <div id="td-el-text" hidden>
+                <label for="td-el-text-content">Text</label>
+                <textarea id="td-el-text-content" rows="3" maxlength="2000" aria-label="Text box content"></textarea>
+                <label for="td-el-text-color">Text colour</label>
+                <input type="color" id="td-el-text-color" />
+                <label for="td-el-text-size">Size — <span id="td-el-text-size-v"></span>%</label>
+                <input type="range" id="td-el-text-size" min="1" max="30" step="1" aria-label="Text size, percent of height" />
+                <label for="td-el-text-align">Alignment</label>
+                <select id="td-el-text-align" aria-label="Text alignment">
+                  <option value="left">Left</option>
+                  <option value="center">Center</option>
+                  <option value="right">Right</option>
+                </select>
               </div>
               <button id="td-el-del" class="td-el-del">Delete element</button>
               <p class="td-hint coming-soon">Drag to move · handles to resize · Arrange sends it behind / in front of the text · a missing image shows the placeholder. The native file-picker + image Fit modes arrive later.</p>
