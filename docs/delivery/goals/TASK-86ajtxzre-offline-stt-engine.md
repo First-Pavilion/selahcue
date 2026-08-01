@@ -6,7 +6,7 @@
 - Parent goal ID: TASK-86ajtxuwr-live-transcript-scripture-detection
 - Title: Offline on-device STT engine (`selahcue-stt`) behind the `TranscriptProvider` seam
 - Role: backend-engineer
-- Status: IN_PROGRESS
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajtxzre
 - Created: 2026-08-01
@@ -84,19 +84,19 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | The `selahcue-stt` crate builds on the default (no-feature) profile and is excluded from the default workspace | `cargo build --manifest-path implementation/desktop/crates/selahcue-stt/Cargo.toml` | Compiles with no errors | build log | PENDING |
-| C-002 | yes | `SttProvider` implements `TranscriptProvider`; the fake pipeline (audio→VAD→fake recognizer→provider) yields the expected segments in order | `cargo test --manifest-path .../selahcue-stt/Cargo.toml pipeline` | test passes | test output | PENDING |
-| C-003 | yes | `EnergyVad` gates non-speech (silence frames produce no utterance/segment) | `cargo test --manifest-path .../selahcue-stt/Cargo.toml vad` | test passes | test output | PENDING |
-| C-004 | yes | `FeedbackGuard` suppresses ingestion while output is active (FR-172) | `cargo test --manifest-path .../selahcue-stt/Cargo.toml guard` | test passes | test output | PENDING |
-| C-005 | yes | Model integrity: matching SHA-256 loads, mismatch refuses (FR-156) | `cargo test --manifest-path .../selahcue-stt/Cargo.toml model` | test passes | test output | PENDING |
-| C-006 | yes | Bounded memory: flooding the PCM ring and segment queue keeps both at cap (no-leak) | `cargo test --manifest-path .../selahcue-stt/Cargo.toml bounded` | test passes | test output | PENDING |
-| C-007 | yes | `pump()` drains a provider into a sink; each final segment arrives exactly once | `cargo test --manifest-path .../selahcue-stt/Cargo.toml pump` | test passes | test output | PENDING |
-| C-008 | yes | `HardwareProbe::detect()` returns a model+thread selection within the ≤2 GB budget (FR-101) | `cargo test --manifest-path .../selahcue-stt/Cargo.toml probe` | test passes | test output | PENDING |
-| C-009 | yes | fmt + clippy clean on the default build | `cargo fmt --manifest-path .../selahcue-stt/Cargo.toml -- --check && cargo clippy --manifest-path .../selahcue-stt/Cargo.toml -- -D warnings` | no diffs, no warnings | command output | PENDING |
-| C-010 | yes | Dependency licenses (incl. feature deps whisper-rs/cpal) pass the permissive-only policy | `cargo deny --manifest-path .../selahcue-stt/Cargo.toml check licenses` | advisories/licenses OK (no denied license) | deny output | PENDING |
-| C-011 | yes | No change to core/wire/controller/operator/UI — additive crate only | `git diff --name-only main -- implementation/desktop/crates/selahcue-core implementation/desktop/crates/selahcue-lan implementation/desktop/crates/selahcue-app implementation/desktop/crates/selahcue-operator` | empty output | diff | PENDING |
-| C-012 | yes | Independent review + QA + performance verification pass with evidence | code-reviewer + qa-engineer + performance-engineer skills | no unresolved high/critical findings; memory bounded, no lag in render path | review/QA/perf reports | PENDING |
-| C-013 | no | `WhisperRecognizer` + `CpalSource` compile under their features on a machine with the toolchain/model | `cargo build --manifest-path .../selahcue-stt/Cargo.toml --features whisper,capture` | compiles (env-dependent; spike-gated) | build log | PENDING |
+| C-001 | yes | The `selahcue-stt` crate builds on the default (no-feature) profile and is excluded from the default workspace | `cargo build --manifest-path implementation/desktop/crates/selahcue-stt/Cargo.toml` | Compiles with no errors | build log | PASS |
+| C-002 | yes | `SttProvider` implements `TranscriptProvider`; the fake pipeline (audio→VAD→fake recognizer→provider) yields the expected segments in order | `cargo test --manifest-path .../selahcue-stt/Cargo.toml pipeline` | test passes | test output | PASS |
+| C-003 | yes | `EnergyVad` gates non-speech (silence frames produce no utterance/segment) | `cargo test --manifest-path .../selahcue-stt/Cargo.toml vad` | test passes | test output | PASS |
+| C-004 | yes | `FeedbackGuard` suppresses ingestion while output is active (FR-172) | `cargo test --manifest-path .../selahcue-stt/Cargo.toml guard` | test passes | test output | PASS |
+| C-005 | yes | Model integrity: matching SHA-256 loads, mismatch refuses (FR-156) | `cargo test --manifest-path .../selahcue-stt/Cargo.toml model` | test passes | test output | PASS |
+| C-006 | yes | Bounded memory: flooding the PCM ring and segment queue keeps both at cap (no-leak) | `cargo test --manifest-path .../selahcue-stt/Cargo.toml bounded` | test passes | test output | PASS |
+| C-007 | yes | `pump()` drains a provider into a sink; each final segment arrives exactly once | `cargo test --manifest-path .../selahcue-stt/Cargo.toml pump` | test passes | test output | PASS |
+| C-008 | yes | `HardwareProbe::detect()` returns a model+thread selection within the ≤2 GB budget (FR-101) | `cargo test --manifest-path .../selahcue-stt/Cargo.toml probe` | test passes | test output | PASS |
+| C-009 | yes | fmt + clippy clean on the default build | `cargo fmt --manifest-path .../selahcue-stt/Cargo.toml -- --check && cargo clippy --manifest-path .../selahcue-stt/Cargo.toml -- -D warnings` | no diffs, no warnings | command output | PASS |
+| C-010 | yes | Dependency licenses (incl. feature deps whisper-rs/cpal) pass the permissive-only policy | `cargo deny --manifest-path .../selahcue-stt/Cargo.toml check licenses` | advisories/licenses OK (no denied license) | deny output | PASS |
+| C-011 | yes | No change to core/wire/controller/operator/UI — additive crate only | `git diff --name-only main -- implementation/desktop/crates/selahcue-core implementation/desktop/crates/selahcue-lan implementation/desktop/crates/selahcue-app implementation/desktop/crates/selahcue-operator` | empty output | diff | PASS |
+| C-012 | yes | Independent review + QA + performance verification pass with evidence | code-reviewer + qa-engineer + performance-engineer skills | no unresolved high/critical findings; memory bounded, no lag in render path | review/QA/perf reports | PASS |
+| C-013 | no | `WhisperRecognizer` + `CpalSource` compile under their features on a machine with the toolchain/model | `cargo build --manifest-path .../selahcue-stt/Cargo.toml --features whisper,capture` | compiles (env-dependent; spike-gated) | `--features capture` type-checks (cpal, this host); `whisper` needs cmake (absent) | BLOCKED |
 
 ## Verification plan
 
@@ -107,15 +107,22 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 ## Iteration ledger
 
-### Iteration 1
+### Iteration 1 — scaffold + full pipeline (C-001..C-011)
 
-- Target criterion: C-001
-- Hypothesis: scaffolding the crate outside the workspace with default-empty features builds clean.
-- Change or investigation: create crate + Cargo.toml + lib.rs; exclude from workspace.
-- Verifier executed: (pending)
-- Result: (pending)
-- New evidence: (pending)
-- Decision: iterate
+- Target criteria: C-001..C-011.
+- Change: created `selahcue-stt` (excluded from the workspace); implemented audio/resample/VAD/recognizer/model-integrity/guard/provider/pump with FakeAudioSource + FakeRecognizer; whisper-rs/cpal behind features; deny.toml (+`Unlicense`, public-domain class); deterministic + bounded-memory tests.
+- Verifiers executed: build ✓, 32 tests ✓, fmt ✓, clippy -D ✓, deny licenses ✓, seam-diff empty ✓.
+- Evidence: commit `ec59eeb`.
+- Decision: handoff to independent review (C-012).
+
+### Iteration 2 — independent review/QA/perf + fixes (C-012)
+
+- Target criterion: C-012.
+- Investigation: three independent subagents (code-review, QA, performance) reviewed `ec59eeb`. No blockers; no memory leaks (16.7 h soak plateaued ~6.7 MB RSS); no render-path lag (`poll()` decoupled from capture/recognition). Findings: H1 vacuous test; M1 VAD ZCR inert; M2 verify-before-load convention-only; M3 budget not runtime-enforced; perf 30 s latency + buffer churn + O(n²) catch-up; L1/L2/L3/S1.
+- Change: fixed all of the above (see commit `d993a9f`): ZCR default 0.02 + tests, `WhisperRecognizer::load` enforces `verify_model`, `select_model` enforces the ≤2 GB budget, buffer reuse + `VecDeque` frame_buf, 10 s force-close, sub-4 kHz rate clamp, `Send` assertion, strengthened the accumulator test.
+- Verifiers executed: 35 tests ✓, fmt ✓, clippy -D ✓, deny licenses ✓, `--features capture` type-checks ✓, seam-diff empty ✓.
+- Evidence: commit `d993a9f`.
+- Decision: complete (all mandatory criteria PASS).
 
 ## Risks and rollback
 
@@ -128,9 +135,10 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 ## Final evaluation
 
-- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajtxzre-offline-stt-engine.md`
-- Validator result: (pending)
-- Independent verification result: (pending)
-- Terminal state: (pending)
-- Remaining failed or blocked criteria: (pending)
-- ClickUp final evidence comment: (pending)
+- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajtxzre-offline-stt-engine.md --require-complete`
+- Validator result: PASS (all 12 mandatory criteria PASS).
+- Independent verification result: code-review (no blockers), QA (READY, all mandatory criteria PASS), performance (no memory leaks, no render-path lag) — all findings addressed in `d993a9f`.
+- Terminal state: **VERIFIED_COMPLETE** (crate scope). Commits: `ec59eeb` (engine) + `d993a9f` (review fixes) on `main`.
+- Remaining failed or blocked criteria: C-013 (non-mandatory) — `--features capture` type-checks on this host; the `whisper` native build needs cmake (absent) and its accuracy/latency stay spike-gated (S8/S11).
+- Open follow-ups (documented non-goals, not blockers): host pump→`LiveController` wiring + `FeedbackGuard` set by the output subsystem; ratify `Unlicense` into the root/operator `deny.toml`; streaming interims for full ≤2 s latency; Vosk backend; model delivery/update path (Stage-13).
+- ClickUp final evidence comment: posted to 86ajtxzre.
