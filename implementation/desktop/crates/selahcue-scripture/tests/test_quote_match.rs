@@ -22,7 +22,7 @@ fn quote_of_psalm_23_matches_the_passage() {
     let out = match_quote(spoken);
     assert_eq!(out.len(), 1, "expected one suggestion, got {out:?}");
     assert!(
-        out[0].starts_with("Psalm") && out[0].contains("23:"),
+        out[0].starts_with("Psalms 23:"),
         "expected a Psalm 23 verse, got {out:?}"
     );
 }
@@ -52,6 +52,28 @@ fn precision_too_few_distinctive_words_yields_no_match() {
 }
 
 #[test]
+fn precision_devotional_praise_speech_yields_no_match() {
+    // Thanksgiving / benediction / praise vocabulary (god, thanks, praise, almighty, mercy,
+    // glory, worship, bless) is shared across many verses AND much of ordinary worship
+    // speech. A devotional phrase built from these — quoting no single verse — must NOT fire.
+    // (Regression for the independent-review HIGH finding; the stopword list is the guard.)
+    for spoken in [
+        "we lift up our hearts and give thanks and praise to almighty god",
+        "we give thanks and praise to almighty god",
+        "let us give thanks and praise to almighty god for his mercy",
+        "father we worship you and we give you all the glory and honour and praise",
+        "holy holy holy is the lord god almighty we bless your holy name",
+        "we thank you lord for your mercy and your grace and your steadfast love",
+    ] {
+        assert!(
+            match_quote(spoken).is_empty(),
+            "devotional speech falsely matched: {spoken:?} -> {:?}",
+            match_quote(spoken)
+        );
+    }
+}
+
+#[test]
 fn fuzzy_partial_quote_of_a_long_verse_matches() {
     // Only the first clause of John 3:16 — a partial quote must still resolve the verse.
     let spoken = "for God so loved the world that he gave his only begotten Son";
@@ -77,10 +99,27 @@ fn determinism_same_input_same_output() {
 }
 
 #[test]
-fn bounded_pathological_input_is_handled() {
-    // A very long, repetitive input must not blow up (candidate scoring is capped) and must
-    // return a bounded result (at most one suggestion). Repeated calls stay consistent (the
-    // index is built once).
+fn bounded_many_distinct_discriminative_tokens_are_capped() {
+    // Exercise the candidate/scoring path (not the early-exit): a long query of MANY DISTINCT
+    // real, distinctive words spans a huge candidate set, so the MAX_CANDIDATES cap and the
+    // scoring loop actually run. It must return quickly, bounded (≤ 1), and deterministically
+    // — and, being no single verse's quotation, must not confidently fire.
+    let distinctive = "babylon egypt jerusalem shepherd covenant wilderness tabernacle \
+        sacrifice offering priest prophet vineyard harvest mountain wickedness righteousness \
+        testimony commandments statutes judgments inheritance brethren multitude congregation \
+        generations firstborn chariots horsemen serpent famine pestilence trumpet incense \
+        pharaoh moses aaron joshua caleb midian amalek philistines nineveh chaldeans";
+    let long_query = format!("{distinctive} {distinctive} {distinctive}");
+    let out = match_quote(&long_query);
+    // Bounded (at most one suggestion) and deterministic even over a large candidate set —
+    // whether or not this grab-bag happens to overlap a single verse enough to fire.
+    assert!(out.len() <= 1, "result must be bounded, got {out:?}");
+    assert_eq!(out, match_quote(&long_query), "deterministic across calls");
+}
+
+#[test]
+fn bounded_pathological_repeated_token_input_is_handled() {
+    // A very long, repetitive input dedups to one token and exits early — must not blow up.
     let spoke = "hallelujah ".repeat(5_000);
     let out = match_quote(&spoke);
     assert!(out.len() <= 1);
