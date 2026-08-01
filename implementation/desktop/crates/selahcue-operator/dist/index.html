@@ -48,7 +48,16 @@
              (whisper/Vosk) plugs in behind the same seam. No fabricated transcript is
              ever shown — the stream is empty until the host reports real segments. -->
         <section id="transcript" class="fwd-panel" aria-label="Live transcript">
-          <h2>Live transcript</h2>
+          <div class="fwd-head">
+            <h2>Live transcript</h2>
+            <!-- Recording indicator — shown only while listening. Live transcript is
+                 audio-based (R3): on-device STT plugs in behind the listen control below,
+                 so no lines are fabricated until it lands. Decorative (aria-hidden); the
+                 accessible announcement is carried by #transcript-status. -->
+            <span id="transcript-rec" class="rec-chip" aria-hidden="true" hidden>
+              <span class="rec-dot"></span>REC
+            </span>
+          </div>
           <div
             id="transcript-log"
             class="stream"
@@ -58,22 +67,19 @@
           ></div>
           <div id="transcript-empty" class="fwd-empty">
             <span class="fwd-icon" aria-hidden="true">🎙</span>
-            <span class="fwd-msg">Listening for the sermon…</span>
-            <span class="fwd-sub"
-              >On-device transcription (R3) plugs in here; meanwhile you can feed lines
-              below.</span
+            <span class="fwd-msg" id="transcript-empty-msg">Not listening yet.</span>
+            <span class="fwd-sub" id="transcript-empty-sub"
+              >Press Start listening to capture the sermon audio.</span
             >
           </div>
-          <form id="transcript-form" class="stream-input" aria-label="Add a transcript line">
-            <input
-              id="transcript-input"
-              type="text"
-              placeholder="Type or dictate a line…"
-              autocomplete="off"
-              aria-label="Transcript line"
-            />
-            <button id="transcript-send" type="submit" class="key">Send</button>
-          </form>
+          <!-- Start / Stop listening — live transcript is audio-based; this toggles the
+               capture state (the old manual "type a line" feed is removed, 86ajq…). -->
+          <div class="listen-row">
+            <button id="transcript-listen" type="button" class="listen-btn" aria-pressed="false">
+              <span class="listen-ico" aria-hidden="true">▶</span>
+              <span id="transcript-listen-label">Start listening</span>
+            </button>
+          </div>
           <p id="transcript-status" class="stream-note" role="status" aria-live="polite"></p>
         </section>
       </div>

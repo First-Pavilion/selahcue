@@ -2621,38 +2621,41 @@
         }
       }
 
-      // The manual transcript feed — the default injected-text STT provider (on-device
-      // whisper/Vosk plugs in behind the same host seam). Timestamps are ms from a
-      // session origin so segments order deterministically on the host.
-      const transcriptOrigin = Date.now();
-      (function wireTranscriptInput() {
-        const form = document.getElementById("transcript-form");
-        const input = document.getElementById("transcript-input");
+      // Live transcript is audio-based (R3): a Start / Stop listening toggle flips the
+      // capture state and the REC indicator. On-device STT (whisper/Vosk) plugs in behind
+      // this seam; until it lands no lines are fabricated — the panel honestly shows the
+      // listening state and the transcript stays empty. State is client-side (there is no
+      // host listen command yet), so it resets on reload — acceptable for an honest,
+      // not-yet-wired affordance.
+      (function wireTranscriptListen() {
+        const btn = document.getElementById("transcript-listen");
+        const label = document.getElementById("transcript-listen-label");
+        const ico = btn && btn.querySelector(".listen-ico");
+        const rec = document.getElementById("transcript-rec");
+        const msg = document.getElementById("transcript-empty-msg");
+        const sub = document.getElementById("transcript-empty-sub");
         const status = document.getElementById("transcript-status");
-        if (!form || !input) return;
-        form.addEventListener("submit", async (e) => {
-          e.preventDefault();
-          const text = input.value.trim();
-          if (!text) return;
-          const now = Date.now() - transcriptOrigin;
-          if (status) status.textContent = "Sending…";
-          try {
-            render(
-              await invoke("ingest_transcript", {
-                text,
-                startMs: now,
-                endMs: now + 2000,
-              })
-            );
-            // Clear ONLY after the host accepted the line — on an RBAC denial, host
-            // error, or disconnect the operator's text is preserved to retry.
-            input.value = "";
-            if (status) status.textContent = "";
-          } catch (err) {
-            console.error(err);
-            if (status) status.textContent = "Could not send that line.";
+        if (!btn) return;
+        let listening = false;
+        function apply() {
+          btn.classList.toggle("listening", listening);
+          btn.setAttribute("aria-pressed", listening ? "true" : "false");
+          if (label) label.textContent = listening ? "Stop listening" : "Start listening";
+          if (ico) ico.textContent = listening ? "⏹" : "▶";
+          if (rec) rec.hidden = !listening;
+          if (msg) msg.textContent = listening ? "Listening for the sermon…" : "Not listening yet.";
+          if (sub) {
+            sub.textContent = listening
+              ? "On-device transcription (R3) plugs in here — no lines appear until it lands."
+              : "Press Start listening to capture the sermon audio.";
           }
+          if (status) status.textContent = listening ? "Listening — capturing audio." : "";
+        }
+        btn.addEventListener("click", () => {
+          listening = !listening;
+          apply();
         });
+        apply();
       })();
 
       act(() => invoke("view"));

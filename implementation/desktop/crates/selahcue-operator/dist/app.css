@@ -265,12 +265,31 @@
       .seg { display: flex; gap: 8px; align-items: baseline; font-size: 12px; line-height: 1.35; }
       .seg-time { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 10px; }
       .seg-text { color: var(--text); word-break: break-word; }
-      .stream-input { display: flex; gap: 6px; margin-top: 8px; }
-      .stream-input input {
-        flex: 1; min-width: 0; padding: 6px 8px; font-size: 12px; color: var(--text);
-        background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+      /* Live-transcript header row: title + the REC recording indicator. */
+      .fwd-head { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; }
+      .fwd-head h2 { margin: 0; flex: 1; }
+      /* REC chip — shown only while listening (audio-based STT, R3). */
+      .rec-chip {
+        display: inline-flex; align-items: center; gap: 5px; flex: none;
+        background: var(--live); color: #fff; font-size: 10px; font-weight: 800;
+        letter-spacing: .08em; border-radius: 999px; padding: 2px 8px;
       }
-      .stream-input button { flex: none; padding: 6px 10px; }
+      /* The author display above beats the UA [hidden] rule — restore it so the chip
+         is hidden until listening (JS toggles the `hidden` attribute). */
+      .rec-chip[hidden] { display: none; }
+      .rec-chip .rec-dot {
+        width: 6px; height: 6px; border-radius: 50%; background: #fff;
+        animation: rec-pulse 1.4s ease-in-out infinite;
+      }
+      @keyframes rec-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+      /* Start / Stop listening toggle — replaces the old manual "type a line" feed.
+         Live transcript is audio-based (R3); this flips the capture state. */
+      .listen-row { margin-top: 8px; }
+      .listen-btn {
+        width: 100%; display: inline-flex; align-items: center; justify-content: center;
+        gap: 6px; padding: 8px 10px; font-size: 12px; font-weight: 600;
+      }
+      .listen-btn.listening { background: var(--live); border-color: var(--live); color: #fff; }
       .stream-note { margin: 4px 0 0; font-size: 11px; color: var(--muted); min-height: 14px; }
       .detection {
         display: flex; flex-direction: column; gap: 6px; padding: 8px;

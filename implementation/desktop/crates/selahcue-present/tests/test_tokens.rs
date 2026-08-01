@@ -139,11 +139,12 @@ fn operator_webview_is_pinned_to_the_canonical_tokens() {
         "obs-row",
         // Live transcript (R3) + scripture-detection approval queue (R4): FUNCTIONAL
         // but HONEST — they stream REAL host data (never fabricated), keep an honest
-        // empty state that discloses the on-device STT (R3) / detection (R4) seam, and
-        // wire the manual transcript feed + one-tap Stage approval.
+        // empty state that discloses the on-device STT (R3) / detection (R4) seam. Live
+        // transcript is audio-based: a Start/Stop listening toggle (#transcript-listen)
+        // flips the capture state — there is NO manual "type a line" feed.
         "id=\"transcript\"",
         "id=\"transcript-log\"",
-        "id=\"transcript-form\"",
+        "id=\"transcript-listen\"",
         "transcription (R3)",
         "id=\"detections\"",
         "id=\"detections-list\"",
