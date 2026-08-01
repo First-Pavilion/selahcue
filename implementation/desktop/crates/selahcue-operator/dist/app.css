@@ -2,8 +2,13 @@
          Pinned by selahcue-present/tests/test_tokens.rs — change both together.
          Fills carry white text; inks are text/glyphs on the dark surfaces. */
       :root {
-        --bg: #0e1116; --panel: #171b22; --line: #2b323d;
-        --text: #eef1f6; --muted: #9aa4b2; --accent: #5b6bd6;
+        /* Neutrals + brand re-skinned onto Design 2.0 (mirror of --sc-* below;
+           tokens::design2). Not token-pinned; darker surfaces only raise ink contrast. */
+        --bg: #0b0d12; --panel: #14161d; --line: #262a34;
+        --text: #f4f6fb; --muted: #a7aebe; --accent: #6e5cf0;
+        /* Status stays UX-CANONICAL §4 (WCAG-audited + pinned by test_tokens.rs).
+           Migrating status to the brighter Design 2.0 inks + soft-tint chips changes
+           §4 + the pin + the WCAG basis — tracked as the Phase-2 status re-skin. */
         --preview: #0f7b6c; --live: #a3283a; --warn: #9a5b00;
         --preview-ink: #2bb673; --live-ink: #ef4444; --warn-ink: #f2b53c;
       }
@@ -80,8 +85,8 @@
         background: none; border: none; color: var(--text); border-radius: 8px;
         padding: 9px 10px; cursor: pointer; font-size: 13px; font-weight: 600;
       }
-      .nav-item:hover { background: #232a35; }
-      .nav-item:focus-visible { background: #232a35; outline: 2px solid var(--accent); outline-offset: -2px; }
+      .nav-item:hover { background: #1c1f28; }
+      .nav-item:focus-visible { background: #1c1f28; outline: 2px solid var(--accent); outline-offset: -2px; }
       .nav-item[aria-current="page"] { background: #10231c; box-shadow: inset 3px 0 0 var(--preview-ink); }
       .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
       /* --- Theme Designer surface (S8-3c; refine: full-center canvas + drag/resize) --- */
@@ -201,7 +206,7 @@
       .screen-head { display: flex; align-items: center; gap: 10px; }
       .role-badge { font-size: 11px; font-weight: 700; border: 1px solid; border-radius: 10px; padding: 1px 8px; }
       .screen-toggle {
-        margin-left: auto; width: 46px; height: 26px; border-radius: 13px; background: #2b323d;
+        margin-left: auto; width: 46px; height: 26px; border-radius: 13px; background: #262a34;
         border: none; position: relative; cursor: pointer; flex: none;
       }
       .screen-toggle.on { background: var(--accent); }
@@ -332,7 +337,7 @@
         border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px;
         cursor: pointer; background: var(--bg);
       }
-      .item:hover { border-color: #35404f; background: #1d2430; }
+      .item:hover { border-color: #35404f; background: #1c1f28; }
       /* Two-line row (Figma): title above, kind below; title never wraps. */
       .item .main {
         flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
@@ -382,7 +387,7 @@
         border: 1px solid transparent; border-radius: 6px;
       }
       #scripture-hits .hit:hover, #scripture-hits .hit.sel {
-        color: var(--text); border-color: var(--line); background: #1d2430;
+        color: var(--text); border-color: var(--line); background: #1c1f28;
       }
       #scripture-hits .hit .ref { color: var(--warn-ink); font-weight: 700; flex: none; }
       #scripture-hits .hit .chip {
@@ -424,7 +429,7 @@
         display: flex; gap: 8px; padding: 6px 8px; border: 1px solid transparent;
         border-radius: 6px; cursor: pointer; font-size: 13px; line-height: 1.45;
       }
-      .verse:hover { background: #1d2430; }
+      .verse:hover { background: #1c1f28; }
       .verse .vnum { color: var(--warn-ink); font-weight: 700; min-width: 22px; text-align: right; }
       .verse.cursor { border-color: var(--preview-ink); background: #10231c; }
       .scrip-note { color: var(--muted); font-size: 11px; text-align: center; }
