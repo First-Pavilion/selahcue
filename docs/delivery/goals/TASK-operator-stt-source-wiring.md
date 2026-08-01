@@ -6,7 +6,7 @@
 - Parent goal ID: EPIC 86ajp08py (R3 · Transcription) / related 86ajtxzre (STT engine)
 - Title: Wire the on-device STT engine as the Operator Console's live-transcript source (feature-gated), so "Start listening" drives real transcription → detection
 - Role: frontend-engineer
-- Status: IN_PROGRESS
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajtxzre (STT engine follow-up; no dedicated story)
 - Created: 2026-08-01
@@ -88,14 +88,14 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Default operator build (no `stt`) compiles — stub commands + handler registration + Cargo.toml | `cargo check --manifest-path implementation/desktop/crates/selahcue-operator/Cargo.toml` | compiles, no errors | check log | PENDING |
-| C-002 | yes | The default build pulls NO whisper/cpal (feature-gated); `stt` feature declares the optional dep | `cargo tree --manifest-path .../selahcue-operator/Cargo.toml -e no-dev` shows no whisper-rs; `--features stt` shows it | whisper only under `stt` | tree output | PENDING |
-| C-003 | yes | `start_listening` + `stop_listening` commands exist (both cfg variants) and are registered in `generate_handler!` | grep `main.rs` | both commands defined + registered | grep | PENDING |
-| C-004 | yes | Honest fallback: without `stt`, `start_listening` returns a clear "not in this build" error; no fabricated transcript | review stub + `app.js` empty-state | honest error surfaced; stream empty until real segments | code | PENDING |
-| C-005 | yes | The `#transcript-listen` button invokes start/stop and reflects real success/error state | grep `app.js` + headless operator check | button wired; state honest | app.js + operator_headless | PENDING |
-| C-006 | yes | `listening.rs` worker drives `SttEngine`→`ingest_transcript` with a stop flag + bounded loop; model verified before load (FR-156) | review `listening.rs` | correct structure; `verify_model` before `WhisperRecognizer::load` | code review | PENDING |
-| C-007 | yes | No concurrent Design-2 hunk is staged/overridden — only my files/hunks | `git diff --cached --name-only` + staged diff review | only Cargo.toml / listening.rs / my main.rs+app.js hunks | staged diff | PENDING |
-| C-008 | no | `--features stt` compiles on a whisper-capable machine (cmake + model) | `cargo check --features stt` on such a host | compiles (env-dependent) | build log | PENDING |
+| C-001 | yes | Default operator build (no `stt`) compiles — stub commands + handler registration + Cargo.toml | `cargo check --manifest-path implementation/desktop/crates/selahcue-operator/Cargo.toml` | compiles, no errors | check log | PASS |
+| C-002 | yes | The default build pulls NO whisper/cpal (feature-gated); `stt` feature declares the optional dep | `cargo tree --manifest-path .../selahcue-operator/Cargo.toml -e no-dev` shows no whisper-rs; `--features stt` shows it | whisper only under `stt` | tree output | PASS |
+| C-003 | yes | `start_listening` + `stop_listening` commands exist (both cfg variants) and are registered in `generate_handler!` | grep `main.rs` | both commands defined + registered | grep | PASS |
+| C-004 | yes | Honest fallback: without `stt`, `start_listening` returns a clear "not in this build" error; no fabricated transcript | review stub + `app.js` empty-state | honest error surfaced; stream empty until real segments | code | PASS |
+| C-005 | yes | The `#transcript-listen` button invokes start/stop and reflects real success/error state | grep `app.js` + headless operator check | button wired; state honest | app.js + operator_headless | PASS |
+| C-006 | yes | `listening.rs` worker drives `SttEngine`→`ingest_transcript` with a stop flag + bounded loop; model verified before load (FR-156) | review `listening.rs` | correct structure; `verify_model` before `WhisperRecognizer::load` | code review | PASS |
+| C-007 | yes | No concurrent Design-2 hunk is staged/overridden — only my files/hunks | `git diff --cached --name-only` + staged diff review | only Cargo.toml / listening.rs / my main.rs+app.js hunks | staged diff | PASS |
+| C-008 | no | `--features stt` compiles on a whisper-capable machine (cmake + model) | `cargo check --features stt` on such a host | compiles (env-dependent) | unbuildable here (no cmake/model); import fix applied by inspection | BLOCKED |
 
 ## Verification plan
 
@@ -106,12 +106,20 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 ## Iteration ledger
 
-### Iteration 1
+### Iteration 1 — implement the wiring (C-001..C-007)
 
-- Target criteria: C-001..C-007.
-- Hypothesis: a feature-gated worker cloning `OperatorShell` into a thread, with honest stubs when `stt` is off, wires the button end-to-end while keeping the default build green and not overriding the concurrent rewrite.
-- Change / verifier / result: (pending)
-- Decision: iterate
+- Change: `stt` feature + optional `selahcue-stt`; `listening.rs` worker; `start/stop_listening` commands (+ stub); button hookup. Surgical (main.rs/app.js hunks in gaps).
+- Verifiers: default `cargo check` compiles (no whisper); commands registered; my app.js change passes headless (99/0) isolated on a clean baseline.
+- Evidence: commit `5d035ae` (superseded).
+- Decision: handoff to independent review.
+
+### Iteration 2 — independent review + fixes (C-006/C-007)
+
+- Investigation: review confirmed the Send split, no-deadlock, idempotence, honest fallback, model integrity, bounded memory, render isolation — but found a **BLOCKER** (`--features stt` would not compile: `CpalSource`/`WhisperRecognizer` imported from the crate root, which does not re-export them), a MEDIUM (mic-open failure left a phantom "listening" state), two LOWs (worker lock held across the slow model load; poisoned-lock made the worker unstoppable), and an INFO — the app.js commit had **bundled ~155 lines of concurrent Design-2 command-palette code** into my hunk.
+- Change (`cb5b6bc`, supersedes `5d035ae`): import `CpalSource`/`WhisperRecognizer` by module path; startup handshake so mic/model failures surface (no phantom state); load the model outside the worker lock; consistent poisoned-lock recovery; **re-committed surgically so app.js contains ONLY my ~15-line handler** (verified 0 palette lines; the concurrent palette is preserved, unstaged, in the working tree).
+- Verifiers: default `cargo check` compiles; my commit's app.js has 0 concurrent code; working tree still holds the concurrent rewrite intact; JS valid.
+- Evidence: commit `cb5b6bc`.
+- Decision: complete for the verifiable scope; `--features stt` compile is env-blocked (C-008).
 
 ## Risks and rollback
 
@@ -124,5 +132,9 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 ## Final evaluation
 
-- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-operator-stt-source-wiring.md`
-- Validator result / Independent verification / Terminal state / Remaining / ClickUp: (pending)
+- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-operator-stt-source-wiring.md --require-complete`
+- Validator result: PASS (all 7 mandatory criteria PASS).
+- Independent verification result: review confirmed the design (Send-correct, no deadlock, honest fallback, model integrity, bounded, render-isolated); its BLOCKER + MEDIUM + 2 LOW + the bundled-concurrent-code INFO were all addressed in `cb5b6bc`.
+- Terminal state: **VERIFIED_COMPLETE** for the default build + wiring. Commit on `main`: `cb5b6bc`.
+- Remaining / open follow-ups (non-blocking): **C-008 — verify `cargo check/run --features stt` on a whisper-capable machine (cmake + a model)**; the import fix + worker are correct by inspection but unbuilt here. Also: real accuracy/latency spike (S8/S11); the button hookup lives on the concurrent Design-2 app.js line — reconcile at their merge; model delivery (ADR-0012 → Stage-13).
+- ClickUp final evidence comment: posted to 86ajtxzre.
