@@ -101,3 +101,123 @@ pub fn contrast_ratio(a: Rgba, b: Rgba) -> f64 {
     let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
     (hi + 0.05) / (lo + 0.05)
 }
+
+/// SelahCue **"Design 2.0"** palette (Figma node `310:124`, file
+/// `SYQn5hFY8YVQKm3c6rw0eJ`) — the redesign token set.
+///
+/// This is an **additive** token layer for the Design 2.0 re-skin: the canonical
+/// status tokens above ([`PREVIEW`]/[`LIVE`]/[`WARN`]) are *white-on-deep-fill* and
+/// stay until components migrate, whereas Design 2.0 uses a **bright ink on a
+/// same-hue soft tint** (see `docs/design/DESIGN-2.0-HANDOFF.md` §3). Mirrored in
+/// the operator webview (`dist/app.css`, `--sc-*`) and the Flutter controller
+/// (`design_tokens.dart`, `d2*`); every surface + the WCAG-AA pairings are pinned
+/// by `tests/test_tokens.rs` — change them together or the audit fails.
+pub mod design2 {
+    use super::{rgb, Rgba};
+
+    /// A palette swatch: the colour and its lowercase CSS hex, kept in lockstep.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Swatch {
+        /// The colour.
+        pub rgba: Rgba,
+        /// Its CSS hex, lowercase (e.g. `"#0b0d12"`).
+        pub hex: &'static str,
+    }
+    const fn sw(r: u8, g: u8, b: u8, hex: &'static str) -> Swatch {
+        Swatch {
+            rgba: rgb(r, g, b),
+            hex,
+        }
+    }
+
+    // — Neutral surface ramp (app background → darkest well) —
+    /// App background.
+    pub const BASE: Swatch = sw(0x0b, 0x0d, 0x12, "#0b0d12");
+    /// Panels / cards.
+    pub const SURFACE: Swatch = sw(0x14, 0x16, 0x1d, "#14161d");
+    /// Rows, inner cards, controls.
+    pub const ELEVATED: Swatch = sw(0x1c, 0x1f, 0x28, "#1c1f28");
+    /// Wells, inputs, monitor mattes.
+    pub const INSET: Swatch = sw(0x0f, 0x11, 0x16, "#0f1116");
+    /// Hairline border.
+    pub const BORDER: Swatch = sw(0x26, 0x2a, 0x34, "#262a34");
+    /// Emphasis border.
+    pub const BORDER_STRONG: Swatch = sw(0x36, 0x3b, 0x47, "#363b47");
+
+    // — Text scale —
+    /// Primary text.
+    pub const TEXT: Swatch = sw(0xf4, 0xf6, 0xfb, "#f4f6fb");
+    /// Secondary text.
+    pub const TEXT_SECONDARY: Swatch = sw(0xa7, 0xae, 0xbe, "#a7aebe");
+    /// Tertiary / hint text (label-only; see the WCAG note in `test_tokens.rs`).
+    pub const TEXT_MUTED: Swatch = sw(0x6b, 0x73, 0x83, "#6b7383");
+
+    // — Brand (indigo → violet) —
+    /// Primary action / selection.
+    pub const PRIMARY: Swatch = sw(0x6e, 0x5c, 0xf0, "#6e5cf0");
+    /// Hover / gradient top.
+    pub const PRIMARY_HOVER: Swatch = sw(0x7e, 0x6e, 0xff, "#7e6eff");
+    /// Soft brand tint (chips/selection fills on dark).
+    pub const ACCENT_SOFT: Swatch = sw(0x20, 0x1f, 0x3a, "#201f3a");
+
+    // — Scripture gold (worship accent; never a status) —
+    /// Scripture references / verse numbers.
+    pub const GOLD: Swatch = sw(0xf2, 0xb8, 0x4b, "#f2b84b");
+    /// Gold soft tint.
+    pub const GOLD_SOFT: Swatch = sw(0x2a, 0x24, 0x15, "#2a2415");
+
+    // — Broadcast status: bright ink + same-hue soft tint + border —
+    /// Live / on-air / alarm ink.
+    pub const LIVE: Swatch = sw(0xff, 0x4d, 0x4d, "#ff4d4d");
+    /// Live soft tint (chip/panel background).
+    pub const LIVE_SOFT: Swatch = sw(0x2a, 0x14, 0x16, "#2a1416");
+    /// Live border.
+    pub const LIVE_BORDER: Swatch = sw(0x5a, 0x23, 0x27, "#5a2327");
+    /// Preview / staged / safe ink.
+    pub const PREVIEW: Swatch = sw(0x35, 0xc0, 0x8a, "#35c08a");
+    /// Preview soft tint.
+    pub const PREVIEW_SOFT: Swatch = sw(0x10, 0x23, 0x1c, "#10231c");
+    /// Preview border.
+    pub const PREVIEW_BORDER: Swatch = sw(0x1c, 0x3a, 0x2e, "#1c3a2e");
+    /// Warning / threshold ink.
+    pub const WARN: Swatch = sw(0xf5, 0xa5, 0x24, "#f5a524");
+    /// Warning soft tint.
+    pub const WARN_SOFT: Swatch = sw(0x2a, 0x24, 0x15, "#2a2415");
+    /// Warning border.
+    pub const WARN_BORDER: Swatch = sw(0x4a, 0x3a, 0x15, "#4a3a15");
+    /// Neutral-informational ink (stage role, opt-in badges).
+    pub const INFO: Swatch = sw(0x38, 0xbd, 0xf8, "#38bdf8");
+    /// Info soft tint.
+    pub const INFO_SOFT: Swatch = sw(0x10, 0x22, 0x2b, "#10222b");
+
+    /// The ordered palette manifest: `(token-name, swatch)`. The name maps to the
+    /// CSS custom property `--sc-<name>` and the Flutter `d2<Camel>` const — the
+    /// pin test iterates this so no surface can drift or drop a token.
+    pub const MANIFEST: &[(&str, Swatch)] = &[
+        ("base", BASE),
+        ("surface", SURFACE),
+        ("elevated", ELEVATED),
+        ("inset", INSET),
+        ("border", BORDER),
+        ("border-strong", BORDER_STRONG),
+        ("text", TEXT),
+        ("text-secondary", TEXT_SECONDARY),
+        ("text-muted", TEXT_MUTED),
+        ("primary", PRIMARY),
+        ("primary-hover", PRIMARY_HOVER),
+        ("accent-soft", ACCENT_SOFT),
+        ("gold", GOLD),
+        ("gold-soft", GOLD_SOFT),
+        ("live", LIVE),
+        ("live-soft", LIVE_SOFT),
+        ("live-border", LIVE_BORDER),
+        ("preview", PREVIEW),
+        ("preview-soft", PREVIEW_SOFT),
+        ("preview-border", PREVIEW_BORDER),
+        ("warn", WARN),
+        ("warn-soft", WARN_SOFT),
+        ("warn-border", WARN_BORDER),
+        ("info", INFO),
+        ("info-soft", INFO_SOFT),
+    ];
+}

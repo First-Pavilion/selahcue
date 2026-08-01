@@ -7,6 +7,21 @@
         --preview: #0f7b6c; --live: #a3283a; --warn: #9a5b00;
         --preview-ink: #2bb673; --live-ink: #ef4444; --warn-ink: #f2b53c;
       }
+      /* SelahCue "Design 2.0" palette (Figma node 310:124) — additive token layer
+         for the redesign re-skin. Canonical source: selahcue-present/src/tokens.rs
+         (design2); pinned + WCAG-audited by test_tokens.rs. The legacy vars above
+         stay until components migrate to --sc-* (see DESIGN-2.0-HANDOFF.md §3). */
+      :root {
+        --sc-base: #0b0d12; --sc-surface: #14161d; --sc-elevated: #1c1f28; --sc-inset: #0f1116;
+        --sc-border: #262a34; --sc-border-strong: #363b47;
+        --sc-text: #f4f6fb; --sc-text-secondary: #a7aebe; --sc-text-muted: #6b7383;
+        --sc-primary: #6e5cf0; --sc-primary-hover: #7e6eff; --sc-accent-soft: #201f3a;
+        --sc-gold: #f2b84b; --sc-gold-soft: #2a2415;
+        --sc-live: #ff4d4d; --sc-live-soft: #2a1416; --sc-live-border: #5a2327;
+        --sc-preview: #35c08a; --sc-preview-soft: #10231c; --sc-preview-border: #1c3a2e;
+        --sc-warn: #f5a524; --sc-warn-soft: #2a2415; --sc-warn-border: #4a3a15;
+        --sc-info: #38bdf8; --sc-info-soft: #10222b;
+      }
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; }
       body {

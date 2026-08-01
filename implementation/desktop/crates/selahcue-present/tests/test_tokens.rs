@@ -234,9 +234,9 @@ fn operator_webview_has_the_app_menu_and_screens_surface() {
         "id=\"td-lock\"",
         "id=\"td-font\"",
         "td-later",
-        // Per-item theme override (S8-3d): a picker on each plan row → set_item_theme.
-        "set_item_theme",
-        "item-theme",
+        // (The per-item theme override + its `set_item_theme`/`item-theme` pins were
+        // removed with the Service-plan declutter in 1108bc4; per-screen theme remains
+        // — see `operator_webview_wires_per_screen_theme`.)
     ] {
         assert!(html.contains(needle), "webview missing {needle:?}");
     }
@@ -311,23 +311,23 @@ fn operator_webview_wires_per_screen_theme() {
     );
 }
 
-/// Saved themes are offered per-item AND per-screen (86ajq69ft): both Theme pickers list
+/// Saved themes are offered on the per-SCREEN Theme picker (86ajq69ft): the picker lists
 /// the library's saved themes (a "Saved" optgroup), not just built-ins. Pinned so a future
-/// edit cannot silently drop the saved themes from either picker.
+/// edit cannot silently drop the saved themes from the picker. (The per-ITEM theme dropdown
+/// — and its `set_item_theme` pin — was removed in 1108bc4's Service-plan declutter.)
 #[test]
-fn operator_webview_offers_saved_themes_per_item_and_per_screen() {
+fn operator_webview_offers_saved_themes_per_screen() {
     let js = operator_dist("app.js");
-    // Both pickers read the library from the view and group the saved names.
+    // The per-screen picker + the change-detect key read the library from the view.
     assert!(
-        js.matches("view.saved_themes").count() >= 3,
-        "the per-item + per-screen pickers (and the change-detect key) read view.saved_themes"
+        js.matches("view.saved_themes").count() >= 2,
+        "the per-screen picker (and the change-detect key) read view.saved_themes"
     );
     for needle in [
         "savedNames",
         "optgroup",
         "grp.label = \"Saved\"",
-        // Both pickers stay wired to their per-item / per-screen commands.
-        "set_item_theme",
+        // The per-screen Theme picker stays wired to its command.
         "set_screen_theme",
     ] {
         assert!(js.contains(needle), "app.js missing {needle:?}");
@@ -391,4 +391,93 @@ fn mobile_tokens_are_pinned_to_the_canonical_tokens() {
             "mobile tokens missing {name} {literal}"
         );
     }
+}
+
+/// The Design 2.0 palette (Figma node 310:124) is carried identically by the
+/// operator webview (CSS `--sc-*`) and the Flutter controller (`0xFF..`), pinned to
+/// the canonical Rust swatches (`tokens::design2`) so the redesign tokens can't
+/// drift or drop across surfaces. Additive layer — see DESIGN-2.0-HANDOFF.md §3.
+#[test]
+fn design2_palette_is_pinned_across_surfaces() {
+    let css = operator_dist("app.css");
+    let dart_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../mobile/selahcue_controller/lib/models/design_tokens.dart"
+    );
+    let dart = std::fs::read_to_string(dart_path).expect("mobile design_tokens.dart exists");
+    let parse = |h: &str| {
+        let v = u32::from_str_radix(&h[1..], 16).unwrap();
+        Rgba {
+            r: (v >> 16) as u8,
+            g: (v >> 8) as u8,
+            b: v as u8,
+            a: 255,
+        }
+    };
+    for &(name, sw) in tokens::design2::MANIFEST {
+        // The canonical Rust hex and Rgba are the same colour (no internal drift).
+        assert_eq!(sw.rgba, parse(sw.hex), "design2 {name}: hex != rgba");
+        // Operator webview CSS custom property, exact.
+        let css_needle = format!("--sc-{name}: {}", sw.hex);
+        assert!(css.contains(&css_needle), "app.css missing {css_needle:?}");
+        // Flutter const colour literal, exact (#0b0d12 -> 0xFF0B0D12).
+        let dart_needle = format!("0xFF{}", sw.hex[1..].to_uppercase());
+        assert!(
+            dart.contains(&dart_needle),
+            "design_tokens.dart missing {dart_needle} ({name})"
+        );
+    }
+}
+
+/// Design 2.0 pairings meet WCAG-AA on the new dark surfaces: body + secondary
+/// text, scripture gold, and the bright status inks clear 4.5:1 on `base` +
+/// `surface` and on their same-hue soft tints; white clears 4.5:1 on the primary
+/// button. `text-muted` is tertiary/label-only and is audited at AA-large (3:1) —
+/// it must NOT carry essential small body text (flagged in DESIGN-2.0-HANDOFF §6).
+#[test]
+fn design2_palette_meets_wcag_aa() {
+    use tokens::design2 as d2;
+    const AA_LARGE: f64 = 3.0;
+    let (base, surface) = (d2::BASE.rgba, d2::SURFACE.rgba);
+    for bg in [base, surface] {
+        assert!(
+            contrast_ratio(d2::TEXT.rgba, bg) >= AA_TEXT,
+            "text on {bg:?}"
+        );
+        assert!(
+            contrast_ratio(d2::TEXT_SECONDARY.rgba, bg) >= AA_TEXT,
+            "text-secondary on {bg:?}"
+        );
+        let m = contrast_ratio(d2::TEXT_MUTED.rgba, bg);
+        assert!(
+            m >= AA_LARGE,
+            "text-muted on {bg:?} = {m:.2} < AA-large {AA_LARGE}"
+        );
+    }
+    // Bright inks + gold as text/glyphs on the dark surfaces.
+    for (n, s) in [
+        ("preview", d2::PREVIEW),
+        ("live", d2::LIVE),
+        ("warn", d2::WARN),
+        ("info", d2::INFO),
+        ("gold", d2::GOLD),
+    ] {
+        for bg in [base, surface] {
+            let c = contrast_ratio(s.rgba, bg);
+            assert!(c >= AA_TEXT, "{n} on {bg:?} = {c:.2} < {AA_TEXT}");
+        }
+    }
+    // Status inks on their own same-hue soft tint (the Design 2.0 chip pattern).
+    for (n, ink, soft) in [
+        ("preview", d2::PREVIEW, d2::PREVIEW_SOFT),
+        ("live", d2::LIVE, d2::LIVE_SOFT),
+        ("warn", d2::WARN, d2::WARN_SOFT),
+        ("info", d2::INFO, d2::INFO_SOFT),
+    ] {
+        let c = contrast_ratio(ink.rgba, soft.rgba);
+        assert!(c >= AA_TEXT, "{n} on its soft tint = {c:.2} < {AA_TEXT}");
+    }
+    // White label on the primary button.
+    let p = contrast_ratio(Rgba::WHITE, d2::PRIMARY.rgba);
+    assert!(p >= AA_TEXT, "white on primary = {p:.2} < {AA_TEXT}");
 }
