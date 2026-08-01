@@ -25,6 +25,10 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 
+/// On-device STT capture worker driving the live transcript (feature `stt`; OFF by default).
+#[cfg(feature = "stt")]
+mod listening;
+
 /// Where the operator commands are dispatched: a remote host output window, or an
 /// in-process demo controller.
 enum Backend {
@@ -761,6 +765,52 @@ async fn dismiss_detection(
 ) -> Result<OperatorView, String> {
     state.backend.dismiss_detection(detection_id).await
 }
+
+// --- Live-transcript source: on-device STT capture (feature `stt`) ------------------------
+// "Start listening" drives real on-device transcription into the local controller's
+// detection engine. On-device STT drives the *local* in-process controller only. Real audio
+// runs only in a build with `--features stt` (native whisper toolchain + model); otherwise
+// the commands still exist and return an honest "not in this build" error — the webview
+// surfaces it and never shows a fabricated transcript.
+
+/// Start on-device transcription into the live transcript.
+#[cfg(feature = "stt")]
+#[tauri::command]
+async fn start_listening(state: State<'_, AppState>) -> Result<(), String> {
+    match &state.backend {
+        Backend::Local(shell) => listening::start(shell.clone()),
+        Backend::Remote(_) => Err(
+            "On-device STT drives the local in-process controller; it is unavailable while \
+             connected to a remote output window."
+                .to_string(),
+        ),
+    }
+}
+
+/// Stop on-device transcription.
+#[cfg(feature = "stt")]
+#[tauri::command]
+async fn stop_listening() -> Result<(), String> {
+    listening::stop();
+    Ok(())
+}
+
+/// Honest fallback when the operator was not built with on-device STT.
+#[cfg(not(feature = "stt"))]
+#[tauri::command]
+async fn start_listening() -> Result<(), String> {
+    Err(
+        "This build does not include on-device speech-to-text. Rebuild the operator with \
+         `--features stt` on a machine with the whisper toolchain and a model."
+            .to_string(),
+    )
+}
+
+#[cfg(not(feature = "stt"))]
+#[tauri::command]
+async fn stop_listening() -> Result<(), String> {
+    Ok(())
+}
 #[tauri::command]
 async fn identify_outputs(state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.identify_outputs().await
@@ -872,6 +922,8 @@ fn main() {
             ingest_transcript,
             approve_detection,
             dismiss_detection,
+            start_listening,
+            stop_listening,
             identify_outputs,
             assign_output,
             set_theme,

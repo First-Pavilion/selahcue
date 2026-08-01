@@ -2651,9 +2651,20 @@
           }
           if (status) status.textContent = listening ? "Listening — capturing audio." : "";
         }
-        btn.addEventListener("click", () => {
-          listening = !listening;
-          apply();
+        btn.addEventListener("click", async () => {
+          const next = !listening;
+          btn.disabled = true;
+          try {
+            await invoke(next ? "start_listening" : "stop_listening");
+            listening = next;
+            if (status) status.textContent = "";
+          } catch (err) {
+            const msg = err && err.message ? err.message : String(err);
+            if (status) status.textContent = msg;
+          } finally {
+            btn.disabled = false;
+            apply();
+          }
         });
         apply();
       })();

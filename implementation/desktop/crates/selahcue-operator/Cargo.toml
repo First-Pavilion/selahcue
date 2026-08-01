@@ -20,6 +20,13 @@ path = "src/main.rs"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = []
+# On-device speech-to-text as the live-transcript source. OFF by default so the operator's
+# compile-check (CI) needs no native whisper toolchain or model; enable on a whisper-capable
+# machine (`cargo run --features stt`) to drive real transcription from "Start listening".
+stt = ["dep:selahcue-stt"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 # Native OS file picker for the Add-Image flow (86ajq6j4p/86ajq6j49) — the official
@@ -37,6 +44,9 @@ selahcue-lan = { path = "../selahcue-lan", features = ["server"] }
 selahcue-core = { path = "../selahcue-core" }
 selahcue-scripture = { path = "../selahcue-scripture" }
 selahcue-present = { path = "../selahcue-present" }
+# On-device STT engine (optional; behind the `stt` feature). Pulls the native whisper.cpp +
+# cpal backends ONLY when `stt` is enabled — the default build never touches them.
+selahcue-stt = { path = "../selahcue-stt", features = ["whisper", "capture"], optional = true }
 
 [lints.clippy]
 unwrap_used = "warn"
