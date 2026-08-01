@@ -8,7 +8,7 @@
 - Role: backend-engineer (registry + wire + controller + data) + frontend-engineer (Screens-page toggle/add/delete)
 - Status: VERIFIED_COMPLETE
 - Execution engine: goal
-- ClickUp task: ⚠ MCP rate-limited (~76 min cooldown) — QUEUED: create a linked STORY "Screens page — dynamic screen registry (enable/add/delete virtual)" under EPIC Accessibility & Design System `86ajp08bx`, related to `86ajq321f` (App menu + Screens page IMPLEMENTATION, in QA); record goal id here on BUILD CONTROL `86ajnx548`.
+- ClickUp task: STORY `86ajujr0y` — "Screens page: dynamic screen registry (enable/disable + add/delete virtual)" under EPIC Accessibility & Design System `86ajp08bx`, related to `86ajq321f` (App menu + Screens page IMPLEMENTATION, in QA); status QA. BUILD CONTROL `86ajnx548` gate comment posted.
 - Created: 2026-08-01
 - Independent verification required: yes (adversarial Workflow review + wire round-trip + migration round-trip + the committed webview gate)
 - Maximum iterations: 12
@@ -84,4 +84,4 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Validator result: PASS (5/5 mandatory criteria PASS)
 - Independent verification result: adversarial review `wf_4b25b9c4-6ff` (4 lenses → per-finding refute-by-default, 12 agents) — 4 raised, 3 confirmed (1 HIGH + 2 MEDIUM) all fixed + regression-tested, 1 refuted; + the committed Chrome 81/81 + WebKit 5/5 CI gates run on the runner.
 - Terminal state: GATE_REVIEW (verifiable work complete; paused for the `/build` user gate).
-- ClickUp final evidence comment: pending — MCP rate-limited this session; QUEUED: create STORY "Screens page — dynamic screen registry" under EPIC Accessibility & Design System 86ajp08bx (related to 86ajq321f), + BUILD CONTROL 86ajnx548 gate update. Retried at finalization.
+- ClickUp final evidence comment: POSTED — STORY `86ajujr0y` created (→ QA) under EPIC `86ajp08bx` (related to `86ajq321f`) with the full acceptance + verification; BUILD CONTROL `86ajnx548` gate comment `90130299940482` posted.
