@@ -57,6 +57,11 @@ pub struct Session {
     pub device_id: DeviceId,
     pub role: Role,
     token: SessionToken,
+    /// When this session was last (re)authenticated. Set at pairing and refreshed on every
+    /// handshake (`touch`); a session idle past [`SESSION_IDLE_TTL`] is reclaimed by
+    /// [`prune_idle`](SessionRegistry::prune_idle) so the active-session cap (audit M3) bounds
+    /// *recently-active* devices, not lifetime pairings (audit #8).
+    last_seen: Instant,
 }
 
 /// Hard cap on concurrent active (paired) sessions (audit M3 no-leak rule). Far above any
@@ -64,6 +69,13 @@ pub struct Session {
 /// never fires in legitimate use — it only stops the `active` map from accumulating one
 /// permanent entry per distinct device without bound when stale sessions are never revoked.
 pub const MAX_ACTIVE_SESSIONS: usize = 256;
+
+/// How long an active session may sit idle (no re-authentication) before
+/// [`prune_idle`](SessionRegistry::prune_idle) reclaims it (audit #8). Generous — far
+/// longer than a service — so an active device is never pruned mid-use, while a dead session
+/// (a device that paired once and never reconnected, e.g. after a reinstall that mints a fresh
+/// `device_id`) self-reclaims within the window rather than permanently consuming a slot.
+pub const SESSION_IDLE_TTL: Duration = Duration::from_secs(6 * 3600);
 
 /// Why redeeming a pairing code failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,12 +165,12 @@ impl SessionRegistry {
                 // entry (no growth) and is always allowed — but note this only helps callers
                 // that present a STABLE id: the loopback operator shell reuses the host device
                 // id, whereas the remote WS server (`server.rs`) mints a fresh random id per
-                // pairing, so a remote re-pair takes a NEW slot. `active` is an in-memory map
-                // reset on restart and reclaimed by `revoke`, so the cap bounds concurrent (not
-                // lifetime) sessions; past it a new device is refused (fail-closed) and the
-                // operator frees a slot by revoking a stale session. A stable-remote-id or an
-                // idle-TTL that lets remote re-pairs replace / self-reclaim is a tracked
-                // follow-up.
+                // pairing, so a remote re-pair takes a NEW slot. That is fine because the cap
+                // now bounds RECENTLY-ACTIVE devices, not lifetime pairings (audit #8): a dead
+                // session self-reclaims via [`prune_idle`] after [`SESSION_IDLE_TTL`] of no
+                // re-authentication (the caller prunes before this cap check), so a full
+                // registry frees slots as idle devices age out; past the cap a new device is
+                // still refused (fail-closed) and `revoke` remains the immediate manual escape.
                 if !self.active.contains_key(&device_id) && self.active.len() >= MAX_ACTIVE_SESSIONS
                 {
                     return Err(PairingError::TooManySessions);
@@ -169,6 +181,7 @@ impl SessionRegistry {
                         device_id,
                         role,
                         token,
+                        last_seen: now,
                     },
                 );
                 Ok(role)
@@ -201,6 +214,29 @@ impl SessionRegistry {
         } else {
             None
         }
+    }
+
+    /// Mark a device's session as active as of `now` — the caller invokes this on every
+    /// successful (re)authentication so [`prune_idle`](Self::prune_idle) does not reclaim a
+    /// device that is still connecting (audit #8). Returns whether a session was refreshed.
+    pub fn touch(&mut self, device_id: &DeviceId, now: Instant) -> bool {
+        if let Some(session) = self.active.get_mut(device_id) {
+            session.last_seen = now;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Reclaim active sessions idle (no re-authentication) for longer than `ttl` — housekeeping
+    /// so the active-session cap (audit M3) bounds *recently-active* devices, not lifetime
+    /// pairings (audit #8). `saturating_duration_since` never panics if a clock ran backwards.
+    /// Returns the number of sessions reclaimed.
+    pub fn prune_idle(&mut self, now: Instant, ttl: Duration) -> usize {
+        let before = self.active.len();
+        self.active
+            .retain(|_, s| now.saturating_duration_since(s.last_seen) <= ttl);
+        before - self.active.len()
     }
 
     /// Revoke a device's session (e.g. operator removes a controller). Returns

@@ -12,7 +12,7 @@ use crate::protocol::{
     ServerMessage,
 };
 use crate::rbac::{authorize, Role};
-use crate::session::{DeviceId, PairingError, SessionRegistry, SessionToken};
+use crate::session::{DeviceId, PairingError, SessionRegistry, SessionToken, SESSION_IDLE_TTL};
 use crate::tls::{server_config, SelfSigned, TransportError};
 use crate::wire::{recv_json, send_json};
 use futures_util::future::BoxFuture;
@@ -240,9 +240,16 @@ impl ControlServer {
                 "unsupported protocol version".into(),
             ));
         }
+        let device_id = DeviceId(auth.device_id.clone());
         let role = {
-            let reg = self.registry.lock().await;
-            reg.authenticate(&DeviceId(auth.device_id.clone()), &auth.token)
+            let mut reg = self.registry.lock().await;
+            let r = reg.authenticate(&device_id, &auth.token);
+            if r.is_some() {
+                // The device just proved it is active — refresh its idle-TTL so housekeeping
+                // does not reclaim it while it is connecting/reconnecting (audit #8).
+                reg.touch(&device_id, std::time::Instant::now());
+            }
+            r
         };
         match role {
             Some(role) => {
@@ -298,6 +305,7 @@ impl ControlServer {
             let mut reg = self.registry.lock().await;
             let now = std::time::Instant::now();
             reg.prune_expired(now);
+            reg.prune_idle(now, SESSION_IDLE_TTL); // reclaim idle sessions (audit #8) before a new pairing
             reg.code_valid(&pair.code, now)
         } {
             return reject(ws, DenyReason::Unauthenticated, "unknown or expired code").await;
@@ -319,6 +327,10 @@ impl ControlServer {
         let token = random_hex(32);
         let redeemed = {
             let mut reg = self.registry.lock().await;
+            // Reclaim idle sessions immediately before the cap check so a full registry frees
+            // slots for this new device as dead ones age out (audit #8; host approval + the
+            // confirm window may have elapsed since the pre-check prune above).
+            reg.prune_idle(std::time::Instant::now(), SESSION_IDLE_TTL);
             reg.redeem(
                 &pair.code,
                 DeviceId(device_id.clone()),

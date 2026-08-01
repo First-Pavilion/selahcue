@@ -373,3 +373,95 @@ fn active_sessions_are_hard_capped() {
         .is_ok());
     assert_eq!(reg.active_count(), MAX_ACTIVE_SESSIONS);
 }
+
+#[test]
+fn prune_idle_reclaims_idle_sessions_and_keeps_touched_ones() {
+    // Audit #8: a session unused past the idle-TTL self-reclaims; a re-authenticated (touched)
+    // one survives. Clock-injected (no wall-clock).
+    use selahcue_lan::session::SESSION_IDLE_TTL;
+    let t0 = Instant::now();
+    let ttl = Duration::from_secs(300);
+    let mut reg = SessionRegistry::new();
+    for id in ["dev-a", "dev-b"] {
+        reg.offer_pairing(id, Role::Producer, t0, Duration::from_secs(60));
+        reg.redeem(id, dev(id), SessionToken::new(id), t0).unwrap();
+    }
+    assert_eq!(reg.active_count(), 2);
+    // dev-b re-authenticates at t0+200s → its idle clock resets.
+    assert!(reg.touch(&dev("dev-b"), t0 + Duration::from_secs(200)));
+    assert!(
+        !reg.touch(&dev("ghost"), t0),
+        "touch on an unknown device is a no-op"
+    );
+    // At t0+301s: dev-a idle 301s (> ttl) → reclaimed; dev-b idle 101s (<= ttl) → kept.
+    let now = t0 + ttl + Duration::from_secs(1);
+    assert_eq!(
+        reg.prune_idle(now, ttl),
+        1,
+        "exactly the idle session is reclaimed"
+    );
+    assert_eq!(reg.active_count(), 1);
+    assert!(
+        reg.authenticate(&dev("dev-b"), "dev-b").is_some(),
+        "the touched session survives"
+    );
+    assert!(
+        reg.authenticate(&dev("dev-a"), "dev-a").is_none(),
+        "the idle session was reclaimed"
+    );
+    // The shipped TTL is generous (longer than a service) so an active device is never pruned mid-use.
+    assert!(SESSION_IDLE_TTL >= Duration::from_secs(3600));
+}
+
+#[test]
+fn idle_ttl_frees_cap_slots_but_recently_active_sessions_still_reject() {
+    // Audit #8 + M3: a full registry of RECENTLY-ACTIVE sessions still rejects a new device
+    // (fail-closed); once they all go idle, prune_idle frees the whole registry and a new
+    // device pairs — so the cap bounds recently-active, not lifetime, pairings.
+    use selahcue_lan::session::MAX_ACTIVE_SESSIONS;
+    let t0 = Instant::now();
+    let ttl = Duration::from_secs(300);
+    let mut reg = SessionRegistry::new();
+    for i in 0..MAX_ACTIVE_SESSIONS {
+        let code = format!("c{i}");
+        reg.offer_pairing(&code, Role::Producer, t0, Duration::from_secs(60));
+        reg.redeem(
+            &code,
+            dev(&format!("d{i}")),
+            SessionToken::new(format!("t{i}")),
+            t0,
+        )
+        .unwrap();
+    }
+    assert_eq!(reg.active_count(), MAX_ACTIVE_SESSIONS);
+
+    // All recently active → prune reclaims nothing → a new device is still refused.
+    let fresh = t0 + Duration::from_secs(10);
+    for i in 0..MAX_ACTIVE_SESSIONS {
+        reg.touch(&dev(&format!("d{i}")), fresh);
+    }
+    assert_eq!(reg.prune_idle(fresh, ttl), 0, "nothing idle yet");
+    reg.offer_pairing("overflow", Role::Producer, fresh, Duration::from_secs(60));
+    assert_eq!(
+        reg.redeem("overflow", dev("new"), SessionToken::new("tok-new"), fresh),
+        Err(PairingError::TooManySessions),
+        "a full registry of recently-active sessions still rejects (fail-closed)"
+    );
+
+    // Let them all go idle → prune frees the whole registry → a new device pairs.
+    let later = t0 + ttl + Duration::from_secs(20); // last_seen == fresh (t0+10); idle 310s > ttl
+    assert_eq!(reg.prune_idle(later, ttl), MAX_ACTIVE_SESSIONS);
+    assert_eq!(reg.active_count(), 0);
+    reg.offer_pairing("after-idle", Role::Producer, later, Duration::from_secs(60));
+    assert!(
+        reg.redeem(
+            "after-idle",
+            dev("fresh-dev"),
+            SessionToken::new("tok-fresh"),
+            later
+        )
+        .is_ok(),
+        "after idle sessions self-reclaim, a new device pairs"
+    );
+    assert_eq!(reg.active_count(), 1);
+}

@@ -1166,8 +1166,10 @@ impl App {
         let now = Instant::now();
         {
             let mut reg = self.remote.registry.blocking_lock();
-            // Housekeeping: reclaim any expired offers so the map stays bounded.
+            // Housekeeping: reclaim any expired offers + idle sessions so both maps stay
+            // bounded (audit #8: an idle session self-reclaims after SESSION_IDLE_TTL).
             reg.prune_expired(now);
+            reg.prune_idle(now, selahcue_lan::session::SESSION_IDLE_TTL);
             reg.offer_pairing(code.clone(), Role::Producer, now, PAIRING_TTL);
         }
         if let Ok(mut slot) = self.remote.active_code.lock() {
