@@ -1,0 +1,36 @@
+[package]
+name = "selahcue-stt"
+publish = false
+version = "0.1.0"
+edition = "2021"
+license = "Proprietary"
+authors = ["SelahCue"]
+description = "SelahCue offline on-device speech-to-text engine: implements selahcue-core's TranscriptProvider seam (ADR-0019). The pure-Rust pipeline (audio framing, resample, VAD, feedback guard, model integrity, hardware probe, provider, pump) is deterministic + bounded and tested with no native deps; the whisper.cpp and cpal backends are opt-in Cargo features."
+
+# Standalone workspace root — EXCLUDED from the desktop workspace (its whisper.cpp/cpal
+# backends are heavy, toolchain-dependent native deps behind features). Keeping an empty
+# [workspace] here makes it its own root so cargo won't fold it back into the parent.
+[workspace]
+
+[features]
+default = []
+# Real microphone capture via cpal (Core Audio / WASAPI / ALSA). Off by default so the
+# deterministic pipeline is tested with FakeAudioSource and CI needs no audio device.
+capture = ["dep:cpal"]
+# Real on-device recognition via whisper-rs (whisper.cpp). Off by default so CI needs no
+# native toolchain or model file; accuracy/latency stay spike-gated (S8/S11).
+whisper = ["dep:whisper-rs"]
+
+[dependencies]
+selahcue-core = { path = "../selahcue-core" }
+# Streaming SHA-256 for model-integrity verification before load (FR-156 / ADR-0012).
+# MIT/Apache-2.0; already in the workspace lock.
+sha2 = "0.10"
+cpal = { version = "0.15", optional = true }
+whisper-rs = { version = "0.14", optional = true }
+
+[dev-dependencies]
+
+[lints.clippy]
+# Match the core: no panics on untrusted input.
+unwrap_used = "warn"

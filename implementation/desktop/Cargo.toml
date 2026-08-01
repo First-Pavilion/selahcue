@@ -5,7 +5,12 @@ members = ["crates/selahcue-core", "crates/selahcue-data", "crates/selahcue-lan"
 # headless build env and pulls a heavy toolchain-dependent dependency tree. It is kept
 # out of the default workspace so the core stays fast + green; it is its own package,
 # compile-checked separately and run on a desktop with the Tauri toolchain.
-exclude = ["crates/selahcue-operator"]
+#
+# selahcue-stt is the on-device STT engine (ADR-0019 follow-up): its whisper.cpp + cpal
+# backends are heavy, toolchain-dependent native deps behind Cargo features. Same
+# rationale — excluded so the default core stays fast + green; the pure-Rust pipeline is
+# tested standalone (`--manifest-path crates/selahcue-stt/Cargo.toml`).
+exclude = ["crates/selahcue-operator", "crates/selahcue-stt"]
 
 [workspace.package]
 publish = false

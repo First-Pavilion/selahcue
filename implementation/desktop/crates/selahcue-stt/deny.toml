@@ -1,0 +1,41 @@
+# Supply-chain policy for the STT crate: license allowlist + duplicate/source hygiene,
+# mirroring the operator crate's policy. `all-features = true` makes this check the native
+# backend deps (cpal, whisper-rs) too, even though they are off by default. Advisories are
+# covered by the separate RustSec `cargo audit` CI job.
+
+[graph]
+all-features = true
+
+[licenses]
+# Our own unpublished (proprietary) crates are exempt from the allowlist.
+private = { ignore = true }
+# Permissive licenses only in the shipped tree. Copyleft (GPL/AGPL/LGPL) is NOT allowed —
+# anything outside this list fails CI loudly.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "BSL-1.0",
+  "Unicode-3.0",
+  "CC0-1.0",
+  # Public-domain dedication (OSI + FSF approved), the same maximally-permissive class as
+  # CC0-1.0 above. Carried by the whisper-rs / whisper-rs-sys bindings (the whisper.cpp
+  # backend itself is MIT). NOT copyleft. Added for the STT crate; ratify + propagate to
+  # the root/operator policy if kept. See ClickUp 86ajtxzre.
+  "Unlicense",
+  "MPL-2.0",
+  "OFL-1.1",
+  "Ubuntu-font-1.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
