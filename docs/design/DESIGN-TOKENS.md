@@ -65,3 +65,46 @@ operable in every state including while a row is being edited (UX-CANONICAL §3)
 The webview honours `prefers-reduced-motion` (all transitions/animations off). The
 TIME UP state is solid inverted by default (§5) — no flashing anywhere yet, so the
 ADR-0015 flash-rate analyzer remains scoped to the Timers epic (`86ajp07nr`).
+
+## "Design 2.0" palette (redesign token layer — implemented)
+
+Status: implemented (TASK-design2-palette-tokens). Source: Figma palette board node
+`310:124` (file `SYQn5hFY8YVQKm3c6rw0eJ`) + [DESIGN-2.0-HANDOFF.md](DESIGN-2.0-HANDOFF.md) §3.
+
+The Design 2.0 redesign introduces a fuller palette (warm-ink neutral ramp, indigo→violet
+brand, gold scripture accent, brighter broadcast semantics). It is added as an **additive
+token layer** — the canonical UX-CANONICAL §4 tokens above stay in place until components are
+re-skinned onto `--sc-*` (a separate migration; see the handoff §3.2 and §8). Adopting the new
+values as the *canonical* status tokens would break the white-on-fill audit, so the two layers
+coexist for now.
+
+### Where the palette lives (pinned together)
+
+| Surface | Location | Naming |
+|---|---|---|
+| Rust (canonical) | `selahcue-present/src/tokens.rs` → `mod design2` | `design2::BASE`, `design2::PRIMARY`, … (`Swatch { rgba, hex }`) |
+| Operator webview | `selahcue-operator/dist/app.css` `:root` | `--sc-base`, `--sc-primary`, `--sc-live-soft`, … |
+| Flutter controller | `mobile/.../lib/models/design_tokens.dart` | `DesignTokens.d2Base`, `d2Primary`, … |
+
+Pinned by `selahcue-present/tests/test_tokens.rs`:
+- `design2_palette_is_pinned_across_surfaces` — every canonical hex appears verbatim in the CSS
+  (`--sc-*`) and Dart (`0xFF..`); `design2::MANIFEST` is the ordered source of truth.
+- `design2_palette_meets_wcag_aa` — WCAG-AA contrast audit (see a11y note).
+
+### Palette
+
+Neutrals: `base #0b0d12` · `surface #14161d` · `elevated #1c1f28` · `inset #0f1116` ·
+`border #262a34` · `border-strong #363b47`.
+Text: `text #f4f6fb` · `text-secondary #a7aebe` · `text-muted #6b7383`.
+Brand: `primary #6e5cf0` · `primary-hover #7e6eff` · `accent-soft #201f3a`.
+Scripture: `gold #f2b84b` · `gold-soft #2a2415`.
+Status (ink / soft / border): `live #ff4d4d / #2a1416 / #5a2327` · `preview #35c08a / #10231c /
+#1c3a2e` · `warn #f5a524 / #2a2415 / #4a3a15` · `info #38bdf8 / #10222b`.
+
+### Accessibility note (audited)
+
+Bright status inks, gold, and body/secondary text clear **AA (4.5:1)** on `base` + `surface`
+and on the same-hue soft tints; white clears AA on the `primary` button (4.72:1). **`text-muted`
+(#6b7383)** is ~3.98:1 on `base` / ~3.78:1 on `surface` — it clears **AA-large (3:1)** but NOT
+AA-normal, so it is **tertiary/label-only** and must not carry essential small body text. This
+is enforced by the audit (`text-muted` gated at 3.0) and flagged in DESIGN-2.0-HANDOFF §6.
