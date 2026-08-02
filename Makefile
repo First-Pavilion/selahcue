@@ -19,16 +19,33 @@ OP       := --manifest-path $(OPERATOR)/Cargo.toml
 ENDPOINT := $(shell python3 -c "import tempfile,os;print(os.path.join(tempfile.gettempdir(),'selahcue-operator-endpoint.json'))" 2>/dev/null)
 CMD      ?= next
 SECS     ?=
+# On-device STT (whisper.cpp + cpal) for the live transcript. ON by default for the dev RUN
+# targets (launch/run/operator/build-operator) so one command brings up live transcription.
+# It needs cmake + a C/C++ toolchain to compile whisper.cpp, and downloads the model on first
+# use. Skip it (e.g. no cmake) with:  make launch OP_FEATURES=
+# CI/check/clippy always use the default (no-STT) operator build, so this never affects them.
+OP_FEATURES ?= stt
+OPRUN       := $(if $(strip $(OP_FEATURES)),--features $(strip $(OP_FEATURES)),)
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run output operator operator-headless remote timer stop-timer demo mobile mobile-test ci nfr build build-operator test check clippy fmt clean
+.PHONY: help launch run output operator operator-headless stt-preflight remote timer stop-timer demo mobile mobile-test ci nfr build build-operator test check clippy fmt clean
+
+stt-preflight: ## (internal) verify the toolchain needed for --features stt is present
+ifneq ($(strip $(OP_FEATURES)),)
+	@command -v cmake >/dev/null 2>&1 || { \
+	  echo "ERROR: on-device STT (--features $(OP_FEATURES)) needs cmake + a C/C++ toolchain to build whisper.cpp."; \
+	  echo "  macOS:         brew install cmake"; \
+	  echo "  Debian/Ubuntu: sudo apt-get install -y cmake build-essential"; \
+	  echo "  Or run without on-device STT:  make $(MAKECMDGOALS) OP_FEATURES="; \
+	  exit 1; }
+endif
 
 help: ## Show this help
 	@echo "SelahCue — make targets:"
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | \
 	  awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-launch: build build-operator ## Launch the app: output window + operator shell together
+launch: stt-preflight build build-operator ## Launch output window + operator shell together (on-device STT on; OP_FEATURES= to skip)
 	@echo ">> clearing any stale endpoint and starting the output window…"
 	@rm -f "$(ENDPOINT)"; \
 	$(CARGO) run -q $(WS) -p selahcue-desktop & \
@@ -37,7 +54,7 @@ launch: build build-operator ## Launch the app: output window + operator shell t
 	echo ">> waiting for the output window to advertise its endpoint…"; \
 	for i in $$(seq 1 40); do [ -f "$(ENDPOINT)" ] && break; sleep 0.25; done; \
 	echo ">> starting the operator shell (its buttons drive the output window)…"; \
-	$(CARGO) run -q $(OP); \
+	$(CARGO) run -q $(OP) $(OPRUN); \
 	echo ">> operator closed; stopping the output window."; \
 	kill $$OUT_PID 2>/dev/null || true
 
@@ -46,8 +63,8 @@ run: launch ## Alias for `launch`
 output: ## Run only the output window (native audience output + LAN control server)
 	$(CARGO) run $(WS) -p selahcue-desktop
 
-operator: ## Run only the operator shell (connects to a running output window, else a standalone demo)
-	$(CARGO) run $(OP)
+operator: stt-preflight ## Run only the operator shell (connects to a running output window, else a standalone demo)
+	$(CARGO) run $(OP) $(OPRUN)
 
 operator-headless: ## Run the committed operator-webview behavioural check (headless Chrome; skips if Chrome absent)
 	python3 scripts/operator_headless.py
@@ -102,8 +119,8 @@ nfr: ## Measure the walking-skeleton NFRs (idle memory / cold start) on a releas
 build: ## Build the desktop workspace
 	$(CARGO) build $(WS)
 
-build-operator: ## Build the Tauri operator shell crate
-	$(CARGO) build $(OP)
+build-operator: stt-preflight ## Build the Tauri operator shell crate
+	$(CARGO) build $(OP) $(OPRUN)
 
 test: ## Run the workspace test suite
 	$(CARGO) test $(WS)
