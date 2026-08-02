@@ -14,6 +14,12 @@ use serde::{Deserialize, Serialize};
 /// bare [`AuthRequest`], so devices can redeem a pairing code over the wire.
 pub const VERSION: u16 = 2;
 
+/// `serde(skip_serializing_if)` predicate: omit a `bool` field when it is `false`, so the
+/// common frame stays byte-identical to a peer that never had the field (additive fields).
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// A command from a controller to the operator. `request_id` (in [`Request`])
 /// correlates the eventual [`ServerMessage::Ack`] / [`ServerMessage::Denied`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +44,12 @@ pub enum Command {
     /// Adjust the RUNNING countdown's target by `delta_secs` (e.g. +60 / -60).
     /// Clamps at zero (landing in TIME UP); denied when no timer is active.
     AdjustTimer { delta_secs: i64 },
+    /// Pause the running countdown, banking the elapsed time. Denied when no timer
+    /// is active. Additive/back-compatible (a unit variant, like [`StopTimer`]).
+    PauseTimer,
+    /// Resume a paused countdown from its banked elapsed time. Denied when no timer
+    /// is active. Additive/back-compatible.
+    ResumeTimer,
     /// Search scripture (does not push live). `translation` is a bundled code
     /// (`"KJV"`/`"WEB"`); omitted = the KJV default. Skip-if-none keeps fixtures.
     ScriptureSearch {
@@ -340,6 +352,18 @@ pub struct TimerSnapshot {
     /// Within the warning threshold (and not yet up).
     pub warn: bool,
     pub running: bool,
+    /// The countdown is paused (banked, not counting). `running` is `false` while
+    /// paused; this field lets the UI distinguish paused from stopped. `serde(default)`
+    /// keeps older-host frames (no `paused` key) parseable; skip-if-false keeps the common
+    /// (not-paused) frame byte-identical to a pre-pause host — matching `total_secs`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub paused: bool,
+    /// The countdown's full length in seconds (`None` for a count-up timer). Lets the UI
+    /// reset to the original duration even after overrun, where `remaining + elapsed` no
+    /// longer equals the original (elapsed keeps growing past TIME UP). Skip-if-none keeps
+    /// the change additive/byte-stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_secs: Option<u32>,
 }
 
 /// A snapshot of the full operator view: the plan with per-item Live/Preview flags,
@@ -442,6 +466,13 @@ pub struct DetectionView {
     /// (e.g. an older host, or a reference outside the bundle).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text: String,
+    /// Detector match confidence as a whole percent (`0..=100`), e.g. `94` renders as
+    /// "94% MATCH". `None` when the detector reports no score — the current parser is a
+    /// binary Ok/Err match with no probability, so this stays `None` (honest-empty) until
+    /// the R4 detection engine produces a genuine score. `u8` (not `f32`) keeps the `Eq`
+    /// derive; skip-if-none keeps the pinned v2 fixtures byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<u8>,
 }
 
 /// One saved (named custom) theme in the library (86ajq4xmy).

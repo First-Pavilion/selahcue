@@ -364,15 +364,121 @@ fn timer_counts_down_reaches_time_up_and_stops() {
     assert_eq!(snap.remaining_secs, Some(15));
     assert!(snap.warn && !snap.time_up);
 
-    // Past the end: TIME UP, zero remaining.
-    c.tick(t0 + Duration::from_secs(65));
+    // Past the end: TIME UP, zero remaining — but `total_secs` still reports the ORIGINAL
+    // length even though elapsed_secs has grown past it (review #1: reset-to-full source).
+    c.tick(t0 + Duration::from_secs(95));
     let snap = c.operator_view().timer.unwrap();
     assert!(snap.time_up);
     assert_eq!(snap.remaining_secs, Some(0));
+    assert!(snap.elapsed_secs >= 90, "elapsed grows in overrun");
+    assert_eq!(
+        snap.total_secs,
+        Some(60),
+        "total_secs stays the original length in overrun"
+    );
 
     // Stop clears it.
     assert_eq!(c.apply(&Command::StopTimer), ControllerReply::Ack);
     assert!(c.operator_view().timer.is_none());
+}
+
+#[test]
+fn pause_freezes_the_countdown_and_resume_continues() {
+    use std::time::{Duration, Instant};
+    let (mut c, _) = controller();
+    let t0 = Instant::now();
+
+    // Pause/Resume are denied with no active timer (mirrors AdjustTimer).
+    assert_eq!(
+        c.apply(&Command::PauseTimer),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        c.apply(&Command::ResumeTimer),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+
+    // Start 60s and run 20s in: 40 remain, running, not paused.
+    c.apply(&Command::StartTimer { seconds: 60 });
+    c.tick(t0);
+    c.tick(t0 + Duration::from_secs(20));
+    let snap = c.operator_view().timer.unwrap();
+    assert_eq!(snap.remaining_secs, Some(40));
+    assert!(snap.running && !snap.paused);
+
+    // Pause banks on the next tick, but the snapshot reports NOT running immediately on the
+    // pause intent — the wire never shows the contradictory running && paused (review #3).
+    assert_eq!(c.apply(&Command::PauseTimer), ControllerReply::Ack);
+    let snap = c.operator_view().timer.unwrap();
+    assert!(
+        snap.paused && !snap.running,
+        "paused ⇒ not running, even pre-tick"
+    );
+    // After the banking tick: still paused, not running, readout frozen at 40.
+    c.tick(t0 + Duration::from_secs(20));
+    let snap = c.operator_view().timer.unwrap();
+    assert!(snap.paused && !snap.running);
+    assert_eq!(snap.remaining_secs, Some(40));
+
+    // 30 wall-seconds later it is STILL frozen at 40 (paused time does not count).
+    c.tick(t0 + Duration::from_secs(50));
+    let snap = c.operator_view().timer.unwrap();
+    assert!(snap.paused && !snap.running);
+    assert_eq!(snap.remaining_secs, Some(40));
+
+    // Resume continues from the banked 40: 20 running-seconds later, 20 remain.
+    assert_eq!(c.apply(&Command::ResumeTimer), ControllerReply::Ack);
+    c.tick(t0 + Duration::from_secs(50));
+    let snap = c.operator_view().timer.unwrap();
+    assert!(snap.running && !snap.paused);
+    assert_eq!(snap.remaining_secs, Some(40));
+    c.tick(t0 + Duration::from_secs(70));
+    let snap = c.operator_view().timer.unwrap();
+    assert_eq!(snap.remaining_secs, Some(20));
+    assert!(snap.running && !snap.paused);
+
+    // A fresh StartTimer clears any paused state.
+    c.apply(&Command::PauseTimer);
+    c.tick(t0 + Duration::from_secs(70));
+    assert!(c.operator_view().timer.unwrap().paused);
+    c.apply(&Command::StartTimer { seconds: 30 });
+    c.tick(t0 + Duration::from_secs(70));
+    assert!(!c.operator_view().timer.unwrap().paused);
+}
+
+#[test]
+fn a_paused_timer_survives_recovery_as_paused_not_running() {
+    use std::time::{Duration, Instant};
+    let t0 = Instant::now();
+    let (mut a, _) = controller();
+    a.apply(&Command::StartTimer { seconds: 300 });
+    a.tick(t0);
+    a.tick(t0 + Duration::from_secs(60)); // 240 remain, running
+
+    // Pause, then snapshot in the PENDING-PAUSE window — before the banking tick — which is
+    // exactly the tick-less shutdown-save path (Timer::is_running() is still true here).
+    a.apply(&Command::PauseTimer);
+    let snap = a.snapshot(t0 + Duration::from_secs(60));
+
+    // Recover into a fresh controller: it must come back PAUSED (frozen), never resume RUNNING.
+    let (mut b, _) = controller();
+    b.restore(&snap);
+    b.tick(t0 + Duration::from_secs(60));
+    let r = b.operator_view().timer.expect("timer recovered");
+    assert!(
+        r.paused && !r.running,
+        "a paused timer recovers paused, not running"
+    );
+    assert_eq!(
+        r.remaining_secs,
+        Some(240),
+        "frozen at the banked remaining"
+    );
+    // …and it stays frozen — no silent resume as wall time passes.
+    b.tick(t0 + Duration::from_secs(120));
+    let r = b.operator_view().timer.unwrap();
+    assert!(r.paused && !r.running);
+    assert_eq!(r.remaining_secs, Some(240));
 }
 
 #[test]
@@ -1761,6 +1867,7 @@ fn saved_theme_library_is_bounded_and_load_drops_bad_entries() {
             z: 0,
             variant: ShapeKind::Rect,
             corner_permille: 0,
+            visible: true,
         });
     }
     assert!(over_cap.elements.len() > MAX_ELEMENTS);
@@ -2229,6 +2336,7 @@ fn a_custom_theme_with_elements_applies_recovers_and_is_bounded() {
         z,
         variant: ShapeKind::Rect,
         corner_permille: 0,
+        visible: true,
     };
     // A custom theme with a full-frame opaque red shape IN FRONT (z=1).
     let mut theme = Theme::high_contrast();
@@ -2303,6 +2411,7 @@ fn a_custom_theme_with_an_ellipse_element_applies_and_recovers() {
         z: 1,
         variant: ShapeKind::Ellipse,
         corner_permille: 0,
+        visible: true,
     };
     let mut theme = Theme::classic(); // dark background
     theme.elements.push(ellipse);
@@ -2365,6 +2474,7 @@ fn a_custom_theme_with_an_image_element_applies_recovers_and_is_bounded() {
         source: MediaRef::new("/no/such/controller/image.png").unwrap(),
         opacity: 255,
         z,
+        visible: true,
     };
     let mut theme = Theme::high_contrast();
     theme.elements.push(image(1)); // in front of the text
@@ -3253,6 +3363,7 @@ fn a_custom_theme_with_a_text_element_applies_recovers_and_is_bounded() {
         font: None,
         weight: 400,
         letter_spacing_permille: 0,
+        visible: true,
     };
     let mut theme = Theme::classic();
     theme.elements.push(text_box("LIVE".into(), 1));

@@ -214,36 +214,60 @@ DRIVER = r"""
       ok(window.__calls.some(function(c){return c.cmd==="builtin_themes";}),
          "L3 designer loads on FIRST activation (builtin_themes fired after opening it)");
 
-      // 86ajq3225: the background editor — the type selector switches solid / gradient / image.
-      ok(el("td-bg-type").value==="solid" && !el("td-bg-solid").hidden,
+      // 86ajq3225 / Design 2.0: the background editor — a SEGMENTED type control switches
+      // solid / gradient / image (Figma 317:142).
+      var bgSeg = function(v){ return el("td-bg-type").querySelector('[data-bg="'+v+'"]'); };
+      ok(bgSeg("solid").classList.contains("on") && !el("td-bg-solid").hidden,
          "bg: defaults to Solid with the colour picker shown");
-      el("td-bg-type").value = "gradient"; el("td-bg-type").dispatchEvent(new Event("change"));
+      bgSeg("gradient").click();
       ok(!el("td-bg-gradient").hidden && el("td-bg-solid").hidden, "bg: Gradient shows the gradient controls");
+      ok(bgSeg("gradient").classList.contains("on"), "bg: the Gradient segment is marked active");
       var bgG = applied().background;
       ok(!!bgG.from && !!bgG.to && bgG.direction==="vertical", "bg: the background serialises as a gradient {from,to,direction}");
       el("td-bg-dir").value = "horizontal"; el("td-bg-dir").dispatchEvent(new Event("change"));
       el("td-bg-to").value = "#ff0000"; el("td-bg-to").dispatchEvent(new Event("input"));
       var bgG2 = applied().background;
       ok(bgG2.direction==="horizontal" && bgG2.to.r===255 && bgG2.to.g===0, "bg: direction + to-colour update the gradient");
-      el("td-bg-type").value = "image"; el("td-bg-type").dispatchEvent(new Event("change"));
+      bgSeg("image").click();
       ok(!el("td-bg-image").hidden, "bg: Image shows the image control");
       el("td-bg-img-pick").click();
       await sleep(30);
       ok(applied().background.source==="/tmp/picked.png", "bg: the image picker sets the background source");
-      el("td-bg-type").value = "solid"; el("td-bg-type").dispatchEvent(new Event("change"));
+      bgSeg("solid").click();
       el("td-bg").value = "#0a141e"; el("td-bg").dispatchEvent(new Event("input"));
       var bgS = applied().background;
       ok(typeof bgS.r==="number" && typeof bgS.from==="undefined" && typeof bgS.source==="undefined",
          "bg: Solid is a bare {r,g,b,a} colour (byte-compatible)");
       // Review MEDIUM fix: switching to Image must NOT write a malformed {source:""} — the
       // stored background stays a VALID shape (the previous solid) until a real source commits.
-      el("td-bg-type").value = "image"; el("td-bg-type").dispatchEvent(new Event("change"));
+      bgSeg("image").click();
       var bgNoSrc = applied().background;
       ok(typeof bgNoSrc.source==="undefined" && typeof bgNoSrc.r==="number",
          "bg: switching to Image with no source keeps the valid solid bg (no malformed {source:''})");
       // The manual path field commits an image source (the no-native-dialog fallback, LOW fix).
       el("td-bg-img-path").value = "/host/bg.png"; el("td-bg-img-path").dispatchEvent(new Event("change"));
       ok(applied().background.source==="/host/bg.png", "bg: the manual path field commits an image source");
+
+      // Design 2.0 TYPOGRAPHY (Figma 317:142): SIZE is a % field, LINE a multiplier field
+      // (number fields, not sliders), and the Fit control is present + wired.
+      el("td-size").value = "8.5"; el("td-size").dispatchEvent(new Event("input"));
+      ok(applied().body.size_permille === 85, "typography: SIZE % field → size_permille (8.5% → 85)");
+      el("td-lh").value = "1.30"; el("td-lh").dispatchEvent(new Event("input"));
+      ok(applied().body.line_height_permille === 1300, "typography: LINE × field → line_height_permille (1.30 → 1300)");
+      document.querySelector('#td-fit button[data-f="clip"]').click();
+      ok(applied().body.fit === "clip", "typography: the Fit control sets the region fit");
+      ok(document.querySelector('#td-fit button[data-f="clip"]').getAttribute("aria-pressed")==="true",
+         "typography: the active Fit segment is marked");
+      // Review fix: a BLANK number field must NOT commit (Number("")===0 would snap to the min);
+      // an out-of-range value clamps the MODEL and `change` repopulates the FIELD to the clamp.
+      el("td-size").value = "9.0"; el("td-size").dispatchEvent(new Event("input"));
+      var szBefore = applied().body.size_permille;
+      el("td-size").value = ""; el("td-size").dispatchEvent(new Event("input"));
+      ok(applied().body.size_permille === szBefore, "typography: clearing SIZE does not snap the model to the min");
+      el("td-size").value = "50"; el("td-size").dispatchEvent(new Event("input"));
+      ok(applied().body.size_permille === 140, "typography: out-of-range SIZE clamps the model (50% → 140)");
+      el("td-size").dispatchEvent(new Event("change"));
+      ok(el("td-size").value === "14.0", "typography: SIZE field repopulates to the clamped value on change");
 
       // C-001: Add Shape → an element on tdTheme.elements, inspector shows, selection is element.
       addShape();
@@ -259,12 +283,14 @@ DRIVER = r"""
       addShape();
       var t2 = applied();
       ok(t2.elements.length===2 && t2.elements[1].z===1, "second shape z=max+1=1");
-      document.querySelector('#td-el-z button[data-z="back"]').click();
+      // The inspector "Arrange (z-order)" buttons were removed — z-order now lives on the LAYERS
+      // panel (drag) + the Cmd/Ctrl+Shift+[ / ] chords. Cmd+Shift+[ = Send to back.
+      el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"[",metaKey:true,shiftKey:true,bubbles:true}));
       var t3 = applied();
-      ok(t3.elements[1].z===-1, "Send to back sets z=min-1=-1 (rewrites z, not the list)");
+      ok(t3.elements[1].z===-1, "Send to back (Cmd+Shift+[) sets z=min-1=-1 (rewrites z, not the list)");
       ok(el("td-el-zchip").textContent.indexOf("Behind")>=0, "chip shows 'Behind text'");
-      document.querySelector('#td-el-z button[data-z="front"]').click();
-      ok(applied().elements[1].z===1, "Bring to front sets z=max+1=1");
+      el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"]",metaKey:true,shiftKey:true,bubbles:true}));
+      ok(applied().elements[1].z===1, "Bring to front (Cmd+Shift+]) sets z=max+1=1");
 
       // C-003 opacity: 50% → u8 128.
       el("td-el-op").value = 50; el("td-el-op").dispatchEvent(new Event("input"));
@@ -393,6 +419,45 @@ DRIVER = r"""
       el("td-sel").dispatchEvent(new PointerEvent("pointerdown",{clientX:cx,clientY:cy,button:0,bubbles:true,pointerId:1}));
       ok(!el("td-el-inspector").hidden, "#3 clicking an element UNDER the region box selects it");
 
+      // User ask: clicking the Body or Reference/Title text ON THE CANVAS auto-selects that
+      // region. Load a fresh built-in (T has no elements) so the click can't hit a leftover
+      // element; the box keeps its real position:fixed geometry from #3.
+      el("td-themes").querySelector('.td-theme-row:not(.td-theme-saved) .td-theme-name').click();
+      await sleep(20);
+      var toClient = function(xp, yp){ var b = box.getBoundingClientRect(); return { x: b.left + (xp/1000)*b.width, y: b.top + (yp/1000)*b.height }; };
+      var pt = toClient(500, 200); // inside the title rect (y 150..260)
+      box.dispatchEvent(new PointerEvent("pointerdown",{clientX:pt.x,clientY:pt.y,button:0,bubbles:true,pointerId:2}));
+      ok(el("td-el-inspector").hidden, "canvas region-click stays in region mode (no element)");
+      ok(document.querySelector('#td-region button[data-region="title"]').getAttribute("aria-pressed")==="true",
+         "canvas: clicking the Reference/Title text selects that region");
+      var pb = toClient(500, 500); // inside the body rect (y 280..840)
+      box.dispatchEvent(new PointerEvent("pointerdown",{clientX:pb.x,clientY:pb.y,button:0,bubbles:true,pointerId:3}));
+      ok(el("td-region-body").getAttribute("aria-pressed")==="true",
+         "canvas: clicking the Body text selects the Body region");
+
+      // Design 2.0: LAYERS drag-and-drop reorders z, and dragging an element past the text
+      // REGION rows crosses the text boundary (front z>0 <-> behind z<0). Fresh Classic theme
+      // (no elements) → add two front shapes → drag the top one below the region rows.
+      el("td-themes").querySelector('.td-theme-row:not(.td-theme-saved) .td-theme-name').click();
+      await sleep(20);
+      addShape(); addShape();
+      var dTop = applied().elements.length - 1; // the frontmost (highest z) shape
+      ok(applied().elements[dTop].z >= 0, "D2 dnd: a freshly-added shape starts in front of the text (z>=0)");
+      var lbox = el("td-layers");
+      var dragRow2 = Array.prototype.filter.call(lbox.querySelectorAll(".td-layer"), function(r){ return r.dataset.idx===String(dTop); })[0];
+      var regionRows2 = Array.prototype.filter.call(lbox.querySelectorAll(".td-layer"), function(r){ return r.dataset.region; });
+      var lastRegion = regionRows2[regionRows2.length-1];
+      var dr = dragRow2.getBoundingClientRect(), lr = lastRegion.getBoundingClientRect();
+      // Precondition: the layers list has real vertical layout (rows at distinct Y) — else the
+      // drag hit-test is meaningless and the assertion below could pass vacuously.
+      ok(lr.top > dr.top + 4, "D2 dnd: the LAYERS list has real row geometry (regions below the shape)");
+      var hdl = dragRow2.querySelector(".td-layer-handle");
+      hdl.dispatchEvent(new PointerEvent("pointerdown",{clientX:dr.left+6,clientY:dr.top+6,button:0,bubbles:true,pointerId:9}));
+      window.dispatchEvent(new PointerEvent("pointermove",{clientX:lr.left+6,clientY:lr.bottom+8,bubbles:true,pointerId:9}));
+      window.dispatchEvent(new PointerEvent("pointerup",{clientX:lr.left+6,clientY:lr.bottom+8,bubbles:true,pointerId:9}));
+      await sleep(10);
+      ok(applied().elements[dTop].z < 0, "D2 dnd: dragging a layer below the region rows moves it BEHIND the text (z<0)");
+
       // C-004 shape PICKER: each geometry adds an element with the right variant + the
       // corner-radius control appears only for a rounded rectangle.
       document.querySelector('.td-addbar button[data-add="shape"]').click();
@@ -434,6 +499,112 @@ DRIVER = r"""
       var td = applied();
       ok(td.weight === undefined, "#5 Regular drops weight (byte-stable)");
       ok(td.letter_spacing_permille === undefined, "#5 zero letter-spacing dropped");
+
+      // === Design 2.0: LAYERS panel + per-layer visibility + zoom + Duplicate ===
+      var layersBox = el("td-layers");
+      ok(!!layersBox, "D2 LAYERS panel present");
+      var qLayers = function(){ return el("td-layers").querySelectorAll(".td-layer"); };
+      var elRowFor = function(i){ return Array.prototype.filter.call(qLayers(), function(r){ return parseInt(r.dataset.idx,10)===i; })[0]; };
+      var regionRowFor = function(k){ return Array.prototype.filter.call(qLayers(), function(r){ return r.dataset.region===k; })[0]; };
+      addShape(); // a fresh element to operate on
+      var elCount = applied().elements.length;
+      ok(qLayers().length === elCount + 2, "D2 LAYERS lists every element + the 2 regions (got " + qLayers().length + ")");
+      var regionRows = Array.prototype.filter.call(qLayers(), function(r){ return r.dataset.region; });
+      ok(regionRows.length === 2, "D2 LAYERS includes both region rows (Title + Body)");
+      ok(regionRows[0].querySelector(".td-layer-handle").getAttribute("aria-disabled")==="true",
+         "D2 a region row is not reorderable (handle aria-disabled)");
+      // The eye HIDES an element layer → a REAL, byte-stable `visible:false` in the Apply payload.
+      var firstEl = Array.prototype.filter.call(qLayers(), function(r){ return r.dataset.idx!==undefined; })[0];
+      var idx = parseInt(firstEl.dataset.idx, 10);
+      firstEl.querySelector(".td-layer-eye").click();
+      ok(applied().elements[idx].visible === false, "D2 the eye HIDES a layer (visible:false in the Apply payload)");
+      elRowFor(idx).querySelector(".td-layer-eye").click(); // show again
+      ok(applied().elements[idx].visible === undefined, "D2 showing a layer OMITS `visible` (byte-stable JSON)");
+      // Selecting a layer row selects that element; a region row selects the region.
+      elRowFor(idx).click();
+      ok(!el("td-el-inspector").hidden, "D2 clicking a layer row selects its element");
+      regionRowFor("title").click();
+      ok(el("td-el-inspector").hidden, "D2 clicking a region row selects the region");
+      // The eye also hides a REGION (real region.visible flag).
+      regionRowFor("title").querySelector(".td-layer-eye").click();
+      ok(applied().title.visible === false, "D2 the eye hides a REGION (title.visible=false)");
+      regionRowFor("title").querySelector(".td-layer-eye").click();
+      ok(applied().title.visible === true, "D2 toggling a region eye shows it again");
+      // Zoom: −/+ scale the preview box via a CSS var; the % readout tracks it (frontend-only).
+      var z0 = parseFloat(el("td-canvas-box").style.getPropertyValue("--td-zoom") || "1");
+      el("td-zoom-in").click();
+      ok(parseFloat(el("td-canvas-box").style.getPropertyValue("--td-zoom")) > z0, "D2 zoom-in increases the preview scale");
+      ok(el("td-zoom-v").textContent.indexOf("%")>=0, "D2 the zoom readout shows a percentage");
+      el("td-zoom-out").click();
+      // Duplicate: clones the current design into a new unsaved working theme (elements carry over).
+      var beforeDup = applied().elements.length;
+      el("td-duplicate").click();
+      // Check the status SYNCHRONOUSLY (before any await): a pending Apply .then from the
+      // applied() above would otherwise overwrite #td-status with "Applied…" during a sleep.
+      ok(el("td-status").textContent.indexOf("Duplicated")>=0, "D2 Duplicate reports it into the status line");
+      await sleep(20);
+      ok(applied().elements.length === beforeDup, "D2 Duplicate clones the current design (same elements, new unsaved copy)");
+
+      // D2 a11y (review fix): keyboard focus survives the LAYERS innerHTML rebuild.
+      addShape();
+      var aRow = Array.prototype.filter.call(qLayers(), function(r){ return r.dataset.idx!==undefined; })[0];
+      var aidx = parseInt(aRow.dataset.idx, 10);
+      var eyeA = aRow.querySelector(".td-layer-eye"); eyeA.focus(); eyeA.click(); // hide → rebuild
+      ok(document.activeElement && document.activeElement.classList.contains("td-layer-eye") &&
+         document.activeElement.closest(".td-layer").dataset.idx === String(aidx),
+         "D2 a11y: an eye toggle keeps focus on the same layer's eye after the rebuild");
+      document.activeElement.click(); // show again (clean state)
+      var rowB = elRowFor(aidx); rowB.focus();
+      rowB.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowUp",altKey:true,bubbles:true})); // reorder → rebuild
+      ok(document.activeElement && document.activeElement.classList.contains("td-layer") &&
+         document.activeElement.dataset.idx === String(aidx),
+         "D2 a11y: Alt+Arrow reorder keeps focus on the moved layer's row");
+
+      // D2 reliability (review fix): a cancelled layer-drag tears down (no stuck reorder).
+      var dragRow = elRowFor(aidx);
+      var zBefore = applied().elements[aidx].z;
+      dragRow.querySelector(".td-layer-handle").dispatchEvent(new PointerEvent("pointerdown",{clientX:0,clientY:0,button:0,bubbles:true,pointerId:7}));
+      window.dispatchEvent(new PointerEvent("pointercancel",{pointerId:7,bubbles:true}));
+      window.dispatchEvent(new PointerEvent("pointermove",{clientX:0,clientY:400,bubbles:true,pointerId:7})); // big move AFTER cancel
+      ok(applied().elements[aidx].z === zBefore, "D2 a cancelled layer-drag stops reordering (pointercancel teardown)");
+
+      // === Design 2.0: Templates strip is selectable (bug repro: "can't select templates") ===
+      // "New from current" clears the selection so the builtin row is NOT current — a
+      // selection CHANGE is then observable on a single builtin row (no saved-theme needed).
+      el("td-new-2").click();
+      await sleep(20);
+      var biRow = el("td-themes").querySelector(".td-theme-row:not(.td-theme-saved)");
+      ok(!!biRow, "D2 a builtin template row renders");
+      ok(biRow.dataset.current === "false", "D2 precondition: the builtin is not current after New");
+      // Clicking the THUMBNAIL (the dominant card target) must select the template.
+      biRow.querySelector(".td-theme-thumb").click();
+      await sleep(20);
+      ok(el("td-themes").querySelector(".td-theme-row:not(.td-theme-saved)").dataset.current === "true",
+         "D2 clicking a template THUMBNAIL selects it");
+      // Deselect again; the NAME text must also select.
+      el("td-new-2").click(); await sleep(20);
+      el("td-themes").querySelector(".td-theme-row:not(.td-theme-saved) .td-theme-name").click();
+      await sleep(20);
+      ok(el("td-themes").querySelector(".td-theme-row:not(.td-theme-saved)").dataset.current === "true",
+         "D2 clicking a template NAME selects it");
+
+      // === Design 2.0: the LAYERS panel IS the z-order (reorder changes element z + list order) ===
+      addShape(); // a fresh, frontmost element (z = maxZ+1)
+      addShape(); // another frontmost element on top
+      var topIdx = applied().elements.length - 1; // the topmost element
+      var zTop = applied().elements[topIdx].z;
+      // The topmost element's LAYERS row is ABOVE (earlier in DOM) the one it stacks over.
+      var order1 = Array.prototype.map.call(qLayers(), function(r){ return r.dataset.idx; }).filter(function(x){ return x!==undefined; });
+      ok(order1.indexOf(String(topIdx)) < order1.indexOf(String(topIdx-1)),
+         "D2 LAYERS lists a higher-z element ABOVE a lower-z one (list = z-order)");
+      // Reorder the topmost DOWN via the panel (Alt+ArrowDown) → its z drops below its neighbour.
+      elRowFor(topIdx).focus();
+      elRowFor(topIdx).dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowDown",altKey:true,bubbles:true}));
+      await sleep(10);
+      ok(applied().elements[topIdx].z < zTop, "D2 a LAYERS reorder changes the element's z-order (backward lowers z)");
+      var order2 = Array.prototype.map.call(qLayers(), function(r){ return r.dataset.idx; }).filter(function(x){ return x!==undefined; });
+      ok(order2.indexOf(String(topIdx)) > order2.indexOf(String(topIdx-1)),
+         "D2 the LAYERS list re-sorts to the new z-order after a reorder");
 
       // === audit M1: the plan dedup key EXCLUDES view.timer (no per-second rebuild) ===
       // render() is a global function; drive it directly with crafted view deltas.

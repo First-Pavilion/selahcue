@@ -105,10 +105,13 @@ fn operator_webview_is_pinned_to_the_canonical_tokens() {
         PREVIEW.ink_hex,
         LIVE.ink_hex,
         WARN.ink_hex,
-        // Always-on emergency chrome (UX-CANONICAL §3) and its canonical keys.
+        // Always-on emergency chrome (UX-CANONICAL §3) and its canonical keys. The clear
+        // control is labelled "Clear Output" in Design 2.0 (Figma 312:156) — the emergency
+        // clear is still present + labelled (non-colour redundancy); it stays the
+        // double-Escape "clear all live layers" action (see #clear-all + its aria-label).
         "id=\"emergency\"",
         "BLACKOUT",
-        "CLEAR ALL",
+        "Clear Output",
         // Reduced-motion setting honoured (story scope).
         "prefers-reduced-motion",
         // Non-colour redundancy: the on-air/staged badges carry text labels
@@ -365,6 +368,75 @@ fn operator_webview_wires_the_system_font_picker() {
     assert!(
         js.contains("delete tdTheme.font"),
         "selecting the default font clears the theme font field"
+    );
+}
+
+/// The Theme Designer Design 2.0 shell (Figma 317:124): a topbar (Duplicate / Preview on
+/// output / Save theme), a canvas zone with a preview zoom + a Templates strip, a sectioned
+/// inspector, and a REAL LAYERS panel (select / reorder→z-order / per-layer visibility).
+/// Pinned so a future edit cannot strip a 2.0 control or silently fake the visibility toggle.
+#[test]
+fn operator_theme_designer_is_design_2() {
+    let html = operator_console_sources();
+    let index = operator_dist("index.html");
+    let js = operator_dist("app.js");
+    let css = operator_dist("app.css");
+    // Topbar actions: Duplicate (new clone), Preview on output (the re-homed #td-apply),
+    // and the gradient Save-theme CTA (not the green go-live gradient).
+    for needle in [
+        "id=\"td-duplicate\"",
+        "Preview on output",
+        "Save theme",
+        "class=\"td-save-cta\"",
+        // Canvas zone: the audience resolution + a frontend-only preview zoom.
+        "Audience · 1920×1080",
+        "id=\"td-zoom-out\"",
+        "id=\"td-zoom-in\"",
+        "id=\"td-zoom-v\"",
+        // Templates strip (the library re-homed as a horizontal card row).
+        "class=\"td-templates\"",
+        "td-themes-strip",
+        // Sectioned inspector selection header.
+        "id=\"td-insp-title\"",
+        // LAYERS panel (the new real control) + its "+ Add layer".
+        "id=\"td-layers\"",
+        "id=\"td-layers-add\"",
+        // Sectioned inspector (Figma 317:142): the background TYPE is a segmented control
+        // (Solid/Gradient/Image), not a select; sections use D2 field labels.
+        "data-bg=\"solid\"",
+        "data-bg=\"gradient\"",
+        "class=\"td-sect\"",
+        "td-fieldlabel",
+    ] {
+        assert!(html.contains(needle), "webview missing {needle:?}");
+    }
+    // The LAYERS panel + zoom + Duplicate are wired for real (behaviour, not just markup).
+    for needle in [
+        "function tdLayers(",
+        "function tdLayerRow(",
+        "tdToggleVisible",
+        "function tdSyncHead(",
+        "--td-zoom",
+        // Clicking the Body / Reference-Title text on the canvas auto-selects that region.
+        "function tdRegionAt(",
+    ] {
+        assert!(js.contains(needle), "app.js missing {needle:?}");
+    }
+    // Per-layer visibility is REAL: an element omits the field when shown (byte-stable JSON)
+    // and sets `visible = false` when hidden — never a fake/disabled toggle.
+    assert!(
+        js.contains("el.visible = false") && js.contains("delete el.visible"),
+        "the layer eye toggles a real, byte-stable `visible` field"
+    );
+    // The LAYERS rows + preview-zoom transform are styled (the 2.0 shell CSS shipped).
+    assert!(
+        css.contains(".td-layer") && css.contains("var(--td-zoom"),
+        "the Design 2.0 LAYERS + zoom CSS is present"
+    );
+    // Import/Export a theme FILE stay honest 'later' affordances (never faked).
+    assert!(
+        index.contains("id=\"td-import\"") && index.contains("id=\"td-export\""),
+        "Import/Export remain present as honest 'later' affordances"
     );
 }
 

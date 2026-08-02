@@ -34,6 +34,9 @@ fn operator_can_do_every_command() {
         Command::Blackout { on: true },
         Command::StartTimer { seconds: 300 },
         Command::StopTimer,
+        Command::AdjustTimer { delta_secs: 60 },
+        Command::PauseTimer,
+        Command::ResumeTimer,
         Command::ScriptureSearch {
             query: "love".into(),
             translation: None,
@@ -156,6 +159,8 @@ fn blackout_timer_and_clear_are_producer_and_up() {
         Command::Blackout { on: true },
         Command::StartTimer { seconds: 60 },
         Command::StopTimer,
+        Command::PauseTimer,
+        Command::ResumeTimer,
         Command::Clear,
     ] {
         assert!(authorize(Role::Operator, &cmd), "operator {cmd:?}");

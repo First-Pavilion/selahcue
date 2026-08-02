@@ -1,250 +1,278 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SelahCue Operator — Theme Designer (review copy)</title>
-    <link rel="stylesheet" href="../../../implementation/desktop/crates/selahcue-operator/dist/app.css" />
-    <!--
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SelahCue Operator — Theme Designer (review copy)</title>
+  <link rel="stylesheet" href="../../../implementation/desktop/crates/selahcue-operator/dist/app.css" />
+  <!--
       REVIEW COPY — NOT wired into the app. Markup is sliced verbatim from
       dist/index.html by docs/review/split_screens.py. Do not hand-edit; edit
       index.html and regenerate. No app.js: this is static markup for review,
       so JS-populated regions (plan list, transcript, canvases) render empty.
     -->
-  </head>
-  <body>
-    <header>
-      <button id="app-menu-btn" aria-haspopup="menu" aria-expanded="false"
-        aria-controls="app-menu" aria-label="Open the app menu (F10)">☰ SelahCue ▾</button>
-      <div id="app-menu" role="menu" aria-label="Go to">
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" accesskey="1">◉ Live Console<span class="nav-key">1</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="theme-designer" aria-current="page" accesskey="2">✎ Theme Designer<span class="nav-key">2</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="screens" accesskey="3">▤ Screens<span class="nav-key">3</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="plan" accesskey="4">☰ Plan / Library<span class="nav-key">4</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="settings" accesskey="5">⚙ Settings<span class="nav-key">5</span></button>
-      </div>
-      <span id="route-status" class="sr-only" aria-live="polite"></span>
-      <h1 id="plan-name">SelahCue Operator</h1>
-      <span class="sub" id="plan-sub"></span>
-      <span id="live-chip">● LIVE</span>
-      <span id="clock"></span>
-    </header>
-    <main>
-      <section id="surface-theme-designer" class="surface-page active" aria-label="Theme Designer">
-        <!-- Header (Figma 204-124): title + New / Import / Export / Save changes.
+</head>
+
+<body>
+  <header>
+    <button id="app-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="app-menu"
+      aria-label="Open the app menu (F10)">☰ SelahCue ▾</button>
+    <div id="app-menu" role="menu" aria-label="Go to">
+      <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" accesskey="1">◉ Live Console<span
+          class="nav-key">1</span></button>
+      <button class="nav-item" role="menuitem" tabindex="-1" data-surface="theme-designer" aria-current="page"
+        accesskey="2">✎ Theme Designer<span class="nav-key">2</span></button>
+      <button class="nav-item" role="menuitem" tabindex="-1" data-surface="screens" accesskey="3">▤ Screens<span
+          class="nav-key">3</span></button>
+      <button class="nav-item" role="menuitem" tabindex="-1" data-surface="plan" accesskey="4">☰ Plan / Library<span
+          class="nav-key">4</span></button>
+      <button class="nav-item" role="menuitem" tabindex="-1" data-surface="settings" accesskey="5">⚙ Settings<span
+          class="nav-key">5</span></button>
+    </div>
+    <span id="route-status" class="sr-only" aria-live="polite"></span>
+    <h1 id="plan-name">SelahCue Operator</h1>
+    <span class="sub" id="plan-sub"></span>
+    <span id="live-chip">● LIVE</span>
+    <span id="clock"></span>
+  </header>
+  <main>
+    <section id="surface-theme-designer" class="surface-page active" aria-label="Theme Designer">
+      <!-- Header (Figma 204-124): title + New / Import / Export / Save changes.
              Save changes is a real named-theme save into the library (86ajq4xmy).
              Import/Export a theme FILE remain honest 'later' affordances. -->
-        <div class="td-header">
-          <div class="td-brand">Theme Designer</div>
-          <div class="td-header-actions">
-            <button id="td-new">＋ New</button>
-            <button id="td-import" class="td-later">↓ Import</button>
-            <button id="td-export" class="td-later">↑ Export</button>
-            <button id="td-save">Save changes</button>
-          </div>
+      <div class="td-header">
+        <div class="td-brand">Theme Designer</div>
+        <div class="td-header-actions">
+          <button id="td-new">＋ New</button>
+          <button id="td-import" class="td-later">↓ Import</button>
+          <button id="td-export" class="td-later">↑ Export</button>
+          <button id="td-save">Save changes</button>
         </div>
-        <div class="td-wrap">
-          <aside class="td-list" aria-label="Templates">
-            <div class="td-tabs" role="tablist" aria-label="Template kind">
-              <button id="td-tab-scriptures" class="td-tab on" role="tab" aria-selected="true" aria-controls="td-panel">Scriptures</button>
-              <button id="td-tab-slides" class="td-tab td-later" role="tab" aria-selected="false" aria-disabled="true">Slides</button>
-            </div>
-            <div id="td-panel" role="tabpanel" aria-labelledby="td-tab-scriptures">
-              <div class="td-sub">Templates</div>
-              <div id="td-themes"></div>
-              <button id="td-new-2" class="td-list-new">＋ New (from current)</button>
-              <!-- Inline save form (WKWebView-safe — no window.prompt). Toggled by
+      </div>
+      <div class="td-wrap">
+        <aside class="td-list" aria-label="Templates">
+          <div class="td-tabs" role="tablist" aria-label="Template kind">
+            <button id="td-tab-scriptures" class="td-tab on" role="tab" aria-selected="true"
+              aria-controls="td-panel">Scriptures</button>
+            <button id="td-tab-slides" class="td-tab td-later" role="tab" aria-selected="false"
+              aria-disabled="true">Slides</button>
+          </div>
+          <div id="td-panel" role="tabpanel" aria-labelledby="td-tab-scriptures">
+            <div class="td-sub">Templates</div>
+            <div id="td-themes"></div>
+            <button id="td-new-2" class="td-list-new">＋ New (from current)</button>
+            <!-- Inline save form (WKWebView-safe — no window.prompt). Toggled by
                    "Save changes"; names the current design into the library. -->
-              <div id="td-save-row" class="td-save-row" hidden>
-                <input id="td-save-name" class="td-save-name" type="text" maxlength="64"
-                       placeholder="Theme name" aria-label="Name for the saved theme"
-                       autocomplete="off" autocorrect="off" spellcheck="false" />
-                <div class="td-save-row-actions">
-                  <button id="td-save-confirm" class="golive">Save</button>
-                  <button id="td-save-cancel">Cancel</button>
-                </div>
+            <div id="td-save-row" class="td-save-row" hidden>
+              <input id="td-save-name" class="td-save-name" type="text" maxlength="64" placeholder="Theme name"
+                aria-label="Name for the saved theme" autocomplete="off" autocorrect="off" spellcheck="false" />
+              <div class="td-save-row-actions">
+                <button id="td-save-confirm" class="golive">Save</button>
+                <button id="td-save-cancel">Cancel</button>
               </div>
-              <p class="td-hint" id="td-list-note">Built-ins are read-only. Save the current design as a named theme; saved themes can be loaded, re-saved, or deleted.</p>
             </div>
-          </aside>
-          <div class="td-stage">
-            <!-- Add-content toolbar (Figma) — honest 'later' (on-canvas element editing). -->
-            <div class="td-addbar" aria-label="Add content">
-              <span class="td-addbar-label">Add content</span>
-              <button data-add="text" title="Add a text box">Text</button><button class="td-later" data-add="scripture" disabled title="Scripture is the intrinsic Body region">Scripture</button><button data-add="shape">Shape</button><button data-add="image">Image</button>
-              <span class="coming-soon td-addbar-note" id="td-addbar-note"></span>
-            </div>
-            <!-- Add Image: a host-local path (the native OS file-picker + FR-138 media-root
+            <p class="td-hint" id="td-list-note">Built-ins are read-only. Save the current design as a named theme;
+              saved themes can be loaded, re-saved, or deleted.</p>
+          </div>
+        </aside>
+        <div class="td-stage">
+          <!-- Add-content toolbar (Figma) — honest 'later' (on-canvas element editing). -->
+          <div class="td-addbar" aria-label="Add content">
+            <span class="td-addbar-label">Add content</span>
+            <button data-add="text" title="Add a text box">Text</button><button class="td-later" data-add="scripture"
+              disabled title="Scripture is the intrinsic Body region">Scripture</button><button
+              data-add="shape">Shape</button><button data-add="image">Image</button>
+            <span class="coming-soon td-addbar-note" id="td-addbar-note"></span>
+          </div>
+          <!-- Add Image: a host-local path (the native OS file-picker + FR-138 media-root
                  confinement are a later increment — the offline build has no dialog crate). -->
-            <div class="td-save-row" id="td-img-row" hidden>
-              <label for="td-img-path" class="sr-only">Image file path on this machine (PNG)</label>
-              <input type="text" id="td-img-path" placeholder="Paste an image file path on this machine (PNG)…"
-                     autocomplete="off" autocorrect="off" spellcheck="false" />
-              <div class="td-save-row-actions">
-                <button id="td-img-add" class="golive">Add</button>
-                <button id="td-img-cancel">Cancel</button>
-              </div>
+          <div class="td-save-row" id="td-img-row" hidden>
+            <label for="td-img-path" class="sr-only">Image file path on this machine (PNG)</label>
+            <input type="text" id="td-img-path" placeholder="Paste an image file path on this machine (PNG)…"
+              autocomplete="off" autocorrect="off" spellcheck="false" />
+            <div class="td-save-row-actions">
+              <button id="td-img-add" class="golive">Add</button>
+              <button id="td-img-cancel">Cancel</button>
             </div>
-            <!-- Add Shape: pick the geometry (86ajtwq24). WKWebView-safe inline picker (no
+          </div>
+          <!-- Add Shape: pick the geometry (86ajtwq24). WKWebView-safe inline picker (no
                  native menu), keyboard-operable, closes on Esc. -->
-            <div class="td-save-row" id="td-shape-row" hidden role="group" aria-label="Choose a shape to add">
-              <span class="td-shape-label">Add a shape:</span>
-              <div class="td-shape-picker">
-                <button data-shape="rect" title="Rectangle">▭ Rectangle</button><button data-shape="ellipse" title="Ellipse">◯ Ellipse</button><button data-shape="rounded_rect" title="Rounded rectangle">▢ Rounded</button><button data-shape="triangle" title="Triangle">△ Triangle</button>
-              </div>
-              <div class="td-save-row-actions">
-                <button id="td-shape-cancel">Cancel</button>
-              </div>
+          <div class="td-save-row" id="td-shape-row" hidden role="group" aria-label="Choose a shape to add">
+            <span class="td-shape-label">Add a shape:</span>
+            <div class="td-shape-picker">
+              <button data-shape="rect" title="Rectangle">▭ Rectangle</button><button data-shape="ellipse"
+                title="Ellipse">◯ Ellipse</button><button data-shape="rounded_rect" title="Rounded rectangle">▢
+                Rounded</button><button data-shape="triangle" title="Triangle">△ Triangle</button>
             </div>
-            <div class="td-canvas-label">Canvas <span id="td-status" class="coming-soon" role="status" aria-live="polite"></span></div>
-            <!-- The preview fills the center. The overlay hosts the safe-area guide
+            <div class="td-save-row-actions">
+              <button id="td-shape-cancel">Cancel</button>
+            </div>
+          </div>
+          <div class="td-canvas-label">Canvas <span id="td-status" class="coming-soon" role="status"
+              aria-live="polite"></span></div>
+          <!-- The preview fills the center. The overlay hosts the safe-area guide
                  and the selected region's move/resize handles, mapped from its rect%. -->
-            <div class="td-canvas-box" id="td-canvas-box">
-              <canvas id="td-preview" width="480" height="270" aria-label="Live theme preview"></canvas>
-              <div class="td-overlay" id="td-overlay">
-                <div class="td-safe" aria-hidden="true"></div>
-                <!-- Selection group: aria-label is updated per region/element in JS. The 8
+          <div class="td-canvas-box" id="td-canvas-box">
+            <canvas id="td-preview" width="480" height="270" aria-label="Live theme preview"></canvas>
+            <div class="td-overlay" id="td-overlay">
+              <div class="td-safe" aria-hidden="true"></div>
+              <!-- Selection group: aria-label is updated per region/element in JS. The 8
                      handles are pointer affordances (aria-hidden); keyboard resize is
                      element-level (Cmd/Ctrl+Arrow on this group). -->
-                <div class="td-sel" id="td-sel" role="group" aria-label="Selected region — drag to move, handles to resize" tabindex="0">
-                  <span class="td-h nw" data-h="nw" aria-hidden="true"></span><span class="td-h n" data-h="n" aria-hidden="true"></span><span class="td-h ne" data-h="ne" aria-hidden="true"></span>
-                  <span class="td-h w" data-h="w" aria-hidden="true"></span><span class="td-h e" data-h="e" aria-hidden="true"></span>
-                  <span class="td-h sw" data-h="sw" aria-hidden="true"></span><span class="td-h s" data-h="s" aria-hidden="true"></span><span class="td-h se" data-h="se" aria-hidden="true"></span>
-                </div>
+              <div class="td-sel" id="td-sel" role="group"
+                aria-label="Selected region — drag to move, handles to resize" tabindex="0">
+                <span class="td-h nw" data-h="nw" aria-hidden="true"></span><span class="td-h n" data-h="n"
+                  aria-hidden="true"></span><span class="td-h ne" data-h="ne" aria-hidden="true"></span>
+                <span class="td-h w" data-h="w" aria-hidden="true"></span><span class="td-h e" data-h="e"
+                  aria-hidden="true"></span>
+                <span class="td-h sw" data-h="sw" aria-hidden="true"></span><span class="td-h s" data-h="s"
+                  aria-hidden="true"></span><span class="td-h se" data-h="se" aria-hidden="true"></span>
               </div>
-            </div>
-            <div class="td-actions">
-              <button id="td-apply" class="golive">Apply to audience output</button>
-              <span class="coming-soon td-note">Live preview · click to select · drag to move · handles to resize · right-click for actions · amber dashed = safe area (5%)</span>
-            </div>
-            <!-- WKWebView-safe custom context menu (the native menu is blocked); positioned
-                 at the cursor, keyboard-operable, closes on Esc / click-away (#4). -->
-            <div id="td-ctx" class="td-ctx" role="menu" aria-label="Element actions" hidden>
-              <button role="menuitem" data-ctx="copy">Copy <span class="td-ctx-key">⌘C</span></button>
-              <button role="menuitem" data-ctx="paste">Paste <span class="td-ctx-key">⌘V</span></button>
-              <button role="menuitem" data-ctx="front">Bring to front</button>
-              <button role="menuitem" data-ctx="back">Send to back</button>
-              <button role="menuitem" data-ctx="delete" class="danger">Delete</button>
             </div>
           </div>
-          <aside class="td-inspector" aria-label="Inspector">
-            <!-- Element inspector (shown when a canvas ELEMENT is selected; 86ajq6j4p). -->
-            <div id="td-el-inspector" hidden>
-              <div class="td-el-head">
-                <span id="td-el-head">Element</span>
-                <span id="td-el-zchip" class="td-chip" aria-live="polite"></span>
-              </div>
-              <label for="td-el-op">Opacity — <span id="td-el-op-v"></span>%</label>
-              <input type="range" id="td-el-op" min="0" max="100" step="1" aria-label="Element opacity, percent" />
-              <label id="td-lbl-el-z">Arrange (z-order)</label>
-              <div class="seg td-icons" id="td-el-z" role="group" aria-labelledby="td-lbl-el-z">
-                <button data-z="back" aria-label="Send to back" title="Send to back">⤓⤓</button><button data-z="backward" aria-label="Send backward" title="Send backward">⤓</button><button data-z="forward" aria-label="Bring forward" title="Bring forward">⤒</button><button data-z="front" aria-label="Bring to front" title="Bring to front">⤒⤒</button>
-              </div>
-              <div id="td-el-shape" hidden>
-                <label for="td-el-fill">Fill colour</label>
-                <input type="color" id="td-el-fill" />
-                <label for="td-el-border">Border colour</label>
-                <input type="color" id="td-el-border" />
-                <label for="td-el-bw">Border width — <span id="td-el-bw-v"></span>%</label>
-                <input type="range" id="td-el-bw" min="0" max="50" step="1" aria-label="Shape border width, percent of height" />
-                <!-- Corner radius — shown only for a rounded rectangle (86ajtwq24). -->
-                <div id="td-el-corner-row" hidden>
-                  <label for="td-el-corner">Corner radius — <span id="td-el-corner-v"></span>%</label>
-                  <input type="range" id="td-el-corner" min="0" max="50" step="1" aria-label="Rounded-rectangle corner radius, percent of the shorter side" />
-                </div>
-              </div>
-              <div id="td-el-image" hidden>
-                <label>Image file (on this machine)</label>
-                <p class="td-el-src" id="td-el-src"></p>
-                <button id="td-el-replace">Replace…</button>
-              </div>
-              <!-- Text-box controls (shown when a TEXT element is selected; 86ajq6j64). -->
-              <div id="td-el-text" hidden>
-                <label for="td-el-text-content">Text</label>
-                <textarea id="td-el-text-content" rows="3" maxlength="2000" aria-label="Text box content"></textarea>
-                <label for="td-el-text-color">Text colour</label>
-                <input type="color" id="td-el-text-color" />
-                <label for="td-el-text-size">Size — <span id="td-el-text-size-v"></span>%</label>
-                <input type="range" id="td-el-text-size" min="1" max="30" step="1" aria-label="Text size, percent of height" />
-                <label for="td-el-text-align">Alignment</label>
-                <select id="td-el-text-align" aria-label="Text alignment">
-                  <option value="left">Left</option>
-                  <option value="center">Center</option>
-                  <option value="right">Right</option>
-                </select>
-              </div>
-              <button id="td-el-del" class="td-el-del">Delete element</button>
-              <p class="td-hint coming-soon">Drag to move · handles to resize · Arrange sends it behind / in front of the text · a missing image shows the placeholder. The native file-picker + image Fit modes arrive later.</p>
+          <div class="td-actions">
+            <button id="td-apply" class="golive">Apply to audience output</button>
+            <span class="coming-soon td-note">Live preview · click to select · drag to move · handles to resize ·
+              right-click for actions · amber dashed = safe area (5%)</span>
+          </div>
+          <!-- WKWebView-safe custom context menu (the native menu is blocked); positioned
+                 at the cursor, keyboard-operable, closes on Esc / click-away (#4). -->
+          <div id="td-ctx" class="td-ctx" role="menu" aria-label="Element actions" hidden>
+            <button role="menuitem" data-ctx="copy">Copy <span class="td-ctx-key">⌘C</span></button>
+            <button role="menuitem" data-ctx="paste">Paste <span class="td-ctx-key">⌘V</span></button>
+            <button role="menuitem" data-ctx="front">Bring to front</button>
+            <button role="menuitem" data-ctx="back">Send to back</button>
+            <button role="menuitem" data-ctx="delete" class="danger">Delete</button>
+          </div>
+        </div>
+        <aside class="td-inspector" aria-label="Inspector">
+          <!-- Element inspector (shown when a canvas ELEMENT is selected; 86ajq6j4p). -->
+          <div id="td-el-inspector" hidden>
+            <div class="td-el-head">
+              <span id="td-el-head">Element</span>
+              <span id="td-el-zchip" class="td-chip" aria-live="polite"></span>
             </div>
+            <label for="td-el-op">Opacity — <span id="td-el-op-v"></span>%</label>
+            <input type="range" id="td-el-op" min="0" max="100" step="1" aria-label="Element opacity, percent" />
 
-            <label id="td-lbl-region">Region</label>
-            <div class="seg" id="td-region" role="group" aria-labelledby="td-lbl-region">
-              <button id="td-region-body" data-region="body" class="on" aria-pressed="true">Body</button>
-              <button data-region="title" aria-pressed="false">Reference / Title</button>
-            </div>
-
-            <div class="td-sub">Layout</div>
-            <span id="td-lbl-align" class="sr-only">Horizontal alignment</span>
-            <div class="td-align-grid" id="td-region-align">
-              <div class="seg td-icons" id="td-align" role="group" aria-labelledby="td-lbl-align">
-                <button data-a="left" aria-label="Align left" aria-pressed="false">⇤</button><button data-a="center" aria-label="Align centre" aria-pressed="false">⇔</button><button data-a="right" aria-label="Align right" aria-pressed="false">⇥</button>
+            <div id="td-el-shape" hidden>
+              <label for="td-el-fill">Fill colour</label>
+              <input type="color" id="td-el-fill" />
+              <label for="td-el-border">Border colour</label>
+              <input type="color" id="td-el-border" />
+              <label for="td-el-bw">Border width — <span id="td-el-bw-v"></span>%</label>
+              <input type="range" id="td-el-bw" min="0" max="50" step="1"
+                aria-label="Shape border width, percent of height" />
+              <!-- Corner radius — shown only for a rounded rectangle (86ajtwq24). -->
+              <div id="td-el-corner-row" hidden>
+                <label for="td-el-corner">Corner radius — <span id="td-el-corner-v"></span>%</label>
+                <input type="range" id="td-el-corner" min="0" max="50" step="1"
+                  aria-label="Rounded-rectangle corner radius, percent of the shorter side" />
               </div>
-              <div class="seg td-icons" id="td-valign" role="group" aria-label="Vertical alignment">
-                <button data-v="top" aria-label="Align top" aria-pressed="false">⤒</button><button data-v="middle" aria-label="Align middle" aria-pressed="false">↕</button><button data-v="bottom" aria-label="Align bottom" aria-pressed="false">⤓</button>
-              </div>
             </div>
-            <div class="td-grid4">
-              <label for="td-x">X %</label><label for="td-w">W %</label>
-              <input type="number" id="td-x" min="0" max="100" step="0.1" aria-label="X position, percent" />
-              <input type="number" id="td-w" min="1" max="100" step="0.1" aria-label="Width, percent" />
-              <label for="td-y">Y %</label><label for="td-h">H %</label>
-              <input type="number" id="td-y" min="0" max="100" step="0.1" aria-label="Y position, percent" />
-              <input type="number" id="td-h" min="1" max="100" step="0.1" aria-label="Height, percent" />
+            <div id="td-el-image" hidden>
+              <label>Image file (on this machine)</label>
+              <p class="td-el-src" id="td-el-src"></p>
+              <button id="td-el-replace">Replace…</button>
             </div>
-            <div class="td-grid2 td-lockrow">
-              <label class="td-check"><input type="checkbox" id="td-lock" /> Lock aspect</label>
-              <label class="td-later" for="td-refgap">Ref. gap %
-                <input type="number" id="td-refgap" disabled aria-label="Reference gap, percent (arrives later)" placeholder="—" />
-              </label>
-            </div>
-
-            <!-- Theme background (86ajq3225): a solid colour, a two-stop gradient, or an image. -->
-            <label for="td-bg-type">Theme background</label>
-            <select id="td-bg-type" aria-label="Background type">
-              <option value="solid">Solid colour</option>
-              <option value="gradient">Gradient</option>
-              <option value="image">Image</option>
-            </select>
-            <div id="td-bg-solid">
-              <label for="td-bg">Colour</label>
-              <input type="color" id="td-bg" />
-            </div>
-            <div id="td-bg-gradient" hidden>
-              <label for="td-bg-from">From colour</label>
-              <input type="color" id="td-bg-from" />
-              <label for="td-bg-to">To colour</label>
-              <input type="color" id="td-bg-to" />
-              <label for="td-bg-dir">Direction</label>
-              <select id="td-bg-dir" aria-label="Gradient direction">
-                <option value="vertical">Vertical (top → bottom)</option>
-                <option value="horizontal">Horizontal (left → right)</option>
-                <option value="diagonal_down">Diagonal ↘</option>
-                <option value="diagonal_up">Diagonal ↗</option>
+            <!-- Text-box controls (shown when a TEXT element is selected; 86ajq6j64). -->
+            <div id="td-el-text" hidden>
+              <label for="td-el-text-content">Text</label>
+              <textarea id="td-el-text-content" rows="3" maxlength="2000" aria-label="Text box content"></textarea>
+              <label for="td-el-text-color">Text colour</label>
+              <input type="color" id="td-el-text-color" />
+              <label for="td-el-text-size">Size — <span id="td-el-text-size-v"></span>%</label>
+              <input type="range" id="td-el-text-size" min="1" max="30" step="1"
+                aria-label="Text size, percent of height" />
+              <label for="td-el-text-align">Alignment</label>
+              <select id="td-el-text-align" aria-label="Text alignment">
+                <option value="left">Left</option>
+                <option value="center">Center</option>
+                <option value="right">Right</option>
               </select>
             </div>
-            <div id="td-bg-image" hidden>
-              <label for="td-bg-img-path">Background image path (on this machine)</label>
-              <input type="text" id="td-bg-img-path" placeholder="/path/to/image.png" aria-label="Background image path" />
-              <button id="td-bg-img-pick" type="button">Choose image…</button>
-              <p class="td-el-src" id="td-bg-img-src"></p>
-            </div>
+            <button id="td-el-del" class="td-el-del">Delete element</button>
+            <p class="td-hint coming-soon">Drag to move · handles to resize · Arrange sends it behind / in front of the
+              text · a missing image shows the placeholder. The native file-picker + image Fit modes arrive later.</p>
+          </div>
 
-            <div id="td-region-text">
+          <label id="td-lbl-region">Region</label>
+          <div class="seg" id="td-region" role="group" aria-labelledby="td-lbl-region">
+            <button id="td-region-body" data-region="body" class="on" aria-pressed="true">Body</button>
+            <button data-region="title" aria-pressed="false">Reference / Title</button>
+          </div>
+
+          <div class="td-sub">Layout</div>
+          <span id="td-lbl-align" class="sr-only">Horizontal alignment</span>
+          <div class="td-align-grid" id="td-region-align">
+            <div class="seg td-icons" id="td-align" role="group" aria-labelledby="td-lbl-align">
+              <button data-a="left" aria-label="Align left" aria-pressed="false">⇤</button><button data-a="center"
+                aria-label="Align centre" aria-pressed="false">⇔</button><button data-a="right" aria-label="Align right"
+                aria-pressed="false">⇥</button>
+            </div>
+            <div class="seg td-icons" id="td-valign" role="group" aria-label="Vertical alignment">
+              <button data-v="top" aria-label="Align top" aria-pressed="false">⤒</button><button data-v="middle"
+                aria-label="Align middle" aria-pressed="false">↕</button><button data-v="bottom"
+                aria-label="Align bottom" aria-pressed="false">⤓</button>
+            </div>
+          </div>
+          <div class="td-grid4">
+            <label for="td-x">X %</label><label for="td-w">W %</label>
+            <input type="number" id="td-x" min="0" max="100" step="0.1" aria-label="X position, percent" />
+            <input type="number" id="td-w" min="1" max="100" step="0.1" aria-label="Width, percent" />
+            <label for="td-y">Y %</label><label for="td-h">H %</label>
+            <input type="number" id="td-y" min="0" max="100" step="0.1" aria-label="Y position, percent" />
+            <input type="number" id="td-h" min="1" max="100" step="0.1" aria-label="Height, percent" />
+          </div>
+          <div class="td-grid2 td-lockrow">
+            <label class="td-check"><input type="checkbox" id="td-lock" /> Lock aspect</label>
+            <label class="td-later" for="td-refgap">Ref. gap %
+              <input type="number" id="td-refgap" disabled aria-label="Reference gap, percent (arrives later)"
+                placeholder="—" />
+            </label>
+          </div>
+
+          <!-- Theme background (86ajq3225): a solid colour, a two-stop gradient, or an image. -->
+          <label for="td-bg-type">Theme background</label>
+          <select id="td-bg-type" aria-label="Background type">
+            <option value="solid">Solid colour</option>
+            <option value="gradient">Gradient</option>
+            <option value="image">Image</option>
+          </select>
+          <div id="td-bg-solid">
+            <label for="td-bg">Colour</label>
+            <input type="color" id="td-bg" />
+          </div>
+          <div id="td-bg-gradient" hidden>
+            <label for="td-bg-from">From colour</label>
+            <input type="color" id="td-bg-from" />
+            <label for="td-bg-to">To colour</label>
+            <input type="color" id="td-bg-to" />
+            <label for="td-bg-dir">Direction</label>
+            <select id="td-bg-dir" aria-label="Gradient direction">
+              <option value="vertical">Vertical (top → bottom)</option>
+              <option value="horizontal">Horizontal (left → right)</option>
+              <option value="diagonal_down">Diagonal ↘</option>
+              <option value="diagonal_up">Diagonal ↗</option>
+            </select>
+          </div>
+          <div id="td-bg-image" hidden>
+            <label for="td-bg-img-path">Background image path (on this machine)</label>
+            <input type="text" id="td-bg-img-path" placeholder="/path/to/image.png"
+              aria-label="Background image path" />
+            <button id="td-bg-img-pick" type="button">Choose image…</button>
+            <p class="td-el-src" id="td-bg-img-src"></p>
+          </div>
+
+          <div id="td-region-text">
             <div class="td-sub">Text</div>
             <label for="td-color">Text colour</label>
             <input type="color" id="td-color" />
             <label for="td-font">Font</label>
-            <select id="td-font" aria-label="Font family (system fonts on this machine; default = bundled Noto Sans)"><option value="">Noto Sans (default)</option></select>
+            <select id="td-font" aria-label="Font family (system fonts on this machine; default = bundled Noto Sans)">
+              <option value="">Noto Sans (default)</option>
+            </select>
             <div class="td-grid2">
               <label for="td-weight">Weight</label><label for="td-letter">Letter spacing (em)</label>
               <select id="td-weight" aria-label="Font weight">
@@ -253,7 +281,8 @@
                 <option value="700">Bold</option>
                 <option value="900">Black</option>
               </select>
-              <input id="td-letter" type="number" min="-0.2" max="1" step="0.01" value="0" aria-label="Letter spacing, em (tracking between glyphs)" />
+              <input id="td-letter" type="number" min="-0.2" max="1" step="0.01" value="0"
+                aria-label="Letter spacing, em (tracking between glyphs)" />
             </div>
             <label for="td-size">Text size — <span id="td-size-v"></span>% of height</label>
             <input type="range" id="td-size" min="20" max="140" step="1" />
@@ -261,19 +290,24 @@
             <input type="range" id="td-lh" min="1000" max="1600" step="10" />
             <label id="td-lbl-fit">Fit</label>
             <div class="seg" id="td-fit" role="group" aria-labelledby="td-lbl-fit">
-              <button data-f="shrink_to_fit" aria-pressed="false">Shrink to fit</button><button data-f="paginate" aria-pressed="false">Paginate</button><button data-f="clip" aria-pressed="false">Clip</button>
+              <button data-f="shrink_to_fit" aria-pressed="false">Shrink to fit</button><button data-f="paginate"
+                aria-pressed="false">Paginate</button><button data-f="clip" aria-pressed="false">Clip</button>
             </div>
-            <p class="td-hint coming-soon">Weight + letter-spacing apply to ALL of the theme's text. Bold on the default Noto Sans is a deterministic faux-bold; a system font uses its real bold face. Font family = any font installed on this machine (themed = per-machine; default Noto Sans = cross-OS-identical).</p>
-            </div><!-- /#td-region-text -->
-          </aside>
-        </div>
-      </section>
-    </main>
-    <footer id="emergency" role="toolbar" aria-label="Emergency controls">
-      <button id="blackout" aria-pressed="false" aria-label="Blackout the audience output">■ BLACKOUT<span id="blackout-state"></span><span class="key">B</span></button>
-      <button id="clear-all" aria-label="Clear all live layers">✕ CLEAR ALL<span class="key">Esc Esc</span></button>
-      <span class="note">Always reachable · pierces any dialog</span>
-      <span class="hints">Space Next · ⏎ Go Live · ← Prev</span>
-    </footer>
-  </body>
+            <p class="td-hint coming-soon">Weight + letter-spacing apply to ALL of the theme's text. Bold on the default
+              Noto Sans is a deterministic faux-bold; a system font uses its real bold face. Font family = any font
+              installed on this machine (themed = per-machine; default Noto Sans = cross-OS-identical).</p>
+          </div><!-- /#td-region-text -->
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer id="emergency" role="toolbar" aria-label="Emergency controls">
+    <button id="blackout" aria-pressed="false" aria-label="Blackout the audience output">■ BLACKOUT<span
+        id="blackout-state"></span><span class="key">B</span></button>
+    <button id="clear-all" aria-label="Clear all live layers">✕ CLEAR ALL<span class="key">Esc Esc</span></button>
+    <span class="note">Always reachable · pierces any dialog</span>
+    <span class="hints">Space Next · ⏎ Go Live · ← Prev</span>
+  </footer>
+</body>
+
 </html>

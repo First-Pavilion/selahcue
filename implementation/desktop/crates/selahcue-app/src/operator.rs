@@ -211,6 +211,16 @@ impl OperatorShell {
         self.act(&Command::AdjustTimer { delta_secs })
     }
 
+    /// Pause the running countdown (banks elapsed; denied when no timer is active).
+    pub fn pause_timer(&self) -> OperatorView {
+        self.act(&Command::PauseTimer)
+    }
+
+    /// Resume a paused countdown from its banked elapsed.
+    pub fn resume_timer(&self) -> OperatorView {
+        self.act(&Command::ResumeTimer)
+    }
+
     /// Append a plan item (Operator-only via RBAC on the remote path).
     /// `content` is the optional plain-text stanza body for songs (S8-1).
     pub fn add_item(&self, kind: &str, title: &str, content: Option<&str>) -> OperatorView {
@@ -541,6 +551,16 @@ impl RemoteOperator {
         delta_secs: i64,
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::AdjustTimer { delta_secs }).await
+    }
+
+    /// Pause the host's running countdown (banks elapsed; denied when no timer is active).
+    pub async fn pause_timer(&mut self) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::PauseTimer).await
+    }
+
+    /// Resume the host's paused countdown from its banked elapsed.
+    pub async fn resume_timer(&mut self) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::ResumeTimer).await
     }
 
     /// Append a plan item on the host (requires the Operator role).

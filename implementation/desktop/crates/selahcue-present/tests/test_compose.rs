@@ -22,6 +22,7 @@ fn full_shape(fill: Rgba, opacity: u8, z: i16) -> Element {
         z,
         variant: ShapeKind::Rect,
         corner_permille: 0,
+        visible: true,
     }
 }
 
@@ -500,6 +501,7 @@ fn a_shape_element_opacity_blends_over_what_is_beneath() {
         z: 1,
         variant: ShapeKind::Rect,
         corner_permille: 0,
+        visible: true,
     });
     let fb = render(&compose_slide(&slide, &theme, 200, 100));
     // Inside the shape (top-left): 50% white over the dark bg → a mid grey, not full white.
@@ -535,6 +537,7 @@ fn a_translucent_element_border_paints_its_corners_uniformly() {
         z: 1,
         variant: ShapeKind::Rect,
         corner_permille: 0,
+        visible: true,
     });
     let fb = render(&compose_slide(&slide, &theme, 200, 100));
     let corner = fb.pixel(1, 1).unwrap(); // top-left corner square
@@ -583,6 +586,112 @@ fn theme_elements_are_additive_serde_and_byte_stable_by_default() {
         old.elements.is_empty(),
         "absent elements deserialize to empty"
     );
+}
+
+// --- Element visibility (Design 2.0 LAYERS) -------------------------------------------
+
+#[test]
+fn a_hidden_element_emits_no_layers() {
+    // A hidden element contributes NOTHING to the composed frame (mirrors a hidden region):
+    // a full-frame opaque shape IN FRONT of the text, when hidden, must not paint — the
+    // render is byte-identical to the no-element baseline.
+    let slide = Slide::new("Ref", ["Body text"]);
+    let baseline = render(&compose_slide(&slide, &Theme::classic(), 200, 100));
+    let mut theme = Theme::classic();
+    let mut hidden = full_shape(Rgba::rgb(255, 0, 0), 255, 1);
+    if let Element::Shape { visible, .. } = &mut hidden {
+        *visible = false;
+    }
+    theme.elements.push(hidden);
+    let fb = render(&compose_slide(&slide, &theme, 200, 100));
+    assert_eq!(
+        fb.bytes(),
+        baseline.bytes(),
+        "a hidden element paints nothing (byte-identical to the no-element baseline)"
+    );
+    // Sanity: the SAME shape SHOWN does change the render — so the suppression is the hide,
+    // not an inert element.
+    let mut shown = Theme::classic();
+    shown
+        .elements
+        .push(full_shape(Rgba::rgb(255, 0, 0), 255, 1));
+    assert_ne!(
+        render(&compose_slide(&slide, &shown, 200, 100)).bytes(),
+        baseline.bytes(),
+        "the same element shown DOES paint"
+    );
+}
+
+#[test]
+fn hiding_one_element_leaves_the_other_visible_elements() {
+    // Two corner shapes; hiding one leaves the other painting — a hidden layer never blanks
+    // the frame or its siblings (the never-blank invariant holds per NFR-024).
+    let slide = Slide::new("R", ["B"]);
+    let corner = |x: u16, fill: Rgba, visible: bool| Element::Shape {
+        x_permille: x,
+        y_permille: 0,
+        w_permille: 100,
+        h_permille: 100,
+        fill,
+        border: Rgba::new(0, 0, 0, 0),
+        border_permille: 0,
+        opacity: 255,
+        z: 1,
+        variant: ShapeKind::Rect,
+        corner_permille: 0,
+        visible,
+    };
+    let mut theme = Theme::classic();
+    theme.elements.push(corner(0, Rgba::rgb(0, 200, 0), true)); // top-left, shown
+    theme
+        .elements
+        .push(corner(900, Rgba::rgb(0, 0, 200), false)); // top-right, hidden
+    let fb = render(&compose_slide(&slide, &theme, 200, 100));
+    let left = fb.pixel(2, 2).unwrap();
+    assert!(
+        left.g > 120 && left.r < 80,
+        "the shown shape still paints, got {left:?}"
+    );
+    let right = fb.pixel(198, 2).unwrap();
+    assert!(
+        right.b < 80,
+        "the hidden shape does NOT paint (dark background shows through), got {right:?}"
+    );
+}
+
+#[test]
+fn element_visibility_is_additive_serde_and_round_trips() {
+    // A SHOWN element (the default) omits `visible` → byte-identical JSON; a HIDDEN element
+    // emits `visible:false` and round-trips; older JSON without the field → shown.
+    let shown = full_shape(Rgba::WHITE, 255, 1);
+    let js = serde_json::to_string(&shown).unwrap();
+    assert!(
+        !js.contains("visible"),
+        "a shown element omits `visible`: {js}"
+    );
+
+    let mut hidden = full_shape(Rgba::WHITE, 255, 1);
+    if let Element::Shape { visible, .. } = &mut hidden {
+        *visible = false;
+    }
+    let jh = serde_json::to_string(&hidden).unwrap();
+    assert!(
+        jh.contains("\"visible\":false"),
+        "a hidden element emits the flag: {jh}"
+    );
+    assert_eq!(
+        serde_json::from_str::<Element>(&jh).unwrap(),
+        hidden,
+        "a hidden element round-trips"
+    );
+
+    // Old JSON (no `visible` key) deserializes to a SHOWN element.
+    let back: Element = serde_json::from_str(&js).unwrap();
+    assert!(
+        back.visible(),
+        "an element without the field defaults to shown"
+    );
+    assert_eq!(back, shown);
 }
 
 // --- Image element (86ajq6j49) --------------------------------------------------------
@@ -639,6 +748,7 @@ fn full_image(path: &std::path::Path, opacity: u8, z: i16) -> Element {
         source: MediaRef::new(path.to_str().unwrap()).unwrap(),
         opacity,
         z,
+        visible: true,
     }
 }
 
@@ -655,6 +765,7 @@ fn an_image_element_composes_to_an_image_layer_with_the_mapped_rect() {
         source: MediaRef::new(img.path().to_str().unwrap()).unwrap(),
         opacity: 200,
         z: 1,
+        visible: true,
     });
     let frame = compose_slide(&Slide::new("R", ["B"]), &theme, 1000, 1000);
     let img = frame
@@ -731,6 +842,7 @@ fn a_missing_image_element_renders_the_non_black_placeholder() {
         source: MediaRef::new("/no/such/theme/image.png").unwrap(),
         opacity: 255,
         z: 1,
+        visible: true,
     });
     let fb = render(&compose_slide(&Slide::new("R", ["B"]), &theme, 64, 64));
     // The placeholder base (64,54,74) fills most of the frame — assert a non-black pixel.
@@ -782,6 +894,7 @@ fn kind_shape(variant: ShapeKind, corner_permille: u16, z: i16) -> Element {
         z,
         variant,
         corner_permille,
+        visible: true,
     }
 }
 
@@ -871,6 +984,7 @@ fn a_rect_shape_element_json_is_byte_identical_to_before() {
         z: 2,
         variant: ShapeKind::Rect,
         corner_permille: 0,
+        visible: true,
     };
     let json = serde_json::to_string(&rect).unwrap();
     assert!(
@@ -880,6 +994,10 @@ fn a_rect_shape_element_json_is_byte_identical_to_before() {
     assert!(
         !json.contains("corner_permille"),
         "a Rect shape omits `corner_permille`: {json}"
+    );
+    assert!(
+        !json.contains("visible"),
+        "a shown shape omits `visible` (byte-identical to before the LAYERS batch): {json}"
     );
     // And it round-trips back to the same value (Rect is the serde default).
     assert_eq!(serde_json::from_str::<Element>(&json).unwrap(), rect);
@@ -897,6 +1015,7 @@ fn a_rect_shape_element_json_is_byte_identical_to_before() {
         z: 2,
         variant: ShapeKind::Ellipse,
         corner_permille: 0,
+        visible: true,
     };
     let j2 = serde_json::to_string(&ell).unwrap();
     assert!(
@@ -1027,6 +1146,7 @@ fn full_text(text: &str, opacity: u8, z: i16) -> Element {
         font: None,
         weight: 400,
         letter_spacing_permille: 0,
+        visible: true,
     }
 }
 
@@ -1050,6 +1170,7 @@ fn bottom_text(text: &str, opacity: u8, z: i16) -> Element {
         font: None,
         weight: 400,
         letter_spacing_permille: 0,
+        visible: true,
     }
 }
 

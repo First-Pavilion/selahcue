@@ -216,6 +216,9 @@ fn every_command_round_trips() {
         Command::Blackout { on: false },
         Command::StartTimer { seconds: 300 },
         Command::StopTimer,
+        Command::AdjustTimer { delta_secs: 60 },
+        Command::PauseTimer,
+        Command::ResumeTimer,
         Command::ScriptureSearch {
             query: "grace".into(),
             translation: None,
@@ -351,6 +354,7 @@ fn transcript_and_detection_view_fields_are_additive() {
             id: 4,
             reference: "John 3:16".into(),
             text: "For God so loved the world".into(),
+            confidence: None,
         }],
     };
     assert_eq!(
@@ -362,8 +366,31 @@ fn transcript_and_detection_view_fields_are_additive() {
         id: 1,
         reference: "Jude 3".into(),
         text: String::new(),
+        confidence: None,
     };
     assert_eq!(to_json(&bare).unwrap(), r#"{"id":1,"reference":"Jude 3"}"#);
+}
+
+/// The detection `confidence` (match %) is additive: `None` is omitted (older frames +
+/// today's honest-empty detector stay byte-identical), `Some(pct)` serializes under the
+/// exact name the operator webview reads, and an older host's frame (no key) parses to `None`.
+#[test]
+fn detection_confidence_is_additive() {
+    use selahcue_lan::protocol::DetectionView;
+    let scored = DetectionView {
+        id: 7,
+        reference: "Romans 8:28".into(),
+        text: "And we know".into(),
+        confidence: Some(94),
+    };
+    assert_eq!(
+        to_json(&scored).unwrap(),
+        r#"{"id":7,"reference":"Romans 8:28","text":"And we know","confidence":94}"#
+    );
+    // An older host omits the key entirely — it must parse to None (serde default).
+    let legacy: DetectionView =
+        from_json(r#"{"id":7,"reference":"Romans 8:28","text":"And we know"}"#).unwrap();
+    assert_eq!(legacy.confidence, None);
 }
 
 #[test]
@@ -728,6 +755,14 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
     assert_eq!(
         to_json(&Command::StopTimer).unwrap(),
         r#"{"cmd":"stop_timer"}"#
+    );
+    assert_eq!(
+        to_json(&Command::PauseTimer).unwrap(),
+        r#"{"cmd":"pause_timer"}"#
+    );
+    assert_eq!(
+        to_json(&Command::ResumeTimer).unwrap(),
+        r#"{"cmd":"resume_timer"}"#
     );
     assert_eq!(
         to_json(&Command::GetOperatorState).unwrap(),

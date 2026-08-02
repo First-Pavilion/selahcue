@@ -221,6 +221,28 @@ impl Backend {
             Backend::Local(s) => Ok(s.adjust_timer(delta_secs)),
         }
     }
+    async fn pause_timer(&self) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .pause_timer()
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.pause_timer()),
+        }
+    }
+    async fn resume_timer(&self) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .resume_timer()
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.resume_timer()),
+        }
+    }
     async fn add_item(
         &self,
         kind: String,
@@ -633,6 +655,14 @@ async fn adjust_timer(delta_secs: i64, state: State<'_, AppState>) -> Result<Ope
     state.backend.adjust_timer(delta_secs).await
 }
 #[tauri::command]
+async fn pause_timer(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.pause_timer().await
+}
+#[tauri::command]
+async fn resume_timer(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.resume_timer().await
+}
+#[tauri::command]
 async fn add_item(
     kind: String,
     title: String,
@@ -919,6 +949,8 @@ fn main() {
             start_timer,
             stop_timer,
             adjust_timer,
+            pause_timer,
+            resume_timer,
             add_item,
             remove_item,
             move_item,

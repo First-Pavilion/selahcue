@@ -1,36 +1,98 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SelahCue Operator</title>
-    <link rel="stylesheet" href="app.css" />
-  </head>
-  <body>
-    <header>
-      <button id="app-menu-btn" aria-haspopup="menu" aria-expanded="false"
-        aria-controls="app-menu" aria-label="Open the app menu (F10)">☰ SelahCue ▾</button>
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SelahCue Operator</title>
+  <link rel="stylesheet" href="app.css" />
+</head>
+
+<body>
+  <!-- Topbar (Figma 312:125): logo pill + surface label · a GLOBAL transport
+         (always reachable, on every surface — Prev/Next/GO LIVE/Blackout mirror the
+         console/footer controls via the same handlers) · timer chip + clock + host
+         connection pill. -->
+  <header>
+    <div class="topbar-left">
+      <button id="app-menu-btn" class="logo-pill" aria-haspopup="menu" aria-expanded="false" aria-controls="app-menu"
+        aria-label="Open the app menu (F10)">
+        <img class="logo-mark" src="selahcue-logo.png" alt="" aria-hidden="true" />SelahCue<span class="logo-caret"
+          aria-hidden="true">▾</span>
+      </button>
       <div id="app-menu" role="menu" aria-label="Go to">
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" accesskey="1" aria-current="page">◉ Live Console<span class="nav-key">1</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="theme-designer" accesskey="2">✎ Theme Designer<span class="nav-key">2</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="screens" accesskey="3">▤ Screens<span class="nav-key">3</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="plan" accesskey="4">☰ Plan / Library<span class="nav-key">4</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="settings" accesskey="5">⚙ Settings<span class="nav-key">5</span></button>
+        <div class="menu-head" aria-hidden="true">
+          <img class="menu-logo" src="selahcue-logo.png" alt="" />
+          <span class="menu-ws"><span class="menu-ws-t">SelahCue</span><span class="menu-ws-d">Operator
+              console</span></span>
+        </div>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" accesskey="1"
+          aria-current="page"><span class="nav-ico" aria-hidden="true">▲</span><span class="nav-txt"><span
+              class="nav-t">Live Console</span><span class="nav-d">Operate the service live</span></span><span
+            class="nav-key">⌘1</span></button>
+        <button class="nav-item nav-later" role="menuitem" tabindex="-1" aria-disabled="true"
+          data-later="presentation"><span class="nav-ico" aria-hidden="true">▦</span><span class="nav-txt"><span
+              class="nav-t">Presentation</span><span class="nav-d">Slides &amp; media</span></span><span
+            class="nav-key nav-key-later">Later</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="theme-designer" accesskey="2"><span
+            class="nav-ico" aria-hidden="true">◈</span><span class="nav-txt"><span class="nav-t">Theme
+              Designer</span><span class="nav-d">Output templates</span></span><span class="nav-key">⌘2</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="screens" accesskey="3"><span
+            class="nav-ico" aria-hidden="true">▤</span><span class="nav-txt"><span class="nav-t">Screens &amp;
+              Outputs</span><span class="nav-d">Displays &amp; health</span></span><span
+            class="nav-key">⌘3</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="plan" accesskey="4"><span class="nav-ico"
+            aria-hidden="true">☰</span><span class="nav-txt"><span class="nav-t">Service Plan</span><span
+              class="nav-d">Order of service</span></span><span class="nav-key">⌘4</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" data-focus="transcript"
+          accesskey="6"><span class="nav-ico" aria-hidden="true">◎</span><span class="nav-txt"><span
+              class="nav-t">Transcript &amp; Notes</span><span class="nav-d">Live transcript · in
+              Console</span></span><span class="nav-key">⌘5</span></button>
+        <div class="menu-div" role="separator"></div>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="settings" accesskey="5"><span
+            class="nav-ico" aria-hidden="true">⚙</span><span class="nav-txt"><span class="nav-t">Settings</span><span
+              class="nav-d">Providers · privacy · network</span></span><span class="nav-key">⌘6</span></button>
+        <div class="menu-foot"><button class="menu-foot-btn" type="button" data-open="palette"><span
+              class="mfk">⌘K</span> Command palette</button><button class="menu-foot-btn" type="button"
+            data-open="shortcuts">Shortcuts</button></div>
       </div>
-      <span id="route-status" class="sr-only" aria-live="polite"></span>
-      <h1 id="plan-name">SelahCue Operator</h1>
-      <span class="sub" id="plan-sub"></span>
+      <span class="topbar-divider" aria-hidden="true"></span>
+      <span id="surface-label" class="topbar-surface">Live Console</span>
+    </div>
+    <span id="route-status" class="sr-only" aria-live="polite"></span>
+    <!-- The console's plan name (host-authoritative). Written by render(); relocated
+           into the Service Plan card header below — kept in the DOM so app.js finds it. -->
+    <div class="topbar-transport" role="group" aria-label="Global transport">
+      <button id="top-prev" class="tb-btn" aria-label="Previous — stage the previous plan item">◀ Previous</button>
+      <button id="top-next" class="tb-btn" aria-label="Next — stage the next plan item">Next ▶</button>
+      <button id="top-golive" class="tb-btn tb-golive" aria-label="Go Live — commit the staged item to the audience">●
+        GO LIVE</button>
+      <button id="top-blackout" class="tb-btn tb-blackout" aria-pressed="false"
+        aria-label="Blackout the audience output">Blackout</button>
+    </div>
+    <div class="topbar-status">
+      <span id="top-timer" class="tb-timer" hidden><span class="tb-timer-ico" aria-hidden="true">⏱</span><span
+          id="top-timer-val">–:––</span></span>
       <span id="live-chip">● LIVE</span>
       <span id="clock"></span>
-    </header>
-    <main>
-      <div id="surface-console" class="surface-page active">
+      <span id="conn-pill" class="tb-conn"><span class="tb-conn-dot" aria-hidden="true"></span><span
+          id="conn-label">Connected</span></span>
+    </div>
+  </header>
+  <main>
+    <div id="surface-console" class="surface-page active">
       <!-- LEFT zone: the service plan (top) + the live transcript (bottom).
            Figma 165:124 layout; every element id is preserved from the prior
            console so the whole <script> keeps working unchanged. -->
       <div class="zone zone-left">
         <section id="plan-wrap" aria-label="Service plan">
-          <h2>Service plan</h2>
+          <div class="card-head">
+            <h2>Service Plan</h2>
+            <span class="count-pill" id="plan-sub"></span>
+          </div>
+          <!-- Host-authoritative plan name (written by render()); kept in the DOM so
+               app.js can set its text. -->
+          <div class="plan-name-sub" id="plan-name">SelahCue Operator</div>
           <div id="plan"></div>
           <div class="add-row">
             <select id="add-kind">
@@ -48,8 +110,8 @@
              (whisper/Vosk) plugs in behind the same seam. No fabricated transcript is
              ever shown — the stream is empty until the host reports real segments. -->
         <section id="transcript" class="fwd-panel" aria-label="Live transcript">
-          <div class="fwd-head">
-            <h2>Live transcript</h2>
+          <div class="fwd-head card-head">
+            <h2>Live Transcript</h2>
             <!-- Recording indicator — shown only while listening. Live transcript is
                  audio-based (R3): on-device STT plugs in behind the listen control below,
                  so no lines are fabricated until it lands. Decorative (aria-hidden); the
@@ -58,19 +120,12 @@
               <span class="rec-dot"></span>REC
             </span>
           </div>
-          <div
-            id="transcript-log"
-            class="stream"
-            role="log"
-            aria-live="polite"
-            aria-label="Live sermon transcript"
-          ></div>
+          <div id="transcript-log" class="stream" role="log" aria-live="polite" aria-label="Live sermon transcript">
+          </div>
           <div id="transcript-empty" class="fwd-empty">
             <span class="fwd-icon" aria-hidden="true">🎙</span>
             <span class="fwd-msg" id="transcript-empty-msg">Not listening yet.</span>
-            <span class="fwd-sub" id="transcript-empty-sub"
-              >Press Start listening to capture the sermon audio.</span
-            >
+            <span class="fwd-sub" id="transcript-empty-sub">Press Start listening to capture the sermon audio.</span>
           </div>
           <!-- Start / Stop listening — live transcript is audio-based; this toggles the
                capture state (the old manual "type a line" feed is removed, 86ajq…). -->
@@ -88,7 +143,11 @@
       <div class="zone zone-center">
         <div class="obs-row">
           <div class="outpanel" id="preview-panel">
-            <div class="head">PREVIEW · STAGED</div>
+            <div class="panel-head">
+              <span class="head panel-pill preview"><span class="pill-dot" aria-hidden="true"></span>PREVIEW ·
+                STAGED</span>
+              <span class="panel-res">1920 × 1080</span>
+            </div>
             <!-- The TRUE composited Preview output (86ajtwq28) — the same pixels the audience
                  preview shows. Drawn by render_console; aria-hidden (the title/cap below carry
                  the accessible text). Hidden until a frame is available (Remote host / error). -->
@@ -99,7 +158,10 @@
             </div>
           </div>
           <div class="outpanel" id="live-panel">
-            <div class="head">● LIVE · ON AIR</div>
+            <div class="panel-head">
+              <span class="head panel-pill live"><span class="pill-dot" aria-hidden="true"></span>LIVE · ON AIR</span>
+              <span class="panel-res">1920 × 1080</span>
+            </div>
             <div class="surface idle" aria-live="polite">
               <canvas class="out-canvas" id="live-canvas" aria-hidden="true"></canvas>
               <span id="live-black">BLACKOUT — OUTPUT DARK</span>
@@ -109,15 +171,19 @@
           </div>
         </div>
         <div class="golive-row">
-          <button id="prev" aria-label="Previous — stage the previous plan item">◀<span class="key">←</span></button>
-          <button id="golive" class="golive">GO LIVE<span class="key">⏎ Enter</span></button>
-          <button id="next" aria-label="Next — stage the next plan item">▶<span class="key">Space</span></button>
+          <button id="prev" aria-label="Previous — stage the previous plan item"><span class="gl-label">◀
+              Previous</span><span class="key">←</span></button>
+          <button id="golive" class="golive"><span class="gl-label">GO LIVE</span><span class="key">⏎
+              Enter</span></button>
+          <button id="next" aria-label="Next — stage the next plan item"><span class="gl-label">Next ▶</span><span
+              class="key">Space</span></button>
         </div>
         <section id="scriptures" aria-label="Scriptures">
-          <div class="scrip-head">
+          <div class="scrip-head card-head">
             <h2>Scriptures</h2>
             <select id="translation" aria-label="Bible translation"></select>
-            <input id="scripture-q" placeholder="Reference or keywords — e.g. Genesis 1" aria-label="Search scripture" />
+            <input id="scripture-q" placeholder="Reference or keywords — e.g. Genesis 1"
+              aria-label="Search scripture" />
           </div>
           <div id="scripture-hits" role="listbox" aria-label="Scripture results"></div>
           <div class="chapter-nav">
@@ -127,29 +193,52 @@
           </div>
           <div id="verse-list" role="listbox" aria-label="Chapter verses"></div>
           <span id="scrip-status" role="status" aria-live="polite"></span>
-          <span class="scrip-note">↑ ↓ move &amp; stage · ⏎ Enter sends it live · double-click a verse for instant live</span>
+          <span class="scrip-note">↑ ↓ move &amp; stage · ⏎ Enter sends it live · double-click a verse for instant
+            live</span>
         </section>
       </div>
       <!-- RIGHT zone: the service timer (top), recent detections, and outputs. -->
       <div class="zone zone-right">
         <aside class="side-panel" aria-label="Service timer">
-          <h2>Service timer</h2>
-          <div id="timer-big">–:––</div>
+          <div class="card-head">
+            <h2>Service Timer</h2>
+            <span id="timer-state" class="status-pill" hidden><span class="status-dot" aria-hidden="true"></span><span
+                id="timer-state-label">RUNNING</span></span>
+          </div>
+          <!-- Big countdown readout in an inset (Figma 323:130). #timer-big keeps its id
+               (written by syncChrome); the subtext explains what it counts down. -->
+          <div class="timer-display">
+            <div id="timer-big">–:––</div>
+            <div class="timer-sub" id="timer-sub">Counts down to 00:00</div>
+          </div>
+          <!-- Set a custom time: HH:MM:SS (Figma 365). Composed to seconds and passed to
+               the existing start_timer command (no backend change). -->
+          <div class="timer-custom-label">SET A CUSTOM TIME</div>
+          <div class="timer-custom-row">
+            <div class="hms" role="group" aria-label="Custom time — hours, minutes, seconds">
+              <span class="hms-unit"><input id="timer-hh" type="number" min="0" max="23" inputmode="numeric" value="0"
+                  aria-label="Hours" /><span class="hms-cap">HRS</span></span>
+              <span class="hms-colon" aria-hidden="true">:</span>
+              <span class="hms-unit"><input id="timer-mm" type="number" min="0" max="59" inputmode="numeric" value="5"
+                  aria-label="Minutes" /><span class="hms-cap">MIN</span></span>
+              <span class="hms-colon" aria-hidden="true">:</span>
+              <span class="hms-unit"><input id="timer-ss" type="number" min="0" max="59" inputmode="numeric" value="0"
+                  aria-label="Seconds" /><span class="hms-cap">SEC</span></span>
+            </div>
+            <button id="timer-start-custom" class="timer-start">Start</button>
+          </div>
           <div class="timer-row">
             <button id="timer-5">⏱ 5:00</button>
             <button id="timer-10">⏱ 10:00</button>
           </div>
           <div class="timer-row">
-            <input id="timer-mins" type="number" min="1" max="999" placeholder="min"
-                   aria-label="Countdown length in minutes" />
-            <button id="timer-start-custom">Start</button>
+            <button id="timer-minus" disabled aria-label="Subtract one minute from the running timer">− 1:00</button>
+            <button id="timer-plus" disabled aria-label="Add one minute to the running timer">+ 1:00</button>
           </div>
           <div class="timer-row">
-            <button id="timer-minus" disabled aria-label="Subtract one minute from the running timer">−1:00</button>
-            <button id="timer-plus" disabled aria-label="Add one minute to the running timer">+1:00</button>
-          </div>
-          <div class="timer-row">
-            <button id="timer-stop">Stop</button>
+            <button id="timer-pause" disabled aria-label="Pause the running timer">Pause</button>
+            <button id="timer-reset" disabled aria-label="Reset the timer to its full length">Reset</button>
+            <button id="timer-stop" class="timer-stop-btn">Stop</button>
           </div>
           <span class="timer-note">Shown on the stage output only</span>
         </aside>
@@ -159,195 +248,262 @@
              FR-115). No fabricated detections — the list is empty until the host
              reports real candidates. -->
         <section id="detections" class="fwd-panel" aria-label="Detected scriptures">
-          <h2>Detected scriptures</h2>
-          <div
-            id="detections-list"
-            class="stream"
-            role="list"
-            aria-label="Scripture detection approval queue"
-          ></div>
+          <div class="card-head">
+            <h2><span class="det-star" aria-hidden="true">✦</span> Detected Scriptures</h2>
+            <span class="count-pill" id="detections-count" hidden></span>
+          </div>
+          <!-- Detection mode. "Operator confirms" is the only live mode — detections never
+               auto-display (FR-115). Auto-stage / auto-approve are honest 'later' options
+               (disabled), not wired, so the safety invariant is preserved. -->
+          <div class="det-mode-row">
+            <label for="detection-mode" class="det-mode-label">Mode</label>
+            <select id="detection-mode" aria-label="Detection handling mode">
+              <option value="confirm" selected>Operator confirms</option>
+              <option value="auto-stage" disabled>Auto-stage (later)</option>
+              <option value="auto-approve" disabled>Auto-approve (later)</option>
+            </select>
+          </div>
+          <div id="detections-list" class="stream" role="list" aria-label="Scripture detection approval queue"></div>
           <div id="detections-empty" class="fwd-empty">
             <span class="fwd-icon" aria-hidden="true">✨</span>
             <span class="fwd-msg">No scriptures detected yet.</span>
-            <span class="fwd-sub"
-              >Scriptures spoken aloud surface here to stage in one tap. Automatic
-              on-device detection (R4) plugs in behind the transcript.</span
-            >
+            <span class="fwd-sub">Scriptures spoken aloud surface here to stage in one tap. Automatic
+              on-device detection (R4) plugs in behind the transcript.</span>
           </div>
         </section>
       </div><!-- /zone-right -->
-      </div><!-- /surface-console -->
+    </div><!-- /surface-console -->
 
-      <!-- SCREENS surface: the output manager (design 86ajq1n14, Figma 217:124). -->
-      <section id="surface-screens" class="surface-page surface-pad" aria-label="Screens">
-        <div style="display:flex;align-items:center;gap:12px;">
-          <h1 style="flex:1;">Screens</h1>
-          <button id="screens-identify" aria-label="Show the identify number on every display">Identify</button>
+    <!-- SCREENS surface: the output manager (design 86ajq1n14, Figma 217:124). -->
+    <section id="surface-screens" class="surface-page surface-pad" aria-label="Screens">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <h1 style="flex:1;">Screens</h1>
+        <button id="screens-identify" aria-label="Show the identify number on every display">Identify</button>
+      </div>
+      <p class="coming-soon" style="margin-top:2px;">Configure each screen — role, display/NDI, format, and its own
+        theme. Each Audience screen renders its own template (86ajq321k); physical NDI/stream delivery for the
+        lower-third/stream screens arrives next.</p>
+      <div id="screens-list" style="margin-top:8px;"></div>
+    </section>
+    <section id="surface-theme-designer" class="surface-page" aria-label="Theme Designer">
+      <!-- Topbar (Design 2.0, Figma 317:124): brand + section name on the left; Duplicate /
+             Preview on output (the re-homed #td-apply) / gradient Save theme on the right.
+             Import / Export a theme FILE stay honest 'later' affordances in the Templates
+             strip footer (Save theme = the live named-theme save, 86ajq4xmy). -->
+      <div class="td-header">
+        <div class="td-brand-row">
+          <span class="td-logo" aria-hidden="true">◈</span>
+          <span class="td-brand">Theme Designer</span>
         </div>
-        <p class="coming-soon" style="margin-top:2px;">Configure each screen — role, display/NDI, format, and its own theme. Each Audience screen renders its own template (86ajq321k); physical NDI/stream delivery for the lower-third/stream screens arrives next.</p>
-        <div id="screens-list" style="margin-top:8px;"></div>
-      </section>
-      <section id="surface-theme-designer" class="surface-page" aria-label="Theme Designer">
-        <!-- Header (Figma 204-124): title + New / Import / Export / Save changes.
-             Save changes is a real named-theme save into the library (86ajq4xmy).
-             Import/Export a theme FILE remain honest 'later' affordances. -->
-        <div class="td-header">
-          <div class="td-brand">Theme Designer</div>
-          <div class="td-header-actions">
-            <button id="td-new">＋ New</button>
-            <button id="td-import" class="td-later">↓ Import</button>
-            <button id="td-export" class="td-later">↑ Export</button>
-            <button id="td-save">Save changes</button>
+        <div class="td-header-actions">
+          <button id="td-duplicate" title="Duplicate the current design into a new unsaved theme">⧉ Duplicate</button>
+          <button id="td-apply">Preview on output</button>
+          <button id="td-save" class="td-save-cta">Save theme</button>
+        </div>
+      </div>
+      <div class="td-wrap">
+        <!-- Canvas zone (Figma 317:141): add-content toolbar + zoom → canvas → Templates strip. -->
+        <div class="td-canvas-zone">
+          <!-- Add-content toolbar (Figma 319:124). Text/Shape/Image add real elements;
+                 Scripture stays the intrinsic Body region (a disabled 'later'). Right side:
+                 the audience resolution + a frontend-only preview zoom. -->
+          <div class="td-addbar" aria-label="Add content">
+            <span class="td-addbar-label sr-only">Add content</span>
+            <button data-add="text" title="Add a text box"><span class="td-add-ico"
+                aria-hidden="true">T</span>Text</button><button data-add="shape" title="Add a shape"><span
+                class="td-add-ico" aria-hidden="true">▢</span>Shape</button><button data-add="image"
+              title="Add an image"><span class="td-add-ico" aria-hidden="true">🖼</span>Image</button><button
+              class="td-later" data-add="scripture" disabled
+              title="Scripture is the intrinsic Body region">Scripture</button>
+            <span class="td-addbar-spacer" aria-hidden="true"></span>
+            <span class="td-audience">Audience · 1920×1080</span>
+            <div class="td-zoom" role="group" aria-label="Preview zoom">
+              <button id="td-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">−</button>
+              <span id="td-zoom-v" aria-live="polite">100%</span>
+              <button id="td-zoom-in" type="button" aria-label="Zoom in" title="Zoom in">+</button>
+            </div>
+            <span class="coming-soon td-addbar-note" id="td-addbar-note"></span>
           </div>
-        </div>
-        <div class="td-wrap">
-          <aside class="td-list" aria-label="Templates">
-            <div class="td-tabs" role="tablist" aria-label="Template kind">
-              <button id="td-tab-scriptures" class="td-tab on" role="tab" aria-selected="true" aria-controls="td-panel">Scriptures</button>
-              <button id="td-tab-slides" class="td-tab td-later" role="tab" aria-selected="false" aria-disabled="true">Slides</button>
-            </div>
-            <div id="td-panel" role="tabpanel" aria-labelledby="td-tab-scriptures">
-              <div class="td-sub">Templates</div>
-              <div id="td-themes"></div>
-              <button id="td-new-2" class="td-list-new">＋ New (from current)</button>
-              <!-- Inline save form (WKWebView-safe — no window.prompt). Toggled by
-                   "Save changes"; names the current design into the library. -->
-              <div id="td-save-row" class="td-save-row" hidden>
-                <input id="td-save-name" class="td-save-name" type="text" maxlength="64"
-                       placeholder="Theme name" aria-label="Name for the saved theme"
-                       autocomplete="off" autocorrect="off" spellcheck="false" />
-                <div class="td-save-row-actions">
-                  <button id="td-save-confirm" class="golive">Save</button>
-                  <button id="td-save-cancel">Cancel</button>
-                </div>
-              </div>
-              <p class="td-hint" id="td-list-note">Built-ins are read-only. Save the current design as a named theme; saved themes can be loaded, re-saved, or deleted.</p>
-            </div>
-          </aside>
-          <div class="td-stage">
-            <!-- Add-content toolbar (Figma) — honest 'later' (on-canvas element editing). -->
-            <div class="td-addbar" aria-label="Add content">
-              <span class="td-addbar-label">Add content</span>
-              <button data-add="text" title="Add a text box">Text</button><button class="td-later" data-add="scripture" disabled title="Scripture is the intrinsic Body region">Scripture</button><button data-add="shape">Shape</button><button data-add="image">Image</button>
-              <span class="coming-soon td-addbar-note" id="td-addbar-note"></span>
-            </div>
-            <!-- Add Image: a host-local path (the native OS file-picker + FR-138 media-root
+          <!-- Add Image: a host-local path (the native OS file-picker + FR-138 media-root
                  confinement are a later increment — the offline build has no dialog crate). -->
-            <div class="td-save-row" id="td-img-row" hidden>
-              <label for="td-img-path" class="sr-only">Image file path on this machine (PNG)</label>
-              <input type="text" id="td-img-path" placeholder="Paste an image file path on this machine (PNG)…"
-                     autocomplete="off" autocorrect="off" spellcheck="false" />
-              <div class="td-save-row-actions">
-                <button id="td-img-add" class="golive">Add</button>
-                <button id="td-img-cancel">Cancel</button>
-              </div>
+          <div class="td-save-row" id="td-img-row" hidden>
+            <label for="td-img-path" class="sr-only">Image file path on this machine (PNG)</label>
+            <input type="text" id="td-img-path" placeholder="Paste an image file path on this machine (PNG)…"
+              autocomplete="off" autocorrect="off" spellcheck="false" />
+            <div class="td-save-row-actions">
+              <button id="td-img-add" class="golive">Add</button>
+              <button id="td-img-cancel">Cancel</button>
             </div>
-            <!-- Add Shape: pick the geometry (86ajtwq24). WKWebView-safe inline picker (no
+          </div>
+          <!-- Add Shape: pick the geometry (86ajtwq24). WKWebView-safe inline picker (no
                  native menu), keyboard-operable, closes on Esc. -->
-            <div class="td-save-row" id="td-shape-row" hidden role="group" aria-label="Choose a shape to add">
-              <span class="td-shape-label">Add a shape:</span>
-              <div class="td-shape-picker">
-                <button data-shape="rect" title="Rectangle">▭ Rectangle</button><button data-shape="ellipse" title="Ellipse">◯ Ellipse</button><button data-shape="rounded_rect" title="Rounded rectangle">▢ Rounded</button><button data-shape="triangle" title="Triangle">△ Triangle</button>
-              </div>
-              <div class="td-save-row-actions">
-                <button id="td-shape-cancel">Cancel</button>
-              </div>
+          <div class="td-save-row" id="td-shape-row" hidden role="group" aria-label="Choose a shape to add">
+            <span class="td-shape-label">Add a shape:</span>
+            <div class="td-shape-picker">
+              <button data-shape="rect" title="Rectangle">▭ Rectangle</button><button data-shape="ellipse"
+                title="Ellipse">◯ Ellipse</button><button data-shape="rounded_rect" title="Rounded rectangle">▢
+                Rounded</button><button data-shape="triangle" title="Triangle">△ Triangle</button>
             </div>
-            <div class="td-canvas-label">Canvas <span id="td-status" class="coming-soon" role="status" aria-live="polite"></span></div>
-            <!-- The preview fills the center. The overlay hosts the safe-area guide
-                 and the selected region's move/resize handles, mapped from its rect%. -->
+            <div class="td-save-row-actions">
+              <button id="td-shape-cancel">Cancel</button>
+            </div>
+          </div>
+          <!-- The preview fills the centre. The overlay hosts the safe-area guide and the
+                 selected region/element's move/resize handles, mapped from its rect%. The
+                 zoom control scales this box (display only; 1920×1080 output is unchanged). -->
+          <div class="td-canvas-scroll">
             <div class="td-canvas-box" id="td-canvas-box">
               <canvas id="td-preview" width="480" height="270" aria-label="Live theme preview"></canvas>
               <div class="td-overlay" id="td-overlay">
                 <div class="td-safe" aria-hidden="true"></div>
                 <!-- Selection group: aria-label is updated per region/element in JS. The 8
-                     handles are pointer affordances (aria-hidden); keyboard resize is
-                     element-level (Cmd/Ctrl+Arrow on this group). -->
-                <div class="td-sel" id="td-sel" role="group" aria-label="Selected region — drag to move, handles to resize" tabindex="0">
-                  <span class="td-h nw" data-h="nw" aria-hidden="true"></span><span class="td-h n" data-h="n" aria-hidden="true"></span><span class="td-h ne" data-h="ne" aria-hidden="true"></span>
-                  <span class="td-h w" data-h="w" aria-hidden="true"></span><span class="td-h e" data-h="e" aria-hidden="true"></span>
-                  <span class="td-h sw" data-h="sw" aria-hidden="true"></span><span class="td-h s" data-h="s" aria-hidden="true"></span><span class="td-h se" data-h="se" aria-hidden="true"></span>
+                       handles are pointer affordances (aria-hidden); keyboard resize is
+                       element-level (Cmd/Ctrl+Arrow on this group). -->
+                <div class="td-sel" id="td-sel" role="group"
+                  aria-label="Selected region — drag to move, handles to resize" tabindex="0">
+                  <span class="td-h nw" data-h="nw" aria-hidden="true"></span><span class="td-h n" data-h="n"
+                    aria-hidden="true"></span><span class="td-h ne" data-h="ne" aria-hidden="true"></span>
+                  <span class="td-h w" data-h="w" aria-hidden="true"></span><span class="td-h e" data-h="e"
+                    aria-hidden="true"></span>
+                  <span class="td-h sw" data-h="sw" aria-hidden="true"></span><span class="td-h s" data-h="s"
+                    aria-hidden="true"></span><span class="td-h se" data-h="se" aria-hidden="true"></span>
                 </div>
               </div>
-            </div>
-            <div class="td-actions">
-              <button id="td-apply" class="golive">Apply to audience output</button>
-              <span class="coming-soon td-note">Live preview · click to select · drag to move · handles to resize · right-click for actions · amber dashed = safe area (5%)</span>
-            </div>
-            <!-- WKWebView-safe custom context menu (the native menu is blocked); positioned
-                 at the cursor, keyboard-operable, closes on Esc / click-away (#4). -->
-            <div id="td-ctx" class="td-ctx" role="menu" aria-label="Element actions" hidden>
-              <button role="menuitem" data-ctx="copy">Copy <span class="td-ctx-key">⌘C</span></button>
-              <button role="menuitem" data-ctx="paste">Paste <span class="td-ctx-key">⌘V</span></button>
-              <button role="menuitem" data-ctx="front">Bring to front</button>
-              <button role="menuitem" data-ctx="back">Send to back</button>
-              <button role="menuitem" data-ctx="delete" class="danger">Delete</button>
             </div>
           </div>
-          <aside class="td-inspector" aria-label="Inspector">
-            <!-- Element inspector (shown when a canvas ELEMENT is selected; 86ajq6j4p). -->
-            <div id="td-el-inspector" hidden>
-              <div class="td-el-head">
-                <span id="td-el-head">Element</span>
-                <span id="td-el-zchip" class="td-chip" aria-live="polite"></span>
+          <div class="td-canvas-foot">
+            <span class="td-canvas-label">Canvas <span id="td-status" class="coming-soon" role="status"
+                aria-live="polite"></span></span>
+            <span class="coming-soon td-note">Live preview · click to select · drag to move · handles to resize ·
+              right-click for actions · amber dashed = safe area (5%)</span>
+          </div>
+          <!-- WKWebView-safe custom context menu (the native menu is blocked); positioned
+                 at the cursor, keyboard-operable, closes on Esc / click-away (#4). -->
+          <div id="td-ctx" class="td-ctx" role="menu" aria-label="Element actions" hidden>
+            <button role="menuitem" data-ctx="copy">Copy <span class="td-ctx-key">⌘C</span></button>
+            <button role="menuitem" data-ctx="paste">Paste <span class="td-ctx-key">⌘V</span></button>
+            <button role="menuitem" data-ctx="front">Bring to front</button>
+            <button role="menuitem" data-ctx="back">Send to back</button>
+            <button role="menuitem" data-ctx="delete" class="danger">Delete</button>
+          </div>
+          <!-- Templates strip (Figma 319:152): the built-in + saved library as a horizontal
+                 row of thumbnail cards. The Scriptures / Slides tabs are the strip header
+                 (Slides is a disabled 'later'). Save-name form (86ajq4xmy) lives here. -->
+          <div class="td-templates">
+            <div class="td-templates-head">
+              <div class="td-tabs" role="tablist" aria-label="Template kind">
+                <button id="td-tab-scriptures" class="td-tab on" role="tab" aria-selected="true"
+                  aria-controls="td-panel">Scriptures</button>
+                <button id="td-tab-slides" class="td-tab td-later" role="tab" aria-selected="false"
+                  aria-disabled="true">Slides</button>
               </div>
-              <label for="td-el-op">Opacity — <span id="td-el-op-v"></span>%</label>
-              <input type="range" id="td-el-op" min="0" max="100" step="1" aria-label="Element opacity, percent" />
-              <label id="td-lbl-el-z">Arrange (z-order)</label>
-              <div class="seg td-icons" id="td-el-z" role="group" aria-labelledby="td-lbl-el-z">
-                <button data-z="back" aria-label="Send to back" title="Send to back">⤓⤓</button><button data-z="backward" aria-label="Send backward" title="Send backward">⤓</button><button data-z="forward" aria-label="Bring forward" title="Bring forward">⤒</button><button data-z="front" aria-label="Bring to front" title="Bring to front">⤒⤒</button>
+              <span class="td-templates-title">Templates</span>
+              <div class="td-templates-actions">
+                <button id="td-new-2" class="td-list-new">＋ New (from current)</button>
+                <button id="td-import" class="td-later">↓ Import</button>
+                <button id="td-export" class="td-later">↑ Export</button>
               </div>
-              <div id="td-el-shape" hidden>
-                <label for="td-el-fill">Fill colour</label>
-                <input type="color" id="td-el-fill" />
-                <label for="td-el-border">Border colour</label>
-                <input type="color" id="td-el-border" />
-                <label for="td-el-bw">Border width — <span id="td-el-bw-v"></span>%</label>
-                <input type="range" id="td-el-bw" min="0" max="50" step="1" aria-label="Shape border width, percent of height" />
-                <!-- Corner radius — shown only for a rounded rectangle (86ajtwq24). -->
-                <div id="td-el-corner-row" hidden>
-                  <label for="td-el-corner">Corner radius — <span id="td-el-corner-v"></span>%</label>
-                  <input type="range" id="td-el-corner" min="0" max="50" step="1" aria-label="Rounded-rectangle corner radius, percent of the shorter side" />
+            </div>
+            <div id="td-panel" role="tabpanel" aria-labelledby="td-tab-scriptures">
+              <div id="td-themes" class="td-themes-strip"></div>
+              <!-- Inline save form (WKWebView-safe — no window.prompt). Toggled by
+                     "Save theme"; names the current design into the library. -->
+              <div id="td-save-row" class="td-save-row" hidden>
+                <input id="td-save-name" class="td-save-name" type="text" maxlength="64" placeholder="Theme name"
+                  aria-label="Name for the saved theme" autocomplete="off" autocorrect="off" spellcheck="false" />
+                <div class="td-save-row-actions">
+                  <button id="td-save-confirm" class="golive">Save</button>
+                  <button id="td-save-cancel">Cancel</button>
                 </div>
               </div>
-              <div id="td-el-image" hidden>
-                <label>Image file (on this machine)</label>
-                <p class="td-el-src" id="td-el-src"></p>
-                <button id="td-el-replace">Replace…</button>
-              </div>
-              <!-- Text-box controls (shown when a TEXT element is selected; 86ajq6j64). -->
-              <div id="td-el-text" hidden>
-                <label for="td-el-text-content">Text</label>
-                <textarea id="td-el-text-content" rows="3" maxlength="2000" aria-label="Text box content"></textarea>
-                <label for="td-el-text-color">Text colour</label>
-                <input type="color" id="td-el-text-color" />
-                <label for="td-el-text-size">Size — <span id="td-el-text-size-v"></span>%</label>
-                <input type="range" id="td-el-text-size" min="1" max="30" step="1" aria-label="Text size, percent of height" />
-                <label for="td-el-text-align">Alignment</label>
-                <select id="td-el-text-align" aria-label="Text alignment">
-                  <option value="left">Left</option>
-                  <option value="center">Center</option>
-                  <option value="right">Right</option>
-                </select>
-              </div>
-              <button id="td-el-del" class="td-el-del">Delete element</button>
-              <p class="td-hint coming-soon">Drag to move · handles to resize · Arrange sends it behind / in front of the text · a missing image shows the placeholder. The native file-picker + image Fit modes arrive later.</p>
+              <p class="td-hint" id="td-list-note">Built-ins are read-only. Save the current design as a named theme;
+                saved themes can be loaded, re-saved, or deleted.</p>
             </div>
+          </div>
+        </div>
+        <!-- Inspector zone (Figma 317:142): selection header + BACKGROUND / TYPOGRAPHY /
+               LAYERS. The element inspector, region picker, layout grid, background, and text
+               controls preserve every pinned id; only the framing/sections are Design 2.0. -->
+        <aside class="td-inspector" aria-label="Inspector">
+          <!-- Selection header (Figma 325:124) — a type chip + the selected region/element
+                 name + a subtext line. -->
+          <div class="td-insp-head">
+            <span class="td-insp-chip" id="td-insp-chip" aria-hidden="true">◈</span>
+            <div class="td-insp-head-txt">
+              <span class="td-insp-title" id="td-insp-title">Theme</span>
+              <span class="td-insp-sub" id="td-insp-sub">Select a layer to edit</span>
+            </div>
+          </div>
 
-            <label id="td-lbl-region">Region</label>
+          <!-- Element inspector (shown when a canvas ELEMENT is selected; 86ajq6j4p). -->
+          <div id="td-el-inspector" class="td-sect" hidden>
+            <div class="td-el-head">
+              <span id="td-el-head">Element</span>
+              <span id="td-el-zchip" class="td-chip" aria-live="polite"></span>
+            </div>
+            <label for="td-el-op">Opacity — <span id="td-el-op-v"></span>%</label>
+            <input type="range" id="td-el-op" min="0" max="100" step="1" aria-label="Element opacity, percent" />
+
+            <div id="td-el-shape" hidden>
+              <label for="td-el-fill">Fill colour</label>
+              <input type="color" id="td-el-fill" />
+              <label for="td-el-border">Border colour</label>
+              <input type="color" id="td-el-border" />
+              <label for="td-el-bw">Border width — <span id="td-el-bw-v"></span>%</label>
+              <input type="range" id="td-el-bw" min="0" max="50" step="1"
+                aria-label="Shape border width, percent of height" />
+              <!-- Corner radius — shown only for a rounded rectangle (86ajtwq24). -->
+              <div id="td-el-corner-row" hidden>
+                <label for="td-el-corner">Corner radius — <span id="td-el-corner-v"></span>%</label>
+                <input type="range" id="td-el-corner" min="0" max="50" step="1"
+                  aria-label="Rounded-rectangle corner radius, percent of the shorter side" />
+              </div>
+            </div>
+            <div id="td-el-image" hidden>
+              <label>Image file (on this machine)</label>
+              <p class="td-el-src" id="td-el-src"></p>
+              <button id="td-el-replace">Replace…</button>
+            </div>
+            <!-- Text-box controls (shown when a TEXT element is selected; 86ajq6j64). -->
+            <div id="td-el-text" hidden>
+              <label for="td-el-text-content">Text</label>
+              <textarea id="td-el-text-content" rows="3" maxlength="2000" aria-label="Text box content"></textarea>
+              <label for="td-el-text-color">Text colour</label>
+              <input type="color" id="td-el-text-color" />
+              <label for="td-el-text-size">Size — <span id="td-el-text-size-v"></span>%</label>
+              <input type="range" id="td-el-text-size" min="1" max="30" step="1"
+                aria-label="Text size, percent of height" />
+              <label for="td-el-text-align">Alignment</label>
+              <select id="td-el-text-align" aria-label="Text alignment">
+                <option value="left">Left</option>
+                <option value="center">Center</option>
+                <option value="right">Right</option>
+              </select>
+            </div>
+            <button id="td-el-del" class="td-el-del">Delete element</button>
+            <p class="td-hint coming-soon">Drag to move · handles to resize · Arrange sends it behind / in front of the
+              text · a missing image shows the placeholder. The native file-picker + image Fit modes arrive later.</p>
+          </div>
+
+          <!-- REGION + LAYOUT (a region is also selectable via the canvas + the LAYERS list). -->
+          <div class="td-sect">
+            <div class="td-sect-title" id="td-lbl-region">Region</div>
             <div class="seg" id="td-region" role="group" aria-labelledby="td-lbl-region">
               <button id="td-region-body" data-region="body" class="on" aria-pressed="true">Body</button>
               <button data-region="title" aria-pressed="false">Reference / Title</button>
             </div>
-
-            <div class="td-sub">Layout</div>
+            <div class="td-fieldlabel">Layout</div>
             <span id="td-lbl-align" class="sr-only">Horizontal alignment</span>
             <div class="td-align-grid" id="td-region-align">
               <div class="seg td-icons" id="td-align" role="group" aria-labelledby="td-lbl-align">
-                <button data-a="left" aria-label="Align left" aria-pressed="false">⇤</button><button data-a="center" aria-label="Align centre" aria-pressed="false">⇔</button><button data-a="right" aria-label="Align right" aria-pressed="false">⇥</button>
+                <button data-a="left" aria-label="Align left" aria-pressed="false">⇤</button><button data-a="center"
+                  aria-label="Align centre" aria-pressed="false">⇔</button><button data-a="right"
+                  aria-label="Align right" aria-pressed="false">⇥</button>
               </div>
               <div class="seg td-icons" id="td-valign" role="group" aria-label="Vertical alignment">
-                <button data-v="top" aria-label="Align top" aria-pressed="false">⤒</button><button data-v="middle" aria-label="Align middle" aria-pressed="false">↕</button><button data-v="bottom" aria-label="Align bottom" aria-pressed="false">⤓</button>
+                <button data-v="top" aria-label="Align top" aria-pressed="false">⤒</button><button data-v="middle"
+                  aria-label="Align middle" aria-pressed="false">↕</button><button data-v="bottom"
+                  aria-label="Align bottom" aria-pressed="false">⤓</button>
               </div>
             </div>
             <div class="td-grid4">
@@ -361,27 +517,40 @@
             <div class="td-grid2 td-lockrow">
               <label class="td-check"><input type="checkbox" id="td-lock" /> Lock aspect</label>
               <label class="td-later" for="td-refgap">Ref. gap %
-                <input type="number" id="td-refgap" disabled aria-label="Reference gap, percent (arrives later)" placeholder="—" />
+                <input type="number" id="td-refgap" disabled aria-label="Reference gap, percent (arrives later)"
+                  placeholder="—" />
               </label>
             </div>
+          </div>
 
-            <!-- Theme background (86ajq3225): a solid colour, a two-stop gradient, or an image. -->
-            <label for="td-bg-type">Theme background</label>
-            <select id="td-bg-type" aria-label="Background type">
-              <option value="solid">Solid colour</option>
-              <option value="gradient">Gradient</option>
-              <option value="image">Image</option>
-            </select>
-            <div id="td-bg-solid">
-              <label for="td-bg">Colour</label>
-              <input type="color" id="td-bg" />
+          <!-- BACKGROUND (86ajq3225): a solid colour, a two-stop gradient, or an image. -->
+          <div class="td-sect">
+            <div class="td-sect-title">Background</div>
+            <div class="seg" id="td-bg-type" role="group" aria-label="Background type">
+              <button data-bg="solid" class="on" aria-pressed="true">Solid</button><button data-bg="gradient"
+                aria-pressed="false">Gradient</button><button data-bg="image" aria-pressed="false">Image</button>
             </div>
-            <div id="td-bg-gradient" hidden>
-              <label for="td-bg-from">From colour</label>
-              <input type="color" id="td-bg-from" />
-              <label for="td-bg-to">To colour</label>
-              <input type="color" id="td-bg-to" />
-              <label for="td-bg-dir">Direction</label>
+            <!-- SOLID: a large colour preview (opens the picker) + its hex + one-tap presets. -->
+            <div id="td-bg-solid" class="td-bgpanel">
+              <label for="td-bg" class="sr-only">Colour</label>
+              <input type="color" id="td-bg" class="td-bg-swatch-lg" aria-label="Background colour" />
+              <div class="td-bg-hex">
+                <span class="td-bg-hex-dot" id="td-bg-hex-dot" aria-hidden="true"></span>
+                <span id="td-bg-hex">#000000</span>
+              </div>
+              <div class="td-fieldlabel">Presets</div>
+              <div class="td-bg-presets" id="td-bg-presets" role="group" aria-label="Preset background colours">
+                <button type="button" class="td-bg-preset" data-color="#000000" style="--c:#000000" aria-label="Black"></button><button type="button" class="td-bg-preset" data-color="#0b0d12" style="--c:#0b0d12" aria-label="Near-black"></button><button type="button" class="td-bg-preset" data-color="#6e5cf0" style="--c:#6e5cf0" aria-label="Brand indigo"></button><button type="button" class="td-bg-preset" data-color="#f2b84b" style="--c:#f2b84b" aria-label="Gold"></button><button type="button" class="td-bg-preset" data-color="#ffffff" style="--c:#ffffff" aria-label="White"></button>
+              </div>
+            </div>
+            <div id="td-bg-gradient" class="td-bgpanel" hidden>
+              <!-- Live preview of the two-stop gradient (background set by tdBgReflect). -->
+              <div class="td-bg-grad-preview" id="td-bg-grad-preview" aria-hidden="true"></div>
+              <div class="td-swatch2">
+                <label class="td-swatchcell"><input type="color" id="td-bg-from" aria-label="Gradient from colour" /><span class="td-swatchcell-hex" id="td-bg-from-hex">#000000</span></label>
+                <label class="td-swatchcell"><input type="color" id="td-bg-to" aria-label="Gradient to colour" /><span class="td-swatchcell-hex" id="td-bg-to-hex">#FFFFFF</span></label>
+              </div>
+              <div class="td-fieldlabel">Angle</div>
               <select id="td-bg-dir" aria-label="Gradient direction">
                 <option value="vertical">Vertical (top → bottom)</option>
                 <option value="horizontal">Horizontal (left → right)</option>
@@ -389,57 +558,155 @@
                 <option value="diagonal_up">Diagonal ↗</option>
               </select>
             </div>
-            <div id="td-bg-image" hidden>
-              <label for="td-bg-img-path">Background image path (on this machine)</label>
-              <input type="text" id="td-bg-img-path" placeholder="/path/to/image.png" aria-label="Background image path" />
-              <button id="td-bg-img-pick" type="button">Choose image…</button>
+            <!-- IMAGE: a choose/drop card + the brand pick button + an honest paste-a-path field. -->
+            <div id="td-bg-image" class="td-bgpanel" hidden>
+              <button type="button" class="td-bg-dropzone" id="td-bg-dropzone" aria-label="Choose a background image">
+                <span class="td-bg-dz-ico" aria-hidden="true">🖼</span>
+                <span class="td-bg-dz-t" id="td-bg-dz-t">Choose a background image</span>
+                <span class="td-bg-dz-s">PNG or JPG · on this machine</span>
+              </button>
+              <button id="td-bg-img-pick" type="button" class="td-bg-choose">↑ Choose image…</button>
+              <label for="td-bg-img-path" class="td-fieldlabel">…or paste a path</label>
+              <input type="text" id="td-bg-img-path" placeholder="/path/to/image.png"
+                aria-label="Background image path" />
               <p class="td-el-src" id="td-bg-img-src"></p>
             </div>
+          </div>
 
-            <div id="td-region-text">
-            <div class="td-sub">Text</div>
-            <label for="td-color">Text colour</label>
-            <input type="color" id="td-color" />
-            <label for="td-font">Font</label>
-            <select id="td-font" aria-label="Font family (system fonts on this machine; default = bundled Noto Sans)"><option value="">Noto Sans (default)</option></select>
-            <div class="td-grid2">
-              <label for="td-weight">Weight</label><label for="td-letter">Letter spacing (em)</label>
-              <select id="td-weight" aria-label="Font weight">
+          <!-- TYPOGRAPHY (region text styling) — hidden when an element is selected. -->
+          <div class="td-sect" id="td-region-text">
+            <div class="td-sect-title">Typography</div>
+            <div class="td-row2">
+              <label for="td-font" class="sr-only">Font family</label>
+              <select id="td-font" aria-label="Font family (system fonts on this machine; default = bundled Noto Sans)">
+                <option value="">Noto Sans (default)</option>
+              </select>
+              <label for="td-weight" class="sr-only">Weight</label>
+              <select id="td-weight" class="td-weight-field" aria-label="Font weight">
                 <option value="400">Regular</option>
                 <option value="600">Semibold</option>
                 <option value="700">Bold</option>
                 <option value="900">Black</option>
               </select>
-              <input id="td-letter" type="number" min="-0.2" max="1" step="0.01" value="0" aria-label="Letter spacing, em (tracking between glyphs)" />
             </div>
-            <label for="td-size">Text size — <span id="td-size-v"></span>% of height</label>
-            <input type="range" id="td-size" min="20" max="140" step="1" />
-            <label for="td-lh">Line height — <span id="td-lh-v"></span>×</label>
-            <input type="range" id="td-lh" min="1000" max="1600" step="10" />
-            <label id="td-lbl-fit">Fit</label>
+            <div class="td-row3">
+              <div class="td-field"><span class="td-fieldlabel"><label for="td-size">Size %</label></span><input
+                  type="number" id="td-size" min="2" max="14" step="0.1" aria-label="Text size, percent of height" />
+              </div>
+              <div class="td-field"><span class="td-fieldlabel"><label for="td-lh">Line ×</label></span><input
+                  type="number" id="td-lh" min="1" max="1.6" step="0.01" aria-label="Line height multiplier" /></div>
+              <div class="td-field"><span class="td-fieldlabel"><label for="td-letter">Spacing</label></span><input
+                  id="td-letter" type="number" min="-0.2" max="1" step="0.01" value="0"
+                  aria-label="Letter spacing, em (tracking between glyphs)" /></div>
+            </div>
+            <div class="td-row2 td-colorrow">
+              <label class="td-colorcell"><input type="color" id="td-color" aria-label="Text colour" /><span>Text
+                  colour</span></label>
+            </div>
+            <div class="td-fieldlabel" id="td-lbl-fit">Fit</div>
             <div class="seg" id="td-fit" role="group" aria-labelledby="td-lbl-fit">
-              <button data-f="shrink_to_fit" aria-pressed="false">Shrink to fit</button><button data-f="paginate" aria-pressed="false">Paginate</button><button data-f="clip" aria-pressed="false">Clip</button>
+              <button data-f="shrink_to_fit" aria-pressed="false">Shrink to fit</button><button data-f="paginate"
+                aria-pressed="false">Paginate</button><button data-f="clip" aria-pressed="false">Clip</button>
             </div>
-            <p class="td-hint coming-soon">Weight + letter-spacing apply to ALL of the theme's text. Bold on the default Noto Sans is a deterministic faux-bold; a system font uses its real bold face. Font family = any font installed on this machine (themed = per-machine; default Noto Sans = cross-OS-identical).</p>
-            </div><!-- /#td-region-text -->
-          </aside>
+            <p class="td-hint coming-soon">Weight + letter-spacing apply to ALL of the theme's text. Bold on the default
+              Noto Sans is a deterministic faux-bold; a system font uses its real bold face. Font family = any font
+              installed on this machine (themed = per-machine; default Noto Sans = cross-OS-identical).</p>
+          </div>
+
+          <!-- LAYERS (Design 2.0, Figma 325:189): the two text regions + every design
+                 element. Select a row to edit it; the eye hides/shows it on the output (real
+                 visibility); drag the handle or Alt+↑/↓ reorders an element (→ z-order). -->
+          <div class="td-sect td-layers-sect">
+            <div class="td-layers-head">
+              <span class="td-sect-title td-layers-title">Layers</span>
+              <button id="td-layers-add" class="td-linkbtn" type="button">+ Add layer</button>
+            </div>
+            <div id="td-layers" class="td-layers" role="list" aria-label="Layers, front to back"></div>
+            <p class="td-hint coming-soon">Click a layer to select it · the eye hides / shows it on the output · drag
+              the handle or press Alt + ↑ / ↓ to reorder an element. Regions stay at the text layer.</p>
+          </div>
+        </aside>
+      </div>
+    </section>
+    <section id="surface-plan" class="surface-page surface-pad" aria-label="Plan and Library">
+      <h1>Plan / Library</h1>
+      <p class="coming-soon">A dedicated plan + song/scripture library surface arrives later. Edit the plan inline on
+        the Live Console for now.</p>
+    </section>
+    <section id="surface-settings" class="surface-page surface-pad" aria-label="Settings">
+      <h1>Settings</h1>
+      <p class="coming-soon">Application settings arrive later.</p>
+    </section>
+  </main>
+  <footer id="emergency" role="toolbar" aria-label="Emergency controls">
+    <div class="emergency-actions">
+      <button id="blackout" aria-pressed="false" aria-label="Blackout the audience output">■ BLACKOUT<span
+          id="blackout-state"></span><span class="key">B</span></button>
+      <button id="clear-all" aria-label="Clear all live layers (double-Escape)">✕ Clear Output<span class="key">Esc
+          Esc</span></button>
+    </div>
+    <span class="note">Emergency controls — always one action away · works with no network</span>
+    <span class="emergency-ready"><span class="ready-dot" aria-hidden="true"></span>Offline-ready</span>
+  </footer>
+  <!-- Command palette (⌘K): search + run any navigation/emergency action. -->
+  <div id="cmd-palette" class="cmd-overlay" role="dialog" aria-modal="true" aria-label="Command palette" hidden>
+    <div class="cmd-box" role="document">
+      <div class="cmd-input-row">
+        <span class="cmd-ico" aria-hidden="true">⌕</span>
+        <input id="cmd-input" type="text" role="combobox" aria-expanded="true" aria-controls="cmd-list"
+          aria-autocomplete="list" aria-activedescendant="" placeholder="Type a command or search…" autocomplete="off"
+          autocapitalize="off" spellcheck="false" />
+        <span class="cmd-esc" aria-hidden="true">esc</span>
+      </div>
+      <ul id="cmd-list" class="cmd-list" role="listbox" aria-label="Commands"></ul>
+      <div class="cmd-empty" hidden>No matching command</div>
+      <div class="cmd-foot" aria-hidden="true"><span>↑ ↓ navigate</span><span>⏎ run</span><span>esc close</span></div>
+    </div>
+  </div>
+  <!-- Global keyboard shortcuts reference (from the app menu → Shortcuts). -->
+  <div id="shortcuts" class="cmd-overlay" role="dialog" aria-modal="true" aria-labelledby="sc-title" hidden>
+    <div class="cmd-box sc-box" role="document">
+      <div class="sc-head">
+        <h2 id="sc-title">Keyboard shortcuts</h2><button id="sc-close" class="sc-close" type="button"
+          aria-label="Close shortcuts">✕</button>
+      </div>
+      <dl class="sc-grid">
+        <div class="sc-row">
+          <dt><kbd>Space</kbd></dt>
+          <dd>Advance to the next item</dd>
         </div>
-      </section>
-      <section id="surface-plan" class="surface-page surface-pad" aria-label="Plan and Library">
-        <h1>Plan / Library</h1>
-        <p class="coming-soon">A dedicated plan + song/scripture library surface arrives later. Edit the plan inline on the Live Console for now.</p>
-      </section>
-      <section id="surface-settings" class="surface-page surface-pad" aria-label="Settings">
-        <h1>Settings</h1>
-        <p class="coming-soon">Application settings arrive later.</p>
-      </section>
-    </main>
-    <footer id="emergency" role="toolbar" aria-label="Emergency controls">
-      <button id="blackout" aria-pressed="false" aria-label="Blackout the audience output">■ BLACKOUT<span id="blackout-state"></span><span class="key">B</span></button>
-      <button id="clear-all" aria-label="Clear all live layers">✕ CLEAR ALL<span class="key">Esc Esc</span></button>
-      <span class="note">Always reachable · pierces any dialog</span>
-      <span class="hints">Space Next · ⏎ Go Live · ← Prev</span>
-    </footer>
-    <script src="app.js" defer></script>
-  </body>
+        <div class="sc-row">
+          <dt><kbd>⏎</kbd></dt>
+          <dd>Send preview → Live</dd>
+        </div>
+        <div class="sc-row">
+          <dt><kbd>←</kbd> <kbd>→</kbd></dt>
+          <dd>Previous / Next</dd>
+        </div>
+        <div class="sc-row">
+          <dt><kbd>B</kbd></dt>
+          <dd>Blackout the output</dd>
+        </div>
+        <div class="sc-row">
+          <dt><kbd>Esc</kbd> <kbd>Esc</kbd></dt>
+          <dd>Clear the output</dd>
+        </div>
+        <div class="sc-row">
+          <dt><kbd>⌘K</kbd></dt>
+          <dd>Command palette</dd>
+        </div>
+        <div class="sc-row">
+          <dt><kbd>F10</kbd></dt>
+          <dd>App menu</dd>
+        </div>
+        <div class="sc-row">
+          <dt><kbd>⌘1</kbd>–<kbd>6</kbd></dt>
+          <dd>Jump to a section</dd>
+        </div>
+      </dl>
+    </div>
+  </div>
+  <script src="app.js" defer></script>
+</body>
+
 </html>

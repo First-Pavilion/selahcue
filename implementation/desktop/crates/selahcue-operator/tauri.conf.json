@@ -12,8 +12,10 @@
       {
         "label": "main",
         "title": "SelahCue Operator",
-        "width": 1100,
-        "height": 720,
+        "width": 1520,
+        "height": 984,
+        "minWidth": 1360,
+        "minHeight": 860,
         "resizable": true
       }
     ],

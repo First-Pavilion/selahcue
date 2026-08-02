@@ -237,6 +237,30 @@ async fn remote_start_timer_is_reflected_after_a_host_tick() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_pause_and_resume_are_reflected_after_a_host_tick() {
+    let (addr, pin, controller) = setup().await;
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "producer", "tok-prod")
+        .await
+        .unwrap();
+
+    op.start_timer(120).await.unwrap();
+    controller.lock().unwrap().tick(Instant::now());
+    assert!(op.view().await.unwrap().timer.unwrap().running);
+
+    // Pause banks on the next host tick: the snapshot reports paused + not running.
+    op.pause_timer().await.unwrap();
+    controller.lock().unwrap().tick(Instant::now());
+    let t = op.view().await.unwrap().timer.expect("timer still present");
+    assert!(t.paused && !t.running);
+
+    // Resume returns it to running on the next host tick.
+    op.resume_timer().await.unwrap();
+    controller.lock().unwrap().tick(Instant::now());
+    let t = op.view().await.unwrap().timer.expect("timer still present");
+    assert!(t.running && !t.paused);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_denied_command_is_not_an_error_and_the_view_reflects_unchanged_state() {
     let (addr, pin, controller) = setup().await;
     let mut op = RemoteOperator::connect(addr, "localhost", pin, "assistant", "tok-asst")

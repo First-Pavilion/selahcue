@@ -106,7 +106,11 @@ pub fn required_permission(cmd: &Command) -> Permission {
         Command::Next | Command::Previous | Command::SelectItem { .. } => Navigate,
         Command::Clear => ClearLive,
         Command::Blackout { .. } => Blackout,
-        Command::StartTimer { .. } | Command::StopTimer | Command::AdjustTimer { .. } => Timer,
+        Command::StartTimer { .. }
+        | Command::StopTimer
+        | Command::AdjustTimer { .. }
+        | Command::PauseTimer
+        | Command::ResumeTimer => Timer,
         Command::ScriptureSearch { .. }
         | Command::StageScripture { .. }
         | Command::GetChapter { .. } => SearchScripture,

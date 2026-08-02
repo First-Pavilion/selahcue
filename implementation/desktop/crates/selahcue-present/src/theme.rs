@@ -165,6 +165,12 @@ pub enum Element {
         /// when unset, keeping older/rectangle JSON byte-identical).
         #[serde(default, skip_serializing_if = "is_zero_u16")]
         corner_permille: u16,
+        /// Whether this element is drawn (Design 2.0 LAYERS visibility). `true` = shown (the
+        /// default); `false` = hidden from the composed frame (no layer emitted), exactly like
+        /// a region's `visible`. Additive (`skip_serializing_if` → a shown shape's JSON is
+        /// byte-identical to before this batch).
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        visible: bool,
     },
     /// A raster **image** (86ajq6j49) at a per-mille rect, blended at `opacity`, ordered by
     /// `z` relative to the text (`z < 0` = behind, `z >= 0` = in front). `source` is a
@@ -184,6 +190,11 @@ pub enum Element {
         opacity: u8,
         /// Draw order relative to the text regions: `< 0` behind the text, `>= 0` in front.
         z: i16,
+        /// Whether this element is drawn (Design 2.0 LAYERS visibility). `true` = shown (the
+        /// default); `false` = hidden from the composed frame. Additive (`skip_serializing_if`
+        /// → a shown image's JSON is byte-identical to before this batch).
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        visible: bool,
     },
     /// A free **text box** (86ajq6j64): the operator's own `text`, wrapped + auto-fit into a
     /// per-mille rect exactly like the theme's title/body regions (same [`autofit_layers`]
@@ -228,6 +239,11 @@ pub enum Element {
         /// Letter-spacing as per-mille of the font size (`0` = none, may be negative). Additive.
         #[serde(default, skip_serializing_if = "is_zero_i16")]
         letter_spacing_permille: i16,
+        /// Whether this element is drawn (Design 2.0 LAYERS visibility). `true` = shown (the
+        /// default); `false` = hidden from the composed frame. Additive (`skip_serializing_if`
+        /// → a shown text box's JSON is byte-identical to before this batch).
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        visible: bool,
     },
 }
 
@@ -255,6 +271,18 @@ fn is_zero_i16(v: &i16) -> bool {
     *v == 0
 }
 
+/// The serde default for an [`Element`]'s `visible` flag: `true` (shown) — so older theme
+/// JSON without the field deserializes to a shown element (paired with `is_true` below).
+fn default_true() -> bool {
+    true
+}
+/// serde `skip_serializing_if` for a `visible: true` element (the default) — the key is
+/// OMITTED for a shown element, so an existing element's JSON stays byte-identical to before
+/// the Design 2.0 LAYERS-visibility batch.
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
 /// Upper bound on a theme's element list (86ajq6j2q) so the design can't grow without
 /// limit (no-leak). A canvas rarely needs more; the compositor + persistence are bounded.
 pub const MAX_ELEMENTS: usize = 64;
@@ -266,6 +294,17 @@ impl Element {
             Element::Shape { z, .. } => *z,
             Element::Image { z, .. } => *z,
             Element::Text { z, .. } => *z,
+        }
+    }
+
+    /// Whether this element is drawn (Design 2.0 LAYERS visibility). Mirrors a region's
+    /// `visible`: a hidden element contributes NO layer to the composed frame (never a blank
+    /// rect), so hiding one layer leaves the background + every other visible layer intact.
+    pub fn visible(&self) -> bool {
+        match self {
+            Element::Shape { visible, .. } => *visible,
+            Element::Image { visible, .. } => *visible,
+            Element::Text { visible, .. } => *visible,
         }
     }
 

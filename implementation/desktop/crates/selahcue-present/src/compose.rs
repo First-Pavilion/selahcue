@@ -281,6 +281,7 @@ fn element_layers(element: &Element, width: u32, height: u32) -> Vec<Layer> {
             z: _,
             variant,
             corner_permille,
+            visible: _, // gated in compose_slide; a hidden element emits no layers
         } => {
             let map = |dim: u32, permille: u16| (dim as u64 * permille as u64 / 1000) as u32;
             let rect = Rect::new(
@@ -373,6 +374,7 @@ fn element_layers(element: &Element, width: u32, height: u32) -> Vec<Layer> {
             source,
             opacity,
             z: _,
+            visible: _, // gated in compose_slide; a hidden element emits no layers
         } => {
             // Per-mille → pixel rect (same mapping as `Shape`/`Band`). The engine decodes
             // `source` through its bounded, deterministic cache and blits it scaled into
@@ -408,6 +410,7 @@ fn element_layers(element: &Element, width: u32, height: u32) -> Vec<Layer> {
             font,
             weight,
             letter_spacing_permille,
+            visible: _, // gated in compose_slide; a hidden element emits no layers
         } => {
             // Per-mille → pixel rect (same mapping as Shape/Image/Band).
             let map = |dim: u32, permille: u16| (dim as u64 * permille as u64 / 1000) as u32;
@@ -492,7 +495,10 @@ pub fn compose_slide(slide: &Slide, theme: &Theme, width: u32, height: u32) -> F
     // text: `z < 0` BEHIND the text, `z >= 0` IN FRONT. A stable sort by z gives a
     // well-defined order (list order within equal z). Rendered here (behind pass) + after
     // the text (front pass). Absent for every current built-in → a no-op → determinism.
-    let mut ordered: Vec<&Element> = theme.elements.iter().collect();
+    // A HIDDEN element (Design 2.0 LAYERS visibility) contributes no layer, exactly like a
+    // hidden region — filtered out of BOTH z-order passes below. The background + every other
+    // visible layer still render, so hiding a layer never blanks the frame (NFR-024).
+    let mut ordered: Vec<&Element> = theme.elements.iter().filter(|e| e.visible()).collect();
     ordered.sort_by_key(|e| e.z());
     for e in ordered.iter().filter(|e| e.z() < 0) {
         for layer in element_layers(e, width, height) {

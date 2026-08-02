@@ -96,6 +96,13 @@ pub struct LiveController {
     /// Set on `StartTimer`; the timer starts on the next [`tick`](Self::tick) so its
     /// start instant is the injected render time, not a wall-clock read in `apply`.
     timer_pending_start: bool,
+    /// Set on `PauseTimer`; the timer is banked on the next [`tick`](Self::tick) so the
+    /// pause instant is the injected render time (mirrors `timer_pending_start`; `apply`
+    /// has no clock — ADR-0015).
+    timer_pending_pause: bool,
+    /// The countdown is paused (banked, not counting). Surfaced in the operator snapshot
+    /// so the UI distinguishes paused from stopped; `running` is `false` while paused.
+    timer_paused: bool,
     /// The last timer view computed by `tick`, surfaced in the operator view.
     last_timer_view: Option<TimerView>,
     /// The stage/confidence monitor (a second output surface, FR-037): current + next
@@ -527,6 +534,8 @@ impl LiveController {
             timer: None,
             timer_total: None,
             timer_pending_start: false,
+            timer_pending_pause: false,
+            timer_paused: false,
             last_timer_view: None,
             stage: StageDisplay::new(width, height, StageTheme::dark()),
             stage_dirty: true,
@@ -995,7 +1004,12 @@ impl LiveController {
                 (Some(timer), Some(total)) => (
                     Some(total.as_secs() as u32),
                     Some(timer.elapsed(now).as_secs() as u32),
-                    timer.is_running() || self.timer_pending_start,
+                    // Mirror the wire guard (see `running` in the operator view): a paused
+                    // timer — including the pending-pause window before the banking tick —
+                    // must persist as NOT running, so recovery derives `timer_paused` back
+                    // (restore: `timer_paused = !timer_running`) and never resumes a paused
+                    // countdown as RUNNING (review: snapshot/restore paused asymmetry).
+                    (timer.is_running() || self.timer_pending_start) && !self.timer_paused,
                 ),
                 _ => (None, None, false),
             };
@@ -1110,6 +1124,11 @@ impl LiveController {
             self.timer = Some(Timer::count_down(total).with_elapsed(elapsed));
             self.timer_total = Some(total);
             self.timer_pending_start = snap.timer_running;
+            // A recovered timer that is present but not running was paused (only Pause
+            // yields a non-running active timer). Recover it as paused, not silently
+            // running (the snapshot has no separate paused bit — this is derived).
+            self.timer_paused = !snap.timer_running;
+            self.timer_pending_pause = false;
             self.last_timer_view = None;
         }
 
@@ -1212,6 +1231,13 @@ impl LiveController {
                 if self.timer_pending_start {
                     timer.start(now);
                     self.timer_pending_start = false;
+                }
+                // Bank a pending pause with the injected clock (apply has none). A paused
+                // Timer has `running_since == None`, so `TimerView::from_timer` reads the
+                // frozen `accumulated` — remaining/elapsed/warn/time_up all freeze.
+                if self.timer_pending_pause {
+                    timer.pause(now);
+                    self.timer_pending_pause = false;
                 }
                 Some(TimerView::from_timer(
                     timer,
@@ -1348,7 +1374,14 @@ impl LiveController {
                 elapsed_secs: v.elapsed_secs,
                 time_up: v.time_up,
                 warn: v.warn,
-                running: self.timer.as_ref().is_some_and(Timer::is_running),
+                // Report NOT running the moment a pause is intended (paused), even before the
+                // deferred `Timer::pause(now)` lands next tick — the wire never shows the
+                // contradictory running && paused (review #3).
+                running: self.timer.as_ref().is_some_and(Timer::is_running) && !self.timer_paused,
+                paused: self.timer_paused,
+                // The original countdown length, so the UI can reset to full even in overrun
+                // (where remaining+elapsed no longer equals it — review #1).
+                total_secs: self.timer_total.map(|d| d.as_secs() as u32),
             }),
             staged_scripture: self.staged_scripture.clone(),
             live_scripture: self.live_scripture.clone(),
@@ -1422,6 +1455,9 @@ impl LiveController {
                         .ok()
                         .and_then(|r| selahcue_scripture::passage_text(&r))
                         .unwrap_or_default(),
+                    // No genuine score exists yet — the parser is a binary Ok/Err match.
+                    // Honest-empty until R4 detection produces a real confidence.
+                    confidence: None,
                 })
                 .collect(),
         }
@@ -1576,10 +1612,40 @@ impl LiveController {
                 self.timer = Some(Timer::count_down(duration));
                 self.timer_total = Some(duration);
                 self.timer_pending_start = true;
+                // A fresh timer is never paused (guards a stale paused flag from a prior run).
+                self.timer_paused = false;
+                self.timer_pending_pause = false;
                 // Drop any prior view so the operator snapshot never mixes an old timer's
                 // displayed value with the fresh timer's state before the next tick.
                 self.last_timer_view = None;
                 // The overlay appears on the next tick (which supplies the start instant).
+                ControllerReply::Ack
+            }
+            Command::PauseTimer => {
+                // Denied when no timer is active (mirrors AdjustTimer). The actual
+                // `Timer::pause(now)` runs on the next tick (apply has no clock).
+                if self.timer.is_none() {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
+                self.timer_pending_pause = true;
+                self.timer_paused = true;
+                // Symmetric to ResumeTimer: clear any latched pending-start so a
+                // pause-immediately-after-start cannot be snapshotted/recovered as RUNNING
+                // (review #4). Harmless for the live path — pause banks a zero segment.
+                self.timer_pending_start = false;
+                self.state_dirty = true;
+                ControllerReply::Ack
+            }
+            Command::ResumeTimer => {
+                // Denied when no timer is active. Resume banks-then-starts via
+                // `timer_pending_start` (Timer::start resumes from the banked elapsed).
+                if self.timer.is_none() {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
+                self.timer_pending_start = true;
+                self.timer_pending_pause = false;
+                self.timer_paused = false;
+                self.state_dirty = true;
                 ControllerReply::Ack
             }
             Command::AdjustTimer { delta_secs } => {
@@ -1601,6 +1667,8 @@ impl LiveController {
                 self.timer = None;
                 self.timer_total = None;
                 self.timer_pending_start = false;
+                self.timer_pending_pause = false;
+                self.timer_paused = false;
                 self.last_timer_view = None;
                 // `apply` marked the stage dirty; the next tick recomposes the monitor
                 // without the timer. The audience output is untouched (no timer there).

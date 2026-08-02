@@ -2,6 +2,7 @@
       let editing = null;       // item id with an open inline editor
       let confirmDelete = null; // item id in the two-click delete confirm state
       let lastRendered = "";    // skip DOM rebuilds when nothing changed
+      let resetInFlight = false; // guards Timer Reset against a double-fire (the 1s poll re-enables the button)
 
       function render(view) {
         // Chrome (emergency footer, LIVE chip, timer, blackout) syncs on EVERY
@@ -65,7 +66,8 @@
           title.className = "title";
           title.textContent = it.title;
           const kind = document.createElement("span");
-          kind.className = "kind";
+          // Colour-coded kind badge (Design 2.0): kind-song/scripture/announcement/section.
+          kind.className = "kind kind-" + it.kind;
           // Truthful slide bookkeeping (S8-1): "song · 2/6" for multi-slide
           // items (position shows for the staged/live item).
           kind.textContent =
@@ -192,34 +194,67 @@
 
         const t = view.timer;
         const big = document.getElementById("timer-big");
+        // Colour via classes (Design 2.0): .warn = amber, .up = live-red (no inline style).
+        big.classList.remove("up", "warn");
+        let bigText = "–:––";
         if (!t) {
-          big.textContent = "–:––";
-          big.classList.remove("up");
-          big.style.color = "";
+          // no timer
         } else if (t.time_up) {
-          big.textContent = "TIME UP";
+          bigText = "TIME UP";
           big.classList.add("up");
-          big.style.color = "";
         } else {
           const secs = t.remaining_secs != null ? t.remaining_secs : t.elapsed_secs;
-          big.textContent = fmtClock(secs);
-          big.classList.remove("up");
-          big.style.color = t.warn ? "var(--warn-ink)" : "var(--preview-ink)";
+          bigText = fmtClock(secs);
+          if (t.warn) big.classList.add("warn");
+        }
+        big.textContent = bigText;
+        // Topbar timer chip mirrors the readout (hidden when no timer is active).
+        const topTimer = document.getElementById("top-timer");
+        const topTimerVal = document.getElementById("top-timer-val");
+        if (topTimer && topTimerVal) {
+          topTimer.hidden = !t;
+          topTimerVal.textContent = bigText;
+        }
+        // RUNNING / PAUSED / TIME UP status pill on the timer card header.
+        const state = document.getElementById("timer-state");
+        const stateLabel = document.getElementById("timer-state-label");
+        if (state && stateLabel) {
+          state.hidden = !t;
+          if (t) {
+            const isPaused = !!t.paused;
+            state.classList.toggle("paused", isPaused || t.time_up);
+            stateLabel.textContent = t.time_up ? "TIME UP" : isPaused ? "PAUSED" : "RUNNING";
+          }
         }
 
         renderOutputs(view);
 
-        // The live-adjust buttons act on a RUNNING (or pending) timer only.
+        // The live-adjust + pause/reset buttons act on an active timer only.
         const hasTimer = !!view.timer;
+        const isPaused = hasTimer && !!view.timer.paused;
         document.getElementById("timer-plus").disabled = !hasTimer;
         document.getElementById("timer-minus").disabled = !hasTimer;
+        const pauseBtn = document.getElementById("timer-pause");
+        const resetBtn = document.getElementById("timer-reset");
+        if (pauseBtn) {
+          pauseBtn.disabled = !hasTimer;
+          pauseBtn.textContent = isPaused ? "Resume" : "Pause";
+          pauseBtn.setAttribute(
+            "aria-label",
+            isPaused ? "Resume the paused timer" : "Pause the running timer"
+          );
+        }
+        if (resetBtn) resetBtn.disabled = !hasTimer || resetInFlight;
 
-        // Non-colour blackout state: label + aria-pressed + the live-panel
-        // overlay, not just the red fill.
-        const b = document.getElementById("blackout");
-        b.classList.toggle("on", view.blackout);
-        b.dataset.on = view.blackout ? "1" : "0";
-        b.setAttribute("aria-pressed", view.blackout ? "true" : "false");
+        // Non-colour blackout state on BOTH triggers (footer #blackout + the global topbar
+        // #top-blackout): label + aria-pressed + the live-panel overlay, not just red fill.
+        ["blackout", "top-blackout"].forEach((id) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.classList.toggle("on", view.blackout);
+          el.dataset.on = view.blackout ? "1" : "0";
+          el.setAttribute("aria-pressed", view.blackout ? "true" : "false");
+        });
         document.getElementById("blackout-state").textContent = view.blackout ? "ON" : "";
         document.getElementById("live-panel").classList.toggle("blackout", view.blackout);
 
@@ -685,9 +720,11 @@
 
       // --- App menu + surface routing (86ajq321f) ---
       const APP_SURFACES = ["console", "theme-designer", "screens", "plan", "settings"];
+      // Kept in sync with the nav items' .nav-t labels — the topbar surface label + the SR
+      // route announcement read from here, so a drift would show a name the menu doesn't use.
       const SURFACE_LABEL = {
         console: "Live Console", "theme-designer": "Theme Designer",
-        screens: "Screens", plan: "Plan / Library", settings: "Settings",
+        screens: "Screens & Outputs", plan: "Service Plan", settings: "Settings",
       };
       const appMenu = document.getElementById("app-menu");
       const appMenuBtn = document.getElementById("app-menu-btn");
@@ -717,7 +754,10 @@
           if (el) el.classList.toggle("active", s === name);
         });
         navItems.forEach((it) => {
-          if (it.dataset.surface === name) it.setAttribute("aria-current", "page");
+          // Mark ONLY the primary entry for a surface as current — a sub-region jump
+          // (data-focus, e.g. "Transcript & Notes" → console) shares the surface but must
+          // not also read as the current page (review #21: avoid two aria-current items).
+          if (it.dataset.surface === name && !it.dataset.focus) it.setAttribute("aria-current", "page");
           else it.removeAttribute("aria-current");
         });
         closeAppMenu();
@@ -725,8 +765,11 @@
         // and announce the route to assistive tech (NAV-IA §2/§5).
         const surf = document.getElementById("surface-" + name);
         if (surf) { surf.tabIndex = -1; surf.focus(); }
-        document.getElementById("route-status").textContent =
-          "Now on: " + (SURFACE_LABEL[name] || name);
+        const label = SURFACE_LABEL[name] || name;
+        document.getElementById("route-status").textContent = "Now on: " + label;
+        // The topbar surface label reflects the active surface (the header is global).
+        const surfLabel = document.getElementById("surface-label");
+        if (surfLabel) surfLabel.textContent = label;
         // Refresh the true Preview/Live render when returning to the console (86ajtwq28).
         if (name === "console") scheduleConsoleRender();
         if (name === "screens") scheduleScreenPreviews(); // refresh the per-screen previews (86ajq321k)
@@ -743,8 +786,20 @@
       }
       function toggleAppMenu() { isMenuOpen() ? closeAppMenu() : openAppMenu(); }
       appMenuBtn.onclick = toggleAppMenu;
+      // Navigate to a menu item's surface. Guards items with no data-surface (an honest
+      // "later" affordance like Presentation, or aria-disabled) so a click can never blank
+      // the router. data-focus scrolls a sub-region of the target surface into view.
+      const navGo = (it) => {
+        if (it.getAttribute("aria-disabled") === "true" || !it.dataset.surface) return;
+        showSurface(it.dataset.surface);
+        const focusSel = it.dataset.focus;
+        if (focusSel) {
+          const el = document.getElementById(focusSel);
+          if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+        }
+      };
       navItems.forEach((it, i) => {
-        it.onclick = () => showSurface(it.dataset.surface);
+        it.onclick = () => navGo(it);
         it.addEventListener("keydown", (e) => {
           if (e.key === "ArrowDown") { e.preventDefault(); focusNav((i + 1) % navItems.length); }
           else if (e.key === "ArrowUp") { e.preventDefault(); focusNav((i - 1 + navItems.length) % navItems.length); }
@@ -862,6 +917,31 @@
         tdPreview();
       }
 
+      // A compact template thumbnail (Design 2.0 strip, Figma 319:152): the theme's REAL
+      // background (solid / gradient / image→neutral) + a title/body bar pair, so each card
+      // reflects the actual theme — never a generic fake.
+      function tdThumb(theme) {
+        const t = document.createElement("div");
+        t.className = "td-theme-thumb";
+        t.setAttribute("aria-hidden", "true");
+        const bg = theme && theme.background;
+        if (bg && Number.isFinite(bg.r)) t.style.background = tdHex(bg); // solid ({r,g,b,a})
+        else if (bg && bg.from && bg.to)
+          t.style.background = "linear-gradient(160deg, " + tdHex(bg.from) + ", " + tdHex(bg.to) + ")";
+        else t.style.background = "var(--sc-inset)"; // image / unknown → neutral inset
+        const bar = (cls, color) => {
+          const d = document.createElement("div");
+          d.className = "td-theme-thumb-bar " + cls;
+          d.style.background = color;
+          return d;
+        };
+        const titleC = theme && theme.title && theme.title.color ? tdHex(theme.title.color) : "rgba(242,184,75,.9)";
+        const bodyC = theme && theme.body && theme.body.color ? tdHex(theme.body.color) : "rgba(255,255,255,.85)";
+        t.appendChild(bar("title", titleC));
+        t.appendChild(bar("body", bodyC));
+        return t;
+      }
+
       function tdList() {
         const box = document.getElementById("td-themes");
         box.innerHTML = "";
@@ -877,9 +957,13 @@
           row.className = "td-theme-row";
           const b = document.createElement("button");
           b.className = "td-theme-name";
+          b.type = "button";
           b.textContent = name;
           b.setAttribute("aria-pressed", tdSelectedKind === "builtin" && name === tdSelected ? "true" : "false");
-          b.onclick = () => {
+          // Selecting a template = clicking anywhere on the CARD (the thumbnail is the dominant
+          // target), not just the name text. The whole row is the control; the name stays a
+          // focusable button so keyboard Enter/Space activates it and bubbles to this handler.
+          row.onclick = () => {
             tdSelected = name;
             tdSelectedKind = "builtin";
             tdTheme = JSON.parse(JSON.stringify(TD_BUILTINS[name]));
@@ -891,8 +975,13 @@
           const tag = document.createElement("span");
           tag.className = "td-theme-tag";
           tag.textContent = "built-in";
-          row.appendChild(b);
-          row.appendChild(tag);
+          row.dataset.current = tdSelectedKind === "builtin" && name === tdSelected ? "true" : "false";
+          const foot = document.createElement("div");
+          foot.className = "td-theme-cardfoot";
+          foot.appendChild(b);
+          foot.appendChild(tag);
+          row.appendChild(tdThumb(TD_BUILTINS[name]));
+          row.appendChild(foot);
           box.appendChild(row);
         });
         // Saved (named custom) themes from the library — selectable (load into the
@@ -902,9 +991,12 @@
           row.className = "td-theme-row td-theme-saved";
           const b = document.createElement("button");
           b.className = "td-theme-name";
+          b.type = "button";
           b.textContent = name;
           b.setAttribute("aria-pressed", tdSelectedKind === "saved" && name === tdSelected ? "true" : "false");
-          b.onclick = () => {
+          // Whole-card select (see the built-in branch); the ✕ stops propagation so deleting
+          // never also loads the theme.
+          row.onclick = () => {
             let parsed;
             try {
               parsed = JSON.parse(theme_json);
@@ -950,8 +1042,15 @@
               }, 3000);
             }
           };
-          row.appendChild(b);
-          row.appendChild(del);
+          row.dataset.current = tdSelectedKind === "saved" && name === tdSelected ? "true" : "false";
+          let thumbTheme = null;
+          try { thumbTheme = JSON.parse(theme_json); } catch (e) { thumbTheme = null; }
+          const foot = document.createElement("div");
+          foot.className = "td-theme-cardfoot";
+          foot.appendChild(b);
+          foot.appendChild(del);
+          row.appendChild(tdThumb(thumbTheme));
+          row.appendChild(foot);
           box.appendChild(row);
         });
       }
@@ -966,6 +1065,9 @@
       function tdActive() { return tdActiveIsEl() ? tdEls()[tdSelEl] : tdTheme ? tdTheme[tdRegion] : null; }
       const tdZ = (e) => (e && Number.isFinite(e.z) ? e.z : 0);
       const tdOpacity = (e) => (e && Number.isFinite(e.opacity) ? e.opacity : 255);
+      // Per-layer visibility (Design 2.0 LAYERS): an element is shown unless `visible === false`
+      // (the field is OMITTED when shown so the theme JSON stays byte-stable — see theme.rs).
+      const tdVisible = (e) => !(e && e.visible === false);
       // Element indices in composite PAINT order (compose_slide stable-sorts by z, THEN list
       // index; z is the sole determinant, the index only breaks ties). Back-to-front.
       function tdPaintOrder() {
@@ -999,6 +1101,15 @@
           xp >= r.x_permille && xp <= r.x_permille + r.w_permille &&
           yp >= r.y_permille && yp <= r.y_permille + r.h_permille
         );
+      }
+      // The text REGION under a client point, or null. Clicking the Body / Reference-Title text
+      // on the canvas selects that region (only VISIBLE regions — you select what you see). Body
+      // is checked first (it renders on top of the title where they overlap).
+      function tdRegionAt(cx, cy) {
+        if (!tdTheme) return null;
+        if (tdTheme.body && tdTheme.body.visible !== false && tdPointInRect(cx, cy, tdTheme.body)) return "body";
+        if (tdTheme.title && tdTheme.title.visible !== false && tdPointInRect(cx, cy, tdTheme.title)) return "title";
+        return null;
       }
       // Screen-reader announcement (reuses the aria-live #td-status region).
       function tdAnnounce(msg) {
@@ -1052,6 +1163,8 @@
         showReg("td-region-align");
         showReg("td-region-text");
         document.getElementById("td-el-inspector").hidden = !isEl;
+        tdSyncHead(isEl); // Design 2.0 selection header (chip + name + subtext)
+        tdLayers(); // Design 2.0 LAYERS panel (regions + elements, front→back)
         tdBgResync = true; // a full render snaps the bg type selector to the stored bg type
         tdSyncBg(); // theme background editor (solid / gradient / image, 86ajq3225)
         if (isEl) {
@@ -1062,10 +1175,10 @@
         tdSel.setAttribute("aria-label", "Selected region — drag to move, handles to resize");
         const r = tdTheme[tdRegion];
         document.getElementById("td-color").value = tdHex(r.color);
-        document.getElementById("td-size").value = r.size_permille;
-        document.getElementById("td-size-v").textContent = (r.size_permille / 10).toFixed(1);
-        document.getElementById("td-lh").value = r.line_height_permille;
-        document.getElementById("td-lh-v").textContent = (r.line_height_permille / 1000).toFixed(2);
+        // Design 2.0: SIZE is a % of height (size_permille/10), LINE a multiplier
+        // (line_height_permille/1000) — number fields, not sliders.
+        document.getElementById("td-size").value = (r.size_permille / 10).toFixed(1);
+        document.getElementById("td-lh").value = (r.line_height_permille / 1000).toFixed(2);
         tdSeg("td-region", tdRegion, "region");
         tdSeg("td-align", r.align_h, "a");
         tdSeg("td-valign", r.align_v, "v");
@@ -1143,6 +1256,295 @@
         }
       }
 
+      // --- Design 2.0 inspector header + LAYERS panel (Figma 317:124 / 325:189) ---
+      // Selection header: a type chip + the selected region/element name + a subtext line.
+      function tdSyncHead(isEl) {
+        const title = document.getElementById("td-insp-title");
+        const sub = document.getElementById("td-insp-sub");
+        const chip = document.getElementById("td-insp-chip");
+        if (!title || !sub || !chip) return;
+        if (isEl) {
+          const el = tdActive();
+          const kind = el && el.kind === "image" ? "Image" : el && el.kind === "text" ? "Text" : "Shape";
+          title.textContent =
+            el && el.kind === "shape" ? (TD_SHAPE_LABELS[el.variant] || "Shape") : kind;
+          sub.textContent = kind + " element · selected on canvas";
+          chip.textContent = kind === "Image" ? "🖼" : kind === "Text" ? "T" : "●";
+        } else {
+          title.textContent = tdRegion === "title" ? "Reference / Title" : "Body";
+          sub.textContent = "Text region · selected on canvas";
+          chip.textContent = "T";
+        }
+      }
+
+      // A single LAYERS row descriptor: a region (pinned at the text layer) or an element.
+      // Effective z orders the list front→back: an element's z; regions sit at the text
+      // boundary (body just above title, both between the behind/front element passes).
+      function tdLayerRows() {
+        const rows = [];
+        tdEls().forEach((el, i) => rows.push({ kind: "el", i, ez: tdZ(el) }));
+        if (tdTheme && tdTheme.title) rows.push({ kind: "region", region: "title", ez: -0.5 });
+        if (tdTheme && tdTheme.body) rows.push({ kind: "region", region: "body", ez: -0.4 });
+        // Descending effective z = topmost first; a stable tie-break keeps insertion order.
+        // Descending effective z = topmost first. Tie-break DESCENDING insertion index so it
+        // matches compose_slide's paint order (a stable sort by z, then list index → the
+        // LATER element paints last = in FRONT); ascending would invert equal-z elements.
+        return rows.map((r, k) => ({ r, k })).sort((a, b) => b.r.ez - a.r.ez || b.k - a.k).map((x) => x.r);
+      }
+
+      function tdSelectLayer(r) {
+        if (r.kind === "el") tdSelEl = r.i;
+        else { tdSelEl = -1; tdRegion = r.region; }
+        tdSync();
+        tdPreview();
+      }
+
+      // Toggle a layer's visibility (real: honored by the host compositor). An element omits
+      // the field when shown (byte-stable JSON); a region always carries `visible`.
+      function tdToggleVisible(r) {
+        if (!tdTheme) return;
+        if (r.kind === "el") {
+          const el = tdEls()[r.i];
+          if (!el) return;
+          if (tdVisible(el)) el.visible = false;
+          else delete el.visible;
+        } else {
+          const reg = tdTheme[r.region];
+          reg.visible = !(reg.visible !== false);
+        }
+        tdSync(); // rebuilds the LAYERS panel + inspector (a hidden region hides its sel box)
+        tdPreview();
+      }
+
+      // Visual drag-reorder for the Layers panel (elements only; the text regions are pinned).
+      // Pointer-based — WKWebView has no reliable native HTML5 DnD. The grabbed row LIFTS out of
+      // flow and follows the pointer; a placeholder holds the drop slot and the other rows part
+      // around it; on release the element z-values are reassigned to the new front→back order,
+      // preserving each element's side of the text layer (front = z>0, behind = z<0).
+      let tdLayerDrag = null;
+      function tdLayerDragStart(ev, idx) {
+        if (ev.button !== undefined && ev.button !== 0) return;
+        const box = document.getElementById("td-layers");
+        const row = ev.target && ev.target.closest(".td-layer");
+        if (!box || !row) return;
+        ev.preventDefault();
+        const rect = row.getBoundingClientRect();
+        // A placeholder holds the row's slot while the row is lifted out of flow.
+        const ph = document.createElement("div");
+        ph.className = "td-layer-placeholder";
+        ph.style.height = rect.height + "px";
+        box.insertBefore(ph, row);
+        // Lift the row: fixed to the viewport so it tracks the pointer; keep its width/left.
+        const grabDy = ev.clientY - rect.top;
+        row.classList.add("dragging");
+        row.style.position = "fixed";
+        row.style.left = rect.left + "px";
+        row.style.width = rect.width + "px";
+        row.style.top = rect.top + "px";
+        tdLayerDrag = { idx, box, row, ph, grabDy };
+        box.classList.add("td-layers-dragging");
+        window.addEventListener("pointermove", tdLayerDragMove);
+        // pointerup COMMITS the reorder; pointercancel (WKWebView gesture takeover / palm-reject
+        // / release outside the WebView — which never fires pointerup) REVERTS it with no z change
+        // and stops the leaked drag.
+        window.addEventListener("pointerup", tdLayerDragCommit);
+        window.addEventListener("pointercancel", tdLayerDragCancel);
+      }
+      function tdLayerDragMove(ev) {
+        const D = tdLayerDrag;
+        if (!D) return;
+        D.row.style.top = ev.clientY - D.grabDy + "px";
+        // Auto-scroll when dragging near the top/bottom edge of an overflowing list.
+        const br = D.box.getBoundingClientRect();
+        if (ev.clientY < br.top + 24) D.box.scrollTop -= 8;
+        else if (ev.clientY > br.bottom - 24) D.box.scrollTop += 8;
+        // Move the placeholder to the gap under the pointer (skip the lifted row + placeholder).
+        const kids = Array.from(D.box.children).filter((c) => c !== D.row && c !== D.ph);
+        let ref = null;
+        for (const c of kids) {
+          const r = c.getBoundingClientRect();
+          if (ev.clientY < r.top + r.height / 2) { ref = c; break; }
+        }
+        if (ref) D.box.insertBefore(D.ph, ref);
+        else D.box.appendChild(D.ph);
+      }
+      // Detach listeners + drag state (idempotent — pointerup/pointercancel may both fire).
+      function tdLayerTeardown() {
+        const D = tdLayerDrag;
+        tdLayerDrag = null;
+        window.removeEventListener("pointermove", tdLayerDragMove);
+        window.removeEventListener("pointerup", tdLayerDragCommit);
+        window.removeEventListener("pointercancel", tdLayerDragCancel);
+        if (D) D.box.classList.remove("td-layers-dragging");
+        return D;
+      }
+      // Cancel: discard the drag with NO z change — drop the lifted styles + placeholder and
+      // rebuild the original order (a WKWebView-cancelled gesture must never reorder).
+      function tdLayerDragCancel() {
+        const D = tdLayerTeardown();
+        if (!D) return;
+        if (D.ph.parentNode) D.ph.parentNode.removeChild(D.ph);
+        D.row.classList.remove("dragging");
+        D.row.removeAttribute("style");
+        tdLayers();
+      }
+      // Commit: apply the drop — reassign element z to the new front→back order.
+      function tdLayerDragCommit() {
+        const D = tdLayerTeardown();
+        if (!D) return;
+        // Read the new front→back order from the DOM — the placeholder marks the dragged
+        // element's slot; region rows mark the text layer.
+        const order = [];
+        Array.from(D.box.children).forEach((c) => {
+          if (c === D.row) return; // the lifted original — its real slot is the placeholder
+          if (c === D.ph) order.push({ el: D.idx });
+          else if (c.dataset.idx !== undefined) order.push({ el: Number(c.dataset.idx) });
+          else if (c.dataset.region) order.push({ region: true });
+        });
+        // Reassign z: elements ABOVE the first text region get descending positive z (front),
+        // those BELOW get descending negative z (behind) — distinct integers, order preserved,
+        // the elements array itself is never reordered (mirrors tdArrange's z-only model).
+        const els = tdEls();
+        const firstRegion = order.findIndex((o) => o.region);
+        let front = order.filter((o, i) => o.el !== undefined && (firstRegion === -1 || i < firstRegion)).length;
+        let back = 0;
+        order.forEach((o, i) => {
+          if (o.el === undefined || !els[o.el]) return;
+          if (firstRegion === -1 || i < firstRegion) { els[o.el].z = front; front -= 1; }
+          else { back -= 1; els[o.el].z = back; }
+        });
+        if (D.ph.parentNode) D.ph.parentNode.removeChild(D.ph);
+        D.row.classList.remove("dragging");
+        D.row.removeAttribute("style");
+        tdSelEl = D.idx; // keep the moved element selected (its array index is unchanged)
+        tdSync(); // rebuilds the Layers list in the new order + refreshes the inspector
+        tdPreview();
+        const npos = tdPaintOrder().indexOf(D.idx) + 1;
+        tdAnnounce("Reordered — layer " + npos + " of " + els.length);
+      }
+
+      // Build one LAYERS row element.
+      function tdLayerRow(r) {
+        const row = document.createElement("div");
+        row.className = "td-layer";
+        row.setAttribute("role", "listitem");
+        row.tabIndex = 0;
+        const isEl = r.kind === "el";
+        const selected = isEl
+          ? tdActiveIsEl() && tdSelEl === r.i
+          : !tdActiveIsEl() && tdRegion === r.region;
+        if (selected) row.classList.add("sel");
+        // The row being pointer-dragged shows the dimmed .dragging affordance.
+        if (isEl && tdLayerDrag && tdLayerDrag.idx === r.i) row.classList.add("dragging");
+        let visible, name, meta, glyph;
+        if (isEl) {
+          const el = tdEls()[r.i];
+          visible = tdVisible(el);
+          glyph = el.kind === "image" ? "🖼" : el.kind === "text" ? "T" : "●";
+          name =
+            el.kind === "text"
+              ? (el.text ? el.text.split("\n")[0].slice(0, 24).trim() || "Text" : "Text")
+              : el.kind === "image"
+                ? "Image"
+                : (TD_SHAPE_LABELS[el.variant] || "Shape");
+          meta = tdElLabel(el) + " · z" + tdZ(el);
+        } else {
+          const reg = tdTheme[r.region];
+          visible = reg.visible !== false;
+          glyph = "T";
+          name = r.region === "title" ? "Reference / Title" : "Body";
+          meta = "Region";
+        }
+        if (!visible) row.classList.add("layer-hidden");
+        row.setAttribute("aria-label", name + " — " + meta + (visible ? "" : " (hidden)"));
+
+        const handle = document.createElement("span");
+        handle.className = "td-layer-handle";
+        handle.textContent = "⋮⋮";
+        handle.setAttribute("aria-hidden", "true");
+        if (isEl) handle.addEventListener("pointerdown", (ev) => tdLayerDragStart(ev, r.i));
+        else handle.setAttribute("aria-disabled", "true");
+
+        const ico = document.createElement("span");
+        ico.className = "td-layer-ico";
+        ico.textContent = glyph;
+        ico.setAttribute("aria-hidden", "true");
+
+        const body = document.createElement("div");
+        body.className = "td-layer-body";
+        const nm = document.createElement("span");
+        nm.className = "td-layer-name";
+        nm.textContent = name;
+        const mt = document.createElement("span");
+        mt.className = "td-layer-meta";
+        mt.textContent = meta;
+        body.appendChild(nm);
+        body.appendChild(mt);
+
+        const eye = document.createElement("button");
+        eye.className = "td-layer-eye";
+        eye.type = "button";
+        eye.textContent = visible ? "👁" : "🚫";
+        eye.setAttribute("aria-pressed", visible ? "true" : "false");
+        eye.setAttribute("aria-label", (visible ? "Hide " : "Show ") + name);
+        eye.title = visible ? "Hide layer" : "Show layer";
+        eye.onclick = (ev) => {
+          ev.stopPropagation();
+          tdToggleVisible(r);
+        };
+
+        row.onclick = () => tdSelectLayer(r);
+        row.onkeydown = (ev) => {
+          if (ev.key === "Enter" || ev.key === " ") {
+            ev.preventDefault();
+            tdSelectLayer(r);
+          } else if (isEl && ev.altKey && (ev.key === "ArrowUp" || ev.key === "ArrowDown")) {
+            ev.preventDefault();
+            tdSelEl = r.i;
+            tdArrange(ev.key === "ArrowUp" ? "forward" : "backward");
+          }
+        };
+
+        row.dataset.kind = r.kind;
+        if (isEl) row.dataset.idx = String(r.i);
+        else row.dataset.region = r.region;
+        row.appendChild(handle);
+        row.appendChild(ico);
+        row.appendChild(body);
+        row.appendChild(eye);
+        return row;
+      }
+
+      function tdLayers() {
+        const box = document.getElementById("td-layers");
+        if (!box || !tdTheme) return;
+        // Preserve keyboard focus across the innerHTML rebuild (a11y — mirrors the Screens
+        // registry pattern). A keyboard reorder (Alt+↑/↓) or an eye toggle rebuilds every row,
+        // destroying the focused node; without this the focus falls to <body> and repeated
+        // keyboard reordering is unusable. The stable data-* attrs re-identify the row.
+        const active = document.activeElement;
+        let refocus = null;
+        if (active && box.contains(active)) {
+          const rowEl = active.closest(".td-layer");
+          if (rowEl) {
+            refocus = {
+              sel: rowEl.dataset.idx !== undefined
+                ? '.td-layer[data-idx="' + rowEl.dataset.idx + '"]'
+                : rowEl.dataset.region
+                  ? '.td-layer[data-region="' + rowEl.dataset.region + '"]'
+                  : null,
+              onEye: active.classList.contains("td-layer-eye"),
+            };
+          }
+        }
+        box.innerHTML = "";
+        tdLayerRows().forEach((r) => box.appendChild(tdLayerRow(r)));
+        if (refocus && refocus.sel) {
+          const row = box.querySelector(refocus.sel);
+          if (row) (refocus.onEye ? row.querySelector(".td-layer-eye") : row).focus();
+        }
+      }
+
       let tdTimer = null;
       function tdPreview() {
         if (!tdTheme) return;
@@ -1201,6 +1603,7 @@
       // The background is an untagged shape: {r,g,b,a} solid, {from,to,direction} gradient,
       // or {source} image. `tdBgType` discriminates by the present fields.
       let tdBgResync = true; // when true, tdSyncBg snaps the type selector to the stored bg type
+      let tdBgSel = "solid"; // the bg TYPE segment currently shown (UI state; may lead the stored bg for "image")
       function tdBgType(bg) {
         if (bg && typeof bg === "object") {
           if (typeof bg.source !== "undefined") return "image";
@@ -1217,9 +1620,11 @@
         if (!tdTheme) return;
         const bg = tdTheme.background || { r: 0, g: 0, b: 0, a: 255 };
         const stored = tdBgType(bg);
-        const sel = document.getElementById("td-bg-type");
-        if (tdBgResync) { sel.value = stored; tdBgResync = false; }
-        const type = sel.value;
+        // Design 2.0: the bg TYPE is a segmented control (Solid/Gradient/Image), not a select.
+        // A full designer render snaps the shown segment back to the stored bg type.
+        if (tdBgResync) { tdBgSel = stored; tdBgResync = false; }
+        const type = tdBgSel;
+        tdSeg("td-bg-type", type, "bg"); // reflect the active segment (on + aria-pressed)
         document.getElementById("td-bg-solid").hidden = type !== "solid";
         document.getElementById("td-bg-gradient").hidden = type !== "gradient";
         document.getElementById("td-bg-image").hidden = type !== "image";
@@ -1236,6 +1641,33 @@
           document.getElementById("td-bg-img-src").textContent =
             src ? ("Using: " + src) : "Pick or type an image path to use it as the background.";
         }
+        tdBgReflect();
+      }
+      // Direction → CSS gradient keyword (matches the host compositor's interpretation).
+      function tdGradCss(from, to, dir) {
+        const d = { vertical: "to bottom", horizontal: "to right", diagonal_down: "to bottom right", diagonal_up: "to top right" }[dir] || "to bottom";
+        return "linear-gradient(" + d + ", " + tdHex(from) + ", " + tdHex(to) + ")";
+      }
+      // Update the Design 2.0 background PREVIEWS (hex readouts + colour dot, the live gradient
+      // bar, the image drop-zone state) from the current tdTheme.background. Called by tdSyncBg
+      // and live during colour drags so the previews track without a full designer re-render.
+      function tdBgReflect() {
+        if (!tdTheme) return;
+        const bg = tdTheme.background || { r: 0, g: 0, b: 0, a: 255 };
+        const stored = tdBgType(bg);
+        const solid = stored === "solid" ? bg : (stored === "gradient" ? bg.from : { r: 0, g: 0, b: 0 });
+        const solidHex = tdHex(solid).toUpperCase();
+        const hx = document.getElementById("td-bg-hex"); if (hx) hx.textContent = solidHex;
+        const dot = document.getElementById("td-bg-hex-dot"); if (dot) dot.style.background = solidHex;
+        if (stored === "gradient") {
+          const fh = document.getElementById("td-bg-from-hex"); if (fh) fh.textContent = tdHex(bg.from).toUpperCase();
+          const th = document.getElementById("td-bg-to-hex"); if (th) th.textContent = tdHex(bg.to).toUpperCase();
+          const gp = document.getElementById("td-bg-grad-preview"); if (gp) gp.style.background = tdGradCss(bg.from, bg.to, bg.direction);
+        }
+        const src = stored === "image" ? (bg.source || "") : "";
+        const dz = document.getElementById("td-bg-dropzone"); if (dz) dz.classList.toggle("has-image", !!src);
+        const dzt = document.getElementById("td-bg-dz-t");
+        if (dzt) dzt.textContent = src ? "Image set — click to replace" : "Choose a background image";
       }
       // Commit an image background from a validated, NON-EMPTY path; an empty path leaves the
       // current (valid) background unchanged — so the theme is never malformed.
@@ -1248,39 +1680,65 @@
         tdSyncBg();
         tdPreview();
       }
-      document.getElementById("td-bg-type").onchange = (e) => {
+      // Background TYPE segmented control (Design 2.0): each segment shows its panel; Solid /
+      // Gradient commit immediately, Image defers until a real source is chosen (no {source:""}).
+      document.querySelectorAll("#td-bg-type button").forEach((b) => (b.onclick = () => {
         if (!tdTheme) return;
+        const val = b.dataset.bg;
+        tdBgSel = val;
         const cur = tdTheme.background;
         const curType = tdBgType(cur);
         const solid = curType === "solid" ? cur : (curType === "gradient" ? cur.from : { r: 0, g: 0, b: 0, a: 255 });
-        if (e.target.value === "gradient") {
+        if (val === "gradient") {
           tdTheme.background = { from: solid, to: { r: 255, g: 255, b: 255, a: 255 }, direction: "vertical" };
           tdPreview();
-        } else if (e.target.value === "solid") {
+        } else if (val === "solid") {
           tdTheme.background = solid;
           tdPreview();
         }
-        // "image": show the panel but do NOT commit until a real source is chosen (no {source:""}).
         tdSyncBg();
-      };
-      document.getElementById("td-bg").oninput = (e) => { if (tdTheme) { tdTheme.background = tdRgb(e.target.value); tdPreview(); } };
-      document.getElementById("td-bg-from").oninput = (e) => { if (tdTheme && tdBgType(tdTheme.background) === "gradient") { tdTheme.background.from = tdRgb(e.target.value); tdPreview(); } };
-      document.getElementById("td-bg-to").oninput = (e) => { if (tdTheme && tdBgType(tdTheme.background) === "gradient") { tdTheme.background.to = tdRgb(e.target.value); tdPreview(); } };
-      document.getElementById("td-bg-dir").onchange = (e) => { if (tdTheme && tdBgType(tdTheme.background) === "gradient") { tdTheme.background.direction = e.target.value; tdPreview(); } };
+      }));
+      document.getElementById("td-bg").oninput = (e) => { if (tdTheme) { tdTheme.background = tdRgb(e.target.value); tdPreview(); tdBgReflect(); } };
+      document.getElementById("td-bg-from").oninput = (e) => { if (tdTheme && tdBgType(tdTheme.background) === "gradient") { tdTheme.background.from = tdRgb(e.target.value); tdPreview(); tdBgReflect(); } };
+      document.getElementById("td-bg-to").oninput = (e) => { if (tdTheme && tdBgType(tdTheme.background) === "gradient") { tdTheme.background.to = tdRgb(e.target.value); tdPreview(); tdBgReflect(); } };
+      document.getElementById("td-bg-dir").onchange = (e) => { if (tdTheme && tdBgType(tdTheme.background) === "gradient") { tdTheme.background.direction = e.target.value; tdPreview(); tdBgReflect(); } };
+      // Preset swatches (Solid): one tap sets the background colour + snaps to the Solid segment.
+      document.querySelectorAll("#td-bg-presets button").forEach((b) => (b.onclick = () => {
+        if (!tdTheme) return;
+        tdBgSel = "solid";
+        tdTheme.background = tdRgb(b.dataset.color);
+        tdSyncBg();
+        tdPreview();
+      }));
       document.getElementById("td-bg-img-path").onchange = (e) => { tdCommitBgImage(e.target.value); };
-      document.getElementById("td-bg-img-pick").onclick = async () => {
+      // The native picker (FR-138 seam). Shared by the "Choose image…" button AND the drop-zone
+      // card — clicking either opens the OS picker; a WKWebView with no dialog falls back to the
+      // paste-a-path field. (HTML5 file-drop is unreliable in WKWebView, so the card is click-only.)
+      async function tdPickBgImage() {
         if (!tdTheme) { tdStatus("Load or start a theme first."); return; }
         let path;
         try { path = await invoke("pick_image"); }
-        catch (e) { tdStatus("No native picker — type the image path in the field above."); document.getElementById("td-bg-img-path").focus(); return; }
+        catch (e) { tdStatus("No native picker — paste the image path in the field below."); document.getElementById("td-bg-img-path").focus(); return; }
         if (!path) return; // cancelled
         document.getElementById("td-bg-img-path").value = path;
         tdCommitBgImage(path);
         tdAnnounce("Background image set");
-      };
+      }
+      document.getElementById("td-bg-img-pick").onclick = tdPickBgImage;
+      const tdDropzone = document.getElementById("td-bg-dropzone");
+      if (tdDropzone) tdDropzone.onclick = tdPickBgImage;
       document.getElementById("td-color").oninput = (e) => { if (!tdTheme) return; tdTheme[tdRegion].color = tdRgb(e.target.value); tdPreview(); };
-      document.getElementById("td-size").oninput = (e) => { if (!tdTheme) return; tdTheme[tdRegion].size_permille = +e.target.value; document.getElementById("td-size-v").textContent = (e.target.value / 10).toFixed(1); tdPreview(); };
-      document.getElementById("td-lh").oninput = (e) => { if (!tdTheme) return; tdTheme[tdRegion].line_height_permille = +e.target.value; document.getElementById("td-lh-v").textContent = (e.target.value / 1000).toFixed(2); tdPreview(); };
+      // SIZE % → size_permille (×10); LINE multiplier → line_height_permille (×1000). Bounded to
+      // the field's range. A BLANK or non-numeric field is ignored (no commit) so clearing it to
+      // retype can't snap the theme to the min (Number("") is 0 — guard the raw string). `change`
+      // (blur/Enter) repopulates the field from the clamped model so the shown number always
+      // matches what's applied (mirrors the X/Y/W/H rect fields).
+      const tdSizeInput = document.getElementById("td-size");
+      const tdLhInput = document.getElementById("td-lh");
+      tdSizeInput.oninput = (e) => { if (!tdTheme) return; const s = e.target.value.trim(); if (s === "") return; const pct = Number(s); if (!Number.isFinite(pct)) return; tdTheme[tdRegion].size_permille = tdClamp(Math.round(pct * 10), 20, 140); tdPreview(); };
+      tdSizeInput.onchange = () => { if (tdTheme) tdSizeInput.value = (tdTheme[tdRegion].size_permille / 10).toFixed(1); };
+      tdLhInput.oninput = (e) => { if (!tdTheme) return; const s = e.target.value.trim(); if (s === "") return; const mult = Number(s); if (!Number.isFinite(mult)) return; tdTheme[tdRegion].line_height_permille = tdClamp(Math.round(mult * 1000), 1000, 1600); tdPreview(); };
+      tdLhInput.onchange = () => { if (tdTheme) tdLhInput.value = (tdTheme[tdRegion].line_height_permille / 1000).toFixed(2); };
       // Numeric X/Y/W/H (percent) — the same rect the on-canvas handles edit. Commit
       // on `change` (blur/Enter), NOT per-keystroke, so multi-digit entry isn't
       // normalized away mid-typing. X/Y clamp as position (keep size); W/H clamp to the
@@ -1464,8 +1922,20 @@
           );
           return;
         }
-        // Clicked empty canvas (no element) while an element was selected → deselect back to
-        // region editing, so the Body/Reference region controls are reachable again.
+        // No element hit → clicking the Body or Reference/Title text on the canvas selects
+        // that region automatically (so you can edit what you clicked).
+        const reg = tdRegionAt(e.clientX, e.clientY);
+        if (reg) {
+          if (tdActiveIsEl() || tdRegion !== reg) {
+            tdSelEl = -1;
+            tdRegion = reg;
+            tdSync();
+            tdAnnounce((reg === "title" ? "Reference / Title" : "Body") + " region selected");
+          }
+          return;
+        }
+        // Clicked truly empty canvas while an element was selected → deselect back to region
+        // editing, so the Body/Reference region controls are reachable again.
         if (tdActiveIsEl()) {
           tdSelEl = -1;
           tdSync();
@@ -1482,7 +1952,10 @@
         catch (e) { return unescape(encodeURIComponent(s)).length; } // WKWebView fallback
       };
       const tdNew = () => { tdSelected = ""; tdSelectedKind = ""; tdList(); tdStatus("Editing a new theme from the current values."); };
-      document.getElementById("td-new").onclick = tdNew;
+      // The Design 2.0 topbar drops the old header "New" (Duplicate + the strip's "New from
+      // current" cover it) — guard the legacy #td-new binding so a missing node can't abort boot.
+      const tdNewBtn = document.getElementById("td-new");
+      if (tdNewBtn) tdNewBtn.onclick = tdNew;
       document.getElementById("td-new-2").onclick = tdNew;
       // Honest 'later' affordances (design fidelity, no fake success): importing /
       // exporting a theme FILE is deferred; the in-app library (Save changes) is live.
@@ -1718,7 +2191,8 @@
           );
         }
       }
-      document.querySelectorAll("#td-el-z button").forEach((b) => (b.onclick = () => tdArrange(b.dataset.z)));
+      // (The inspector "Arrange (z-order)" buttons were removed — the LAYERS panel now owns
+      // z-order via drag-and-drop; tdArrange still backs the keyboard chords + context menu.)
 
       // Delete an element (two-click confirm, mirroring the saved-theme delete pattern).
       function tdDeleteEl() {
@@ -1900,6 +2374,37 @@
           .then((v) => { s.textContent = "Applied to the audience output."; return v; })
           .catch((e) => { s.textContent = "Couldn't apply the theme — the audience output is unchanged."; throw e; }));
       };
+      // Duplicate (Design 2.0 topbar): deep-clone the current design into a NEW unsaved
+      // working theme (save-as-new on the next Save). No backend call — pure client clone.
+      document.getElementById("td-duplicate").onclick = () => {
+        if (!tdTheme) { tdStatus("Nothing to duplicate yet."); return; }
+        tdTheme = JSON.parse(JSON.stringify(tdTheme));
+        tdSelected = "";
+        tdSelectedKind = "";
+        tdSelEl = -1;
+        tdList();
+        tdSync();
+        tdPreview();
+        tdStatus("Duplicated — editing a new unsaved copy. Use “Save theme” to name it.");
+      };
+
+      // Preview zoom (Design 2.0): scales the on-screen preview box ONLY (a CSS transform;
+      // getBoundingClientRect accounts for it, so pointer→per-mille stays exact). Bounded
+      // 25–200%; never persisted; never changes the 1920×1080 audience output.
+      let tdZoom = 1;
+      const tdZoomV = document.getElementById("td-zoom-v");
+      function tdApplyZoom() {
+        tdBox.style.setProperty("--td-zoom", String(tdZoom));
+        if (tdZoomV) tdZoomV.textContent = Math.round(tdZoom * 100) + "%";
+      }
+      document.getElementById("td-zoom-in").onclick = () => { tdZoom = tdClamp(Math.round((tdZoom + 0.1) * 100) / 100, 0.25, 2); tdApplyZoom(); };
+      document.getElementById("td-zoom-out").onclick = () => { tdZoom = tdClamp(Math.round((tdZoom - 0.1) * 100) / 100, 0.25, 2); tdApplyZoom(); };
+      tdApplyZoom();
+
+      // "+ Add layer" (LAYERS header): adds a Text element (the most common new layer),
+      // reusing the canonical add-content path (bounded by the 64-element cap).
+      document.getElementById("td-layers-add").onclick = () => tdAddElement("text");
+
       // (Theme Designer built-ins + fonts load lazily on first activation — see
       // ensureThemeDesignerLoaded / showSurface, audit L3. Not loaded at boot.)
 
@@ -1939,34 +2444,96 @@
       };
       const clearAll = () => act(() => invoke("clear"));
 
-      document.getElementById("prev").onclick = () => act(() => invoke("previous"));
-      document.getElementById("next").onclick = () => act(() => invoke("next"));
-      document.getElementById("golive").onclick = () => act(() => invoke("go_live"));
+      const goPrev = () => act(() => invoke("previous"));
+      const goNext = () => act(() => invoke("next"));
+      const goLive = () => act(() => invoke("go_live"));
+      document.getElementById("prev").onclick = goPrev;
+      document.getElementById("next").onclick = goNext;
+      document.getElementById("golive").onclick = goLive;
       document.getElementById("blackout").onclick = toggleBlackout;
       document.getElementById("clear-all").onclick = clearAll;
+      // Global topbar transport (always reachable, on every surface) — the same actions
+      // as the console/footer controls, wired to the same handlers.
+      const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+      bind("top-prev", goPrev);
+      bind("top-next", goNext);
+      bind("top-golive", goLive);
+      bind("top-blackout", toggleBlackout);
       document.getElementById("timer-5").onclick = () =>
         act(() => invoke("start_timer", { seconds: 300 }));
       document.getElementById("timer-10").onclick = () =>
         act(() => invoke("start_timer", { seconds: 600 }));
       document.getElementById("timer-stop").onclick = () => act(() => invoke("stop_timer"));
+      // Custom time as HH:MM:SS (Figma 365) — composed to seconds for the existing
+      // start_timer command. Each field is sanitised + bounded; total capped at 99h.
+      // The custom-time ceiling (23:59:59) — matches the #timer-hh max="23" attribute so the
+      // input and the JS agree, and bounds every path that feeds start_timer (custom + reset).
+      const MAX_TIMER_SECS = 23 * 3600 + 59 * 60 + 59;
+      const readHms = () => {
+        const val = (id, max) => {
+          const raw = Number(document.getElementById(id).value);
+          if (!Number.isFinite(raw)) return 0;
+          return Math.max(0, Math.min(max, Math.floor(raw)));
+        };
+        return val("timer-hh", 23) * 3600 + val("timer-mm", 59) * 60 + val("timer-ss", 59);
+      };
       document.getElementById("timer-start-custom").onclick = () => {
-        // Sanitize + bound (the input's max attribute does not block typing):
-        // whole minutes, 1..=999 — the same cap the field declares.
-        const raw = Number(document.getElementById("timer-mins").value);
-        if (!Number.isFinite(raw)) return;
-        const mins = Math.min(999, Math.floor(raw));
-        if (mins >= 1) act(() => invoke("start_timer", { seconds: mins * 60 }));
+        const secs = Math.min(MAX_TIMER_SECS, readHms());
+        if (secs >= 1) act(() => invoke("start_timer", { seconds: secs }));
       };
-      document.getElementById("timer-mins").onkeydown = (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          document.getElementById("timer-start-custom").click();
-        }
-      };
+      ["timer-hh", "timer-mm", "timer-ss"].forEach((id) => {
+        document.getElementById(id).addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            document.getElementById("timer-start-custom").click();
+          }
+        });
+      });
       document.getElementById("timer-plus").onclick = () =>
         act(() => invoke("adjust_timer", { deltaSecs: 60 }));
       document.getElementById("timer-minus").onclick = () =>
         act(() => invoke("adjust_timer", { deltaSecs: -60 }));
+      // Pause toggles pause_timer / resume_timer by the current paused state (read from the
+      // button's live label, kept in sync by syncChrome). Reset restarts the countdown from
+      // its full length (remaining + elapsed at the moment of reset).
+      const pauseBtnEl = document.getElementById("timer-pause");
+      if (pauseBtnEl) {
+        pauseBtnEl.onclick = () => {
+          const resume = pauseBtnEl.textContent.trim() === "Resume";
+          act(() => invoke(resume ? "resume_timer" : "pause_timer"));
+        };
+      }
+      const resetBtnEl = document.getElementById("timer-reset");
+      if (resetBtnEl) {
+        resetBtnEl.onclick = () => {
+          // Restart the countdown from its ORIGINAL length. Prefer the host's total_secs —
+          // correct even in overrun, where remaining+elapsed no longer equals the original
+          // (elapsed keeps growing past TIME UP, review #1). Fall back to remaining+elapsed
+          // for an older host that doesn't send total_secs. resetInFlight guards against a
+          // double-fire while the round-trip is pending (the 1s poll re-enables the button).
+          if (resetInFlight) return;
+          resetInFlight = true;
+          resetBtnEl.disabled = true;
+          act(async () => {
+            try {
+              const v = await invoke("view");
+              const t = v && v.timer;
+              if (!t) return v;
+              const raw =
+                typeof t.total_secs === "number"
+                  ? t.total_secs
+                  : (t.remaining_secs != null ? t.remaining_secs : 0) + (t.elapsed_secs || 0);
+              // Bound the host-supplied value with the same ceiling the custom-time path uses
+              // (defence-in-depth — never pass an unbounded seconds to start_timer). await so
+              // the in-flight guard clears only after the restart round-trip actually completes.
+              const total = Math.min(MAX_TIMER_SECS, raw);
+              return total >= 1 ? await invoke("start_timer", { seconds: total }) : v;
+            } finally {
+              resetInFlight = false;
+            }
+          });
+        };
+      }
       // ── Scriptures chapter browser (86ajpkfcd, Pewbeam-style; KJV default).
       // Type a reference -> the chapter opens as a numbered verse list; ↑/↓
       // move the highlighted verse AND stage it; the canonical Enter (Go Live)
@@ -2415,6 +2982,40 @@
           clearAll();
           return;
         }
+        // Command palette: ⌘/Ctrl+K opens it from anywhere (even a focused field).
+        if (mod && !e.shiftKey && (e.key === "k" || e.key === "K")) {
+          e.preventDefault();
+          disarm();
+          if (window.__cmdPalette) window.__cmdPalette.open();
+          return;
+        }
+        // While a modal (palette / shortcuts) is open, Esc closes it and transport/
+        // emergency-arming keys are suppressed (the palette input's own listener drives
+        // its arrows/Enter). The emergency CHORDS above still pierce.
+        if (window.__cmdPalette && window.__cmdPalette.isOpen()) {
+          disarm();
+          if (e.key === "Escape") {
+            e.preventDefault();
+            window.__cmdPalette.closeAll();
+          }
+          return;
+        }
+        // Global ⌘/Ctrl+1–6 jump to the six navigable sections — makes the menu's ⌘N badges
+        // and the Shortcuts reference REAL (they map by menu order; the disabled "Presentation"
+        // item carries no number, so it is filtered out). Works whether the menu is open or not.
+        if (mod && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "6") {
+          const targets = navItems.filter(
+            (it) => it.dataset.surface && it.getAttribute("aria-disabled") !== "true"
+          );
+          const it = targets[Number(e.key) - 1];
+          if (it) {
+            e.preventDefault();
+            disarm();
+            closeAppMenu();
+            navGo(it);
+            return;
+          }
+        }
         // App menu: F10 opens/closes the surface navigation (reachable anywhere).
         // Cmd/Ctrl+M is intentionally NOT bound — it is the macOS "Minimize window"
         // accelerator. disarm() so opening the menu can't leave a Clear-all armed.
@@ -2569,12 +3170,19 @@
 
       function syncDetections(view) {
         const dets = Array.isArray(view.detections) ? view.detections : [];
-        const key = JSON.stringify(dets.map((d) => [d.id, d.reference, d.text]));
+        // Confidence is part of the change key so a match-% update re-renders the row.
+        const key = JSON.stringify(dets.map((d) => [d.id, d.reference, d.text, d.confidence]));
         if (key === detectionsKey) return;
         detectionsKey = key;
         const list = document.getElementById("detections-list");
         const empty = document.getElementById("detections-empty");
         if (!list || !empty) return;
+        // "N new" count pill in the card header (hidden when none).
+        const count = document.getElementById("detections-count");
+        if (count) {
+          count.hidden = dets.length === 0;
+          count.textContent = dets.length + " new";
+        }
         list.innerHTML = "";
         empty.style.display = dets.length ? "none" : "";
         for (const d of dets) {
@@ -2588,7 +3196,15 @@
           ref.className = "ref";
           ref.textContent = d.reference;
           head.appendChild(ref);
-          head.appendChild(badge("preview", "DETECTED"));
+          // Match-% pill — ONLY when the host supplied a real confidence (honest-empty
+          // until R4 scoring lands); green when confident, amber tint when fuzzy.
+          if (typeof d.confidence === "number") {
+            const pct = Math.max(0, Math.min(100, Math.round(d.confidence)));
+            const m = document.createElement("span");
+            m.className = "match-pill" + (pct >= 90 ? "" : " fuzzy");
+            m.textContent = pct + "% MATCH";
+            head.appendChild(m);
+          }
           row.appendChild(head);
 
           if (d.text) {
@@ -2600,8 +3216,10 @@
 
           const actions = document.createElement("div");
           actions.className = "detection-actions";
+          // Stage = approve_detection (into Preview; the operator then reviews + GO LIVEs —
+          // never auto-displayed, FR-115). Indigo primary to match the Figma.
           const approve = document.createElement("button");
-          approve.className = "golive";
+          approve.className = "det-stage";
           approve.type = "button";
           approve.textContent = "Stage";
           approve.setAttribute("aria-label", "Stage " + d.reference + " in preview");
@@ -2652,6 +3270,9 @@
           if (status) status.textContent = listening ? "Listening — capturing audio." : "";
         }
         btn.addEventListener("click", async () => {
+          // Drive the host STT source. Only reflect "listening" when the backend confirms;
+          // on failure (e.g. a build without on-device STT, or no model) surface the reason
+          // honestly and stay in the prior state — never fake a transcript.
           const next = !listening;
           btn.disabled = true;
           let errMsg = "";
@@ -2663,19 +3284,188 @@
           }
           btn.disabled = false;
           apply();
-          // Surface any failure AFTER apply() (which resets the status line from the
-          // unchanged listening flag) so the reason stays visible instead of being cleared.
+          // Surface any failure AFTER apply() — apply() resets the status line from the
+          // (unchanged) listening flag, so setting the error here keeps it visible instead
+          // of being cleared to "" (the bug that made a failed click look like a no-op).
           if (errMsg && status) status.textContent = errMsg;
         });
         apply();
       })();
 
-      act(() => invoke("view"));
+      // --- Command palette (⌘K) + Shortcuts modal (app menu → footer buttons). Searches
+      // and runs the same navigation / transport / emergency actions the console already
+      // exposes — no new host commands, just a faster way to reach them. Exposed to the
+      // global keymap via window.__cmdPalette so ⌘K + Esc integrate with the chords. ---
+      (function wireCommandPalette() {
+        const palette = document.getElementById("cmd-palette");
+        const input = document.getElementById("cmd-input");
+        const listEl = document.getElementById("cmd-list");
+        const shortcuts = document.getElementById("shortcuts");
+        if (!palette || !input || !listEl) return;
+        const emptyEl = palette.querySelector(".cmd-empty");
+
+        const commands = () => {
+          const cmds = [];
+          navItems.forEach((it) => {
+            if (!it.dataset.surface || it.getAttribute("aria-disabled") === "true") return;
+            const t = it.querySelector(".nav-t");
+            const name = (t ? t.textContent : it.textContent).trim();
+            cmds.push({ label: "Go to " + name, ico: "→", run: () => navGo(it) });
+          });
+          cmds.push({ label: "Go Live", ico: "●", sub: "⏎", run: () => act(() => invoke("go_live")) });
+          cmds.push({ label: "Next item", ico: "▶", sub: "Space", run: () => act(() => invoke("next")) });
+          cmds.push({ label: "Previous item", ico: "◀", sub: "←", run: () => act(() => invoke("previous")) });
+          cmds.push({ label: "Blackout output", ico: "■", sub: "B", run: () => toggleBlackout() });
+          cmds.push({ label: "Clear output", ico: "✕", sub: "Esc Esc", run: () => clearAll() });
+          cmds.push({ label: "Keyboard shortcuts", ico: "⌨", run: () => openShortcuts() });
+          return cmds;
+        };
+
+        let filtered = [];
+        let active = 0;
+        // Point the combobox at the active option so a screen reader announces it
+        // (aria-activedescendant is declared on #cmd-input; each option carries an id).
+        const syncActiveDescendant = () => {
+          if (filtered.length) input.setAttribute("aria-activedescendant", "cmd-opt-" + active);
+          else input.removeAttribute("aria-activedescendant");
+        };
+        const paint = () => {
+          Array.from(listEl.children).forEach((li, i) => {
+            const on = i === active;
+            li.classList.toggle("active", on);
+            li.setAttribute("aria-selected", on ? "true" : "false");
+            if (on && li.scrollIntoView) li.scrollIntoView({ block: "nearest" });
+          });
+          syncActiveDescendant();
+        };
+        const render = () => {
+          const q = input.value.trim().toLowerCase();
+          filtered = commands().filter((c) => !q || c.label.toLowerCase().includes(q));
+          if (active >= filtered.length) active = Math.max(0, filtered.length - 1);
+          listEl.innerHTML = "";
+          filtered.forEach((c, i) => {
+            const li = document.createElement("li");
+            li.className = "cmd-item" + (i === active ? " active" : "");
+            li.id = "cmd-opt-" + i;
+            li.setAttribute("role", "option");
+            li.setAttribute("aria-selected", i === active ? "true" : "false");
+            const ico = document.createElement("span");
+            ico.className = "cmd-item-ico"; ico.setAttribute("aria-hidden", "true");
+            ico.textContent = c.ico || "•";
+            const label = document.createElement("span");
+            label.textContent = c.label; // command labels are static, but textContent regardless
+            li.appendChild(ico);
+            li.appendChild(label);
+            if (c.sub) {
+              const s = document.createElement("span");
+              s.className = "cmd-item-sub"; s.textContent = c.sub;
+              li.appendChild(s);
+            }
+            li.addEventListener("mousemove", () => { if (active !== i) { active = i; paint(); } });
+            li.addEventListener("click", () => runAt(i));
+            listEl.appendChild(li);
+          });
+          if (emptyEl) emptyEl.hidden = filtered.length > 0;
+          syncActiveDescendant();
+        };
+        const runAt = (i) => { const c = filtered[i]; if (!c) return; closePalette(); c.run(); };
+
+        // Focus management for the modal contract (role=dialog aria-modal): remember what
+        // was focused before the modal stack opened and restore it on close. Palette and
+        // Shortcuts are mutually exclusive; `switching` suppresses a restore during a
+        // palette↔shortcuts handoff so focus doesn't bounce to the opener mid-transition.
+        // Opening either also closes the app menu, so ⌘K over an open menu is well-behaved.
+        let opener = null, switching = false;
+        const modalOpen = () => !palette.hidden || (shortcuts && !shortcuts.hidden);
+        const restoreFocus = () => {
+          if (switching) return;
+          const o = opener; opener = null;
+          // Idempotent: once a session's focus has been restored, opener is null, so a second
+          // call (e.g. closeAll() closing both modals, or the global Esc + the input's own Esc
+          // both firing) must NOT steal focus to the menu button — leave it on the restored
+          // element. Only the FIRST close of a session restores.
+          if (!o) return;
+          if (document.contains(o) && o.offsetParent !== null) { o.focus(); return; }
+          const mb = document.getElementById("app-menu-btn");
+          if (mb) mb.focus();
+        };
+
+        function openPalette() {
+          if (!modalOpen()) opener = document.activeElement;
+          switching = true; closeAppMenu(); closeShortcuts(); switching = false;
+          palette.hidden = false;
+          active = 0; input.value = ""; render(); input.focus();
+        }
+        function closePalette() { palette.hidden = true; restoreFocus(); }
+        function openShortcuts() {
+          if (!modalOpen()) opener = document.activeElement;
+          switching = true; closeAppMenu(); closePalette(); switching = false;
+          if (shortcuts) { shortcuts.hidden = false; const c = document.getElementById("sc-close"); if (c) c.focus(); }
+        }
+        function closeShortcuts() { if (shortcuts) shortcuts.hidden = true; restoreFocus(); }
+
+        input.addEventListener("input", () => { active = 0; render(); });
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "ArrowDown") { e.preventDefault(); active = Math.min(filtered.length - 1, active + 1); paint(); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); active = Math.max(0, active - 1); paint(); }
+          else if (e.key === "Enter") { e.preventDefault(); runAt(active); }
+          else if (e.key === "Escape") { e.preventDefault(); closePalette(); }
+          // Trap Tab: #cmd-input is the only focusable node in the dialog, so keep it here
+          // (aria-modal requires focus not to escape to the page behind the palette).
+          else if (e.key === "Tab") { e.preventDefault(); }
+        });
+        palette.addEventListener("click", (e) => { if (e.target === palette) closePalette(); });
+        if (shortcuts) shortcuts.addEventListener("click", (e) => { if (e.target === shortcuts) closeShortcuts(); });
+        const scClose = document.getElementById("sc-close");
+        if (scClose) scClose.addEventListener("click", closeShortcuts);
+        // Shortcuts modal: Esc closes; Tab is trapped to the close button (its only
+        // focusable node) so focus can't fall behind the role=dialog overlay.
+        if (shortcuts) shortcuts.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") { e.preventDefault(); closeShortcuts(); }
+          else if (e.key === "Tab") { e.preventDefault(); if (scClose) scClose.focus(); }
+        });
+        document.querySelectorAll("[data-open]").forEach((b) => {
+          b.addEventListener("click", () => {
+            closeAppMenu();
+            if (b.dataset.open === "palette") openPalette();
+            else if (b.dataset.open === "shortcuts") openShortcuts();
+          });
+        });
+
+        // Bridge for the global keymap: ⌘K opens the palette; Esc closes an open modal
+        // (and, crucially, the double-Esc clear-all does NOT arm while a modal is open).
+        window.__cmdPalette = {
+          open: openPalette,
+          isOpen: () => !palette.hidden || (shortcuts && !shortcuts.hidden),
+          closeAll: () => { closePalette(); closeShortcuts(); },
+        };
+      })();
+
+      // Host connection pill: green "Connected" while the view poll succeeds; amber
+      // "Reconnecting…" when a poll throws (a remote host dropped). Local mode never fails.
+      // Only touch the DOM when the state actually FLIPS — the 1s poll must not rewrite the
+      // pill every second (no needless class/text/attr churn on the hot path).
+      let lastConn = null;
+      const setConn = (ok) => {
+        if (ok === lastConn) return;
+        lastConn = ok;
+        const pill = document.getElementById("conn-pill");
+        const label = document.getElementById("conn-label");
+        if (!pill) return;
+        pill.classList.toggle("reconnecting", !ok);
+        if (label) label.textContent = ok ? "Connected" : "Reconnecting…";
+        pill.setAttribute("aria-label", ok ? "Host connected" : "Reconnecting to host");
+      };
+      (async () => {
+        try { render(await invoke("view")); setConn(true); }
+        catch (e) { setConn(false); }
+      })();
       // Poll so a running countdown ticks in the UI (the host advances it each frame).
       setInterval(async () => {
         try {
           render(await invoke("view"));
+          setConn(true);
         } catch (e) {
-          /* transient */
+          setConn(false);
         }
       }, 1000);
