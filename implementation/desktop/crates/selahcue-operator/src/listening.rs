@@ -12,7 +12,7 @@
 //! environment and **integrity-verified before load** (FR-156 / ADR-0012); no model ships in
 //! the binary (ADR-0012 defers delivery). Real accuracy/latency are spike-gated (S8/S11).
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -58,19 +58,46 @@ pub fn start(shell: OperatorShell) -> Result<(), String> {
     }
 
     // Resolve + integrity-verify + load the model BEFORE taking the worker lock: the
-    // multi-hundred-MB SHA-256 + whisper.cpp load is slow and must not block
-    // `is_listening()` / `stop()`. No model is bundled (ADR-0012).
-    let model_path = std::env::var("SELAHCUE_STT_MODEL").map_err(|_| {
-        "on-device STT needs a model: set SELAHCUE_STT_MODEL to the whisper model file path"
-            .to_string()
-    })?;
-    let expected_sha = std::env::var("SELAHCUE_STT_MODEL_SHA256").map_err(|_| {
-        "set SELAHCUE_STT_MODEL_SHA256 to the model's pinned SHA-256 (integrity gate, FR-156)"
-            .to_string()
-    })?;
+    // download + multi-hundred-MB SHA-256 + whisper.cpp load are slow and must not block
+    // `is_listening()` / `stop()`.
     let selection = HardwareProbe::detect().select_model();
+    // Model resolution: an explicit path override (advanced/offline installs), else
+    // download-on-demand of the hardware-probe-selected model into the per-user cache,
+    // pinned + integrity-verified (FR-156 / ADR-0012). Offline-first: this is only reached
+    // on the operator's explicit "Start listening" action; a cached model needs no network,
+    // and a network failure is surfaced as an error (no fabricated transcript).
+    let (model_path, expected_sha) = match std::env::var("SELAHCUE_STT_MODEL") {
+        Ok(path) => {
+            // A manual override still requires its pinned SHA-256.
+            let sha = std::env::var("SELAHCUE_STT_MODEL_SHA256").map_err(|_| {
+                "SELAHCUE_STT_MODEL is set — also set SELAHCUE_STT_MODEL_SHA256 (integrity gate, FR-156)"
+                    .to_string()
+            })?;
+            (PathBuf::from(path), sha)
+        }
+        Err(_) => {
+            let asset = selection.model.asset();
+            let cache = selahcue_stt::default_cache_dir();
+            eprintln!(
+                "SelahCue STT: resolving model {} (~{} MB) in {}…",
+                asset.file_name,
+                asset.size_bytes / 1_000_000,
+                cache.display()
+            );
+            let path = selahcue_stt::fetch_model(&asset, &cache, |done, total| {
+                if total > 0 {
+                    eprintln!(
+                        "SelahCue STT: downloading {} … {}%",
+                        asset.file_name,
+                        done.saturating_mul(100) / total
+                    );
+                }
+            })?;
+            (path, asset.sha256.to_string())
+        }
+    };
     // Verifies before load; a hash mismatch refuses to load.
-    let recognizer = WhisperRecognizer::load(Path::new(&model_path), &expected_sha, &selection)?;
+    let recognizer = WhisperRecognizer::load(&model_path, &expected_sha, &selection)?;
 
     let mut guard = worker_lock();
     if guard.is_some() {

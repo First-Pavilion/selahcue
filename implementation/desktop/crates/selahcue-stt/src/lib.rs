@@ -32,6 +32,8 @@ pub mod audio;
 pub mod engine;
 pub mod guard;
 pub mod model;
+#[cfg(feature = "download")]
+pub mod model_fetch;
 pub mod provider;
 pub mod pump;
 pub mod recognizer;
@@ -41,7 +43,11 @@ pub mod vad;
 pub use audio::{AudioChunk, AudioSource, FakeAudioSource, PcmRing, MAX_PCM_SAMPLES};
 pub use engine::{EngineConfig, SttEngine};
 pub use guard::FeedbackGuard;
-pub use model::{verify_model, Backend, HardwareProbe, ModelError, ModelSelection, WhisperModel};
+pub use model::{
+    verify_model, Backend, HardwareProbe, ModelAsset, ModelError, ModelSelection, WhisperModel,
+};
+#[cfg(feature = "download")]
+pub use model_fetch::{default_cache_dir, fetch_model};
 pub use provider::{SttProvider, MAX_PENDING_SEGMENTS};
 pub use pump::pump;
 pub use recognizer::{FakeRecognizer, RecognizedSegment, Recognizer};

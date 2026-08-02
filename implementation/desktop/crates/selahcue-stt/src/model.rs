@@ -130,6 +130,68 @@ impl WhisperModel {
             WhisperModel::Base => 150 * 1024 * 1024,
         }
     }
+
+    /// The pinned downloadable asset for this variant — the bundled public-domain-ish
+    /// whisper.cpp `ggml` weights from the upstream `ggerganov/whisper.cpp` model repo. The
+    /// SHA-256 is each file's published Git-LFS digest — the **same** digest
+    /// [`verify_model`] recomputes after download, so a corrupted or substituted file is
+    /// rejected (FR-156 / ADR-0012). Full signature/HSM custody is the Stage-13 hardening;
+    /// this is the hash-pin baseline. Values captured 2026-08 from Hugging Face.
+    pub fn asset(self) -> ModelAsset {
+        // whisper.cpp ggml weights are MIT-licensed (OpenAI Whisper) and served from the
+        // upstream model repo. The download URL and the pinned digest move together.
+        const BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
+        let (file_name, sha256, size_bytes) = match self {
+            WhisperModel::LargeV3Turbo => (
+                "ggml-large-v3-turbo.bin",
+                "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+                1_624_555_275,
+            ),
+            WhisperModel::Medium => (
+                "ggml-medium.bin",
+                "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+                1_533_763_059,
+            ),
+            WhisperModel::Small => (
+                "ggml-small.bin",
+                "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+                487_601_967,
+            ),
+            WhisperModel::Base => (
+                "ggml-base.bin",
+                "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+                147_951_465,
+            ),
+        };
+        ModelAsset {
+            model: self,
+            file_name,
+            url: BASE_URL,
+            sha256,
+            size_bytes,
+        }
+    }
+}
+
+/// A pinned, downloadable whisper model file: its name, the source URL prefix, the pinned
+/// SHA-256 the downloaded bytes must match, and the expected size. This is the supply-chain
+/// pin (ADR-0012): the URL and digest travel together and a mismatch refuses to load.
+#[derive(Debug, Clone, Copy)]
+pub struct ModelAsset {
+    pub model: WhisperModel,
+    pub file_name: &'static str,
+    /// URL prefix; the full download URL is `url` + `file_name`.
+    pub url: &'static str,
+    /// Lowercase-hex SHA-256 the downloaded file must match ([`verify_model`]).
+    pub sha256: &'static str,
+    pub size_bytes: u64,
+}
+
+impl ModelAsset {
+    /// The full download URL (`url` + `file_name`).
+    pub fn download_url(&self) -> String {
+        format!("{}{}", self.url, self.file_name)
+    }
 }
 
 /// The upper bound on resident model memory (ADR-0010): a model must fit within ~2 GB.
@@ -312,5 +374,38 @@ mod tests {
             threads: 1,
         };
         assert_eq!(probe.select_model().model, WhisperModel::Base);
+    }
+
+    #[test]
+    fn every_model_variant_has_a_well_formed_pinned_asset() {
+        // The download manifest must be a valid supply-chain pin for every variant: a
+        // 64-char lowercase-hex SHA-256 (the digest verify_model checks), an https URL, a
+        // `.bin` file name, and a plausible size. A malformed pin is a build defect.
+        for m in [
+            WhisperModel::LargeV3Turbo,
+            WhisperModel::Medium,
+            WhisperModel::Small,
+            WhisperModel::Base,
+        ] {
+            let a = m.asset();
+            assert_eq!(a.model, m);
+            assert_eq!(a.sha256.len(), 64, "{} sha256 not 64 hex", a.file_name);
+            assert!(
+                a.sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                "{} sha256 must be lowercase hex",
+                a.file_name
+            );
+            assert!(a.file_name.ends_with(".bin"));
+            let url = a.download_url();
+            assert!(url.starts_with("https://"), "{url} is not https");
+            assert!(url.ends_with(a.file_name));
+            assert!(
+                a.size_bytes > 1_000_000,
+                "{} size implausibly small",
+                a.file_name
+            );
+        }
     }
 }

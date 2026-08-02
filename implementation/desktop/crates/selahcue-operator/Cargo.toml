@@ -46,7 +46,7 @@ selahcue-scripture = { path = "../selahcue-scripture" }
 selahcue-present = { path = "../selahcue-present" }
 # On-device STT engine (optional; behind the `stt` feature). Pulls the native whisper.cpp +
 # cpal backends ONLY when `stt` is enabled — the default build never touches them.
-selahcue-stt = { path = "../selahcue-stt", features = ["whisper", "capture"], optional = true }
+selahcue-stt = { path = "../selahcue-stt", features = ["whisper", "capture", "download"], optional = true }
 
 [lints.clippy]
 unwrap_used = "warn"

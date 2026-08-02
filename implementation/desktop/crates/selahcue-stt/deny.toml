@@ -27,6 +27,11 @@ allow = [
   # backend itself is MIT). NOT copyleft. Added for the STT crate; ratify + propagate to
   # the root/operator policy if kept. See ClickUp 86ajtxzre.
   "Unlicense",
+  # Permissive Community Data License (no copyleft; permits redistribution). Carried by
+  # `webpki-roots` (the Mozilla CA-certificate bundle) that ureq's TLS uses under the
+  # `download` feature. Data-license analogue of the permissive code licenses above. Added
+  # for the STT crate; ratify + propagate to the root/operator policy if kept.
+  "CDLA-Permissive-2.0",
   "MPL-2.0",
   "OFL-1.1",
   "Ubuntu-font-1.0",

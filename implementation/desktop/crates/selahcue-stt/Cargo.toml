@@ -20,6 +20,10 @@ capture = ["dep:cpal"]
 # Real on-device recognition via whisper-rs (whisper.cpp). Off by default so CI needs no
 # native toolchain or model file; accuracy/latency stay spike-gated (S8/S11).
 whisper = ["dep:whisper-rs"]
+# Download-on-demand of a pinned model file (ureq + rustls). Pure-Rust — no native toolchain
+# — so this feature compiles without whisper; the downloaded file is SHA-256-verified before
+# use (FR-156). Off by default (offline-first: nothing is fetched unless enabled and invoked).
+download = ["dep:ureq"]
 
 [dependencies]
 selahcue-core = { path = "../selahcue-core" }
@@ -28,6 +32,8 @@ selahcue-core = { path = "../selahcue-core" }
 sha2 = "0.10"
 cpal = { version = "0.15", optional = true }
 whisper-rs = { version = "0.14", optional = true }
+# Blocking HTTP(S) client (rustls) for model download-on-demand (feature `download`).
+ureq = { version = "2", optional = true }
 
 [dev-dependencies]
 
