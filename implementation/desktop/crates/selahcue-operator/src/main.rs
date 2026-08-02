@@ -767,8 +767,10 @@ async fn dismiss_detection(
 }
 
 // --- Live-transcript source: on-device STT capture (feature `stt`) ------------------------
-// "Start listening" drives real on-device transcription into the local controller's
-// detection engine. On-device STT drives the *local* in-process controller only. Real audio
+// "Start listening" drives real on-device transcription into the detection engine. It works
+// whether or not an output window is open: the transcript is ingested through the backend's
+// dual path (local in-process controller, or forwarded over the wire to a connected
+// output-window host), so scripture detection populates the panels either way. Real audio
 // runs only in a build with `--features stt` (native whisper toolchain + model); otherwise
 // the commands still exist and return an honest "not in this build" error — the webview
 // surfaces it and never shows a fabricated transcript.
@@ -776,14 +778,20 @@ async fn dismiss_detection(
 /// Start on-device transcription into the live transcript.
 #[cfg(feature = "stt")]
 #[tauri::command]
-async fn start_listening(state: State<'_, AppState>) -> Result<(), String> {
-    match &state.backend {
-        Backend::Local(shell) => listening::start(shell.clone()),
-        Backend::Remote(_) => Err(
-            "On-device STT drives the local in-process controller; it is unavailable while \
-             connected to a remote output window."
-                .to_string(),
-        ),
+async fn start_listening(app: tauri::AppHandle) -> Result<(), String> {
+    // The worker (its own thread) loads the model + opens the mic and reports readiness; we
+    // await that here without blocking the executor. On failure, tear the worker back down so
+    // the UI is not left in a phantom "listening" state.
+    match listening::start(app).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+            listening::stop();
+            Err(e)
+        }
+        Err(_) => {
+            listening::stop();
+            Err("on-device STT worker aborted before it started".to_string())
+        }
     }
 }
 
