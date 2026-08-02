@@ -2654,17 +2654,18 @@
         btn.addEventListener("click", async () => {
           const next = !listening;
           btn.disabled = true;
+          let errMsg = "";
           try {
             await invoke(next ? "start_listening" : "stop_listening");
             listening = next;
-            if (status) status.textContent = "";
           } catch (err) {
-            const msg = err && err.message ? err.message : String(err);
-            if (status) status.textContent = msg;
-          } finally {
-            btn.disabled = false;
-            apply();
+            errMsg = err && err.message ? err.message : String(err);
           }
+          btn.disabled = false;
+          apply();
+          // Surface any failure AFTER apply() (which resets the status line from the
+          // unchanged listening flag) so the reason stays visible instead of being cleared.
+          if (errMsg && status) status.textContent = errMsg;
         });
         apply();
       })();
