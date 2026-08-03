@@ -229,8 +229,9 @@ pub const AUDIENCE_SCREENS: [&str; 1] = ["main"];
 /// The hard cap on the number of screens in the registry (no-leak): the built-ins plus
 /// any virtual screens the operator adds. Small — a church stage has a handful of outputs
 /// — so `AddScreen` cannot grow the registry without limit (the exact reason
-/// [`AUDIENCE_SCREENS`] was a fixed const before the registry).
-pub const MAX_SCREENS: usize = 16;
+/// [`AUDIENCE_SCREENS`] was a fixed const before the registry). At most **8** outputs: the
+/// two physical built-ins (`main` + `stage`) plus up to six virtual audience feeds.
+pub const MAX_SCREENS: usize = 8;
 
 /// A screen's role in the registry (Screens page — dynamic registry). Audience-class
 /// roles (`Main`/`LowerThird`/`Stream`) render the live content under a per-screen theme

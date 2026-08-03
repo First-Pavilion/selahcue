@@ -899,6 +899,30 @@ DRIVER = r"""
          active.closest('.screen-row') && active.closest('.screen-row').dataset.screen === "main",
          "registry: keyboard focus is restored to the toggle after the rebuild (a11y)");
 
+      // === Output cap: '+ Add virtual output' disables at the 8-output maximum (MAX_SCREENS) ===
+      var addBtnCap = document.getElementById("screen-add-btn");
+      var addRoleCap = document.getElementById("screen-add-role");
+      var rowCount = function(){ return document.querySelectorAll('#screens-list .screen-row').length; };
+      // Fill to the cap with virtual stream feeds (the registry currently holds 4 outputs).
+      var capGuard = 0;
+      while (rowCount() < 8 && !addBtnCap.disabled && capGuard++ < 12) {
+        addFeed("stream");
+        await new Promise(function(r){ setTimeout(r, 40); });
+      }
+      ok(rowCount() === 8, "cap: the registry fills to the 8-output maximum (got " + rowCount() + ")");
+      ok(addBtnCap.disabled && addRoleCap.disabled,
+         "cap: '+ Add virtual output' + role picker are DISABLED at the 8-output maximum");
+      ok(/aximum of 8/.test(addBtnCap.getAttribute("aria-label") || ""),
+         "cap: the disabled add affordance announces the 8-output maximum (a11y)");
+      // Deleting a virtual output drops below the cap and re-enables the affordance.
+      var lastV = Array.from(document.querySelectorAll('#screens-list .screen-row'))
+        .map(function(r){ return r.dataset.screen; })
+        .filter(function(id){ return /^stream-/.test(id); }).pop();
+      rowFor(lastV).querySelector('.screen-delete').click();
+      await waitFor(function(){ return !addBtnCap.disabled; });
+      ok(!addBtnCap.disabled && !addRoleCap.disabled,
+         "cap: deleting an output re-enables '+ Add virtual output' below the cap");
+
       // === Design 2.0 INSPECTOR: the per-output config controls drive the new backend
       // commands (orientation / scaling / mirror / delay / frame-rate / safe-area / layers). ===
       var insp = document.getElementById("screens-inspector");

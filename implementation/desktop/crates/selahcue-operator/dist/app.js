@@ -527,6 +527,23 @@
 
         // The topbar Identify targets every physical display; disabled with no outputs.
         document.getElementById("screens-identify").disabled = outs.length === 0;
+        // Cap the number of outputs at MAX_OUTPUTS (mirrors selahcue-app MAX_SCREENS — the
+        // host enforces it server-side; this disables the "+ Add virtual output" affordance
+        // + its role picker at the cap so the operator sees the limit rather than a silently
+        // refused click).
+        const MAX_OUTPUTS = 8;
+        const atCap = registry.length >= MAX_OUTPUTS;
+        const addBtn = document.getElementById("screen-add-btn");
+        const addRole = document.getElementById("screen-add-role");
+        if (addBtn) {
+          addBtn.disabled = atCap;
+          addBtn.title = atCap ? ("Maximum of " + MAX_OUTPUTS + " outputs reached") : "";
+          addBtn.setAttribute(
+            "aria-label",
+            atCap ? ("Add virtual output — maximum of " + MAX_OUTPUTS + " outputs reached") : "Add a virtual output"
+          );
+        }
+        if (addRole) addRole.disabled = atCap;
         // The "N connected" pill: physical outputs bound to a display (honest — a virtual
         // feed composes + previews but has no physical connection yet).
         const conn = document.getElementById("screens-conn");
