@@ -84,6 +84,8 @@ html = open(os.path.join(DIST, "index.html")).read()
 STUB = r"""
 <script>
   window.__calls = [];
+  window.__ev = {};          // event name -> [handlers] (Tauri event stub)
+  window.__startCtl = null;  // resolve/reject for a pending start_listening
   window.__renderAvailable = true; // flip to test the Remote/older-host text fallback
   // A REAL OperatorView so the boot render path (act->render->syncChrome->renderConsole) runs
   // exactly as in the app — the prior null stub masked the #7 render never firing on launch.
@@ -144,8 +146,22 @@ STUB = r"""
     if (cmd === "set_custom_theme") return Promise.resolve({});
     if (cmd === "save_theme") return Promise.resolve({saved_themes:[{name:args.name, theme_json:args.themeJson}]});
     if (cmd === "operator_state" || cmd === "state") return Promise.resolve({});
+    // Listen control: start_listening stays PENDING until the test drives it, mirroring the
+    // host worker that loads the model + opens the mic before signalling readiness.
+    if (cmd === "start_listening") return new Promise(function(res, rej){ window.__startCtl = {resolve:res, reject:rej}; });
+    if (cmd === "stop_listening") return Promise.resolve(null);
+    if (cmd === "get_chapter") return Promise.resolve({
+      reference: (args && args.reference) ? String(args.reference).replace(/:.*$/, "") : "Isaiah 61",
+      translation: "KJV", translations: ["KJV"],
+      verses: [[1, "verse one text"], [5, "verse five text"]],
+      verse_start: 5, verse_end: null, prev: true, next: true,
+    });
+    if (cmd === "approve_detection" || cmd === "dismiss_detection" || cmd === "go_live")
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
     return Promise.resolve(null);
-  } } };
+  } },
+  event: { listen: function(name, cb){ (window.__ev[name] = window.__ev[name] || []).push(cb); return Promise.resolve(function(){}); } } };
+  window.__emit = function(name, payload){ (window.__ev[name] || []).forEach(function(cb){ cb({event:name, payload:payload}); }); };
 </script>
 """
 
@@ -637,6 +653,125 @@ DRIVER = r"""
       var segIds = Array.from(logEl.children).map(function (r) { return r.dataset.segId; });
       ok(segIds.indexOf("199") >= 0 && segIds.indexOf("0") < 0,
          "M4 keeps the NEWEST 120 (id 199 present, id 0 pruned)");
+
+      // === right-column tabs: Service Timer | Detected Scriptures (Figma 430:124) ===
+      var rtabTimer = el("rtab-timer"), rtabDet = el("rtab-detections");
+      var rpTimer = el("rpanel-timer"), rpDet = el("rpanel-detections");
+      ok(rtabTimer && rtabDet && rpTimer && rpDet, "tabs: right-column tabs + panels exist");
+      ok(rtabTimer.getAttribute("aria-selected") === "true" && rpDet.hidden && !rpTimer.hidden,
+         "tabs: Service Timer active on boot; the Detected panel is hidden");
+      rtabDet.click();
+      ok(rtabDet.getAttribute("aria-selected") === "true" && !rpDet.hidden &&
+         rpTimer.hidden && rtabTimer.getAttribute("aria-selected") === "false",
+         "tabs: clicking Detected Scriptures shows its panel and hides the timer");
+      rtabDet.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+      ok(rtabTimer.getAttribute("aria-selected") === "true" && !rpTimer.hidden,
+         "tabs: ArrowLeft moves selection back to Service Timer (real tablist)");
+      // A new detection auto-surfaces the Detected tab (no focus steal) while on the timer tab.
+      render(Object.assign({}, baseView, { detections: [
+        { id: 991, reference: "John 3:16", text: "For God so loved the world", confidence: 95 },
+      ] }));
+      ok(rtabDet.getAttribute("aria-selected") === "true",
+         "tabs: a new detection auto-surfaces the Detected Scriptures tab");
+      var rcnt = el("detections-count");
+      ok(rcnt && rcnt.hidden === false && rcnt.textContent.indexOf("1") >= 0,
+         "tabs: the count badge on the tab shows the unactioned detection count");
+      // A bare detection must NOT display anything: no Preview/Live change, no chapter opened.
+      ok(!window.__calls.some(function(c){ return c.cmd === "get_chapter" && c.args && c.args.reference === "John 3:16"; }),
+         "flow: a detection does NOT open its chapter or touch Preview/Live (nothing until Stage)");
+      // Stage confirms it: approve_detection (Preview) + go_live (audience) + open the chapter.
+      el("detections-list").querySelector(".det-stage").click();
+      await sleep(15);
+      ok(window.__calls.some(function(c){ return c.cmd === "approve_detection" && c.args && c.args.detectionId === 991; }),
+         "flow: Stage → approve_detection (stages the verse in Preview)");
+      ok(window.__calls.some(function(c){ return c.cmd === "go_live"; }),
+         "flow: Stage → go_live (operator confirmed → pushed Live to the audience)");
+      ok(window.__calls.some(function(c){ return c.cmd === "get_chapter" && c.args && c.args.reference === "John 3:16"; }),
+         "flow: Stage → the full chapter opens in the Scriptures browser");
+      rtabTimer.click(); render(baseView); // reset for the following checks
+
+      // === display: recognised STT text reaches the operator through the FULL poll->render
+      // path (not just a direct syncTranscript call). This is what the 1s poll does with the
+      // host-authoritative view once the on-device STT source ingests segments. ===
+      var sttView = Object.assign({}, baseView, { transcript: [
+        { id: 9001, text: "For God so loved the world", start_ms: 5000 },
+        { id: 9002, text: "that he gave his only Son", start_ms: 9000 },
+      ] });
+      render(sttView); // the SAME top-level render() the 1s poll invokes
+      var sttLog = el("transcript-log");
+      var sttEmpty = el("transcript-empty");
+      ok(sttLog.children.length === 2 &&
+         sttLog.textContent.indexOf("For God so loved the world") >= 0 &&
+         sttLog.textContent.indexOf("that he gave his only Son") >= 0,
+         "display: STT segments in view.transcript render as visible lines in #transcript-log");
+      ok(sttEmpty.style.display === "none",
+         "display: the empty-state overlay is hidden once transcript lines arrive");
+      render(baseView); // restore so the trailing 1s poll stays consistent
+
+      // === R4 detection: a confidence-bearing detection renders the match-% pill, colour-
+      // coded green (>=90, e.g. an explicitly-spoken reference) vs amber "fuzzy" (a paraphrase). ===
+      var detView = Object.assign({}, baseView, { detections: [
+        { id: 501, reference: "John 3:16", text: "For God so loved the world", confidence: 95 },
+        { id: 502, reference: "Psalm 23:1", text: "The Lord is my shepherd", confidence: 72 },
+      ] });
+      render(detView); // the SAME render() the 1s poll invokes
+      var detList = el("detections-list");
+      var pills = detList.querySelectorAll(".match-pill");
+      ok(pills.length === 2 &&
+         detList.textContent.indexOf("95% MATCH") >= 0 &&
+         detList.textContent.indexOf("72% MATCH") >= 0,
+         "R4: detections render a match-% pill from view.confidence (95% + 72%)");
+      // #3 newest-first: the host queues oldest-first, so id 502 (last in the array) renders on top.
+      var firstRef = detList.querySelector(".detection .ref");
+      ok(firstRef && firstRef.textContent.indexOf("Psalm 23:1") >= 0,
+         "#3 the newest detection renders at the top (host oldest-first list reversed for display)");
+      ok(pills[0].className.indexOf("fuzzy") >= 0 && pills[1].className.indexOf("fuzzy") < 0,
+         "R4: pill colour follows its card — newest 72% fuzzy (amber) on top, 95% solid (green) below");
+      render(baseView); // restore so the trailing 1s poll stays consistent
+
+      // === listen control: a real state machine — the button never sits silently disabled,
+      // and "no transcript" is a diagnosable state, not a dead panel. ===
+      var lBtn = el("transcript-listen");
+      var lLabel = el("transcript-listen-label");
+      var lStatus = el("transcript-status");
+      ok(lLabel.textContent.indexOf("Start listening") >= 0 && !lBtn.disabled,
+         "listen: idle shows 'Start listening', enabled");
+      lBtn.click(); // start_listening stays pending (model load) — must show progress, not freeze
+      ok(lBtn.disabled && lLabel.textContent.indexOf("Preparing") >= 0,
+         "listen: clicking Start immediately shows 'Preparing…' (never a silent dead button)");
+      window.__emit("stt://progress", { done: 620000000, total: 1600000000, pct: 38 });
+      ok(lStatus.textContent.indexOf("38%") >= 0,
+         "listen: first-run model-download progress renders (Downloading model… 38%)");
+      window.__startCtl.resolve(null); // worker loaded the model + opened the mic
+      await sleep(10);
+      ok(!lBtn.disabled && lLabel.textContent.indexOf("Stop listening") >= 0,
+         "listen: once ready the control flips to 'Stop listening' (enabled)");
+      ok(lStatus.textContent.toLowerCase().indexOf("waiting for speech") >= 0,
+         "listen: listening but no lines yet -> 'waiting for speech…' (makes empty transcript diagnosable)");
+      // A live mic level surfaces in the waiting status so a dead/denied microphone (peak 0
+      // while speaking) is visibly distinct from a working mic with recognition pending.
+      window.__emit("stt://level", { pct: 0 });
+      ok(lStatus.textContent.indexOf("mic 0%") >= 0,
+         "listen: mic level 0 while waiting shows '(mic 0%)' — isolates a dead/denied microphone");
+      window.__emit("stt://level", { pct: 42 });
+      ok(lStatus.textContent.indexOf("mic 42%") >= 0,
+         "listen: a live mic level shows '(mic 42%)' (audio is arriving; recognition is downstream)");
+      // Sustained 0% (denied mic) turns into an actionable permission hint, not an endless wait.
+      var lSub = el("transcript-empty-sub");
+      for (var z = 0; z < 14; z++) window.__emit("stt://level", { pct: 0 });
+      ok(lSub.textContent.indexOf("Privacy & Security") >= 0 && lSub.textContent.indexOf("Microphone") >= 0,
+         "listen: a run of 0% surfaces the 'grant mic access' hint (actionable, not a dead 0%)");
+      render(Object.assign({}, baseView, { transcript: [{ id: 77, text: "and it came to pass", start_ms: 1000 }] }));
+      ok(lStatus.textContent.toLowerCase().indexOf("transcribing") >= 0,
+         "listen: once a line is recognised, status shows 'transcribing on-device'");
+      lBtn.click(); await sleep(5); // Stop -> idle
+      lBtn.click();                 // Start again -> preparing/pending
+      window.__startCtl.reject({ message: "This build does not include on-device speech-to-text." });
+      await sleep(10);
+      ok(!lBtn.disabled && lStatus.textContent.indexOf("does not include on-device") >= 0,
+         "listen: a start failure surfaces the reason and re-enables the button (no silent no-op)");
+      render(baseView); // restore the view for the trailing poll
+
       // (The Theme-Designer's MAX_ELEMENTS=64 cap is enforced + tested host-side in Rust —
       // engine/present tests — so it is not re-asserted here as a tautology.)
 

@@ -2540,6 +2540,13 @@
       // then sends it to the audience. Keywords fall back to search hits.
       let currentTranslation = "KJV";
       let currentChapter = null; // {reference, verses:[[num,text]...], prev, next}
+
+      // Called only when the operator STAGES a detection (an explicit confirm) — open the
+      // detected verse's FULL chapter in the browser, cursored to the verse, for follow-on
+      // browsing. A bare detection never touches this panel (or Preview/Live).
+      window.__openChapterForStage = function (reference) {
+        if (reference) loadChapter(reference, null);
+      };
       let verseCursor = -1;
       let scriptureTimer = null;
       let scriptureHits = [];
@@ -3132,6 +3139,10 @@
         const all = Array.isArray(view.transcript) ? view.transcript : [];
         const segs =
           all.length > MAX_TRANSCRIPT_ROWS ? all.slice(-MAX_TRANSCRIPT_ROWS) : all;
+        // Report the line count every poll (before the change-key early-return) so the listen
+        // control's "waiting for speech…" vs "transcribing" status is always current, even when
+        // the transcript itself hasn't changed. Set by wireTranscriptListen.
+        if (window.__sttNoteTranscript) window.__sttNoteTranscript(segs.length);
         const key = JSON.stringify(segs.map((s) => [s.id, s.text]));
         if (key === transcriptKey) return; // poll-safe: skip identical re-renders
         transcriptKey = key;
@@ -3169,7 +3180,8 @@
       }
 
       function syncDetections(view) {
-        const dets = Array.isArray(view.detections) ? view.detections : [];
+        // Newest detection first: the host queues them oldest-first, so reverse for display.
+        const dets = (Array.isArray(view.detections) ? view.detections : []).slice().reverse();
         // Confidence is part of the change key so a match-% update re-renders the row.
         const key = JSON.stringify(dets.map((d) => [d.id, d.reference, d.text, d.confidence]));
         if (key === detectionsKey) return;
@@ -3183,6 +3195,10 @@
           count.hidden = dets.length === 0;
           count.textContent = dets.length + " new";
         }
+        // Surface a new detection on the right-column tab (never steals focus / interrupts a
+        // timer edit). A detection does NOT touch Preview/Live or the Scriptures browser — that
+        // only happens when the operator clicks Stage (an explicit confirm).
+        if (window.__rightTabsOnDetections) window.__rightTabsOnDetections(dets.length);
         list.innerHTML = "";
         empty.style.display = dets.length ? "none" : "";
         for (const d of dets) {
@@ -3216,15 +3232,21 @@
 
           const actions = document.createElement("div");
           actions.className = "detection-actions";
-          // Stage = approve_detection (into Preview; the operator then reviews + GO LIVEs —
-          // never auto-displayed, FR-115). Indigo primary to match the Figma.
+          // Stage = the operator's confirmation (FR-115): it stages the verse in Preview AND
+          // pushes it Live to the audience in one action, then opens its full chapter in the
+          // Scriptures browser. A bare detection never displays anything on its own.
           const approve = document.createElement("button");
           approve.className = "det-stage";
           approve.type = "button";
           approve.textContent = "Stage";
-          approve.setAttribute("aria-label", "Stage " + d.reference + " in preview");
+          approve.setAttribute("aria-label", "Stage " + d.reference + " and show it live");
           approve.onclick = () =>
-            act(() => invoke("approve_detection", { detectionId: d.id }));
+            act(async () => {
+              await invoke("approve_detection", { detectionId: d.id }); // stage in Preview
+              const v = await invoke("go_live"); // confirmed → push to the audience output
+              if (window.__openChapterForStage) window.__openChapterForStage(d.reference);
+              return v;
+            });
           const dismiss = document.createElement("button");
           dismiss.type = "button";
           dismiss.textContent = "Dismiss";
@@ -3240,11 +3262,12 @@
       }
 
       // Live transcript is audio-based (R3): a Start / Stop listening toggle flips the
-      // capture state and the REC indicator. On-device STT (whisper/Vosk) plugs in behind
-      // this seam; until it lands no lines are fabricated — the panel honestly shows the
-      // listening state and the transcript stays empty. State is client-side (there is no
-      // host listen command yet), so it resets on reload — acceptable for an honest,
-      // not-yet-wired affordance.
+      // capture state and the REC indicator. It drives the on-device STT source over the
+      // host commands `start_listening` / `stop_listening`; recognised lines then stream
+      // into #transcript-log from the host-authoritative `view.transcript` (rendered by
+      // `syncTranscript` on the 1s poll) — never fabricated. The button only reflects
+      // "listening" once the backend confirms; a build without on-device STT (or a missing
+      // model) surfaces the reason honestly and stays in the prior state.
       (function wireTranscriptListen() {
         const btn = document.getElementById("transcript-listen");
         const label = document.getElementById("transcript-listen-label");
@@ -3254,42 +3277,197 @@
         const sub = document.getElementById("transcript-empty-sub");
         const status = document.getElementById("transcript-status");
         if (!btn) return;
-        let listening = false;
+
+        // A small state machine so the control NEVER sits silently disabled: pressing Start
+        // moves idle → preparing → (downloading the model, first run only) → listening; a
+        // build/model/mic failure surfaces the reason and returns to idle. `start_listening`
+        // resolves only once the host worker has loaded the model + opened the mic — which on
+        // first run downloads a ~1.6 GB model (minutes) — so we show that progress instead of
+        // a dead button. Recognition itself is host-authoritative: recognised lines arrive in
+        // `#transcript-log` via the 1s poll (syncTranscript); this only drives the control and
+        // the empty-state copy, and reports whether any lines have been recognised yet.
+        let sttState = "idle"; // idle | preparing | downloading | listening | error
+        let dlPct = null;
+        let lastErr = "";
+        let hasLines = false;
+        let micPct = null; // live input level while listening (null until the host reports one)
+        let zeroTicks = 0; // consecutive mic-level reports at 0% while listening (no audio)
+        const NO_AUDIO_TICKS = 12; // ~2.5s of silence (levels arrive ~5/s) → surface the hint
+
         function apply() {
+          const listening = sttState === "listening";
+          const busy = sttState === "preparing" || sttState === "downloading";
+          btn.disabled = busy;
           btn.classList.toggle("listening", listening);
           btn.setAttribute("aria-pressed", listening ? "true" : "false");
-          if (label) label.textContent = listening ? "Stop listening" : "Start listening";
+          if (label)
+            label.textContent = busy
+              ? "Preparing…"
+              : listening
+                ? "Stop listening"
+                : "Start listening";
           if (ico) ico.textContent = listening ? "⏹" : "▶";
           if (rec) rec.hidden = !listening;
-          if (msg) msg.textContent = listening ? "Listening for the sermon…" : "Not listening yet.";
+          if (msg)
+            msg.textContent = listening
+              ? "Listening for the sermon…"
+              : busy
+                ? "Preparing on-device transcription…"
+                : "Not listening yet.";
           if (sub) {
-            sub.textContent = listening
-              ? "On-device transcription (R3) plugs in here — no lines appear until it lands."
-              : "Press Start listening to capture the sermon audio.";
+            sub.textContent =
+              sttState === "downloading"
+                ? "Downloading the speech model (one-time)" +
+                  (dlPct == null ? "…" : " — " + dlPct + "%")
+                : sttState === "preparing"
+                  ? "Loading the speech model and opening the microphone. First run downloads it (~1.6 GB) and can take a minute."
+                  : listening
+                    ? zeroTicks >= NO_AUDIO_TICKS && !hasLines
+                      ? "No audio is reaching the microphone (0%). Grant mic access in System Settings → Privacy & Security → Microphone, then stop and start listening again."
+                      : "On-device transcription is running — recognised lines appear here as the sermon is spoken."
+                    : "Press Start listening to capture the sermon audio.";
           }
-          if (status) status.textContent = listening ? "Listening — capturing audio." : "";
+          if (status)
+            status.textContent =
+              sttState === "downloading"
+                ? "Downloading model…" + (dlPct == null ? "" : " " + dlPct + "%")
+                : sttState === "preparing"
+                  ? "Preparing on-device transcription…"
+                  : sttState === "error"
+                    ? lastErr
+                    : listening
+                      ? hasLines
+                        ? "Listening — transcribing on-device."
+                        : "Listening — waiting for speech…" +
+                          (micPct == null ? "" : " (mic " + micPct + "%)")
+                      : "";
         }
-        btn.addEventListener("click", async () => {
-          // Drive the host STT source. Only reflect "listening" when the backend confirms;
-          // on failure (e.g. a build without on-device STT, or no model) surface the reason
-          // honestly and stay in the prior state — never fake a transcript.
-          const next = !listening;
-          btn.disabled = true;
-          let errMsg = "";
-          try {
-            await invoke(next ? "start_listening" : "stop_listening");
-            listening = next;
-          } catch (err) {
-            errMsg = err && err.message ? err.message : String(err);
+
+        // The 1s poll reports whether any recognised lines have arrived, so the status can
+        // honestly distinguish "listening but nothing recognised yet" (mic/speech) from
+        // "transcribing" — turning a silent empty panel into a diagnosable state.
+        window.__sttNoteTranscript = function (count) {
+          const now = count > 0;
+          if (now !== hasLines) {
+            hasLines = now;
+            if (sttState === "listening") apply();
           }
-          btn.disabled = false;
+        };
+
+        // Optional first-run model-download progress, pushed from the host worker. The control
+        // still works without it (just without a %); only meaningful while starting.
+        if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) {
+          window.__TAURI__.event.listen("stt://progress", function (e) {
+            const p = (e && e.payload) || {};
+            if (sttState === "preparing" || sttState === "downloading") {
+              sttState = "downloading";
+              dlPct = typeof p.pct === "number" ? p.pct : null;
+              apply();
+            }
+          });
+          // Live mic level: lets the "waiting for speech…" status show whether audio is even
+          // arriving (a level stuck at 0 while speaking ⇒ mic/permission, not the UI).
+          window.__TAURI__.event.listen("stt://level", function (e) {
+            const p = (e && e.payload) || {};
+            if (typeof p.pct === "number") {
+              micPct = p.pct;
+              if (sttState === "listening" && !hasLines) {
+                // Track a run of silence so a mic that delivers nothing (0% — usually denied
+                // permission) turns into an actionable hint instead of an endless wait.
+                zeroTicks = p.pct === 0 ? zeroTicks + 1 : 0;
+                apply();
+              }
+            }
+          });
+        }
+
+        btn.addEventListener("click", async () => {
+          if (sttState === "preparing" || sttState === "downloading") return; // starting; ignore
+          if (sttState === "listening") {
+            // Stop — reflect it immediately (stop is idempotent host-side).
+            sttState = "idle";
+            dlPct = null;
+            lastErr = "";
+            hasLines = false;
+            micPct = null;
+            zeroTicks = 0;
+            apply();
+            try {
+              await invoke("stop_listening");
+            } catch (err) {
+              /* idempotent; nothing to surface */
+            }
+            return;
+          }
+          // Start — show progress at once so the control never looks hung during the load.
+          sttState = "preparing";
+          dlPct = null;
+          lastErr = "";
+          hasLines = false;
           apply();
-          // Surface any failure AFTER apply() — apply() resets the status line from the
-          // (unchanged) listening flag, so setting the error here keeps it visible instead
-          // of being cleared to "" (the bug that made a failed click look like a no-op).
-          if (errMsg && status) status.textContent = errMsg;
+          try {
+            await invoke("start_listening");
+            sttState = "listening";
+          } catch (err) {
+            lastErr = err && err.message ? err.message : String(err);
+            sttState = "error";
+          }
+          apply();
         });
         apply();
+      })();
+
+      // --- Right column tabs: Service Timer | Detected Scriptures (Figma 430:124). Tabbing
+      // the two gives the detection list the full column height (≥3 cards). A real tablist:
+      // ←/→ move between tabs, aria-selected + roving tabindex, panels toggle `hidden`. A NEW
+      // detection surfaces the Detected tab — but never while the operator is setting a timer,
+      // and never by stealing focus. ---
+      (function wireRightTabs() {
+        const tabs = [
+          document.getElementById("rtab-timer"),
+          document.getElementById("rtab-detections"),
+        ];
+        if (!tabs[0] || !tabs[1]) return;
+        const panelOf = (t) => document.getElementById(t.getAttribute("aria-controls"));
+        function select(tab, focus) {
+          for (const t of tabs) {
+            const on = t === tab;
+            t.classList.toggle("active", on);
+            t.setAttribute("aria-selected", on ? "true" : "false");
+            t.tabIndex = on ? 0 : -1;
+            const p = panelOf(t);
+            if (p) p.hidden = !on;
+          }
+          if (focus) tab.focus();
+        }
+        tabs.forEach((t, i) => {
+          t.addEventListener("click", () => select(t, false));
+          t.addEventListener("keydown", (e) => {
+            if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+              e.preventDefault();
+              const d = e.key === "ArrowRight" ? 1 : tabs.length - 1;
+              select(tabs[(i + d) % tabs.length], true);
+            } else if (e.key === "Home") {
+              e.preventDefault();
+              select(tabs[0], true);
+            } else if (e.key === "End") {
+              e.preventDefault();
+              select(tabs[tabs.length - 1], true);
+            }
+          });
+        });
+        // Called by syncDetections after the count updates.
+        let prevCount = 0;
+        window.__rightTabsOnDetections = function (count) {
+          const det = tabs[1];
+          if (count > prevCount && det.getAttribute("aria-selected") !== "true") {
+            const timerPanel = document.getElementById("rpanel-timer");
+            const editingTimer =
+              timerPanel && timerPanel.contains(document.activeElement);
+            if (!editingTimer) select(det, false); // surface, don't steal focus
+          }
+          prevCount = count;
+        };
       })();
 
       // --- Command palette (⌘K) + Shortcuts modal (app menu → footer buttons). Searches

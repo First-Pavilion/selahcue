@@ -140,18 +140,25 @@ fn operator_webview_is_pinned_to_the_canonical_tokens() {
         "zone-center",
         "zone-right",
         "obs-row",
-        // Live transcript (R3) + scripture-detection approval queue (R4): FUNCTIONAL
-        // but HONEST — they stream REAL host data (never fabricated), keep an honest
-        // empty state that discloses the on-device STT (R3) / detection (R4) seam. Live
-        // transcript is audio-based: a Start/Stop listening toggle (#transcript-listen)
-        // flips the capture state — there is NO manual "type a line" feed.
+        // Live transcript (R3) + scripture-detection approval queue (R4): FUNCTIONAL —
+        // they stream REAL host data (never fabricated). Live transcript is audio-based: a
+        // Start/Stop listening toggle (#transcript-listen) drives the on-device STT source
+        // and recognised lines render into #transcript-log — there is NO manual "type a
+        // line" feed. The copy affirmatively states transcription is running (pinned so it
+        // never regresses to a pre-STT "not yet wired" disclosure).
         "id=\"transcript\"",
         "id=\"transcript-log\"",
         "id=\"transcript-listen\"",
-        "transcription (R3)",
+        "On-device transcription",
         "id=\"detections\"",
         "id=\"detections-list\"",
         "detection (R4)",
+        // Right column is tabbed (Figma 430:124): Service Timer | Detected Scriptures share the
+        // column so ≥3 detections fit. A real tablist with a count badge on the Detected tab.
+        "role=\"tablist\"",
+        "id=\"rtab-timer\"",
+        "id=\"rtab-detections\"",
+        "role=\"tabpanel\"",
     ] {
         assert!(html.contains(needle), "webview missing {needle:?}");
     }

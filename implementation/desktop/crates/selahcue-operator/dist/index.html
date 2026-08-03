@@ -105,17 +105,18 @@
             <button id="add-item">+ Add</button>
           </div>
         </section>
-        <!-- Live transcript (R3). Segments stream from the host's transcript engine.
-             The default provider is injected text (the field below); on-device STT
-             (whisper/Vosk) plugs in behind the same seam. No fabricated transcript is
-             ever shown — the stream is empty until the host reports real segments. -->
+        <!-- Live transcript (R3). Segments stream from the host's transcript engine,
+             recognised on-device by the STT source that the listen control starts. No
+             fabricated transcript is ever shown — the stream is empty until the host
+             reports real segments. -->
         <section id="transcript" class="fwd-panel" aria-label="Live transcript">
           <div class="fwd-head card-head">
             <h2>Live Transcript</h2>
             <!-- Recording indicator — shown only while listening. Live transcript is
-                 audio-based (R3): on-device STT plugs in behind the listen control below,
-                 so no lines are fabricated until it lands. Decorative (aria-hidden); the
-                 accessible announcement is carried by #transcript-status. -->
+                 audio-based (R3): the listen control below drives the on-device STT source,
+                 and recognised lines stream into #transcript-log (never fabricated).
+                 Decorative (aria-hidden); the accessible announcement is carried by
+                 #transcript-status. -->
             <span id="transcript-rec" class="rec-chip" aria-hidden="true" hidden>
               <span class="rec-dot"></span>REC
             </span>
@@ -199,12 +200,22 @@
       </div>
       <!-- RIGHT zone: the service timer (top), recent detections, and outputs. -->
       <div class="zone zone-right">
-        <aside class="side-panel" aria-label="Service timer">
-          <div class="card-head">
-            <h2>Service Timer</h2>
-            <span id="timer-state" class="status-pill" hidden><span class="status-dot" aria-hidden="true"></span><span
-                id="timer-state-label">RUNNING</span></span>
+        <!-- Timer + Detected Scriptures share the column via tabs so ≥3 detections fit at once
+             (Figma 430:124). Both keep their existing ids/JS hooks; only the container is tabbed. -->
+        <section class="right-tabs fwd-panel" aria-label="Timer and detected scriptures">
+          <div class="tabbar" role="tablist" aria-label="Timer and detected scriptures">
+            <button class="rtab active" id="rtab-timer" type="button" role="tab" aria-selected="true"
+              aria-controls="rpanel-timer">Service Timer</button>
+            <button class="rtab" id="rtab-detections" type="button" role="tab" aria-selected="false"
+              aria-controls="rpanel-detections" tabindex="-1">Detected Scriptures <span class="count-pill"
+                id="detections-count" hidden></span></button>
           </div>
+          <div class="rpanel" id="rpanel-timer" role="tabpanel" aria-labelledby="rtab-timer">
+            <aside class="side-panel" aria-label="Service timer">
+              <div class="rpanel-head">
+                <span id="timer-state" class="status-pill" hidden><span class="status-dot" aria-hidden="true"></span><span
+                    id="timer-state-label">RUNNING</span></span>
+              </div>
           <!-- Big countdown readout in an inset (Figma 323:130). #timer-big keeps its id
                (written by syncChrome); the subtext explains what it counts down. -->
           <div class="timer-display">
@@ -241,17 +252,14 @@
             <button id="timer-stop" class="timer-stop-btn">Stop</button>
           </div>
           <span class="timer-note">Shown on the stage output only</span>
-        </aside>
-        <!-- Scripture detection approval queue (R4). Candidates detected in the
-             transcript surface here; the operator approves (stages the verse in
-             Preview) or dismisses. Detections never auto-display (operator-confirmed,
-             FR-115). No fabricated detections — the list is empty until the host
-             reports real candidates. -->
-        <section id="detections" class="fwd-panel" aria-label="Detected scriptures">
-          <div class="card-head">
-            <h2><span class="det-star" aria-hidden="true">✦</span> Detected Scriptures</h2>
-            <span class="count-pill" id="detections-count" hidden></span>
-          </div>
+            </aside>
+          </div><!-- /rpanel-timer -->
+          <div class="rpanel" id="rpanel-detections" role="tabpanel" aria-labelledby="rtab-detections" hidden>
+            <!-- Scripture detection approval queue (R4). Candidates detected in the transcript
+                 surface here; approve stages the verse in Preview, dismiss removes it. Never
+                 auto-displays (operator-confirmed, FR-115); empty until the host reports real
+                 candidates. The count shows on the tab above. -->
+            <section id="detections" aria-label="Detected scriptures">
           <!-- Detection mode. "Operator confirms" is the only live mode — detections never
                auto-display (FR-115). Auto-stage / auto-approve are honest 'later' options
                (disabled), not wired, so the safety invariant is preserved. -->
@@ -268,9 +276,11 @@
             <span class="fwd-icon" aria-hidden="true">✨</span>
             <span class="fwd-msg">No scriptures detected yet.</span>
             <span class="fwd-sub">Scriptures spoken aloud surface here to stage in one tap. Automatic
-              on-device detection (R4) plugs in behind the transcript.</span>
+              detection (R4) never stages or goes live on its own — it stays operator-confirmed (FR-115).</span>
           </div>
-        </section>
+            </section>
+          </div><!-- /rpanel-detections -->
+        </section><!-- /right-tabs -->
       </div><!-- /zone-right -->
     </div><!-- /surface-console -->
 
