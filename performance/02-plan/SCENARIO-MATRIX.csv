@@ -1,0 +1,19 @@
+scenario_id,concern,scenario,client,workload,metric_ids,verifier,evidence,result
+S01,lag,Trigger a staged slide to live at 1080p,operator,worst single go-live,M1,go_live_slide_trigger_latency_is_within_budget,04-results/BASELINE-REPORT.md,PASS
+S02,lag,Stage then go-live scripture repeatedly at 1080p,operator,25 warmed iterations,M2,scripture_stage_to_live_latency_is_measured,04-results/BASELINE-REPORT.md,PASS median 2.8ms
+S03,lag,Trigger the longest KJV verse through the auto-fit path,operator,worst single go-live,M3,go_live_latency_holds_for_the_longest_verse_auto_fit,04-results/BASELINE-REPORT.md,PASS
+S04,lag,Full-scan keyword search for a rare phrase,operator,worst single search over ~31k verses,M4,keyword_search_meets_the_500ms_budget,04-results/BASELINE-REPORT.md,PASS
+S05,correctness,GPU compositor vs CPU rasterizer offscreen readback,audience output,per-frame parity,M5,selahcue-gpu test_parity,04-results/BASELINE-REPORT.md,PASS SSIM>=0.99
+S06,leak,Host never polls the STT segment sink under a flood,stt worker,adversarial flood,M6,bounded_segment_queue_caps_when_host_never_polls,04-results/BOTTLENECK-ANALYSIS.md,PASS
+S07,leak,Flood the PCM ring with audio samples,stt capture,adversarial flood,M7,bounded_pcm_ring_caps_under_a_flood,04-results/BOTTLENECK-ANALYSIS.md,PASS
+S08,leak,Continuous speech with no silence,stt engine,10s+ continuous,M8,bounded_utterance_accumulator_force_closes_continuous_speech,04-results/BOTTLENECK-ANALYSIS.md,PASS
+S09,leak,Flood the transcript log and detection queue,core,adversarial flood,M9 M10,core transcript + detection bounded tests,04-results/BOTTLENECK-ANALYSIS.md,PASS
+S10,leak,Render text caches over many renders,present raster,thousands of renders,M12,text_caches_stay_bounded_over_many_renders,04-results/BOTTLENECK-ANALYSIS.md,PASS
+S11,leak,Image decode cache over many media loads,present media,many decodes,M13,the_image_decode_cache_stays_bounded,04-results/BOTTLENECK-ANALYSIS.md,PASS
+S12,leak,Presenter state over many stage/live cycles,present,long run,M17,presenter_state_is_bounded_over_many_cycles,04-results/BOTTLENECK-ANALYSIS.md,PASS
+S13,concurrency,Many LAN connect/disconnect cycles,mobile controller,connection churn,M14,connections_do_not_leak_server_state,03-suite/TEST-INVENTORY.md,PASS
+S14,concurrency,Stalled TLS half-open handshakes,mobile controller,stalled handshakes,M15,stalled_half_open_connections_are_reaped,03-suite/TEST-INVENTORY.md,PASS
+S15,concurrency,Session registry under a flood of sessions,mobile controller,session flood,M16,active_sessions_are_hard_capped,03-suite/TEST-INVENTORY.md,PASS
+S16,leak,At-rest encryption open/migrate/backup,data,feature=encryption E2E,,selahcue-data --features encryption,03-suite/TEST-INVENTORY.md,PASS
+S17,nfr,Idle process resident memory,app,steady idle,M18,scripts/measure_nfr.sh,05-handoff/RELEASE-RECOMMENDATION.md,OWNER-RUN
+S18,nfr,Cold start to first frame,app,launch,M19,scripts/measure_nfr.sh,05-handoff/RELEASE-RECOMMENDATION.md,OWNER-RUN
