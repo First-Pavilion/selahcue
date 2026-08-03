@@ -188,6 +188,10 @@ pub struct LiveController {
     /// strangers shall" / "feed your flock") is still matched, not just single-segment quotes.
     /// Bounded to [`QUOTE_WINDOW_SEGMENTS`] (no-leak).
     recent_texts: std::collections::VecDeque<String>,
+    /// The current streaming INTERIM transcript line (recognised words for the utterance still
+    /// being spoken). Shown live below the finalised transcript; replaced by each interim and
+    /// cleared when the utterance finalises. Not logged and not run through detection.
+    partial: Option<String>,
 }
 
 /// How many recent transcript segments the fuzzy quote matcher looks back over, so a
@@ -586,6 +590,7 @@ impl LiveController {
             screen_registry_dirty: false,
             transcript: TranscriptEngine::new(),
             recent_texts: std::collections::VecDeque::new(),
+            partial: None,
         }
     }
 
@@ -593,7 +598,21 @@ impl LiveController {
     /// scripture detection over it. Host-facing: the desktop's transcription provider
     /// pumps segments here directly (out-of-band from render); the same path backs the
     /// `IngestTranscript` wire command. Returns the number of NEW detections queued.
-    pub fn ingest_transcript(&mut self, text: &str, start_ms: u64, end_ms: u64) -> usize {
+    pub fn ingest_transcript(
+        &mut self,
+        text: &str,
+        start_ms: u64,
+        end_ms: u64,
+        is_final: bool,
+    ) -> usize {
+        if !is_final {
+            // Streaming interim (R3): show the live in-progress line, but do NOT log it or run
+            // detection — a later final for the same utterance supersedes it.
+            self.partial = (!text.trim().is_empty()).then(|| text.to_string());
+            return 0;
+        }
+        // Final: the utterance closed, so the interim is superseded.
+        self.partial = None;
         // Exact reference detection PLUS the fuzzy quote/paraphrase rung (R4): the corpus
         // matcher lives in selahcue-scripture (the pure core cannot see the corpus), so its
         // most-likely-verse suggestion for a spoken quotation is enqueued alongside exact
@@ -1478,6 +1497,8 @@ impl LiveController {
                     text: s.text.clone(),
                 })
                 .collect(),
+            // The live in-progress line (streaming interim), shown below the finalised tail.
+            partial_transcript: self.partial.clone(),
             // The pending detection queue, each with its verse text (default translation)
             // so the operator sees WHAT they would stage before approving.
             detections: self
@@ -2076,14 +2097,16 @@ impl LiveController {
                 text,
                 start_ms,
                 end_ms,
+                is_final,
             } => {
                 let start = start_ms.unwrap_or(0);
                 // A missing/backwards end clamps to start inside the engine.
                 let end = end_ms.unwrap_or(start);
                 // Run the FULL R4 detection (exact + fuzzy quote/paraphrase over the rolling
                 // window), not just exact — this is the wire path a remote/mobile controller and
-                // the STT worker feed, so paraphrases must resolve here too.
-                self.ingest_transcript(text, start, end);
+                // the STT worker feed, so paraphrases must resolve here too. A streaming interim
+                // (`is_final == false`) only updates the live partial line.
+                self.ingest_transcript(text, start, end, *is_final);
                 ControllerReply::Ack
             }
             Command::ApproveDetection { detection_id } => {

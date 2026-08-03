@@ -589,7 +589,7 @@ async fn remote_transcription_detects_and_approves_over_the_wire() {
         .unwrap();
 
     let v = op
-        .ingest_transcript("please turn to John chapter 3 verse 16", 0, 2_000)
+        .ingest_transcript("please turn to John chapter 3 verse 16", 0, 2_000, true)
         .await
         .unwrap();
     assert_eq!(v.transcript.len(), 1, "the utterance streamed to the host");
@@ -628,7 +628,7 @@ async fn assistant_cannot_ingest_but_can_action_detections_over_the_wire() {
         .await
         .unwrap();
     let v = asst
-        .ingest_transcript("First Corinthians 13", 0, 1_000)
+        .ingest_transcript("First Corinthians 13", 0, 1_000, true)
         .await
         .unwrap();
     assert!(
@@ -641,7 +641,7 @@ async fn assistant_cannot_ingest_but_can_action_detections_over_the_wire() {
         .await
         .unwrap();
     let v = prod
-        .ingest_transcript("First Corinthians 13", 0, 1_000)
+        .ingest_transcript("First Corinthians 13", 0, 1_000, true)
         .await
         .unwrap();
     assert_eq!(v.detections.len(), 1);

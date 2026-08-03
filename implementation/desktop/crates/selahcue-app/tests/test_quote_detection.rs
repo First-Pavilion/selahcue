@@ -32,6 +32,7 @@ fn ingest_transcript_detects_a_spoken_quote_without_a_named_reference() {
          that whosoever believeth in him should not perish but have everlasting life",
         0,
         3_000,
+        true,
     );
     assert_eq!(n, 1, "the quote should surface one detection");
     assert!(
@@ -45,7 +46,7 @@ fn ingest_transcript_detects_a_spoken_quote_without_a_named_reference() {
 fn ingest_transcript_still_detects_a_named_reference() {
     // Regression: the exact detector is unchanged.
     let mut c = controller();
-    c.ingest_transcript("please turn to John chapter 3 verse 16", 0, 2_000);
+    c.ingest_transcript("please turn to John chapter 3 verse 16", 0, 2_000, true);
     assert!(pending_refs(&c).contains(&"John 3:16".to_string()));
 }
 
@@ -57,6 +58,7 @@ fn ingest_transcript_ignores_ordinary_speech() {
         "good morning everyone and welcome to church this morning",
         0,
         2_000,
+        true,
     );
     assert_eq!(n, 0);
     assert!(pending_refs(&c).is_empty());

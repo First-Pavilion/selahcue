@@ -25,7 +25,7 @@ pub fn pump_transcript(
     let segments = provider.poll();
     let n = segments.len();
     for seg in segments {
-        controller.ingest_transcript(&seg.text, seg.start_ms, seg.end_ms);
+        controller.ingest_transcript(&seg.text, seg.start_ms, seg.end_ms, seg.is_final);
     }
     n
 }

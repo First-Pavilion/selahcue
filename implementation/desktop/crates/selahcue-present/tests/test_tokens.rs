@@ -148,6 +148,7 @@ fn operator_webview_is_pinned_to_the_canonical_tokens() {
         // never regresses to a pre-STT "not yet wired" disclosure).
         "id=\"transcript\"",
         "id=\"transcript-log\"",
+        "id=\"transcript-partial\"",
         "id=\"transcript-listen\"",
         "On-device transcription",
         "id=\"detections\"",

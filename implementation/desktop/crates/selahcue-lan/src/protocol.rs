@@ -186,6 +186,12 @@ pub enum Command {
         start_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         end_ms: Option<u64>,
+        /// `false` marks a streaming INTERIM (a live in-progress preview that a later `true`
+        /// supersedes); `true` is a finalised line that lands in the transcript and runs
+        /// detection. Defaults to `true` and skips-when-true, so a client that never streams
+        /// interims (and the pinned fixtures) stay byte-identical.
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        is_final: bool,
     },
     /// Approve a queued scripture detection by id (R4): stage its verse in Preview (the
     /// operator Goes Live when ready — detections never auto-display, FR-115) and remove
@@ -434,10 +440,26 @@ pub struct OperatorStateView {
     /// stay byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transcript: Vec<TranscriptSegmentView>,
+    /// The current streaming INTERIM line (recognised words for the utterance still being
+    /// spoken), shown live below the finalised transcript and cleared when it finalises.
+    /// `None` when nothing is mid-utterance; omitted then so the pinned fixtures stay
+    /// byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_transcript: Option<String>,
     /// The pending scripture-detection approval queue (R4) — candidates the operator
     /// one-click stages. Omitted when empty so the pinned v2 fixtures stay byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub detections: Vec<DetectionView>,
+}
+
+/// serde default/skip for a bool that defaults to `true`: an absent field deserialises as
+/// `true`, and a `true` value is omitted on serialisation — so an additive `is_final`-style
+/// flag stays byte-identical for clients/fixtures that predate it.
+fn default_true() -> bool {
+    true
+}
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 /// One live-transcript segment as the operator UI renders it (wire form of a

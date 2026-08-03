@@ -706,6 +706,14 @@ DRIVER = r"""
          "display: STT segments in view.transcript render as visible lines in #transcript-log");
       ok(sttEmpty.style.display === "none",
          "display: the empty-state overlay is hidden once transcript lines arrive");
+      // #1 real-time streaming: the in-progress interim renders as a live partial line and
+      // clears when the utterance finalises (no partial_transcript).
+      render(Object.assign({}, baseView, { partial_transcript: "and it came to" }));
+      var partialEl = el("transcript-partial");
+      ok(partialEl && !partialEl.hidden && partialEl.textContent.indexOf("and it came to") >= 0,
+         "stream: a streaming interim renders as the live partial line");
+      render(baseView);
+      ok(partialEl.hidden, "stream: the partial line clears when the interim finalises");
       render(baseView); // restore so the trailing 1s poll stays consistent
 
       // === R4 detection: a confidence-bearing detection renders the match-% pill, colour-

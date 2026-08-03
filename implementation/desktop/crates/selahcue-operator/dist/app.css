@@ -2424,6 +2424,33 @@
         word-break: break-word;
       }
 
+      /* The streaming interim (in-progress) line: dimmed + italic to read as not-yet-final,
+         with a soft pulse. Sits directly under the finalised lines. */
+      .seg-partial {
+        color: var(--sc-text-secondary);
+        font-style: italic;
+        opacity: 0.75;
+        word-break: break-word;
+        margin-top: 2px;
+      }
+      .seg-partial[hidden] {
+        display: none;
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        .seg-partial {
+          animation: partial-pulse 1.6s ease-in-out infinite;
+        }
+        @keyframes partial-pulse {
+          0%,
+          100% {
+            opacity: 0.6;
+          }
+          50% {
+            opacity: 0.9;
+          }
+        }
+      }
+
       /* Live-transcript header row: title + the REC recording indicator. */
       .fwd-head {
         display: flex;

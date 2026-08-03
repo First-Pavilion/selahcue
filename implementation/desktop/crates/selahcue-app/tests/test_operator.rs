@@ -164,7 +164,7 @@ fn console_thumbnails_return_the_bounded_frames_and_never_touch_on_air() {
 fn shell_ingest_detect_approve_stage_flow() {
     let s = shell();
     // Ingest a spoken reference — the transcript panel and detection queue populate.
-    let view = s.ingest_transcript("open to John chapter 3 verse 16", 0, 2_000);
+    let view = s.ingest_transcript("open to John chapter 3 verse 16", 0, 2_000, true);
     assert_eq!(view.transcript.len(), 1);
     assert_eq!(view.detections.len(), 1);
     assert_eq!(view.detections[0].reference, "John 3:16");
@@ -180,7 +180,7 @@ fn shell_ingest_detect_approve_stage_flow() {
 #[test]
 fn shell_dismiss_removes_the_detection() {
     let s = shell();
-    let view = s.ingest_transcript("as First Corinthians 13 says", 0, 1_000);
+    let view = s.ingest_transcript("as First Corinthians 13 says", 0, 1_000, true);
     let id = view.detections[0].id;
     let after = s.dismiss_detection(id);
     assert!(after.detections.is_empty());

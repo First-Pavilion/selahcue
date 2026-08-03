@@ -83,6 +83,9 @@ pub struct OperatorView {
     /// The recent live-transcript segments (bounded tail, oldest first) — the transcript
     /// panel (R3).
     pub transcript: Vec<TranscriptSegmentView>,
+    /// The current streaming interim line (words for the utterance still being spoken), shown
+    /// live below the finalised transcript; `None` when nothing is mid-utterance.
+    pub partial_transcript: Option<String>,
     /// The pending scripture-detection approval queue (R4) — candidates to one-click stage.
     pub detections: Vec<DetectionView>,
 }
@@ -268,13 +271,21 @@ impl OperatorShell {
         })
     }
 
-    /// Feed one live-transcript segment (the STT-provider ingestion channel — the
-    /// default provider is operator/host-injected text). Runs scripture detection.
-    pub fn ingest_transcript(&self, text: &str, start_ms: u64, end_ms: u64) -> OperatorView {
+    /// Feed one live-transcript segment (the STT-provider ingestion channel — the default
+    /// provider is operator/host-injected text). A final segment runs scripture detection; an
+    /// interim (`is_final == false`) only updates the live partial line.
+    pub fn ingest_transcript(
+        &self,
+        text: &str,
+        start_ms: u64,
+        end_ms: u64,
+        is_final: bool,
+    ) -> OperatorView {
         self.act(&Command::IngestTranscript {
             text: text.into(),
             start_ms: Some(start_ms),
             end_ms: Some(end_ms),
+            is_final,
         })
     }
 
@@ -434,6 +445,7 @@ impl From<OperatorView> for OperatorStateView {
             screen_themes: v.screen_themes,
             screens: v.screens,
             transcript: v.transcript,
+            partial_transcript: v.partial_transcript,
             detections: v.detections,
         }
     }
@@ -460,6 +472,7 @@ impl From<OperatorStateView> for OperatorView {
             screen_themes: v.screen_themes,
             screens: v.screens,
             transcript: v.transcript,
+            partial_transcript: v.partial_transcript,
             detections: v.detections,
         }
     }
@@ -644,11 +657,13 @@ impl RemoteOperator {
         text: &str,
         start_ms: u64,
         end_ms: u64,
+        is_final: bool,
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::IngestTranscript {
             text: text.into(),
             start_ms: Some(start_ms),
             end_ms: Some(end_ms),
+            is_final,
         })
         .await
     }

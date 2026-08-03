@@ -142,7 +142,7 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
             let state = app_task.state::<crate::AppState>();
             let _ = state
                 .backend
-                .ingest_transcript(seg.text, seg.start_ms, seg.end_ms)
+                .ingest_transcript(seg.text, seg.start_ms, seg.end_ms, seg.is_final)
                 .await;
         }
     });
@@ -175,7 +175,13 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
         let _ = ready_tx.send(Ok(()));
 
         let (mut engine, mut provider) = SttEngine::build(
-            EngineConfig::default(),
+            // Stream interims (~0.8 s cadence) so recognised words appear live in the operator's
+            // transcript instead of only when the utterance closes. (Cost grows with the open
+            // buffer; the 10 s force-close bounds it — a sliding-window pass is a perf follow-up.)
+            EngineConfig {
+                interim_interval_frames: 40,
+                ..EngineConfig::default()
+            },
             Box::new(EnergyVad::new()),
             Box::new(recognizer),
             FeedbackGuard::new(),

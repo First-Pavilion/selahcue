@@ -37,10 +37,16 @@ pub struct EngineConfig {
     pub min_utterance_frames: usize,
     /// Hard cap on an utterance's samples; unbroken speech is force-closed here so the
     /// accumulator can never grow without bound (no-leak) AND so a sustained monologue still
-    /// produces transcript within a bounded delay. Default 10 s balances the ≤2 s latency
-    /// target (streaming interims to get fully under 2 s are a spike-gated follow-up, S8/S11)
-    /// against giving the recognizer enough context.
+    /// produces transcript within a bounded delay. Default 10 s gives the recognizer context;
+    /// [`interim_interval_frames`](Self::interim_interval_frames) is what gets latency low.
     pub max_utterance_samples: usize,
+    /// Streaming interims: while an utterance is still open, re-transcribe the growing buffer
+    /// every this-many processed frames and emit the result as a NON-final segment
+    /// (`is_final = false`) — the "words appearing as you speak" preview. The final on close
+    /// supersedes it. `0` disables interims (the utterance only transcribes once, on close).
+    /// A frame is ~20 ms, so `40` ≈ 0.8 s cadence. Costs extra recognizer passes on the open
+    /// buffer, so it is off in the default config and enabled by the host that wants it.
+    pub interim_interval_frames: usize,
 }
 
 impl Default for EngineConfig {
@@ -49,6 +55,7 @@ impl Default for EngineConfig {
             hangover_frames: 15,     // ~300 ms of trailing silence closes an utterance
             min_utterance_frames: 3, // ~60 ms of speech minimum
             max_utterance_samples: 10 * TARGET_SAMPLE_RATE as usize, // 10 s force-close
+            interim_interval_frames: 0, // interims off by default (opt-in; see the field docs)
         }
     }
 }
@@ -77,6 +84,9 @@ pub struct SttEngine {
     frame_index: u64,
     /// Frame index at which the current utterance started.
     utt_start_frame: u64,
+    /// Frames processed since the last interim emission for the open utterance (drives the
+    /// streaming-interim cadence; reset when an utterance starts and after each interim).
+    frames_since_interim: usize,
 }
 
 // The engine is designed to run on a host worker thread; make that a compile-time
@@ -111,6 +121,7 @@ impl SttEngine {
             speech_frames: 0,
             frame_index: 0,
             utt_start_frame: 0,
+            frames_since_interim: 0,
         };
         (engine, SttProvider::new(sink, label))
     }
@@ -162,6 +173,7 @@ impl SttEngine {
                 self.utt_start_frame = self.frame_index - 1;
                 self.utterance.clear();
                 self.speech_frames = 0;
+                self.frames_since_interim = 0;
             }
             self.utterance.extend_from_slice(&self.frame_scratch);
             self.speech_frames += 1;
@@ -171,6 +183,9 @@ impl SttEngine {
             self.utterance.extend_from_slice(&self.frame_scratch);
             self.silence_run += 1;
         }
+        if self.in_speech {
+            self.frames_since_interim += 1;
+        }
         // Close on hangover OR the hard sample cap (checked after any append, so the
         // accumulator is bounded regardless of which branch grew it — no-leak).
         if self.in_speech
@@ -178,6 +193,38 @@ impl SttEngine {
                 || self.utterance.len() >= self.config.max_utterance_samples)
         {
             self.close_utterance();
+        } else if self.in_speech
+            && self.config.interim_interval_frames > 0
+            && self.speech_frames >= self.config.min_utterance_frames
+            && self.frames_since_interim >= self.config.interim_interval_frames
+        {
+            // Not closing this frame → emit a streaming interim of the utterance so far.
+            self.emit_interim();
+            self.frames_since_interim = 0;
+        }
+    }
+
+    /// Transcribe the still-open utterance and push it as ONE non-final segment (`is_final =
+    /// false`) — the live "words as you speak" line. Re-run on the growing buffer at the config
+    /// cadence; the final on close supersedes it. Empty transcripts are dropped.
+    fn emit_interim(&mut self) {
+        let start_ms = self.utt_start_frame * MS_PER_FRAME;
+        let end_ms = self.frame_index * MS_PER_FRAME;
+        let text = self
+            .recognizer
+            .transcribe(&self.utterance, start_ms, end_ms)
+            .into_iter()
+            .map(|s| s.text)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text = text.trim();
+        if !text.is_empty() {
+            self.sink.push(ProviderSegment {
+                text: text.to_string(),
+                start_ms,
+                end_ms,
+                is_final: false,
+            });
         }
     }
 
@@ -272,6 +319,47 @@ mod tests {
         assert_eq!(out[0].text, "and it came to pass");
         assert!(out[0].is_final);
         assert!(out[0].end_ms >= out[0].start_ms);
+    }
+
+    #[test]
+    fn interims_stream_while_speaking_then_a_final_on_close() {
+        // With interims enabled, a still-open utterance emits NON-final previews at the config
+        // cadence; the final on close supersedes them. (FakeRecognizer pops one line per call,
+        // so script generously — extra calls just return nothing.)
+        let script = vec!["a partial line"; 20];
+        let (mut engine, mut provider) = engine_with(
+            &script,
+            EngineConfig {
+                interim_interval_frames: 5, // ~100 ms cadence for the test
+                ..EngineConfig::default()
+            },
+        );
+        engine.process(&speech_chunk(12)); // continuous speech, no pause → interims stream
+        let mid = provider.poll();
+        assert!(
+            !mid.is_empty() && mid.iter().all(|s| !s.is_final),
+            "streaming interims (non-final) arrive while still speaking: {mid:?}"
+        );
+        engine.process(&silence_chunk(20)); // trailing silence → close
+        let end = provider.poll();
+        assert!(
+            end.iter().any(|s| s.is_final),
+            "a final (is_final) segment is emitted when the utterance closes: {end:?}"
+        );
+    }
+
+    #[test]
+    fn interims_off_by_default_only_a_final_on_close() {
+        let (mut engine, mut provider) = engine_with(&["the whole line"], EngineConfig::default());
+        engine.process(&speech_chunk(30)); // long speech, but interims are OFF by default
+        assert!(
+            provider.poll().is_empty(),
+            "no interims stream with the default config (nothing until close)"
+        );
+        engine.process(&silence_chunk(20));
+        let out = provider.poll();
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_final);
     }
 
     #[test]

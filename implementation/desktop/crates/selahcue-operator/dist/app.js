@@ -3139,17 +3139,27 @@
         const all = Array.isArray(view.transcript) ? view.transcript : [];
         const segs =
           all.length > MAX_TRANSCRIPT_ROWS ? all.slice(-MAX_TRANSCRIPT_ROWS) : all;
-        // Report the line count every poll (before the change-key early-return) so the listen
-        // control's "waiting for speech…" vs "transcribing" status is always current, even when
-        // the transcript itself hasn't changed. Set by wireTranscriptListen.
-        if (window.__sttNoteTranscript) window.__sttNoteTranscript(segs.length);
+        const partial =
+          typeof view.partial_transcript === "string" ? view.partial_transcript : "";
+        const empty = document.getElementById("transcript-empty");
+        // The live in-progress line (streaming interim). Updated EVERY poll — before the log's
+        // change-key early-return — so recognised words appear as they're spoken even when the
+        // finalised log hasn't changed. Untrusted → textContent.
+        const partialEl = document.getElementById("transcript-partial");
+        if (partialEl) {
+          partialEl.textContent = partial;
+          partialEl.hidden = !partial;
+        }
+        // Report activity (finalised lines OR a live partial) so the listen status can tell
+        // "waiting for speech…" from "transcribing". Set by wireTranscriptListen.
+        if (window.__sttNoteTranscript)
+          window.__sttNoteTranscript(segs.length + (partial ? 1 : 0));
+        if (empty) empty.style.display = segs.length || partial ? "none" : "";
         const key = JSON.stringify(segs.map((s) => [s.id, s.text]));
-        if (key === transcriptKey) return; // poll-safe: skip identical re-renders
+        if (key === transcriptKey) return; // poll-safe: skip identical re-renders of the log
         transcriptKey = key;
         const log = document.getElementById("transcript-log");
-        const empty = document.getElementById("transcript-empty");
         if (!log || !empty) return;
-        empty.style.display = segs.length ? "none" : "";
         // APPEND-ONLY by segment id: the log is an aria-live region, so clearing and
         // rebuilding it would make assistive tech re-announce the WHOLE transcript on
         // every new line. Instead drop rows that scrolled out of the bounded tail and

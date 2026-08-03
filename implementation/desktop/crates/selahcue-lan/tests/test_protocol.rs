@@ -272,11 +272,13 @@ fn every_command_round_trips() {
             text: "turn to John chapter 3 verse 16".into(),
             start_ms: Some(1_500),
             end_ms: Some(3_200),
+            is_final: true,
         },
         Command::IngestTranscript {
             text: "no timestamps".into(),
             start_ms: None,
             end_ms: None,
+            is_final: true,
         },
         Command::ApproveDetection { detection_id: 7 },
         Command::DismissDetection { detection_id: 7 },
@@ -310,6 +312,7 @@ fn every_command_round_trips() {
             text: "hi".into(),
             start_ms: None,
             end_ms: None,
+            is_final: true,
         })
         .unwrap(),
         r#"{"cmd":"ingest_transcript","text":"hi"}"#
@@ -350,6 +353,7 @@ fn transcript_and_detection_view_fields_are_additive() {
             end_ms: 1_500,
             text: "turn to John 3:16".into(),
         }],
+        partial_transcript: None,
         detections: vec![DetectionView {
             id: 4,
             reference: "John 3:16".into(),
@@ -557,6 +561,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screen_themes: vec![],
         screens: vec![],
         transcript: vec![],
+        partial_transcript: None,
         detections: vec![],
     };
     assert_eq!(
@@ -597,6 +602,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screen_themes: vec![],
         screens: vec![],
         transcript: vec![],
+        partial_transcript: None,
         detections: vec![],
     };
     assert_eq!(
@@ -637,6 +643,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screen_themes: vec![],
         screens: vec![],
         transcript: vec![],
+        partial_transcript: None,
         detections: vec![],
     };
     assert_eq!(
@@ -668,6 +675,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screen_themes: vec![],
         screens: vec![],
         transcript: vec![],
+        partial_transcript: None,
         detections: vec![],
     };
     assert_eq!(
@@ -705,6 +713,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         ],
         screens: vec![],
         transcript: vec![],
+        partial_transcript: None,
         detections: vec![],
     };
     assert_eq!(

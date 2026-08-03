@@ -123,6 +123,10 @@
           </div>
           <div id="transcript-log" class="stream" role="log" aria-live="polite" aria-label="Live sermon transcript">
           </div>
+          <!-- The live in-progress line (streaming interim): recognised words for the utterance
+               still being spoken. Dimmed to read as not-yet-final; the finalised line replaces
+               it above. Untrusted → textContent. -->
+          <div id="transcript-partial" class="seg seg-partial" aria-live="polite" hidden></div>
           <div id="transcript-empty" class="fwd-empty">
             <span class="fwd-icon" aria-hidden="true">🎙</span>
             <span class="fwd-msg" id="transcript-empty-msg">Not listening yet.</span>

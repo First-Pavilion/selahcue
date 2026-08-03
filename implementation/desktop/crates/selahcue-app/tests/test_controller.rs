@@ -2593,6 +2593,7 @@ fn ingesting_transcript_streams_segments_and_detects_scripture() {
             text: "please turn with me to John chapter 3 verse 16".into(),
             start_ms: Some(0),
             end_ms: Some(2_500),
+            is_final: true,
         }),
         ControllerReply::Ack
     );
@@ -2631,11 +2632,13 @@ fn a_paraphrase_split_across_segments_is_still_detected() {
         text: "and strangers shall".into(),
         start_ms: Some(0),
         end_ms: Some(1_000),
+        is_final: true,
     });
     c.apply(&Command::IngestTranscript {
         text: "feed your flock".into(),
         start_ms: Some(1_000),
         end_ms: Some(2_000),
+        is_final: true,
     });
     let view = c.operator_view();
     assert!(
@@ -2657,6 +2660,7 @@ fn approving_a_whole_chapter_detection_stages_only_the_first_verse() {
         text: "turn to First Corinthians 13".into(),
         start_ms: Some(0),
         end_ms: Some(1_500),
+        is_final: true,
     });
     let det_id = c
         .operator_view()
@@ -2679,12 +2683,52 @@ fn approving_a_whole_chapter_detection_stages_only_the_first_verse() {
 }
 
 #[test]
+fn a_streaming_interim_updates_the_partial_line_without_logging_or_detecting() {
+    // Real-time (R3): an interim (is_final=false) is the live in-progress line — shown via
+    // partial_transcript, but never logged and never run through detection (even if it names a
+    // reference); the final for the utterance supersedes it.
+    let (mut c, _) = controller();
+    let n = c.ingest_transcript("please turn to John 3:16", 0, 1_000, false);
+    assert_eq!(n, 0, "an interim enqueues no detection");
+    let v = c.operator_view();
+    assert_eq!(
+        v.partial_transcript.as_deref(),
+        Some("please turn to John 3:16"),
+        "the interim shows as the live partial line"
+    );
+    assert!(v.transcript.is_empty(), "an interim is not logged");
+    assert!(v.detections.is_empty(), "an interim runs no detection");
+
+    // The final supersedes: clears the partial, logs the line, and runs detection.
+    c.ingest_transcript("please turn to John 3:16", 0, 1_500, true);
+    let v = c.operator_view();
+    assert_eq!(
+        v.partial_transcript, None,
+        "the final clears the partial line"
+    );
+    assert_eq!(
+        v.transcript.len(),
+        1,
+        "the final lands in the transcript log"
+    );
+    assert!(
+        v.detections.iter().any(|d| d.reference == "John 3:16"),
+        "the final runs detection: {:?}",
+        v.detections
+            .iter()
+            .map(|d| &d.reference)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn approving_a_detection_stages_the_verse_in_preview_not_live() {
     let (mut c, _) = controller();
     c.apply(&Command::IngestTranscript {
         text: "first Corinthians 13".into(),
         start_ms: None,
         end_ms: None,
+        is_final: true,
     });
     let id = c.operator_view().detections[0].id;
     assert_eq!(
@@ -2720,6 +2764,7 @@ fn dismissing_a_detection_removes_it_without_staging() {
         text: "Romans eight twenty eight".into(),
         start_ms: None,
         end_ms: None,
+        is_final: true,
     });
     let id = c.operator_view().detections[0].id;
     assert_eq!(
@@ -2755,6 +2800,7 @@ fn transcription_never_blanks_the_live_output() {
             ),
             start_ms: Some(i),
             end_ms: Some(i + 1),
+            is_final: true,
         });
     }
     assert_eq!(

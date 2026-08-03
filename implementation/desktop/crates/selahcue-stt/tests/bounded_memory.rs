@@ -44,6 +44,7 @@ fn bounded_segment_queue_caps_when_host_never_polls() {
         hangover_frames: 2,
         min_utterance_frames: 1,
         max_utterance_samples: FRAME_16K, // 1 frame → each speech frame closes an utterance
+        interim_interval_frames: 0,
     };
     let (mut engine, provider) = SttEngine::build(
         config,
@@ -83,6 +84,7 @@ fn bounded_utterance_accumulator_force_closes_continuous_speech() {
         hangover_frames: 100,
         min_utterance_frames: 1,
         max_utterance_samples: FRAME_16K * 4, // force-close every 4 frames
+        interim_interval_frames: 1,           // interims on — must still stay bounded (no-leak)
     };
     let (mut engine, mut provider) = SttEngine::build(
         config,

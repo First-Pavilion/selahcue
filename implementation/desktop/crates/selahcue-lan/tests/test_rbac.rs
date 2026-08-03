@@ -239,6 +239,7 @@ fn transcription_ingest_is_producer_and_up_not_assistant() {
         text: "John chapter 3 verse 16".into(),
         start_ms: None,
         end_ms: None,
+        is_final: true,
     };
     assert!(authorize(Role::Operator, &ingest), "operator ingest");
     assert!(authorize(Role::Producer, &ingest), "producer ingest");

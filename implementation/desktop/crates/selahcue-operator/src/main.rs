@@ -342,15 +342,16 @@ impl Backend {
         text: String,
         start_ms: u64,
         end_ms: u64,
+        is_final: bool,
     ) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
                 .lock()
                 .await
-                .ingest_transcript(&text, start_ms, end_ms)
+                .ingest_transcript(&text, start_ms, end_ms, is_final)
                 .await
                 .map_err(|e| e.to_string()),
-            Backend::Local(s) => Ok(s.ingest_transcript(&text, start_ms, end_ms)),
+            Backend::Local(s) => Ok(s.ingest_transcript(&text, start_ms, end_ms, is_final)),
         }
     }
     async fn approve_detection(&self, detection_id: u64) -> Result<OperatorView, String> {
@@ -774,9 +775,10 @@ async fn ingest_transcript(
     end_ms: u64,
     state: State<'_, AppState>,
 ) -> Result<OperatorView, String> {
+    // A directly-injected line is a finalised segment (interims come from the STT worker).
     state
         .backend
-        .ingest_transcript(text, start_ms, end_ms)
+        .ingest_transcript(text, start_ms, end_ms, true)
         .await
 }
 /// Approve a queued scripture detection (R4): stage its verse in Preview.
