@@ -33,8 +33,14 @@ and one owner-run measurement.
 | --- | --- | --- | --- |
 | NFR-MEM | Idle RSS ≤ 300 MB and cold start ≤ 3 s | owner | Run `make nfr` on a machine with a display; paste numbers into `04-results/BASELINE-REPORT.md`. If both hold, the release exception clears. |
 
-## ClickUp
+## ClickUp — filed
 
-Per the repo convention (Build Control `86ajnx548` is the source of truth), these follow-ups should be
-filed as linked tasks and the review evidence linked from the Build Control task. ClickUp update is pending
-(see handoff note in `STATUS.md`); this file is the ready-to-file list.
+Per the repo convention (Build Control `86ajnx548` is the source of truth), these follow-ups are filed as
+tasks in the "SelahCue — Delivery" list, each linked to Build Control, with a review-summary comment on
+Build Control:
+
+- **PERF-1** (MEDIUM, STT interim sliding-window) → `86ajuwrq4`
+- **PERF-2** (MEDIUM, QuoteIndex token memoisation) → `86ajuwrr9`
+- **PERF-3..8 + NFR-MEM** (LOW/minor + owner-run idle-RSS/cold-start bundle) → `86ajuwrt6`
+
+Split the bundle into individual tickets when any item is scheduled.

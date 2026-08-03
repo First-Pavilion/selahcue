@@ -2,7 +2,7 @@
 
 - **Stage:** 05-handoff — review complete, decision issued.
 - **Active goal:** PERF-REVIEW-2026-08 — whole-codebase performance review (no leaks / no lags / no perf issues).
-- **ClickUp task:** Build Control `86ajnx548` (pending update; see handoff note below).
+- **ClickUp task:** Build Control `86ajnx548` — review comment posted; follow-ups filed and linked (PERF-1 `86ajuwrq4`, PERF-2 `86ajuwrr9`, PERF-3..8 + NFR-MEM bundle `86ajuwrt6`).
 - **Execution mode:** Claude Code native review pass (bounded, evidence-driven). Not a `/goal` optimisation loop — no production code changed.
 - **Toolchain status:** in-repo `cargo test` suites (release + feature-gated) + `scripts/measure_nfr.sh` + independent static hot-path scan. No new tooling introduced. See `00-intake/TOOLCHAIN.md`.
 - **Terminal state:** VERIFIED_COMPLETE — with approved exceptions (see `05-handoff/RELEASE-RECOMMENDATION.md`).
@@ -15,6 +15,12 @@ All 22 required artifacts under `performance/`. Evidence is measured, not assert
 - Full server-feature E2E, at-rest-encryption E2E, and STT pipeline executed green.
 - GPU↔CPU parity (SSIM ≥ 0.99) executed green.
 - Independent hot-path / unbounded-collection scan completed; six findings triaged.
+
+## ClickUp
+
+Filed under Build Control `86ajnx548` (list "SelahCue — Delivery"): a review-summary comment plus three
+linked follow-up tasks — PERF-1 (`86ajuwrq4`), PERF-2 (`86ajuwrr9`), and the PERF-3..8 + NFR-MEM bundle
+(`86ajuwrt6`).
 
 ## Blockers
 
