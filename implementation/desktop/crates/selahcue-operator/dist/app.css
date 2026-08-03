@@ -51,6 +51,9 @@
         --sc-warn-border: #4a3a15;
         --sc-info: #38bdf8;
         --sc-info-soft: #10222b;
+        /* READY status-pill border (Design 2.0 §STATUS PILL) — the only design colour that
+           lacked a token; added so the pill never hardcodes a hex. */
+        --sc-info-border: #1c3a4a;
       }
 
       * {
@@ -816,22 +819,6 @@
         padding-top: 12px;
       }
 
-      .td-grid4 {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 4px 10px;
-        align-items: center;
-      }
-
-      .td-grid4 label {
-        margin: 4px 0 0;
-      }
-
-      .td-grid4 input {
-        width: 100%;
-        box-sizing: border-box;
-      }
-
       .td-inspector input[type=color] {
         width: 52px;
         height: 30px;
@@ -981,43 +968,6 @@
         font-size: 15px;
         line-height: 1;
         padding: 5px 0;
-      }
-
-      .td-grid2 {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 4px 10px;
-        align-items: center;
-      }
-
-      .td-grid2 label {
-        margin: 4px 0 0;
-      }
-
-      .td-grid2 select,
-      .td-grid2 input {
-        width: 100%;
-        box-sizing: border-box;
-      }
-
-      .td-lockrow {
-        align-items: center;
-        margin-top: 10px;
-      }
-
-      .td-check {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--text);
-        margin: 0;
-        cursor: pointer;
-      }
-
-      .td-check input {
-        width: auto;
       }
 
       #td-font {
@@ -1354,11 +1304,51 @@
         flex-wrap: wrap;
       }
 
-      /* Templates strip */
+      /* Templates strip (collapsible — collapse it to give the canvas more room). */
       .td-templates {
         border-top: 1px solid var(--sc-border);
         background: rgba(20, 22, 29, .5);
         padding: 12px 16px 14px;
+      }
+
+      .td-templates.collapsed {
+        padding-bottom: 10px;
+      }
+
+      .td-templates.collapsed #td-panel {
+        display: none;
+      }
+
+      .td-templates.collapsed .td-templates-head {
+        margin-bottom: 0;
+      }
+
+      .td-templates-toggle {
+        flex: 0 0 auto;
+        border: none;
+        background: none;
+        color: var(--sc-text-secondary);
+        cursor: pointer;
+        padding: 2px 6px;
+        font-size: 13px;
+        line-height: 1;
+      }
+
+      .td-templates-toggle:hover {
+        color: var(--sc-text);
+      }
+
+      .td-templates-toggle .td-chevron {
+        display: inline-block;
+        transition: transform .15s ease;
+      }
+
+      .td-templates.collapsed .td-templates-toggle .td-chevron {
+        transform: rotate(-90deg);
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .td-templates-toggle .td-chevron { transition: none; }
       }
 
       .td-templates-head {
@@ -1957,208 +1947,541 @@
         color: var(--sc-text-muted);
       }
 
-      /* --- Screens surface --- */
-      .screen-row {
-        border-bottom: 1px solid var(--line);
-        padding: 16px 0;
-        max-width: 1100px;
+      /* --- Screens & Outputs surface (Design 2.0, Figma 327:124) --- */
+      #surface-screens {
+        padding: 0;
+        overflow: hidden;
       }
 
-      .screen-head {
+      #surface-screens.active {
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* TOPBAR */
+      .scr-topbar {
         display: flex;
         align-items: center;
-        gap: 10px;
+        justify-content: space-between;
+        padding: 13px 18px;
+        background: var(--sc-surface);
+        border-bottom: 1px solid var(--sc-border);
+        flex: none;
       }
 
-      .role-badge {
-        font-size: 11px;
+      .scr-topbar-left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .scr-brand-mark {
+        color: var(--sc-primary-hover);
+        font-size: 15px;
+      }
+
+      .scr-brand-name {
+        font-size: 14px;
         font-weight: 700;
-        border: 1px solid;
-        border-radius: 10px;
-        padding: 1px 8px;
+        color: var(--sc-text);
       }
 
-      .screen-toggle {
-        margin-left: auto;
-        width: 46px;
-        height: 26px;
-        border-radius: 13px;
-        background: #262a34;
-        border: none;
-        position: relative;
-        cursor: pointer;
-        flex: none;
+      .scr-brand-caret {
+        font-size: 10px;
+        color: var(--sc-text-muted);
       }
 
-      .screen-toggle.on {
-        background: var(--accent);
-      }
-
-      .screen-toggle .knob {
-        position: absolute;
-        top: 3px;
-        left: 3px;
-        width: 20px;
+      .scr-divider {
+        width: 1px;
         height: 20px;
-        border-radius: 50%;
-        background: #fff;
+        background: var(--sc-border);
+        margin: 0 4px;
       }
 
-      .screen-toggle.on .knob {
-        left: 23px;
-      }
-
-      /* Screens page — dynamic registry: per-row Enable toggle + Delete; "+ Add screen". */
-      .screen-controls {
-        margin-left: auto;
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        flex: none;
-      }
-
-      .screen-enable {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 12px;
-        color: var(--muted);
-        cursor: pointer;
-      }
-
-      .screen-enable-toggle {
-        width: 16px;
-        height: 16px;
-        cursor: pointer;
-        accent-color: var(--accent);
-      }
-
-      .screen-enable-label {
+      .scr-breadcrumb {
+        font-size: 14px;
         font-weight: 600;
+        color: var(--sc-text-secondary);
       }
 
-      .screen-delete {
-        font-size: 12px;
-        background: transparent;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        padding: 4px 10px;
-        color: var(--warn-ink);
-        cursor: pointer;
-      }
-
-      .screen-delete:hover {
-        border-color: var(--warn-ink);
-      }
-
-      .screen-row.screen-disabled .screen-fields {
-        opacity: 0.45;
-      }
-
-      .screen-add {
-        margin-top: 20px;
-        max-width: 1100px;
-      }
-
-      .screen-add-row {
+      .scr-topbar-right {
         display: flex;
+        align-items: center;
         gap: 10px;
-        align-items: center;
-        margin-top: 6px;
       }
 
-      .screen-add-row select {
-        background: var(--panel, #1a1f27);
-        color: inherit;
-        border: 1px solid var(--line);
+      .scr-topbar-right select {
+        background: var(--sc-inset);
+        border: 1px solid var(--sc-border);
+        color: var(--sc-text);
         border-radius: 8px;
-        padding: 8px 10px;
+        padding: 7px 10px;
         font: inherit;
+        font-size: 12px;
       }
 
-      .screen-add-btn {
-        font-size: 13px;
-        font-weight: 600;
-        background: var(--accent);
-        color: #fff;
-        border: none;
-        border-radius: 8px;
-        padding: 9px 14px;
+      .scr-visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+
+      /* BODY: scrollable grid pane + fixed inspector */
+      .scr-body {
+        display: flex;
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+
+      .scr-grid-pane {
+        flex: 1 1 auto;
+        min-width: 0;
+        background: var(--sc-base);
+        padding: 18px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .scr-grid-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .scr-grid-title {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        color: var(--sc-text-muted);
+      }
+
+      .scr-grid-subtitle {
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--sc-text-muted);
+      }
+
+      .scr-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 14px;
+        align-content: start;
+      }
+
+      /* OUTPUT CARD */
+      .scr-card {
+        background: var(--sc-surface);
+        border: 1px solid var(--sc-border);
+        border-radius: 14px;
+        padding: 13px;
+        display: flex;
+        flex-direction: column;
+        gap: 11px;
         cursor: pointer;
       }
 
-      .screen-add-btn:hover {
-        filter: brightness(1.08);
+      /* Selected: a 2px ring via inset box-shadow so the 1px→2px change never reflows. */
+      .scr-card-selected {
+        box-shadow: inset 0 0 0 2px var(--sc-primary-hover);
+        border-color: transparent;
       }
 
-      .screen-fields {
+      .scr-card.screen-disabled {
+        opacity: 0.5;
+      }
+
+      .scr-thumb {
+        height: 148px;
+        border-radius: 9px;
+        overflow: hidden;
+        background: linear-gradient(180deg, #241c4a, #0e1016);
         display: flex;
-        gap: 20px;
-        margin-top: 14px;
-        flex-wrap: wrap;
-      }
-
-      .screen-fields label {
-        display: block;
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--muted);
-        margin-bottom: 6px;
-      }
-
-      .screen-fields select,
-      .screen-fields .field {
-        min-width: 220px;
-        background: var(--panel);
-        border: 1px solid var(--line);
-        color: var(--text);
-        border-radius: 8px;
-        padding: 10px 12px;
-        font-size: 13px;
-      }
-
-      .screen-fields select.mismatch,
-      .screen-fields .field.mismatch {
-        border-color: var(--warn-ink);
-        color: var(--warn-ink);
-      }
-
-      /* Per-screen live preview (86ajq321k): a small 16:9 monitor of THIS screen's themed output. */
-      .screen-preview-wrap {
-        margin-top: 12px;
+        align-items: center;
+        justify-content: center;
       }
 
       .screen-preview {
         display: block;
         width: 100%;
-        max-width: 220px;
-        aspect-ratio: 16 / 9;
+        height: 100%;
+        object-fit: cover;
         background: #000;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        object-fit: contain;
       }
 
+      .scr-card-namerow {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 9px;
+      }
+
+      .scr-card-namegroup {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-width: 0;
+      }
+
+      .scr-card-name {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--sc-text);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .scr-card-right {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        flex: none;
+      }
+
+      /* ROLE BADGE — shared inset bg + border; text colour switches per role. */
+      .scr-role-badge {
+        font-size: 10px;
+        font-weight: 700;
+        border: 1px solid var(--sc-border);
+        background: var(--sc-inset);
+        border-radius: 999px;
+        padding: 3px 9px;
+        white-space: nowrap;
+      }
+
+      .scr-role-main { color: var(--sc-primary-hover); }
+      .scr-role-stage { color: var(--sc-info); }
+      .scr-role-lower-third { color: var(--sc-gold); }
+      .scr-role-stream { color: var(--sc-live); }
+
+      /* STATUS PILL — 4 variants; leading dot inherits the text colour. */
+      .scr-pill {
+        font-size: 10px;
+        font-weight: 700;
+        border-radius: 999px;
+        padding: 3px 10px;
+        border: 1px solid transparent;
+        white-space: nowrap;
+      }
+
+      .scr-pill-live {
+        color: var(--sc-live);
+        background: var(--sc-live-soft);
+        border-color: var(--sc-live-border);
+      }
+
+      .scr-pill-connected {
+        color: var(--sc-preview);
+        background: var(--sc-preview-soft);
+        border-color: var(--sc-preview-border);
+      }
+
+      .scr-pill-ready {
+        color: var(--sc-info);
+        background: var(--sc-info-soft);
+        border-color: var(--sc-info-border);
+      }
+
+      .scr-pill-warning {
+        color: var(--sc-warn);
+        background: var(--sc-warn-soft);
+        border-color: var(--sc-warn-border);
+      }
+
+      .scr-card-metarow {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 9px;
+      }
+
+      .scr-card-meta {
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--sc-text-muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .scr-card-actions {
+        display: flex;
+        gap: 8px;
+        flex: none;
+      }
+
+      .scr-card-btn {
+        font-size: 12px;
+        padding: 6px 12px;
+      }
+
+      .screen-delete {
+        color: var(--sc-live);
+      }
+
+      /* CSS TOGGLE — the hidden checkbox is the pinned .screen-enable-toggle. */
+      .scr-toggle {
+        position: relative;
+        display: inline-block;
+        width: 42px;
+        height: 24px;
+        flex: none;
+        cursor: pointer;
+      }
+
+      .scr-toggle input {
+        position: absolute;
+        opacity: 0;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        cursor: pointer;
+      }
+
+      .scr-toggle-knob {
+        position: absolute;
+        inset: 0;
+        border-radius: 999px;
+        background: var(--sc-elevated);
+        border: 1px solid var(--sc-border);
+        transition: background 0.12s ease;
+      }
+
+      .scr-toggle-knob::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #fff;
+        transition: left 0.12s ease;
+      }
+
+      .scr-toggle input:checked + .scr-toggle-knob {
+        background: var(--sc-primary);
+        border-color: var(--sc-primary);
+      }
+
+      .scr-toggle input:checked + .scr-toggle-knob::after {
+        left: 22px;
+      }
+
+      .scr-toggle input:focus-visible + .scr-toggle-knob {
+        outline: 2px solid var(--sc-primary-hover);
+        outline-offset: 2px;
+      }
+
+      /* Stage-card thumbnail chips */
       .stage-chips {
         display: flex;
-        gap: 6px;
+        gap: 8px;
       }
 
       .stage-chip {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 12px;
-        border: 1px solid var(--line);
-        border-radius: 15px;
-        padding: 6px 12px;
-        color: var(--muted);
+        font-size: 11px;
+        border: 1px solid var(--sc-border);
+        border-radius: 999px;
+        padding: 5px 11px;
+        color: var(--sc-text-secondary);
+        background: var(--sc-inset);
       }
 
       .stage-chip.on {
-        background: var(--accent);
-        color: #fff;
-        border-color: var(--accent);
+        color: var(--sc-text);
+        border-color: var(--sc-border-strong);
+      }
+
+      /* INSPECTOR (360px fixed) */
+      .scr-inspector {
+        width: 360px;
+        flex: none;
+        background: var(--sc-surface);
+        border-left: 1px solid var(--sc-border);
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .scr-isection {
+        padding: 15px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .scr-iheader {
+        gap: 6px;
+      }
+
+      .scr-iheader-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 9px;
+      }
+
+      .scr-iheader-name {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--sc-text);
+      }
+
+      .scr-iheader-sub {
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--sc-text-muted);
+      }
+
+      .scr-idivider {
+        height: 1px;
+        background: var(--sc-border);
+      }
+
+      .scr-isection-title {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        color: var(--sc-text-muted);
+      }
+
+      .scr-imuted {
+        font-size: 13px;
+        color: var(--sc-text-muted);
+      }
+
+      .scr-irow {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .scr-irow-label {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--sc-text-secondary);
+      }
+
+      .scr-irow-value {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--sc-text);
+      }
+
+      .scr-select {
+        background: var(--sc-inset);
+        border: 1px solid var(--sc-border);
+        color: var(--sc-text);
+        border-radius: 8px;
+        padding: 8px 11px;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        max-width: 60%;
+      }
+
+      .scr-select-gold {
+        color: var(--sc-gold);
+      }
+
+      /* NDI source-name text input (inspector NDI section) */
+      .scr-input {
+        background: var(--sc-inset);
+        border: 1px solid var(--sc-border);
+        color: var(--sc-text);
+        border-radius: 8px;
+        padding: 8px 11px;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        max-width: 60%;
+        min-width: 0;
+      }
+
+      .scr-input::placeholder {
+        color: var(--sc-text-muted);
+        font-weight: 500;
+      }
+
+      .scr-input:focus-visible {
+        outline: 2px solid var(--sc-primary-hover);
+        outline-offset: 1px;
+      }
+
+      .scr-select.mismatch {
+        border-color: var(--sc-warn);
+        color: var(--sc-warn);
+      }
+
+      .scr-idevice-row {
+        display: flex;
+        gap: 8px;
+      }
+
+      .scr-idevice-btn {
+        flex: 1;
+        text-align: center;
+        padding: 9px 0;
+      }
+
+      .scr-ifullscreen {
+        width: 100%;
+        padding: 11px 0;
+        font-size: 13px;
+      }
+
+      .scr-signal {
+        border-radius: 9px;
+        padding: 10px 12px;
+        font-size: 11px;
+        font-weight: 600;
+        border: 1px solid transparent;
+      }
+
+      .scr-signal-ok {
+        color: var(--sc-preview);
+        background: var(--sc-preview-soft);
+        border-color: var(--sc-preview-border);
+      }
+
+      .scr-signal-warn {
+        color: var(--sc-warn);
+        background: var(--sc-warn-soft);
+        border-color: var(--sc-warn-border);
+      }
+
+      .scr-signal-bad {
+        color: var(--sc-live);
+        background: var(--sc-live-soft);
+        border-color: var(--sc-live-border);
+      }
+
+      .scr-signal-neutral {
+        color: var(--sc-text-muted);
+        background: var(--sc-inset);
+        border-color: var(--sc-border);
+      }
+
+      /* Narrow webview: the inspector drops below the grid. */
+      @media (max-width: 900px) {
+        .scr-body {
+          flex-direction: column;
+        }
+
+        .scr-inspector {
+          width: auto;
+          border-left: none;
+          border-top: 1px solid var(--sc-border);
+        }
       }
 
       /* Each zone stacks its panels vertically and never overflows the row. */

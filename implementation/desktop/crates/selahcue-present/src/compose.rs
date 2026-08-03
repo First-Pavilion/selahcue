@@ -477,28 +477,94 @@ fn push_background(frame: &mut Frame, bg: &Background, width: u32, height: u32) 
     }
 }
 
+/// Which compositing layer CATEGORIES to include when composing a slide — the Design 2.0
+/// per-output VISIBLE LAYERS mask. Each `false` flag drops that category from the composed
+/// frame; the remaining layers still render, so hiding a layer NEVER blanks the frame
+/// (NFR-024). Defaults to all-visible (identity), so [`compose_slide`] (which passes
+/// [`LayerMask::ALL`]) is byte-identical to the pre-mask behaviour.
+///
+/// Category → theme mapping: `background` gates the slide background (solid/gradient/image),
+/// `text` gates the title + body text regions, `lower_third` gates the decorative band (the
+/// lower-third bar), `logo` gates the design elements (logos/graphics/watermarks). The audience
+/// `timer` layer is not composed here (it lives only on the stage/confidence monitor), so it is
+/// gated on that separate path, not by this mask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayerMask {
+    pub background: bool,
+    pub text: bool,
+    pub lower_third: bool,
+    pub logo: bool,
+}
+
+impl LayerMask {
+    /// Every layer visible — the identity mask (default compose behaviour).
+    pub const ALL: LayerMask = LayerMask {
+        background: true,
+        text: true,
+        lower_third: true,
+        logo: true,
+    };
+}
+
+impl Default for LayerMask {
+    fn default() -> Self {
+        LayerMask::ALL
+    }
+}
+
+/// Compose a slide with every layer visible (the identity mask). Kept byte-identical to the
+/// pre-mask behaviour (NFR-014) — a thin wrapper over [`compose_slide_masked`].
 pub fn compose_slide(slide: &Slide, theme: &Theme, width: u32, height: u32) -> Frame {
+    compose_slide_masked(slide, theme, width, height, LayerMask::ALL)
+}
+
+/// Compose a slide under a per-output [`LayerMask`] (Design 2.0 VISIBLE LAYERS). A masked-off
+/// category contributes no layer; the frame is never blank as a result (NFR-024). Pure and
+/// deterministic — the same (slide, theme, mask) always yields byte-identical pixels.
+pub fn compose_slide_masked(
+    slide: &Slide,
+    theme: &Theme,
+    width: u32,
+    height: u32,
+    mask: LayerMask,
+) -> Frame {
     // The background base colour is the frame clear (the GPU clear + the CPU base fill); a
-    // gradient/image background (86ajq3225) adds a full-frame layer BEHIND everything.
-    let mut frame = Frame::new(width, height).with_background(theme.background.base_color());
-    push_background(&mut frame, &theme.background, width, height);
+    // gradient/image background (86ajq3225) adds a full-frame layer BEHIND everything. When the
+    // BACKGROUND layer is hidden, the frame clears to black and no background layer is pushed
+    // (content still renders on black — never a blank frame).
+    let base = if mask.background {
+        theme.background.base_color()
+    } else {
+        Rgba::BLACK
+    };
+    let mut frame = Frame::new(width, height).with_background(base);
+    if mask.background {
+        push_background(&mut frame, &theme.background, width, height);
+    }
     if slide.is_blank() {
         return frame; // background only (solid / gradient / image)
     }
-    // A decorative band (e.g. the lower-third bar) sits behind everything else.
-    if let Some(band) = &theme.band {
-        for layer in band_layers(band, width, height) {
-            frame.push(layer);
+    // A decorative band (e.g. the lower-third bar) sits behind everything else — the
+    // LOWER-THIRD layer.
+    if mask.lower_third {
+        if let Some(band) = &theme.band {
+            for layer in band_layers(band, width, height) {
+                frame.push(layer);
+            }
         }
     }
-    // Design elements (Canvas Editing, 86ajq6j2q) composite by z-order relative to the
-    // text: `z < 0` BEHIND the text, `z >= 0` IN FRONT. A stable sort by z gives a
-    // well-defined order (list order within equal z). Rendered here (behind pass) + after
-    // the text (front pass). Absent for every current built-in → a no-op → determinism.
-    // A HIDDEN element (Design 2.0 LAYERS visibility) contributes no layer, exactly like a
-    // hidden region — filtered out of BOTH z-order passes below. The background + every other
-    // visible layer still render, so hiding a layer never blanks the frame (NFR-024).
-    let mut ordered: Vec<&Element> = theme.elements.iter().filter(|e| e.visible()).collect();
+    // Design elements (Canvas Editing, 86ajq6j2q) — the LOGO/graphics layer — composite by
+    // z-order relative to the text: `z < 0` BEHIND the text, `z >= 0` IN FRONT. A stable sort
+    // by z gives a well-defined order (list order within equal z). Absent for every current
+    // built-in → a no-op → determinism. A HIDDEN element (its own `visible()` flag) contributes
+    // no layer, exactly like a hidden region; the whole LOGO category is dropped when
+    // `mask.logo` is false. The background + every other visible layer still render, so hiding a
+    // layer never blanks the frame (NFR-024).
+    let mut ordered: Vec<&Element> = if mask.logo {
+        theme.elements.iter().filter(|e| e.visible()).collect()
+    } else {
+        Vec::new()
+    };
     ordered.sort_by_key(|e| e.z());
     for e in ordered.iter().filter(|e| e.z() < 0) {
         for layer in element_layers(e, width, height) {
@@ -516,7 +582,7 @@ pub fn compose_slide(slide: &Slide, theme: &Theme, width: u32, height: u32) -> F
         // A title-only slide (section header, song title): the title IS the main
         // content, so it renders large + centred in the BODY region — not as a
         // small header. (This matches the pre-theme "big centred title" behaviour.)
-        if theme.body.visible && !title.is_empty() {
+        if mask.text && theme.body.visible && !title.is_empty() {
             for layer in layout_region(
                 &[title],
                 &theme.body,
@@ -531,8 +597,8 @@ pub fn compose_slide(slide: &Slide, theme: &Theme, width: u32, height: u32) -> F
         }
     } else {
         // Content slide: the title is the reference/heading (title region) and the
-        // body lines fill the body region.
-        if theme.title.visible && !title.is_empty() {
+        // body lines fill the body region. The TEXT layer gates both regions.
+        if mask.text && theme.title.visible && !title.is_empty() {
             for layer in layout_region(
                 &[title],
                 &theme.title,
@@ -545,7 +611,7 @@ pub fn compose_slide(slide: &Slide, theme: &Theme, width: u32, height: u32) -> F
                 frame.push(layer);
             }
         }
-        if theme.body.visible {
+        if mask.text && theme.body.visible {
             for layer in layout_region(
                 &body,
                 &theme.body,

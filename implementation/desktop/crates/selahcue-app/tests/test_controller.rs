@@ -3569,3 +3569,409 @@ fn a_custom_theme_with_a_gradient_or_image_background_applies_and_recovers() {
         );
     }
 }
+
+// --- Per-output config (Screens page inspector): store, clamps, validation, persist signal,
+// operator-view surfacing, and drop-on-remove. Backend for the Design 2.0 inspector. ---
+
+#[test]
+fn output_config_defaults_are_identity_and_undirtied() {
+    let (c, _) = controller();
+    let d = c.output_config("main");
+    assert_eq!(d.orientation, 0);
+    assert!(matches!(
+        d.scale_fit,
+        selahcue_lan::protocol::ScaleFit::Fill
+    ));
+    assert!(!d.mirror);
+    assert_eq!(d.delay_ms, 0);
+    assert_eq!(d.frame_rate, 60);
+    assert!(!d.safe_area_guides);
+    assert!(
+        d.layers.background
+            && d.layers.text
+            && d.layers.lower_third
+            && d.layers.logo
+            && d.layers.timer,
+        "every layer visible by default"
+    );
+    assert!(d.is_default());
+}
+
+#[test]
+fn output_config_applies_clamps_and_marks_dirty() {
+    let (mut c, _) = controller();
+    assert!(!c.take_output_configs_dirty(), "no config yet → not dirty");
+
+    assert_eq!(
+        c.apply(&Command::SetOutputOrientation {
+            screen: "main".into(),
+            quarter_turns: 1
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(c.output_config("main").orientation, 1);
+    assert!(c.take_output_configs_dirty(), "a real change dirties");
+    assert!(!c.take_output_configs_dirty(), "taking the flag clears it");
+
+    // Out-of-range orientation is rejected and leaves state unchanged.
+    assert_eq!(
+        c.apply(&Command::SetOutputOrientation {
+            screen: "main".into(),
+            quarter_turns: 4
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(c.output_config("main").orientation, 1);
+
+    // Delay clamps to MAX_OUTPUT_DELAY_MS; frame-rate clamps into [MIN, MAX].
+    c.apply(&Command::SetOutputDelay {
+        screen: "main".into(),
+        ms: 9_999_999,
+    });
+    assert_eq!(
+        c.output_config("main").delay_ms,
+        selahcue_lan::protocol::MAX_OUTPUT_DELAY_MS
+    );
+    c.apply(&Command::SetOutputFrameRate {
+        screen: "main".into(),
+        fps: 1,
+    });
+    assert_eq!(
+        c.output_config("main").frame_rate,
+        selahcue_lan::protocol::MIN_FRAME_RATE
+    );
+    c.apply(&Command::SetOutputFrameRate {
+        screen: "main".into(),
+        fps: 9_999,
+    });
+    assert_eq!(
+        c.output_config("main").frame_rate,
+        selahcue_lan::protocol::MAX_FRAME_RATE
+    );
+}
+
+#[test]
+fn output_config_rejects_unknown_screen_and_layer() {
+    let (mut c, _) = controller();
+    assert_eq!(
+        c.apply(&Command::SetOutputMirror {
+            screen: "does-not-exist".into(),
+            on: true
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        c.apply(&Command::SetScreenLayerVisible {
+            screen: "main".into(),
+            layer: "not-a-layer".into(),
+            visible: false
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    // A valid layer on a valid screen is accepted and gates that layer.
+    assert_eq!(
+        c.apply(&Command::SetScreenLayerVisible {
+            screen: "main".into(),
+            layer: "lower-third".into(),
+            visible: false
+        }),
+        ControllerReply::Ack
+    );
+    assert!(!c.output_config("main").layers.lower_third);
+    assert!(
+        c.output_config("main").layers.background,
+        "other layers untouched"
+    );
+}
+
+#[test]
+fn config_returning_to_default_is_normalized_away_and_off_the_wire() {
+    let (mut c, _) = controller();
+    // Toggle a layer off, then back on: the config returns to all-default.
+    c.apply(&Command::SetScreenLayerVisible {
+        screen: "main".into(),
+        layer: "logo".into(),
+        visible: false,
+    });
+    c.apply(&Command::SetScreenLayerVisible {
+        screen: "main".into(),
+        layer: "logo".into(),
+        visible: true,
+    });
+    assert!(
+        c.output_config("main").is_default(),
+        "normalized back to default"
+    );
+    // The default config is not surfaced on the ScreenView (byte-identical fixtures).
+    let main = c
+        .operator_view()
+        .screens
+        .into_iter()
+        .find(|s| s.screen == "main")
+        .unwrap();
+    assert!(main.config.is_default());
+
+    // A NO-OP set (writing the value it already has) acks WITHOUT dirtying.
+    let _ = c.take_output_configs_dirty();
+    assert_eq!(
+        c.apply(&Command::SetOutputMirror {
+            screen: "main".into(),
+            on: false
+        }),
+        ControllerReply::Ack
+    );
+    assert!(!c.take_output_configs_dirty(), "a no-op set does not dirty");
+}
+
+#[test]
+fn operator_view_surfaces_a_configured_screen() {
+    let (mut c, _) = controller();
+    c.apply(&Command::SetOutputScaleFit {
+        screen: "main".into(),
+        fit: selahcue_lan::protocol::ScaleFit::Fit,
+    });
+    c.apply(&Command::SetOutputMirror {
+        screen: "main".into(),
+        on: true,
+    });
+    let main = c
+        .operator_view()
+        .screens
+        .into_iter()
+        .find(|s| s.screen == "main")
+        .unwrap();
+    assert!(matches!(
+        main.config.scale_fit,
+        selahcue_lan::protocol::ScaleFit::Fit
+    ));
+    assert!(main.config.mirror);
+    assert!(!main.config.is_default());
+}
+
+#[test]
+fn removing_a_virtual_screen_drops_its_output_config() {
+    let (mut c, _) = controller();
+    // Mint a virtual stream screen, configure it, then delete it.
+    assert_eq!(
+        c.apply(&Command::AddScreen {
+            role: "stream".into()
+        }),
+        ControllerReply::Ack
+    );
+    let virt = c
+        .operator_view()
+        .screens
+        .into_iter()
+        .find(|s| s.deletable)
+        .expect("a virtual screen was added")
+        .screen;
+    c.apply(&Command::SetOutputMirror {
+        screen: virt.clone(),
+        on: true,
+    });
+    assert!(c.output_config(&virt).mirror);
+    assert_eq!(
+        c.apply(&Command::RemoveScreen {
+            screen: virt.clone()
+        }),
+        ControllerReply::Ack
+    );
+    // The removed screen's config is gone — a re-minted id never inherits stale config.
+    assert!(
+        c.output_config(&virt).is_default(),
+        "config dropped with the screen"
+    );
+}
+
+#[test]
+fn output_config_load_drops_unknown_and_default_entries() {
+    let (mut c, _) = controller();
+    let cfg_nondefault = selahcue_lan::protocol::OutputConfigView {
+        mirror: true,
+        ..selahcue_lan::protocol::OutputConfigView::default()
+    };
+    c.load_output_configs([
+        ("main".to_string(), cfg_nondefault.clone()),
+        // An unknown screen id is dropped on load (never crashes).
+        ("ghost".to_string(), cfg_nondefault.clone()),
+        // An all-default entry is dropped (it would never be surfaced anyway).
+        (
+            "stage".to_string(),
+            selahcue_lan::protocol::OutputConfigView::default(),
+        ),
+    ]);
+    assert!(
+        c.output_config("main").mirror,
+        "a known non-default config loads"
+    );
+    assert!(
+        c.output_config("stage").is_default(),
+        "a default entry is not stored"
+    );
+    assert!(!c.take_output_configs_dirty(), "loading does not dirty");
+}
+
+#[test]
+fn hiding_a_layer_changes_the_composed_screen_output() {
+    // The VISIBLE LAYERS mask is applied at compose (not merely stored): hiding a layer on a
+    // screen changes what compose_screen produces for that screen.
+    let (mut c, ids) = controller();
+    c.apply(&Command::SelectItem { item_id: ids[0] });
+    c.apply(&Command::GoLive);
+    let before = c.compose_screen("main").expect("main composes");
+    assert_eq!(
+        c.apply(&Command::SetScreenLayerVisible {
+            screen: "main".into(),
+            layer: "text".into(),
+            visible: false,
+        }),
+        ControllerReply::Ack
+    );
+    let after = c.compose_screen("main").expect("main composes");
+    assert_ne!(
+        before.bytes(),
+        after.bytes(),
+        "hiding the text layer changes the composed main output"
+    );
+    // Re-showing the layer restores the original composition byte-for-byte.
+    c.apply(&Command::SetScreenLayerVisible {
+        screen: "main".into(),
+        layer: "text".into(),
+        visible: true,
+    });
+    let restored = c.compose_screen("main").expect("main composes");
+    assert_eq!(
+        before.bytes(),
+        restored.bytes(),
+        "re-showing restores the frame"
+    );
+}
+
+// --- NDI output setup (Screens page): SetNdiOutput validation + name uniqueness. ---
+
+#[test]
+fn ndi_output_configures_an_audience_screen_and_surfaces_on_the_view() {
+    let (mut c, _) = controller();
+    assert_eq!(
+        c.apply(&Command::SetNdiOutput {
+            screen: "stream".into(),
+            name: "SelahCue Program".into(),
+            enabled: true,
+        }),
+        ControllerReply::Ack
+    );
+    let cfg = c.output_config("stream");
+    assert!(cfg.ndi_enabled && cfg.ndi_name == "SelahCue Program");
+    // Surfaced on the ScreenView the operator renders.
+    let sv = c
+        .operator_view()
+        .screens
+        .into_iter()
+        .find(|s| s.screen == "stream")
+        .unwrap();
+    assert!(sv.config.ndi_enabled && sv.config.ndi_name == "SelahCue Program");
+    // A leading/trailing space is trimmed.
+    c.apply(&Command::SetNdiOutput {
+        screen: "stream".into(),
+        name: "  Cam 1  ".into(),
+        enabled: true,
+    });
+    assert_eq!(c.output_config("stream").ndi_name, "Cam 1");
+}
+
+#[test]
+fn ndi_output_rejects_non_audience_bad_name_and_empty_when_enabled() {
+    let (mut c, _) = controller();
+    // The stage confidence monitor is not an audience feed.
+    assert_eq!(
+        c.apply(&Command::SetNdiOutput {
+            screen: "stage".into(),
+            name: "X".into(),
+            enabled: true
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    // Enabling requires a non-empty name.
+    assert_eq!(
+        c.apply(&Command::SetNdiOutput {
+            screen: "stream".into(),
+            name: "   ".into(),
+            enabled: true
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    // A control char in the name is rejected (not silently stripped).
+    assert_eq!(
+        c.apply(&Command::SetNdiOutput {
+            screen: "stream".into(),
+            name: "Bad\nName".into(),
+            enabled: true
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    // An over-length name is rejected.
+    let long = "a".repeat(selahcue_lan::protocol::MAX_NDI_NAME_LEN + 1);
+    assert_eq!(
+        c.apply(&Command::SetNdiOutput {
+            screen: "stream".into(),
+            name: long,
+            enabled: true
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    // None of the rejects left an NDI config behind.
+    assert!(
+        !c.output_config("stream").ndi_enabled && c.output_config("stream").ndi_name.is_empty()
+    );
+}
+
+#[test]
+fn two_enabled_ndi_screens_may_not_share_a_name() {
+    let (mut c, _) = controller();
+    // Add a second stream screen so there are two audience feeds to name.
+    c.apply(&Command::AddScreen {
+        role: "stream".into(),
+    });
+    let virt = c
+        .operator_view()
+        .screens
+        .into_iter()
+        .find(|s| s.deletable)
+        .unwrap()
+        .screen;
+    assert_eq!(
+        c.apply(&Command::SetNdiOutput {
+            screen: "stream".into(),
+            name: "Program".into(),
+            enabled: true
+        }),
+        ControllerReply::Ack
+    );
+    // A DIFFERENT enabled screen may not reuse the same source name.
+    assert_eq!(
+        c.apply(&Command::SetNdiOutput {
+            screen: virt.clone(),
+            name: "Program".into(),
+            enabled: true
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    // A DISABLED screen may hold the same name without clashing (only enabled sources collide).
+    assert_eq!(
+        c.apply(&Command::SetNdiOutput {
+            screen: virt.clone(),
+            name: "Program".into(),
+            enabled: false
+        }),
+        ControllerReply::Ack
+    );
+    // Re-naming the same screen to its OWN name is fine (not a clash with itself).
+    assert_eq!(
+        c.apply(&Command::SetNdiOutput {
+            screen: "stream".into(),
+            name: "Program".into(),
+            enabled: true
+        }),
+        ControllerReply::Ack
+    );
+}

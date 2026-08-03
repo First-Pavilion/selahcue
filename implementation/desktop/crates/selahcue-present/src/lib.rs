@@ -19,7 +19,7 @@ pub mod stage;
 pub mod theme;
 pub mod tokens;
 
-pub use compose::compose_slide;
+pub use compose::{compose_slide, compose_slide_masked, LayerMask};
 pub use present::Presenter;
 pub use qr::{compose_qr, qr_modules};
 pub use slide::Slide;

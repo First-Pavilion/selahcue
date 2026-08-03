@@ -18,8 +18,10 @@ fn schema_version_is_pinned() {
     // Append-only migrations: bump deliberately with each new migration so an
     // accidental reorder/removal is caught. v8 = session_state.theme (S8-3b);
     // v9 = session_state.custom_theme (S8-3c); v10 = plan_item.theme (S8-3d);
-    // v11 = saved_theme library table (86ajq4xmy); v12 = screen_theme table (86ajq321k).
-    assert_eq!(migrations::target_version(), 13);
+    // v11 = saved_theme library table (86ajq4xmy); v12 = screen_theme table (86ajq321k);
+    // v13 = screen registry table; v14 = screen_output_config table (Screens 2.0 inspector);
+    // v15 = NDI output columns (ndi_enabled/ndi_name) on screen_output_config.
+    assert_eq!(migrations::target_version(), 15);
 }
 
 #[test]
@@ -36,6 +38,7 @@ fn a_pre_saved_theme_database_upgrades_and_gains_the_saved_theme_table() {
             "DROP TABLE saved_theme;
              DROP TABLE screen_theme;
              DROP TABLE screen;
+             DROP TABLE screen_output_config;
              PRAGMA user_version = 10;",
         )
         .unwrap();
@@ -71,6 +74,7 @@ fn a_pre_screen_theme_database_upgrades_and_gains_the_screen_theme_table() {
         conn.execute_batch(
             "DROP TABLE screen;
              DROP TABLE screen_theme;
+             DROP TABLE screen_output_config;
              PRAGMA user_version = 11;",
         )
         .unwrap();
@@ -96,8 +100,9 @@ fn a_pre_screen_theme_database_upgrades_and_gains_the_screen_theme_table() {
 fn a_pre_registry_database_upgrades_and_gains_the_screen_table() {
     // A v12 DB (screen_theme but no screen-registry table) must upgrade cleanly to v13 —
     // a fresh `screen` table, so existing data survives and the registry starts empty
-    // (the controller recovers to the four built-in screens). Dropping `screen` + resetting
-    // to v12 forces the v12->v13 migration to re-run.
+    // (the controller recovers to the four built-in screens). Dropping `screen` (and the
+    // later screen_output_config) + resetting to v12 forces the v12->v13->v14 migrations to
+    // re-run.
     let file = tempfile::NamedTempFile::new().unwrap();
     let path = file.path().to_path_buf();
     {
@@ -105,12 +110,17 @@ fn a_pre_registry_database_upgrades_and_gains_the_screen_table() {
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(
             "DROP TABLE screen;
+             DROP TABLE screen_output_config;
              PRAGMA user_version = 12;",
         )
         .unwrap();
     }
     let db = Database::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), 13, "re-ran the v13 migration");
+    assert_eq!(
+        db.schema_version().unwrap(),
+        migrations::target_version(),
+        "re-ran the v13 + v14 migrations"
+    );
     let present: i64 = db
         .conn()
         .query_row(
@@ -142,6 +152,7 @@ fn a_pre_per_item_theme_database_upgrades_and_gains_the_plan_item_theme_column()
              DROP TABLE saved_theme;
              DROP TABLE screen_theme;
              DROP TABLE screen;
+             DROP TABLE screen_output_config;
              PRAGMA user_version = 9;",
         )
         .unwrap();
@@ -180,6 +191,7 @@ fn a_pre_theme_database_upgrades_and_gains_the_theme_columns() {
              DROP TABLE saved_theme;
              DROP TABLE screen_theme;
              DROP TABLE screen;
+             DROP TABLE screen_output_config;
              PRAGMA user_version = 7;",
         )
         .unwrap();

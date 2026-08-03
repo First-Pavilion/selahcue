@@ -136,7 +136,18 @@ pub fn required_permission(cmd: &Command) -> Permission {
         | Command::SetScreenTheme { .. }
         | Command::SetScreenEnabled { .. }
         | Command::AddScreen { .. }
-        | Command::RemoveScreen { .. } => ConfigureOutputs,
+        | Command::RemoveScreen { .. }
+        // Per-output config (orientation/scale/mirror/delay/frame-rate/safe-area/layers) is
+        // the SAME output-config authority — Operator-only, denied for everyone below.
+        | Command::SetOutputOrientation { .. }
+        | Command::SetOutputScaleFit { .. }
+        | Command::SetOutputMirror { .. }
+        | Command::SetOutputDelay { .. }
+        | Command::SetOutputFrameRate { .. }
+        | Command::SetOutputSafeArea { .. }
+        | Command::SetScreenLayerVisible { .. }
+        // Configuring a screen's NDI output is the SAME output-config authority — Operator-only.
+        | Command::SetNdiOutput { .. } => ConfigureOutputs,
     }
 }
 

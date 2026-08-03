@@ -4,7 +4,7 @@
 
 use selahcue_engine::analysis::analyze_flashes;
 use selahcue_engine::raster::FrameBuffer;
-use selahcue_present::{Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView};
+use selahcue_present::{LayerMask, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView};
 use std::time::{Duration, Instant};
 
 fn presenter() -> Presenter {
@@ -456,9 +456,9 @@ fn secondary_screens_render_the_same_live_content_under_different_themes_at_once
     assert!(p.go_live());
 
     // main (global classic) vs a lower-third screen vs a high-contrast stream screen.
-    let main = p.compose_screen_live(None);
-    let lower = p.compose_screen_live(Some(&Theme::lower_third()));
-    let stream = p.compose_screen_live(Some(&Theme::high_contrast()));
+    let main = p.compose_screen_live(None, LayerMask::ALL);
+    let lower = p.compose_screen_live(Some(&Theme::lower_third()), LayerMask::ALL);
+    let stream = p.compose_screen_live(Some(&Theme::high_contrast()), LayerMask::ALL);
 
     // main matches the physical live output exactly (same effective theme path).
     assert_eq!(
@@ -477,12 +477,13 @@ fn secondary_screens_render_the_same_live_content_under_different_themes_at_once
 
     // Isolation: changing the main screen theme leaves a secondary compose untouched.
     let lower_before = p
-        .compose_screen_live(Some(&Theme::lower_third()))
+        .compose_screen_live(Some(&Theme::lower_third()), LayerMask::ALL)
         .bytes()
         .to_vec();
     p.set_main_screen_theme(Some(Theme::high_contrast()));
     assert_eq!(
-        p.compose_screen_live(Some(&Theme::lower_third())).bytes(),
+        p.compose_screen_live(Some(&Theme::lower_third()), LayerMask::ALL)
+            .bytes(),
         lower_before.as_slice(),
         "a secondary screen's render is independent of main's theme"
     );
@@ -491,7 +492,7 @@ fn secondary_screens_render_the_same_live_content_under_different_themes_at_once
 #[test]
 fn a_blank_live_composes_a_safe_black_secondary_screen() {
     let p = Presenter::new(320, 180, Theme::classic());
-    let fb = p.compose_screen_live(Some(&Theme::classic()));
+    let fb = p.compose_screen_live(Some(&Theme::classic()), LayerMask::ALL);
     assert_eq!((fb.width(), fb.height()), (320, 180));
     assert!(is_black(&fb), "nothing live → a safe black secondary frame");
 }

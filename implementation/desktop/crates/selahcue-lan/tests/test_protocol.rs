@@ -3,8 +3,8 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_lan::protocol::{
-    from_json, to_json, AuthRequest, AuthResponse, Command, DenyReason, Request, ScreenView,
-    ServerMessage, ThumbView, VerseView, VERSION,
+    from_json, to_json, AuthRequest, AuthResponse, Command, DenyReason, LayerVisibility,
+    OutputConfigView, Request, ScaleFit, ScreenView, ServerMessage, ThumbView, VerseView, VERSION,
 };
 use selahcue_lan::rbac::Role;
 
@@ -147,10 +147,17 @@ fn screen_registry_commands_round_trip_and_are_additive() {
         enabled: true,
         deletable: false,
         theme: Some("high-contrast".into()),
+        config: OutputConfigView::default(),
     };
     let aj = to_json(&audience).unwrap();
     assert!(aj.contains(r#""deletable":false"#), "{aj}");
     assert!(aj.contains(r#""theme":"high-contrast""#), "{aj}");
+    // A DEFAULT per-output config is omitted on the wire (byte-identical to a pre-config
+    // peer / the pinned v2 fixtures).
+    assert!(
+        !aj.contains("\"config\""),
+        "default config is skipped: {aj}"
+    );
     assert_eq!(from_json::<ScreenView>(&aj).unwrap(), audience);
     let stage = ScreenView {
         screen: "stage".into(),
@@ -158,10 +165,46 @@ fn screen_registry_commands_round_trip_and_are_additive() {
         enabled: false,
         deletable: false,
         theme: None,
+        config: OutputConfigView::default(),
     };
     let sj = to_json(&stage).unwrap();
     assert!(!sj.contains("\"theme\""), "a None theme is skipped: {sj}");
+    assert!(
+        !sj.contains("\"config\""),
+        "default config is skipped: {sj}"
+    );
     assert_eq!(from_json::<ScreenView>(&sj).unwrap(), stage);
+    assert_eq!(VERSION, 2);
+
+    // A NON-default per-output config round-trips and IS carried on the wire (additive).
+    let configured = ScreenView {
+        screen: "main".into(),
+        role: "main".into(),
+        enabled: true,
+        deletable: false,
+        theme: None,
+        config: OutputConfigView {
+            orientation: 1,
+            scale_fit: ScaleFit::Fit,
+            mirror: true,
+            delay_ms: 40,
+            frame_rate: 30,
+            safe_area_guides: true,
+            layers: LayerVisibility {
+                lower_third: false,
+                ..LayerVisibility::default()
+            },
+            ndi_enabled: true,
+            ndi_name: "SelahCue Program".into(),
+        },
+    };
+    let cj = to_json(&configured).unwrap();
+    assert!(
+        cj.contains("\"config\""),
+        "a non-default config is carried: {cj}"
+    );
+    assert!(cj.contains("\"scale_fit\":\"fit\""), "{cj}");
+    assert_eq!(from_json::<ScreenView>(&cj).unwrap(), configured);
     assert_eq!(VERSION, 2);
 }
 
@@ -588,6 +631,9 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
             height: 1080,
             assigned: true,
             assigned_key: Some("Projector|1920x1080".into()),
+            fps: None,
+            dropped_frames: None,
+            signal: None,
         }],
         displays: vec![selahcue_lan::protocol::DisplayView {
             key: "Projector|1920x1080".into(),
@@ -916,4 +962,42 @@ fn add_item_command_carries_optional_song_content() {
     };
     let back: Command = from_json(&to_json(&cmd).unwrap()).unwrap();
     assert_eq!(back, cmd);
+}
+
+#[test]
+fn set_ndi_output_round_trips_and_is_additive() {
+    // NDI output config: the command round-trips with a stable snake_case tag; additive
+    // (VERSION unchanged, a new tag not in any pinned fixture).
+    assert_eq!(
+        to_json(&Command::SetNdiOutput {
+            screen: "stream".into(),
+            name: "SelahCue Program".into(),
+            enabled: true,
+        })
+        .unwrap(),
+        r#"{"cmd":"set_ndi_output","screen":"stream","name":"SelahCue Program","enabled":true}"#
+    );
+    let cmd = Command::SetNdiOutput {
+        screen: "stream-2".into(),
+        name: "".into(),
+        enabled: false,
+    };
+    assert_eq!(from_json::<Command>(&to_json(&cmd).unwrap()).unwrap(), cmd);
+
+    // The NDI fields on OutputConfigView are additive: default (off/empty) is skipped, a
+    // configured NDI output is carried.
+    let mut cfg = OutputConfigView::default();
+    assert!(
+        !to_json(&cfg).unwrap().contains("ndi_"),
+        "default NDI is off the wire"
+    );
+    cfg.ndi_enabled = true;
+    cfg.ndi_name = "Cam 1".into();
+    let j = to_json(&cfg).unwrap();
+    assert!(
+        j.contains(r#""ndi_enabled":true"#) && j.contains(r#""ndi_name":"Cam 1""#),
+        "{j}"
+    );
+    assert_eq!(from_json::<OutputConfigView>(&j).unwrap(), cfg);
+    assert_eq!(VERSION, 2);
 }

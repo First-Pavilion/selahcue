@@ -213,9 +213,10 @@ fn operator_webview_has_the_app_menu_and_screens_surface() {
         "preview_theme",
         "set_custom_theme",
         // The inspector's authoring controls (C-004): per-region colour/size/align/
-        // line-height/Fit + the region selector + background. Pinned so a future edit
-        // cannot strip the authoring half while leaving preview + Apply green.
-        "id=\"td-region\"",
+        // line-height/Fit + background. Pinned so a future edit cannot strip the authoring
+        // half while leaving preview + Apply green. (The explicit Region *picker* was removed
+        // as redundant — a region is selected via the LAYERS rows / canvas click and named in
+        // the inspector header; per-region editing + selection is preserved without it.)
         "id=\"td-bg\"",
         "id=\"td-color\"",
         "id=\"td-size\"",
@@ -227,22 +228,21 @@ fn operator_webview_has_the_app_menu_and_screens_surface() {
         "aria-labelledby=\"td-lbl-align\"",
         "aria-pressed",
         // Refine (Figma 204-124/208-137): a full-center canvas with an on-canvas
-        // selection box + resize handles, numeric X/Y/W/H, vertical alignment, and
-        // host-sourced built-ins (no hand-mirrored JS drift).
+        // selection box + resize handles, vertical alignment, and host-sourced built-ins
+        // (no hand-mirrored JS drift). (The numeric X/Y/W/H grid + Lock aspect were removed —
+        // redundant with the on-canvas move/resize handles; position/size is edited on canvas.)
         "id=\"td-canvas-box\"",
         "id=\"td-sel\"",
         "data-h=\"nw\"",
-        "id=\"td-x\"",
         "id=\"td-valign\"",
         "builtin_themes",
-        // Refine 2 (Figma 204-124 alignment): header actions, tabs, add-content, lock,
-        // and honest 'later' affordances (present but not fake). Save routes to 86ajq4xmy.
+        // Refine 2 (Figma 204-124 alignment): header actions, tabs, add-content, and honest
+        // 'later' affordances (present but not fake). Save routes to 86ajq4xmy.
         "class=\"td-header\"",
         "id=\"td-save\"",
         "id=\"td-tab-scriptures\"",
         "id=\"td-tab-slides\"",
         "data-add=\"text\"",
-        "id=\"td-lock\"",
         "id=\"td-font\"",
         "td-later",
         // (The per-item theme override + its `set_item_theme`/`item-theme` pins were
@@ -415,6 +415,8 @@ fn operator_theme_designer_is_design_2() {
         "data-bg=\"gradient\"",
         "class=\"td-sect\"",
         "td-fieldlabel",
+        // A collapsible Templates row (reclaim canvas space) — the toggle is present.
+        "id=\"td-templates-toggle\"",
     ] {
         assert!(html.contains(needle), "webview missing {needle:?}");
     }
@@ -427,6 +429,8 @@ fn operator_theme_designer_is_design_2() {
         "--td-zoom",
         // Clicking the Body / Reference-Title text on the canvas auto-selects that region.
         "function tdRegionAt(",
+        // The canvas fits (letterboxes) to the available area — resizes with the screen.
+        "function tdFitCanvas(",
     ] {
         assert!(js.contains(needle), "app.js missing {needle:?}");
     }

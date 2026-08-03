@@ -367,8 +367,31 @@
           if (res && res.available && res.frame) {
             blitFrame(cv, res.frame);
             cv.classList.add("has-render");
+            // Overlay the safe-area guides on the OPERATOR preview only (Design 2.0) — the
+            // audience output never carries them.
+            if (cv.dataset.safeArea === "1") drawSafeAreaGuides(cv);
           }
         }
+      }
+      // Draw broadcast-style safe-area guides onto a preview canvas: an action-safe rectangle
+      // (~3.5% inset) and a dashed title-safe rectangle (~5% inset), in the preview accent so
+      // the operator can frame content. Preview-only — never touches the audience output.
+      function drawSafeAreaGuides(cv) {
+        const ctx = cv.getContext && cv.getContext("2d");
+        if (!ctx) return;
+        const w = cv.width, h = cv.height;
+        if (!w || !h) return;
+        const inset = (frac, dash) => {
+          const x = Math.round(w * frac), y = Math.round(h * frac);
+          ctx.setLineDash(dash ? [Math.max(2, Math.round(w / 48)), Math.max(2, Math.round(w / 96))] : []);
+          ctx.strokeRect(x + 0.5, y + 0.5, w - 2 * x - 1, h - 2 * y - 1);
+        };
+        ctx.save();
+        ctx.lineWidth = Math.max(1, Math.round(w / 240));
+        ctx.strokeStyle = "rgba(53,192,138,0.9)"; // --sc-preview
+        inset(0.035, false); // action-safe
+        inset(0.05, true);   // title-safe (dashed)
+        ctx.restore();
       }
       // Surface a render-console DIAGNOSTIC into the panels (visible in a screenshot) + the
       // devtools console, so a real-app render failure can be pinpointed without the GUI here.
@@ -420,9 +443,51 @@
         }
       }
 
-      // OUTPUTS panel (FR-040/151): role -> display, assignment picker, health dot.
+      // OUTPUTS surface (Design 2.0, Figma 327:124): a card grid + a fixed inspector for the
+      // selected output. Role → display, per-output config, honest telemetry.
       let outputsKey = "";
       let outputsPending = null; // deferred view while a picker has focus
+      let selectedScreen = null; // the output shown in the inspector (defaults to the first)
+      let lastOutputsView = null; // stashed so a card-select can re-render the inspector alone
+
+      // Display name for a screen id/role (built-in or a virtual "Stream 2" feed).
+      function screenDisplayName(s) {
+        if (s.screen === "main") return "Audience — Main";
+        if (s.screen === "stage") return "Stage Display";
+        if (s.screen === "lower-third") return "Lower Third";
+        if (s.screen === "stream") return "Livestream Program";
+        const base = s.role === "lower-third" ? "Lower Third" : s.role === "stream" ? "Stream" : s.role;
+        const m = /-(\d+)$/.exec(s.screen);
+        return m ? base + " " + m[1] : base;
+      }
+      // Short role-badge label (Design 2.0 §ROLE BADGE).
+      function roleBadgeText(role) {
+        return role === "main" ? "MAIN" : role === "stage" ? "STAGE"
+          : role === "lower-third" ? "L3 · ALPHA" : "STREAM";
+      }
+      // Normalize a ScreenView.config (omitted → identity default) into a full object.
+      function cfgOf(s) {
+        const c = (s && s.config) || {};
+        const L = c.layers || {};
+        return {
+          orientation: c.orientation || 0,
+          scale_fit: c.scale_fit || "fill",
+          mirror: !!c.mirror,
+          delay_ms: c.delay_ms || 0,
+          frame_rate: c.frame_rate || 60,
+          safe_area_guides: !!c.safe_area_guides,
+          layers: {
+            background: L.background !== false,
+            text: L.text !== false,
+            lower_third: L.lower_third !== false,
+            logo: L.logo !== false,
+            timer: L.timer !== false,
+          },
+          ndi_enabled: !!c.ndi_enabled,
+          ndi_name: c.ndi_name || "",
+        };
+      }
+
       function renderOutputs(view) {
         const outs = view.outputs || [];
         const displays = view.displays || [];
@@ -441,276 +506,541 @@
           { screen: "stream", role: "stream", enabled: true, deletable: false },
           { screen: "stage", role: "stage", enabled: true, deletable: false },
         ];
-        const key = JSON.stringify([outs, displays, themes, activeTheme, view.screen_themes || [], view.saved_themes || [], registry]);
+        lastOutputsView = view;
+        // The selected output must always name a real screen (default the first).
+        if (!registry.some((s) => s.screen === selectedScreen)) {
+          selectedScreen = registry[0] ? registry[0].screen : null;
+        }
+        const key = JSON.stringify([outs, displays, themes, activeTheme, view.screen_themes || [], view.saved_themes || [], registry, selectedScreen]);
         if (key === outputsKey) return; // pickers are interactive: rebuild only on change
         const list = document.getElementById("screens-list");
         // Never yank an OPEN PICKER out from under the operator: a focused <select>
         // survives, and the fresh data renders when focus leaves it. A toggle/button
         // click is a completed action, so it does NOT defer — the row updates at once.
         const ae = document.activeElement;
-        if (ae && list.contains(ae) && ae.tagName === "SELECT") {
+        if (ae && (list.contains(ae) || (document.getElementById("screens-inspector") || {}).contains && document.getElementById("screens-inspector").contains(ae)) && ae.tagName === "SELECT") {
           outputsPending = view;
           return;
         }
         outputsPending = null;
         outputsKey = key;
 
-        // Outputs/screens are shown + managed on the Screens surface (menu →
-        // Screens); the console no longer carries an outputs panel.
+        // The topbar Identify targets every physical display; disabled with no outputs.
         document.getElementById("screens-identify").disabled = outs.length === 0;
+        // The "N connected" pill: physical outputs bound to a display (honest — a virtual
+        // feed composes + previews but has no physical connection yet).
+        const conn = document.getElementById("screens-conn");
+        if (conn) {
+          const n = outs.filter((o) => o.assigned).length;
+          conn.textContent = "● " + n + " connected";
+        }
 
-        // A per-SCREEN Theme picker (86ajq321k): sets THIS screen's theme (not the
-        // global) and reflects the screen's current theme. Returned as a label + select.
-        const themePickerFor = (screen) => {
-          const frag = document.createDocumentFragment();
-          const cl = document.createElement("label"); cl.textContent = "Theme"; frag.appendChild(cl);
-          const sel = document.createElement("select");
-          sel.setAttribute("aria-label", "Theme for the " + screen + " screen");
-          if (!themes.length) {
-            const opt = document.createElement("option");
-            opt.textContent = "No themes offered"; opt.disabled = true; opt.selected = true;
-            sel.appendChild(opt); sel.disabled = true;
-          } else {
-            // Whether this screen has an EXPLICIT per-screen theme (vs. following the
-            // global). Membership, not value — "explicitly classic" ≠ "unset (global)".
-            const explicit = Object.prototype.hasOwnProperty.call(screenThemes, screen);
-            // A "follow global" entry (empty value) — sending it clears the override
-            // (the backend's empty-name clear). Mirrors the per-item picker (S8-3d).
-            const glob = document.createElement("option");
-            glob.value = ""; glob.textContent = "◈ Follow global";
-            if (!explicit) glob.selected = true;
-            sel.appendChild(glob);
-            themes.forEach((t) => {
-              const opt = document.createElement("option");
-              opt.value = t; opt.textContent = t;
-              if (explicit && t === screenThemes[screen]) opt.selected = true;
-              sel.appendChild(opt);
-            });
-            // Saved (named custom) themes from the library (86ajq69ft), in a labelled group.
-            const savedNames = (view.saved_themes || []).map((t) => t.name);
-            if (savedNames.length) {
-              const grp = document.createElement("optgroup");
-              grp.label = "Saved";
-              savedNames.forEach((name) => {
-                const opt = document.createElement("option");
-                opt.value = name; opt.textContent = name;
-                if (explicit && name === screenThemes[screen]) opt.selected = true;
-                grp.appendChild(opt);
-              });
-              sel.appendChild(grp);
-            }
-            sel.onchange = () => act(() => invoke("set_screen_theme", { screen, name: sel.value }));
-          }
-          frag.appendChild(sel);
-          return frag;
-        };
-
-        // A small LIVE preview of THIS screen's own themed output (86ajq321k) — filled by
-        // renderScreenPreviews via render_screen. Each Audience screen shows a different design.
-        const screenPreviewFor = (screen) => {
-          const wrap = document.createElement("div");
-          wrap.className = "screen-preview-wrap";
-          const cap = document.createElement("label");
-          cap.textContent = "Preview";
-          wrap.appendChild(cap);
-          const cv = document.createElement("canvas");
-          cv.className = "screen-preview";
-          cv.dataset.screen = screen;
-          cv.setAttribute("aria-label", "Live preview of the " + screen + " screen's themed output");
-          wrap.appendChild(cv);
-          return wrap;
-        };
-
-        // --- Full Screens list (registry-driven: per-screen role → content control) ---
-        // Physical output (display assignment + format) is keyed by role for main/stage.
+        // Physical output (display assignment + format + telemetry) is keyed by role.
         const outByRole = {};
         outs.forEach((o) => { outByRole[o.role] = o; });
-        const displayName = (s) => {
-          if (s.screen === "main") return "Main Screen";
-          if (s.screen === "stage") return "Stage Display";
-          if (s.screen === "lower-third") return "Lower Third";
-          if (s.screen === "stream") return "Stream";
-          // A virtual feed: "Stream 2" / "Lower Third 2" from its role + numeric suffix.
-          const base = s.role === "lower-third" ? "Lower Third" : s.role === "stream" ? "Stream" : s.role;
-          const m = /-(\d+)$/.exec(s.screen);
-          return m ? base + " " + m[1] : base;
-        };
-        const badgeText = (role) =>
-          role === "main" ? "Audience" : role === "stage" ? "Stage"
-            : role === "lower-third" ? "Lower-third" : "Stream";
 
         // Preserve KEYBOARD focus across the destructive innerHTML rebuild (a11y): a toggle
         // or button (unlike a <select>, handled above) is destroyed by the rebuild, dropping
         // focus to <body>. Remember which control was focused so we can re-focus its
-        // equivalent after the rows are rebuilt (a still-existing control; a deleted row's
-        // control simply can't be restored, which is expected).
+        // equivalent after the rows are rebuilt.
         const focused = document.activeElement;
         let refocusSel = null;
         if (focused && list.contains(focused)) {
-          if (focused.id === "screen-add-btn" || focused.id === "screen-add-role") {
-            refocusSel = "#" + focused.id;
-          } else {
-            const fr = focused.closest(".screen-row");
-            const fsid = fr && fr.dataset.screen;
-            if (fsid && focused.classList.contains("screen-enable-toggle")) {
-              refocusSel = '.screen-row[data-screen="' + fsid + '"] .screen-enable-toggle';
-            } else if (fsid && focused.classList.contains("screen-delete")) {
-              refocusSel = '.screen-row[data-screen="' + fsid + '"] .screen-delete';
-            }
+          const fr = focused.closest(".screen-row");
+          const fsid = fr && fr.dataset.screen;
+          if (fsid && focused.classList.contains("screen-enable-toggle")) {
+            refocusSel = '.screen-row[data-screen="' + fsid + '"] .screen-enable-toggle';
+          } else if (fsid && focused.classList.contains("screen-delete")) {
+            refocusSel = '.screen-row[data-screen="' + fsid + '"] .screen-delete';
           }
         }
+
+        // --- OUTPUT CARDS (Design 2.0): each is a .screen-row[data-screen] carrying the
+        // pinned hooks (preview canvas for audience, enable toggle, delete-on-virtual). ---
         list.innerHTML = "";
         registry.forEach((s) => {
           const isStage = s.role === "stage";
           const audience = !isStage; // main / lower-third / stream are Audience-class
-          const isMain = s.role === "main";
           const o = outByRole[s.role]; // the physical output for main/stage (if any)
-          const row = document.createElement("div");
-          row.className = "screen-row" + (s.enabled ? "" : " screen-disabled");
-          row.dataset.screen = s.screen;
+          const card = document.createElement("div");
+          card.className = "screen-row scr-card" + (s.enabled ? "" : " screen-disabled")
+            + (s.screen === selectedScreen ? " scr-card-selected" : "");
+          card.dataset.screen = s.screen;
 
-          const head = document.createElement("div"); head.className = "screen-head";
-          const name = document.createElement("strong");
-          name.style.fontSize = "17px"; name.textContent = displayName(s);
-          const rb = document.createElement("span"); rb.className = "role-badge";
-          rb.textContent = badgeText(s.role);
-          const rc = isStage ? "var(--warn-ink)" : "var(--accent)";
-          rb.style.color = rc; rb.style.borderColor = rc;
-          head.appendChild(name); head.appendChild(rb);
+          // (1) Preview thumbnail — a live canvas for Audience screens (86ajq321k); the Stage
+          // card shows its Current/Next/Timer chips (no preview canvas → the pinned "exactly
+          // 3 audience previews" count holds).
+          const thumb = document.createElement("div"); thumb.className = "scr-thumb";
+          if (audience) {
+            const cv = document.createElement("canvas");
+            cv.className = "screen-preview"; cv.dataset.screen = s.screen;
+            // Safe-area guides are an OPERATOR-preview overlay only (never the audience output)
+            // — flag the canvas so renderScreenPreviews draws the guides after blitting.
+            cv.dataset.safeArea = cfgOf(s).safe_area_guides ? "1" : "";
+            cv.setAttribute("aria-label", "Live preview of the " + s.screen + " screen's themed output");
+            thumb.appendChild(cv);
+          } else {
+            const chips = document.createElement("div"); chips.className = "stage-chips";
+            ["Current", "Next", "Timer"].forEach((l) => {
+              const c = document.createElement("span"); c.className = "stage-chip on"; c.textContent = l;
+              chips.appendChild(c);
+            });
+            thumb.appendChild(chips);
+          }
+          card.appendChild(thumb);
 
-          // Right-aligned controls: the Enable toggle + (virtual only) Delete.
-          const controls = document.createElement("div"); controls.className = "screen-controls";
-          const toggle = document.createElement("label"); toggle.className = "screen-enable";
+          // (2) Name + role badge  /  status pill + enable toggle
+          const nameRow = document.createElement("div"); nameRow.className = "scr-card-namerow";
+          const nameGroup = document.createElement("div"); nameGroup.className = "scr-card-namegroup";
+          const nm = document.createElement("strong"); nm.className = "scr-card-name";
+          nm.textContent = screenDisplayName(s);
+          const rb = document.createElement("span");
+          rb.className = "scr-role-badge scr-role-" + s.role;
+          rb.textContent = roleBadgeText(s.role);
+          nameGroup.appendChild(nm); nameGroup.appendChild(rb);
+          const rightGroup = document.createElement("div"); rightGroup.className = "scr-card-right";
+          rightGroup.appendChild(statusPillFor(s, o));
+          // The Enable toggle (pinned .screen-enable-toggle) — a D2 switch in the card head.
+          const toggle = document.createElement("label"); toggle.className = "scr-toggle scr-card-enable";
           const cb = document.createElement("input");
           cb.type = "checkbox"; cb.checked = s.enabled;
           cb.className = "screen-enable-toggle"; cb.dataset.screen = s.screen;
-          cb.setAttribute("aria-label", (s.enabled ? "Disable" : "Enable") + " the " + displayName(s) + " screen");
+          cb.setAttribute("aria-label", (s.enabled ? "Disable" : "Enable") + " the " + screenDisplayName(s) + " output");
           cb.onchange = () => {
             // Revert the optimistic native flip to the authoritative value BEFORE the round
-            // trip (like the assign-output <select>): a SUCCESS re-renders the row with the
-            // new state, while a REJECTED call (RBAC-denied / older host / transport) leaves
-            // the checkbox showing the true, unchanged state instead of a permanent lie.
+            // trip: a SUCCESS re-renders with the new state; a REJECTED call (RBAC / older
+            // host) leaves the switch showing the true, unchanged state — never a lie.
             const want = cb.checked;
             cb.checked = s.enabled;
             act(() => invoke("set_screen_enabled", { screen: s.screen, enabled: want }));
           };
-          const tl = document.createElement("span"); tl.className = "screen-enable-label";
-          tl.textContent = s.enabled ? "On" : "Off";
-          toggle.appendChild(cb); toggle.appendChild(tl);
-          controls.appendChild(toggle);
+          const knob = document.createElement("span"); knob.className = "scr-toggle-knob";
+          toggle.appendChild(cb); toggle.appendChild(knob);
+          rightGroup.appendChild(toggle);
+          nameRow.appendChild(nameGroup); nameRow.appendChild(rightGroup);
+          card.appendChild(nameRow);
+
+          // (3) Meta line  /  Identify · Configure (· Delete for a virtual output)
+          const metaRow = document.createElement("div"); metaRow.className = "scr-card-metarow";
+          const meta = document.createElement("span"); meta.className = "scr-card-meta";
+          meta.textContent = metaLine(s, o, cfgOf(s));
+          const actions = document.createElement("div"); actions.className = "scr-card-actions";
+          const idBtn = document.createElement("button");
+          idBtn.type = "button"; idBtn.className = "btn-secondary scr-card-btn";
+          idBtn.textContent = "Identify";
+          idBtn.disabled = outs.length === 0;
+          idBtn.setAttribute("aria-label", "Identify " + screenDisplayName(s));
+          idBtn.onclick = () => act(() => invoke("identify_outputs"));
+          const cfgBtn = document.createElement("button");
+          cfgBtn.type = "button"; cfgBtn.className = "btn-secondary scr-card-btn";
+          cfgBtn.textContent = "Configure";
+          cfgBtn.setAttribute("aria-label", "Configure " + screenDisplayName(s) + " in the inspector");
+          cfgBtn.onclick = () => selectScreen(s.screen);
+          actions.appendChild(idBtn); actions.appendChild(cfgBtn);
           if (s.deletable) {
             const del = document.createElement("button");
-            del.type = "button"; del.className = "screen-delete"; del.dataset.screen = s.screen;
+            del.type = "button"; del.className = "screen-delete scr-card-btn"; del.dataset.screen = s.screen;
             del.textContent = "Delete";
-            del.setAttribute("aria-label", "Delete the " + displayName(s) + " screen");
+            del.setAttribute("aria-label", "Delete the " + screenDisplayName(s) + " output");
             del.onclick = () => act(() => invoke("remove_screen", { screen: s.screen }));
-            controls.appendChild(del);
+            actions.appendChild(del);
           }
-          head.appendChild(controls);
-          row.appendChild(head);
+          metaRow.appendChild(meta); metaRow.appendChild(actions);
+          card.appendChild(metaRow);
 
-          const fields = document.createElement("div"); fields.className = "screen-fields";
-          // Output: main/stage bind a physical display; the secondaries are an honest seam.
-          const of = document.createElement("div");
-          const ol = document.createElement("label"); ol.textContent = "Output"; of.appendChild(ol);
-          if ((isMain || isStage) && displays.length && o) {
-            const sel = document.createElement("select");
-            sel.setAttribute("aria-label", "Assign the " + s.role + " output to a display");
-            if (!o.assigned) sel.classList.add("mismatch");
-            const none = document.createElement("option");
-            none.value = "";
-            none.textContent = o.assigned ? "Assign to display…" : "— not assigned · select";
-            sel.appendChild(none);
-            displays.forEach((d) => {
-              const opt = document.createElement("option");
-              opt.value = d.key;
-              opt.textContent = d.name + " (" + d.width + "×" + d.height + ")";
-              if (o.assigned_key && o.assigned_key === d.key) opt.selected = true;
-              sel.appendChild(opt);
-            });
-            sel.onchange = () => {
-              const chosen = sel.value;
-              if (chosen) {
-                sel.value = o.assigned_key || "";
-                act(() => invoke("assign_output", { role: s.role, displayKey: chosen }));
-              }
-            };
-            of.appendChild(sel);
-          } else if (isMain || isStage) {
-            const f = document.createElement("div"); f.className = "field";
-            f.textContent = (o && o.display) || "No displays found";
-            of.appendChild(f);
-          } else {
-            const f = document.createElement("div"); f.className = "field coming-soon";
-            f.textContent = "NDI / stream — delivery arrives later";
-            of.appendChild(f);
-          }
-          fields.appendChild(of);
-          // Format (read-only) — only a physical output reports one.
-          if ((isMain || isStage) && o) {
-            const ff = document.createElement("div");
-            const fl = document.createElement("label"); fl.textContent = "Format"; ff.appendChild(fl);
-            const fv = document.createElement("div"); fv.className = "field";
-            fv.textContent = o.width + " × " + o.height;
-            ff.appendChild(fv); fields.appendChild(ff);
-          }
-          // Content — role-driven: Audience → per-screen Theme + preview; Stage → chips.
-          const cf = document.createElement("div");
-          if (audience) {
-            cf.appendChild(themePickerFor(s.screen));
-            cf.appendChild(screenPreviewFor(s.screen));
-          } else {
-            const cl = document.createElement("label"); cl.textContent = "Stage layout"; cf.appendChild(cl);
-            const chips = document.createElement("div"); chips.className = "stage-chips";
-            ["Current", "Next", "Timer"].forEach((l) => {
-              const c = document.createElement("span"); c.className = "stage-chip on";
-              c.textContent = l; chips.appendChild(c);
-            });
-            cf.appendChild(chips);
-          }
-          fields.appendChild(cf);
-          row.appendChild(fields);
-          list.appendChild(row);
+          // Clicking a card body (not a control) selects it into the inspector.
+          card.addEventListener("click", (e) => {
+            if (e.target.closest("button, input, select, label")) return;
+            selectScreen(s.screen);
+          });
+          list.appendChild(card);
         });
 
-        // "+ Add screen": mint a VIRTUAL Audience-class feed (lower-third / stream). The
-        // host caps the registry, so this is refused (harmlessly) at the bound.
-        const add = document.createElement("div"); add.className = "screen-add";
-        const al = document.createElement("label"); al.textContent = "Add a virtual screen";
-        al.setAttribute("for", "screen-add-role"); add.appendChild(al);
-        const arow = document.createElement("div"); arow.className = "screen-add-row";
-        const roleSel = document.createElement("select"); roleSel.id = "screen-add-role";
-        roleSel.setAttribute("aria-label", "Role for the new virtual screen");
-        [["stream", "Stream"], ["lower-third", "Lower Third"]].forEach(([v, t]) => {
-          const opt = document.createElement("option"); opt.value = v; opt.textContent = t;
-          roleSel.appendChild(opt);
-        });
-        const addBtn = document.createElement("button");
-        addBtn.type = "button"; addBtn.className = "screen-add-btn"; addBtn.id = "screen-add-btn";
-        addBtn.textContent = "+ Add screen";
-        addBtn.onclick = () => act(() => invoke("add_screen", { role: roleSel.value }));
-        arow.appendChild(roleSel); arow.appendChild(addBtn); add.appendChild(arow);
-        list.appendChild(add);
-
-        // Honest seam: physical NDI/SDI/stream DELIVERY for the secondary feeds is later;
-        // enable/disable + add/delete are live now.
-        const note = document.createElement("p");
-        note.className = "coming-soon"; note.style.fontSize = "11px";
-        note.textContent =
-          "Enable/disable and add/delete a virtual screen are live. Physical NDI/SDI/stream OUTPUT delivery for the lower-third/stream feeds arrives later.";
-        list.appendChild(note);
-        // Restore keyboard focus to the rebuilt equivalent control (a11y — see above).
+        // Restore keyboard focus to the rebuilt equivalent control (a11y).
         if (refocusSel) {
           const rf = list.querySelector(refocusSel);
           if (rf) rf.focus();
         }
-        scheduleScreenPreviews(); // fill each screen's preview canvas (86ajq321k)
+        renderInspector(view, registry, outByRole, screenThemes, themes);
+        scheduleScreenPreviews(); // fill each Audience screen's preview canvas (86ajq321k)
+      }
+
+      // The status pill for a card (Design 2.0 §STATUS PILL): honest — LIVE only when the
+      // physical output is presenting; CONNECTED when assigned; READY for a composed virtual
+      // feed; NO SIGNAL when a physical role has no display.
+      function statusPillFor(s, o) {
+        const pill = document.createElement("span"); pill.className = "scr-pill";
+        let variant = "ready", label = "READY";
+        if (s.role === "main" || s.role === "stage") {
+          if (o && o.assigned && o.signal === "healthy") { variant = "live"; label = "LIVE"; }
+          else if (o && o.assigned) { variant = "connected"; label = "CONNECTED"; }
+          else if (o && o.signal === "degraded") { variant = "warning"; label = "DEGRADED"; }
+          else { variant = "warning"; label = "NO SIGNAL"; }
+        } else {
+          // A virtual audience feed composes + previews; if it broadcasts NDI, surface that.
+          const cfg = cfgOf(s);
+          if (s.enabled && cfg.ndi_enabled) {
+            variant = "connected"; label = "NDI";
+          } else {
+            variant = s.enabled ? "connected" : "ready";
+            label = s.enabled ? "COMPOSED" : "MUTED";
+          }
+        }
+        pill.classList.add("scr-pill-" + variant);
+        pill.textContent = "● " + label;
+        return pill;
+      }
+
+      // The card meta line: resolution · fps · orientation (honest — only what the host
+      // reports). A virtual feed shows its composed nature.
+      function metaLine(s, o, cfg) {
+        const parts = [];
+        if (o && o.width) parts.push(o.width + "×" + o.height);
+        if (o && typeof o.fps === "number") parts.push(o.fps + "fps");
+        else if (o) parts.push(cfg.frame_rate + "fps target");
+        parts.push(cfg.orientation % 2 === 0 ? "Landscape" : "Portrait");
+        if (!o && s.role !== "stage") return "Composed feed · " + (cfg.orientation % 2 === 0 ? "Landscape" : "Portrait");
+        return parts.join(" · ");
+      }
+
+      // Move the inspector to a different output (card Configure / body click). Re-renders the
+      // inspector alone (no grid rebuild → no preview thrash) and re-marks the selected card.
+      function selectScreen(id) {
+        if (selectedScreen === id) return;
+        selectedScreen = id;
+        const list = document.getElementById("screens-list");
+        list.querySelectorAll(".scr-card").forEach((c) => {
+          c.classList.toggle("scr-card-selected", c.dataset.screen === id);
+        });
+        if (lastOutputsView) {
+          const view = lastOutputsView;
+          const registry = (view.screens && view.screens.length) ? view.screens : [];
+          const outByRole = {}; (view.outputs || []).forEach((o) => { outByRole[o.role] = o; });
+          const screenThemes = {}; (view.screen_themes || []).forEach((st) => { screenThemes[st.screen] = st.theme; });
+          // Re-render the inspector for the new selection and re-mark the card IN PLACE — no
+          // grid rebuild here, so the preview canvases are not thrashed on a mere selection.
+          // outputsKey is deliberately left alone: selectedScreen is part of the change-gate
+          // key, so the next poll reconciles the grid on its own only if the data changed.
+          renderInspector(view, registry, outByRole, screenThemes, view.themes || []);
+        }
+      }
+
+      // A per-SCREEN Theme picker (86ajq321k): sets THIS screen's theme (not the global) and
+      // reflects the screen's current theme. Returned as a label + select for the inspector.
+      function themePickerFor(screen, themes, screenThemes, view) {
+        const frag = document.createDocumentFragment();
+        const cl = document.createElement("label"); cl.className = "scr-irow-label"; cl.textContent = "Theme";
+        frag.appendChild(cl);
+        const sel = document.createElement("select"); sel.className = "scr-select scr-select-gold";
+        sel.setAttribute("aria-label", "Theme for the " + screen + " screen");
+        if (!themes.length) {
+          const opt = document.createElement("option");
+          opt.textContent = "No themes offered"; opt.disabled = true; opt.selected = true;
+          sel.appendChild(opt); sel.disabled = true;
+        } else {
+          // Whether this screen has an EXPLICIT per-screen theme (vs. following the global).
+          const explicit = Object.prototype.hasOwnProperty.call(screenThemes, screen);
+          const glob = document.createElement("option");
+          glob.value = ""; glob.textContent = "◈ Follow global";
+          if (!explicit) glob.selected = true;
+          sel.appendChild(glob);
+          themes.forEach((t) => {
+            const opt = document.createElement("option");
+            opt.value = t; opt.textContent = t;
+            if (explicit && t === screenThemes[screen]) opt.selected = true;
+            sel.appendChild(opt);
+          });
+          // Saved (named custom) themes from the library (86ajq69ft), in a labelled group.
+          const savedNames = (view.saved_themes || []).map((t) => t.name);
+          if (savedNames.length) {
+            const grp = document.createElement("optgroup");
+            grp.label = "Saved";
+            savedNames.forEach((name) => {
+              const opt = document.createElement("option");
+              opt.value = name; opt.textContent = name;
+              if (explicit && name === screenThemes[screen]) opt.selected = true;
+              grp.appendChild(opt);
+            });
+            sel.appendChild(grp);
+          }
+          sel.onchange = () => act(() => invoke("set_screen_theme", { screen, name: sel.value }));
+        }
+        frag.appendChild(sel);
+        return frag;
+      }
+
+      // --- INSPECTOR (Design 2.0 §INSPECTOR): the per-output config panel for the selected
+      // screen. Every control drives a real backend command; a value the host cannot report
+      // (telemetry, a virtual feed's monitor) shows an honest dash, never a fabricated number.
+      function renderInspector(view, registry, outByRole, screenThemes, themes) {
+        const insp = document.getElementById("screens-inspector");
+        if (!insp) return;
+        insp.innerHTML = "";
+        const s = registry.find((r) => r.screen === selectedScreen);
+        if (!s) {
+          const empty = document.createElement("div");
+          empty.className = "scr-isection scr-imuted";
+          empty.textContent = "Select an output to configure it.";
+          insp.appendChild(empty);
+          return;
+        }
+        const o = outByRole[s.role];
+        const cfg = cfgOf(s);
+        const isPhysical = s.role === "main" || s.role === "stage";
+        const audience = s.role !== "stage";
+        const displays = view.displays || [];
+
+        // A titled section container.
+        const section = (title) => {
+          const sec = document.createElement("div"); sec.className = "scr-isection";
+          if (title) {
+            const t = document.createElement("div"); t.className = "scr-isection-title";
+            t.textContent = title; sec.appendChild(t);
+          }
+          return sec;
+        };
+        const divider = () => { const d = document.createElement("div"); d.className = "scr-idivider"; return d; };
+        // A label-left / <select>-right config row with optimistic revert (a rejected change
+        // never shows a false value — the poll re-render reflects the true state).
+        const selectRow = (labelText, ariaLabel, options, current, onChange, goldValue) => {
+          const row = document.createElement("div"); row.className = "scr-irow";
+          const lab = document.createElement("label"); lab.className = "scr-irow-label"; lab.textContent = labelText;
+          const sel = document.createElement("select");
+          sel.className = "scr-select" + (goldValue ? " scr-select-gold" : "");
+          sel.setAttribute("aria-label", ariaLabel);
+          options.forEach(([v, t]) => {
+            const opt = document.createElement("option");
+            opt.value = String(v); opt.textContent = t;
+            if (String(v) === String(current)) opt.selected = true;
+            sel.appendChild(opt);
+          });
+          sel.onchange = () => {
+            const want = sel.value; sel.value = String(current); onChange(want);
+          };
+          const id = "scr-irow-" + Math.random().toString(36).slice(2, 8);
+          lab.setAttribute("for", id); sel.id = id;
+          row.appendChild(lab); row.appendChild(sel);
+          return row;
+        };
+        // A read-only label-left / value-right row.
+        const valueRow = (labelText, valueText) => {
+          const row = document.createElement("div"); row.className = "scr-irow";
+          const lab = document.createElement("label"); lab.className = "scr-irow-label"; lab.textContent = labelText;
+          const val = document.createElement("span"); val.className = "scr-irow-value"; val.textContent = valueText;
+          row.appendChild(lab); row.appendChild(val);
+          return row;
+        };
+        // A label-left / toggle-right row with optimistic revert.
+        const toggleRow = (labelText, ariaLabel, checked, onChange) => {
+          const row = document.createElement("div"); row.className = "scr-irow";
+          const lab = document.createElement("label"); lab.className = "scr-irow-label"; lab.textContent = labelText;
+          const tog = document.createElement("label"); tog.className = "scr-toggle";
+          const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = checked;
+          cb.setAttribute("aria-label", ariaLabel);
+          cb.onchange = () => { const want = cb.checked; cb.checked = checked; onChange(want); };
+          const knob = document.createElement("span"); knob.className = "scr-toggle-knob";
+          tog.appendChild(cb); tog.appendChild(knob);
+          row.appendChild(lab); row.appendChild(tog);
+          return row;
+        };
+
+        // --- Header: selected identity + status pill + subtitle ---
+        const header = section(null); header.classList.add("scr-iheader");
+        const idRow = document.createElement("div"); idRow.className = "scr-iheader-row";
+        const nm = document.createElement("strong"); nm.className = "scr-iheader-name";
+        nm.textContent = screenDisplayName(s);
+        idRow.appendChild(nm); idRow.appendChild(statusPillFor(s, o));
+        header.appendChild(idRow);
+        const sub = document.createElement("div"); sub.className = "scr-iheader-sub";
+        const roleTag = roleBadgeText(s.role);
+        const where = o && o.display ? o.display : (isPhysical ? "No display assigned" : "Composed feed — no physical output");
+        sub.textContent = roleTag + " role · " + where;
+        header.appendChild(sub);
+        insp.appendChild(header); insp.appendChild(divider());
+
+        // --- DISPLAY ---
+        const disp = section("DISPLAY");
+        // Monitor (assign) — physical roles bind a display; a virtual feed is an honest seam.
+        if (isPhysical && displays.length && o) {
+          const row = document.createElement("div"); row.className = "scr-irow";
+          const lab = document.createElement("label"); lab.className = "scr-irow-label"; lab.textContent = "Monitor";
+          const sel = document.createElement("select"); sel.className = "scr-select";
+          sel.setAttribute("aria-label", "Assign the " + s.role + " output to a display");
+          if (!o.assigned) sel.classList.add("mismatch");
+          const none = document.createElement("option");
+          none.value = ""; none.textContent = o.assigned ? "Assign to display…" : "— not assigned";
+          sel.appendChild(none);
+          displays.forEach((d) => {
+            const opt = document.createElement("option");
+            opt.value = d.key; opt.textContent = d.name;
+            if (o.assigned_key && o.assigned_key === d.key) opt.selected = true;
+            sel.appendChild(opt);
+          });
+          sel.onchange = () => {
+            const chosen = sel.value; sel.value = o.assigned_key || "";
+            if (chosen) act(() => invoke("assign_output", { role: s.role, displayKey: chosen }));
+          };
+          const id = "scr-mon-" + s.screen; lab.setAttribute("for", id); sel.id = id;
+          row.appendChild(lab); row.appendChild(sel); disp.appendChild(row);
+        } else if (isPhysical) {
+          disp.appendChild(valueRow("Monitor", o && o.display ? o.display : "No displays found"));
+        } else {
+          disp.appendChild(valueRow("Monitor", "No physical output"));
+        }
+        disp.appendChild(valueRow("Resolution", o && o.width ? o.width + " × " + o.height : "—"));
+        disp.appendChild(selectRow(
+          "Frame rate", "Target frame rate for " + s.screen,
+          [[24, "24 fps"], [30, "30 fps"], [48, "48 fps"], [50, "50 fps"], [60, "60 fps"]],
+          cfg.frame_rate,
+          (v) => act(() => invoke("set_output_frame_rate", { screen: s.screen, fps: parseInt(v, 10) }))
+        ));
+        disp.appendChild(selectRow(
+          "Orientation", "Orientation for " + s.screen,
+          [[0, "Landscape"], [1, "Portrait"], [2, "Landscape flipped"], [3, "Portrait flipped"]],
+          cfg.orientation,
+          (v) => act(() => invoke("set_output_orientation", { screen: s.screen, quarterTurns: parseInt(v, 10) }))
+        ));
+        insp.appendChild(disp); insp.appendChild(divider());
+
+        // --- APPEARANCE ---
+        const app = section("APPEARANCE");
+        if (audience) {
+          const themeRow = document.createElement("div"); themeRow.className = "scr-irow";
+          themeRow.appendChild(themePickerFor(s.screen, themes, screenThemes, view));
+          app.appendChild(themeRow);
+        } else {
+          app.appendChild(valueRow("Theme", "Stage layout"));
+        }
+        app.appendChild(selectRow(
+          "Scaling / fit", "Scaling and fit for " + s.screen,
+          [["fill", "Fill"], ["fit", "Fit"], ["stretch", "Stretch"]],
+          cfg.scale_fit,
+          (v) => act(() => invoke("set_output_scale_fit", { screen: s.screen, fit: v }))
+        ));
+        app.appendChild(toggleRow(
+          "Show safe-area guides", "Show safe-area guides on the operator preview for " + s.screen,
+          cfg.safe_area_guides,
+          (on) => act(() => invoke("set_output_safe_area", { screen: s.screen, on }))
+        ));
+        insp.appendChild(app); insp.appendChild(divider());
+
+        // --- VISIBLE LAYERS ---
+        const layers = section("VISIBLE LAYERS");
+        [
+          ["background", "Background", cfg.layers.background],
+          ["text", "Text / lyrics", cfg.layers.text],
+          ["lower-third", "Lower third", cfg.layers.lower_third],
+          ["logo", "Church logo", cfg.layers.logo],
+          ["timer", "Service timer", cfg.layers.timer],
+        ].forEach(([layer, label, on]) => {
+          layers.appendChild(toggleRow(
+            label, label + " layer on " + s.screen, on,
+            (vis) => act(() => invoke("set_screen_layer_visible", { screen: s.screen, layer, visible: vis }))
+          ));
+        });
+        insp.appendChild(layers); insp.appendChild(divider());
+
+        // --- TIMING ---
+        const timing = section("TIMING");
+        timing.appendChild(selectRow(
+          "Output delay", "Output delay for " + s.screen,
+          [[0, "0 ms"], [40, "40 ms"], [80, "80 ms"], [120, "120 ms"], [250, "250 ms"], [500, "500 ms"], [1000, "1000 ms"]],
+          cfg.delay_ms,
+          (v) => act(() => invoke("set_output_delay", { screen: s.screen, ms: parseInt(v, 10) }))
+        ));
+        timing.appendChild(toggleRow(
+          "Mirror horizontally", "Mirror " + s.screen + " horizontally",
+          cfg.mirror,
+          (on) => act(() => invoke("set_output_mirror", { screen: s.screen, on }))
+        ));
+        insp.appendChild(timing); insp.appendChild(divider());
+
+        // --- NDI OUTPUT (Audience-class feeds: publish the composed feed as an NDI source
+        // that OBS / vMix / another SelahCue can receive over the network). Name + enable are
+        // set together; the host validates the name + uniqueness. ---
+        if (audience) {
+          const ndi = section("NDI OUTPUT");
+          const nameRow = document.createElement("div"); nameRow.className = "scr-irow";
+          const nameLab = document.createElement("label"); nameLab.className = "scr-irow-label";
+          nameLab.textContent = "Source name";
+          const nameInput = document.createElement("input");
+          nameInput.type = "text"; nameInput.className = "scr-input";
+          nameInput.value = cfg.ndi_name;
+          nameInput.maxLength = 64;
+          nameInput.placeholder = "e.g. SelahCue Program";
+          nameInput.setAttribute("aria-label", "NDI source name for " + s.screen);
+          const nameId = "scr-ndi-name-" + s.screen;
+          nameLab.setAttribute("for", nameId); nameInput.id = nameId;
+          // Commit the name + a target enabled state atomically to the host.
+          const commitNdi = (enabled) => {
+            const name = nameInput.value.trim();
+            act(() => invoke("set_ndi_output", { screen: s.screen, name, enabled }));
+          };
+          nameInput.onchange = () => commitNdi(cfg.ndi_enabled);
+          nameRow.appendChild(nameLab); nameRow.appendChild(nameInput);
+          ndi.appendChild(nameRow);
+          // Broadcast toggle — reads the (possibly just-edited) name; enabling with an empty
+          // name is rejected by the host and reverts, so the control never lies.
+          ndi.appendChild(toggleRow(
+            "Broadcast as NDI", "Broadcast " + s.screen + " as an NDI source",
+            cfg.ndi_enabled,
+            (on) => commitNdi(on)
+          ));
+          // Honest status: broadcasting (with the source name) or off.
+          const st = document.createElement("div"); st.className = "scr-signal";
+          if (cfg.ndi_enabled && cfg.ndi_name) {
+            st.classList.add("scr-signal-ok");
+            st.textContent = "● Broadcasting NDI · " + cfg.ndi_name;
+          } else {
+            st.classList.add("scr-signal-neutral");
+            st.textContent = "NDI off — set a source name and enable to broadcast on the network";
+          }
+          ndi.appendChild(st);
+          insp.appendChild(ndi); insp.appendChild(divider());
+        }
+
+        // --- DEVICE ---
+        const dev = section("DEVICE");
+        const devRow = document.createElement("div"); devRow.className = "scr-idevice-row";
+        const idBtn = document.createElement("button");
+        idBtn.type = "button"; idBtn.className = "btn-secondary scr-idevice-btn"; idBtn.textContent = "Identify";
+        idBtn.disabled = (view.outputs || []).length === 0;
+        idBtn.onclick = () => act(() => invoke("identify_outputs"));
+        const testBtn = document.createElement("button");
+        testBtn.type = "button"; testBtn.className = "btn-secondary scr-idevice-btn"; testBtn.textContent = "Test pattern";
+        testBtn.disabled = true; testBtn.title = "A calibration test pattern arrives with physical NDI/SDI delivery.";
+        devRow.appendChild(idBtn); devRow.appendChild(testBtn); dev.appendChild(devRow);
+        const fs = document.createElement("button");
+        fs.type = "button"; fs.className = "btn-primary scr-ifullscreen"; fs.textContent = "⛶  Go fullscreen";
+        fs.disabled = true; fs.title = "Full-screen control of a physical output arrives with NDI/SDI delivery.";
+        dev.appendChild(fs);
+        // Honest signal-health footer (telemetry — never fabricated).
+        const foot = document.createElement("div"); foot.className = "scr-signal";
+        let sig = "neutral", txt = "Signal — · awaiting host telemetry";
+        if (o && o.signal === "healthy") {
+          sig = "ok";
+          txt = "● Signal healthy" + (typeof o.fps === "number" ? " · " + o.fps + "fps" : "")
+            + (typeof o.dropped_frames === "number" ? " · " + o.dropped_frames + " dropped frames" : "");
+        } else if (o && o.signal === "degraded") {
+          sig = "warn"; txt = "● Signal degraded"
+            + (typeof o.dropped_frames === "number" ? " · " + o.dropped_frames + " dropped frames" : "");
+        } else if (o && o.signal === "no_signal") {
+          sig = "bad"; txt = "● No signal · no monitor attached";
+        } else if (!isPhysical) {
+          sig = "neutral"; txt = "Composed feed · no physical signal yet";
+        }
+        foot.classList.add("scr-signal-" + sig); foot.textContent = txt;
+        dev.appendChild(foot);
+        insp.appendChild(dev);
       }
 
       document.getElementById("screens-list").addEventListener("focusout", () => {
         setTimeout(() => {
           const list = document.getElementById("screens-list");
-          if (outputsPending && !list.contains(document.activeElement)) {
+          const insp = document.getElementById("screens-inspector");
+          const active = document.activeElement;
+          const stillInside = (list && list.contains(active)) || (insp && insp.contains(active));
+          if (outputsPending && !stillInside) {
             const v = outputsPending;
             outputsPending = null;
             renderOutputs(v);
@@ -765,6 +1095,8 @@
         // and announce the route to assistive tech (NAV-IA §2/§5).
         const surf = document.getElementById("surface-" + name);
         if (surf) { surf.tabIndex = -1; surf.focus(); }
+        // The Theme Designer canvas fits the available area once its surface is laid out.
+        if (name === "theme-designer" && typeof tdFitCanvasSoon === "function") tdFitCanvasSoon();
         const label = SURFACE_LABEL[name] || name;
         document.getElementById("route-status").textContent = "Now on: " + label;
         // The topbar surface label reflects the active surface (the header is global).
@@ -813,6 +1145,13 @@
         if (isMenuOpen() && !appMenu.contains(e.target) && e.target !== appMenuBtn) closeAppMenu();
       });
       document.getElementById("screens-identify").onclick = () => act(() => invoke("identify_outputs"));
+      // "+ Add virtual output" (Design 2.0 topbar): mint a VIRTUAL Audience-class feed
+      // (lower-third / stream) from the role select. The host caps the registry, so this is
+      // refused (harmlessly) at the bound.
+      document.getElementById("screen-add-btn").onclick = () => {
+        const roleSel = document.getElementById("screen-add-role");
+        act(() => invoke("add_screen", { role: roleSel.value }));
+      };
 
       // --- Theme Designer (S8-3c; refine: full-center canvas + on-canvas drag/resize) ---
       // Built-ins come from the HOST (`builtin_themes`) so the editor previews/applies
@@ -1134,32 +1473,25 @@
         tdSel.style.height = r.h_permille / 10 + "%";
       }
 
-      // Update just the Layout fields + the selection box (called on every drag frame).
+      // Redraw the on-canvas selection box for the active target (called on every drag frame).
+      // (The numeric X/Y/W/H fields were removed — position/size is edited on the canvas.)
       function tdSyncLayout() {
         const r = tdActive();
         if (!r) return;
-        // Never rewrite a field the user is actively typing in (numeric entry commits
-        // on `change`; a concurrent drag must not clobber a focused field mid-keystroke).
-        const set = (id, val) => { const el = document.getElementById(id); if (el !== document.activeElement) el.value = val; };
-        set("td-x", (r.x_permille / 10).toFixed(1));
-        set("td-y", (r.y_permille / 10).toFixed(1));
-        set("td-w", (r.w_permille / 10).toFixed(1));
-        set("td-h", (r.h_permille / 10).toFixed(1));
         tdDrawSel();
       }
 
       function tdSync() {
         if (!tdTheme) return;
         const isEl = tdActiveIsEl();
-        // Toggle inspector mode: region controls (region picker / align / text) hide when an
-        // element is selected; the element inspector shows. Layout (X/Y/W/H) + Theme
-        // background are shared/always-visible.
+        // Toggle inspector mode: the region-only controls (alignment + text/typography) hide
+        // when an element is selected; the element inspector shows instead. Theme background is
+        // shared/always-visible. (Region selection is via the LAYERS list / canvas — there is
+        // no Region picker; position/size is edited on the canvas — there is no numeric panel.)
         const showReg = (id) => {
           const el = document.getElementById(id);
           if (el) el.style.display = isEl ? "none" : "";
         };
-        showReg("td-lbl-region");
-        showReg("td-region");
         showReg("td-region-align");
         showReg("td-region-text");
         document.getElementById("td-el-inspector").hidden = !isEl;
@@ -1179,7 +1511,6 @@
         // (line_height_permille/1000) — number fields, not sliders.
         document.getElementById("td-size").value = (r.size_permille / 10).toFixed(1);
         document.getElementById("td-lh").value = (r.line_height_permille / 1000).toFixed(2);
-        tdSeg("td-region", tdRegion, "region");
         tdSeg("td-align", r.align_h, "a");
         tdSeg("td-valign", r.align_v, "v");
         tdSeg("td-fit", r.fit, "f");
@@ -1739,27 +2070,10 @@
       tdSizeInput.onchange = () => { if (tdTheme) tdSizeInput.value = (tdTheme[tdRegion].size_permille / 10).toFixed(1); };
       tdLhInput.oninput = (e) => { if (!tdTheme) return; const s = e.target.value.trim(); if (s === "") return; const mult = Number(s); if (!Number.isFinite(mult)) return; tdTheme[tdRegion].line_height_permille = tdClamp(Math.round(mult * 1000), 1000, 1600); tdPreview(); };
       tdLhInput.onchange = () => { if (tdTheme) tdLhInput.value = (tdTheme[tdRegion].line_height_permille / 1000).toFixed(2); };
-      // Numeric X/Y/W/H (percent) — the same rect the on-canvas handles edit. Commit
-      // on `change` (blur/Enter), NOT per-keystroke, so multi-digit entry isn't
-      // normalized away mid-typing. X/Y clamp as position (keep size); W/H clamp to the
-      // frame keeping the region's origin (anchored top-left, no jump). Non-numeric input
-      // is rejected and the field is restored to the current value.
-      [["td-x", "x_permille"], ["td-y", "y_permille"], ["td-w", "w_permille"], ["td-h", "h_permille"]].forEach(([id, key]) => {
-        document.getElementById(id).onchange = (e) => {
-          if (!tdTheme) return;
-          const pm = Math.round(parseFloat(e.target.value) * 10);
-          const r = tdActive();
-          if (!r) return;
-          if (!Number.isFinite(pm)) { tdSyncLayout(); return; }
-          if (key === "w_permille") r.w_permille = tdClamp(pm, 20, 1000 - r.x_permille);
-          else if (key === "h_permille") r.h_permille = tdClamp(pm, 20, 1000 - r.y_permille);
-          else if (key === "x_permille") r.x_permille = tdClamp(pm, 0, 1000 - r.w_permille);
-          else r.y_permille = tdClamp(pm, 0, 1000 - r.h_permille);
-          tdSyncLayout();
-          tdPreview();
-        };
-      });
-      document.querySelectorAll("#td-region button").forEach((b) => (b.onclick = () => { tdSelEl = -1; tdRegion = b.dataset.region; tdSync(); }));
+      // (The numeric X/Y/W/H fields + Lock aspect were removed — position/size is edited with
+      // the on-canvas move/resize handles.)
+      // (The explicit Region picker was removed — a region is selected via the LAYERS rows or by
+      // clicking its text on the canvas, both of which set tdRegion + tdSelEl=-1.)
       document.querySelectorAll("#td-align button").forEach((b) => (b.onclick = () => { if (!tdTheme) return; tdTheme[tdRegion].align_h = b.dataset.a; tdSeg("td-align", b.dataset.a, "a"); tdPreview(); }));
       document.querySelectorAll("#td-valign button").forEach((b) => (b.onclick = () => { if (!tdTheme) return; tdTheme[tdRegion].align_v = b.dataset.v; tdSeg("td-valign", b.dataset.v, "v"); tdPreview(); }));
       document.querySelectorAll("#td-fit button").forEach((b) => (b.onclick = () => { if (!tdTheme) return; tdTheme[tdRegion].fit = b.dataset.f; tdSeg("td-fit", b.dataset.f, "f"); tdPreview(); }));
@@ -1816,9 +2130,11 @@
           if (hh.includes("w")) left = tdClamp(left + dxp, 0, right - MIN);
           if (hh.includes("s")) bottom = tdClamp(bottom + dyp, top + MIN, 1000);
           if (hh.includes("n")) top = tdClamp(top + dyp, 0, bottom - MIN);
-          // Lock aspect: constrain the height to the region's original w:h ratio
-          // (width-driven), re-anchored on the dragged vertical edge + clamped to the frame.
-          if (document.getElementById("td-lock").checked && tdDrag.h > 0) {
+          // Lock aspect (only if the optional checkbox exists — it was removed from the
+          // streamlined inspector, so resize is free by default): constrain the height to the
+          // region's original w:h ratio, re-anchored on the dragged edge + clamped to the frame.
+          const tdLockEl = document.getElementById("td-lock");
+          if (tdLockEl && tdLockEl.checked && tdDrag.h > 0) {
             const aspect = tdDrag.w / tdDrag.h;
             const newH = (right - left) / aspect;
             if (hh.includes("n")) top = bottom - newH;
@@ -1855,13 +2171,14 @@
       // anchored at the origin so a resize at the frame edge doesn't shift the top-left.
       tdSel.addEventListener("keydown", (e) => {
         if (!tdTheme) return;
-        // Escape deselects an element back to region editing (keyboard path — the region
-        // buttons are hidden in element mode, so Escape is how a keyboard user returns).
+        // Escape deselects an element back to region editing (keyboard path). Focus returns to
+        // the active region's LAYERS row (the Region picker was removed; regions are selected
+        // via the LAYERS list / canvas), so a keyboard user lands on a sensible control.
         if (e.key === "Escape" && tdActiveIsEl()) {
           e.preventDefault();
           tdSelEl = -1;
           tdSync();
-          const rb = document.getElementById("td-region-body");
+          const rb = document.querySelector('#td-layers .td-layer[data-region="' + tdRegion + '"]');
           if (rb) rb.focus();
           tdAnnounce("Deselected — editing regions");
           return;
@@ -1973,6 +2290,10 @@
       };
       const tdOpenSaveRow = () => {
         if (!tdTheme) { tdStatus("Nothing to save yet."); return; }
+        // The save form lives inside the collapsible Templates panel — expand it first, else
+        // clicking the topbar "Save theme" while Templates are collapsed would silently do
+        // nothing (the form would be inside a display:none subtree).
+        tdSetTemplatesCollapsed(false);
         // Pre-fill the name only when re-saving an existing SAVED theme (overwrite) —
         // keyed by kind so a selected BUILT-IN (read-only) never pre-fills its name and
         // silently overwrites a same-named saved copy (Save = save-as-new for a built-in).
@@ -2400,6 +2721,45 @@
       document.getElementById("td-zoom-in").onclick = () => { tdZoom = tdClamp(Math.round((tdZoom + 0.1) * 100) / 100, 0.25, 2); tdApplyZoom(); };
       document.getElementById("td-zoom-out").onclick = () => { tdZoom = tdClamp(Math.round((tdZoom - 0.1) * 100) / 100, 0.25, 2); tdApplyZoom(); };
       tdApplyZoom();
+
+      // Fit the 16:9 preview box to the available canvas area (letterbox: bound by BOTH the
+      // width and the height so it never overflows/clips — the previous fixed 860px width
+      // clipped the top on short screens). The zoom transform still scales from this base.
+      function tdFitCanvas() {
+        const scroll = tdBox.parentElement;
+        if (!scroll || !scroll.clientWidth) return; // hidden surface → 0; re-run on activation
+        const cs = getComputedStyle(scroll);
+        const availW = scroll.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+        const availH = scroll.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+        if (availW <= 0 || availH <= 0) return;
+        const fitW = Math.max(160, Math.min(availW, availH * (16 / 9)));
+        tdBox.style.width = Math.floor(fitW) + "px";
+        tdBox.style.maxWidth = "none";
+      }
+      let tdFitRaf = 0;
+      function tdFitCanvasSoon() { cancelAnimationFrame(tdFitRaf); tdFitRaf = requestAnimationFrame(tdFitCanvas); }
+      window.addEventListener("resize", tdFitCanvasSoon);
+
+      // Collapsible Templates row — collapse it to give the canvas more room to work; the
+      // reclaimed height flows to the canvas area, so re-fit the preview after toggling.
+      const tdTemplatesEl = document.querySelector(".td-templates");
+      const tdTemplatesToggle = document.getElementById("td-templates-toggle");
+      // Hoisted so tdOpenSaveRow (defined earlier) can force-expand the strip before revealing
+      // the save form, which lives inside the collapsible #td-panel.
+      function tdSetTemplatesCollapsed(collapsed) {
+        if (!tdTemplatesEl) return;
+        tdTemplatesEl.classList.toggle("collapsed", collapsed);
+        if (tdTemplatesToggle) {
+          tdTemplatesToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+          const t = collapsed ? "Show templates" : "Collapse templates";
+          tdTemplatesToggle.title = t;
+          tdTemplatesToggle.setAttribute("aria-label", t);
+        }
+        tdFitCanvasSoon();
+      }
+      if (tdTemplatesToggle && tdTemplatesEl) {
+        tdTemplatesToggle.onclick = () => tdSetTemplatesCollapsed(!tdTemplatesEl.classList.contains("collapsed"));
+      }
 
       // "+ Add layer" (LAYERS header): adds a Text element (the most common new layer),
       // reusing the canonical add-content path (bounded by the 64-element cap).

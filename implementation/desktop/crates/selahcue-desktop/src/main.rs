@@ -18,6 +18,7 @@
 mod guard;
 #[cfg(feature = "encryption")]
 mod keys;
+mod video_sink;
 
 use selahcue_app::{
     handler_for, CanonicalAction, ControllerSnapshot, KeyPress, Keymap, LiveController,
@@ -25,11 +26,14 @@ use selahcue_app::{
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_data::session_repo::SessionState;
 use selahcue_data::{
-    output_repo, plan_repo, saved_theme_repo, screen_repo, screen_theme_repo, session_repo,
-    DataError, Database,
+    output_repo, plan_repo, saved_theme_repo, screen_config_repo, screen_repo, screen_theme_repo,
+    session_repo, DataError, Database,
 };
-use selahcue_engine::raster::FrameBuffer;
-use selahcue_lan::protocol::{Command, DisplayView, OutputStatusView, PairingInvite};
+use selahcue_engine::raster::{Fit, FrameBuffer};
+use selahcue_lan::protocol::{
+    Command, DisplayView, LayerVisibility, OutputConfigView, OutputStatusView, PairingInvite,
+    ScaleFit,
+};
 use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
 use selahcue_lan::{generate_pairing_code, generate_token, ControlServer, Role, SelfSigned};
 use selahcue_present::qr_modules;
@@ -501,6 +505,37 @@ impl SessionStore {
         }
     }
 
+    /// The persisted per-screen OUTPUT CONFIG (Screens page inspector), decoded to
+    /// `(screen, OutputConfigView)`. The controller drops any unknown/default entry on load.
+    fn load_screen_configs(&self) -> Vec<(String, OutputConfigView)> {
+        self.db
+            .as_ref()
+            .and_then(|db| match screen_config_repo::load_all(db) {
+                Ok(rows) => Some(rows.into_iter().map(row_to_config).collect()),
+                Err(e) => {
+                    eprintln!("SelahCue: could not read the per-screen output config ({e}).");
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    /// Persist the whole per-screen output-config set (reported, never fatal). Returns whether
+    /// the write succeeded so the caller can re-arm the dirty flag on failure.
+    fn save_screen_configs(&self, configs: &[(String, OutputConfigView)]) -> bool {
+        let Some(db) = self.db.as_ref() else {
+            return true;
+        };
+        let rows: Vec<_> = configs.iter().map(|(s, c)| config_to_row(s, c)).collect();
+        match screen_config_repo::save_all(db, &rows) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("SelahCue: could not persist the per-screen output config ({e}).");
+                false
+            }
+        }
+    }
+
     /// Persist the (edited) plan: update in place, or insert on the first save.
     /// Returns whether the write succeeded (the caller re-arms the retry).
     fn save_plan(&mut self, plan: &ServicePlan) -> bool {
@@ -557,6 +592,196 @@ impl SessionStore {
     }
 }
 
+/// Honest per-output present telemetry (Screens page signal-health footer). Every field is
+/// MEASURED by the present loop — never fabricated. `fps` is an EWMA of real present
+/// intervals; `dropped_frames` counts deferred presents (a lost/outdated swapchain); `signal`
+/// reflects whether a monitor is attached and the last present succeeded. A virtual screen
+/// with no physical window has no `Renderer`, so it honestly reports no telemetry (dash).
+#[derive(Debug, Clone, Copy)]
+struct OutputTelemetry {
+    /// Frames actually presented to the surface.
+    frames_presented: u64,
+    /// Frames the host deferred (swapchain lost/outdated) — the honest dropped count.
+    dropped_frames: u64,
+    /// EWMA of the instantaneous present rate (fps). `0.0` until the second present.
+    fps_ewma: f32,
+    /// When the last present succeeded (drives the fps interval + the frame-rate gate).
+    last_present: Option<Instant>,
+    /// Whether the last present attempt succeeded (a deferred present degrades the signal).
+    last_present_ok: bool,
+}
+
+impl OutputTelemetry {
+    fn new() -> Self {
+        OutputTelemetry {
+            frames_presented: 0,
+            dropped_frames: 0,
+            fps_ewma: 0.0,
+            last_present: None,
+            last_present_ok: true,
+        }
+    }
+
+    /// The measured fps as a whole number (rounded EWMA). `0` before the second present.
+    fn fps(&self) -> u16 {
+        self.fps_ewma.round().clamp(0.0, u16::MAX as f32) as u16
+    }
+
+    /// Honest signal-health label for the given (freshly sampled) monitor attachment: no
+    /// monitor → `no_signal`; a recently-deferred present → `degraded`; otherwise `healthy`.
+    /// `monitor_attached` is sampled by the caller at the low Moved/Resized cadence, not per
+    /// frame.
+    fn signal_label(&self, monitor_attached: bool) -> &'static str {
+        if !monitor_attached {
+            "no_signal"
+        } else if !self.last_present_ok {
+            "degraded"
+        } else {
+            "healthy"
+        }
+    }
+
+    /// Record the outcome of a present ATTEMPT (not a frame-rate skip): update the EWMA fps
+    /// from the real interval, and the dropped-frame count on a deferred present. Does NOT
+    /// query the windowing system for monitor attachment — that is sampled at the far lower
+    /// Moved/Resized cadence in `publish_output_status`, so the hot present path stays cheap.
+    fn record(&mut self, now: Instant, presented: bool) {
+        if presented {
+            if let Some(prev) = self.last_present {
+                let dt = now.duration_since(prev).as_secs_f32();
+                if dt > 0.0 {
+                    let inst = 1.0 / dt;
+                    // Seed on the first interval, then a light EWMA to smooth jitter.
+                    self.fps_ewma = if self.fps_ewma == 0.0 {
+                        inst
+                    } else {
+                        0.9 * self.fps_ewma + 0.1 * inst
+                    };
+                }
+            }
+            self.last_present = Some(now);
+            self.last_present_ok = true;
+            self.frames_presented = self.frames_presented.saturating_add(1);
+        } else {
+            self.last_present_ok = false;
+            self.dropped_frames = self.dropped_frames.saturating_add(1);
+        }
+    }
+}
+
+/// Apply a screen's per-output GEOMETRIC config to its composed frame, targeting the
+/// `win_w × win_h` output surface: rotate (orientation) → mirror → fit (scaling). Returns
+/// `None` when the config is geometrically default (orientation 0, no mirror, `Fill`) so the
+/// caller blits the original buffer UNCHANGED — the common case pays ZERO transform cost and
+/// default rendering is byte-identical (no regression / pinned smoke test safe). Pure integer
+/// transforms (NFR-014). This drives the on-screen blit ONLY; the operator preview
+/// (`render_screen` → `compose_screen`) is a separate path that does not apply these
+/// geometric transforms (per-screen THEME + LAYER visibility do reach the preview, geometry
+/// does not — a documented asymmetry).
+///
+/// Each stage is skipped when it would be an IDENTITY on this buffer, so a mirror-only (or
+/// Fill-at-native-size) config never pays for a wasteful full-frame `rotated(0)` clone or a
+/// no-op `fitted()` resample+crop on the audience-critical present path.
+fn apply_output_config(
+    base: &FrameBuffer,
+    cfg: &OutputConfigView,
+    win_w: u32,
+    win_h: u32,
+) -> Option<FrameBuffer> {
+    let geometry_default =
+        cfg.orientation.is_multiple_of(4) && !cfg.mirror && matches!(cfg.scale_fit, ScaleFit::Fill);
+    if geometry_default {
+        return None;
+    }
+    let (win_w, win_h) = (win_w.max(1), win_h.max(1));
+    // Rotate only when it is not a full turn (rotated(0) is a wasteful identity clone).
+    let rotated = (!cfg.orientation.is_multiple_of(4)).then(|| base.rotated(cfg.orientation));
+    // Mirror the current buffer (borrow `base` when no rotate happened) only when requested.
+    let mirrored = cfg
+        .mirror
+        .then(|| rotated.as_ref().unwrap_or(base).mirrored_horizontal());
+    // The buffer after rotate+mirror, borrowing whichever we actually produced.
+    let cur = mirrored.as_ref().or(rotated.as_ref()).unwrap_or(base);
+    // Fit only when it would change the buffer: `Fill` that already matches the surface is a
+    // no-op (skip the resample+crop clone chain).
+    let fill_matches =
+        matches!(cfg.scale_fit, ScaleFit::Fill) && cur.width() == win_w && cur.height() == win_h;
+    if !fill_matches {
+        let fit = match cfg.scale_fit {
+            ScaleFit::Fill => Fit::Fill,
+            ScaleFit::Fit => Fit::Fit,
+            ScaleFit::Stretch => Fit::Stretch,
+        };
+        return Some(cur.fitted(win_w, win_h, fit));
+    }
+    // No fit needed — return the rotated/mirrored buffer (non-default guarantees one exists).
+    mirrored.or(rotated)
+}
+
+/// The measured telemetry for an output window (`None` for an absent/virtual output).
+fn telemetry_of(r: &Option<Renderer>) -> Option<&OutputTelemetry> {
+    r.as_ref().map(|r| &r.telemetry)
+}
+
+/// The stable persist tag for a scaling/fit mode.
+fn scale_fit_tag(fit: ScaleFit) -> &'static str {
+    match fit {
+        ScaleFit::Fill => "fill",
+        ScaleFit::Fit => "fit",
+        ScaleFit::Stretch => "stretch",
+    }
+}
+
+/// Encode an [`OutputConfigView`] as a persist row (Store ↔ `screen_config_repo`).
+fn config_to_row(screen: &str, c: &OutputConfigView) -> screen_config_repo::ScreenConfigRow {
+    screen_config_repo::ScreenConfigRow {
+        screen: screen.to_string(),
+        orientation: c.orientation,
+        scale_fit: scale_fit_tag(c.scale_fit).to_string(),
+        mirror: c.mirror,
+        delay_ms: c.delay_ms,
+        frame_rate: c.frame_rate,
+        layer_background: c.layers.background,
+        layer_text: c.layers.text,
+        layer_lower_third: c.layers.lower_third,
+        layer_logo: c.layers.logo,
+        layer_timer: c.layers.timer,
+        safe_area: c.safe_area_guides,
+        ndi_enabled: c.ndi_enabled,
+        ndi_name: c.ndi_name.clone(),
+    }
+}
+
+/// Decode a persist row into `(screen, OutputConfigView)`. An unknown `scale_fit` tag decodes
+/// to the identity default (`Fill`) — robust recovery from a tampered/forward-compat store.
+fn row_to_config(row: screen_config_repo::ScreenConfigRow) -> (String, OutputConfigView) {
+    let scale_fit = match row.scale_fit.as_str() {
+        "fit" => ScaleFit::Fit,
+        "stretch" => ScaleFit::Stretch,
+        _ => ScaleFit::Fill,
+    };
+    (
+        row.screen,
+        OutputConfigView {
+            orientation: row.orientation,
+            scale_fit,
+            mirror: row.mirror,
+            delay_ms: row.delay_ms,
+            frame_rate: row.frame_rate,
+            safe_area_guides: row.safe_area,
+            layers: LayerVisibility {
+                background: row.layer_background,
+                text: row.layer_text,
+                lower_third: row.layer_lower_third,
+                logo: row.layer_logo,
+                timer: row.layer_timer,
+            },
+            ndi_enabled: row.ndi_enabled,
+            ndi_name: row.ndi_name,
+        },
+    )
+}
+
 struct Renderer {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -567,6 +792,8 @@ struct Renderer {
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     frame_texture: Option<(wgpu::Texture, u32, u32)>,
+    /// Measured present telemetry (Screens page signal-health).
+    telemetry: OutputTelemetry,
 }
 
 impl Renderer {
@@ -667,6 +894,7 @@ impl Renderer {
             bind_group_layout,
             sampler,
             frame_texture: None,
+            telemetry: OutputTelemetry::new(),
         }
     }
 
@@ -779,6 +1007,32 @@ impl Renderer {
         surface_frame.present();
         true
     }
+
+    /// Present `base` under this output's per-screen `cfg` (Screens page): honor the
+    /// frame-rate cap, apply the geometric transform (orientation/mirror/fit), blit, and
+    /// record telemetry. Returns whether a frame was actually presented. A frame-rate SKIP
+    /// (the configured interval has not elapsed) is intentional — it returns `false` but is
+    /// NOT counted as a dropped frame.
+    fn present_output(&mut self, base: &FrameBuffer, cfg: &OutputConfigView, now: Instant) -> bool {
+        // Frame-rate gate. Default 60fps at the 60 Hz loop never gates (5% slack); only an
+        // explicitly LOWER target skips presents.
+        let target = cfg.frame_rate.max(1) as f32;
+        if let Some(prev) = self.telemetry.last_present {
+            let min_dt = (1.0 / target) * 0.95;
+            if now.duration_since(prev).as_secs_f32() < min_dt {
+                return false; // intentional frame-rate skip — not a drop
+            }
+        }
+        let (win_w, win_h) = {
+            let s = self.window.inner_size();
+            (s.width.max(1), s.height.max(1))
+        };
+        let transformed = apply_output_config(base, cfg, win_w, win_h);
+        let frame = transformed.as_ref().unwrap_or(base);
+        let presented = self.render(frame);
+        self.telemetry.record(now, presented);
+        presented
+    }
 }
 
 /// A pairing request awaiting the operator's Y/N (one at a time; extras auto-deny).
@@ -842,6 +1096,12 @@ struct App {
     smoke: bool,
     /// Whether the smoke exit has already fired (present can tick more than once).
     smoke_done: bool,
+    /// Live NDI OUTPUT senders, keyed by registry screen id. Reconciled against the registry
+    /// each frame: a sender is created for an enabled, NDI-configured audience screen and
+    /// dropped (RAII closes the NDI source) when the screen is disabled / deleted / renamed —
+    /// so the map stays bounded by the registry (`MAX_SCREENS`, no-leak). Empty in the default
+    /// build (NDI delivery needs `--features ndi`); the config is stored + surfaced regardless.
+    ndi_outputs: std::collections::HashMap<String, video_sink::NdiOutput>,
 }
 
 /// Apply one command to the shared controller (a poisoned lock just drops the input
@@ -849,6 +1109,56 @@ struct App {
 fn drive(controller: &Mutex<LiveController>, command: &Command) {
     if let Ok(mut c) = controller.lock() {
         let _ = c.apply(command);
+    }
+}
+
+/// Reconcile the NDI OUTPUT senders against the registry + per-screen config, then feed each
+/// live sender its composed frame. Bounded by the registry (`MAX_SCREENS`) and leak-free — a
+/// sender is dropped (RAII closes the NDI source) when its screen is removed, disabled, has NDI
+/// turned off, or is renamed. Cheap no-op in the DEFAULT build: without the `ndi` feature
+/// `NdiOutput::new` returns `None`, so no sender exists and no per-screen frame is composed.
+fn reconcile_ndi(
+    c: &LiveController,
+    senders: &mut std::collections::HashMap<String, video_sink::NdiOutput>,
+) {
+    // Drop any sender whose screen no longer exists in the registry (a deleted virtual feed).
+    let live: std::collections::HashSet<&str> =
+        c.screen_registry().iter().map(|s| s.id.as_str()).collect();
+    senders.retain(|id, _| live.contains(id.as_str()));
+
+    // The output resolution (used to construct a sender without a per-screen compose).
+    let (out_w, out_h) = {
+        let fb = c.presenter().live_output();
+        (fb.width(), fb.height())
+    };
+    for s in c.screen_registry().iter() {
+        let cfg = c.output_config(&s.id);
+        let want = s.enabled && cfg.ndi_enabled && !cfg.ndi_name.is_empty();
+        // Drop a stale sender (screen disabled / NDI off / renamed) so RAII closes its source.
+        if senders
+            .get(&s.id)
+            .is_some_and(|o| !want || o.name() != cfg.ndi_name)
+        {
+            senders.remove(&s.id);
+        }
+        if !want {
+            continue;
+        }
+        // Create the sender lazily (using the output dims — no per-screen compose to construct).
+        if !senders.contains_key(&s.id) {
+            if let Some(out) =
+                video_sink::NdiOutput::new(&cfg.ndi_name, out_w, out_h, cfg.frame_rate)
+            {
+                senders.insert(s.id.clone(), out);
+            }
+        }
+        // Compose + send ONLY when a real sink exists (feature on) — the default build (no
+        // sink created) composes nothing here, so there is zero per-frame NDI cost.
+        if let Some(out) = senders.get_mut(&s.id) {
+            if let Some(fb) = c.compose_screen(&s.id) {
+                out.send(&fb);
+            }
+        }
     }
 }
 
@@ -920,6 +1230,9 @@ impl App {
             // in the registry). An empty/corrupt registry recovers to the built-ins.
             c.load_screen_registry(store.load_screens());
             c.load_screen_themes(store.load_screen_themes());
+            // Per-output config loads AFTER the registry (it keeps only configs for a screen
+            // in the registry) so a deleted screen's stale config is discarded, never crashes.
+            c.load_output_configs(store.load_screen_configs());
             match &restored {
                 Some(snap) => {
                     // Crash/restart recovery: rebuild the exact live state.
@@ -975,6 +1288,7 @@ impl App {
                 std::env::var_os("SELAHCUE_SMOKE").is_some(),
             ),
             smoke_done: false,
+            ndi_outputs: std::collections::HashMap::new(),
         }
     }
 
@@ -997,6 +1311,13 @@ impl App {
                 .and_then(|r| r.window.current_monitor())
                 .and_then(|m| m.name())
         };
+        // Sample monitor attachment HERE (this runs on Moved/Resized, not per frame) so the
+        // telemetry signal-health is honest without a per-present windowing query.
+        let monitor_attached = |renderer: &Option<Renderer>| {
+            renderer
+                .as_ref()
+                .is_some_and(|r| r.window.current_monitor().is_some())
+        };
         let size_of = |renderer: &Option<Renderer>| {
             renderer
                 .as_ref()
@@ -1016,6 +1337,10 @@ impl App {
                 height: mh,
                 assigned: assigned("main"),
                 assigned_key: assigned_key("main"),
+                fps: telemetry_of(&self.main).map(|t| t.fps()),
+                dropped_frames: telemetry_of(&self.main).map(|t| t.dropped_frames),
+                signal: telemetry_of(&self.main)
+                    .map(|t| t.signal_label(monitor_attached(&self.main)).to_string()),
             },
             OutputStatusView {
                 role: "stage".into(),
@@ -1024,6 +1349,10 @@ impl App {
                 height: sh,
                 assigned: assigned("stage"),
                 assigned_key: assigned_key("stage"),
+                fps: telemetry_of(&self.stage).map(|t| t.fps()),
+                dropped_frames: telemetry_of(&self.stage).map(|t| t.dropped_frames),
+                signal: telemetry_of(&self.stage)
+                    .map(|t| t.signal_label(monitor_attached(&self.stage)).to_string()),
             },
         ];
         if let Ok(mut c) = self.controller.lock() {
@@ -1162,6 +1491,19 @@ impl App {
                 .collect();
             if !self.store.save_screens(&screens) {
                 c.mark_screen_registry_dirty(); // failed write: retry next frame
+            }
+        }
+        // The per-screen OUTPUT CONFIG (Screens page inspector) persists on any change, so
+        // orientation / scaling / mirror / delay / frame-rate / safe-area / layer visibility
+        // survive a restart (venue output config, like the display assignment).
+        if c.take_output_configs_dirty() {
+            let configs: Vec<(String, OutputConfigView)> = c
+                .output_configs()
+                .iter()
+                .map(|(s, cfg)| (s.clone(), cfg.clone()))
+                .collect();
+            if !self.store.save_screen_configs(&configs) {
+                c.mark_output_configs_dirty(); // failed write: retry next frame
             }
         }
         // Plan edits persist immediately (rare, operator-driven actions) — and the
@@ -1435,8 +1777,10 @@ impl ApplicationHandler for App {
                 // Each window presents its own surface from the same shared live state.
                 // A DISABLED screen (Screens page — dynamic registry) shows black: a
                 // per-screen mute distinct from global blackout.
+                let now = Instant::now();
                 if self.main.as_ref().is_some_and(|r| r.window.id() == id) {
                     let live = c.presenter().live_output();
+                    let cfg = c.output_config("main");
                     let black;
                     let main_out = if c.is_screen_enabled("main") {
                         live
@@ -1451,7 +1795,7 @@ impl ApplicationHandler for App {
                     let presented = self
                         .main
                         .as_mut()
-                        .map(|r| r.render(main_out))
+                        .map(|r| r.present_output(main_out, &cfg, now))
                         .unwrap_or(false);
                     // Smoke mode (86ajpevzp): the main window produced a real frame —
                     // report time-to-first-frame (from App init) and exit cleanly (0).
@@ -1465,6 +1809,7 @@ impl ApplicationHandler for App {
                     }
                 } else if self.stage.is_some() {
                     let stage_live = c.stage_output();
+                    let cfg = c.output_config("stage");
                     let black;
                     let stage_out = if c.is_screen_enabled("stage") {
                         stage_live
@@ -1477,7 +1822,7 @@ impl ApplicationHandler for App {
                         &black
                     };
                     if let Some(r) = self.stage.as_mut() {
-                        r.render(stage_out);
+                        r.present_output(stage_out, &cfg, now);
                     }
                 }
             }
@@ -1577,6 +1922,9 @@ impl ApplicationHandler for App {
             self.next_frame = Some(now + FRAME);
             if let Ok(mut c) = self.controller.lock() {
                 c.tick(now);
+                // Reconcile + feed the NDI OUTPUT senders from the same live state (holding the
+                // lock once). No-op in the default build (no `ndi` feature → no sinks created).
+                reconcile_ndi(&c, &mut self.ndi_outputs);
             }
             self.autosave(now);
             self.apply_pending_assignments();
@@ -1948,6 +2296,14 @@ fn main() {
                     })
                     .collect();
                 app.store.save_screens(&screens);
+            }
+            if c.take_output_configs_dirty() {
+                let configs: Vec<(String, OutputConfigView)> = c
+                    .output_configs()
+                    .iter()
+                    .map(|(s, cfg)| (s.clone(), cfg.clone()))
+                    .collect();
+                app.store.save_screen_configs(&configs);
             }
             app.store.save_session(&c.snapshot(Instant::now()));
         }

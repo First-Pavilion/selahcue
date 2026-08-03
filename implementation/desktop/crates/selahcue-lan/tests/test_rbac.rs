@@ -117,6 +117,44 @@ fn set_theme_is_operator_only_output_config() {
         Command::RemoveScreen {
             screen: "stream-2".into(),
         },
+        // The per-output config commands (Screens page inspector: orientation / scaling /
+        // mirror / delay / frame-rate / safe-area / layer visibility) are the SAME
+        // output-config authority — Operator-only, denied for everyone below.
+        Command::SetOutputOrientation {
+            screen: "main".into(),
+            quarter_turns: 1,
+        },
+        Command::SetOutputScaleFit {
+            screen: "main".into(),
+            fit: selahcue_lan::protocol::ScaleFit::Fit,
+        },
+        Command::SetOutputMirror {
+            screen: "main".into(),
+            on: true,
+        },
+        Command::SetOutputDelay {
+            screen: "main".into(),
+            ms: 40,
+        },
+        Command::SetOutputFrameRate {
+            screen: "main".into(),
+            fps: 30,
+        },
+        Command::SetOutputSafeArea {
+            screen: "main".into(),
+            on: true,
+        },
+        Command::SetScreenLayerVisible {
+            screen: "main".into(),
+            layer: "lower-third".into(),
+            visible: false,
+        },
+        // Configuring an NDI output is the SAME output-config authority — Operator-only.
+        Command::SetNdiOutput {
+            screen: "stream".into(),
+            name: "SelahCue Program".into(),
+            enabled: true,
+        },
     ] {
         assert!(authorize(Role::Operator, &cmd), "operator {cmd:?}");
         assert!(!authorize(Role::Producer, &cmd), "producer {cmd:?}");

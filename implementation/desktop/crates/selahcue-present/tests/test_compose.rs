@@ -1437,3 +1437,151 @@ fn an_image_background_fills_the_frame_behind_the_text() {
         "the slide text renders over the image background"
     );
 }
+
+// --- Design 2.0 VISIBLE LAYERS: the per-output LayerMask actually gates compositing layers
+// at compose (background / text / lower-third / logo). Each hidden layer drops from the frame;
+// hiding a layer never blanks it (NFR-024). ALL is byte-identical to the unmasked compose. ---
+
+use selahcue_present::{compose_slide_masked, LayerMask};
+
+#[test]
+fn layer_mask_all_is_byte_identical_to_unmasked_compose() {
+    let theme = Theme::lower_third();
+    let slide = Slide::new("John 3:16", ["For God so loved the world"]);
+    let a = render(&compose_slide(&slide, &theme, 320, 180));
+    let b = render(&compose_slide_masked(
+        &slide,
+        &theme,
+        320,
+        180,
+        LayerMask::ALL,
+    ));
+    assert_eq!(
+        a.bytes(),
+        b.bytes(),
+        "ALL mask == unmasked (byte-identical, NFR-014)"
+    );
+}
+
+#[test]
+fn hiding_the_text_layer_drops_the_text_but_never_blanks() {
+    // classic is a plain full-screen theme (no band, no elements), so text off == background.
+    let theme = Theme::classic();
+    let slide = Slide::new("REFERENCE", ["Body copy line here"]);
+    let (w, h) = (256, 144);
+    let shown = render(&compose_slide(&slide, &theme, w, h));
+    let hidden = render(&compose_slide_masked(
+        &slide,
+        &theme,
+        w,
+        h,
+        LayerMask {
+            text: false,
+            ..LayerMask::ALL
+        },
+    ));
+    assert_ne!(
+        shown.bytes(),
+        hidden.bytes(),
+        "hiding text changes the frame"
+    );
+    // Never blank: with text hidden the background still renders — equal to a blank slide.
+    let blank = render(&compose_slide(&Slide::title(""), &theme, w, h));
+    assert_eq!(
+        hidden.bytes(),
+        blank.bytes(),
+        "text hidden → background only, not blank"
+    );
+}
+
+#[test]
+fn hiding_the_background_layer_clears_to_black_but_keeps_content() {
+    let theme = Theme::classic();
+    let slide = Slide::new("REFERENCE", ["Body copy line here"]);
+    let (w, h) = (256, 144);
+    let hidden = render(&compose_slide_masked(
+        &slide,
+        &theme,
+        w,
+        h,
+        LayerMask {
+            background: false,
+            ..LayerMask::ALL
+        },
+    ));
+    // A corner (away from the centred text) is BLACK — the background layer is gone.
+    assert_eq!(
+        hidden.pixel(0, 0).unwrap(),
+        Rgba::BLACK,
+        "background hidden → black behind"
+    );
+    // The text still renders (hiding the background never blanks the content).
+    assert!(
+        has_ink_in(&hidden, 0, 0, w, h),
+        "content still renders over black"
+    );
+}
+
+#[test]
+fn hiding_the_lower_third_layer_removes_the_band_but_keeps_text() {
+    let (w, h) = (1280u32, 720u32);
+    let slide = Slide::new("John 3:16", ["For God so loved the world"]);
+    let hidden = render(&compose_slide_masked(
+        &slide,
+        &Theme::lower_third(),
+        w,
+        h,
+        LayerMask {
+            lower_third: false,
+            ..LayerMask::ALL
+        },
+    ));
+    // The amber band border is gone from both edges (the lower-third layer was dropped).
+    let mid_y = 560;
+    assert!(
+        !(25..55).any(|x| is_amber(&hidden, x, mid_y)),
+        "lower-third hidden → no amber band at the left edge"
+    );
+    assert!(
+        !(1225..1255).any(|x| is_amber(&hidden, x, mid_y)),
+        "lower-third hidden → no amber band at the right edge"
+    );
+    // The text layer is independent — the reference/body still render.
+    assert!(
+        has_ink_in(&hidden, 60, 490, 1200, 675),
+        "text survives a hidden band"
+    );
+}
+
+#[test]
+fn hiding_the_logo_layer_removes_the_design_element() {
+    // A theme with a full-frame green LOGO element behind the text.
+    let mut theme = Theme::classic();
+    theme.elements = vec![full_shape(Rgba::rgb(0, 220, 0), 255, -1)];
+    let slide = Slide::new("REFERENCE", ["Body copy line here"]);
+    let (w, h) = (200, 120);
+    let is_green = |fb: &FrameBuffer, x: u32, y: u32| {
+        fb.pixel(x, y)
+            .map(|p| p.g > 150 && p.r < 90 && p.b < 90)
+            .unwrap_or(false)
+    };
+    let shown = render(&compose_slide(&slide, &theme, w, h));
+    let hidden = render(&compose_slide_masked(
+        &slide,
+        &theme,
+        w,
+        h,
+        LayerMask {
+            logo: false,
+            ..LayerMask::ALL
+        },
+    ));
+    assert!(
+        is_green(&shown, 2, 2),
+        "the logo element paints when visible"
+    );
+    assert!(
+        !is_green(&hidden, 2, 2),
+        "logo hidden → the design element is gone"
+    );
+}

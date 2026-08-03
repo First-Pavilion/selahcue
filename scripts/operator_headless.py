@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 99
+EXPECTED_MIN_CHECKS = 183
 
 
 def find_chrome():
@@ -312,10 +312,7 @@ DRIVER = r"""
       el("td-el-op").value = 50; el("td-el-op").dispatchEvent(new Event("input"));
       ok(applied().elements[1].opacity===128, "opacity 50% maps to u8 128");
 
-      // C-002 numeric X sync: set X=10.0% → x_permille=100.
-      el("td-x").value = "10.0"; el("td-x").dispatchEvent(new Event("change"));
-      ok(applied().elements[1].x_permille===100, "numeric X=10% → x_permille=100 (active element)");
-
+      // (The numeric X/Y/W/H fields were removed — position is edited on the canvas: keyboard.)
       // C-002 keyboard move: ArrowRight nudges +10‰.
       var before = applied().elements[1].x_permille;
       el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowRight",bubbles:true}));
@@ -380,10 +377,11 @@ DRIVER = r"""
       el("td-el-del").click(); // should ARM B (not delete), since the arm was reset
       ok(applied().elements.length===nA, "one click after a selection change does NOT delete (arm reset)");
 
-      // Region regression: selecting a region hides the element inspector.
-      document.querySelector('#td-region button[data-region="title"]').click();
+      // Region regression: selecting a region (via the LAYERS row — the Region picker was
+      // removed) hides the element inspector and shows the region-layout controls.
+      el("td-layers").querySelector('.td-layer[data-region="title"]').click();
       ok(el("td-el-inspector").hidden, "selecting a region hides the element inspector");
-      ok(el("td-region").style.display!=="none", "region controls visible in region mode");
+      ok(el("td-region-align").style.display!=="none", "region layout controls visible in region mode");
 
       // Make the designer laid out so getComputedStyle reflects the real CSS (the menu's
       // hide contract is CSS: .td-ctx[hidden]{display:none} vs .td-ctx{display:flex}).
@@ -423,7 +421,7 @@ DRIVER = r"""
       var surf=el("surface-theme-designer"); surf.style.display="block"; surf.classList.add("active");
       var box=el("td-canvas-box"); box.style.cssText="position:fixed;left:0;top:0;width:400px;height:226px;z-index:9;display:block";
       addShape(); // default centre ≈ (500,500) permille
-      document.querySelector('#td-region button[data-region="body"]').click(); // select the large Body region
+      el("td-layers").querySelector('.td-layer[data-region="body"]').click(); // select the large Body region (LAYERS row)
       ok(el("td-el-inspector").hidden, "#3 region selected — element inspector hidden");
       var br=box.getBoundingClientRect();
       // The forced position:fixed;width:400px MUST yield real viewport geometry (Chrome does
@@ -444,12 +442,13 @@ DRIVER = r"""
       var pt = toClient(500, 200); // inside the title rect (y 150..260)
       box.dispatchEvent(new PointerEvent("pointerdown",{clientX:pt.x,clientY:pt.y,button:0,bubbles:true,pointerId:2}));
       ok(el("td-el-inspector").hidden, "canvas region-click stays in region mode (no element)");
-      ok(document.querySelector('#td-region button[data-region="title"]').getAttribute("aria-pressed")==="true",
-         "canvas: clicking the Reference/Title text selects that region");
+      // The Region picker was removed — the active region is named in the inspector header.
+      ok(el("td-insp-title").textContent.indexOf("Reference")>=0,
+         "canvas: clicking the Reference/Title text selects that region (header names it)");
       var pb = toClient(500, 500); // inside the body rect (y 280..840)
       box.dispatchEvent(new PointerEvent("pointerdown",{clientX:pb.x,clientY:pb.y,button:0,bubbles:true,pointerId:3}));
-      ok(el("td-region-body").getAttribute("aria-pressed")==="true",
-         "canvas: clicking the Body text selects the Body region");
+      ok(el("td-insp-title").textContent==="Body",
+         "canvas: clicking the Body text selects the Body region (header names it)");
 
       // Design 2.0: LAYERS drag-and-drop reorders z, and dragging an element past the text
       // REGION rows crosses the text boundary (front z>0 <-> behind z<0). Fresh Classic theme
@@ -621,6 +620,26 @@ DRIVER = r"""
       var order2 = Array.prototype.map.call(qLayers(), function(r){ return r.dataset.idx; }).filter(function(x){ return x!==undefined; });
       ok(order2.indexOf(String(topIdx)) > order2.indexOf(String(topIdx-1)),
          "D2 the LAYERS list re-sorts to the new z-order after a reorder");
+
+      // === Design 2.0: collapsible Templates row (gives the canvas more room) ===
+      var tmpl = document.querySelector(".td-templates");
+      var tgl = el("td-templates-toggle");
+      ok(!!(tmpl && tgl), "D2 templates collapse toggle present");
+      ok(!tmpl.classList.contains("collapsed") && tgl.getAttribute("aria-expanded")==="true", "D2 templates start expanded");
+      tgl.click();
+      ok(tmpl.classList.contains("collapsed") && tgl.getAttribute("aria-expanded")==="false", "D2 toggle collapses the templates row (#td-panel hidden via CSS)");
+      tgl.click();
+      ok(!tmpl.classList.contains("collapsed") && tgl.getAttribute("aria-expanded")==="true", "D2 toggling again expands the templates row");
+      // Review fix (HIGH): "Save theme" while Templates are collapsed must EXPAND the strip so
+      // the save form (inside the collapsible #td-panel) is visible — not a silent no-op.
+      tgl.click(); // collapse
+      ok(tmpl.classList.contains("collapsed"), "D2 precondition: templates collapsed before Save");
+      el("td-save").click(); // the topbar "Save theme" CTA
+      ok(!tmpl.classList.contains("collapsed") && tgl.getAttribute("aria-expanded")==="true", "D2 Save-theme expands the collapsed Templates strip (no silent no-op)");
+      ok(!el("td-save-row").hidden, "D2 Save-theme reveals the save-name form");
+      el("td-save-cancel").click();
+      // The Region picker + numeric X/Y/W/H + Lock were removed from the inspector.
+      ok(!el("td-region") && !el("td-x") && !el("td-lock"), "D2 inspector trimmed: Region picker + X/Y/W/H + Lock removed");
 
       // === audit M1: the plan dedup key EXCLUDES view.timer (no per-second rebuild) ===
       // render() is a global function; drive it directly with crafted view deltas.
@@ -859,6 +878,65 @@ DRIVER = r"""
       ok(active && active.classList.contains("screen-enable-toggle") &&
          active.closest('.screen-row') && active.closest('.screen-row').dataset.screen === "main",
          "registry: keyboard focus is restored to the toggle after the rebuild (a11y)");
+
+      // === Design 2.0 INSPECTOR: the per-output config controls drive the new backend
+      // commands (orientation / scaling / mirror / delay / frame-rate / safe-area / layers). ===
+      var insp = document.getElementById("screens-inspector");
+      ok(!!insp && /DISPLAY/.test(insp.textContent) && /APPEARANCE/.test(insp.textContent)
+         && /VISIBLE LAYERS/.test(insp.textContent) && /TIMING/.test(insp.textContent)
+         && /DEVICE/.test(insp.textContent),
+         "inspector: the selected output shows DISPLAY / APPEARANCE / VISIBLE LAYERS / TIMING / DEVICE");
+      // The connected pill reflects the assigned physical outputs (honest count).
+      ok(/connected/.test((document.getElementById("screens-conn")||{}).textContent||""),
+         "inspector: the topbar shows an honest '<n> connected' pill");
+      var setSel = function(aria, val){
+        var s = insp.querySelector('select[aria-label="'+aria+'"]');
+        s.value = String(val); s.dispatchEvent(new Event("change"));
+      };
+      var togInsp = function(aria){ insp.querySelector('input[aria-label="'+aria+'"]').click(); };
+      var lastCall = function(cmd){
+        var m = window.__calls.filter(function(c){ return c.cmd === cmd; }); return m[m.length-1];
+      };
+      setSel("Target frame rate for main", 30);
+      ok((lastCall("set_output_frame_rate")||{}).args && lastCall("set_output_frame_rate").args.fps === 30
+         && lastCall("set_output_frame_rate").args.screen === "main",
+         "inspector: Frame rate → set_output_frame_rate(fps=30)");
+      setSel("Orientation for main", 1);
+      ok((lastCall("set_output_orientation")||{}).args && lastCall("set_output_orientation").args.quarterTurns === 1,
+         "inspector: Orientation → set_output_orientation(quarterTurns=1)");
+      setSel("Scaling and fit for main", "fit");
+      ok((lastCall("set_output_scale_fit")||{}).args && lastCall("set_output_scale_fit").args.fit === "fit",
+         "inspector: Scaling/fit → set_output_scale_fit(fit=fit)");
+      setSel("Output delay for main", 40);
+      ok((lastCall("set_output_delay")||{}).args && lastCall("set_output_delay").args.ms === 40,
+         "inspector: Output delay → set_output_delay(ms=40)");
+      togInsp("Mirror main horizontally");
+      ok((lastCall("set_output_mirror")||{}).args && lastCall("set_output_mirror").args.on === true,
+         "inspector: Mirror → set_output_mirror(on=true)");
+      togInsp("Show safe-area guides on the operator preview for main");
+      ok((lastCall("set_output_safe_area")||{}).args && lastCall("set_output_safe_area").args.on === true,
+         "inspector: Safe-area guides → set_output_safe_area(on=true)");
+      togInsp("Lower third layer on main");
+      ok((lastCall("set_screen_layer_visible")||{}).args
+         && lastCall("set_screen_layer_visible").args.layer === "lower-third"
+         && lastCall("set_screen_layer_visible").args.visible === false,
+         "inspector: a VISIBLE LAYERS toggle → set_screen_layer_visible(layer, visible=false)");
+
+      // === NDI OUTPUT: an audience feed can be set up as an NDI source (name + broadcast). ===
+      var streamCard = rowFor("stream");
+      Array.from(streamCard.querySelectorAll("button")).filter(function(b){ return b.textContent === "Configure"; })[0].click();
+      await waitFor(function(){ return /NDI OUTPUT/.test(document.getElementById("screens-inspector").textContent); });
+      var insp2 = document.getElementById("screens-inspector");
+      ok(/NDI OUTPUT/.test(insp2.textContent), "inspector: an audience feed shows an NDI OUTPUT section");
+      var ndiName = insp2.querySelector('input[aria-label="NDI source name for stream"]');
+      ok(!!ndiName, "inspector: NDI section has a source-name input");
+      ndiName.value = "Test NDI"; ndiName.dispatchEvent(new Event("change"));
+      insp2.querySelector('input[aria-label="Broadcast stream as an NDI source"]').click();
+      ok(window.__calls.some(function(c){
+           return c.cmd === "set_ndi_output" && c.args.screen === "stream"
+             && c.args.name === "Test NDI" && c.args.enabled === true;
+         }),
+         "inspector: NDI name + broadcast toggle → set_ndi_output(screen=stream, name, enabled=true)");
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
     el("__r").textContent = "RESULTS\n"+R.join("\n")+"\nDONE("+R.length+")";
   }

@@ -149,6 +149,20 @@ pub fn is_renderable(width: u32, height: u32) -> bool {
     width > 0 && height > 0 && width <= MAX_DIMENSION && height <= MAX_DIMENSION
 }
 
+/// How a composed frame fits its output surface — the per-output "scaling / fit" transform
+/// ([`FrameBuffer::fitted`]). Mirrors the wire `ScaleFit` (the protocol crate does not depend
+/// on the engine, so the desktop host maps one to the other).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Fit {
+    /// Cover the surface, centre-cropping overflow (preserve aspect). The default.
+    #[default]
+    Fill,
+    /// Contain within the surface, letterboxing (preserve aspect, no crop).
+    Fit,
+    /// Stretch to the exact surface, distorting aspect.
+    Stretch,
+}
+
 /// A rendered RGBA8 frame — the CPU-side pixel readback (row-major, 4 bytes/px).
 #[derive(Clone, PartialEq, Eq)]
 pub struct FrameBuffer {
@@ -296,6 +310,190 @@ impl FrameBuffer {
         FrameBuffer {
             width: tw as u32,
             height: th as u32,
+            pixels,
+        }
+    }
+
+    /// A horizontally MIRRORED copy (each row reversed) — the per-output "mirror
+    /// horizontally" transform (Screens inspector). Pure integer, deterministic + byte-
+    /// identical cross-OS (NFR-014), like [`thumbnail`](Self::thumbnail). Same dimensions.
+    pub fn mirrored_horizontal(&self) -> FrameBuffer {
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let mut pixels = vec![0u8; self.pixels.len()];
+        for y in 0..h {
+            let row = y * w;
+            for x in 0..w {
+                let src = (row + x) * 4;
+                let dst = (row + (w - 1 - x)) * 4;
+                pixels[dst..dst + 4].copy_from_slice(&self.pixels[src..src + 4]);
+            }
+        }
+        FrameBuffer {
+            width: self.width,
+            height: self.height,
+            pixels,
+        }
+    }
+
+    /// A copy ROTATED clockwise by `quarter_turns` (`0`=none, `1`=90°, `2`=180°, `3`=270°;
+    /// any value is taken mod 4) — the per-output orientation transform. A 90°/270° turn
+    /// swaps width and height. Pure integer index-remap, deterministic + byte-identical
+    /// cross-OS (NFR-014). `0` returns an unchanged clone.
+    pub fn rotated(&self, quarter_turns: u8) -> FrameBuffer {
+        let turns = quarter_turns % 4;
+        if turns == 0 {
+            return self.clone();
+        }
+        let (sw, sh) = (self.width as usize, self.height as usize);
+        let (dw, dh) = if turns == 2 { (sw, sh) } else { (sh, sw) };
+        let mut pixels = vec![0u8; self.pixels.len()];
+        for sy in 0..sh {
+            let srow = sy * sw;
+            for sx in 0..sw {
+                // Destination (dx, dy) for a clockwise turn of the source pixel (sx, sy).
+                let (dx, dy) = match turns {
+                    1 => (sh - 1 - sy, sx),          // 90° CW
+                    2 => (sw - 1 - sx, sh - 1 - sy), // 180°
+                    _ => (sy, sw - 1 - sx),          // 270° CW
+                };
+                let s = (srow + sx) * 4;
+                let d = (dy * dw + dx) * 4;
+                pixels[d..d + 4].copy_from_slice(&self.pixels[s..s + 4]);
+            }
+        }
+        FrameBuffer {
+            width: dw as u32,
+            height: dh as u32,
+            pixels,
+        }
+    }
+
+    /// Resample to exactly `dst_w × dst_h` (no aspect preservation): a generalization of
+    /// [`thumbnail`](Self::thumbnail) that also UPSCALES (nearest-source for an expanded
+    /// axis, box-average for a contracted one). Integer + deterministic. The building block
+    /// for [`fitted`](Self::fitted). Bounds `dst_*` to `1..=MAX_DIMENSION`.
+    fn resampled(&self, dst_w: u32, dst_h: u32) -> FrameBuffer {
+        let dst_w = dst_w.clamp(1, MAX_DIMENSION);
+        let dst_h = dst_h.clamp(1, MAX_DIMENSION);
+        if dst_w == self.width && dst_h == self.height {
+            return self.clone();
+        }
+        let (w, h) = (self.width as u64, self.height as u64);
+        let (dw, dh) = (dst_w as u64, dst_h as u64);
+        let mut pixels = Vec::with_capacity((dw * dh) as usize * 4);
+        for ty in 0..dh {
+            let sy0 = (ty * h / dh) as u32;
+            let sy1 = (((ty + 1) * h / dh) as u32).max(sy0 + 1).min(self.height);
+            for tx in 0..dw {
+                let sx0 = (tx * w / dw) as u32;
+                let sx1 = (((tx + 1) * w / dw) as u32).max(sx0 + 1).min(self.width);
+                let (mut r, mut g, mut b, mut a, mut n) = (0u64, 0u64, 0u64, 0u64, 0u64);
+                for sy in sy0..sy1 {
+                    let row = sy as usize * self.width as usize;
+                    for sx in sx0..sx1 {
+                        let i = (row + sx as usize) * 4;
+                        r += self.pixels[i] as u64;
+                        g += self.pixels[i + 1] as u64;
+                        b += self.pixels[i + 2] as u64;
+                        a += self.pixels[i + 3] as u64;
+                        n += 1;
+                    }
+                }
+                let n = n.max(1);
+                pixels.extend_from_slice(&[
+                    (r / n) as u8,
+                    (g / n) as u8,
+                    (b / n) as u8,
+                    (a / n) as u8,
+                ]);
+            }
+        }
+        FrameBuffer {
+            width: dst_w,
+            height: dst_h,
+            pixels,
+        }
+    }
+
+    /// Fit this frame into a `dst_w × dst_h` surface under `fit` — the per-output
+    /// "scaling / fit" transform (Screens inspector). Always returns exactly `dst_w × dst_h`:
+    /// [`Fit::Stretch`] distorts to fill, [`Fit::Fit`] letterboxes (black bars, no crop),
+    /// [`Fit::Fill`] covers and centre-crops. Pure integer, deterministic (NFR-014).
+    pub fn fitted(&self, dst_w: u32, dst_h: u32, fit: Fit) -> FrameBuffer {
+        let dst_w = dst_w.clamp(1, MAX_DIMENSION);
+        let dst_h = dst_h.clamp(1, MAX_DIMENSION);
+        match fit {
+            Fit::Stretch => self.resampled(dst_w, dst_h),
+            Fit::Fit => {
+                // Contain: the largest aspect-preserving size within the surface, letterboxed.
+                let (w, h) = (self.width as u64, self.height as u64);
+                let (dw, dh) = (dst_w as u64, dst_h as u64);
+                let (sw, sh) = if w * dh <= h * dw {
+                    (((w * dh) / h).max(1), dh) // height binds
+                } else {
+                    (dw, ((h * dw) / w).max(1)) // width binds
+                };
+                let scaled = self.resampled(sw as u32, sh as u32);
+                let mut out = FrameBuffer::filled(dst_w, dst_h, Rgba::BLACK);
+                let ox = (dst_w - scaled.width) / 2;
+                let oy = (dst_h - scaled.height) / 2;
+                out.blit_opaque(&scaled, ox, oy);
+                out
+            }
+            Fit::Fill => {
+                // Cover: the smallest aspect-preserving size that covers the surface, then
+                // centre-crop to the surface.
+                let (w, h) = (self.width as u64, self.height as u64);
+                let (dw, dh) = (dst_w as u64, dst_h as u64);
+                let (sw, sh) = if w * dh >= h * dw {
+                    (((w * dh) / h).max(1), dh) // height binds (source relatively wider)
+                } else {
+                    (dw, ((h * dw) / w).max(1)) // width binds
+                };
+                let scaled = self.resampled(sw as u32, sh as u32);
+                let ox = (scaled.width - dst_w) / 2;
+                let oy = (scaled.height - dst_h) / 2;
+                scaled.cropped(ox, oy, dst_w, dst_h)
+            }
+        }
+    }
+
+    /// Copy `src` opaquely onto `self` at `(ox, oy)`, clipped to bounds (no blending — a
+    /// letterbox paste). Used by [`fitted`](Self::fitted).
+    fn blit_opaque(&mut self, src: &FrameBuffer, ox: u32, oy: u32) {
+        for sy in 0..src.height {
+            let dy = oy + sy;
+            if dy >= self.height {
+                break;
+            }
+            for sx in 0..src.width {
+                let dx = ox + sx;
+                if dx >= self.width {
+                    break;
+                }
+                let s = (sy as usize * src.width as usize + sx as usize) * 4;
+                let d = (dy as usize * self.width as usize + dx as usize) * 4;
+                self.pixels[d..d + 4].copy_from_slice(&src.pixels[s..s + 4]);
+            }
+        }
+    }
+
+    /// A `w × h` crop of this frame starting at `(x, y)`, clamped so the window stays in
+    /// bounds. Used by [`fitted`](Self::fitted)'s cover mode.
+    fn cropped(&self, x: u32, y: u32, w: u32, h: u32) -> FrameBuffer {
+        let w = w.clamp(1, self.width);
+        let h = h.clamp(1, self.height);
+        let x = x.min(self.width - w);
+        let y = y.min(self.height - h);
+        let mut pixels = Vec::with_capacity((w * h) as usize * 4);
+        for ry in 0..h {
+            let row = ((y + ry) as usize * self.width as usize + x as usize) * 4;
+            pixels.extend_from_slice(&self.pixels[row..row + (w as usize) * 4]);
+        }
+        FrameBuffer {
+            width: w,
+            height: h,
             pixels,
         }
     }

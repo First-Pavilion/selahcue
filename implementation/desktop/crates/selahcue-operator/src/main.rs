@@ -19,6 +19,7 @@
 
 use selahcue_app::{LiveController, OperatorShell, OperatorView, RemoteOperator};
 use selahcue_core::plan::{ItemKind, ServicePlan};
+use selahcue_lan::protocol::ScaleFit;
 use selahcue_lan::CertPin;
 use selahcue_present::{FrameBuffer, Theme};
 use std::net::SocketAddr;
@@ -180,6 +181,116 @@ impl Backend {
                 .await
                 .map_err(|e| e.to_string()),
             Backend::Local(s) => Ok(s.remove_screen(&screen)),
+        }
+    }
+    async fn set_output_orientation(
+        &self,
+        screen: String,
+        quarter_turns: u8,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_output_orientation(&screen, quarter_turns)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_output_orientation(&screen, quarter_turns)),
+        }
+    }
+    async fn set_output_scale_fit(
+        &self,
+        screen: String,
+        fit: ScaleFit,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_output_scale_fit(&screen, fit)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_output_scale_fit(&screen, fit)),
+        }
+    }
+    async fn set_output_mirror(&self, screen: String, on: bool) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_output_mirror(&screen, on)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_output_mirror(&screen, on)),
+        }
+    }
+    async fn set_output_delay(&self, screen: String, ms: u32) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_output_delay(&screen, ms)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_output_delay(&screen, ms)),
+        }
+    }
+    async fn set_output_frame_rate(
+        &self,
+        screen: String,
+        fps: u16,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_output_frame_rate(&screen, fps)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_output_frame_rate(&screen, fps)),
+        }
+    }
+    async fn set_output_safe_area(&self, screen: String, on: bool) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_output_safe_area(&screen, on)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_output_safe_area(&screen, on)),
+        }
+    }
+    async fn set_screen_layer_visible(
+        &self,
+        screen: String,
+        layer: String,
+        visible: bool,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_screen_layer_visible(&screen, &layer, visible)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_screen_layer_visible(&screen, &layer, visible)),
+        }
+    }
+    async fn set_ndi_output(
+        &self,
+        screen: String,
+        name: String,
+        enabled: bool,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_ndi_output(&screen, &name, enabled)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_ndi_output(&screen, &name, enabled)),
         }
     }
     async fn select(&self, item_id: u64) -> Result<OperatorView, String> {
@@ -482,6 +593,78 @@ async fn add_screen(role: String, state: State<'_, AppState>) -> Result<Operator
 #[tauri::command]
 async fn remove_screen(screen: String, state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.remove_screen(screen).await
+}
+#[tauri::command]
+async fn set_output_orientation(
+    screen: String,
+    quarter_turns: u8,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state
+        .backend
+        .set_output_orientation(screen, quarter_turns)
+        .await
+}
+#[tauri::command]
+async fn set_output_scale_fit(
+    screen: String,
+    fit: ScaleFit,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_output_scale_fit(screen, fit).await
+}
+#[tauri::command]
+async fn set_output_mirror(
+    screen: String,
+    on: bool,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_output_mirror(screen, on).await
+}
+#[tauri::command]
+async fn set_output_delay(
+    screen: String,
+    ms: u32,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_output_delay(screen, ms).await
+}
+#[tauri::command]
+async fn set_output_frame_rate(
+    screen: String,
+    fps: u16,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_output_frame_rate(screen, fps).await
+}
+#[tauri::command]
+async fn set_output_safe_area(
+    screen: String,
+    on: bool,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_output_safe_area(screen, on).await
+}
+#[tauri::command]
+async fn set_screen_layer_visible(
+    screen: String,
+    layer: String,
+    visible: bool,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state
+        .backend
+        .set_screen_layer_visible(screen, layer, visible)
+        .await
+}
+#[tauri::command]
+async fn set_ndi_output(
+    screen: String,
+    name: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_ndi_output(screen, name, enabled).await
 }
 /// The built-in themes as `[{ name, theme }]` (theme = the serialized `Theme`) so the
 /// Theme Designer edits/previews the REAL built-ins from `theme.rs` — no hand-mirrored
@@ -977,6 +1160,14 @@ fn main() {
             set_screen_enabled,
             add_screen,
             remove_screen,
+            set_output_orientation,
+            set_output_scale_fit,
+            set_output_mirror,
+            set_output_delay,
+            set_output_frame_rate,
+            set_output_safe_area,
+            set_screen_layer_visible,
+            set_ndi_output,
             preview_theme,
             render_console,
             render_screen,

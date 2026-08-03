@@ -8,8 +8,8 @@
 
 use crate::controller::LiveController;
 use selahcue_lan::protocol::{
-    Command, DetectionView, OperatorStateView, PlanItemView, SavedThemeView, ScreenThemeView,
-    ScreenView, TimerSnapshot, TranscriptSegmentView,
+    Command, DetectionView, OperatorStateView, PlanItemView, SavedThemeView, ScaleFit,
+    ScreenThemeView, ScreenView, TimerSnapshot, TranscriptSegmentView,
 };
 use selahcue_present::FrameBuffer;
 use serde::Serialize;
@@ -366,6 +366,77 @@ impl OperatorShell {
     pub fn remove_screen(&self, screen: &str) -> OperatorView {
         self.act(&Command::RemoveScreen {
             screen: screen.into(),
+        })
+    }
+
+    /// Set a screen's output orientation (quarter-turns clockwise, `0..=3`).
+    pub fn set_output_orientation(&self, screen: &str, quarter_turns: u8) -> OperatorView {
+        self.act(&Command::SetOutputOrientation {
+            screen: screen.into(),
+            quarter_turns,
+        })
+    }
+
+    /// Set a screen's scaling/fit mode.
+    pub fn set_output_scale_fit(&self, screen: &str, fit: ScaleFit) -> OperatorView {
+        self.act(&Command::SetOutputScaleFit {
+            screen: screen.into(),
+            fit,
+        })
+    }
+
+    /// Mirror a screen's output horizontally.
+    pub fn set_output_mirror(&self, screen: &str, on: bool) -> OperatorView {
+        self.act(&Command::SetOutputMirror {
+            screen: screen.into(),
+            on,
+        })
+    }
+
+    /// Set a screen's output delay (ms; clamped by the controller).
+    pub fn set_output_delay(&self, screen: &str, ms: u32) -> OperatorView {
+        self.act(&Command::SetOutputDelay {
+            screen: screen.into(),
+            ms,
+        })
+    }
+
+    /// Set a screen's target frame rate (fps; clamped by the controller).
+    pub fn set_output_frame_rate(&self, screen: &str, fps: u16) -> OperatorView {
+        self.act(&Command::SetOutputFrameRate {
+            screen: screen.into(),
+            fps,
+        })
+    }
+
+    /// Toggle a screen's safe-area guides (operator preview overlay only).
+    pub fn set_output_safe_area(&self, screen: &str, on: bool) -> OperatorView {
+        self.act(&Command::SetOutputSafeArea {
+            screen: screen.into(),
+            on,
+        })
+    }
+
+    /// Show/hide one compositing layer on a screen.
+    pub fn set_screen_layer_visible(
+        &self,
+        screen: &str,
+        layer: &str,
+        visible: bool,
+    ) -> OperatorView {
+        self.act(&Command::SetScreenLayerVisible {
+            screen: screen.into(),
+            layer: layer.into(),
+            visible,
+        })
+    }
+
+    /// Configure a screen's NDI output (source name + enabled), atomically.
+    pub fn set_ndi_output(&self, screen: &str, name: &str, enabled: bool) -> OperatorView {
+        self.act(&Command::SetNdiOutput {
+            screen: screen.into(),
+            name: name.into(),
+            enabled,
         })
     }
 
@@ -791,6 +862,114 @@ impl RemoteOperator {
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::RemoveScreen {
             screen: screen.into(),
+        })
+        .await
+    }
+
+    /// Set a screen's output orientation on the host (quarter-turns clockwise).
+    pub async fn set_output_orientation(
+        &mut self,
+        screen: &str,
+        quarter_turns: u8,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetOutputOrientation {
+            screen: screen.into(),
+            quarter_turns,
+        })
+        .await
+    }
+
+    /// Set a screen's scaling/fit mode on the host.
+    pub async fn set_output_scale_fit(
+        &mut self,
+        screen: &str,
+        fit: ScaleFit,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetOutputScaleFit {
+            screen: screen.into(),
+            fit,
+        })
+        .await
+    }
+
+    /// Mirror a screen's output horizontally on the host.
+    pub async fn set_output_mirror(
+        &mut self,
+        screen: &str,
+        on: bool,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetOutputMirror {
+            screen: screen.into(),
+            on,
+        })
+        .await
+    }
+
+    /// Set a screen's output delay (ms) on the host.
+    pub async fn set_output_delay(
+        &mut self,
+        screen: &str,
+        ms: u32,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetOutputDelay {
+            screen: screen.into(),
+            ms,
+        })
+        .await
+    }
+
+    /// Set a screen's target frame rate (fps) on the host.
+    pub async fn set_output_frame_rate(
+        &mut self,
+        screen: &str,
+        fps: u16,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetOutputFrameRate {
+            screen: screen.into(),
+            fps,
+        })
+        .await
+    }
+
+    /// Toggle a screen's safe-area guides on the host (operator preview overlay only).
+    pub async fn set_output_safe_area(
+        &mut self,
+        screen: &str,
+        on: bool,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetOutputSafeArea {
+            screen: screen.into(),
+            on,
+        })
+        .await
+    }
+
+    /// Show/hide one compositing layer on a screen on the host.
+    pub async fn set_screen_layer_visible(
+        &mut self,
+        screen: &str,
+        layer: &str,
+        visible: bool,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetScreenLayerVisible {
+            screen: screen.into(),
+            layer: layer.into(),
+            visible,
+        })
+        .await
+    }
+
+    /// Configure a screen's NDI output (source name + enabled) on the host.
+    pub async fn set_ndi_output(
+        &mut self,
+        screen: &str,
+        name: &str,
+        enabled: bool,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetNdiOutput {
+            screen: screen.into(),
+            name: name.into(),
+            enabled,
         })
         .await
     }

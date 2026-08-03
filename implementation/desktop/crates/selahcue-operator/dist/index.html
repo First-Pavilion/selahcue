@@ -288,16 +288,41 @@
       </div><!-- /zone-right -->
     </div><!-- /surface-console -->
 
-    <!-- SCREENS surface: the output manager (design 86ajq1n14, Figma 217:124). -->
-    <section id="surface-screens" class="surface-page surface-pad" aria-label="Screens">
-      <div style="display:flex;align-items:center;gap:12px;">
-        <h1 style="flex:1;">Screens</h1>
-        <button id="screens-identify" aria-label="Show the identify number on every display">Identify</button>
+    <!-- SCREENS & OUTPUTS surface (Design 2.0, Figma 327:124): a topbar, a scrollable
+         OUTPUTS card grid, and a fixed 360px INSPECTOR for the selected output. Every card is
+         a .screen-row[data-screen] carrying the pinned hooks (preview canvas, enable toggle,
+         delete-on-virtual); the per-output config controls live in the inspector. -->
+    <section id="surface-screens" class="surface-page" aria-label="Screens">
+      <div class="scr-topbar">
+        <div class="scr-topbar-left">
+          <span class="scr-brand-mark" aria-hidden="true">◆</span>
+          <span class="scr-brand-name">SelahCue</span>
+          <span class="scr-brand-caret" aria-hidden="true">▾</span>
+          <span class="scr-divider" aria-hidden="true"></span>
+          <span class="scr-breadcrumb">Screens &amp; Outputs</span>
+        </div>
+        <div class="scr-topbar-right">
+          <span id="screens-conn" class="scr-pill scr-pill-connected" aria-live="polite">● 0 connected</span>
+          <label class="scr-visually-hidden" for="screen-add-role">Role for the new virtual output</label>
+          <select id="screen-add-role" aria-label="Role for the new virtual output">
+            <option value="stream">Stream</option>
+            <option value="lower-third">Lower Third</option>
+          </select>
+          <button id="screen-add-btn" class="btn-primary" type="button">+ Add virtual output</button>
+          <button id="screens-identify" class="btn-secondary" type="button"
+            aria-label="Show the identify number on every display">Identify</button>
+        </div>
       </div>
-      <p class="coming-soon" style="margin-top:2px;">Configure each screen — role, display/NDI, format, and its own
-        theme. Each Audience screen renders its own template (86ajq321k); physical NDI/stream delivery for the
-        lower-third/stream screens arrives next.</p>
-      <div id="screens-list" style="margin-top:8px;"></div>
+      <div class="scr-body">
+        <div class="scr-grid-pane">
+          <div class="scr-grid-head">
+            <span class="scr-grid-title">OUTPUTS</span>
+            <span class="scr-grid-subtitle">Each output renders the same live content through its own role + theme</span>
+          </div>
+          <div id="screens-list" class="scr-grid"></div>
+        </div>
+        <aside id="screens-inspector" class="scr-inspector" aria-label="Selected output settings"></aside>
+      </div>
     </section>
     <section id="surface-theme-designer" class="surface-page" aria-label="Theme Designer">
       <!-- Topbar (Design 2.0, Figma 317:124): brand + section name on the left; Duplicate /
@@ -405,6 +430,9 @@
                  (Slides is a disabled 'later'). Save-name form (86ajq4xmy) lives here. -->
           <div class="td-templates">
             <div class="td-templates-head">
+              <button id="td-templates-toggle" class="td-templates-toggle" type="button"
+                aria-expanded="true" aria-controls="td-panel" title="Collapse templates"
+                aria-label="Collapse templates"><span class="td-chevron" aria-hidden="true">▾</span></button>
               <div class="td-tabs" role="tablist" aria-label="Template kind">
                 <button id="td-tab-scriptures" class="td-tab on" role="tab" aria-selected="true"
                   aria-controls="td-panel">Scriptures</button>
@@ -499,14 +527,12 @@
               text · a missing image shows the placeholder. The native file-picker + image Fit modes arrive later.</p>
           </div>
 
-          <!-- REGION + LAYOUT (a region is also selectable via the canvas + the LAYERS list). -->
+          <!-- LAYOUT — the region/element rect + alignment. The explicit Region picker was
+               removed (redundant): the Body / Reference-Title regions are selected via the
+               LAYERS rows or by clicking their text on the canvas, and the inspector header
+               names the active region. -->
           <div class="td-sect">
-            <div class="td-sect-title" id="td-lbl-region">Region</div>
-            <div class="seg" id="td-region" role="group" aria-labelledby="td-lbl-region">
-              <button id="td-region-body" data-region="body" class="on" aria-pressed="true">Body</button>
-              <button data-region="title" aria-pressed="false">Reference / Title</button>
-            </div>
-            <div class="td-fieldlabel">Layout</div>
+            <div class="td-sect-title">Layout</div>
             <span id="td-lbl-align" class="sr-only">Horizontal alignment</span>
             <div class="td-align-grid" id="td-region-align">
               <div class="seg td-icons" id="td-align" role="group" aria-labelledby="td-lbl-align">
@@ -520,21 +546,9 @@
                   aria-label="Align bottom" aria-pressed="false">⤓</button>
               </div>
             </div>
-            <div class="td-grid4">
-              <label for="td-x">X %</label><label for="td-w">W %</label>
-              <input type="number" id="td-x" min="0" max="100" step="0.1" aria-label="X position, percent" />
-              <input type="number" id="td-w" min="1" max="100" step="0.1" aria-label="Width, percent" />
-              <label for="td-y">Y %</label><label for="td-h">H %</label>
-              <input type="number" id="td-y" min="0" max="100" step="0.1" aria-label="Y position, percent" />
-              <input type="number" id="td-h" min="1" max="100" step="0.1" aria-label="Height, percent" />
-            </div>
-            <div class="td-grid2 td-lockrow">
-              <label class="td-check"><input type="checkbox" id="td-lock" /> Lock aspect</label>
-              <label class="td-later" for="td-refgap">Ref. gap %
-                <input type="number" id="td-refgap" disabled aria-label="Reference gap, percent (arrives later)"
-                  placeholder="—" />
-              </label>
-            </div>
+            <!-- The numeric X/Y/W/H grid + Lock aspect + Ref-gap were removed (redundant with
+                 the on-canvas move/resize handles; the design streamlined them away) to give
+                 the inspector more room. Position/size is edited directly on the canvas. -->
           </div>
 
           <!-- BACKGROUND (86ajq3225): a solid colour, a two-stop gradient, or an image. -->

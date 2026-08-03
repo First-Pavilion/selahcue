@@ -11,11 +11,14 @@ use selahcue_core::plan::{ItemId, ServicePlan};
 use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{
-    Command, DenyReason, DetectionView, DisplayView, OutputStatusView, SavedThemeView,
-    ScreenThemeView, ScreenView, ServerMessage, ThumbView, TimerSnapshot, TranscriptSegmentView,
-    VerseView,
+    Command, DenyReason, DetectionView, DisplayView, OutputConfigView, OutputStatusView,
+    SavedThemeView, ScaleFit, ScreenThemeView, ScreenView, ServerMessage, ThumbView, TimerSnapshot,
+    TranscriptSegmentView, VerseView, MAX_FRAME_RATE, MAX_NDI_NAME_LEN, MAX_OUTPUT_DELAY_MS,
+    MIN_FRAME_RATE,
 };
-use selahcue_present::{FrameBuffer, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView};
+use selahcue_present::{
+    FrameBuffer, LayerMask, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView,
+};
 use std::time::{Duration, Instant};
 
 /// Seconds-remaining threshold at which the countdown enters its amber "warning" state.
@@ -177,6 +180,14 @@ pub struct LiveController {
     /// `screen_themes`); `screen_themes`' keys stay a subset of the registry's ids.
     screen_registry: ScreenRegistry,
     screen_registry_dirty: bool,
+    /// Per-SCREEN OUTPUT CONFIG (Screens page inspector): `screen id → OutputConfigView`
+    /// (orientation, scaling/fit, mirror, output delay, frame-rate target, safe-area guides,
+    /// per-layer visibility). A screen with no entry uses [`OutputConfigView::default`] (all
+    /// identity), so only a configured screen occupies the map — bounded by the registry
+    /// ([`MAX_SCREENS`], no-leak). Persisted separately (like `screen_themes`); keys stay a
+    /// subset of the registry's ids (dropped when a virtual screen is removed).
+    output_configs: std::collections::BTreeMap<String, OutputConfigView>,
+    output_configs_dirty: bool,
     /// The live-transcript + scripture-detection engine (R3/R4; ADR-0010). Runs
     /// out-of-band from the render/output path — it is fed transcript segments and
     /// surfaces bounded transcript + a detection approval queue in the operator view,
@@ -476,6 +487,18 @@ fn resolve_theme_name(
     })
 }
 
+/// The compose-time [`LayerMask`] for an output config (Design 2.0 VISIBLE LAYERS). Maps the
+/// four AUDIENCE-compositing layers (background/text/lower-third/logo); the `timer` layer is
+/// composed only on the stage/confidence monitor, not by this audience mask.
+fn to_layer_mask(cfg: &OutputConfigView) -> LayerMask {
+    LayerMask {
+        background: cfg.layers.background,
+        text: cfg.layers.text,
+        lower_third: cfg.layers.lower_third,
+        logo: cfg.layers.logo,
+    }
+}
+
 /// How long the identify overlay stays on the outputs once triggered (FR-040).
 pub const IDENTIFY_TTL: Duration = Duration::from_secs(5);
 
@@ -588,6 +611,8 @@ impl LiveController {
             screen_themes_dirty: false,
             screen_registry: ScreenRegistry::with_builtins(),
             screen_registry_dirty: false,
+            output_configs: std::collections::BTreeMap::new(),
+            output_configs_dirty: false,
             transcript: TranscriptEngine::new(),
             recent_texts: std::collections::VecDeque::new(),
             partial: None,
@@ -922,7 +947,11 @@ impl LiveController {
             .screen_themes
             .get(screen)
             .and_then(|name| self.resolve_theme(name));
-        Some(self.presenter.compose_screen_live(theme.as_ref()))
+        // Gate the composed layers by THIS screen's VISIBLE-LAYERS config (Design 2.0), so a
+        // hidden layer (e.g. lyrics off on the livestream feed) is actually dropped from the
+        // preview + the composed output — not merely stored.
+        let mask = to_layer_mask(&self.output_config(screen));
+        Some(self.presenter.compose_screen_live(theme.as_ref(), mask))
     }
 
     /// The per-screen theme map (`screen → theme name`), for the operator view + persist.
@@ -1009,6 +1038,11 @@ impl LiveController {
                 if self.screen_themes.remove(screen).is_some() {
                     self.screen_themes_dirty = true;
                 }
+                // Drop the removed screen's per-output config too (keys stay a subset of the
+                // registry ids), so a re-minted id never inherits a stale config.
+                if self.output_configs.remove(screen).is_some() {
+                    self.output_configs_dirty = true;
+                }
                 ControllerReply::Ack
             }
             // Deleting a built-in is a client bug (the UI hides the control) — deny.
@@ -1049,6 +1083,187 @@ impl LiveController {
     {
         self.screen_registry = ScreenRegistry::from_persisted(rows);
         self.screen_registry_dirty = false;
+    }
+
+    /// Mutate a screen's output config via `f`, normalizing the result: an UNKNOWN screen is
+    /// rejected; a mutation that leaves the config all-default removes the map entry (so only
+    /// a configured screen occupies the bounded map); a genuine change marks the persist
+    /// signal. A no-op mutation acks without dirtying. The single choke point for every
+    /// `SetOutput*` handler.
+    fn mutate_output_config<F: FnOnce(&mut OutputConfigView)>(
+        &mut self,
+        screen: &str,
+        f: F,
+    ) -> ControllerReply {
+        if self.screen_registry.get(screen).is_none() {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        let before = self.output_configs.get(screen).cloned().unwrap_or_default();
+        let mut cfg = before.clone();
+        f(&mut cfg);
+        if cfg == before {
+            return ControllerReply::Ack; // no-op — do not dirty
+        }
+        if cfg.is_default() {
+            self.output_configs.remove(screen);
+        } else {
+            self.output_configs.insert(screen.to_string(), cfg);
+        }
+        self.output_configs_dirty = true;
+        ControllerReply::Ack
+    }
+
+    /// Set a screen's orientation (quarter-turns clockwise). `>= 4` is rejected (a client bug).
+    fn set_output_orientation(&mut self, screen: &str, quarter_turns: u8) -> ControllerReply {
+        if quarter_turns >= 4 {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        self.mutate_output_config(screen, |c| c.orientation = quarter_turns)
+    }
+
+    /// Set a screen's scaling/fit mode.
+    fn set_output_scale_fit(&mut self, screen: &str, fit: ScaleFit) -> ControllerReply {
+        self.mutate_output_config(screen, |c| c.scale_fit = fit)
+    }
+
+    /// Mirror a screen's output horizontally.
+    fn set_output_mirror(&mut self, screen: &str, on: bool) -> ControllerReply {
+        self.mutate_output_config(screen, |c| c.mirror = on)
+    }
+
+    /// Set a screen's output delay (ms), clamped to [`MAX_OUTPUT_DELAY_MS`] (no-leak bound).
+    fn set_output_delay(&mut self, screen: &str, ms: u32) -> ControllerReply {
+        let ms = ms.min(MAX_OUTPUT_DELAY_MS);
+        self.mutate_output_config(screen, |c| c.delay_ms = ms)
+    }
+
+    /// Set a screen's target frame rate (fps), clamped to `[MIN_FRAME_RATE, MAX_FRAME_RATE]`.
+    fn set_output_frame_rate(&mut self, screen: &str, fps: u16) -> ControllerReply {
+        let fps = fps.clamp(MIN_FRAME_RATE, MAX_FRAME_RATE);
+        self.mutate_output_config(screen, |c| c.frame_rate = fps)
+    }
+
+    /// Toggle a screen's safe-area guides (operator preview overlay only).
+    fn set_output_safe_area(&mut self, screen: &str, on: bool) -> ControllerReply {
+        self.mutate_output_config(screen, |c| c.safe_area_guides = on)
+    }
+
+    /// Show/hide one compositing layer on a screen. An unknown `layer` tag is rejected.
+    fn set_screen_layer_visible(
+        &mut self,
+        screen: &str,
+        layer: &str,
+        visible: bool,
+    ) -> ControllerReply {
+        // Validate the layer tag BEFORE touching config, so a bogus layer never mutates state.
+        if !matches!(
+            layer,
+            "background" | "text" | "lower-third" | "logo" | "timer"
+        ) {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        let reply = self.mutate_output_config(screen, |c| match layer {
+            "background" => c.layers.background = visible,
+            "text" => c.layers.text = visible,
+            "lower-third" => c.layers.lower_third = visible,
+            "logo" => c.layers.logo = visible,
+            "timer" => c.layers.timer = visible,
+            _ => {}
+        });
+        // The physical `main` output (and its preview) is composed by the Presenter, so push
+        // main's new layer mask there to recompose Preview + Live immediately (secondary
+        // screens gate at `compose_screen` time; the `timer` layer is the stage path). A
+        // recompose re-issues SetScene, so re-apply blackout (mask ⟂ blackout).
+        if matches!(reply, ControllerReply::Ack) && screen == "main" {
+            let mask = to_layer_mask(&self.output_config("main"));
+            self.presenter.set_main_layer_mask(mask);
+            self.presenter.blackout(self.blackout);
+        }
+        // The stage screen's `timer` layer gates the confidence monitor — mark it dirty so the
+        // next tick recomposes with/without the countdown immediately.
+        if matches!(reply, ControllerReply::Ack) && screen == "stage" && layer == "timer" {
+            self.stage_dirty = true;
+        }
+        reply
+    }
+
+    /// Configure a screen's NDI output (Audience-class `stream`/`lower-third` feed only): set
+    /// its source `name` and whether NDI delivery is `enabled`, atomically. Validates:
+    /// audience-class screen; a bounded, printable (no control-char) name; a non-empty name
+    /// when enabling; and NAME UNIQUENESS across every OTHER enabled NDI screen (two live NDI
+    /// sources must not share a name). Persists via the shared output-config store.
+    fn set_ndi_output(&mut self, screen: &str, name: &str, enabled: bool) -> ControllerReply {
+        // Audience-class only — never the stage confidence monitor or an unknown id.
+        if !self
+            .screen_registry
+            .get(screen)
+            .is_some_and(|s| s.role.is_audience())
+        {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        let name = name.trim();
+        // A bounded, printable name (NDI source names are conventionally simple text); a
+        // control char / newline is rejected, never sanitized silently.
+        if name.chars().count() > MAX_NDI_NAME_LEN || name.chars().any(|c| c.is_control()) {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        // Enabling NDI requires a name; disabling may clear it.
+        if enabled && name.is_empty() {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        // Uniqueness: no OTHER currently-enabled NDI screen may broadcast the same source name
+        // (two NDI senders sharing a name collide on the network).
+        if enabled
+            && self
+                .output_configs
+                .iter()
+                .any(|(id, cfg)| id != screen && cfg.ndi_enabled && cfg.ndi_name == name)
+        {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        self.mutate_output_config(screen, |c| {
+            c.ndi_name = name.to_string();
+            c.ndi_enabled = enabled;
+        })
+    }
+
+    /// A screen's per-output config (its default/identity value when unconfigured).
+    pub fn output_config(&self, screen: &str) -> OutputConfigView {
+        self.output_configs.get(screen).cloned().unwrap_or_default()
+    }
+
+    /// The full per-screen output-config map (for the operator view + persistence).
+    pub fn output_configs(&self) -> &std::collections::BTreeMap<String, OutputConfigView> {
+        &self.output_configs
+    }
+
+    /// Whether the per-screen output-config map changed since the last check (persist signal).
+    pub fn take_output_configs_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.output_configs_dirty)
+    }
+
+    /// Re-arm the output-config persist signal (a failed write must be retried).
+    pub fn mark_output_configs_dirty(&mut self) {
+        self.output_configs_dirty = true;
+    }
+
+    /// Load per-screen output configs at startup. Keeps only a config whose screen exists in
+    /// the registry (load the registry FIRST) and drops any all-default entry, so a
+    /// stale/removed screen's config is discarded rather than crashing. Does not dirty.
+    pub fn load_output_configs(
+        &mut self,
+        configs: impl IntoIterator<Item = (String, OutputConfigView)>,
+    ) {
+        let registry = &self.screen_registry;
+        self.output_configs = configs
+            .into_iter()
+            .filter(|(screen, cfg)| registry.get(screen).is_some() && !cfg.is_default())
+            .collect();
+        self.output_configs_dirty = false;
+        // Reflect the restored MAIN screen's layer mask on the Presenter (a no-op recompose
+        // while nothing is live yet; recovery re-stages afterwards with the mask in place).
+        let mask = to_layer_mask(&self.output_config("main"));
+        self.presenter.set_main_layer_mask(mask);
     }
 
     /// A persistable snapshot of the live session at `now` (injected clock, so the
@@ -1323,10 +1538,21 @@ impl LiveController {
             self.stage_dirty = true;
         }
 
+        // The stage "Service timer" LAYER (Design 2.0 VISIBLE LAYERS): the confidence
+        // monitor's countdown is gated by the STAGE screen's config — hidden when the operator
+        // toggles it off (the countdown is stage-only, so this is the only output it affects).
+        // The operator's own timer chip (`last_timer_view`, above) is ungated.
+        let show_stage_timer = self
+            .output_configs
+            .get("stage")
+            .map(|c| c.layers.timer)
+            .unwrap_or(true);
+        let stage_view = if show_stage_timer { view } else { None };
+
         // Refresh the confidence monitor when the timer's displayed value changed or a
         // command marked it dirty — not every frame. While pairing mode is active the
         // stage output shows the invite QR instead of the speaker scene.
-        let key = timer_key(view);
+        let key = timer_key(stage_view);
         if self.stage_dirty || key != self.last_stage_key {
             self.stage_dirty = false;
             self.last_stage_key = key;
@@ -1339,14 +1565,14 @@ impl LiveController {
                         let current = self.presenter.live_slide().cloned();
                         let next = self.stage_next_slide();
                         self.stage
-                            .update(current.as_ref(), next.as_ref(), view.as_ref());
+                            .update(current.as_ref(), next.as_ref(), stage_view.as_ref());
                     }
                 }
                 None => {
                     let current = self.presenter.live_slide().cloned();
                     let next = self.stage_next_slide();
                     self.stage
-                        .update(current.as_ref(), next.as_ref(), view.as_ref());
+                        .update(current.as_ref(), next.as_ref(), stage_view.as_ref());
                 }
             }
         }
@@ -1481,6 +1707,9 @@ impl LiveController {
                     } else {
                         None
                     },
+                    // Per-output config (identity/default when the screen is unconfigured;
+                    // skipped on the wire then, keeping the v2 fixtures byte-identical).
+                    config: self.output_configs.get(&s.id).cloned().unwrap_or_default(),
                 })
                 .collect(),
             // The bounded recent transcript tail (oldest first) — the log is already
@@ -2090,6 +2319,27 @@ impl LiveController {
             }
             Command::AddScreen { role } => self.add_screen(role),
             Command::RemoveScreen { screen } => self.remove_screen(screen),
+            // --- Per-output config (Screens page inspector). Each persists per screen and,
+            // where a physical output exists, the desktop host applies it to the frame. ---
+            Command::SetOutputOrientation {
+                screen,
+                quarter_turns,
+            } => self.set_output_orientation(screen, *quarter_turns),
+            Command::SetOutputScaleFit { screen, fit } => self.set_output_scale_fit(screen, *fit),
+            Command::SetOutputMirror { screen, on } => self.set_output_mirror(screen, *on),
+            Command::SetOutputDelay { screen, ms } => self.set_output_delay(screen, *ms),
+            Command::SetOutputFrameRate { screen, fps } => self.set_output_frame_rate(screen, *fps),
+            Command::SetOutputSafeArea { screen, on } => self.set_output_safe_area(screen, *on),
+            Command::SetScreenLayerVisible {
+                screen,
+                layer,
+                visible,
+            } => self.set_screen_layer_visible(screen, layer, *visible),
+            Command::SetNdiOutput {
+                screen,
+                name,
+                enabled,
+            } => self.set_ndi_output(screen, name, *enabled),
             // --- Live transcript + scripture detection (R3/R4; ADR-0010). Assistive:
             // never touches the render/output path directly — ingestion feeds the
             // out-of-band engine; approving stages to Preview (operator Goes Live). ---

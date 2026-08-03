@@ -136,6 +136,36 @@ const MIGRATIONS: &[&str] = &[
         ordering  INTEGER NOT NULL
     );
     "#,
+    // v13 -> v14: per-SCREEN OUTPUT CONFIG (Screens page Design 2.0 inspector) — each
+    // configured screen's orientation, scaling/fit, mirror, output delay, frame-rate target,
+    // safe-area guides, and per-layer visibility. A fresh table (named `screen_output_config`
+    // to avoid the v4 role→display `output_config`), so an older database opens unchanged and
+    // starts with no per-output config (every screen uses the identity default). Only a
+    // NON-default config occupies a row; the controller drops unknown/default rows on load.
+    r#"
+    CREATE TABLE screen_output_config (
+        screen            TEXT PRIMARY KEY,
+        orientation       INTEGER NOT NULL,
+        scale_fit         TEXT NOT NULL,
+        mirror            INTEGER NOT NULL,
+        delay_ms          INTEGER NOT NULL,
+        frame_rate        INTEGER NOT NULL,
+        layer_background  INTEGER NOT NULL,
+        layer_text        INTEGER NOT NULL,
+        layer_lower_third INTEGER NOT NULL,
+        layer_logo        INTEGER NOT NULL,
+        layer_timer       INTEGER NOT NULL,
+        safe_area         INTEGER NOT NULL
+    );
+    "#,
+    // v14 -> v15: NDI output delivery (Screens page — set up an NDI output). Two additive
+    // columns on the per-screen output-config table: whether the screen broadcasts as an NDI
+    // source, and its NDI source name. Additive (ALTER ADD with defaults), so an older database
+    // opens unchanged and every existing row defaults to NDI off / empty name.
+    r#"
+    ALTER TABLE screen_output_config ADD COLUMN ndi_enabled INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE screen_output_config ADD COLUMN ndi_name    TEXT    NOT NULL DEFAULT '';
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

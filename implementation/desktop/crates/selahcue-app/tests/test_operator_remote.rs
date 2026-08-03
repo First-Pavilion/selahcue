@@ -486,6 +486,9 @@ async fn output_configuration_is_operator_only_and_status_travels_the_wire() {
             height: 1080,
             assigned: true,
             assigned_key: Some("Projector|1920x1080".into()),
+            fps: None,
+            dropped_frames: None,
+            signal: None,
         }],
         vec![DisplayView {
             key: "Projector|1920x1080".into(),

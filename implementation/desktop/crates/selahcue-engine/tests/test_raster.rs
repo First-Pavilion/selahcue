@@ -1052,3 +1052,99 @@ fn a_gradient_is_bounded_on_extreme_rects_without_panic() {
         "an oversized (w > i32::MAX) gradient still fills the frame, not silently dropped: {p:?}"
     );
 }
+
+// --- Per-output geometric transforms (Screens inspector): mirror / rotate / fit. Pure
+// integer, deterministic (NFR-014) — the same transforms serve BOTH the on-screen blit and
+// the operator preview thumbnails, so they are exercised headlessly here. ---
+
+/// Build a `w×h` buffer from a per-pixel `(x,y) -> Rgba` closure (row-major RGBA8).
+fn grid(w: u32, h: u32, f: impl Fn(u32, u32) -> Rgba) -> FrameBuffer {
+    let mut px = Vec::with_capacity((w * h) as usize * 4);
+    for y in 0..h {
+        for x in 0..w {
+            let c = f(x, y);
+            px.extend_from_slice(&[c.r, c.g, c.b, c.a]);
+        }
+    }
+    FrameBuffer::from_rgba(w, h, px).unwrap()
+}
+
+#[test]
+fn mirror_horizontal_reverses_each_row_and_is_its_own_inverse() {
+    // A distinct colour per column so a flip is observable.
+    let src = grid(4, 2, |x, _| Rgba::rgb((x as u8 + 1) * 10, 0, 0));
+    let m = src.mirrored_horizontal();
+    assert_eq!((m.width(), m.height()), (4, 2));
+    for y in 0..2 {
+        for x in 0..4 {
+            assert_eq!(m.pixel(x, y).unwrap(), src.pixel(3 - x, y).unwrap());
+        }
+    }
+    // Mirroring twice is the identity (byte-identical).
+    assert!(m.mirrored_horizontal() == src);
+}
+
+#[test]
+fn rotate_90_swaps_dimensions_and_maps_corners_clockwise() {
+    // Top-left pixel is unique; after a 90° CW turn it must land at the top-RIGHT.
+    let src = grid(3, 2, |x, y| Rgba::rgb(x as u8, y as u8, 0));
+    let r = src.rotated(1);
+    assert_eq!((r.width(), r.height()), (2, 3)); // 90°/270° swap w/h
+                                                 // Source (0,0) -> dest (h-1, 0) = (1, 0) for a clockwise turn.
+    assert_eq!(r.pixel(1, 0).unwrap(), src.pixel(0, 0).unwrap());
+    // Four quarter-turns return to the original, byte-identical.
+    assert!(src.rotated(1).rotated(1).rotated(1).rotated(1) == src);
+    // 180° twice is the identity; a 0-turn is an unchanged clone.
+    assert!(src.rotated(2).rotated(2) == src);
+    assert!(src.rotated(0) == src);
+    // `quarter_turns` is taken mod 4.
+    assert!(src.rotated(5) == src.rotated(1));
+}
+
+#[test]
+fn fit_stretch_hits_exact_surface_size() {
+    let src = grid(2, 2, |x, y| Rgba::rgb(x as u8 * 100, y as u8 * 100, 0));
+    let out = src.fitted(6, 4, selahcue_engine::raster::Fit::Stretch);
+    assert_eq!((out.width(), out.height()), (6, 4));
+}
+
+#[test]
+fn fit_contain_letterboxes_with_black_bars_and_exact_size() {
+    // A wide (4:1) source into a square surface must letterbox top+bottom with black.
+    let src = grid(8, 2, |_, _| Rgba::WHITE);
+    let out = src.fitted(8, 8, selahcue_engine::raster::Fit::Fit);
+    assert_eq!((out.width(), out.height()), (8, 8));
+    // Top and bottom rows are black bars; the middle band carries the (white) image.
+    assert_eq!(out.pixel(4, 0).unwrap(), Rgba::BLACK);
+    assert_eq!(out.pixel(4, 7).unwrap(), Rgba::BLACK);
+    assert_eq!(out.pixel(4, 4).unwrap(), Rgba::WHITE);
+}
+
+#[test]
+fn fit_cover_fills_every_pixel_no_black_bars_and_exact_size() {
+    // Cover a square surface from a wide source: no black bars — every pixel is image.
+    let src = grid(8, 2, |_, _| Rgba::WHITE);
+    let out = src.fitted(8, 8, selahcue_engine::raster::Fit::Fill);
+    assert_eq!((out.width(), out.height()), (8, 8));
+    for y in 0..8 {
+        for x in 0..8 {
+            assert_eq!(
+                out.pixel(x, y).unwrap(),
+                Rgba::WHITE,
+                "cover leaves no bars"
+            );
+        }
+    }
+}
+
+#[test]
+fn transforms_preserve_buffer_byte_length_invariant() {
+    // A rotate/mirror never changes the pixel COUNT (w*h*4) — bounded-memory sanity.
+    let src = grid(5, 3, |x, y| Rgba::rgb(x as u8, y as u8, 7));
+    assert_eq!(src.mirrored_horizontal().byte_len(), src.byte_len());
+    assert_eq!(src.rotated(1).byte_len(), src.byte_len());
+    assert_eq!(src.rotated(2).byte_len(), src.byte_len());
+    // A fit to an explicit size has exactly that many bytes.
+    let fit = src.fitted(10, 10, selahcue_engine::raster::Fit::Stretch);
+    assert_eq!(fit.byte_len(), 10 * 10 * 4);
+}

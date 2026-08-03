@@ -8,7 +8,7 @@
 //!
 //! [`go_live`]: Presenter::go_live
 
-use crate::compose::compose_slide;
+use crate::compose::{compose_slide_masked, LayerMask};
 use crate::slide::Slide;
 use crate::stage::compose_identify;
 use crate::theme::Theme;
@@ -42,6 +42,12 @@ pub struct Presenter {
     /// a `None` value leaves the S8-3d behaviour byte-identical. Secondary audience
     /// screens are composed on-demand (see [`Presenter::compose_screen_live`]).
     main_screen_theme: Option<Theme>,
+    /// The `main` audience screen's per-output VISIBLE-LAYERS mask (Design 2.0). `ALL` by
+    /// default, so the main output is byte-identical to the pre-mask behaviour. When a layer
+    /// is hidden here, both the Preview and the Live main surfaces recompose without that
+    /// category (hiding a layer never blanks the frame — NFR-024). Secondary audience screens
+    /// carry their own mask, passed per call to [`Presenter::compose_screen_live`].
+    main_layer_mask: LayerMask,
 }
 
 impl Presenter {
@@ -66,6 +72,7 @@ impl Presenter {
             staged_theme: None,
             live_theme: None,
             main_screen_theme: None,
+            main_layer_mask: LayerMask::ALL,
         }
     }
 
@@ -89,11 +96,12 @@ impl Presenter {
     /// Stage a slide in **Preview** with an optional per-item theme override (S8-3d) —
     /// `None` uses the global theme. The Live output is untouched (FR-012).
     pub fn stage_themed(&mut self, slide: Slide, theme_override: Option<Theme>) {
-        let frame = compose_slide(
+        let frame = compose_slide_masked(
             &slide,
             self.effective(theme_override.as_ref()),
             self.width,
             self.height,
+            self.main_layer_mask,
         );
         // Only track the slide if the engine actually rendered it (defensive — the
         // clamped dimensions make rejection unreachable in normal use).
@@ -112,11 +120,12 @@ impl Presenter {
         let Some(slide) = self.staged.clone() else {
             return false;
         };
-        let frame = compose_slide(
+        let frame = compose_slide_masked(
             &slide,
             self.effective(self.staged_theme.as_ref()),
             self.width,
             self.height,
+            self.main_layer_mask,
         );
         // Report success (and record the live slide) only if the frame actually
         // reached the output — never claim "live" for a rejected frame.
@@ -140,20 +149,22 @@ impl Presenter {
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
         if let Some(slide) = self.staged.clone() {
-            let frame = compose_slide(
+            let frame = compose_slide_masked(
                 &slide,
                 self.effective(self.staged_theme.as_ref()),
                 self.width,
                 self.height,
+                self.main_layer_mask,
             );
             self.preview.apply(EngineCommand::SetScene { frame });
         }
         if let Some(slide) = self.live_slide.clone() {
-            let frame = compose_slide(
+            let frame = compose_slide_masked(
                 &slide,
                 self.effective(self.live_theme.as_ref()),
                 self.width,
                 self.height,
+                self.main_layer_mask,
             );
             self.live.apply(EngineCommand::SetScene { frame });
         }
@@ -166,20 +177,22 @@ impl Presenter {
     pub fn set_main_screen_theme(&mut self, theme: Option<Theme>) {
         self.main_screen_theme = theme;
         if let Some(slide) = self.staged.clone() {
-            let frame = compose_slide(
+            let frame = compose_slide_masked(
                 &slide,
                 self.effective(self.staged_theme.as_ref()),
                 self.width,
                 self.height,
+                self.main_layer_mask,
             );
             self.preview.apply(EngineCommand::SetScene { frame });
         }
         if let Some(slide) = self.live_slide.clone() {
-            let frame = compose_slide(
+            let frame = compose_slide_masked(
                 &slide,
                 self.effective(self.live_theme.as_ref()),
                 self.width,
                 self.height,
+                self.main_layer_mask,
             );
             self.live.apply(EngineCommand::SetScene { frame });
         }
@@ -190,6 +203,40 @@ impl Presenter {
         self.main_screen_theme.clone()
     }
 
+    /// Set the `main` audience screen's per-output VISIBLE-LAYERS mask (Design 2.0) and
+    /// recompose Preview + Live from the retained slides — content unchanged, only which layer
+    /// categories render (hiding a layer never blanks the frame — NFR-024). `ALL` restores the
+    /// full composition. Blackout is orthogonal; the caller re-applies it (as with
+    /// [`set_main_screen_theme`]).
+    pub fn set_main_layer_mask(&mut self, mask: LayerMask) {
+        self.main_layer_mask = mask;
+        if let Some(slide) = self.staged.clone() {
+            let frame = compose_slide_masked(
+                &slide,
+                self.effective(self.staged_theme.as_ref()),
+                self.width,
+                self.height,
+                self.main_layer_mask,
+            );
+            self.preview.apply(EngineCommand::SetScene { frame });
+        }
+        if let Some(slide) = self.live_slide.clone() {
+            let frame = compose_slide_masked(
+                &slide,
+                self.effective(self.live_theme.as_ref()),
+                self.width,
+                self.height,
+                self.main_layer_mask,
+            );
+            self.live.apply(EngineCommand::SetScene { frame });
+        }
+    }
+
+    /// The `main` audience screen's current per-output layer mask.
+    pub fn main_layer_mask(&self) -> LayerMask {
+        self.main_layer_mask
+    }
+
     /// Compose the current LIVE content for a SECONDARY audience screen (lower-third /
     /// stream) with its own per-screen theme, on-demand and WITHOUT a persistent engine
     /// (86ajq321k). Effective theme = **`screen_theme` ?? the live item override ?? global**
@@ -197,14 +244,24 @@ impl Presenter {
     /// theme (each screen renders its own design). A blank live surface yields a safe
     /// black frame (matching the main output when idle). Pure: content ⟂ theme, so calling
     /// it for N screens renders the SAME live item under N different themes at once.
-    pub fn compose_screen_live(&self, screen_theme: Option<&Theme>) -> FrameBuffer {
+    pub fn compose_screen_live(
+        &self,
+        screen_theme: Option<&Theme>,
+        mask: LayerMask,
+    ) -> FrameBuffer {
         let Some(slide) = self.live_slide.as_ref() else {
             return raster::render(&Frame::new(self.width, self.height));
         };
         let theme = screen_theme
             .or(self.live_theme.as_ref())
             .unwrap_or(&self.theme);
-        raster::render(&compose_slide(slide, theme, self.width, self.height))
+        raster::render(&compose_slide_masked(
+            slide,
+            theme,
+            self.width,
+            self.height,
+            mask,
+        ))
     }
 
     /// The active global audience theme.
@@ -218,11 +275,12 @@ impl Presenter {
     pub fn set_live_theme(&mut self, theme_override: Option<Theme>) {
         self.live_theme = theme_override;
         if let Some(slide) = self.live_slide.clone() {
-            let frame = compose_slide(
+            let frame = compose_slide_masked(
                 &slide,
                 self.effective(self.live_theme.as_ref()),
                 self.width,
                 self.height,
+                self.main_layer_mask,
             );
             self.live.apply(EngineCommand::SetScene { frame });
         }

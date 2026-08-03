@@ -20,6 +20,21 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Upper bound on per-output present delay. Bounds the desktop host's delay-buffer ring so a
+/// large `delay_ms` cannot grow output memory without limit (no-leak). Values above are
+/// clamped to this ceiling by the controller.
+pub const MAX_OUTPUT_DELAY_MS: u32 = 1_000;
+/// Lowest selectable per-output frame-rate target (fps). Below this the output would visibly
+/// stutter; the controller clamps up to it.
+pub const MIN_FRAME_RATE: u16 = 24;
+/// Highest selectable per-output frame-rate target (fps). The compositor is paced at 60Hz; a
+/// higher target is meaningless, so the controller clamps down to it.
+pub const MAX_FRAME_RATE: u16 = 60;
+/// Longest permitted NDI source name (the name broadcast on the network for a Stream/NDI
+/// output). Bounded so the persisted/wire name cannot grow without limit (no-leak); NDI itself
+/// tolerates longer, but a church stage needs only a short human-readable source name.
+pub const MAX_NDI_NAME_LEN: usize = 64;
+
 /// A command from a controller to the operator. `request_id` (in [`Request`])
 /// correlates the eventual [`ServerMessage::Ack`] / [`ServerMessage::Denied`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +189,47 @@ pub enum Command {
     /// server-side. Also drops that screen's per-screen theme override. Idempotent for an
     /// already-absent id. Operator-only (`ConfigureOutputs`).
     RemoveScreen { screen: String },
+    /// Set a SCREEN's output orientation as `quarter_turns` clockwise (`0`=Landscape,
+    /// `1`=Portrait, `2`=Landscape flipped, `3`=Portrait flipped). Values `>= 4` are rejected.
+    /// Persisted per screen; applied as a pure buffer transform. Operator-only
+    /// (`ConfigureOutputs`).
+    SetOutputOrientation { screen: String, quarter_turns: u8 },
+    /// Set a SCREEN's scaling/fit mode (how the live frame fills the display surface).
+    /// Persisted; applied as a pure buffer transform. Operator-only (`ConfigureOutputs`).
+    SetOutputScaleFit { screen: String, fit: ScaleFit },
+    /// Mirror a SCREEN's output horizontally (row-reverse). Persisted; applied as a pure
+    /// buffer transform. Operator-only (`ConfigureOutputs`).
+    SetOutputMirror { screen: String, on: bool },
+    /// Set a SCREEN's output delay in milliseconds (a bounded present-buffer ring; capped at
+    /// [`MAX_OUTPUT_DELAY_MS`], values above are clamped). Persisted. Operator-only.
+    SetOutputDelay { screen: String, ms: u32 },
+    /// Set a SCREEN's target frame rate in fps (clamped to `[MIN_FRAME_RATE, MAX_FRAME_RATE]`).
+    /// Persisted; paces that output's redraw. Operator-only (`ConfigureOutputs`).
+    SetOutputFrameRate { screen: String, fps: u16 },
+    /// Toggle safe-area guides for a SCREEN. Guides draw on the OPERATOR preview/monitor only
+    /// — never on the audience output. Persisted. Operator-only (`ConfigureOutputs`).
+    SetOutputSafeArea { screen: String, on: bool },
+    /// Show or hide one compositing LAYER on a SCREEN's output (`layer` ∈
+    /// `background`/`text`/`lower-third`/`logo`/`timer`). Hiding a layer never blanks the
+    /// frame. Persisted per screen; applied at compose. An unknown layer is rejected.
+    /// Operator-only (`ConfigureOutputs`).
+    SetScreenLayerVisible {
+        screen: String,
+        layer: String,
+        visible: bool,
+    },
+    /// Configure a SCREEN's NDI output (an Audience-class `stream`/`lower-third` feed): set its
+    /// NDI source `name` (broadcast on the network) and whether NDI delivery is `enabled`, both
+    /// atomically. Rejected when: an empty/blank name is enabled, the name exceeds
+    /// [`MAX_NDI_NAME_LEN`], the name has a control char, the screen is not audience-class, or
+    /// the name is already used by ANOTHER enabled screen. Actual NDI transmission is a
+    /// feature-gated host sink; the config persists + surfaces regardless. Operator-only
+    /// (`ConfigureOutputs`).
+    SetNdiOutput {
+        screen: String,
+        name: String,
+        enabled: bool,
+    },
     /// Feed one segment into the live-transcript stream (R3). This is the
     /// STT-provider ingestion channel — the default provider is operator/host-injected
     /// text; a real on-device engine feeds the same path. The detection engine scans
@@ -535,6 +591,106 @@ pub struct ScreenView {
     /// global theme.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// The screen's per-output configuration (orientation, scaling/fit, mirror, delay, frame
+    /// rate, safe-area guides, per-layer visibility). Omitted on the wire when every field is
+    /// at its default, so the pinned v2 fixtures stay byte-identical for a screen nobody has
+    /// configured.
+    #[serde(default, skip_serializing_if = "OutputConfigView::is_default")]
+    pub config: OutputConfigView,
+}
+
+/// How an output fits the composed live frame into its display surface. Applied as a pure
+/// integer buffer transform on the host (deterministic, NFR-014). Additive on the wire via
+/// [`Default`] + `skip_serializing_if`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ScaleFit {
+    /// Cover the surface, cropping overflow (preserve aspect). The default.
+    #[default]
+    Fill,
+    /// Contain within the surface, letterboxing (preserve aspect, no crop).
+    Fit,
+    /// Stretch to the exact surface, distorting aspect.
+    Stretch,
+}
+
+/// Per-layer visibility mask for one output. Each flag gates a compositing layer category at
+/// compose time; hiding a layer never blanks the frame. Defaults to all-visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerVisibility {
+    pub background: bool,
+    pub text: bool,
+    pub lower_third: bool,
+    pub logo: bool,
+    pub timer: bool,
+}
+
+impl Default for LayerVisibility {
+    fn default() -> Self {
+        Self {
+            background: true,
+            text: true,
+            lower_third: true,
+            logo: true,
+            timer: true,
+        }
+    }
+}
+
+/// One screen's per-output configuration, surfaced on [`ScreenView`] and driven by the
+/// `SetOutput*` / `SetScreenLayerVisible` commands. Every field defaults to a
+/// no-op/identity value, so [`is_default`](OutputConfigView::is_default) lets an
+/// unconfigured screen stay off the wire (pinned-fixture safe).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputConfigView {
+    /// Orientation as quarter-turns clockwise (`0`=Landscape … `3`=Portrait flipped).
+    pub orientation: u8,
+    /// Scaling/fit mode.
+    pub scale_fit: ScaleFit,
+    /// Whether the output is mirrored horizontally.
+    pub mirror: bool,
+    /// Present delay in milliseconds (bounded by [`MAX_OUTPUT_DELAY_MS`]).
+    pub delay_ms: u32,
+    /// Target frame rate in fps (within `[MIN_FRAME_RATE, MAX_FRAME_RATE]`).
+    pub frame_rate: u16,
+    /// Whether safe-area guides show on the OPERATOR preview (never the audience output).
+    pub safe_area_guides: bool,
+    /// Per-layer visibility mask.
+    pub layers: LayerVisibility,
+    /// Whether this screen is delivered as an NDI output (Audience-class `stream`/`lower-third`
+    /// feeds only). The config persists + surfaces even without the host's NDI feature; actual
+    /// transmission is a feature-gated sink. Default `false`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ndi_enabled: bool,
+    /// The NDI source NAME broadcast on the network (bounded by [`MAX_NDI_NAME_LEN`]). Empty
+    /// when NDI is not configured; skipped on the wire then, so a non-NDI screen's config stays
+    /// byte-stable.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ndi_name: String,
+}
+
+impl Default for OutputConfigView {
+    fn default() -> Self {
+        Self {
+            orientation: 0,
+            scale_fit: ScaleFit::Fill,
+            mirror: false,
+            delay_ms: 0,
+            frame_rate: MAX_FRAME_RATE,
+            safe_area_guides: false,
+            layers: LayerVisibility::default(),
+            ndi_enabled: false,
+            ndi_name: String::new(),
+        }
+    }
+}
+
+impl OutputConfigView {
+    /// Whether every field is at its default (identity) value — the `skip_serializing_if`
+    /// predicate that keeps an unconfigured screen off the wire.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// One output role (main/stage) and where it currently renders.
@@ -552,6 +708,20 @@ pub struct OutputStatusView {
     /// The persisted display key for this role (drives the picker's selection).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assigned_key: Option<String>,
+    /// The measured output frame rate (fps), derived honestly from the desktop present loop
+    /// (an EWMA of present intervals). `None` when unmeasured (older/non-desktop host) — the
+    /// UI shows a neutral dash, never a fabricated number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u16>,
+    /// Frames the host deferred (a lost/outdated swapchain) on this output since launch — the
+    /// honest dropped-frame count. `None` when unmeasured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped_frames: Option<u64>,
+    /// Honest signal-health label: `"healthy"` (monitor attached + presenting), `"degraded"`
+    /// (recent dropped frames), or `"no_signal"` (no monitor). `None` when the host reports
+    /// nothing — the UI shows a neutral dash, never a fabricated status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
 }
 
 /// One scripture search hit: the stageable reference plus its verse text
