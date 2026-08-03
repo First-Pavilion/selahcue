@@ -40,7 +40,7 @@ pub mod recognizer;
 pub mod resample;
 pub mod vad;
 
-pub use audio::{AudioChunk, AudioSource, FakeAudioSource, PcmRing, MAX_PCM_SAMPLES};
+pub use audio::{frame_peak, AudioChunk, AudioSource, FakeAudioSource, PcmRing, MAX_PCM_SAMPLES};
 pub use engine::{EngineConfig, SttEngine};
 pub use guard::FeedbackGuard;
 pub use model::{

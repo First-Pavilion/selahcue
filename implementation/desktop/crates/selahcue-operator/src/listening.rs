@@ -24,13 +24,38 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use selahcue_core::transcript::ProviderSegment;
-use selahcue_stt::audio::CpalSource;
+use selahcue_stt::audio::{AudioSource, CpalSource};
 use selahcue_stt::recognizer::WhisperRecognizer;
 use selahcue_stt::{pump, EnergyVad, EngineConfig, FeedbackGuard, HardwareProbe, SttEngine};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Poll cadence for draining captured audio → recognition → ingest. Out-of-band from render.
 const PUMP_INTERVAL: Duration = Duration::from_millis(200);
+
+/// The Tauri event the operator webview listens on for first-run model-download progress, so
+/// the "Start listening" control can show "Downloading model… N%" instead of a dead button
+/// while the ~1.6 GB model is fetched. Purely advisory — readiness is still the command's
+/// return value; the UI works without these events (it just shows a generic "Preparing…").
+const PROGRESS_EVENT: &str = "stt://progress";
+
+/// Payload for [`PROGRESS_EVENT`]: bytes fetched so far, the total, and a whole-percent.
+#[derive(Clone, serde::Serialize)]
+struct DownloadProgress {
+    done: u64,
+    total: u64,
+    pct: u8,
+}
+
+/// The Tauri event carrying a live microphone level (peak percent) while listening, so the
+/// "waiting for speech…" status can show whether audio is actually arriving — a peak stuck at
+/// 0 while the operator speaks points at mic/permission, not the transcript UI.
+const LEVEL_EVENT: &str = "stt://level";
+
+/// Payload for [`LEVEL_EVENT`]: peak input amplitude as a whole percent (`0..=100`).
+#[derive(Clone, serde::Serialize)]
+struct MicLevel {
+    pct: u8,
+}
 
 /// Bound on segments buffered between the audio worker and the ingest drain task (no-leak).
 const SEGMENT_QUEUE: usize = 256;
@@ -58,7 +83,7 @@ pub fn is_listening() -> bool {
 /// Resolve the model (cache/download, integrity-verified) and load the recognizer. Runs on
 /// the worker thread (it can be slow: a large SHA-256 + whisper.cpp load, or a first-run
 /// download). An explicit `SELAHCUE_STT_MODEL` path overrides the download.
-fn load_recognizer() -> Result<WhisperRecognizer, String> {
+fn load_recognizer(app: &AppHandle) -> Result<WhisperRecognizer, String> {
     let selection = HardwareProbe::detect().select_model();
     let (model_path, expected_sha) = match std::env::var("SELAHCUE_STT_MODEL") {
         Ok(path) => {
@@ -79,11 +104,10 @@ fn load_recognizer() -> Result<WhisperRecognizer, String> {
             );
             let path = selahcue_stt::fetch_model(&asset, &cache, |done, total| {
                 if total > 0 {
-                    eprintln!(
-                        "SelahCue STT: downloading {} … {}%",
-                        asset.file_name,
-                        done.saturating_mul(100) / total
-                    );
+                    let pct = (done.saturating_mul(100) / total) as u8;
+                    // Advisory progress for the operator UI; ignore send errors (no window yet).
+                    let _ = app.emit(PROGRESS_EVENT, DownloadProgress { done, total, pct });
+                    eprintln!("SelahCue STT: downloading {} … {}%", asset.file_name, pct);
                 }
             })?;
             (path, asset.sha256.to_string())
@@ -125,10 +149,12 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_worker = Arc::clone(&stop);
+    // A handle for the worker thread to emit first-run download progress to the webview.
+    let app_worker = app.clone();
     let handle = std::thread::spawn(move || {
         // Slow, fallible setup on the worker thread (not the executor): model + mic. Report
         // the outcome so the caller can surface it before we claim to be listening.
-        let recognizer = match load_recognizer() {
+        let recognizer = match load_recognizer(&app_worker) {
             Ok(r) => r,
             Err(e) => {
                 let _ = ready_tx.send(Err(e));
@@ -142,6 +168,10 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
                 return;
             }
         };
+        eprintln!(
+            "SelahCue STT: capturing from {} — listening.",
+            source.label()
+        );
         let _ = ready_tx.send(Ok(()));
 
         let (mut engine, mut provider) = SttEngine::build(
@@ -150,11 +180,22 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
             Box::new(recognizer),
             FeedbackGuard::new(),
         );
+        // Throttle the level readout to ~4/sec (every LEVEL_EVERY pump ticks); the callback
+        // keeps the running peak between reads so nothing is missed.
+        const LEVEL_EVERY: u32 = 1;
+        let mut tick: u32 = 0;
         while !stop_worker.load(Ordering::Relaxed) {
             engine.drain_source(&mut source);
             pump(&mut provider, |seg| {
                 let _ = seg_tx.try_send(seg); // bounded; drop under backpressure, never block
             });
+            // Emit a live mic level so "waiting for speech…" can show whether audio is even
+            // arriving (peak 0 for seconds while speaking ⇒ mic/permission, not the UI).
+            tick = tick.wrapping_add(1);
+            if tick % LEVEL_EVERY == 0 {
+                let pct = (source.peak_level() * 100.0).round().clamp(0.0, 100.0) as u8;
+                let _ = app_worker.emit(LEVEL_EVENT, MicLevel { pct });
+            }
             std::thread::sleep(PUMP_INTERVAL);
         }
         engine.flush();

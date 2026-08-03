@@ -27,6 +27,16 @@ SECS     ?=
 OP_FEATURES ?= stt
 OPRUN       := $(if $(strip $(OP_FEATURES)),--features $(strip $(OP_FEATURES)),)
 
+# On macOS the operator runs from a signed .app bundle so the on-device STT worker can get
+# microphone access — a raw `cargo run` binary has no bundle identity, so macOS never prompts
+# and mic capture silently returns silence. Everywhere else, run it directly with cargo.
+UNAME := $(shell uname)
+ifeq ($(UNAME),Darwin)
+OPERATOR_RUN := sh scripts/run_operator_macapp.sh $(OPRUN)
+else
+OPERATOR_RUN := $(CARGO) run $(OP) $(OPRUN)
+endif
+
 .DEFAULT_GOAL := help
 .PHONY: help launch run output operator operator-headless stt-preflight remote timer stop-timer demo mobile mobile-test ci nfr build build-operator test check clippy fmt clean
 
@@ -54,7 +64,7 @@ launch: stt-preflight build build-operator ## Launch output window + operator sh
 	echo ">> waiting for the output window to advertise its endpoint…"; \
 	for i in $$(seq 1 40); do [ -f "$(ENDPOINT)" ] && break; sleep 0.25; done; \
 	echo ">> starting the operator shell (its buttons drive the output window)…"; \
-	$(CARGO) run -q $(OP) $(OPRUN); \
+	$(OPERATOR_RUN); \
 	echo ">> operator closed; stopping the output window."; \
 	kill $$OUT_PID 2>/dev/null || true
 
@@ -64,7 +74,7 @@ output: ## Run only the output window (native audience output + LAN control serv
 	$(CARGO) run $(WS) -p selahcue-desktop
 
 operator: stt-preflight ## Run only the operator shell (connects to a running output window, else a standalone demo)
-	$(CARGO) run $(OP) $(OPRUN)
+	$(OPERATOR_RUN)
 
 operator-headless: ## Run the committed operator-webview behavioural check (headless Chrome; skips if Chrome absent)
 	python3 scripts/operator_headless.py

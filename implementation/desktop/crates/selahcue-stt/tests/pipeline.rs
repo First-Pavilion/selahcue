@@ -69,3 +69,14 @@ fn pipeline_yields_nothing_for_pure_silence() {
     engine.drain_source(&mut source);
     assert!(provider.poll().is_empty());
 }
+
+#[test]
+fn frame_peak_reports_silence_as_zero_and_tracks_amplitude() {
+    // The live mic-level readout: silence → 0 (the "waiting for speech… (mic 0%)" case that
+    // isolates a dead/denied microphone), a signal → its max |sample|, order-independent.
+    use selahcue_stt::frame_peak;
+    assert_eq!(frame_peak(&[]), 0.0);
+    assert_eq!(frame_peak(&[0.0, 0.0, 0.0]), 0.0);
+    assert_eq!(frame_peak(&[0.1, -0.8, 0.3]), 0.8);
+    assert_eq!(frame_peak(&[-0.8, 0.1, 0.3]), 0.8);
+}

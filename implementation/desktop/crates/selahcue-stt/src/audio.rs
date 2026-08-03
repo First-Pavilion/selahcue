@@ -144,6 +144,15 @@ impl AudioSource for FakeAudioSource {
     }
 }
 
+/// Peak amplitude (max `|sample|`, in `0..=1`) of a raw f32 buffer. Used as a live
+/// microphone-level readout so the operator can tell "listening but no audio arriving"
+/// (peak stays 0 — e.g. denied mic permission, which yields silence, not an error) from
+/// "audio arriving but nothing recognised yet". Pure + always compiled (testable without a
+/// device).
+pub fn frame_peak(samples: &[f32]) -> f32 {
+    samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()))
+}
+
 #[cfg(feature = "capture")]
 pub use cpal_source::CpalSource;
 
@@ -152,7 +161,8 @@ mod cpal_source {
     //! Real microphone capture via `cpal`. Compiled only under the `capture` feature so the
     //! default build/tests need no audio device or platform audio libraries.
 
-    use super::{AudioChunk, AudioSource, PcmRing};
+    use super::{frame_peak, AudioChunk, AudioSource, PcmRing};
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
 
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -165,6 +175,9 @@ mod cpal_source {
         sample_rate: u32,
         channels: u16,
         ring: Arc<Mutex<PcmRing>>,
+        // Running peak amplitude since the last `peak_level()` read (f32 bits), updated by the
+        // capture callback — a live "is the mic actually delivering audio?" signal.
+        peak: Arc<AtomicU32>,
         // Held to keep the stream alive; dropping it stops capture.
         _stream: cpal::Stream,
     }
@@ -184,6 +197,8 @@ mod cpal_source {
             let channels = config.channels();
             let ring = Arc::new(Mutex::new(PcmRing::new()));
             let cb_ring = Arc::clone(&ring);
+            let peak = Arc::new(AtomicU32::new(0));
+            let cb_peak = Arc::clone(&peak);
             let err_fn = |e| eprintln!("cpal stream error: {e}");
             // Only the f32 sample format is wired here; other formats fall through as an
             // honest error rather than silently mis-decoding.
@@ -191,6 +206,12 @@ mod cpal_source {
                 cpal::SampleFormat::F32 => device.build_input_stream(
                     &config.into(),
                     move |data: &[f32], _| {
+                        // Accumulate the peak since the last read (max), so a level poll can
+                        // never miss a transient between polls.
+                        let p = frame_peak(data);
+                        if p > f32::from_bits(cb_peak.load(Ordering::Relaxed)) {
+                            cb_peak.store(p.to_bits(), Ordering::Relaxed);
+                        }
                         if let Ok(mut r) = cb_ring.lock() {
                             r.push(data);
                         }
@@ -207,8 +228,15 @@ mod cpal_source {
                 sample_rate,
                 channels,
                 ring,
+                peak,
                 _stream: stream,
             })
+        }
+
+        /// Peak input amplitude (`0..=1`) observed since the previous call, then reset — a
+        /// live mic-level readout for the operator's "waiting for speech…" diagnostic.
+        pub fn peak_level(&self) -> f32 {
+            f32::from_bits(self.peak.swap(0, Ordering::Relaxed))
         }
     }
 
