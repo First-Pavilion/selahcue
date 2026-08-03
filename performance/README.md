@@ -44,5 +44,6 @@ maps scenarios to the real test files and commands.
   ~300 ms two-render ceiling — an ~80× margin.
 - **Six efficiency findings**, none catastrophic: two MEDIUM CPU/allocation follow-ups and four
   LOW/LOW-MEDIUM lock/upload observations. All bounded; none can blank live output.
-- **One measurement gap:** idle-RSS and cold-start NFRs need a GUI display and are owner-run via
-  `make nfr`; they were not executed in this headless session. Recorded as an approved exception.
+- **Resource NFRs measured (owner-run `make nfr`):** idle RSS **124.1 MB** (≤300) and cold start
+  **1.56 s** (≤3) — both PASS with wide headroom. This closed the sole prior exception, making the decision
+  an **unqualified PASS**.

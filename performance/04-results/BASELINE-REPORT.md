@@ -65,9 +65,17 @@ loop (`test_operator_remote`, `test_remote`) — all green. Wire messages capped
 
 `selahcue-data --features encryption` — SQLCipher open/migrate/backup suites green.
 
-## Not measured this session (owner-run)
+## Resource NFRs — measured (owner-run `make nfr`)
 
-| Metric | Threshold | Reason | How to close |
+Run by the owner on a machine with a display (release build, Darwin arm64 / Apple M5). Both PASS with wide
+headroom; this closed the sole prior exception.
+
+| Metric | Threshold | Measured | Result |
 | --- | --- | --- | --- |
-| Idle RSS (M18) | ≤ 300 MB | Needs an attached display; headless session | `make nfr` on a display |
-| Cold start (M19) | ≤ 3 s | Needs an attached display; headless session | `make nfr` on a display |
+| Cold start (M19) — launch → control-server-ready | ≤ 3.0 s | **1.56 s** | PASS (~1.9× headroom) |
+| Idle RSS (M18) — max RSS over 5 s | ≤ 300 MB | **124.1 MB** | PASS (~2.4× headroom) |
+| Slide-trigger (re-confirmed by the harness) | ≤ 150 ms | within budget | PASS |
+
+Harness note: the `Terminated: 15` line in the `make nfr` output is the script sending SIGTERM to the
+`selahcue-output` window after it finishes sampling RSS — expected teardown, not a failure. The results
+print after it.

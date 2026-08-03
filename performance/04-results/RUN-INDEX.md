@@ -17,11 +17,11 @@ revision `dbd040e`.
 | R10 | Independent hot-path / unbounded-collection scan (fresh-context) | n/a | No leak; 6 findings triaged (`BOTTLENECK-ANALYSIS.md`) |
 | R11 | Independent artifact/decision verification (fresh-context, tasked to refute) | release + static | Verdict DECISION_SOUND; reproduced median 2.566 ms / p90 2.835 ms / max 3.134 ms; `test_parity` executed+passed on M5 GPU; `leak_refutation: null`; 3 minor non-refuting risks (`REGRESSION-DECISION.md`) |
 
-## Not run (owner-run)
+## Owner-run (completed)
 
-| Run | Command | Reason |
+| Run | Command | Result |
 | --- | --- | --- |
-| Rx | `make nfr` (idle RSS ≤300 MB, cold start ≤3 s) | Requires an attached display; headless session |
+| R12 | `make nfr` (release, Apple M5, with display) | cold start **1.56 s** (≤3.0), idle RSS **124.1 MB** (≤300), slide-trigger within 150 ms — all PASS |
 
 ## Variance notes
 

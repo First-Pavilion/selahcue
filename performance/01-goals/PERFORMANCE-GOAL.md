@@ -35,7 +35,7 @@ Each criterion has a verifier and an evidence location. All are `MET` unless mar
 | C6 | GPU compositor matches CPU rasterizer (SSIM ≥ 0.99) | MET | `selahcue-gpu` `test_parity` (release) | `04-results/BASELINE-REPORT.md` |
 | C7 | Concurrency: connections/sessions do not leak; half-open reaped; sessions capped | MET | `selahcue-lan --features server` E2E | `03-suite/TEST-INVENTORY.md` |
 | C8 | STT real-time path bounded (segment queue, PCM ring, utterance force-close, backpressure drop) | MET | `selahcue-stt` bounded + pipeline tests | `04-results/BOTTLENECK-ANALYSIS.md` |
-| C9 | Idle RSS ≤ 300 MB and cold start ≤ 3 s | APPROVED EXCEPTION (owner-run) | `scripts/measure_nfr.sh` (`make nfr`, needs display) | `05-handoff/RELEASE-RECOMMENDATION.md` |
+| C9 | Idle RSS ≤ 300 MB and cold start ≤ 3 s | MET — 124.1 MB / 1.56 s (owner-run `make nfr`) | `scripts/measure_nfr.sh` | `04-results/BASELINE-REPORT.md` |
 | C10 | Findings triaged with severity + owner; none Critical/High | MET | This review | `05-handoff/DEFECTS-AND-FOLLOWUPS.md` |
 
 ## Independent verification
@@ -60,5 +60,5 @@ the findings was itself an independent pass, separate from the reviewer that aut
 
 ## Terminal state
 
-VERIFIED_COMPLETE — with one approved exception (C9, owner-run GUI NFRs). Decision recorded in
-`05-handoff/RELEASE-RECOMMENDATION.md`.
+VERIFIED_COMPLETE — all criteria C1–C10 met (C9 closed by the owner-run `make nfr`: idle RSS 124.1 MB,
+cold start 1.56 s). Decision: unqualified PASS, recorded in `05-handoff/RELEASE-RECOMMENDATION.md`.

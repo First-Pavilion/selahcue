@@ -5,7 +5,7 @@
 - **ClickUp task:** Build Control `86ajnx548` — review comment posted; follow-ups filed and linked (PERF-1 `86ajuwrq4`, PERF-2 `86ajuwrr9`, PERF-3..8 + NFR-MEM bundle `86ajuwrt6`).
 - **Execution mode:** Claude Code native review pass (bounded, evidence-driven). Not a `/goal` optimisation loop — no production code changed.
 - **Toolchain status:** in-repo `cargo test` suites (release + feature-gated) + `scripts/measure_nfr.sh` + independent static hot-path scan. No new tooling introduced. See `00-intake/TOOLCHAIN.md`.
-- **Terminal state:** VERIFIED_COMPLETE — with approved exceptions (see `05-handoff/RELEASE-RECOMMENDATION.md`).
+- **Terminal state:** VERIFIED_COMPLETE — unqualified PASS. The one prior exception (idle-RSS / cold-start) was closed by the owner-run `make nfr` (see `05-handoff/RELEASE-RECOMMENDATION.md`).
 
 ## Completed artifacts
 
@@ -24,12 +24,11 @@ linked follow-up tasks — PERF-1 (`86ajuwrq4`), PERF-2 (`86ajuwrr9`), and the P
 
 ## Blockers
 
-None blocking the decision. One deferred measurement:
-- **Idle-RSS (≤300 MB) and cold-start (≤3 s) NFRs** require an attached display; the harness opens
-  native windows. Deferred to owner-run `make nfr`. Recorded as an approved exception, not a failure.
+None. The one deferred measurement is now done:
+- **Idle-RSS and cold-start NFRs** were run by the owner via `make nfr` (release, Apple M5): idle RSS
+  **124.1 MB** (≤300) and cold start **1.56 s** (≤3) — both PASS with wide headroom. Exception cleared.
 
 ## Next verification action
 
-Owner runs `make nfr` on a machine with a display and pastes the idle-RSS / cold-start numbers into
-`04-results/BASELINE-REPORT.md`. If both hold, the single remaining exception clears and the decision
-becomes an unqualified PASS.
+None required for the decision. Optional quality work: schedule PERF-1..PERF-8 (efficiency follow-ups,
+non-blocking) when convenient.

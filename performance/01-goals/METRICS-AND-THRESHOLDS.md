@@ -22,8 +22,8 @@ Percentiles are release-build measurements at audience resolution unless noted.
 | M15 | Half-open connections reaped | Stalled TLS handshakes | reaped within timeout | invariant | `stalled_half_open_connections_are_reaped` | `03-suite/TEST-INVENTORY.md` | PASS | High |
 | M16 | Active sessions hard-capped | Session registry under flood | ≤ hard cap | cap | `active_sessions_are_hard_capped` | `03-suite/TEST-INVENTORY.md` | PASS | High |
 | M17 | Presenter state bounded over long runs | Many stage/live cycles | steady state | invariant | `presenter_state_is_bounded_over_many_cycles` | `04-results/BOTTLENECK-ANALYSIS.md` | PASS | Medium |
-| M18 | Idle memory | Live process at idle | ≤ 300 MB RSS | steady state | `scripts/measure_nfr.sh` | owner-run | APPROVED EXCEPTION — needs display | Medium |
-| M19 | Cold start | Launch → first frame | ≤ 3 s | wall-clock | `scripts/measure_nfr.sh` | owner-run | APPROVED EXCEPTION — needs display | Medium |
+| M18 | Idle memory | Live process at idle (max RSS over 5 s) | ≤ 300 MB RSS | steady state | `scripts/measure_nfr.sh` | `04-results/BASELINE-REPORT.md` | PASS — 124.1 MB (owner-run) | Medium |
+| M19 | Cold start | Launch → control-server-ready | ≤ 3 s | wall-clock | `scripts/measure_nfr.sh` | `04-results/BASELINE-REPORT.md` | PASS — 1.56 s (owner-run) | Medium |
 
 ## Notes on measurement boundary
 

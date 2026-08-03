@@ -11,12 +11,11 @@ they rank above pure efficiency concerns even when currently within budget.
 | R4 | Slide/cue trigger drifts over budget as themes/auto-fit grow | Low | High | Low | Release budget tests (M1, M3) gate this in CI; measured ~2.8 ms vs 150 ms | Closed (huge margin) |
 | R5 | GPU compositor diverges from CPU reference and shows a wrong/blank frame | Low | High | Low | SSIM ≥ 0.99 parity oracle (M5) gates every frame shape | Closed |
 | R6 | Fuzzy quote matcher spikes CPU/allocations on a pathological transcript | Low | Medium | Low | Bounded by `MAX_CANDIDATES` (5000) + discriminative-token thresholds; runs at final-segment cadence, off the render path | Accept as MEDIUM follow-up #2 |
-| R7 | Idle memory / cold start exceed NFR on the real GUI build | Unknown | Medium | Medium | Not measured this session (headless); harness exists (`make nfr`) | **Open — owner-run** (C9 exception) |
+| R7 | Idle memory / cold start exceed NFR on the real GUI build | — | Medium | — | Measured via owner-run `make nfr`: idle RSS 124.1 MB (≤300), cold start 1.56 s (≤3) | Closed — both PASS with wide headroom |
 | R8 | LAN peer floods connections/sessions to exhaust the operator | Low | High | Low | Half-open reaping, hard session cap, 64 KiB message cap (M14–M16) | Closed |
 | R9 | Manual/host-injection provider (`ManualProvider.pending`) grows if a caller submits without polling | Low | Low | Low | Test/host-injection path only, not a production ingest source | Accept (minor note); one-line bound if it ever backs real ingest |
 
 ## Risk-acceptance summary
 
-- **Closed** (verified mitigated): R3, R4, R5, R8.
+- **Closed** (verified mitigated): R3, R4, R5, R7, R8.
 - **Accepted follow-ups** (non-blocking, owned): R1, R2, R6, R9.
-- **Open, owner-run**: R7 (idle-RSS / cold-start GUI NFR).

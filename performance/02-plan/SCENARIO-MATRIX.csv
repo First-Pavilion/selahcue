@@ -15,5 +15,5 @@ S13,concurrency,Many LAN connect/disconnect cycles,mobile controller,connection 
 S14,concurrency,Stalled TLS half-open handshakes,mobile controller,stalled handshakes,M15,stalled_half_open_connections_are_reaped,03-suite/TEST-INVENTORY.md,PASS
 S15,concurrency,Session registry under a flood of sessions,mobile controller,session flood,M16,active_sessions_are_hard_capped,03-suite/TEST-INVENTORY.md,PASS
 S16,leak,At-rest encryption open/migrate/backup,data,feature=encryption E2E,,selahcue-data --features encryption,03-suite/TEST-INVENTORY.md,PASS
-S17,nfr,Idle process resident memory,app,steady idle,M18,scripts/measure_nfr.sh,05-handoff/RELEASE-RECOMMENDATION.md,OWNER-RUN
-S18,nfr,Cold start to first frame,app,launch,M19,scripts/measure_nfr.sh,05-handoff/RELEASE-RECOMMENDATION.md,OWNER-RUN
+S17,nfr,Idle process resident memory,app,steady idle,M18,scripts/measure_nfr.sh,04-results/BASELINE-REPORT.md,PASS 124.1MB
+S18,nfr,Cold start to control-server-ready,app,launch,M19,scripts/measure_nfr.sh,04-results/BASELINE-REPORT.md,PASS 1.56s

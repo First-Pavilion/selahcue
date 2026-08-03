@@ -12,7 +12,7 @@ and one owner-run measurement.
 | Medium | 2 (PERF-1, PERF-2) | No (accepted, owned) |
 | Low / Low-Medium | 4 (PERF-3..PERF-6) | No (accepted, owned) |
 | Minor note | 2 (PERF-7, PERF-8) | No (accepted, owned) |
-| Owner-run measurement | 1 (NFR-MEM) | No (approved exception) |
+| Owner-run measurement | 1 (NFR-MEM) | No — now DONE, both PASS |
 
 ## Follow-ups (from `BOTTLENECK-ANALYSIS.md`)
 
@@ -27,11 +27,11 @@ and one owner-run measurement.
 | PERF-7 | `ManualProvider.pending`: add a one-line bound if it ever backs a live ingest source | LOW | backend | Test/host-injection only today; bound before any production wiring |
 | PERF-8 | `SessionRegistry.pending`: add a hard count cap symmetric with `active` (256) | LOW | backend | Bound becomes a local invariant, not a reachability argument; existing session E2E stays green |
 
-## Owner-run measurement
+## Owner-run measurement — DONE
 
-| ID | Title | Owner | How to close |
+| ID | Title | Owner | Result |
 | --- | --- | --- | --- |
-| NFR-MEM | Idle RSS ≤ 300 MB and cold start ≤ 3 s | owner | Run `make nfr` on a machine with a display; paste numbers into `04-results/BASELINE-REPORT.md`. If both hold, the release exception clears. |
+| NFR-MEM | Idle RSS ≤ 300 MB and cold start ≤ 3 s | owner | **Closed** — `make nfr` (release, Apple M5): idle RSS **124.1 MB**, cold start **1.56 s**. Both PASS with wide headroom; the release exception cleared → unqualified PASS. |
 
 ## ClickUp — filed
 
