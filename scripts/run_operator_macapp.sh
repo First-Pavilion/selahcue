@@ -21,10 +21,13 @@ cargo build --manifest-path "$OP/Cargo.toml" "$@"
 
 echo ">> assembling the .app bundle (microphone-capable)…" >&2
 rm -rf "$APP"
-mkdir -p "$CONTENTS/MacOS"
+mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$OP/Info.plist" "$CONTENTS/Info.plist"
 cp "$BIN" "$CONTENTS/MacOS/selahcue-operator"
 chmod +x "$CONTENTS/MacOS/selahcue-operator"
+# App icon: the SelahCue logo (icons/icon.icns). Info.plist's CFBundleIconFile=icon points here,
+# so the dock/Finder/cmd-tab show the logo instead of the generic app icon.
+cp "$OP/icons/icon.icns" "$CONTENTS/Resources/icon.icns"
 xattr -cr "$APP" 2>/dev/null || true    # clear any quarantine so LaunchServices will launch it
 
 # Ad-hoc sign with a STABLE identifier so the mic grant is attributed to com.selahcue.operator.
