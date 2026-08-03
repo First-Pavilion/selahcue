@@ -647,8 +647,9 @@ async fn assistant_cannot_ingest_but_can_action_detections_over_the_wire() {
     assert_eq!(v.detections.len(), 1);
     let id = v.detections[0].id;
 
-    // The Assistant (who CAN stage scripture) may approve it — staging Preview.
+    // The Assistant (who CAN stage scripture) may approve it — staging Preview. A whole-chapter
+    // detection stages just its first verse (never a full chapter of text on one slide).
     let v = asst.approve_detection(id).await.unwrap();
-    assert_eq!(v.staged_scripture.as_deref(), Some("1 Corinthians 13"));
+    assert_eq!(v.staged_scripture.as_deref(), Some("1 Corinthians 13:1"));
     assert!(v.detections.is_empty());
 }

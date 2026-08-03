@@ -36,8 +36,13 @@ const DF_CAP_FRACTION: f64 = 0.03;
 const MIN_DISCRIMINATIVE_TOKENS: usize = 3;
 
 /// The best verse must cover at least this fraction of either the verse's or the spoken
-/// text's IDF mass. Full/near-full quotes clear it easily; ordinary speech does not.
-const COVERAGE_THRESHOLD: f64 = 0.55;
+/// text's IDF mass. Set low (0.30) so allusions/descriptions — not just verbatim quotes —
+/// surface (e.g. "as you brought Peter out of the prison" → Acts 12, "thrown into the fiery
+/// furnace" → Daniel 3), returning their real (possibly low) confidence for the operator to
+/// judge. Recall-biased on purpose: detections are operator-confirmed and never auto-display
+/// (FR-115), so a weak coincidental card is low-harm; the stopword list + [`MIN_SHARED_MASS`]
+/// + [`MIN_DISCRIMINATIVE_TOKENS`] still keep pure devotional/greeting filler from firing.
+const COVERAGE_THRESHOLD: f64 = 0.30;
 
 /// Absolute IDF-mass floor on the shared tokens — the overlap must include enough *rare*
 /// words, so a match built from only common/moderate vocabulary is rejected.
@@ -225,6 +230,28 @@ pub fn match_quote(text: &str) -> Vec<String> {
 
 /// [`match_quote`] against an explicit translation.
 pub fn match_quote_in(t: Translation, text: &str) -> Vec<String> {
+    match_quote_scored_in(t, text)
+        .into_iter()
+        .map(|(r, _)| r)
+        .collect()
+}
+
+/// Like [`match_quote`], but each suggestion carries the detector's **confidence** as a
+/// whole percent (`0..=100`) — the greater of the verse/query IDF coverage, scaled. Feeds
+/// the operator's match-% pill so a fuzzy paraphrase reads as e.g. "72% MATCH". Still a
+/// suggestion only, never auto-displayed (FR-115).
+pub fn match_quote_scored(text: &str) -> Vec<(String, u8)> {
+    match_quote_scored_in(Translation::default(), text)
+}
+
+/// Map a coverage score (`>= COVERAGE_THRESHOLD`, at most `1.0`) to a whole-percent
+/// confidence for the operator UI. Saturating: a verbatim quote can read 100%.
+fn score_to_confidence(score: f64) -> u8 {
+    (score * 100.0).round().clamp(0.0, 100.0) as u8
+}
+
+/// [`match_quote_scored`] against an explicit translation.
+pub fn match_quote_scored_in(t: Translation, text: &str) -> Vec<(String, u8)> {
     let verses = index_of(t);
     let n = verses.len();
     if n == 0 {
@@ -300,7 +327,12 @@ pub fn match_quote_in(t: Translation, text: &str) -> Vec<String> {
     }
 
     match best {
-        Some((_, _, vi)) => vec![display_reference(&verses[vi as usize])],
+        Some((score, _, vi)) => {
+            vec![(
+                display_reference(&verses[vi as usize]),
+                score_to_confidence(score),
+            )]
+        }
         None => Vec::new(),
     }
 }

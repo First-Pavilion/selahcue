@@ -35,6 +35,13 @@ pub const RECENT_DEDUP_WINDOW: usize = 16;
 /// numbered book + chapter + verse). Bounds the per-segment scan cost.
 const MAX_WINDOW: usize = 6;
 
+/// Confidence assigned to an **explicitly-detected** reference — one the parser matched
+/// verbatim from the spoken words (e.g. "Romans eight twenty-eight"). It is a deliberate,
+/// explicit citation, so it ranks high (renders green in the operator's match-% pill), but
+/// stays below 100 to stay honest about STT mishearing a spoken number. A *fuzzy quote*
+/// match instead carries its own coverage-derived score.
+pub const NAMED_REFERENCE_CONFIDENCE: u8 = 95;
+
 /// A scripture reference detected in the transcript, awaiting operator action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedReference {
@@ -45,6 +52,10 @@ pub struct DetectedReference {
     pub reference: String,
     /// The transcript segment id this was detected in (provenance for the UI).
     pub source_segment: u64,
+    /// Detector confidence as a whole percent (`0..=100`): [`NAMED_REFERENCE_CONFIDENCE`]
+    /// for an explicitly-spoken reference, or the fuzzy quote matcher's coverage score for
+    /// a paraphrase. Surfaces as the operator's "N% MATCH" pill.
+    pub confidence: u8,
 }
 
 /// Detect every scripture reference in one piece of transcript text, in order, as
@@ -304,7 +315,12 @@ impl DetectionQueue {
     /// Enqueue a detected reference from `source_segment`. Returns the new id, or `None`
     /// if an identical reference is already pending (dedup). Evicts the oldest pending
     /// candidate when at capacity.
-    pub fn enqueue(&mut self, reference: String, source_segment: u64) -> Option<u64> {
+    pub fn enqueue(
+        &mut self,
+        reference: String,
+        source_segment: u64,
+        confidence: u8,
+    ) -> Option<u64> {
         if self.items.iter().any(|d| d.reference == reference) {
             return None;
         }
@@ -314,6 +330,7 @@ impl DetectionQueue {
             id,
             reference,
             source_segment,
+            confidence,
         });
         while self.items.len() > MAX_DETECTIONS {
             self.items.pop_front();
@@ -394,26 +411,42 @@ impl TranscriptEngine {
         text: &str,
         start_ms: u64,
         end_ms: u64,
-        quote_refs: &[String],
+        quote_refs: &[(String, u8)],
     ) -> Vec<u64> {
         let segment_id = self.log.push(text, start_ms, end_ms);
         let mut new_ids = Vec::new();
+        // Explicit references first (high confidence), so an explicitly-spoken "John 3:16"
+        // wins the dedup over a fuzzy quote match for the same verse and keeps its score.
         for reference in detect(text) {
-            self.try_enqueue(reference, segment_id, &mut new_ids);
+            self.try_enqueue(
+                reference,
+                segment_id,
+                NAMED_REFERENCE_CONFIDENCE,
+                &mut new_ids,
+            );
         }
-        for reference in quote_refs {
-            self.try_enqueue(reference.clone(), segment_id, &mut new_ids);
+        for (reference, confidence) in quote_refs {
+            self.try_enqueue(reference.clone(), segment_id, *confidence, &mut new_ids);
         }
         new_ids
     }
 
-    /// Enqueue one candidate reference unless it is within the recent-dedup window or already
-    /// pending; on success, remember it and record the new id.
-    fn try_enqueue(&mut self, reference: String, segment_id: u64, new_ids: &mut Vec<u64>) {
+    /// Enqueue one candidate reference (with its detector confidence) unless it is within the
+    /// recent-dedup window or already pending; on success, remember it and record the new id.
+    fn try_enqueue(
+        &mut self,
+        reference: String,
+        segment_id: u64,
+        confidence: u8,
+        new_ids: &mut Vec<u64>,
+    ) {
         if self.recent_refs.iter().any(|r| r == &reference) {
             return;
         }
-        if let Some(id) = self.queue.enqueue(reference.clone(), segment_id) {
+        if let Some(id) = self
+            .queue
+            .enqueue(reference.clone(), segment_id, confidence)
+        {
             self.remember(reference);
             new_ids.push(id);
         }

@@ -467,10 +467,11 @@ pub struct DetectionView {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text: String,
     /// Detector match confidence as a whole percent (`0..=100`), e.g. `94` renders as
-    /// "94% MATCH". `None` when the detector reports no score — the current parser is a
-    /// binary Ok/Err match with no probability, so this stays `None` (honest-empty) until
-    /// the R4 detection engine produces a genuine score. `u8` (not `f32`) keeps the `Eq`
-    /// derive; skip-if-none keeps the pinned v2 fixtures byte-identical.
+    /// "94% MATCH". Populated by the R4 detection engine: a high fixed score for an
+    /// explicitly-spoken reference, or the fuzzy quote matcher's coverage score for a
+    /// paraphrase. `None` only when the host reports no score (e.g. an older host). `u8`
+    /// (not `f32`) keeps the `Eq` derive; skip-if-none keeps the pinned v2 fixtures
+    /// byte-identical when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<u8>,
 }

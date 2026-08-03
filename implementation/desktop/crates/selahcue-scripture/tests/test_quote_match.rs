@@ -2,7 +2,32 @@
 //! corpus: a spoken quotation → the most-likely verse; ordinary speech → nothing
 //! (precision over recall, FR-121); deterministic; fuzzy-tolerant; bounded.
 
-use selahcue_scripture::match_quote;
+use selahcue_scripture::{match_quote, match_quote_scored};
+
+#[test]
+fn scored_quote_carries_a_confidence_percent() {
+    // The scored API returns the SAME best verse as `match_quote`, plus a confidence in
+    // 0..=100 for the operator's match-% pill. A near-verbatim quote covers the verse well,
+    // so it scores strongly (>= the coverage floor of ~55%).
+    let spoken = "For God so loved the world, that he gave his only begotten Son, \
+                  that whosoever believeth in him should not perish, but have everlasting life";
+    let scored = match_quote_scored(spoken);
+    assert_eq!(scored.len(), 1);
+    assert_eq!(scored[0].0, "John 3:16");
+    assert!(
+        scored[0].1 >= 55 && scored[0].1 <= 100,
+        "confidence is a sane percent (got {})",
+        scored[0].1
+    );
+}
+
+#[test]
+fn scored_ordinary_speech_yields_no_match() {
+    // Precision (FR-121): non-quotations produce no scored suggestion — never a low-confidence
+    // false positive.
+    assert!(match_quote_scored("god is good all the time").is_empty());
+    assert!(match_quote_scored("let us welcome one another this morning").is_empty());
+}
 
 #[test]
 fn quote_of_john_3_16_matches_the_verse() {
@@ -28,18 +53,48 @@ fn quote_of_psalm_23_matches_the_passage() {
 }
 
 #[test]
-fn precision_ordinary_speech_yields_no_match() {
-    // Ordinary service speech shares no distinctive verse vocabulary → no detection.
+fn precision_filler_without_scriptural_echo_yields_no_match() {
+    // Recall is biased high (see `COVERAGE_THRESHOLD`) so allusions/descriptions surface — but
+    // pure logistics/filler with no distinctive scriptural vocabulary still yields nothing (the
+    // stopword list + rare-word-mass + min-distinctive-token gates hold). (Greeting speech that
+    // genuinely echoes a verse — "we are so glad" ≈ Ps 126:3 — is now ALLOWED to surface weakly
+    // by design; the operator confirms or dismisses, FR-115.)
     for spoken in [
-        "welcome to church today we are so glad that you came to worship with us this morning",
         "please find your seats and turn off your phones as we prepare our hearts to begin",
         "the offering baskets are coming around now so please give generously and cheerfully",
-        "let us all stand together and greet the people sitting right next to us with a smile",
     ] {
         assert!(
             match_quote(spoken).is_empty(),
-            "ordinary speech falsely matched: {spoken:?} -> {:?}",
+            "filler falsely matched: {spoken:?} -> {:?}",
             match_quote(spoken)
+        );
+    }
+}
+
+#[test]
+fn allusions_and_descriptions_surface_even_at_low_confidence() {
+    // Not just verbatim quotes: a described biblical event resolves to its verse, and its real
+    // (possibly low) confidence is returned for the operator to judge — the recall the operator
+    // asked for. Detections stay operator-confirmed (FR-115).
+    let cases = [
+        ("as you brought Peter out of the prison", "Acts 12:"),
+        ("you were thrown into the fiery furnace", "Daniel 3:"),
+    ];
+    for (spoken, prefix) in cases {
+        let out = selahcue_scripture::match_quote_scored(spoken);
+        assert_eq!(
+            out.len(),
+            1,
+            "expected a suggestion for {spoken:?}, got {out:?}"
+        );
+        assert!(
+            out[0].0.starts_with(prefix),
+            "expected a {prefix} verse for {spoken:?}, got {out:?}"
+        );
+        assert!(
+            out[0].1 >= 30 && out[0].1 <= 100,
+            "confidence should be a shown percent for {spoken:?}, got {}",
+            out[0].1
         );
     }
 }

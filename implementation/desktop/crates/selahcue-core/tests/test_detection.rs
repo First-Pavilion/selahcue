@@ -2,7 +2,9 @@
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_core::detection::{detect, DetectionQueue, TranscriptEngine, MAX_DETECTIONS};
+use selahcue_core::detection::{
+    detect, DetectionQueue, TranscriptEngine, MAX_DETECTIONS, NAMED_REFERENCE_CONFIDENCE,
+};
 
 // ---- Spoken-form detection correctness (the cases the story names) ----
 
@@ -113,14 +115,18 @@ fn duplicates_within_one_call_collapse() {
 #[test]
 fn queue_enqueue_dedups_pending_and_approves() {
     let mut q = DetectionQueue::new();
-    let id = q.enqueue("Romans 8:28".into(), 0).unwrap();
+    let id = q.enqueue("Romans 8:28".into(), 0, 95).unwrap();
     assert!(
-        q.enqueue("Romans 8:28".into(), 1).is_none(),
+        q.enqueue("Romans 8:28".into(), 1, 95).is_none(),
         "a still-pending reference is not enqueued twice"
     );
     assert_eq!(q.len(), 1);
     let approved = q.approve(id).unwrap();
     assert_eq!(approved.reference, "Romans 8:28");
+    assert_eq!(
+        approved.confidence, 95,
+        "the detector confidence is carried through the queue"
+    );
     assert!(q.is_empty());
     assert!(q.approve(id).is_none(), "already approved");
 }
@@ -128,7 +134,7 @@ fn queue_enqueue_dedups_pending_and_approves() {
 #[test]
 fn queue_dismiss_removes_without_returning() {
     let mut q = DetectionQueue::new();
-    let id = q.enqueue("John 3:16".into(), 0).unwrap();
+    let id = q.enqueue("John 3:16".into(), 0, 95).unwrap();
     assert!(q.dismiss(id));
     assert!(!q.dismiss(id), "dismiss is idempotent");
     assert!(q.is_empty());
@@ -140,7 +146,7 @@ fn queue_is_bounded_under_flood() {
     let mut q = DetectionQueue::new();
     for i in 0..(MAX_DETECTIONS * 20) {
         // Distinct references so dedup never suppresses — pure eviction pressure.
-        q.enqueue(format!("Psalms {}", i + 1), i as u64);
+        q.enqueue(format!("Psalms {}", i + 1), i as u64, 50);
     }
     assert_eq!(
         q.len(),
@@ -232,7 +238,7 @@ fn engine_ingest_with_quotes_enqueues_injected_candidates() {
     // A spoken quote whose reference is NOT named: the exact detector finds nothing, but the
     // caller's fuzzy matcher supplies the most-likely verse, which is queued for approval.
     let mut e = TranscriptEngine::new();
-    let quotes = vec!["John 3:16".to_string()];
+    let quotes = vec![("John 3:16".to_string(), 72u8)];
     let new = e.ingest_with_quotes("for God so loved the world", 0, 2_000, &quotes);
     assert_eq!(new.len(), 1);
     let pending: Vec<_> = e.detections().pending().collect();
@@ -242,6 +248,35 @@ fn engine_ingest_with_quotes_enqueues_injected_candidates() {
         pending[0].source_segment, 0,
         "quote candidate carries provenance"
     );
+    assert_eq!(
+        pending[0].confidence, 72,
+        "a fuzzy quote candidate carries the matcher's coverage score, not the named default"
+    );
+}
+
+#[test]
+fn engine_named_reference_gets_named_confidence_and_outranks_a_quote_dup() {
+    // An explicitly-spoken reference is enqueued at the high NAMED confidence; when the same
+    // verse is ALSO supplied as a lower-scored fuzzy quote, the named one wins the dedup and
+    // its high confidence is what the operator sees (never downgraded by the paraphrase).
+    let mut e = TranscriptEngine::new();
+    let quotes = vec![("John 3:16".to_string(), 60u8)];
+    e.ingest_with_quotes(
+        "turn to John chapter 3 verse 16 — for God so loved the world",
+        0,
+        2_000,
+        &quotes,
+    );
+    let pending: Vec<_> = e.detections().pending().collect();
+    assert_eq!(
+        pending.len(),
+        1,
+        "the named ref + its quote dup collapse to one"
+    );
+    assert_eq!(
+        pending[0].confidence, NAMED_REFERENCE_CONFIDENCE,
+        "the explicitly-spoken reference keeps its high confidence over the quote score"
+    );
 }
 
 #[test]
@@ -249,7 +284,7 @@ fn engine_ingest_with_quotes_dedups_quote_against_exact_hit() {
     // The same verse is BOTH spoken as a reference and matched as a quote → one detection,
     // not two (exact is enqueued first; the duplicate quote candidate is dropped).
     let mut e = TranscriptEngine::new();
-    let quotes = vec!["John 3:16".to_string()];
+    let quotes = vec![("John 3:16".to_string(), 70u8)];
     let new = e.ingest_with_quotes(
         "John chapter 3 verse 16 — for God so loved the world",
         0,
@@ -269,7 +304,7 @@ fn engine_ingest_with_quotes_is_bounded_under_a_flood_of_candidates() {
     // A flood of DISTINCT injected quote candidates cannot grow the queue past its cap.
     let mut e = TranscriptEngine::new();
     for i in 0..(MAX_DETECTIONS * 10) {
-        let quotes = vec![format!("Psalms {}:1", (i % 150) + 1)];
+        let quotes = vec![(format!("Psalms {}:1", (i % 150) + 1), 60u8)];
         e.ingest_with_quotes("a spoken quotation", i as u64, i as u64 + 1, &quotes);
     }
     assert!(e.detections().len() <= MAX_DETECTIONS);

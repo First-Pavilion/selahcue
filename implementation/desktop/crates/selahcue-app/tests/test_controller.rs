@@ -2612,6 +2612,70 @@ fn ingesting_transcript_streams_segments_and_detects_scripture() {
         "the detection carries the verse text to stage: {:?}",
         view.detections[0].text
     );
+    // R4: the detection carries a genuine confidence (no longer hard-coded None). An
+    // explicitly-spoken reference ranks high, so the operator's match-% pill shows green.
+    assert_eq!(
+        view.detections[0].confidence,
+        Some(selahcue_core::detection::NAMED_REFERENCE_CONFIDENCE),
+        "an explicitly-spoken reference carries the high NAMED confidence"
+    );
+}
+
+#[test]
+fn a_paraphrase_split_across_segments_is_still_detected() {
+    // R4: whisper emits utterances on pauses, so a spoken quotation can arrive as two segments.
+    // The controller runs the fuzzy matcher over a small rolling window, so the paraphrase still
+    // resolves even though neither half carries enough on its own.
+    let (mut c, _) = controller();
+    c.apply(&Command::IngestTranscript {
+        text: "and strangers shall".into(),
+        start_ms: Some(0),
+        end_ms: Some(1_000),
+    });
+    c.apply(&Command::IngestTranscript {
+        text: "feed your flock".into(),
+        start_ms: Some(1_000),
+        end_ms: Some(2_000),
+    });
+    let view = c.operator_view();
+    assert!(
+        view.detections.iter().any(|d| d.reference == "Isaiah 61:5"),
+        "a paraphrase split across two segments resolves via the rolling window: {:?}",
+        view.detections
+            .iter()
+            .map(|d| &d.reference)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn approving_a_whole_chapter_detection_stages_only_the_first_verse() {
+    // A spoken whole chapter (no verse) — "First Corinthians 13" — is detected as the chapter.
+    // Staging it must put a single readable verse on Preview, not the entire chapter of text.
+    let (mut c, _) = controller();
+    c.apply(&Command::IngestTranscript {
+        text: "turn to First Corinthians 13".into(),
+        start_ms: Some(0),
+        end_ms: Some(1_500),
+    });
+    let det_id = c
+        .operator_view()
+        .detections
+        .iter()
+        .find(|d| d.reference == "1 Corinthians 13")
+        .map(|d| d.id)
+        .expect("the whole chapter is detected");
+    assert_eq!(
+        c.apply(&Command::ApproveDetection {
+            detection_id: det_id
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.operator_view().staged_scripture.as_deref(),
+        Some("1 Corinthians 13:1"),
+        "a whole-chapter detection stages only the first verse on Preview"
+    );
 }
 
 #[test]
@@ -2630,8 +2694,8 @@ fn approving_a_detection_stages_the_verse_in_preview_not_live() {
     let view = c.operator_view();
     assert_eq!(
         view.staged_scripture.as_deref(),
-        Some("1 Corinthians 13"),
-        "approve stages the verse in Preview"
+        Some("1 Corinthians 13:1"),
+        "approve stages the verse in Preview — a whole chapter narrows to its first verse"
     );
     assert!(
         view.detections.is_empty(),

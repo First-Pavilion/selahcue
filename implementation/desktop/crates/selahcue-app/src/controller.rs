@@ -183,7 +183,16 @@ pub struct LiveController {
     /// but never blocks or blanks Live (FR-083). In-memory only this slice (encrypted
     /// persistence + retention is a documented follow-up seam).
     transcript: TranscriptEngine,
+    /// A tiny rolling window of the most recent transcript segments, joined and fed to the
+    /// fuzzy quote matcher — so a paraphrase spoken across an utterance boundary ("…and
+    /// strangers shall" / "feed your flock") is still matched, not just single-segment quotes.
+    /// Bounded to [`QUOTE_WINDOW_SEGMENTS`] (no-leak).
+    recent_texts: std::collections::VecDeque<String>,
 }
+
+/// How many recent transcript segments the fuzzy quote matcher looks back over, so a
+/// paraphrase split across utterances still resolves. Small + bounded.
+const QUOTE_WINDOW_SEGMENTS: usize = 3;
 
 /// How many recent transcript segments the operator view carries (a bounded tail of the
 /// already-capped log — keeps the view payload small on the 1 s poll).
@@ -474,6 +483,18 @@ fn scripture_slide(reference: &str) -> Slide {
     scripture_slide_in(selahcue_scripture::Translation::default(), reference)
 }
 
+/// Narrow a WHOLE-CHAPTER reference (e.g. a spoken "Isaiah 61" — no verse) to just its first
+/// verse for Preview/Live, so a chapter detection stages a single readable verse rather than a
+/// wall of the whole chapter on one slide. A reference that already names a verse (or doesn't
+/// parse) is returned unchanged. `Reference`'s Display is `"Book Chapter"` for a whole chapter,
+/// so appending `":1"` reparses cleanly to the first verse.
+fn stage_reference_for_detection(reference: &str) -> String {
+    match scripture::parse_one(reference) {
+        Ok(r) if r.verses.is_none() => format!("{r}:1"),
+        _ => reference.to_string(),
+    }
+}
+
 /// Compose the slide for one within-item position (story S8-1). A title-only
 /// item (no stanzas) is its single title slide — the exact pre-8a shape. A song
 /// stanza renders as the item title plus the stanza's wrapped lines, capped by
@@ -564,6 +585,7 @@ impl LiveController {
             screen_registry: ScreenRegistry::with_builtins(),
             screen_registry_dirty: false,
             transcript: TranscriptEngine::new(),
+            recent_texts: std::collections::VecDeque::new(),
         }
     }
 
@@ -576,7 +598,21 @@ impl LiveController {
         // matcher lives in selahcue-scripture (the pure core cannot see the corpus), so its
         // most-likely-verse suggestion for a spoken quotation is enqueued alongside exact
         // hits, deduped, for operator confirmation (never auto-live, FR-115).
-        let quotes = selahcue_scripture::match_quote(text);
+        // Run the fuzzy matcher over a small rolling window of recent segments (joined), so a
+        // paraphrase spoken across an utterance boundary still resolves; the queue's dedup rings
+        // suppress the repeats as the window slides. Exact detection stays per-segment (a spoken
+        // reference lands in one segment).
+        self.recent_texts.push_back(text.to_string());
+        while self.recent_texts.len() > QUOTE_WINDOW_SEGMENTS {
+            self.recent_texts.pop_front();
+        }
+        let window = self
+            .recent_texts
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let quotes = selahcue_scripture::match_quote_scored(&window);
         self.transcript
             .ingest_with_quotes(text, start_ms, end_ms, &quotes)
             .len()
@@ -1455,9 +1491,9 @@ impl LiveController {
                         .ok()
                         .and_then(|r| selahcue_scripture::passage_text(&r))
                         .unwrap_or_default(),
-                    // No genuine score exists yet — the parser is a binary Ok/Err match.
-                    // Honest-empty until R4 detection produces a real confidence.
-                    confidence: None,
+                    // R4 confidence: NAMED_REFERENCE_CONFIDENCE for an explicitly-spoken
+                    // reference, or the fuzzy quote matcher's coverage score for a paraphrase.
+                    confidence: Some(d.confidence),
                 })
                 .collect(),
         }
@@ -2044,7 +2080,10 @@ impl LiveController {
                 let start = start_ms.unwrap_or(0);
                 // A missing/backwards end clamps to start inside the engine.
                 let end = end_ms.unwrap_or(start);
-                self.transcript.ingest(text, start, end);
+                // Run the FULL R4 detection (exact + fuzzy quote/paraphrase over the rolling
+                // window), not just exact — this is the wire path a remote/mobile controller and
+                // the STT worker feed, so paraphrases must resolve here too.
+                self.ingest_transcript(text, start, end);
                 ControllerReply::Ack
             }
             Command::ApproveDetection { detection_id } => {
@@ -2053,9 +2092,12 @@ impl LiveController {
                 // the queue. An unknown/stale id is a bad request.
                 match self.transcript.approve(*detection_id) {
                     Some(detected) => {
-                        self.presenter.stage(scripture_slide(&detected.reference));
+                        // A whole-chapter detection stages just its first verse (never a full
+                        // chapter of text on one slide); a specific verse stages as-is.
+                        let staged = stage_reference_for_detection(&detected.reference);
+                        self.presenter.stage(scripture_slide(&staged));
                         self.staged_idx = None; // a scripture slide is not a plan index
-                        self.staged_scripture = Some(detected.reference);
+                        self.staged_scripture = Some(staged);
                         ControllerReply::Ack
                     }
                     None => ControllerReply::Deny(DenyReason::BadRequest),

@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 
 /// Fuzzy quote/paraphrase detection (R4 "fuzzy" rung) — match spoken text against the corpus.
 pub mod quote_match;
-pub use quote_match::{match_quote, match_quote_in};
+pub use quote_match::{match_quote, match_quote_in, match_quote_scored, match_quote_scored_in};
 
 /// One verse of the bundled translation.
 #[derive(Debug, Clone, PartialEq, Eq)]
