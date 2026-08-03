@@ -694,6 +694,73 @@ fn element_visibility_is_additive_serde_and_round_trips() {
     assert_eq!(back, shown);
 }
 
+#[test]
+fn a_hidden_image_element_emits_no_layers() {
+    // The `visible` gate covers the Image variant too (not just Shape): a hidden full-frame
+    // image paints nothing (byte-identical to the no-element baseline).
+    let img = temp_image(1, 1, Rgba::rgb(220, 30, 30));
+    let slide = Slide::new("R", ["B"]);
+    let baseline = render(&compose_slide(&slide, &Theme::classic(), 200, 100));
+    let mut theme = Theme::classic();
+    let mut hidden = full_image(img.path(), 255, 1);
+    if let Element::Image { visible, .. } = &mut hidden {
+        *visible = false;
+    }
+    theme.elements.push(hidden);
+    assert_eq!(
+        render(&compose_slide(&slide, &theme, 200, 100)).bytes(),
+        baseline.bytes(),
+        "a hidden image element paints nothing"
+    );
+    let mut shown = Theme::classic();
+    shown.elements.push(full_image(img.path(), 255, 1));
+    assert_ne!(
+        render(&compose_slide(&slide, &shown, 200, 100)).bytes(),
+        baseline.bytes(),
+        "the same image element SHOWN does paint"
+    );
+}
+
+#[test]
+fn a_hidden_text_element_emits_no_layers() {
+    // The `visible` gate covers the Text variant too: a hidden text box in the bottom band
+    // (which the classic theme leaves empty) paints no ink; shown, it does.
+    let slide = Slide::new("Ref", ["Body"]);
+    let baseline = render(&compose_slide(&slide, &Theme::classic(), 200, 100));
+    assert!(
+        !has_ink_in(&baseline, 0, 90, 200, 100),
+        "classic leaves the bottom band empty"
+    );
+    let mut theme = Theme::classic();
+    let mut hidden = bottom_text("HELLO", 255, 1);
+    if let Element::Text { visible, .. } = &mut hidden {
+        *visible = false;
+    }
+    theme.elements.push(hidden);
+    assert!(
+        !has_ink_in(
+            &render(&compose_slide(&slide, &theme, 200, 100)),
+            0,
+            90,
+            200,
+            100
+        ),
+        "a hidden text element paints no ink"
+    );
+    let mut shown = Theme::classic();
+    shown.elements.push(bottom_text("HELLO", 255, 1));
+    assert!(
+        has_ink_in(
+            &render(&compose_slide(&slide, &shown, 200, 100)),
+            0,
+            90,
+            200,
+            100
+        ),
+        "the same text element SHOWN paints ink in the bottom band"
+    );
+}
+
 // --- Image element (86ajq6j49) --------------------------------------------------------
 
 use selahcue_present::MediaRef;

@@ -1904,9 +1904,28 @@ fn controller_live() -> LiveController {
     c
 }
 
+/// Add the two secondary Audience feeds (`lower-third` + `stream`). They used to be built-in
+/// but are now added on demand ("+ Add virtual output"); the bare role names are minted first,
+/// so their ids are exactly `lower-third` and `stream`.
+fn add_feeds(c: &mut LiveController) {
+    assert_eq!(
+        c.apply(&Command::AddScreen {
+            role: "lower-third".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.apply(&Command::AddScreen {
+            role: "stream".into()
+        }),
+        ControllerReply::Ack
+    );
+}
+
 #[test]
 fn set_screen_theme_validates_maps_and_recomposes_main() {
     let mut c = controller_live();
+    add_feeds(&mut c);
     assert!(!c.take_screen_themes_dirty(), "clean at start");
 
     // A per-screen theme for the physical `main` recomposes the live output + marks dirty.
@@ -1994,6 +2013,7 @@ fn set_screen_theme_validates_maps_and_recomposes_main() {
 #[test]
 fn compose_screen_renders_each_audience_screen_under_its_own_theme() {
     let mut c = controller_live();
+    add_feeds(&mut c);
     c.apply(&Command::SetScreenTheme {
         screen: "lower-third".into(),
         name: "lower-third".into(),
@@ -2062,8 +2082,10 @@ fn per_screen_theme_map_is_bounded_and_load_restores_main_dropping_stale() {
     );
 
     // load_screen_themes (startup / recovery): keeps known+resolvable, drops the rest,
-    // applies `main` to the physical output, and does not dirty.
+    // applies `main` to the physical output, and does not dirty. `stream` must exist in the
+    // registry to be kept, so add the feeds first (they are no longer built-in).
     let mut d = controller_live();
+    add_feeds(&mut d);
     let main_before = d.presenter().live_output().bytes().to_vec();
     d.load_screen_themes([
         ("main".to_string(), "high-contrast".to_string()),
@@ -3075,6 +3097,7 @@ fn get_screen_frame_command_returns_a_themed_thumbnail_per_screen() {
         }
     }
     let mut c = controller_live();
+    add_feeds(&mut c);
     c.apply(&Command::SetScreenTheme {
         screen: "lower-third".into(),
         name: "lower-third".into(),
@@ -3126,18 +3149,15 @@ fn get_screen_frame_command_returns_a_themed_thumbnail_per_screen() {
 
 // ---- Screens page: dynamic screen registry (enable/disable + add/delete virtual) ----
 
-/// The operator view exposes the four built-in screens (main/lower-third/stream/stage),
-/// all enabled, none deletable — the default registry.
+/// The operator view exposes exactly the two built-in physical outputs (Audience `main` +
+/// Stage Display `stage`), both enabled, neither deletable — the default registry. Secondary
+/// Audience feeds are added on demand, not built in.
 #[test]
-fn registry_seeds_the_four_builtins_none_deletable() {
+fn registry_seeds_the_two_builtins_none_deletable() {
     let c = controller_live();
     let screens = c.operator_view().screens;
     let ids: Vec<&str> = screens.iter().map(|s| s.screen.as_str()).collect();
-    assert_eq!(
-        ids,
-        ["main", "lower-third", "stream", "stage"],
-        "order stable"
-    );
+    assert_eq!(ids, ["main", "stage"], "only Audience + Stage by default");
     for s in &screens {
         assert!(s.enabled, "{} enabled by default", s.screen);
         assert!(!s.deletable, "{} is a built-in (not deletable)", s.screen);
@@ -3159,6 +3179,7 @@ fn disabling_a_screen_blacks_its_frame_and_reenabling_restores() {
             .all(|px| px[0] == 0 && px[1] == 0 && px[2] == 0)
     };
     let mut c = controller_live();
+    add_feeds(&mut c);
     let themed = c.compose_screen("lower-third").unwrap().bytes().to_vec();
     assert!(
         themed
@@ -3215,28 +3236,29 @@ fn add_virtual_screen_mints_a_composable_audience_feed() {
         ControllerReply::Ack
     );
     let screens = c.operator_view().screens;
+    // The first stream feed takes the bare role name (no longer a built-in).
     let added = screens
         .iter()
-        .find(|s| s.screen == "stream-2")
-        .expect("stream-2 minted");
+        .find(|s| s.screen == "stream")
+        .expect("stream minted");
     assert_eq!(added.role, "stream");
     assert!(added.enabled && added.deletable);
     // The virtual feed composes the live content (follows global until themed).
-    assert!(c.compose_screen("stream-2").is_some());
+    assert!(c.compose_screen("stream").is_some());
     // It can carry its own theme (Audience-class).
     assert_eq!(
         c.apply(&Command::SetScreenTheme {
-            screen: "stream-2".into(),
+            screen: "stream".into(),
             name: "high-contrast".into(),
         }),
         ControllerReply::Ack
     );
     assert_eq!(
-        c.screen_themes().get("stream-2").map(String::as_str),
+        c.screen_themes().get("stream").map(String::as_str),
         Some("high-contrast")
     );
 
-    // A second stream feed gets the next free id, deterministically.
+    // A second stream feed gets the next free id (`stream-2`), deterministically.
     assert_eq!(
         c.apply(&Command::AddScreen {
             role: "stream".into()
@@ -3247,8 +3269,8 @@ fn add_virtual_screen_mints_a_composable_audience_feed() {
         .operator_view()
         .screens
         .iter()
-        .any(|s| s.screen == "stream-3"));
-    // A lower-third virtual feed is independent.
+        .any(|s| s.screen == "stream-2"));
+    // A lower-third virtual feed is independent (takes the bare `lower-third` id first).
     assert_eq!(
         c.apply(&Command::AddScreen {
             role: "lower-third".into()
@@ -3259,7 +3281,7 @@ fn add_virtual_screen_mints_a_composable_audience_feed() {
         .operator_view()
         .screens
         .iter()
-        .any(|s| s.screen == "lower-third-2"));
+        .any(|s| s.screen == "lower-third"));
 
     // Singleton / unknown roles cannot be added.
     for bad in ["main", "stage", "bogus"] {
@@ -3276,17 +3298,21 @@ fn add_virtual_screen_mints_a_composable_audience_feed() {
 #[test]
 fn delete_is_virtual_only_and_drops_the_theme() {
     let mut c = controller_live();
-    c.apply(&Command::AddScreen {
-        role: "stream".into(),
-    });
+    // A virtual stream feed mints the bare id `stream` (no longer a built-in).
+    assert_eq!(
+        c.apply(&Command::AddScreen {
+            role: "stream".into(),
+        }),
+        ControllerReply::Ack
+    );
     c.apply(&Command::SetScreenTheme {
-        screen: "stream-2".into(),
+        screen: "stream".into(),
         name: "classic".into(),
     });
-    assert!(c.screen_themes().get("stream-2").is_some());
+    assert!(c.screen_themes().get("stream").is_some());
 
-    // A built-in is never deletable — even though it exists.
-    for builtin in ["main", "lower-third", "stream", "stage"] {
+    // A built-in physical output is never deletable — even though it exists.
+    for builtin in ["main", "stage"] {
         assert_eq!(
             c.apply(&Command::RemoveScreen {
                 screen: builtin.into()
@@ -3303,24 +3329,24 @@ fn delete_is_virtual_only_and_drops_the_theme() {
     // The virtual screen deletes, and its theme override goes with it.
     assert_eq!(
         c.apply(&Command::RemoveScreen {
-            screen: "stream-2".into()
+            screen: "stream".into()
         }),
         ControllerReply::Ack
     );
-    assert!(c.screen_registry().get("stream-2").is_none());
+    assert!(c.screen_registry().get("stream").is_none());
     assert!(
-        c.screen_themes().get("stream-2").is_none(),
+        c.screen_themes().get("stream").is_none(),
         "theme dropped with the screen"
     );
     assert!(
-        c.compose_screen("stream-2").is_none(),
+        c.compose_screen("stream").is_none(),
         "a deleted screen no longer composes"
     );
 
     // A double-delete (already absent) is idempotent, not an error.
     assert_eq!(
         c.apply(&Command::RemoveScreen {
-            screen: "stream-2".into()
+            screen: "stream".into()
         }),
         ControllerReply::Ack
     );
@@ -3361,7 +3387,7 @@ fn registry_is_bounded_to_max_screens() {
     );
 }
 
-/// `from_persisted` recovers robustly: the four built-ins are always present, a corrupt
+/// `from_persisted` recovers robustly: the two built-ins are always present, a corrupt
 /// (unknown-role) row and an over-cap row are dropped, and built-in enable flags restore.
 #[test]
 fn registry_from_persisted_recovers_and_bounds() {
@@ -3379,8 +3405,8 @@ fn registry_from_persisted_recovers_and_bounds() {
     }
     let reg = ScreenRegistry::from_persisted(rows);
     assert!(reg.len() <= selahcue_app::MAX_SCREENS, "bounded on load");
-    // The four built-ins survive exactly once each, in order.
-    for b in ["main", "lower-third", "stream", "stage"] {
+    // The two built-ins survive exactly once each, in order.
+    for b in ["main", "stage"] {
         assert_eq!(
             reg.iter().filter(|s| s.id == b).count(),
             1,
@@ -3399,7 +3425,7 @@ fn registry_from_persisted_recovers_and_bounds() {
     assert!(reg.get("evil").is_none(), "the corrupt-role row dropped");
     // An empty store still yields the safe default (never empty / crash).
     let empty = ScreenRegistry::from_persisted(std::iter::empty());
-    assert_eq!(empty.len(), 4, "empty store recovers to the four built-ins");
+    assert_eq!(empty.len(), 2, "empty store recovers to the two built-ins");
 }
 
 /// Review fix (registry lens): the operator console LIVE monitor is the `main` audience
@@ -3852,6 +3878,7 @@ fn hiding_a_layer_changes_the_composed_screen_output() {
 #[test]
 fn ndi_output_configures_an_audience_screen_and_surfaces_on_the_view() {
     let (mut c, _) = controller();
+    add_feeds(&mut c); // lower-third + stream are added on demand now
     assert_eq!(
         c.apply(&Command::SetNdiOutput {
             screen: "stream".into(),
@@ -3882,7 +3909,8 @@ fn ndi_output_configures_an_audience_screen_and_surfaces_on_the_view() {
 #[test]
 fn ndi_output_rejects_non_audience_bad_name_and_empty_when_enabled() {
     let (mut c, _) = controller();
-    // The stage confidence monitor is not an audience feed.
+    add_feeds(&mut c); // so `stream` exists and the name-validation rejects are real
+                       // The stage confidence monitor is not an audience feed.
     assert_eq!(
         c.apply(&Command::SetNdiOutput {
             screen: "stage".into(),
@@ -3928,17 +3956,8 @@ fn ndi_output_rejects_non_audience_bad_name_and_empty_when_enabled() {
 #[test]
 fn two_enabled_ndi_screens_may_not_share_a_name() {
     let (mut c, _) = controller();
-    // Add a second stream screen so there are two audience feeds to name.
-    c.apply(&Command::AddScreen {
-        role: "stream".into(),
-    });
-    let virt = c
-        .operator_view()
-        .screens
-        .into_iter()
-        .find(|s| s.deletable)
-        .unwrap()
-        .screen;
+    // Two audience feeds to name (added on demand): `lower-third` + `stream`.
+    add_feeds(&mut c);
     assert_eq!(
         c.apply(&Command::SetNdiOutput {
             screen: "stream".into(),
@@ -3950,7 +3969,7 @@ fn two_enabled_ndi_screens_may_not_share_a_name() {
     // A DIFFERENT enabled screen may not reuse the same source name.
     assert_eq!(
         c.apply(&Command::SetNdiOutput {
-            screen: virt.clone(),
+            screen: "lower-third".into(),
             name: "Program".into(),
             enabled: true
         }),
@@ -3959,7 +3978,7 @@ fn two_enabled_ndi_screens_may_not_share_a_name() {
     // A DISABLED screen may hold the same name without clashing (only enabled sources collide).
     assert_eq!(
         c.apply(&Command::SetNdiOutput {
-            screen: virt.clone(),
+            screen: "lower-third".into(),
             name: "Program".into(),
             enabled: false
         }),
@@ -3973,5 +3992,36 @@ fn two_enabled_ndi_screens_may_not_share_a_name() {
             enabled: true
         }),
         ControllerReply::Ack
+    );
+}
+
+#[test]
+fn load_output_configs_normalizes_invalid_or_duplicate_ndi() {
+    // A tampered / forward-compat store cannot reintroduce an NDI state the command path
+    // forbids: a non-audience source, or two enabled sources sharing a name.
+    use selahcue_lan::protocol::OutputConfigView;
+    let (mut c, _) = controller();
+    add_feeds(&mut c); // lower-third + stream are audience feeds
+    let ndi = |name: &str| OutputConfigView {
+        ndi_enabled: true,
+        ndi_name: name.into(),
+        ..OutputConfigView::default()
+    };
+    c.load_output_configs([
+        ("stage".to_string(), ndi("Phantom")), // non-audience → NDI disabled on load
+        ("lower-third".to_string(), ndi("Program")), // first audience claimant keeps the name
+        ("stream".to_string(), ndi("Program")), // duplicate name → NDI disabled on load
+    ]);
+    assert!(
+        !c.output_config("stage").ndi_enabled,
+        "NDI on the non-audience stage screen is disabled on load"
+    );
+    assert!(
+        c.output_config("lower-third").ndi_enabled,
+        "the first audience claimant keeps its NDI name"
+    );
+    assert!(
+        !c.output_config("stream").ndi_enabled,
+        "a duplicate NDI source name is disabled on load"
     );
 }

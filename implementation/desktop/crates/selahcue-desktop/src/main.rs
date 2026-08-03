@@ -62,6 +62,9 @@ const AUTOSAVE_MIN_INTERVAL: Duration = Duration::from_secs(1);
 /// While a countdown runs, refresh its persisted elapsed at least this often — so a
 /// crash loses at most this much timer progress.
 const TIMER_AUTOSAVE_INTERVAL: Duration = Duration::from_secs(5);
+/// After an NDI sender fails to construct, wait at least this long before retrying it — so a
+/// persistent failure (feature-on) is a slow poll, not a per-frame native re-init storm.
+const NDI_RETRY_BACKOFF: Duration = Duration::from_secs(5);
 
 /// GUI-launch smoke watchdog (story 86ajpevzp): in `--smoke` mode, if the main
 /// window has not presented a frame within this budget, exit non-zero so CI
@@ -1102,6 +1105,12 @@ struct App {
     /// so the map stays bounded by the registry (`MAX_SCREENS`, no-leak). Empty in the default
     /// build (NDI delivery needs `--features ndi`); the config is stored + surfaced regardless.
     ndi_outputs: std::collections::HashMap<String, video_sink::NdiOutput>,
+    /// Per-screen "do not retry NDI sender construction before this instant" backoff. When a
+    /// sender fails to construct (feature-on: runtime not loadable, a network name collision, a
+    /// resource limit), retrying every frame would be a ~60 Hz native re-init storm; this backs
+    /// each failing screen off to [`NDI_RETRY_BACKOFF`]. Cleared when the screen's config changes
+    /// or it succeeds. Bounded by the registry (entries pruned with the sender map).
+    ndi_backoff: std::collections::HashMap<String, Instant>,
 }
 
 /// Apply one command to the shared controller (a poisoned lock just drops the input
@@ -1120,11 +1129,14 @@ fn drive(controller: &Mutex<LiveController>, command: &Command) {
 fn reconcile_ndi(
     c: &LiveController,
     senders: &mut std::collections::HashMap<String, video_sink::NdiOutput>,
+    backoff: &mut std::collections::HashMap<String, Instant>,
+    now: Instant,
 ) {
-    // Drop any sender whose screen no longer exists in the registry (a deleted virtual feed).
+    // Drop any sender / backoff whose screen no longer exists in the registry (deleted feed).
     let live: std::collections::HashSet<&str> =
         c.screen_registry().iter().map(|s| s.id.as_str()).collect();
     senders.retain(|id, _| live.contains(id.as_str()));
+    backoff.retain(|id, _| live.contains(id.as_str()));
 
     // The output resolution (used to construct a sender without a per-screen compose).
     let (out_w, out_h) = {
@@ -1134,22 +1146,31 @@ fn reconcile_ndi(
     for s in c.screen_registry().iter() {
         let cfg = c.output_config(&s.id);
         let want = s.enabled && cfg.ndi_enabled && !cfg.ndi_name.is_empty();
-        // Drop a stale sender (screen disabled / NDI off / renamed) so RAII closes its source.
+        // Drop a stale sender (screen disabled / NDI off / renamed) so RAII closes its source;
+        // clear any backoff so a re-enable / rename retries construction immediately.
         if senders
             .get(&s.id)
             .is_some_and(|o| !want || o.name() != cfg.ndi_name)
         {
             senders.remove(&s.id);
+            backoff.remove(&s.id);
         }
         if !want {
+            backoff.remove(&s.id);
             continue;
         }
-        // Create the sender lazily (using the output dims — no per-screen compose to construct).
-        if !senders.contains_key(&s.id) {
-            if let Some(out) =
-                video_sink::NdiOutput::new(&cfg.ndi_name, out_w, out_h, cfg.frame_rate)
-            {
-                senders.insert(s.id.clone(), out);
+        // Create the sender lazily (using the output dims — no per-screen compose to construct),
+        // but not while backing off from a recent construction failure (avoids a per-frame
+        // native re-init storm when the NDI runtime / name is persistently unavailable).
+        if !senders.contains_key(&s.id) && backoff.get(&s.id).is_none_or(|&t| now >= t) {
+            match video_sink::NdiOutput::new(&cfg.ndi_name, out_w, out_h, cfg.frame_rate) {
+                Some(out) => {
+                    senders.insert(s.id.clone(), out);
+                    backoff.remove(&s.id);
+                }
+                None => {
+                    backoff.insert(s.id.clone(), now + NDI_RETRY_BACKOFF);
+                }
             }
         }
         // Compose + send ONLY when a real sink exists (feature on) — the default build (no
@@ -1289,6 +1310,7 @@ impl App {
             ),
             smoke_done: false,
             ndi_outputs: std::collections::HashMap::new(),
+            ndi_backoff: std::collections::HashMap::new(),
         }
     }
 
@@ -1924,7 +1946,7 @@ impl ApplicationHandler for App {
                 c.tick(now);
                 // Reconcile + feed the NDI OUTPUT senders from the same live state (holding the
                 // lock once). No-op in the default build (no `ndi` feature → no sinks created).
-                reconcile_ndi(&c, &mut self.ndi_outputs);
+                reconcile_ndi(&c, &mut self.ndi_outputs, &mut self.ndi_backoff, now);
             }
             self.autosave(now);
             self.apply_pending_assignments();

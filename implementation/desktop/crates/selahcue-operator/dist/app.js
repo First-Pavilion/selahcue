@@ -500,10 +500,10 @@
         // The SCREEN REGISTRY (Screens page — dynamic registry): the authoritative managed
         // screen list with role/enabled/deletable. An older host that doesn't send it falls
         // back to the four built-ins (all enabled, none deletable) so the page still works.
+        // Only the two physical outputs are default (Audience `main` + Stage `stage`); secondary
+        // audience feeds (lower-third / stream) are added on demand via "+ Add virtual output".
         const registry = (view.screens && view.screens.length) ? view.screens : [
           { screen: "main", role: "main", enabled: true, deletable: false },
-          { screen: "lower-third", role: "lower-third", enabled: true, deletable: false },
-          { screen: "stream", role: "stream", enabled: true, deletable: false },
           { screen: "stage", role: "stage", enabled: true, deletable: false },
         ];
         lastOutputsView = view;
@@ -1628,6 +1628,14 @@
         else { tdSelEl = -1; tdRegion = r.region; }
         tdSync();
         tdPreview();
+        // Announce the selection (the LAYERS list is a keyboard/SR selection surface — mirror
+        // the canvas-click announcements so keyboard selection isn't silent).
+        if (r.kind === "el") {
+          const el = tdEls()[r.i];
+          tdAnnounce((el ? tdElLabel(el) : "Element") + " selected");
+        } else {
+          tdAnnounce((r.region === "title" ? "Reference / Title" : "Body") + " region selected");
+        }
       }
 
       // Toggle a layer's visibility (real: honored by the host compositor). An element omits
@@ -1765,6 +1773,9 @@
           ? tdActiveIsEl() && tdSelEl === r.i
           : !tdActiveIsEl() && tdRegion === r.region;
         if (selected) row.classList.add("sel");
+        // Expose the selection to assistive tech (not colour-only) — aria-current is valid on a
+        // role=listitem. The LAYERS list is the only keyboard/SR way to pick a region/element.
+        if (selected) row.setAttribute("aria-current", "true");
         // The row being pointer-dragged shows the dimmed .dragging affordance.
         if (isEl && tdLayerDrag && tdLayerDrag.idx === r.i) row.classList.add("dragging");
         let visible, name, meta, glyph;
@@ -1787,7 +1798,7 @@
           meta = "Region";
         }
         if (!visible) row.classList.add("layer-hidden");
-        row.setAttribute("aria-label", name + " — " + meta + (visible ? "" : " (hidden)"));
+        row.setAttribute("aria-label", name + " — " + meta + (visible ? "" : " (hidden)") + (selected ? " (selected)" : ""));
 
         const handle = document.createElement("span");
         handle.className = "td-layer-handle";
@@ -1826,6 +1837,10 @@
 
         row.onclick = () => tdSelectLayer(r);
         row.onkeydown = (ev) => {
+          // Only handle keys that originate ON the row itself — a keydown from the child eye
+          // <button> must reach the button's native Enter/Space activation (toggle visibility)
+          // and must NOT be preventDefault-ed into a row selection (keyboard/pointer parity).
+          if (ev.target !== row) return;
           if (ev.key === "Enter" || ev.key === " ") {
             ev.preventDefault();
             tdSelectLayer(r);

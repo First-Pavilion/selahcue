@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 183
+EXPECTED_MIN_CHECKS = 185
 
 
 def find_chrome():
@@ -97,8 +97,6 @@ STUB = r"""
     theme:"classic", themes:["classic"], saved_themes:[], screen_themes:[],
     screens:[
       {screen:"main", role:"main", enabled:true, deletable:false, theme:null},
-      {screen:"lower-third", role:"lower-third", enabled:true, deletable:false, theme:null},
-      {screen:"stream", role:"stream", enabled:true, deletable:false, theme:null},
       {screen:"stage", role:"stage", enabled:true, deletable:false, theme:null}
     ] };
   var T = {
@@ -133,10 +131,11 @@ STUB = r"""
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
     }
     if (cmd === "add_screen") {
-      // Mint role-N (smallest N>=2 free), mirroring the host registry.
+      // Mint the bare role name first, then role-2, role-3… — mirroring the host registry.
       var ids = V.screens.map(function(s){ return s.screen; });
-      var n = 2; while (ids.indexOf(args.role + "-" + n) >= 0) n++;
-      V.screens.push({screen: args.role + "-" + n, role: args.role, enabled:true, deletable:true, theme:null});
+      var id = args.role, n = 2;
+      while (ids.indexOf(id) >= 0) { id = args.role + "-" + n; n++; }
+      V.screens.push({screen: id, role: args.role, enabled:true, deletable:true, theme:null});
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
     }
     if (cmd === "remove_screen") {
@@ -574,6 +573,20 @@ DRIVER = r"""
       ok(document.activeElement && document.activeElement.classList.contains("td-layer") &&
          document.activeElement.dataset.idx === String(aidx),
          "D2 a11y: Alt+Arrow reorder keeps focus on the moved layer's row");
+      // Review fix: the selected layer row exposes aria-current (not colour-only) to AT.
+      ok(el("td-layers").querySelector(".td-layer.sel") &&
+         el("td-layers").querySelector(".td-layer.sel").getAttribute("aria-current")==="true",
+         "D2 a11y: the selected layer row exposes aria-current to assistive tech");
+      // Review fix: Enter on a layer's EYE must NOT steal row selection (keyboard/pointer parity)
+      // — row.onkeydown bails for keydowns originating on the child eye button.
+      var elRowsK = Array.prototype.filter.call(qLayers(), function(r){ return r.dataset.idx!==undefined; });
+      if (elRowsK.length >= 2) {
+        var aK = parseInt(elRowsK[0].dataset.idx,10), bK = parseInt(elRowsK[1].dataset.idx,10);
+        elRowFor(aK).click(); // select layer A
+        elRowFor(bK).querySelector(".td-layer-eye").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}));
+        ok(el("td-layers").querySelector('.td-layer[data-idx="'+aK+'"]').classList.contains("sel"),
+           "D2 a11y: Enter on a layer's eye does not steal selection from another row");
+      }
 
       // D2 reliability (review fix): a cancelled layer-drag tears down (no stuck reorder).
       var dragRow = elRowFor(aidx);
@@ -802,15 +815,24 @@ DRIVER = r"""
       // (The Theme-Designer's MAX_ELEMENTS=64 cap is enforced + tested host-side in Rust —
       // engine/present tests — so it is not re-asserted here as a tautology.)
 
-      // === per-screen PREVIEW (86ajq321k): the Screens page shows each Audience screen's own
-      // themed output via render_screen; the three previews render + differ ===
+      // === per-screen PREVIEW (86ajq321k): only Audience + Stage are built in now, so ADD the
+      // two secondary Audience feeds on demand; then all three previews render + differ ===
       document.querySelector('.nav-item[data-surface="screens"]').click();
+      var rowFor = function(id){ return document.querySelector('#screens-list .screen-row[data-screen="'+id+'"]'); };
+      var addFeed = function(role){
+        document.getElementById("screen-add-role").value = role;
+        document.getElementById("screen-add-btn").click();
+      };
+      addFeed("lower-third");
+      await waitFor(function(){ return !!rowFor("lower-third"); });
+      addFeed("stream");
+      await waitFor(function(){ return !!rowFor("stream"); });
       await waitFor(function(){
         var cs = document.querySelectorAll('#screens-list canvas.screen-preview');
         return cs.length >= 3 && Array.from(cs).every(function(c){ return c.classList.contains("has-render"); });
       });
       var previews = document.querySelectorAll('#screens-list canvas.screen-preview');
-      ok(previews.length === 3, "per-screen: 3 preview canvases render (main/lower-third/stream, got " + previews.length + ")");
+      ok(previews.length === 3, "per-screen: 3 preview canvases render (main + added lower-third/stream, got " + previews.length + ")");
       var byScreen = {};
       Array.from(previews).forEach(function(c){ byScreen[c.dataset.screen] = c; });
       ok(!!byScreen["main"] && !!byScreen["lower-third"] && !!byScreen["stream"],
@@ -821,12 +843,16 @@ DRIVER = r"""
          pixel(byScreen["lower-third"]) !== pixel(byScreen["stream"]),
          "per-screen: the three screens render DIFFERENT designs at once");
 
-      // === Screens page — dynamic registry: enable/disable + add/delete virtual ===
-      var rowFor = function(id){ return document.querySelector('#screens-list .screen-row[data-screen="'+id+'"]'); };
-      ok(!!rowFor("main") && !!rowFor("lower-third") && !!rowFor("stream") && !!rowFor("stage"),
-         "registry: the four built-in screen rows render (main/lower-third/stream/stage)");
-      ok(!!rowFor("main").querySelector('.screen-enable-toggle') && !rowFor("main").querySelector('.screen-delete'),
-         "registry: a built-in row has an enable toggle but NO delete control");
+      // === Screens page — dynamic registry: only Audience + Stage are built in; the added
+      // feeds are deletable virtuals ===
+      ok(!!rowFor("main") && !!rowFor("stage"),
+         "registry: the two built-in outputs render (Audience main + Stage)");
+      ok(!rowFor("main").querySelector('.screen-delete') && !rowFor("stage").querySelector('.screen-delete'),
+         "registry: a built-in output has an enable toggle but NO delete control");
+      ok(!!rowFor("lower-third").querySelector('.screen-delete') && !!rowFor("stream").querySelector('.screen-delete'),
+         "registry: an ADDED virtual feed HAS a delete control (unlike a built-in)");
+      ok(window.__calls.some(function(c){ return c.cmd === "add_screen" && c.args.role === "stream"; }),
+         "registry: '+ Add virtual output' invoked add_screen with role=stream");
 
       // Disabling a screen invokes set_screen_enabled(false) and dims the row.
       var beforeToggle = window.__calls.length;
@@ -838,17 +864,11 @@ DRIVER = r"""
       ok(rowFor("lower-third").classList.contains("screen-disabled"),
          "registry: a disabled screen row is dimmed");
 
-      // '+ Add screen' (role=stream) creates a virtual, DELETABLE row.
-      document.getElementById("screen-add-role").value = "stream";
-      document.getElementById("screen-add-btn").click();
+      // A SECOND stream feed mints stream-2 (the bare `stream` id is taken); delete it.
+      addFeed("stream");
       await waitFor(function(){ return !!rowFor("stream-2"); });
-      ok(!!rowFor("stream-2"), "registry: '+ Add screen' creates a virtual stream-2 row");
-      ok(!!rowFor("stream-2").querySelector('.screen-delete'),
-         "registry: a virtual row HAS a delete control (unlike a built-in)");
-      ok(window.__calls.some(function(c){ return c.cmd === "add_screen" && c.args.role === "stream"; }),
-         "registry: add_screen invoked with role=stream");
-
-      // Deleting the virtual screen invokes remove_screen and removes its row.
+      ok(!!rowFor("stream-2") && !!rowFor("stream-2").querySelector('.screen-delete'),
+         "registry: a second stream feed mints stream-2 with a delete control");
       rowFor("stream-2").querySelector('.screen-delete').click();
       await waitFor(function(){ return !rowFor("stream-2"); });
       ok(!rowFor("stream-2"), "registry: deleting a virtual screen removes its row");

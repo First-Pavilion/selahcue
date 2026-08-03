@@ -305,9 +305,10 @@ fn operator_webview_wires_per_screen_theme() {
         // The reusable per-screen picker + the map fed from the view.
         "themePickerFor",
         "screen_themes",
-        // The virtual Audience-class screens carry their own theme (an honest output seam).
-        "screen: \"lower-third\"",
-        "screen: \"stream\"",
+        // The addable Audience-class roles (added on demand via "+ Add virtual output") each
+        // carry their own theme; the role picker offers them.
+        "lower-third",
+        "stream",
         // A "follow global" entry (empty value) so a set per-screen theme can be cleared
         // back to the global (mirrors the per-item picker; the backend's empty-name clear).
         "Follow global",

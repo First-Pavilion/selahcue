@@ -219,12 +219,12 @@ pub const OPERATOR_TRANSCRIPT_TAIL: usize = 60;
 pub const MAX_SAVED_THEMES: usize = 256;
 pub const MAX_THEME_NAME_LEN: usize = 64;
 
-/// The Audience-class SCREENS that carry their own per-screen theme (86ajq321k; Screens
-/// design §3): the physical `main` projector plus the virtual `lower-third` / `stream`
-/// feeds. A fixed, bounded set this batch (dynamic Add/Delete virtual screens is a
-/// Screens-page follow-up); the `stage` confidence monitor is NOT here — it keeps its
-/// stage layout, not an audience theme. The per-screen theme map is bounded to these ids.
-pub const AUDIENCE_SCREENS: [&str; 3] = ["main", "lower-third", "stream"];
+/// The BUILT-IN Audience-class screen(s) that carry their own per-screen theme (86ajq321k):
+/// just the physical `main` projector by default. Secondary Audience feeds (lower-third /
+/// stream) are added on demand and also carry per-screen themes, but they are not default
+/// outputs; the `stage` confidence monitor is NOT audience-class (it renders a stage layout,
+/// not a theme). The per-screen theme map is bounded by the registry ([`MAX_SCREENS`]).
+pub const AUDIENCE_SCREENS: [&str; 1] = ["main"];
 
 /// The hard cap on the number of screens in the registry (no-leak): the built-ins plus
 /// any virtual screens the operator adds. Small — a church stage has a handful of outputs
@@ -331,23 +331,15 @@ impl Default for ScreenRegistry {
 impl ScreenRegistry {
     /// The default registry: the four built-in screens, all enabled, none deletable.
     pub fn with_builtins() -> Self {
+        // Only the two PHYSICAL outputs are built in: the Audience (`main`) projector and the
+        // Stage Display (`stage`) confidence monitor. Secondary Audience feeds (lower-third /
+        // stream, e.g. an NDI output) are NOT default outputs — the operator adds them on demand
+        // via "+ Add virtual output" ([`ScreenRegistry::add_virtual`]).
         Self {
             screens: vec![
                 Screen {
                     id: "main".into(),
                     role: ScreenRole::Main,
-                    enabled: true,
-                    deletable: false,
-                },
-                Screen {
-                    id: "lower-third".into(),
-                    role: ScreenRole::LowerThird,
-                    enabled: true,
-                    deletable: false,
-                },
-                Screen {
-                    id: "stream".into(),
-                    role: ScreenRole::Stream,
                     enabled: true,
                     deletable: false,
                 },
@@ -430,9 +422,10 @@ impl ScreenRegistry {
         }
     }
 
-    /// Add a virtual screen of `role`, minting a stable id (`role-N`, the smallest `N >= 2`
-    /// whose id is free — deterministic). `Err` if the role is not addable or the cap is
-    /// reached.
+    /// Add a virtual screen of `role`, minting a stable id: the bare role tag (`stream`,
+    /// `lower-third`) when free, else `role-N` for the smallest `N >= 2` whose id is free —
+    /// deterministic. (These roles are no longer default outputs, so the first one added takes
+    /// the plain name.) `Err` if the role is not addable or the cap is reached.
     pub fn add_virtual(&mut self, role: ScreenRole) -> Result<String, AddScreenError> {
         if !role.is_addable() {
             return Err(AddScreenError::BadRole);
@@ -441,9 +434,10 @@ impl ScreenRegistry {
             return Err(AddScreenError::Full);
         }
         let base = role.as_tag();
-        let mut n = 2usize;
-        loop {
-            let candidate = format!("{base}-{n}");
+        // Try the bare role name first, then role-2, role-3, … until one is free.
+        let candidates =
+            std::iter::once(base.to_string()).chain((2usize..).map(|n| format!("{base}-{n}")));
+        for candidate in candidates {
             if self.get(&candidate).is_none() {
                 self.screens.push(Screen {
                     id: candidate.clone(),
@@ -453,8 +447,8 @@ impl ScreenRegistry {
                 });
                 return Ok(candidate);
             }
-            n += 1;
         }
+        unreachable!("the candidate stream is infinite, so a free id always exists")
     }
 
     /// Remove a screen by id — only a deletable (virtual) screen. A built-in yields
@@ -497,6 +491,13 @@ fn to_layer_mask(cfg: &OutputConfigView) -> LayerMask {
         lower_third: cfg.layers.lower_third,
         logo: cfg.layers.logo,
     }
+}
+
+/// Whether an NDI source name is acceptable: bounded ([`MAX_NDI_NAME_LEN`] chars) and printable
+/// (no control chars). Emptiness is checked separately — an empty name is fine when NDI is off.
+/// Shared by the command path ([`LiveController::set_ndi_output`]) and the defensive load path.
+fn ndi_name_valid(name: &str) -> bool {
+    name.chars().count() <= MAX_NDI_NAME_LEN && !name.chars().any(|c| c.is_control())
 }
 
 /// How long the identify overlay stays on the outputs once triggered (FR-040).
@@ -1204,7 +1205,7 @@ impl LiveController {
         let name = name.trim();
         // A bounded, printable name (NDI source names are conventionally simple text); a
         // control char / newline is rejected, never sanitized silently.
-        if name.chars().count() > MAX_NDI_NAME_LEN || name.chars().any(|c| c.is_control()) {
+        if !ndi_name_valid(name) {
             return ControllerReply::Deny(DenyReason::BadRequest);
         }
         // Enabling NDI requires a name; disabling may clear it.
@@ -1259,6 +1260,31 @@ impl LiveController {
             .into_iter()
             .filter(|(screen, cfg)| registry.get(screen).is_some() && !cfg.is_default())
             .collect();
+        // Defensively re-apply the NDI invariants the command path enforces, so a tampered /
+        // forward-compat store cannot reintroduce a forbidden NDI state (a non-audience or
+        // invalid-name phantom source, or two enabled sources sharing a name). Mirrors the
+        // audience-filter `load_screen_themes` applies on load. Iteration order is deterministic
+        // (a BTreeMap keyed by screen id), so the first enabled screen keeps a contested name.
+        let mut claimed_ndi: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (screen, cfg) in self.output_configs.iter_mut() {
+            if !cfg.ndi_enabled {
+                continue;
+            }
+            let name = cfg.ndi_name.trim();
+            let ok = self
+                .screen_registry
+                .get(screen)
+                .is_some_and(|s| s.role.is_audience())
+                && !name.is_empty()
+                && ndi_name_valid(name)
+                && claimed_ndi.insert(name.to_string());
+            if !ok {
+                cfg.ndi_enabled = false; // disable a phantom / invalid / duplicate NDI source
+            }
+        }
+        // A config that normalized back to default (e.g. NDI was its only non-default field) is
+        // dropped so it never re-surfaces or re-persists.
+        self.output_configs.retain(|_, cfg| !cfg.is_default());
         self.output_configs_dirty = false;
         // Reflect the restored MAIN screen's layer mask on the Presenter (a no-op recompose
         // while nothing is live yet; recovery re-stages afterwards with the mask in place).
