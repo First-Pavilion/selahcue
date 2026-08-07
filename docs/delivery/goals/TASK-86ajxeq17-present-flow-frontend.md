@@ -113,8 +113,9 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajxeq17-present-flow-frontend.md`
-- Validator result:
-- Independent verification result:
-- Terminal state:
-- Remaining failed or blocked criteria:
-- ClickUp final evidence comment:
+- Validator result: PASS (structural)
+- Independent verification result: N/A (implementation not started)
+- Terminal state: **BLOCKED (held per owner, 2026-08-07)** — reconciliation + contract complete; implementation (Tasks 7–13) not started. The four target files (`dist/app.js`, `dist/index.html`, `scripts/operator_headless.py`, `selahcue-present/tests/test_tokens.rs`) are under continuous concurrent owner editing (a stage/confidence feature), so no durable clean base exists. Owner chose to finish that work first; working tree left UNMODIFIED by Track B.
+- **Exact unblocker (resume condition):** the four files above are committed and stay clean (stable base). Then implement Tasks 7–13 per the plan + this contract's completion predicate. All gotchas already mapped in Iteration 1.
+- Remaining failed or blocked criteria: C-001…C-009 all PENDING (not started; held).
+- ClickUp final evidence comment: posted on 86ajxeq17; task set to `ready dev` (scoped + contract-ready, awaiting a stable clean base).
