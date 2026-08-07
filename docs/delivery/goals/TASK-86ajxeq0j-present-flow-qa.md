@@ -97,8 +97,16 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajxeq0j-present-flow-qa.md`
-- Validator result:
-- Independent verification result:
-- Terminal state:
-- Remaining failed or blocked criteria:
-- ClickUp final evidence comment:
+- Validator result: PASS (structural)
+- Independent verification result: **The Presentation flow PASSES QA.** Independently re-run (2026-08-07):
+  - Q-001 flow tests green: `test_present` 26/0, `test_deck` 12/0, `test_deck_compose` 8/0, `test_deck_session` 10/0, `test_tokens` 18/0.
+  - Q-002 `selahcue-gpu` 2/0 (authored parity scene + device-loss).
+  - Q-003 host: `test_controller operator_view_reports_the_live_authored` 1/0; operator `go_live_delta` 2/0.
+  - Q-004 webview `operator_headless.py` = **365 checks / 0 FAIL** (flow + §8 states + a11y assertions).
+  - Q-005 operator `cargo check` clean.
+  - Q-006 acceptance map: every spec §6 (select/go-live/arrows-advance-live), §7 (one-live-output + authored secondary mirroring), §8 (empty/loading/render-fail/nothing-live/live/first-last/go-live-failed/preview-only/blackout/deck-open-failed/reconnecting), §9 (role=listbox, roving tabindex, aria-live, LIVE text label), §10 (--sc-* only) maps to a green check above. No uncovered mandatory criterion.
+  - Q-007 exploratory: the C-009 review's 6 findings are fixed AND now asserted by the headless gate (independently re-verified). No NEW flow defect found.
+- Terminal state: **GATE_REVIEW — flow QA PASS; story-level `make ci` blocked by EXTERNAL concurrent WIP (not this story).** `cargo test -p selahcue-present` as a whole is transiently RED from the owner's rapidly-churning stage/confidence work (observed within minutes: `scripture_huge_width`/`worship_saturating_text_width` → `verify_finding_*_4k_height` → the `test_verify_panic_zzz.rs` file deleted). These are text-fit/panic-safety tests in `stage.rs`/`lib.rs` (dirty, owner WIP) — orthogonal to the flow (which touches no text-fit/raster code). NOT filed as a bug: it is unstable in-progress work, not a delivered defect (would duplicate the owner's active work).
+- Remaining failed or blocked criteria: Q-008 release verdict is GATE (below). No flow criterion failed.
+- **Release blockers (external, owner/other-process):** (1) `selahcue-present` stage/confidence + verify tests must settle for a green `cargo test -p selahcue-present` (part of `make ci`); (2) `test_protocol.rs` fixtures need `stage_template`/`stage_message`. Neither is a defect in this story.
+- ClickUp final evidence comment: posted on 86ajxeq0j.
