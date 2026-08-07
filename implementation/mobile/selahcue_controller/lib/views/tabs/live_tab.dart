@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../../controllers/live_controller.dart';
 import '../../models/design_tokens.dart';
 import '../../models/protocol.dart';
+import '../../models/rbac.dart';
 import '../widgets/mobile_widgets.dart';
 
 class LiveTab extends StatelessWidget {
@@ -55,45 +56,56 @@ class LiveTab extends StatelessWidget {
           idle: 'Nothing staged',
         ),
         const SizedBox(height: 10),
-        Row(
-          children: [
-            _TransportBtn(
-                glyph: '◀',
-                label: 'Previous item',
-                onTap: () => live.act(cmdPrevious())),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Semantics(
-                button: true,
-                label: 'Go live',
-                child: Material(
-                  color: DesignTokens.previewFill,
-                  borderRadius: BorderRadius.circular(10),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(10),
-                    onTap: () => live.act(cmdGoLive()),
-                    child: Container(
-                      height: 54,
-                      alignment: Alignment.center,
-                      child: const Text('GO LIVE',
-                          style: TextStyle(
-                              fontSize: 17,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 0.4,
-                              color: Colors.white)),
+        // Transport is role-gated: navigate → Prev/Next; goLive → GO LIVE.
+        // A role with neither (Viewer) gets read-only cards, no transport row.
+        if (live.can(Capability.navigate) || live.can(Capability.goLive)) ...[
+          Row(
+            children: [
+              if (live.can(Capability.navigate)) ...[
+                _TransportBtn(
+                    glyph: '◀',
+                    label: 'Previous item',
+                    onTap: () => live.act(cmdPrevious())),
+                const SizedBox(width: 8),
+              ],
+              if (live.can(Capability.goLive))
+                Expanded(
+                  child: Semantics(
+                    button: true,
+                    label: 'Go live',
+                    child: Material(
+                      color: DesignTokens.previewFill,
+                      borderRadius: BorderRadius.circular(10),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () => live.act(cmdGoLive()),
+                        child: Container(
+                          height: 54,
+                          alignment: Alignment.center,
+                          child: const Text('GO LIVE',
+                              style: TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: 0.4,
+                                  color: Colors.white)),
+                        ),
+                      ),
                     ),
                   ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            _TransportBtn(
-                glyph: '▶',
-                label: 'Next item',
-                onTap: () => live.act(cmdNext())),
-          ],
-        ),
-        const SizedBox(height: 10),
+                )
+              else
+                const Spacer(),
+              if (live.can(Capability.navigate)) ...[
+                const SizedBox(width: 8),
+                _TransportBtn(
+                    glyph: '▶',
+                    label: 'Next item',
+                    onTap: () => live.act(cmdNext())),
+              ],
+            ],
+          ),
+          const SizedBox(height: 10),
+        ],
         OutputCard(
           header: '● LIVE · ON AIR',
           headerColor: DesignTokens.liveFill,
