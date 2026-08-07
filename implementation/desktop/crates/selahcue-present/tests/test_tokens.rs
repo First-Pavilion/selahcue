@@ -616,7 +616,9 @@ fn operator_presentation_media_surface_is_wired() {
         "id=\"pm-autoadv\"",
         "id=\"pm-import\"",
         "id=\"pm-undo\"",
-        "id=\"pm-present\"",
+        "id=\"pm-grid\"",
+        "id=\"pm-grid-edit\"",
+        "id=\"pm-transport\"",
         // Scoped to the PM toolbar so it can't accidentally match the Theme Designer's add-bar.
         "class=\"pm-tool\" data-add=\"text\"",
         // The contextual right panel: Media ⟷ Inspector tabs + the two bodies (86ajvjtax).
@@ -774,7 +776,6 @@ fn operator_presentations_library_is_wired() {
         "id=\"pm-library\"",
         "id=\"pm-lib-grid\"",
         "id=\"pm-lib-new\"",
-        "id=\"pm-lib-back\"",
         "id=\"pm-lib-q\"",
         "id=\"pm-lib-empty\"",
         "id=\"pm-lib-error\"",

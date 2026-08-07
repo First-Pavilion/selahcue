@@ -4013,11 +4013,16 @@
           // Presentation-surface actions are offered only while that surface is active (they act
           // on the authored deck) — keyboard-first parity for the slide editor (FR-021/022).
           const pmActive = document.getElementById("surface-presentation");
-          if (pmActive && pmActive.classList.contains("active")) {
-            cmds.push({ label: "Add slide", ico: "+", run: () => { if (typeof pmAddSlide === "function") pmAddSlide(); } });
-            cmds.push({ label: "Present slide", ico: "▶", run: () => { if (typeof pmPresent === "function") pmPresent(); } });
-            cmds.push({ label: "Undo slide edit", ico: "↶", sub: "⌘Z", run: () => { if (typeof pmUndo === "function") pmUndo(); } });
-            cmds.push({ label: "Redo slide edit", ico: "↷", sub: "⌘⇧Z", run: () => { if (typeof pmRedo === "function") pmRedo(); } });
+          if (pmActive && pmActive.classList.contains("active") && typeof pmMode !== "undefined") {
+            if (pmMode === "grid") {
+              // Grid mode owns presenting — present the cursor slide (double-click / Enter equivalent).
+              cmds.push({ label: "Present slide", ico: "▶", run: () => { if (typeof pmGridGoLive === "function") pmGridGoLive(pmGridCursor); } });
+            } else if (pmMode === "editor") {
+              cmds.push({ label: "Add slide", ico: "+", run: () => { if (typeof pmAddSlide === "function") pmAddSlide(); } });
+              cmds.push({ label: "Present slide", ico: "▶", run: () => { if (typeof pmPresent === "function") pmPresent(); } });
+              cmds.push({ label: "Undo slide edit", ico: "↶", sub: "⌘Z", run: () => { if (typeof pmUndo === "function") pmUndo(); } });
+              cmds.push({ label: "Redo slide edit", ico: "↷", sub: "⌘⇧Z", run: () => { if (typeof pmRedo === "function") pmRedo(); } });
+            }
           }
           cmds.push({ label: "Keyboard shortcuts", ico: "⌨", run: () => openShortcuts() });
           return cmds;
@@ -4543,7 +4548,7 @@
         const grid = pmEl("pm-lib-grid"); if (!grid) return;
         let t = id != null ? grid.querySelector('.pm-lib-card[data-id="' + id + '"] .pm-lib-open') : null;
         if (!t) t = grid.querySelector(".pm-lib-card .pm-lib-open");
-        if (!t) t = pmEl("pm-lib-q") || pmEl("pm-lib-back");
+        if (!t) t = pmEl("pm-lib-q") || pmEl("pm-lib-new");
         if (t) t.focus();
       }
       function pmLibNew() {
@@ -5391,7 +5396,6 @@
       // --- wire the static controls (they exist at load; #surface-presentation is in the DOM) ---
       (function wirePresentation() {
         pmEl("pm-add-slide").onclick = pmAddSlide;
-        pmEl("pm-present").onclick = pmPresent;
         pmEl("pm-undo").onclick = pmUndo;
         pmEl("pm-redo").onclick = pmRedo;
         pmEl("pm-import").onclick = () => pAct(() => invoke("deck_import_image"), "import the image");
@@ -5401,7 +5405,6 @@
         // Presentations Library: the deck-switcher opens it; ＋ New creates; the library controls.
         pmEl("pm-deckswitch").onclick = pmShowLibrary;
         pmEl("pm-newpres").onclick = pmLibNew;
-        pmEl("pm-lib-back").onclick = pmHideLibrary;
         pmEl("pm-lib-new").onclick = pmLibNew;
         pmEl("pm-lib-empty-new").onclick = pmLibNew;
         pmEl("pm-lib-retry").onclick = pmLibLoad;

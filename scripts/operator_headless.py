@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 356
+EXPECTED_MIN_CHECKS = 353
 
 
 def find_chrome():
@@ -1349,13 +1349,8 @@ DRIVER = r"""
       el("pm-undo").click();
       await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_undo"; }); });
       ok(window.__calls.some(function(c){ return c.cmd === "deck_undo"; }), "PM: Undo drives deck_undo");
-      // Present (Preview→Live): sets the live slide AND routes it to the native audience output.
-      el("pm-present").click();
-      await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_go_live"; }); });
-      ok(window.__calls.some(function(c){ return c.cmd === "deck_go_live"; }), "PM: 'Present' takes the slide live (deck_go_live)");
-      // On success a toast confirms it reached the audience output (the fix for "Present did nothing").
-      await waitFor(function(){ return !el("pm-toast").hidden && /presenting/i.test(el("pm-toast").textContent); });
-      ok(!el("pm-toast").hidden && /presenting/i.test(el("pm-toast").textContent), "PM: 'Present' confirms it reached the audience output with a toast");
+      // Present is now GRID-owned (double-click / Enter / transport) — the editor's ▶ Present button
+      // was relocated (story 86ajxeq17). Grid go-live is covered by the PM/B checks above.
       // Canvas keyboard: add an element (which selects it), then nudge / toggle / raise / remove it.
       document.querySelector('#surface-presentation .pm-tool[data-add="shape"]').click();
       await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_add_element" && c.args.kind === "shape"; }); });
@@ -1653,10 +1648,8 @@ DRIVER = r"""
       ok(!!el("pm-prompt-input"), "PM/Lib: ⌘N opens the New presentation dialog");
       el("pm-prompt-input").dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
       await waitFor(function(){ return !el("pm-prompt-input"); });
-      // ‹ Back to editor.
-      el("pm-lib-back").click();
-      ok(el("pm-library").hidden && getComputedStyle(document.querySelector("#surface-presentation .pm-body")).display !== "none",
-         "PM/Lib: '‹ Back to editor' returns to the editor");
+      // (The '‹ Back to editor' affordance was removed — the Library is the landing; opening a card
+      //  goes to the grid, story 86ajxeq17.)
 
       // The ⌘1-6 surface map is UNCHANGED by activating Presentation: ⌘2 still → Theme Designer.
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"2", metaKey:true, bubbles:true}));
