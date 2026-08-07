@@ -1623,6 +1623,11 @@ impl LiveController {
         if self.stage_dirty || key != self.last_stage_key {
             self.stage_dirty = false;
             self.last_stage_key = key;
+            // Feed the worship header its live stanza position ("Verse 2 of 4"). Derived from
+            // the live plan item; `None` for non-song items. (Computed before the mutable
+            // borrow of `self.stage` below.)
+            let position = self.stage_song_position();
+            self.stage.set_song_position(position);
             match &self.pairing_qr {
                 Some((uri, _)) => {
                     if !self.stage.show_qr(uri) {
@@ -1658,6 +1663,20 @@ impl LiveController {
             }
         }
         self.presenter.staged().cloned()
+    }
+
+    /// The live song's stanza position as 1-based `(index, total)` for the worship confidence
+    /// header ("Verse 2 of 4"). `None` when the live item is not a multi-stanza song (a
+    /// title-only or single-stanza item has no verse count to show). Public so the stage-output
+    /// contract is directly observable (like [`stage_next_slide`](Self::stage_next_slide)).
+    pub fn stage_song_position(&self) -> Option<(u16, u16)> {
+        let item = self.plan.items().get(self.live_idx?)?;
+        let total = item.stanzas.len();
+        if total <= 1 {
+            return None;
+        }
+        let idx = (self.live_slide.min(total - 1) + 1) as u16;
+        Some((idx, total as u16))
     }
 
     /// The presenter (for the output window / stage display to render).

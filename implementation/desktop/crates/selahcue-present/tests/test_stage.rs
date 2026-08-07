@@ -11,8 +11,8 @@ use selahcue_engine::scene::{Frame, Rgba};
 // a crate-root re-export) so this feature stays isolated from the crate's shared `lib.rs`.
 use selahcue_present::stage::{StageTemplate, MAX_STAGE_MESSAGE_LEN};
 use selahcue_present::{
-    compose_identify, compose_slide, compose_stage, Presenter, Slide, StageDisplay, StageTheme,
-    Theme, TimerView, WallClock,
+    compose_identify, compose_slide, compose_stage, Presenter, Slide, StageContext, StageDisplay,
+    StageTheme, Theme, TimerView, WallClock,
 };
 use std::time::{Duration, Instant};
 
@@ -43,7 +43,17 @@ fn ws(
     w: u32,
     h: u32,
 ) -> Frame {
-    compose_stage(c, n, t, StageTemplate::Worship, None, None, theme, w, h)
+    compose_stage(
+        c,
+        n,
+        t,
+        StageTemplate::Worship,
+        None,
+        &StageContext::default(),
+        theme,
+        w,
+        h,
+    )
 }
 
 fn has_color(fb: &FrameBuffer, color: Rgba) -> bool {
@@ -142,8 +152,9 @@ fn stage_current_region_auto_fits_a_long_verse_without_truncation_or_clip() {
     for word in verse.split_whitespace() {
         assert!(joined.contains(word), "stage dropped the word {word:?}");
     }
-    // ...and nothing overflows the current region (bottom ≈ 0.58·height).
-    let current_bottom = (h as f64 * 0.60) as i32 + 2;
+    // ...and nothing overflows the current lyric band (bottom ≈ 0.64·height — the band sits
+    // below the song header pill and above the NEXT/footer rows, Figma 373-133).
+    let current_bottom = (h as f64 * 0.65) as i32 + 2;
     for (_, px, y, _) in &texts {
         assert!(
             *y + *px as i32 <= current_bottom,
@@ -231,7 +242,7 @@ fn stage_templates_render_differently() {
         Some(&t),
         StageTemplate::Worship,
         None,
-        None,
+        &StageContext::default(),
         &theme,
         400,
         240,
@@ -242,7 +253,7 @@ fn stage_templates_render_differently() {
         Some(&t),
         StageTemplate::Scripture,
         None,
-        None,
+        &StageContext::default(),
         &theme,
         400,
         240,
@@ -253,7 +264,7 @@ fn stage_templates_render_differently() {
         Some(&t),
         StageTemplate::TimerOnly,
         None,
-        None,
+        &StageContext::default(),
         &theme,
         400,
         240,
@@ -274,7 +285,10 @@ fn timer_only_shows_service_chrome_wall_clock_and_a_200px_readout() {
     use selahcue_engine::scene::Layer;
     let theme = StageTheme::dark();
     let cur = Slide::title("SERMON");
-    let clock = WallClock::new("Sunday · August 3, 2026", "10:42 AM");
+    let ctx = StageContext {
+        clock: Some(WallClock::new("Sunday · August 3, 2026", "10:42 AM")),
+        ..StageContext::default()
+    };
     let t = TimerView {
         elapsed_secs: 0,
         remaining_secs: Some(765), // 12:45
@@ -289,7 +303,7 @@ fn timer_only_shows_service_chrome_wall_clock_and_a_200px_readout() {
         Some(&t),
         StageTemplate::TimerOnly,
         None,
-        Some(&clock),
+        &ctx,
         &theme,
         w,
         h,
@@ -352,7 +366,10 @@ fn timer_only_omits_clock_chrome_when_no_wall_clock_is_set() {
         Some(&t),
         StageTemplate::TimerOnly,
         None,
-        Some(&WallClock::new("Sunday · August 3, 2026", "10:42 AM")),
+        &StageContext {
+            clock: Some(WallClock::new("Sunday · August 3, 2026", "10:42 AM")),
+            ..StageContext::default()
+        },
         &theme,
         400,
         240,
@@ -363,7 +380,7 @@ fn timer_only_omits_clock_chrome_when_no_wall_clock_is_set() {
         Some(&t),
         StageTemplate::TimerOnly,
         None,
-        None,
+        &StageContext::default(),
         &theme,
         400,
         240,
@@ -406,6 +423,380 @@ fn set_clock_round_trips_and_bounds_each_field() {
 }
 
 #[test]
+fn worship_renders_song_header_verse_position_lyrics_and_footer_timer() {
+    // Figma 373-133: a song-title pill (violet dot) + stanza position + clock header, big
+    // centred lyrics (the BODY, not the title), a NEXT line, and a footer timer band.
+    use selahcue_engine::scene::Layer;
+    let theme = StageTheme::dark();
+    let cur = Slide::new(
+        "Amazing Grace",
+        [
+            "Amazing grace, how sweet the sound",
+            "that saved a wretch like me",
+        ],
+    );
+    let next = Slide::new("", ["I once was lost, but now am found"]);
+    let ctx = StageContext {
+        clock: Some(WallClock::new("Sunday · August 3, 2026", "10:42 AM")),
+        song_position: Some((2, 4)),
+    };
+    let t = TimerView {
+        elapsed_secs: 0,
+        remaining_secs: Some(765), // 12:45
+        time_up: false,
+        warn: false,
+        progress: 0.5,
+    };
+    let (w, h) = (1000u32, 563u32);
+    let frame = compose_stage(
+        Some(&cur),
+        Some(&next),
+        Some(&t),
+        StageTemplate::Worship,
+        None,
+        &ctx,
+        &theme,
+        w,
+        h,
+    );
+    let texts: Vec<&str> = frame
+        .layers
+        .iter()
+        .filter_map(|l| match l {
+            Layer::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        texts.contains(&"Amazing Grace"),
+        "the song title labels the header pill"
+    );
+    assert!(
+        texts.contains(&"Verse 2 of 4"),
+        "the stanza position renders from the context"
+    );
+    assert!(texts.contains(&"10:42 AM"), "the header wall clock renders");
+    assert!(
+        texts.contains(&"SERVICE TIMER"),
+        "the footer timer caption renders"
+    );
+    assert!(
+        texts.contains(&"12:45"),
+        "the footer countdown readout renders"
+    );
+    assert!(
+        texts.iter().any(|s| s.contains("Amazing grace, how sweet")),
+        "the stanza LYRIC (body) renders in the centre band"
+    );
+    assert!(
+        texts.contains(&"I once was lost, but now am found"),
+        "the NEXT line renders"
+    );
+    // The violet 'live song' accent dot (Figma 373-136) is present.
+    let fb = render(&frame);
+    assert!(
+        has_color(&fb, Rgba::rgb(0x8b, 0x5c, 0xf6)),
+        "the song pill shows the violet live-song dot"
+    );
+    // No stanza position when the context has none (honest — never a fabricated count).
+    let ctx2 = StageContext {
+        song_position: None,
+        ..ctx.clone()
+    };
+    let f2 = compose_stage(
+        Some(&cur),
+        Some(&next),
+        Some(&t),
+        StageTemplate::Worship,
+        None,
+        &ctx2,
+        &theme,
+        w,
+        h,
+    );
+    assert!(
+        !f2.layers
+            .iter()
+            .any(|l| matches!(l, Layer::Text { text, .. } if text.starts_with("Verse "))),
+        "no stanza position label when the context has none"
+    );
+}
+
+#[test]
+fn scripture_renders_gold_reference_left_verse_and_countdown_panel() {
+    // Figma 374-128: header + clock, a GOLD reference over a left-aligned verse, a NEXT line,
+    // and a right panel with a status pill + TIME LEFT + the readout.
+    use selahcue_engine::scene::Layer;
+    let theme = StageTheme::dark();
+    let cur = Slide::new(
+        "Isaiah 61:5 · KJV",
+        ["And strangers shall stand and feed your flocks, and the sons of the alien."],
+    );
+    let next = Slide::new(
+        "Isaiah 61:6",
+        ["But ye shall be named the Priests of the Lord"],
+    );
+    let ctx = StageContext {
+        clock: Some(WallClock::new("Sunday · August 3, 2026", "10:42 AM")),
+        song_position: None,
+    };
+    let t = TimerView {
+        elapsed_secs: 0,
+        remaining_secs: Some(765), // 12:45
+        time_up: false,
+        warn: false,
+        progress: 0.5,
+    };
+    let (w, h) = (1000u32, 563u32);
+    let frame = compose_stage(
+        Some(&cur),
+        Some(&next),
+        Some(&t),
+        StageTemplate::Scripture,
+        None,
+        &ctx,
+        &theme,
+        w,
+        h,
+    );
+    let texts: Vec<&str> = frame
+        .layers
+        .iter()
+        .filter_map(|l| match l {
+            Layer::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        texts.contains(&"STAGE · SCRIPTURE"),
+        "the header label renders"
+    );
+    assert!(
+        texts.iter().any(|s| s.contains("ISAIAH 61:5")),
+        "the reference renders UPPERCASED"
+    );
+    assert!(texts.contains(&"10:42 AM"), "the header wall clock renders");
+    assert!(
+        texts.contains(&"ON TIME"),
+        "the status pill shows ON TIME while comfortably running"
+    );
+    assert!(texts.contains(&"TIME LEFT"), "the panel caption renders");
+    assert!(
+        texts.contains(&"12:45"),
+        "the panel countdown readout renders"
+    );
+    assert!(
+        texts.iter().any(|s| s.contains("And strangers shall")),
+        "the verse body renders"
+    );
+    assert!(
+        texts.iter().any(|s| s.contains("Isaiah 61:6")),
+        "the NEXT reference renders"
+    );
+    // The reference renders in the gold accent (the only accent-coloured element here).
+    let fb = render(&frame);
+    assert!(
+        has_color(&fb, theme.accent),
+        "the scripture reference renders in gold"
+    );
+}
+
+#[test]
+fn scripture_panel_pill_and_wash_reflect_the_timer_state() {
+    // The right panel signals state: ON TIME (green) / HURRY (amber) / TIME UP (red pill +
+    // a panel-only red wash that never touches the verse column).
+    use selahcue_engine::scene::Layer;
+    let theme = StageTheme::dark();
+    let cur = Slide::new("Isaiah 61:5", ["And strangers shall stand."]);
+    let (w, h) = (1000u32, 563u32);
+    let texts = |f: &Frame| {
+        f.layers
+            .iter()
+            .filter_map(|l| match l {
+                Layer::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // WARN → HURRY (amber readout).
+    let warn = TimerView {
+        warn: true,
+        ..running(0.2)
+    };
+    let fw = compose_stage(
+        Some(&cur),
+        None,
+        Some(&warn),
+        StageTemplate::Scripture,
+        None,
+        &StageContext::default(),
+        &theme,
+        w,
+        h,
+    );
+    assert!(texts(&fw).iter().any(|s| s == "HURRY"), "warn shows HURRY");
+    assert!(
+        has_color(&render(&fw), theme.timer_warn),
+        "the warn readout is amber"
+    );
+    // TIME UP → a TIME UP pill + a panel-only red wash (the LEFT verse column stays dark).
+    let up = compose_stage(
+        Some(&cur),
+        None,
+        Some(&timed_up()),
+        StageTemplate::Scripture,
+        None,
+        &StageContext::default(),
+        &theme,
+        w,
+        h,
+    );
+    let fbu = render(&up);
+    assert!(texts(&up).iter().any(|s| s == "TIME UP"), "TIME UP pill");
+    assert!(
+        has_color(&fbu, theme.alert_wash),
+        "the panel washes red at TIME UP"
+    );
+    assert_eq!(
+        fbu.pixel(3, 3).unwrap(),
+        theme.background,
+        "the LEFT column is NOT washed (panel only, Figma 374-128)"
+    );
+}
+
+#[test]
+fn scripture_next_line_is_truncated_with_an_ellipsis_when_it_overflows() {
+    // The NEXT reference/verse is clipped to the left column with an ASCII ellipsis so it can
+    // never spill into the timer panel (the bundled Latin face has no `…` glyph).
+    use selahcue_engine::scene::Layer;
+    let theme = StageTheme::dark();
+    let cur = Slide::new("Isaiah 61:5", ["verse"]);
+    let long = "But ye shall be named the Priests of the Lord: men shall call you the \
+                Ministers of our God: ye shall eat the riches of the Gentiles"
+        .to_string();
+    let next = Slide::new("Isaiah 61:6", [long.clone()]);
+    let t = TimerView {
+        elapsed_secs: 0,
+        remaining_secs: Some(765),
+        time_up: false,
+        warn: false,
+        progress: 0.5,
+    };
+    let frame = compose_stage(
+        Some(&cur),
+        Some(&next),
+        Some(&t),
+        StageTemplate::Scripture,
+        None,
+        &StageContext::default(),
+        &theme,
+        1000,
+        563,
+    );
+    let next_line = frame
+        .layers
+        .iter()
+        .find_map(|l| match l {
+            Layer::Text { text, .. } if text.starts_with("Isaiah 61:6") => Some(text.clone()),
+            _ => None,
+        })
+        .expect("the NEXT line renders");
+    assert!(
+        next_line.ends_with("..."),
+        "an overflowing NEXT line is clipped with an ellipsis: {next_line:?}"
+    );
+    let full = format!("Isaiah 61:6 · {long}");
+    assert!(
+        next_line.chars().count() < full.chars().count(),
+        "the ellipsized line is shorter than the full label"
+    );
+}
+
+#[test]
+fn set_song_position_round_trips() {
+    let mut sd = StageDisplay::new(160, 90, StageTheme::dark());
+    assert_eq!(sd.song_position(), None);
+    sd.set_song_position(Some((2, 4)));
+    assert_eq!(sd.song_position(), Some((2, 4)));
+    sd.set_song_position(None);
+    assert_eq!(sd.song_position(), None);
+}
+
+#[test]
+fn worship_title_only_item_shows_the_title_as_content_without_a_song_pill() {
+    // A title-only item (no lyrics) is not a "song": it shows its title as the centre content
+    // and gets NO violet song pill (which is reserved for a real song with stanzas).
+    use selahcue_engine::scene::Layer;
+    let theme = StageTheme::dark();
+    let cur = Slide::title("WELCOME");
+    let frame = compose_stage(
+        Some(&cur),
+        None,
+        None,
+        StageTemplate::Worship,
+        None,
+        &StageContext::default(),
+        &theme,
+        1000,
+        563,
+    );
+    assert!(
+        frame
+            .layers
+            .iter()
+            .any(|l| matches!(l, Layer::Text { text, .. } if text.contains("WELCOME"))),
+        "the title renders as the centre content"
+    );
+    assert!(
+        !has_color(&render(&frame), Rgba::rgb(0x8b, 0x5c, 0xf6)),
+        "a title-only item shows no violet song pill"
+    );
+}
+
+#[test]
+fn the_composer_never_panics_on_pathological_input() {
+    // The confidence monitor renders UNTRUSTED slide content (imported plans, remote
+    // controllers). It must NEVER panic — a colossal title/verse/next line (which would once
+    // saturate the width estimate and overflow the pill/next SUMS) and extreme dimensions
+    // (which would once overflow the i32 panel geometry) must both compose safely.
+    let theme = StageTheme::dark();
+    let huge = "x".repeat(30_000_000); // beyond the pre-cap u32 overflow threshold
+    let cur = Slide::new(huge.clone(), ["a short verse line"]);
+    let next = Slide::new(huge.clone(), ["short"]);
+    let ctx = StageContext {
+        clock: Some(WallClock::new("Sunday · August 3, 2026", "10:42 AM")),
+        song_position: Some((u16::MAX, 1)),
+    };
+    let t = TimerView {
+        elapsed_secs: u32::MAX,
+        remaining_secs: Some(u32::MAX),
+        time_up: false,
+        warn: true,
+        progress: 2.0,
+    };
+    for tmpl in [
+        StageTemplate::Worship,
+        StageTemplate::Scripture,
+        StageTemplate::TimerOnly,
+    ] {
+        for (w, h) in [(1u32, 1u32), (u32::MAX, u32::MAX), (1920, 1080)] {
+            // Returns a frame; the assertion is simply that this does not panic.
+            let _ = compose_stage(
+                Some(&cur),
+                Some(&next),
+                Some(&t),
+                tmpl,
+                Some("Wrap up now"),
+                &ctx,
+                &theme,
+                w,
+                h,
+            );
+        }
+    }
+}
+
+#[test]
 fn time_up_is_full_screen_for_timer_only_but_region_only_for_worship() {
     // Behaviour spec (375-139): timer-only reddens the whole screen at TIME UP; worship
     // reddens only its bottom bar, leaving the content area untouched.
@@ -416,7 +807,7 @@ fn time_up_is_full_screen_for_timer_only_but_region_only_for_worship() {
         Some(&timed_up()),
         StageTemplate::TimerOnly,
         None,
-        None,
+        &StageContext::default(),
         &theme,
         200,
         120,
@@ -432,7 +823,7 @@ fn time_up_is_full_screen_for_timer_only_but_region_only_for_worship() {
         Some(&timed_up()),
         StageTemplate::Worship,
         None,
-        None,
+        &StageContext::default(),
         &theme,
         200,
         120,
@@ -459,7 +850,7 @@ fn a_production_message_overlays_and_frames_the_stage() {
         None,
         StageTemplate::Worship,
         None,
-        None,
+        &StageContext::default(),
         &theme,
         320,
         200,
@@ -470,7 +861,7 @@ fn a_production_message_overlays_and_frames_the_stage() {
         None,
         StageTemplate::Worship,
         Some("WRAP UP - 2 MIN LEFT"),
-        None,
+        &StageContext::default(),
         &theme,
         320,
         200,
@@ -491,7 +882,7 @@ fn a_production_message_overlays_and_frames_the_stage() {
         None,
         StageTemplate::Worship,
         Some("   "),
-        None,
+        &StageContext::default(),
         &theme,
         320,
         200,

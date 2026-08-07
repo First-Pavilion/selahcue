@@ -2,7 +2,9 @@
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_engine::raster::{render, system_font_families, FrameBuffer, MAX_SYSTEM_FONTS};
+use selahcue_engine::raster::{
+    measure_line_width, render, system_font_families, FrameBuffer, MAX_SYSTEM_FONTS, STAGE_FONT,
+};
 use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, ShapeKind, TextAlign, TextStyle};
 
 fn red_frame_with_blue_box() -> Frame {
@@ -459,6 +461,36 @@ fn a_missing_font_falls_back_readably_and_deterministically() {
     );
     // And the bundled default itself draws ink.
     assert!(render_text(None).iter().any(|&px| px != 0));
+}
+
+#[test]
+fn the_bundled_stage_font_resolves_proportionally_at_both_weights() {
+    // The stage/confidence monitor requests the bundled Inter at Regular AND Bold. Inter is a
+    // PROPORTIONAL face; a regression where only one weight is bundled makes cosmic-text fall
+    // back to a system MONOSPACE for the missing weight once system fonts are in the DB — a
+    // narrow 'i' and a wide 'W' then measure equal. Assert both weights shape proportionally,
+    // and that Bold is a real heavier face (wider advances), not the Regular reused.
+    let inter = FontName::new(STAGE_FONT).unwrap();
+    for weight in [400u16, 700] {
+        let narrow = measure_line_width("iiiiiiiiii", 100, Some(&inter), weight);
+        let wide = measure_line_width("WWWWWWWWWW", 100, Some(&inter), weight);
+        assert!(
+            narrow > 0.0 && wide > 0.0,
+            "the stage font draws ink at weight {weight}"
+        );
+        assert!(
+            wide > narrow * 1.5,
+            "Inter must shape PROPORTIONALLY at weight {weight} (W ≫ i), not fall back to a \
+             monospace (narrow={narrow:.0}, wide={wide:.0})"
+        );
+    }
+    let reg = measure_line_width("Weight", 100, Some(&inter), 400);
+    let bold = measure_line_width("Weight", 100, Some(&inter), 700);
+    assert!(
+        bold > reg,
+        "bundled Inter Bold (700) is a real heavier face — wider than Regular (400) \
+         (reg={reg:.0}, bold={bold:.0}), not a fallback that reuses Regular"
+    );
 }
 
 #[test]

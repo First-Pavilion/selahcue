@@ -30,6 +30,12 @@ static FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSans-Latin.ttf");
 /// on the bundled Noto Sans, byte-identical as before (NFR-014).
 static INTER_BYTES: &[u8] = include_bytes!("../assets/fonts/Inter-Latin.ttf");
 
+/// The bundled Inter **Bold** (700) static face. A named-font request never falls back to a
+/// system font for a heavier weight when the exact weight is present: with only a single
+/// Regular face loaded, cosmic-text resolves `(Inter, 700)` to a *system monospace* once
+/// system fonts are in the DB — so the stage's bold text must have a real 700 face bundled.
+static INTER_BOLD_BYTES: &[u8] = include_bytes!("../assets/fonts/Inter-Bold-Latin.ttf");
+
 /// The bundled family name to request a Layer in the Inter face (`Family::Name(STAGE_FONT)`).
 pub const STAGE_FONT: &str = "Inter";
 
@@ -101,9 +107,12 @@ pub fn system_font_families() -> Vec<String> {
 fn build_system_fs() -> FontSystem {
     let mut db = cosmic_text::fontdb::Database::new();
     db.load_font_data(FONT_BYTES.to_vec());
-    // Bundled Inter (loaded before the system fonts so `Family::Name("Inter")` resolves to the
-    // bundled face, not a machine-installed Inter) — the stage/confidence typeface.
+    // Bundled Inter Regular + Bold (loaded before the system fonts so `Family::Name("Inter")`
+    // resolves to the bundled faces, not a machine-installed Inter) — the stage/confidence
+    // typeface. Both weights are bundled so `(Inter, 700)` has an exact face and never falls
+    // back to a system monospace once system fonts are in the DB.
     db.load_font_data(INTER_BYTES.to_vec());
+    db.load_font_data(INTER_BOLD_BYTES.to_vec());
     db.load_system_fonts();
     FontSystem::new_with_locale_and_db("en-US".to_string(), db)
 }

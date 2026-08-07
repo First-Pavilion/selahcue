@@ -1175,6 +1175,39 @@ fn next_advances_slide_within_a_song_before_crossing_items() {
 }
 
 #[test]
+fn stage_song_position_reports_the_verse_index_only_for_multi_stanza_songs() {
+    // The worship confidence header's "Verse N of M" is driven by this — a real count from the
+    // live plan item, never fabricated. Multi-stanza song → (idx, total); anything else → None.
+    let mut c = song_controller();
+    assert_eq!(c.stage_song_position(), None, "nothing is live yet");
+    c.apply(&Command::Next); // stage stanza 0
+    c.apply(&Command::GoLive);
+    assert_eq!(
+        c.stage_song_position(),
+        Some((1, 3)),
+        "verse 1 of 3 is live"
+    );
+    c.apply(&Command::Next); // stage stanza 1
+    c.apply(&Command::GoLive);
+    assert_eq!(
+        c.stage_song_position(),
+        Some((2, 3)),
+        "advanced to verse 2 of 3"
+    );
+    c.apply(&Command::Next); // stage stanza 2
+    c.apply(&Command::GoLive);
+    assert_eq!(c.stage_song_position(), Some((3, 3)), "verse 3 of 3");
+    c.apply(&Command::Next); // cross to the scripture (item 1, title-only here)
+    c.apply(&Command::GoLive);
+    assert_eq!(c.live_index(), Some(1), "now live on a title-only item");
+    assert_eq!(
+        c.stage_song_position(),
+        None,
+        "a title-only item has no verse count"
+    );
+}
+
+#[test]
 fn previous_steps_back_within_the_song_then_crosses_at_the_last_slide() {
     let mut c = song_controller();
     for _ in 0..3 {

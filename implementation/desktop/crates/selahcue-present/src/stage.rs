@@ -176,12 +176,6 @@ impl TimerView {
 /// 0.13 / 0.10), so a short line keeps the familiar spacing and a long verse still fits.
 const STAGE_LINE_HEIGHT: f64 = 1.3;
 
-/// The design (ceiling) cell height for a confidence region — a few large lines (≈ 20% of
-/// the region height, the historical `line_h`); auto-fit shrinks below this for longer content.
-fn region_max_cell(region: Rect) -> u32 {
-    ((region.h as f64 * 0.2) as u32).max(1)
-}
-
 /// Format a whole-second count as `M:SS` for the timer readout.
 fn format_clock(secs: u32) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
@@ -224,11 +218,25 @@ impl WallClock {
     }
 }
 
+/// Extra live context for the confidence-monitor chrome that the current/next [`Slide`]s do
+/// not carry — the wall clock and the live song's stanza position (Figma 373-375: the header
+/// `10:42 AM` clock, `Verse 2 of 4`). Supplied by the controller/desktop so composition stays
+/// deterministic and clock-free; every field is optional and the templates degrade gracefully
+/// when a value is unknown. Cheap to clone (a small snapshot, replaced not accumulated).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StageContext {
+    /// The local wall clock (date line + 12-hour time). `None` until the backend feeds it.
+    pub clock: Option<WallClock>,
+    /// The live stanza position as 1-based `(index, total)` → `Verse 2 of 4`. `None` for a
+    /// non-song item or a single-slide item.
+    pub song_position: Option<(u16, u16)>,
+}
+
 /// Compose the stage/confidence scene from the current live state, laid out by the chosen
 /// [`StageTemplate`] and with an optional operator `message` overlaid (Figma 373-375 / spec
-/// 375-139). `timer` is the active timer (`None` when none is running). The confidence
-/// monitor always uses the bundled default font (deterministic — it is the speaker's view,
-/// not the themed audience output). The time-of-day clock is drawn by the desktop backend.
+/// 375-139). `timer` is the active timer (`None` when none is running); `context` carries the
+/// wall clock + stanza position. The confidence monitor shapes its text in the bundled Inter
+/// face (deterministic — it is the speaker's view, not the themed audience output).
 #[allow(clippy::too_many_arguments)]
 pub fn compose_stage(
     current: Option<&Slide>,
@@ -236,24 +244,29 @@ pub fn compose_stage(
     timer: Option<&TimerView>,
     template: StageTemplate,
     message: Option<&str>,
-    clock: Option<&WallClock>,
+    context: &StageContext,
     theme: &StageTheme,
     width: u32,
     height: u32,
 ) -> Frame {
+    // Clamp to the renderable bound so the per-template geometry (fractions of w/h cast to
+    // i32/u32) can't overflow on a pathological size — the composer must never panic. A frame
+    // beyond this can't rasterize anyway (the engine rejects it at readback).
+    let width = width.min(selahcue_engine::raster::MAX_DIMENSION);
+    let height = height.min(selahcue_engine::raster::MAX_DIMENSION);
     let mut frame = Frame::new(width, height).with_background(theme.background);
     if width == 0 || height == 0 {
         return frame;
     }
     match template {
-        StageTemplate::Worship => {
-            compose_worship(&mut frame, current, next, timer, theme, width, height)
-        }
-        StageTemplate::Scripture => {
-            compose_scripture(&mut frame, current, next, timer, theme, width, height)
-        }
+        StageTemplate::Worship => compose_worship(
+            &mut frame, current, next, timer, context, theme, width, height,
+        ),
+        StageTemplate::Scripture => compose_scripture(
+            &mut frame, current, next, timer, context, theme, width, height,
+        ),
         StageTemplate::TimerOnly => {
-            compose_timer_only(&mut frame, current, timer, clock, theme, width, height)
+            compose_timer_only(&mut frame, current, timer, context, theme, width, height)
         }
     }
     // The production message is a stage-only overlay (never the audience) — it dims the
@@ -308,10 +321,17 @@ fn line(f: &mut Frame, x: i32, y: i32, w: u32, px: u32, text: &str, color: Rgba,
     });
 }
 
-/// A rough single-line advance for the bundled default font (≈ 0.6 em) — good enough to
-/// size a chip; exact glyph metrics are not needed for a status pill.
+/// A rough single-line advance (≈ 0.6 em) — good enough to size a chip; exact glyph metrics
+/// are not needed for a status pill. **Bounded**: a pathologically long (untrusted) title or
+/// line can't saturate the `f64 → u32` cast to `u32::MAX` and overflow the width SUMS the
+/// callers build from it — the composer must never panic on any input.
 fn text_width(text: &str, px: u32) -> u32 {
-    ((text.chars().count() as f64) * (px as f64) * 0.6).ceil() as u32
+    // 4 Mpx — far beyond any renderable width (MAX_DIMENSION is 8192), yet small enough that a
+    // handful of these summed stay well under u32::MAX.
+    const CAP: f64 = (1u32 << 22) as f64;
+    ((text.chars().count() as f64) * (px as f64) * 0.6)
+        .ceil()
+        .min(CAP) as u32
 }
 
 /// A small filled pill with a left label; returns its total width so the caller can flow
@@ -340,28 +360,35 @@ fn dot(f: &mut Frame, x: i32, y: i32, d: u32, color: Rgba) {
     fill(f, x, y, d.max(1), d.max(1), color);
 }
 
-/// Auto-fit a slide's full text into `region` (word-wrap + shrink-to-fit so the speaker
-/// sees EVERYTHING, never truncated — parity with the audience output).
-fn content_region(
+/// The violet "live song" indicator on the worship header pill (Figma 373-136). A fixed
+/// accent — the confidence monitor is single-theme, so this stays deterministic.
+const SONG_ACCENT: Rgba = Rgba::rgb(0x8b, 0x5c, 0xf6);
+
+/// Auto-fit explicit `lines` into `region` (word-wrap + shrink-to-fit so the speaker sees
+/// EVERYTHING, never truncated — parity with the audience output), capped at `max_cell`
+/// line-box height. Templates pass a larger cap for the big lyric / verse bands than for a
+/// muted status line.
+#[allow(clippy::too_many_arguments)]
+fn fit_lines(
     f: &mut Frame,
-    slide: Option<&Slide>,
+    lines: &[&str],
     region: Rect,
+    max_cell: u32,
     align: TextAlign,
+    valign: VAlign,
     color: Rgba,
     weight: u16,
 ) {
-    let Some(slide) = slide else {
+    if lines.is_empty() {
         return;
-    };
-    let lines: Vec<&str> = slide.lines().collect();
-    let max_cell = region_max_cell(region);
+    }
     for layer in autofit_layers(
-        &lines,
+        lines,
         region,
-        max_cell,
+        max_cell.max(1),
         STAGE_LINE_HEIGHT,
         align,
-        VAlign::Top,
+        valign,
         color,
         Fit::ShrinkToFit,
         stage_font(),
@@ -381,96 +408,212 @@ fn timer_readout(t: &TimerView) -> String {
     }
 }
 
-// --- Worship: lyric now / next + a bottom timer bar. TIME UP tints the bar only. ---
+/// The top-right header wall clock shared by the worship + scripture templates (Figma
+/// 373-140 / 374-131): the 12-hour time-of-day, right-aligned to a 0.04·w margin. A no-op
+/// until the backend feeds a clock.
+fn header_clock(f: &mut Frame, ctx: &StageContext, theme: &StageTheme, w: u32, h: u32) {
+    let Some(time) = ctx
+        .clock
+        .as_ref()
+        .map(|c| c.time())
+        .filter(|s| !s.is_empty())
+    else {
+        return;
+    };
+    line(
+        f,
+        0,
+        (h as f64 * 0.05) as i32,
+        (w as f64 * 0.96) as u32,
+        ((h as f64 * 0.062) as u32).max(1),
+        time,
+        theme.text,
+        TextAlign::Right,
+    );
+}
+
+// --- Worship: a song header (title pill + stanza position + clock), big centred lyrics, the
+// coming line, and a footer timer band. TIME UP flips only the footer (Figma 373-133/159). ---
+#[allow(clippy::too_many_arguments)]
 fn compose_worship(
     frame: &mut Frame,
     current: Option<&Slide>,
     next: Option<&Slide>,
     timer: Option<&TimerView>,
+    ctx: &StageContext,
     theme: &StageTheme,
     w: u32,
     h: u32,
 ) {
-    // Current lyric — the large centre band.
-    let cur = Rect::new(
-        (w as f64 * 0.06) as i32,
-        (h as f64 * 0.10) as i32,
-        (w as f64 * 0.88) as u32,
-        (h as f64 * 0.48) as u32,
-    );
-    content_region(frame, current, cur, TextAlign::Center, theme.text, 700);
+    let title = current.map(|s| s.title.trim()).filter(|t| !t.is_empty());
+    let body: Vec<&str> = current
+        .map(|s| {
+            s.body
+                .iter()
+                .map(String::as_str)
+                .filter(|l| !l.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let is_song = !body.is_empty();
 
-    // NEXT chip + the coming line (muted).
-    if next.is_some() {
-        let ny = (h as f64 * 0.62) as i32;
+    // Header pill: the live song (violet dot + title). Only a real song (has lyrics) gets the
+    // pill; a title-only item shows its title as the centre text instead.
+    if is_song {
+        if let Some(title) = title {
+            let pill_px = ((h as f64 * 0.044) as u32).max(1);
+            let px0 = (w as f64 * 0.04) as i32;
+            let py0 = (h as f64 * 0.052) as i32;
+            let pad = ((pill_px as f64) * 0.55) as u32;
+            let dot_d = ((pill_px as f64) * 0.36) as u32;
+            let gap = ((pill_px as f64) * 0.4) as u32;
+            let title_w = text_width(title, pill_px);
+            let pill_w = pad + dot_d + gap + title_w + pad;
+            let pill_h = pill_px + pad;
+            fill(frame, px0, py0, pill_w, pill_h, theme.track);
+            dot(
+                frame,
+                px0 + pad as i32,
+                py0 + (pill_h.saturating_sub(dot_d) / 2) as i32,
+                dot_d,
+                SONG_ACCENT,
+            );
+            line(
+                frame,
+                px0 + (pad + dot_d + gap) as i32,
+                py0 + (pad / 2) as i32,
+                title_w + pill_px,
+                pill_px,
+                title,
+                theme.text,
+                TextAlign::Left,
+            );
+            // Stanza position after the pill, e.g. "Verse 2 of 4".
+            if let Some((i, n)) = ctx.song_position {
+                let vpx = ((h as f64 * 0.040) as u32).max(1);
+                line(
+                    frame,
+                    px0 + pill_w as i32 + (w as f64 * 0.016) as i32,
+                    py0 + (pill_h.saturating_sub(vpx) / 2) as i32,
+                    (w as f64 * 0.4) as u32,
+                    vpx,
+                    &format!("Verse {i} of {n}"),
+                    theme.muted,
+                    TextAlign::Left,
+                );
+            }
+        }
+    }
+    header_clock(frame, ctx, theme, w, h);
+
+    // Centre band: the current stanza (or the title for a title-only item), big + centred.
+    let content: Vec<&str> = if is_song {
+        body
+    } else {
+        title.into_iter().collect()
+    };
+    fit_lines(
+        frame,
+        &content,
+        Rect::new(
+            (w as f64 * 0.05) as i32,
+            (h as f64 * 0.19) as i32,
+            (w as f64 * 0.90) as u32,
+            (h as f64 * 0.45) as u32,
+        ),
+        (h as f64 * 0.17) as u32,
+        TextAlign::Center,
+        VAlign::Middle,
+        theme.text,
+        700,
+    );
+
+    // The coming line (muted), a NEXT chip + the first line of the next stanza, centred.
+    if let Some(nl) = next
+        .map(|s| s.body.first().map(String::as_str).unwrap_or(&s.title))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let ny = (h as f64 * 0.68) as i32;
         let chip_px = ((h as f64 * 0.030) as u32).max(1);
+        let line_px = ((h as f64 * 0.034) as u32).max(1);
+        let gap = (w as f64 * 0.015) as u32;
+        // Centre the (chip + gap + line) group. `chip()` draws a width of text+px (pad·2).
+        let chip_w = text_width("NEXT", chip_px) + chip_px;
+        let line_w = text_width(nl, line_px);
+        let group_w = chip_w + gap + line_w;
+        let start_x = (w.saturating_sub(group_w) / 2) as i32;
+        let chip_h = chip_px + chip_px / 2;
         let cw = chip(
             frame,
-            (w as f64 * 0.06) as i32,
+            start_x,
             ny,
             "NEXT",
             chip_px,
             theme.track,
             theme.muted,
         );
-        let nx = (w as f64 * 0.06) as i32 + cw as i32 + (w as f64 * 0.015) as i32;
-        let nrect = Rect::new(
-            nx,
-            ny,
-            (w as f64 * 0.94) as u32 - (nx.max(0) as u32),
-            (h as f64 * 0.18) as u32,
+        line(
+            frame,
+            start_x + cw as i32 + gap as i32,
+            ny + (chip_h.saturating_sub(line_px) / 2) as i32,
+            line_w + line_px,
+            line_px,
+            nl,
+            theme.muted,
+            TextAlign::Left,
         );
-        content_region(frame, next, nrect, TextAlign::Left, theme.muted, 400);
     }
 
-    // Bottom timer bar. TIME UP washes only this region red (spec: worship = region only).
-    let bar_h = ((h as f64 * 0.15) as u32).max(1);
-    let bar_y = (h - bar_h) as i32;
+    // Footer timer band: a state dot + SERVICE TIMER and the readout. TIME UP washes only
+    // this band red (spec: worship flips the timer region only, not the whole screen).
+    let band_h = ((h as f64 * 0.19) as u32).max(1);
+    let band_y = (h - band_h) as i32;
     let up = timer.map(|t| t.time_up).unwrap_or(false);
     fill(
         frame,
         0,
-        bar_y,
+        band_y,
         w,
-        bar_h,
+        band_h,
         if up { theme.alert_wash } else { theme.panel },
     );
-    // Only an ACTIVE timer draws the caption + readout; an idle monitor shows a bare bar
-    // (never mistakable for a full countdown, and no stray text over an empty stage).
+    // Only an ACTIVE timer draws the caption + readout; an idle monitor shows a bare band.
     if let Some(t) = timer {
-        if !t.time_up {
-            // A thin progress ribbon along the top of the bar (drains as time runs out).
-            let fw = ((w as f64 * t.progress).round() as u32).min(w);
-            fill(
-                frame,
-                0,
-                bar_y,
-                fw,
-                ((bar_h as f64 * 0.10) as u32).max(1),
-                t.color(theme),
-            );
-        }
-        let cap_px = ((bar_h as f64 * 0.26) as u32).max(1);
+        let col = if up {
+            theme.timer_alert
+        } else {
+            t.color(theme)
+        };
+        let cap_px = ((band_h as f64 * 0.22) as u32).max(1);
+        let cy = band_y + (band_h.saturating_sub(cap_px) / 2) as i32;
+        let dot_d = ((cap_px as f64) * 0.55) as u32;
+        dot(
+            frame,
+            (w as f64 * 0.04) as i32,
+            cy + (cap_px.saturating_sub(dot_d) / 2) as i32,
+            dot_d,
+            col,
+        );
         line(
             frame,
-            (w as f64 * 0.03) as i32,
-            bar_y + (bar_h as f64 * 0.30) as i32,
+            (w as f64 * 0.04) as i32 + dot_d as i32 + (w as f64 * 0.012) as i32,
+            cy,
             (w as f64 * 0.5) as u32,
             cap_px,
             "SERVICE TIMER",
             theme.muted,
             TextAlign::Left,
         );
-        let px = ((bar_h as f64 * 0.48) as u32).max(1);
-        let ty = bar_y + ((bar_h.saturating_sub(px)) / 2) as i32;
+        let px = ((band_h as f64 * 0.42) as u32).max(1);
         line(
             frame,
-            (w as f64 * 0.53) as i32,
-            ty,
-            (w as f64 * 0.44) as u32,
+            (w as f64 * 0.50) as i32,
+            band_y + (band_h.saturating_sub(px) / 2) as i32,
+            (w as f64 * 0.46) as u32,
             px,
             &timer_readout(t),
-            t.color(theme),
+            col,
             TextAlign::Right,
         );
     }
@@ -478,56 +621,99 @@ fn compose_worship(
 
 // --- Scripture: verse + next on the left, a countdown panel on the right. TIME UP tints
 // the panel only. ---
+#[allow(clippy::too_many_arguments)]
 fn compose_scripture(
     frame: &mut Frame,
     current: Option<&Slide>,
     next: Option<&Slide>,
     timer: Option<&TimerView>,
+    ctx: &StageContext,
     theme: &StageTheme,
     w: u32,
     h: u32,
 ) {
-    let hx = (w as f64 * 0.04) as i32;
-    let left_w = (w as f64 * 0.58) as u32;
-    let lbl_px = ((h as f64 * 0.030) as u32).max(1);
+    let hx = (w as f64 * 0.048) as i32;
+    let left_w = (w as f64 * 0.60) as u32;
+
+    // Header: the screen label + the wall clock.
     line(
         frame,
         hx,
-        (h as f64 * 0.06) as i32,
+        (h as f64 * 0.058) as i32,
         left_w,
-        lbl_px,
+        ((h as f64 * 0.050) as u32).max(1),
         "STAGE · SCRIPTURE",
         theme.muted,
         TextAlign::Left,
     );
+    header_clock(frame, ctx, theme, w, h);
 
-    let cur = Rect::new(
-        hx,
-        (h as f64 * 0.16) as i32,
-        left_w,
-        (h as f64 * 0.54) as u32,
-    );
-    content_region(frame, current, cur, TextAlign::Left, theme.text, 700);
-
-    if next.is_some() {
-        let ny = (h as f64 * 0.76) as i32;
-        let chip_px = ((h as f64 * 0.028) as u32).max(1);
-        let cw = chip(frame, hx, ny, "NEXT", chip_px, theme.track, theme.muted);
-        let nx = hx + cw as i32 + (w as f64 * 0.012) as i32;
-        let nrect = Rect::new(
-            nx,
-            ny,
-            left_w.saturating_sub(cw + (w as f64 * 0.012) as u32),
-            (h as f64 * 0.16) as u32,
+    // Left column: the reference (gold) then the verse body (white, left-aligned + wrapped).
+    if let Some(reference) = current.map(|s| s.title.trim()).filter(|t| !t.is_empty()) {
+        line(
+            frame,
+            hx,
+            (h as f64 * 0.185) as i32,
+            left_w,
+            ((h as f64 * 0.062) as u32).max(1),
+            &reference.to_uppercase(),
+            theme.accent,
+            TextAlign::Left,
         );
-        content_region(frame, next, nrect, TextAlign::Left, theme.muted, 400);
+    }
+    let verse: Vec<&str> = current
+        .map(|s| {
+            s.body
+                .iter()
+                .map(String::as_str)
+                .filter(|l| !l.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    fit_lines(
+        frame,
+        &verse,
+        Rect::new(
+            hx,
+            (h as f64 * 0.28) as i32,
+            left_w,
+            (h as f64 * 0.50) as u32,
+        ),
+        (h as f64 * 0.115) as u32,
+        TextAlign::Left,
+        VAlign::Top,
+        theme.text,
+        700,
+    );
+
+    // NEXT row (left column): the coming reference · verse, clipped to the column with an
+    // ellipsis (the panel must stay clear).
+    if let Some(nl) = next.and_then(scripture_next_label) {
+        let ny = (h as f64 * 0.85) as i32;
+        let chip_px = ((h as f64 * 0.028) as u32).max(1);
+        let line_px = ((h as f64 * 0.030) as u32).max(1);
+        let gap = (w as f64 * 0.012) as u32;
+        let cw = chip(frame, hx, ny, "NEXT", chip_px, theme.track, theme.muted);
+        let nx = hx + cw as i32 + gap as i32;
+        let avail = left_w.saturating_sub(cw + gap);
+        let chip_h = chip_px + chip_px / 2;
+        line(
+            frame,
+            nx,
+            ny + (chip_h.saturating_sub(line_px) / 2) as i32,
+            avail,
+            line_px,
+            &ellipsize(&nl, line_px, avail),
+            theme.muted,
+            TextAlign::Left,
+        );
     }
 
-    // Right countdown panel.
-    let px0 = (w as f64 * 0.64) as i32;
-    let pw = (w as f64 * 0.32) as u32;
-    let py = (h as f64 * 0.14) as i32;
-    let ph = (h as f64 * 0.72) as u32;
+    // Right countdown panel (full content height). TIME UP washes the panel only.
+    let px0 = (w as f64 * 0.68) as i32;
+    let pw = w.saturating_sub(px0.max(0) as u32);
+    let py = (h as f64 * 0.142) as i32;
+    let ph = h.saturating_sub(py.max(0) as u32);
     let up = timer.map(|t| t.time_up).unwrap_or(false);
     let warn = timer.map(|t| t.warn).unwrap_or(false);
     fill(
@@ -539,7 +725,7 @@ fn compose_scripture(
         if up { theme.alert_wash } else { theme.panel },
     );
 
-    // Status pill (dot + label), centred near the top of the panel.
+    // Status pill (a filled chip: dot + label) centred in the panel.
     let (pill, pill_col) = if up {
         ("TIME UP", theme.timer_alert)
     } else if warn {
@@ -547,50 +733,100 @@ fn compose_scripture(
     } else {
         ("ON TIME", theme.timer_ok)
     };
-    let pill_px = ((h as f64 * 0.024) as u32).max(1);
-    let pill_w = text_width(pill, pill_px) + pill_px;
-    let pill_x = px0 + (pw as i32 - pill_w as i32) / 2;
+    let pill_px = ((h as f64 * 0.028) as u32).max(1);
+    let dot_d = ((pill_px as f64) * 0.5) as u32;
+    let pgap = ((pill_px as f64) * 0.4) as u32;
+    let hpad = ((pill_px as f64) * 0.7) as u32;
+    let label_w = text_width(pill, pill_px);
+    let pill_w = hpad + dot_d + pgap + label_w + hpad;
+    let pill_h = pill_px + pill_px / 2;
+    let pill_x = px0 + (pw.saturating_sub(pill_w) / 2) as i32;
+    let pill_y = (h as f64 * 0.37) as i32;
+    fill(frame, pill_x, pill_y, pill_w, pill_h, theme.track);
     dot(
         frame,
-        pill_x,
-        py + (ph as f64 * 0.12) as i32,
-        (pill_px as f64 * 0.7) as u32,
+        pill_x + hpad as i32,
+        pill_y + (pill_h.saturating_sub(dot_d) / 2) as i32,
+        dot_d,
         pill_col,
     );
     line(
         frame,
-        pill_x + pill_px as i32,
-        py + (ph as f64 * 0.11) as i32,
-        pill_w,
+        pill_x + (hpad + dot_d + pgap) as i32,
+        pill_y + (pill_h.saturating_sub(pill_px) / 2) as i32,
+        label_w + pill_px,
         pill_px,
         pill,
         pill_col,
         TextAlign::Left,
     );
 
+    // "TIME LEFT" caption + the big readout, centred in the panel.
     line(
         frame,
         px0,
-        py + (ph as f64 * 0.26) as i32,
+        (h as f64 * 0.45) as i32,
         pw,
-        ((h as f64 * 0.020) as u32).max(1),
+        ((h as f64 * 0.030) as u32).max(1),
         "TIME LEFT",
         theme.muted,
         TextAlign::Center,
     );
     if let Some(t) = timer {
-        let big = ((h as f64 * 0.16) as u32).max(1);
+        // "TIME UP" is wider than "M:SS", so it drops to a size that clears the narrow panel.
+        let (txt, read_px) = if up {
+            ("TIME UP".to_string(), (h as f64 * 0.11) as u32)
+        } else {
+            (timer_readout(t), (h as f64 * 0.22) as u32)
+        };
         line(
             frame,
             px0,
-            py + (ph as f64 * 0.40) as i32,
+            (h as f64 * 0.50) as i32,
             pw,
-            big,
-            &timer_readout(t),
-            t.color(theme),
+            read_px.max(1),
+            &txt,
+            if up {
+                theme.timer_alert
+            } else {
+                t.color(theme)
+            },
             TextAlign::Center,
         );
     }
+}
+
+/// The scripture NEXT label: the coming reference joined to the start of its verse
+/// (`Isaiah 61:6 · But ye shall be named…`). `None` when there's nothing meaningful.
+fn scripture_next_label(s: &Slide) -> Option<String> {
+    let head = s.title.trim();
+    let body = s.body.first().map(|l| l.trim()).filter(|l| !l.is_empty());
+    match (head.is_empty(), body) {
+        (false, Some(b)) => Some(format!("{head} · {b}")),
+        (false, None) => Some(head.to_string()),
+        (true, Some(b)) => Some(b.to_string()),
+        (true, None) => None,
+    }
+}
+
+/// Truncate `text` with a trailing `...` so its estimated width fits `max_w` at `px` (matches
+/// the design's clipped NEXT line). Rough — uses [`text_width`]'s estimate — but never
+/// overflows. Uses ASCII dots (the bundled Latin face has no `…` glyph).
+fn ellipsize(text: &str, px: u32, max_w: u32) -> String {
+    if text_width(text, px) <= max_w {
+        return text.to_string();
+    }
+    let mut kept = String::new();
+    for ch in text.chars() {
+        let mut candidate = kept.clone();
+        candidate.push(ch);
+        if text_width(&format!("{candidate}..."), px) > max_w {
+            break;
+        }
+        kept.push(ch);
+    }
+    kept.push_str("...");
+    kept
 }
 
 // --- Timer-only: a big centred countdown with service chrome (Figma 374-151). Header row
@@ -600,11 +836,12 @@ fn compose_timer_only(
     frame: &mut Frame,
     current: Option<&Slide>,
     timer: Option<&TimerView>,
-    clock: Option<&WallClock>,
+    ctx: &StageContext,
     theme: &StageTheme,
     w: u32,
     h: u32,
 ) {
+    let clock = ctx.clock.as_ref();
     let up = timer.map(|t| t.time_up).unwrap_or(false);
     if up {
         // Full-screen solid red wash (never flashing — WCAG 2.3.1).
@@ -820,7 +1057,7 @@ pub struct StageDisplay {
     theme: StageTheme,
     template: StageTemplate,
     message: Option<String>,
-    clock: Option<WallClock>,
+    context: StageContext,
     engine: Engine,
 }
 
@@ -832,7 +1069,7 @@ impl StageDisplay {
             theme,
             template: StageTemplate::default(),
             message: None,
-            clock: None,
+            context: StageContext::default(),
             engine: Engine::new(width, height),
         }
     }
@@ -863,16 +1100,28 @@ impl StageDisplay {
         };
     }
 
-    /// The wall-clock snapshot the confidence monitor renders (Timer-only footer/header), if
-    /// any. Compared by the controller so the monitor only re-composes when the value changes.
+    /// The wall-clock snapshot the confidence monitor renders (header/footer chrome), if any.
+    /// Compared by the controller so the monitor only re-composes when the value changes.
     pub fn clock(&self) -> Option<&WallClock> {
-        self.clock.as_ref()
+        self.context.clock.as_ref()
     }
 
     /// Set (or clear, with `None`) the wall-clock snapshot. The desktop backend pushes the
     /// current local date/time here each refresh; composition itself stays clock-free.
     pub fn set_clock(&mut self, clock: Option<WallClock>) {
-        self.clock = clock;
+        self.context.clock = clock;
+    }
+
+    /// The live song's stanza position (1-based `(index, total)` → `Verse 2 of 4`), if any.
+    /// Compared by the controller so the monitor only re-composes when it changes.
+    pub fn song_position(&self) -> Option<(u16, u16)> {
+        self.context.song_position
+    }
+
+    /// Set (or clear, with `None`) the live song's stanza position for the worship header.
+    /// Derived by the controller from the live plan item; `None` for non-song items.
+    pub fn set_song_position(&mut self, position: Option<(u16, u16)>) {
+        self.context.song_position = position;
     }
 
     /// Update the monitor from the current live state (`timer` = `None` when no timer
@@ -889,7 +1138,7 @@ impl StageDisplay {
             timer,
             self.template,
             self.message.as_deref(),
-            self.clock.as_ref(),
+            &self.context,
             &self.theme,
             self.width,
             self.height,

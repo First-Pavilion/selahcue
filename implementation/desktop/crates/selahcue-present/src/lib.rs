@@ -28,7 +28,9 @@ pub use deck::{
 pub use present::Presenter;
 pub use qr::{compose_qr, qr_modules};
 pub use slide::Slide;
-pub use stage::{compose_identify, compose_stage, StageDisplay, StageTheme, TimerView, WallClock};
+pub use stage::{
+    compose_identify, compose_stage, StageContext, StageDisplay, StageTheme, TimerView, WallClock,
+};
 pub use theme::{
     Background, Band, Element, Fit, GradientBackground, ImageBackground, RegionStyle, Theme,
     VAlign, MAX_ELEMENTS, MAX_TEXT_ELEMENT_LEN,
