@@ -169,6 +169,11 @@ class _ScriptureTabState extends State<ScriptureTab> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // The human-in-the-loop gate (FR-095): auto-detected scripture the
+        // operator must approve before it can go live (never auto-displays,
+        // FR-115). Shown above search when the host has pending detections.
+        if (view != null && view.detections.isNotEmpty)
+          _detectionSection(view.detections),
         // Controls: translation picker + reference/search field.
         Padding(
           padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
@@ -234,6 +239,91 @@ class _ScriptureTabState extends State<ScriptureTab> {
       ],
     );
   }
+
+  /// The "NEEDS YOUR APPROVAL" card — one row per pending detection. Approve
+  /// stages the verse in Preview (`ApproveDetection`); Reject drops it
+  /// (`DismissDetection`). Both require SearchScripture (this tab is gated).
+  Widget _detectionSection(List<DetectionView> detections) => Container(
+        margin: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: DesignTokens.warnFill.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: DesignTokens.warnInk),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('NEEDS YOUR APPROVAL',
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.7,
+                    color: DesignTokens.warnInk)),
+            for (final d in detections) _detectionRow(d),
+          ],
+        ),
+      );
+
+  Widget _detectionRow(DetectionView d) => Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(d.reference,
+                      style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: DesignTokens.textPrimary)),
+                ),
+                if (d.confidence != null)
+                  Text('${d.confidence}% MATCH',
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: DesignTokens.previewInk)),
+              ],
+            ),
+            if (d.text.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(d.text,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 13, color: DesignTokens.textMuted)),
+              ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton(
+                    style: FilledButton.styleFrom(
+                        backgroundColor: DesignTokens.previewFill,
+                        padding: const EdgeInsets.symmetric(vertical: 10)),
+                    onPressed: () =>
+                        widget.live.act(cmdApproveDetection(d.id)),
+                    child: const Text('Approve'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 10)),
+                    onPressed: () =>
+                        widget.live.act(cmdDismissDetection(d.id)),
+                    child: const Text('Reject'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
 
   Widget _chapterNav(ChapterResult ch) => Padding(
         padding: const EdgeInsets.fromLTRB(14, 4, 14, 6),
