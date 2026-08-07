@@ -4,7 +4,10 @@
 
 use selahcue_engine::analysis::analyze_flashes;
 use selahcue_engine::raster::FrameBuffer;
-use selahcue_present::{LayerMask, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView};
+use selahcue_present::{
+    AuthoredSlide, Background, LayerMask, Presenter, Rgba, Slide, SlideId, StageDisplay,
+    StageTheme, Theme, TimerView,
+};
 use std::time::{Duration, Instant};
 
 fn presenter() -> Presenter {
@@ -44,6 +47,73 @@ fn go_live_pushes_preview_to_live() {
         "live must match what preview was showing"
     );
     assert_eq!(p.live_slide().unwrap().title, "Song 1");
+}
+
+#[test]
+fn present_authored_puts_the_slide_on_live_and_takes_over() {
+    let mut p = presenter();
+    // Go live with a normal title+body plan slide first, so we can prove the authored present
+    // REPLACES it (the two live models are mutually exclusive on the single audience surface).
+    p.stage(Slide::title("Song 1"));
+    assert!(p.go_live());
+    assert!(p.live_slide().is_some());
+
+    // An authored deck slide with a distinctive solid background composes to that colour across
+    // the whole frame (NFR-024: the background always fills the frame).
+    let bg = Rgba::rgb(180, 40, 90);
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    slide.background = Some(Background::Solid(bg));
+    assert!(
+        p.present_authored(&slide, &Theme::dark()),
+        "presenting a valid authored slide succeeds"
+    );
+
+    // The audience output now shows the presented slide's pixels — byte-identical to the canvas
+    // compositor — and it has TAKEN OVER: the title+body live slide is cleared.
+    assert_eq!(
+        p.live_output().pixel(160, 90).unwrap(),
+        bg,
+        "the audience output shows the presented authored slide"
+    );
+    assert!(
+        p.live_slide().is_none(),
+        "presenting an authored slide takes over live (no title+body live slide remains)"
+    );
+
+    // A later plan Go-Live cleanly replaces the presented authored slide (last writer wins on
+    // the single live output).
+    p.stage(Slide::title("Song 2"));
+    assert!(p.go_live());
+    assert_eq!(p.live_slide().unwrap().title, "Song 2");
+    assert_ne!(
+        p.live_output().pixel(160, 90).unwrap(),
+        bg,
+        "a later go-live replaces the presented authored slide"
+    );
+}
+
+#[test]
+fn authored_live_is_tracked_and_cleared_by_a_later_go_live() {
+    let mut p = presenter();
+    assert_eq!(p.authored_live_id(), None, "nothing authored is live initially");
+
+    let mut slide = AuthoredSlide::new(SlideId(7));
+    slide.background = Some(Background::Solid(Rgba::rgb(180, 40, 90)));
+    assert!(p.present_authored(&slide, &Theme::dark()));
+    assert_eq!(
+        p.authored_live_id(),
+        Some(7),
+        "presenting an authored slide records it as the live authored content"
+    );
+
+    // A later plan go-live takes over → the authored-live signal clears (mutual exclusion).
+    p.stage(Slide::title("Song 2"));
+    assert!(p.go_live());
+    assert_eq!(
+        p.authored_live_id(),
+        None,
+        "a plan go-live clears the authored-live signal"
+    );
 }
 
 #[test]

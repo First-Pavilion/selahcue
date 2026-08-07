@@ -8,7 +8,8 @@
 //!
 //! [`go_live`]: Presenter::go_live
 
-use crate::compose::{compose_slide_masked, LayerMask};
+use crate::compose::{compose_authored_slide, compose_slide_masked, LayerMask};
+use crate::deck::AuthoredSlide;
 use crate::slide::Slide;
 use crate::stage::compose_identify;
 use crate::theme::Theme;
@@ -35,6 +36,11 @@ pub struct Presenter {
     /// with its own effective theme and never clobbers an overridden one.
     staged_theme: Option<Theme>,
     live_theme: Option<Theme>,
+    /// The authored deck slide currently on the Live surface (Design 2.0, node 329:124), if any.
+    /// Mutually exclusive with `live_slide`: `present_authored` sets this and clears `live_slide`;
+    /// a plan/scripture `go_live` clears this. Retained so secondary screens / NDI can MIRROR the
+    /// authored slide (see [`compose_screen_live`](Self::compose_screen_live)) instead of idle black.
+    live_authored: Option<AuthoredSlide>,
     /// The `main` audience SCREEN's per-screen theme (86ajq321k). `None` = follow the
     /// per-item override / global. When set, it is the strongest signal for the physical
     /// `main` output: the effective theme is `main_screen_theme ?? item_theme ?? global`,
@@ -71,6 +77,7 @@ impl Presenter {
             live_slide: None,
             staged_theme: None,
             live_theme: None,
+            live_authored: None,
             main_screen_theme: None,
             main_layer_mask: LayerMask::ALL,
         }
@@ -137,7 +144,45 @@ impl Presenter {
         }
         self.live_slide = Some(slide);
         self.live_theme = self.staged_theme.clone();
+        self.live_authored = None;
         true
+    }
+
+    /// **Present an authored deck slide** (Design 2.0, node 329:124) DIRECTLY on the Live
+    /// audience output — its own z-ordered [`Element`](crate::theme::Element)s over its own
+    /// [`Background`](crate::theme::Background), composed with the SAME compositor as the
+    /// audience output, so the physical output is byte-identical to the operator's canvas
+    /// preview ([`compose_authored_slide`]). `theme` supplies only the fallback background /
+    /// default styling (the slide's own background overrides it).
+    ///
+    /// Unlike [`go_live`](Self::go_live) this bypasses the staged title+body [`Slide`] model:
+    /// it **takes over** the Live surface (like [`identify`](Self::identify)), so `live_slide`
+    /// / `live_theme` are cleared and a later plan/scripture [`go_live`](Self::go_live) cleanly
+    /// replaces it. Returns `false` (Live unchanged) if the engine rejected the composed frame
+    /// — never claiming live for a rejected frame. The composed frame is not blacked out, so a
+    /// present reveals from blackout exactly as go-live does; blackout/clear stay orthogonal.
+    ///
+    /// Secondary audience screens / NDI ([`compose_screen_live`](Self::compose_screen_live))
+    /// mirror only the title+body live slide, so while an authored slide is presented they show
+    /// the idle black frame — deck mirroring to secondaries is a documented follow-up.
+    pub fn present_authored(&mut self, slide: &AuthoredSlide, theme: &Theme) -> bool {
+        let frame = compose_authored_slide(slide, theme, self.width, self.height);
+        if matches!(
+            self.live.apply(EngineCommand::SetScene { frame }),
+            EngineEvent::Rejected { .. }
+        ) {
+            return false;
+        }
+        self.live_slide = None;
+        self.live_theme = None;
+        self.live_authored = Some(slide.clone());
+        true
+    }
+
+    /// The id of the authored deck slide currently on Live, if an authored slide is presented
+    /// (rather than plan/scripture content). Host-truth for the operator grid's LIVE ring.
+    pub fn authored_live_id(&self) -> Option<u64> {
+        self.live_authored.as_ref().map(|s| s.id.0)
     }
 
     /// Switch the **global** audience theme, re-composing **both** surfaces from the
@@ -291,6 +336,7 @@ impl Presenter {
         self.live.apply(EngineCommand::Clear);
         self.live_slide = None;
         self.live_theme = None;
+        self.live_authored = None;
     }
 
     /// Clear the Preview/staged slot (e.g. session restore establishing "nothing is
@@ -319,6 +365,7 @@ impl Presenter {
         );
         self.live.apply(EngineCommand::SetScene { frame });
         self.live_slide = None;
+        self.live_authored = None;
     }
 
     /// The Preview readback (offscreen, FR-013).
