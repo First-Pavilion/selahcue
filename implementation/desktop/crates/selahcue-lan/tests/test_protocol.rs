@@ -600,10 +600,23 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         v: 2,
         code: "ABCD2345".into(),
         device_name: "Phone".into(),
+        platform: String::new(),
     });
+    // An omitted platform is skipped — byte-identical to the pinned cross-language fixture.
     assert_eq!(
         to_json(&pair).unwrap(),
         r#"{"hello":"pair","v":2,"code":"ABCD2345","device_name":"Phone"}"#
+    );
+    // With a platform present it is appended LAST (the additive, optional field).
+    let pair_p = Hello::Pair(PairRequest {
+        v: 2,
+        code: "ABCD2345".into(),
+        device_name: "Phone".into(),
+        platform: "ios".into(),
+    });
+    assert_eq!(
+        to_json(&pair_p).unwrap(),
+        r#"{"hello":"pair","v":2,"code":"ABCD2345","device_name":"Phone","platform":"ios"}"#
     );
 
     // The operator_state frame WITH the batch-7y scripture fields, pinned on the

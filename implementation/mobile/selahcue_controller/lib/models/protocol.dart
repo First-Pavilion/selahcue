@@ -18,11 +18,16 @@ Map<String, dynamic> helloAuth(String deviceId, String token) => {
     };
 
 /// First frame: redeem a pairing code (the operator must confirm on the host).
-Map<String, dynamic> helloPair(String code, String deviceName) => {
+Map<String, dynamic> helloPair(String code, String deviceName,
+        {String? platform}) =>
+    {
       'hello': 'pair',
       'v': wireVersion,
       'code': code,
       'device_name': deviceName,
+      // Optional, appended LAST and omitted when empty, so a client that sends no platform
+      // (and the pinned cross-language fixture) stays byte-identical to the Rust wire.
+      if (platform != null && platform.isNotEmpty) 'platform': platform,
     };
 
 /// A command request frame. Commands are internally tagged: `{'cmd': 'go_live'}`,

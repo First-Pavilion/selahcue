@@ -34,8 +34,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(String::as_str)
             .unwrap_or("selahcue-remote CLI");
         println!("pairing with {addr} — waiting for the host to allow…");
-        let (client, creds) =
-            ControlClient::pair(addr, "localhost", pin, &invite.code, name).await?;
+        let (client, creds) = ControlClient::pair(
+            addr,
+            "localhost",
+            pin,
+            &invite.code,
+            name,
+            std::env::consts::OS,
+        )
+        .await?;
         println!("paired! role {:?}", client.role());
         println!("device : {}", creds.device_id);
         println!("token  : {}", creds.token);

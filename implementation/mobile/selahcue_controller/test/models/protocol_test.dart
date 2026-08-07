@@ -24,6 +24,19 @@ void main() {
     );
   });
 
+  test('hello pair appends an optional platform last', () {
+    // The optional platform is added last and omitted when empty, so it stays byte-compatible
+    // with the Rust `PairRequest` (skip-when-empty) and the pinned no-platform fixture above.
+    expect(
+      jsonEncode(helloPair('ABCD2345', 'Phone', platform: 'ios')),
+      '{"hello":"pair","v":2,"code":"ABCD2345","device_name":"Phone","platform":"ios"}',
+    );
+    expect(
+      jsonEncode(helloPair('ABCD2345', 'Phone', platform: '')),
+      '{"hello":"pair","v":2,"code":"ABCD2345","device_name":"Phone"}',
+    );
+  });
+
   test('request select_item matches the Rust wire fixture', () {
     expect(
       jsonEncode(request(7, cmdSelectItem(3))),

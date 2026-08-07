@@ -918,6 +918,12 @@ pub struct PairRequest {
     /// Human-readable device name shown to the operator for confirmation
     /// (e.g. "Dami's iPhone"). Untrusted display text.
     pub device_name: String,
+    /// Device platform / OS shown alongside the name on the operator's Remote Control
+    /// list (e.g. "iOS", "Android", "iPadOS"). Untrusted display text; optional and
+    /// declared LAST with skip-when-empty so a client that omits it (and the pinned
+    /// cross-language fixtures) stay byte-identical.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub platform: String,
 }
 
 impl PairRequest {
@@ -933,6 +939,7 @@ impl std::fmt::Debug for PairRequest {
             .field("v", &self.v)
             .field("code", &"<redacted>")
             .field("device_name", &self.device_name)
+            .field("platform", &self.platform)
             .finish()
     }
 }

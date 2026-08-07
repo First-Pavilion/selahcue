@@ -342,6 +342,13 @@ impl SessionRegistry {
         self.active.remove(device_id).is_some()
     }
 
+    /// Whether this device id is already an active session or a pending request. The transport
+    /// uses it to mint a collision-free `device_id` for a new pairing request, so a fresh park
+    /// can never overwrite (or be confused with) an existing session/request.
+    pub fn is_known_device(&self, device_id: &DeviceId) -> bool {
+        self.active.contains_key(device_id) || self.requests.contains_key(device_id)
+    }
+
     /// Change a device's granted [`Role`] in place — the operator re-roles a controller
     /// (the `ManageDevices` authority; Operator-only at the command layer). Takes effect on
     /// the device's next authenticated request. Returns whether an active session was updated.

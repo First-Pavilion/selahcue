@@ -50,9 +50,10 @@ impl ControlClient {
     /// forever (e.g. a stale endpoint pointing at a now-reused loopback port).
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-    /// How long a pairing attempt waits for the grant — the transport phase plus the
-    /// server's 30s host-confirmation window (the operator pressing "allow").
-    const PAIR_TIMEOUT: Duration = Duration::from_secs(45);
+    /// How long a pairing attempt waits for the grant — the transport phase plus the server's
+    /// operator-approval park window. MUST exceed the server's `PAIRING_PARK_TIMEOUT` (120s) so
+    /// the device never hangs up before the operator has decided (else it would burn the code).
+    const PAIR_TIMEOUT: Duration = Duration::from_secs(150);
 
     /// Establish the pinned-TLS WebSocket transport (no authentication yet).
     async fn establish(
@@ -123,6 +124,7 @@ impl ControlClient {
         pin: CertPin,
         code: &str,
         device_name: &str,
+        platform: &str,
     ) -> Result<(Self, PairingCredentials), TransportError> {
         let attempt = async {
             let mut ws = Self::establish(addr, server_name, pin).await?;
@@ -132,6 +134,7 @@ impl ControlClient {
                     v: protocol::VERSION,
                     code: code.to_string(),
                     device_name: device_name.to_string(),
+                    platform: platform.to_string(),
                 }),
             )
             .await?;

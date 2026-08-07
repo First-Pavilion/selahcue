@@ -12,18 +12,20 @@ use crate::protocol::{
     RemotePendingView, Request, ServerMessage,
 };
 use crate::rbac::{authorize, Role};
-use crate::session::{DeviceId, PairingError, SessionRegistry, SessionToken, SESSION_IDLE_TTL};
+use crate::session::{
+    ApproveError, DeviceId, RequestError, SessionRegistry, SessionToken, SESSION_IDLE_TTL,
+};
 use crate::tls::{server_config, SelfSigned, TransportError};
 use crate::wire::{recv_json, send_json};
-use futures_util::future::BoxFuture;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use ring::rand::{SecureRandom, SystemRandom};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{oneshot, Mutex, Semaphore};
 use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -43,19 +45,62 @@ const DEFAULT_MAX_CONNECTIONS: usize = 128;
 /// stops a peer from forcing large pre-auth buffering.
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
-/// How long the operator has to confirm/decline a pairing request. Applied *after*
-/// the network handshake completed (the pairing peer has already sent its full
-/// frame), so waiting on the human does not extend the slowloris window.
-const PAIRING_APPROVAL_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a device's `Pair` connection parks awaiting the operator's approve/deny
+/// decision. Applied *after* the network handshake completed (the pairing peer has
+/// already sent its full frame), so waiting on the human does not extend the slowloris
+/// window. The client's pair timeout MUST exceed this so the device never hangs up first.
+const PAIRING_PARK_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Cadence of keepalive pings sent to a parked pairing connection, so NAT/idle timeouts
+/// do not silently drop the socket across the (up-to-[`PAIRING_PARK_TIMEOUT`]) human wait.
+const PAIRING_PARK_PING_INTERVAL: Duration = Duration::from_secs(25);
+
+/// Registry-side backstop TTL for pending requests, swept on each new pairing/auth. Set
+/// above [`PAIRING_PARK_TIMEOUT`] so it only reclaims requests orphaned by a task that was
+/// cancelled/aborted without running its inline cleanup (no-leak guarantee).
+const PAIRING_STALE_REQUEST_TTL: Duration = Duration::from_secs(180);
 
 /// Cap on the displayed device name (untrusted text shown to the operator).
 const MAX_DEVICE_NAME: usize = 48;
 
-/// Host-confirmation seam (FR-086): given the requesting device's (sanitized) display
-/// name, resolve to whether the operator approves. Implementations typically prompt
-/// the operator; tests inject closures. Approval is awaited with
-/// [`PAIRING_APPROVAL_TIMEOUT`]; a timeout counts as declined.
-pub type PairingApproval = Arc<dyn Fn(String) -> BoxFuture<'static, bool> + Send + Sync>;
+/// Cap on the displayed device platform / OS string (untrusted text).
+const MAX_PLATFORM: usize = 32;
+
+/// The pairing model this server runs.
+enum PairingMode {
+    /// Reject every `Pair` hello — the secure default; a server must opt in to pairing.
+    Disabled,
+    /// Operator-paced (86ajxer8n): a `Pair` hello parks as a pending request until the operator
+    /// approves it (with a role) or denies it over the Remote Control channel. The token is minted
+    /// operator-side at approval and pushed back to the still-parked device socket.
+    OperatorPaced,
+}
+
+/// The operator's decision, delivered from the (separate) operator connection to a parked
+/// pairing connection over its private one-shot rendezvous. `Debug` redacts the token.
+enum Approval {
+    Granted { token: String, role: Role },
+    Denied,
+}
+
+impl std::fmt::Debug for Approval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Approval::Granted { role, .. } => f
+                .debug_struct("Approval::Granted")
+                .field("token", &"<redacted>")
+                .field("role", role)
+                .finish(),
+            Approval::Denied => f.write_str("Approval::Denied"),
+        }
+    }
+}
+
+/// The per-device rendezvous channels for parked pairing connections, keyed by the
+/// server-minted `device_id`. A [`oneshot::Sender`] is inserted while a device parks and
+/// removed on every exit path; bounded by `MAX_PENDING_REQUESTS` (a waiter is only inserted
+/// after `submit_request` succeeds), so it cannot grow without limit.
+type Waiters = Arc<std::sync::Mutex<HashMap<DeviceId, oneshot::Sender<Approval>>>>;
 
 /// The operator's response to an authorized command.
 pub enum Reply {
@@ -82,15 +127,34 @@ pub struct ControlServer {
     handler: Handler,
     active_connections: Arc<AtomicUsize>,
     handshake_timeout: Duration,
+    park_timeout: Duration,
     limiter: Arc<Semaphore>,
-    /// Host-confirmation for over-the-wire pairing. `None` (the secure default)
-    /// rejects every `Pair` hello — a server must opt in to wire pairing.
-    pairing: Option<PairingApproval>,
+    /// The over-the-wire pairing model. [`PairingMode::Disabled`] (the secure default)
+    /// rejects every `Pair` hello — a server must opt in with [`ControlServer::with_pairing_requests`].
+    pairing: PairingMode,
+    /// Rendezvous senders for parked pairing connections (see [`Waiters`]).
+    waiters: Waiters,
 }
 
 /// Increments the live-connection counter on creation and decrements it on drop —
 /// so the count is correct even if a connection task ends via error or panic.
 struct ConnGuard(Arc<AtomicUsize>);
+
+/// Removes a parked device's rendezvous sender on drop — a synchronous, panic/cancel-safe
+/// backstop so a waiter never outlives its parked connection even if the task is aborted
+/// without running its inline cleanup.
+struct WaiterGuard {
+    waiters: Waiters,
+    device_id: DeviceId,
+}
+
+impl Drop for WaiterGuard {
+    fn drop(&mut self) {
+        if let Ok(mut w) = self.waiters.lock() {
+            w.remove(&self.device_id);
+        }
+    }
+}
 
 impl ConnGuard {
     fn new(counter: Arc<AtomicUsize>) -> Self {
@@ -120,21 +184,30 @@ impl ControlServer {
             handler,
             active_connections: Arc::new(AtomicUsize::new(0)),
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            park_timeout: PAIRING_PARK_TIMEOUT,
             limiter: Arc::new(Semaphore::new(DEFAULT_MAX_CONNECTIONS)),
-            pairing: None,
+            pairing: PairingMode::Disabled,
+            waiters: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
     }
 
-    /// Enable over-the-wire pairing, gated by this host-confirmation callback
-    /// (FR-086). Without this, `Pair` hellos are rejected.
-    pub fn with_pairing_approval(mut self, approval: PairingApproval) -> Self {
-        self.pairing = Some(approval);
+    /// Enable operator-paced over-the-wire pairing (86ajxer8n): a `Pair` hello parks as a
+    /// pending request until the operator approves it with a role (or denies it) over the
+    /// Remote Control channel. Without this, `Pair` hellos are rejected (the secure default).
+    pub fn with_pairing_requests(mut self) -> Self {
+        self.pairing = PairingMode::OperatorPaced;
         self
     }
 
     /// Override the pre-auth handshake timeout (default 10s). Mainly for tests.
     pub fn with_handshake_timeout(mut self, timeout: Duration) -> Self {
         self.handshake_timeout = timeout;
+        self
+    }
+
+    /// Override the operator-approval park window (default 120s). Mainly for tests.
+    pub fn with_park_timeout(mut self, timeout: Duration) -> Self {
+        self.park_timeout = timeout;
         self
     }
 
@@ -269,9 +342,12 @@ impl ControlServer {
         }
     }
 
-    /// Redeem a pairing code over the wire: version + code validity (non-consuming)
-    /// → **host confirmation** → single-use redemption with server-generated
-    /// credentials → `Granted`, continuing the connection already authenticated.
+    /// Operator-paced pairing (86ajxer8n): validate + consume the single-use code, park the
+    /// connection as a pending request (device-supplied name/platform), then await the operator's
+    /// approve/deny decision delivered over a per-device one-shot rendezvous. On approval the
+    /// operator-minted token is pushed to this still-open socket as `Granted` and the connection
+    /// continues already authenticated; on deny/timeout/disconnect it is rejected and the pending
+    /// request is dropped. Bounded by the pending-request cap + a park timeout (no-leak).
     async fn complete_pairing<S>(
         &self,
         ws: &mut WebSocketStream<S>,
@@ -295,55 +371,110 @@ impl ControlServer {
         if !pair.version_supported() {
             return reject(ws, DenyReason::BadRequest, "unsupported protocol version").await;
         }
-        let Some(approval) = self.pairing.as_ref() else {
-            return reject(ws, DenyReason::Forbidden, "pairing not enabled").await;
-        };
-        // Cheap pre-check (non-consuming) so an invalid/expired code never bothers
-        // the operator with a confirmation prompt. Pruning here also keeps the
-        // pending-offer map from accumulating expired entries (bounded memory).
-        if !{
+        match self.pairing {
+            PairingMode::Disabled => {
+                return reject(ws, DenyReason::Forbidden, "pairing not enabled").await;
+            }
+            PairingMode::OperatorPaced => {}
+        }
+
+        // Register the pending request + its rendezvous under ONE registry-lock critical section:
+        // the waiter is inserted BEFORE the request is observable in `pending_requests`, and the
+        // operator can only learn the `device_id` from that snapshot — so an approval can never
+        // race ahead of the park (this structurally closes the lost-wakeup window).
+        let now = std::time::Instant::now();
+        let (device_id, mut rx) = {
             let mut reg = self.registry.lock().await;
-            let now = std::time::Instant::now();
             reg.prune_expired(now);
-            reg.prune_idle(now, SESSION_IDLE_TTL); // reclaim idle sessions (audit #8) before a new pairing
-            reg.code_valid(&pair.code, now)
-        } {
-            return reject(ws, DenyReason::Unauthenticated, "unknown or expired code").await;
-        }
-
-        // Host confirmation (FR-086). The device name is untrusted display text —
-        // sanitize before showing. A timeout counts as declined.
-        let name = sanitize_device_name(&pair.device_name);
-        let approved = tokio::time::timeout(PAIRING_APPROVAL_TIMEOUT, approval(name))
-            .await
-            .unwrap_or(false);
-        if !approved {
-            return reject(ws, DenyReason::Forbidden, "host declined").await;
-        }
-
-        // Redeem (single-use; re-checks expiry, closing the confirm-window race) with
-        // server-generated credentials.
-        let device_id = format!("dev-{}", random_hex(8));
-        let token = random_hex(32);
-        let redeemed = {
-            let mut reg = self.registry.lock().await;
-            // Reclaim idle sessions immediately before the cap check so a full registry frees
-            // slots for this new device as dead ones age out (audit #8; host approval + the
-            // confirm window may have elapsed since the pre-check prune above).
-            reg.prune_idle(std::time::Instant::now(), SESSION_IDLE_TTL);
-            reg.redeem(
-                &pair.code,
-                DeviceId(device_id.clone()),
-                SessionToken::new(token.clone()),
-                std::time::Instant::now(),
-            )
+            reg.prune_idle(now, SESSION_IDLE_TTL);
+            // Backstop: reclaim any pending request orphaned by a cancelled/aborted parked task.
+            reg.prune_stale_requests(now, PAIRING_STALE_REQUEST_TTL);
+            if !reg.code_valid(&pair.code, now) {
+                drop(reg);
+                return reject(ws, DenyReason::Unauthenticated, "unknown or expired code").await;
+            }
+            // Consume the code single-use NOW, detaching the park from the code's short TTL.
+            reg.withdraw(&pair.code);
+            // Mint a fresh, collision-free server-side device id (checked against active
+            // sessions, pending requests, AND currently-parked waiters, all under this lock).
+            let device_id = {
+                let waiters = self.waiters.lock().expect("waiters mutex poisoned");
+                let mut candidate = DeviceId(format!("dev-{}", random_hex(8)));
+                while reg.is_known_device(&candidate) || waiters.contains_key(&candidate) {
+                    candidate = DeviceId(format!("dev-{}", random_hex(8)));
+                }
+                candidate
+            };
+            let name = sanitize_device_name(&pair.device_name);
+            let platform = sanitize_platform(&pair.platform);
+            // NOTE: the fingerprint is the code-derived placeholder (see `pairing_fingerprint`);
+            // real TLS-cert SHA-256 pinning is deferred to the Part B cert-pinning follow-on.
+            let fingerprint = pairing_fingerprint(&pair.code);
+            match reg.submit_request(device_id.clone(), name, platform, fingerprint, now) {
+                Ok(()) => {}
+                Err(RequestError::TooManyRequests) => {
+                    drop(reg);
+                    return reject(ws, DenyReason::Unauthenticated, "too many pending requests")
+                        .await;
+                }
+            }
+            let (tx, rx) = oneshot::channel::<Approval>();
+            self.waiters
+                .lock()
+                .expect("waiters mutex poisoned")
+                .insert(device_id.clone(), tx);
+            (device_id, rx)
         };
-        match redeemed {
-            Ok(role) => {
+        // Removes the waiter on EVERY exit — approve, deny, timeout, disconnect, or task abort.
+        let _waiter_guard = WaiterGuard {
+            waiters: Arc::clone(&self.waiters),
+            device_id: device_id.clone(),
+        };
+
+        // Park: await the operator's decision, sending periodic keepalive pings so an idle
+        // NAT/firewall does not silently drop the socket across the (up-to-120s) human wait.
+        // We do not read here — the client sends nothing while parked, `recv_json` skips our
+        // pings, and any buffered pong is ignored by the request loop once we proceed.
+        enum ParkExit {
+            Decision(Approval),
+            Timeout,
+            Gone,
+        }
+        let exit = {
+            let deadline = tokio::time::sleep(self.park_timeout);
+            tokio::pin!(deadline);
+            // Ping often enough to notice a dead socket well within the park window (and to keep
+            // NAT state warm), but never faster than the base cadence for a long human wait.
+            let ping_interval = std::cmp::min(PAIRING_PARK_PING_INTERVAL, self.park_timeout / 4)
+                .max(Duration::from_millis(50));
+            let mut ping = tokio::time::interval(ping_interval);
+            ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ping.tick().await; // consume the immediate first tick — first real ping is one interval in
+            loop {
+                tokio::select! {
+                    biased;
+                    res = &mut rx => break match res {
+                        Ok(approval) => ParkExit::Decision(approval),
+                        Err(_) => ParkExit::Gone, // sender dropped without a decision
+                    },
+                    _ = &mut deadline => break ParkExit::Timeout,
+                    _ = ping.tick() => {
+                        if ws.send(Message::Ping(Default::default())).await.is_err() {
+                            break ParkExit::Gone; // socket is dead
+                        }
+                    }
+                }
+            }
+        };
+
+        match exit {
+            // Approved: the session already exists (minted by `approve_request` on the operator
+            // connection); push the token to this still-parked socket and continue authenticated.
+            ParkExit::Decision(Approval::Granted { token, role }) => {
                 send_json(
                     ws,
                     &PairResponse::Granted {
-                        device_id,
+                        device_id: device_id.0,
                         token,
                         role,
                     },
@@ -351,12 +482,36 @@ impl ControlServer {
                 .await?;
                 Ok(role)
             }
-            // A cap rejection (audit M3) is not an auth failure — tell the operator why so a
-            // stale session can be revoked; other errors stay a generic invalid/expired reject.
-            Err(PairingError::TooManySessions) => {
-                reject(ws, DenyReason::Unauthenticated, "too many active sessions").await
+            ParkExit::Decision(Approval::Denied) => {
+                reject(ws, DenyReason::Forbidden, "operator denied the request").await
             }
-            Err(_) => reject(ws, DenyReason::Unauthenticated, "code invalid or expired").await,
+            // Timed out or the socket went away. Close the zombie-session race UNDER the registry
+            // lock: an approval may have landed in the very instant we stopped waiting (the
+            // operator's `send` succeeded before our `WaiterGuard` dropped) — honor it; otherwise
+            // drop the pending request so nothing lingers.
+            ParkExit::Timeout | ParkExit::Gone => {
+                let mut reg = self.registry.lock().await;
+                match rx.try_recv() {
+                    Ok(Approval::Granted { token, role }) => {
+                        drop(reg);
+                        send_json(
+                            ws,
+                            &PairResponse::Granted {
+                                device_id: device_id.0,
+                                token,
+                                role,
+                            },
+                        )
+                        .await?;
+                        Ok(role)
+                    }
+                    _ => {
+                        reg.deny_request(&device_id);
+                        drop(reg);
+                        reject(ws, DenyReason::Forbidden, "pairing not approved in time").await
+                    }
+                }
+            }
         }
     }
 
@@ -379,14 +534,56 @@ impl ControlServer {
                 Some(remote_snapshot(&reg, now))
             }
             Command::DenyPairing { device_id } => {
-                reg.deny_request(&DeviceId(device_id.clone()));
+                let did = DeviceId(device_id.clone());
+                reg.deny_request(&did);
+                // Wake a parked device with the denial (best-effort; it may already be gone).
+                if let Some(tx) = self
+                    .waiters
+                    .lock()
+                    .expect("waiters mutex poisoned")
+                    .remove(&did)
+                {
+                    let _ = tx.send(Approval::Denied);
+                }
                 Some(remote_snapshot(&reg, now))
             }
             Command::ApprovePairing { device_id, role } => {
-                let token = SessionToken::new(random_hex(32));
-                // Fails closed (unknown request / at capacity) — the request stays parked for a
-                // retry and the operator just sees the unchanged snapshot.
-                let _ = reg.approve_request(&DeviceId(device_id.clone()), *role, token, now);
+                let did = DeviceId(device_id.clone());
+                // Fail-closed: a remotely-paired device may NEVER be granted Operator
+                // (device-management) authority — the console stays the sole Operator. The request
+                // is left pending so the operator can re-approve it with a valid role.
+                if *role == Role::Operator {
+                    return Some(remote_snapshot(&reg, now));
+                }
+                let token = random_hex(32);
+                match reg.approve_request(&did, *role, SessionToken::new(token.clone()), now) {
+                    Ok(granted_role) => {
+                        // Wake the parked device with the SAME token, if it is still parked.
+                        // No waiter (None) = an operator-management flow with no parked connection
+                        // (e.g. a directly-seeded request): keep the session as-is. A present
+                        // waiter whose receiver is gone (send Err) = the device left/timed out:
+                        // compensate the just-minted zombie session.
+                        let sender = self
+                            .waiters
+                            .lock()
+                            .expect("waiters mutex poisoned")
+                            .remove(&did);
+                        if let Some(tx) = sender {
+                            if tx
+                                .send(Approval::Granted {
+                                    token,
+                                    role: granted_role,
+                                })
+                                .is_err()
+                            {
+                                reg.revoke(&did);
+                            }
+                        }
+                    }
+                    // NoSuchRequest (denied / timed out / never existed) or TooManySessions
+                    // (retryable) — leave any waiter untouched and create no session.
+                    Err(ApproveError::NoSuchRequest) | Err(ApproveError::TooManySessions) => {}
+                }
                 Some(remote_snapshot(&reg, now))
             }
             Command::NewPairingCode => {
@@ -575,4 +772,16 @@ fn sanitize_device_name(raw: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+/// Sanitize the untrusted device platform / OS string before it enters the registry and the
+/// operator's snapshots: strip control characters and length-cap. Unlike the device name, an
+/// empty platform is allowed (it is optional and omitted on the wire).
+fn sanitize_platform(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_PLATFORM)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }

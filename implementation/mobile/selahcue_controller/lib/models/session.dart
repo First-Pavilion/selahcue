@@ -18,7 +18,9 @@ import 'protocol.dart';
 /// Mirrors the Rust client's budgets: transport 10s; pairing additionally waits
 /// through the host's 30s confirmation window.
 const Duration connectTimeout = Duration(seconds: 10);
-const Duration pairTimeout = Duration(seconds: 45);
+// Must exceed the server's operator-approval park window (120s) so the device does not hang up
+// before the operator has decided (86ajxer8n).
+const Duration pairTimeout = Duration(seconds: 150);
 const Duration commandTimeout = Duration(seconds: 10);
 
 class SessionException implements Exception {
@@ -74,14 +76,16 @@ class SelahSession implements ControllerSession {
     }
   }
 
-  /// Redeem a pairing invite. Waits through the operator's confirmation window; on
-  /// success the connection is already authenticated and credentials are returned.
+  /// Redeem a pairing invite. The device parks until the operator approves it (assigning a role)
+  /// from the Remote Control console; on approval the connection is already authenticated and the
+  /// issued credentials are returned.
   static Future<(SelahSession, Credentials)> pair(
       PairingInvite invite, String deviceName) async {
     final ws = await _establish(invite.host, invite.port, invite.pinHex);
     try {
       final incoming = StreamQueue(ws);
-      ws.add(jsonEncode(helloPair(invite.code, deviceName)));
+      ws.add(jsonEncode(
+          helloPair(invite.code, deviceName, platform: Platform.operatingSystem)));
       final reply = await incoming.nextJson(pairTimeout);
       switch (PairResult.fromJson(reply)) {
         case PairGranted(:final deviceId, :final token, :final role):

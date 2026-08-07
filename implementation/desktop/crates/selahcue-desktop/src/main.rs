@@ -11,7 +11,7 @@
 //! Local keys follow the canonical map (UX-CANONICAL §1, `selahcue_app::keymap`):
 //! `Space`/`→` stage next · `←` previous · `Enter` Go Live · `B` blackout ·
 //! `Esc Esc` clear all · `Backspace` clear staged — plus host-only `P` pairing QR
-//! and `Y`/`N` approve/deny. Quit via the window close button.
+//! (devices are approved/denied from the operator console). Quit via the window close button.
 
 #![forbid(unsafe_code)]
 
@@ -1038,18 +1038,11 @@ impl Renderer {
     }
 }
 
-/// A pairing request awaiting the operator's Y/N (one at a time; extras auto-deny).
-struct PendingApproval {
-    name: String,
-    respond: tokio::sync::oneshot::Sender<bool>,
-}
-
 /// State shared between the winit thread and the control-server thread.
 struct RemoteShared {
     registry: Arc<AsyncMutex<SessionRegistry>>,
     /// `(bound port, certificate pin hex)` — filled once the server is listening.
     lan: OnceLock<(u16, String)>,
-    approval: Mutex<Option<PendingApproval>>,
     /// The currently offered pairing code, so cancelling pairing can withdraw it
     /// from the registry (a cancelled code must actually die, not linger to TTL).
     active_code: Mutex<Option<String>>,
@@ -1300,7 +1293,6 @@ impl App {
         let remote = Arc::new(RemoteShared {
             registry: Arc::new(AsyncMutex::new(SessionRegistry::new())),
             lan: OnceLock::new(),
-            approval: Mutex::new(None),
             active_code: Mutex::new(None),
         });
         start_remote_control(controller.clone(), remote.clone());
@@ -1649,35 +1641,6 @@ impl App {
         }
     }
 
-    /// `Y`/`N`: resolve a pending pairing-approval prompt. A prompt whose server
-    /// side already timed out (30s) is announced as expired — it must not be
-    /// mistaken for a successful approval.
-    fn resolve_approval(&self, allow: bool) {
-        let pending = self.remote.approval.lock().ok().and_then(|mut g| g.take());
-        let Some(pending) = pending else { return };
-        if pending.respond.send(allow).is_err() {
-            println!(
-                "  (the pairing request from '{}' had already expired — nothing granted)",
-                pending.name
-            );
-            return;
-        }
-        println!(
-            "  Pairing request from '{}' {}.",
-            pending.name,
-            if allow { "ALLOWED" } else { "denied" }
-        );
-        if allow {
-            // The code is being consumed; dismiss the QR and forget the code.
-            if let Ok(mut c) = self.controller.lock() {
-                c.clear_pairing_qr();
-            }
-            if let Ok(mut slot) = self.remote.active_code.lock() {
-                *slot = None;
-            }
-        }
-    }
-
     /// The renderer whose window matches `id`, if any.
     fn renderer_for(&mut self, id: WindowId) -> Option<&mut Renderer> {
         if self.main.as_ref().is_some_and(|r| r.window.id() == id) {
@@ -1899,16 +1862,6 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
-                    Key::Character(c) if c.eq_ignore_ascii_case("y") => {
-                        self.keymap.disarm();
-                        self.resolve_approval(true);
-                        return;
-                    }
-                    Key::Character(c) if c.eq_ignore_ascii_case("n") => {
-                        self.keymap.disarm();
-                        self.resolve_approval(false);
-                        return;
-                    }
                     _ => {}
                 }
                 // Canonical map (UX-CANONICAL §1). NOTE: `Esc` no longer quits —
@@ -2066,50 +2019,13 @@ async fn run_server(
         reg.pin(&DeviceId(device.to_string()));
     }
 
-    // Host confirmation (FR-086): raise a Y/N prompt for the winit thread; one pending
-    // request at a time (extras auto-deny); an unanswered prompt times out as denied.
-    // A slot whose server side already timed out (its receiver is gone) is DEAD — it
-    // is reclaimed here so one ignored prompt can never wedge future pairing.
-    let approval_shared = remote.clone();
-    let approval: selahcue_lan::PairingApproval = Arc::new(move |name: String| {
-        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        let stored = match approval_shared.approval.lock() {
-            Ok(mut slot) => {
-                if slot.as_ref().is_some_and(|p| p.respond.is_closed()) {
-                    *slot = None; // stale prompt from a timed-out request
-                }
-                if slot.is_none() {
-                    *slot = Some(PendingApproval {
-                        name: name.clone(),
-                        respond: tx,
-                    });
-                    true
-                } else {
-                    false
-                }
-            }
-            Err(_) => false,
-        };
-        if stored {
-            println!();
-            println!(
-                "  PAIRING REQUEST from '{name}' — approving grants PRODUCER control \
-                 (go-live/blackout/timers). Press Y to allow, N to deny (30s)."
-            );
-        }
-        Box::pin(async move {
-            if stored {
-                rx.await.unwrap_or(false)
-            } else {
-                false // busy with another request
-            }
-        })
-    });
-
+    // Operator-paced pairing (86ajxer8n): a device that scans the QR and connects parks as a
+    // pending request; the operator approves it (assigning a role) or denies it from the Remote
+    // Control console. The output window no longer prompts for Y/N host confirmation.
     let server = Arc::new(
         ControlServer::new(&identity, remote.registry.clone(), handler_for(controller))
             .map_err(|e| format!("server: {e:?}"))?
-            .with_pairing_approval(approval),
+            .with_pairing_requests(),
     );
     // Bind the LAN so a phone can reach us: joining is gated by pairing (single-use
     // TTL code + host confirmation) behind pinned TLS, so an open port grants nothing.
@@ -2297,9 +2213,7 @@ fn print_connect_banner(
     );
     println!();
     println!("  Local keys: Space/\u{2192}=next  \u{2190}=prev  Enter=Go Live  B=blackout  Esc Esc=clear all  Backspace=clear staged");
-    println!(
-        "  Pairing:    P=show a QR invite (stage window + terminal)  Y/N=allow/deny a request"
-    );
+    println!("  Pairing:    P=show a QR invite (approve/deny devices from the operator console)");
     println!();
 }
 

@@ -6,7 +6,6 @@
 #![cfg(feature = "server")]
 #![allow(clippy::unwrap_used)]
 
-use futures_util::FutureExt;
 use selahcue_app::{handler_for, LiveController, RemoteOperator};
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_lan::protocol::{Command, ServerMessage};
@@ -337,7 +336,7 @@ async fn a_denied_command_is_not_an_error_and_the_view_reflects_unchanged_state(
 /// in selahcue-lan runs against a stub handler; this closes the pair→advance gap.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wire_paired_device_advances_the_live_output() {
-    use selahcue_lan::PairingApproval;
+    use selahcue_lan::session::{DeviceId, SessionToken};
 
     let identity = SelfSigned::generate(vec!["localhost".into()]).unwrap();
     let pin = identity.pin;
@@ -352,17 +351,34 @@ async fn wire_paired_device_advances_the_live_output() {
     )));
 
     let registry = Arc::new(AsyncMutex::new(SessionRegistry::new()));
-    registry.lock().await.offer_pairing(
-        "QRCODE23",
-        selahcue_lan::Role::Producer,
-        Instant::now(),
-        Duration::from_secs(300),
-    );
-    let approve: PairingApproval = Arc::new(|_name| async { true }.boxed());
+    {
+        let now = Instant::now();
+        let mut reg = registry.lock().await;
+        reg.offer_pairing(
+            "QRCODE23",
+            selahcue_lan::Role::Producer,
+            now,
+            Duration::from_secs(300),
+        );
+        // A pre-paired Operator drives the approval on a second connection.
+        reg.offer_pairing(
+            "op-code",
+            selahcue_lan::Role::Operator,
+            now,
+            Duration::from_secs(300),
+        );
+        reg.redeem(
+            "op-code",
+            DeviceId("operator".into()),
+            SessionToken::new("tok-op"),
+            now,
+        )
+        .unwrap();
+    }
     let server = Arc::new(
         ControlServer::new(&identity, registry, handler_for(controller.clone()))
             .unwrap()
-            .with_pairing_approval(approve),
+            .with_pairing_requests(),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -371,11 +387,33 @@ async fn wire_paired_device_advances_the_live_output() {
         let _ = running.run(listener).await;
     });
 
-    // Pair over the wire (the invite's code), then drive the REAL controller.
-    let (mut client, _creds) =
-        selahcue_lan::ControlClient::pair(addr, "localhost", pin, "QRCODE23", "Demo Phone")
+    // A phone parks awaiting approval; the operator approves it Producer over a second connection.
+    let device = tokio::spawn(async move {
+        selahcue_lan::ControlClient::pair(addr, "localhost", pin, "QRCODE23", "Demo Phone", "iOS")
             .await
-            .unwrap();
+    });
+    let mut op = selahcue_lan::ControlClient::connect(addr, "localhost", pin, "operator", "tok-op")
+        .await
+        .unwrap();
+    let device_id = loop {
+        if let ServerMessage::RemoteDevices { pending, .. } =
+            op.command(Command::ListRemoteDevices).await.unwrap()
+        {
+            if let Some(p) = pending.first() {
+                break p.device_id.clone();
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    op.command(Command::ApprovePairing {
+        device_id,
+        role: selahcue_lan::Role::Producer,
+    })
+    .await
+    .unwrap();
+
+    // The approved connection then drives the REAL controller.
+    let (mut client, _creds) = device.await.unwrap().unwrap();
     assert!(matches!(
         client.command(Command::Next).await.unwrap(),
         ServerMessage::Ack { .. }
