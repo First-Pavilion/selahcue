@@ -40,8 +40,10 @@ class PairingController extends ChangeNotifier {
     _busy = true;
     _error = null;
     notifyListeners();
+    SelahSession? session;
     try {
-      final (session, creds) = await SelahSession.pair(invite, deviceName);
+      final (s, creds) = await SelahSession.pair(invite, deviceName);
+      session = s;
       final stored = StoredSession(
         host: invite.host,
         port: invite.port,
@@ -49,10 +51,19 @@ class PairingController extends ChangeNotifier {
         deviceId: creds.deviceId,
         token: creds.token,
       );
+      // A keystore write can throw a PlatformException (not a SessionException); if saving the
+      // credentials fails AFTER pairing, close the just-opened pinned-TLS socket so it never leaks.
       await StoredSession.save(stored);
       return PairedOutcome(session, stored);
     } on SessionException catch (e) {
+      await session?.close();
       _error = '$e';
+      return null;
+    } catch (e) {
+      // Any non-SessionException failure (e.g. secure-storage PlatformException) after a granted
+      // pairing must also release the socket rather than orphan it.
+      await session?.close();
+      _error = 'Paired, but could not save credentials on this device.';
       return null;
     } finally {
       _busy = false;

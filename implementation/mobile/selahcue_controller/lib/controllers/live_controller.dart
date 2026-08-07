@@ -184,6 +184,12 @@ class LiveController extends ChangeNotifier {
 
   /// Forget this device's credentials and close the connection.
   Future<void> unpair() async {
+    // Stop polling and mark stopped BEFORE closing the socket, so no in-flight or next 1s refresh
+    // tick can hit the closed session, fall into _reconnect(), and silently re-open with the stored
+    // credentials the link the user just disconnected. (The same _disposed guard act()/refresh()/
+    // _reconnect() already honour.)
+    _disposed = true;
+    _poll?.cancel();
     await StoredSession.clear();
     await _session.close();
   }

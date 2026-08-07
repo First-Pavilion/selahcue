@@ -157,12 +157,13 @@ class _PairingViewState extends State<PairingView> {
                     fontWeight: FontWeight.w600,
                     color: DesignTokens.textPrimary)),
             const SizedBox(height: 10),
-            Text('You appear as "$name" — the operator presses Y to allow.',
+            Text('You appear as "$name" — the operator approves you (with a role) '
+                'from the Remote Control console.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                     fontSize: 13, color: DesignTokens.textMuted)),
             const SizedBox(height: 6),
-            const Text('This request expires in about 30 seconds.',
+            const Text('This request expires in about 2 minutes.',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 12, color: DesignTokens.textMuted)),
           ],
