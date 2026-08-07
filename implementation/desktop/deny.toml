@@ -23,6 +23,11 @@ allow = [
   "MPL-2.0", # file-level copyleft only; carried by wgpu's DX shader stack
   "OFL-1.1", # font data
   "Ubuntu-font-1.0",
+  # Independent JPEG Group license — permissive (no copyleft). Transitive via
+  # grafton-ndi → jpeg-encoder (the NDI output feature). Its one obligation is an
+  # acknowledgment ("based in part on the work of the Independent JPEG Group") in the
+  # app's third-party licenses / about screen.
+  "IJG",
 ]
 
 [bans]
