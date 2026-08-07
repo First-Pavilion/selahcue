@@ -126,7 +126,58 @@ class LiveTab extends StatelessWidget {
           Text('Next: ${_nextName(view)}',
               style:
                   const TextStyle(fontSize: 11, color: DesignTokens.textMuted)),
+        // Live transcript (read-only) — every role can watch it (Monitor).
+        if (view.transcript.isNotEmpty ||
+            (view.partialTranscript?.isNotEmpty ?? false))
+          _transcriptSection(view),
       ],
+    );
+  }
+
+  /// The read-only live-transcript panel: the last few finalised segments plus
+  /// the in-progress (italic) partial line.
+  Widget _transcriptSection(OperatorStateView v) {
+    final recent = v.transcript.length > 6
+        ? v.transcript.sublist(v.transcript.length - 6)
+        : v.transcript;
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: DesignTokens.bgPanel,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: DesignTokens.border),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('LIVE TRANSCRIPT',
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.7,
+                    color: DesignTokens.textMuted)),
+            const SizedBox(height: 6),
+            for (final s in recent)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(s.text,
+                    style: const TextStyle(
+                        fontSize: 13,
+                        height: 1.35,
+                        color: DesignTokens.textPrimary)),
+              ),
+            if (v.partialTranscript?.isNotEmpty ?? false)
+              Text(v.partialTranscript!,
+                  style: const TextStyle(
+                      fontSize: 13,
+                      height: 1.35,
+                      fontStyle: FontStyle.italic,
+                      color: DesignTokens.textMuted)),
+          ],
+        ),
+      ),
     );
   }
 
