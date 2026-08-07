@@ -8,8 +8,8 @@
 //! (see `active_connection_count`).
 
 use crate::protocol::{
-    self, AuthResponse, Command, DenyReason, Hello, PairRequest, PairResponse, Request,
-    ServerMessage,
+    self, AuthResponse, Command, DenyReason, Hello, PairRequest, PairResponse, RemoteDeviceView,
+    RemotePendingView, Request, ServerMessage,
 };
 use crate::rbac::{authorize, Role};
 use crate::session::{DeviceId, PairingError, SessionRegistry, SessionToken, SESSION_IDLE_TTL};
@@ -360,6 +360,52 @@ impl ControlServer {
         }
     }
 
+    /// Handle a Remote Control device-management command against the [`SessionRegistry`] (the
+    /// operator's device authority, 86ajxer8n). Returns `Some(reply)` for a device command — the
+    /// caller has already `authorize`d it as `ManageDevices` — or `None` for any other command,
+    /// which then falls through to the application handler. Every mutator replies with the fresh
+    /// snapshot so the operator UI re-renders from a single source of truth.
+    async fn handle_remote_command(&self, cmd: &Command) -> Option<ServerMessage> {
+        let now = std::time::Instant::now();
+        let mut reg = self.registry.lock().await;
+        match cmd {
+            Command::ListRemoteDevices => Some(remote_snapshot(&reg, now)),
+            Command::RevokeSession { device_id } => {
+                reg.revoke(&DeviceId(device_id.clone()));
+                Some(remote_snapshot(&reg, now))
+            }
+            Command::SetSessionRole { device_id, role } => {
+                reg.set_role(&DeviceId(device_id.clone()), *role);
+                Some(remote_snapshot(&reg, now))
+            }
+            Command::DenyPairing { device_id } => {
+                reg.deny_request(&DeviceId(device_id.clone()));
+                Some(remote_snapshot(&reg, now))
+            }
+            Command::ApprovePairing { device_id, role } => {
+                let token = SessionToken::new(random_hex(32));
+                // Fails closed (unknown request / at capacity) — the request stays parked for a
+                // retry and the operator just sees the unchanged snapshot.
+                let _ = reg.approve_request(&DeviceId(device_id.clone()), *role, token, now);
+                Some(remote_snapshot(&reg, now))
+            }
+            Command::NewPairingCode => {
+                let code = random_hex(4); // 8 hex chars — short enough for a QR fallback readout
+                let fingerprint = pairing_fingerprint(&code);
+                let ttl = Duration::from_secs(120);
+                // Least-privilege default: a scanning device redeems as Viewer, then the operator
+                // approves/re-roles it. (The role-at-approval handshake is the Part B follow-on.)
+                reg.offer_pairing(code.clone(), Role::Viewer, now, ttl);
+                Some(ServerMessage::PairingCode {
+                    code,
+                    fingerprint,
+                    expires_in_secs: ttl.as_secs(),
+                })
+            }
+            _ => None,
+        }
+    }
+
     async fn request_loop<S>(
         &self,
         ws: &mut WebSocketStream<S>,
@@ -395,15 +441,22 @@ impl ControlServer {
                         continue;
                     }
                     let reply = if authorize(role, &req.command) {
-                        match (self.handler)(role, &req.command) {
-                            Reply::Ack => ServerMessage::Ack {
-                                request_id: req.request_id,
-                            },
-                            Reply::Deny(reason) => ServerMessage::Denied {
-                                request_id: req.request_id,
-                                reason,
-                            },
-                            Reply::Message(msg) => *msg,
+                        // Remote Control device management is served here against the
+                        // SessionRegistry (the server owns it); everything else falls through to
+                        // the application handler (86ajxer8n).
+                        if let Some(msg) = self.handle_remote_command(&req.command).await {
+                            msg
+                        } else {
+                            match (self.handler)(role, &req.command) {
+                                Reply::Ack => ServerMessage::Ack {
+                                    request_id: req.request_id,
+                                },
+                                Reply::Deny(reason) => ServerMessage::Denied {
+                                    request_id: req.request_id,
+                                    reason,
+                                },
+                                Reply::Message(msg) => *msg,
+                            }
                         }
                     } else {
                         ServerMessage::Denied {
@@ -424,6 +477,48 @@ impl ControlServer {
 /// `n` random bytes from the OS CSPRNG as lowercase hex (2n chars). Falls back to a
 /// second draw attempt; a CSPRNG that cannot produce bytes is unrecoverable, so the
 /// caller-facing contract stays simple (this is used for token/device-id issuance).
+/// Build the operator's Remote Control snapshot — paired devices + pending requests — as
+/// JS-friendly wire views (seconds instead of `Duration`, and never a session token).
+fn remote_snapshot(reg: &SessionRegistry, now: std::time::Instant) -> ServerMessage {
+    ServerMessage::RemoteDevices {
+        devices: reg
+            .sessions(now)
+            .into_iter()
+            .map(|s| RemoteDeviceView {
+                device_id: s.device_id.0,
+                name: s.name,
+                platform: s.platform,
+                role: s.role,
+                idle_secs: s.idle_for.as_secs(),
+                pinned: s.pinned,
+            })
+            .collect(),
+        pending: reg
+            .pending_requests(now)
+            .into_iter()
+            .map(|p| RemotePendingView {
+                device_id: p.device_id.0,
+                name: p.name,
+                platform: p.platform,
+                fingerprint: p.fingerprint,
+                waiting_secs: p.waiting_for.as_secs(),
+            })
+            .collect(),
+    }
+}
+
+/// A short, human-readable fingerprint for the "Pair a device" QR, rendered as space-separated hex
+/// pairs (e.g. `A1 · B2 · C3 · D4`). NOTE: derived from the pairing code as a placeholder — the
+/// real TLS-cert SHA-256 pinning belongs to the pairing-handshake redesign (Part B).
+fn pairing_fingerprint(code: &str) -> String {
+    code.to_uppercase()
+        .as_bytes()
+        .chunks(2)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 fn random_hex(n: usize) -> String {
     let rng = SystemRandom::new();
     let mut bytes = vec![0u8; n];

@@ -411,3 +411,42 @@ fn manage_devices_is_operator_only() {
     assert!(!Role::Assistant.can(Permission::ManageDevices));
     assert!(!Role::Viewer.can(Permission::ManageDevices));
 }
+
+#[test]
+fn device_management_commands_are_operator_only() {
+    // Every Remote Control device command maps to ManageDevices through the single authorize()
+    // choke point → Operator alone is allowed; everyone below is denied by default (86ajxer8n).
+    let cmds = [
+        Command::ListRemoteDevices,
+        Command::ApprovePairing {
+            device_id: "dev-1".into(),
+            role: Role::Assistant,
+        },
+        Command::DenyPairing {
+            device_id: "dev-1".into(),
+        },
+        Command::RevokeSession {
+            device_id: "dev-1".into(),
+        },
+        Command::SetSessionRole {
+            device_id: "dev-1".into(),
+            role: Role::Producer,
+        },
+        Command::NewPairingCode,
+    ];
+    for c in &cmds {
+        assert!(
+            authorize(Role::Operator, c),
+            "operator must be allowed {c:?}"
+        );
+        assert!(
+            !authorize(Role::Producer, c),
+            "producer must be denied {c:?}"
+        );
+        assert!(
+            !authorize(Role::Assistant, c),
+            "assistant must be denied {c:?}"
+        );
+        assert!(!authorize(Role::Viewer, c), "viewer must be denied {c:?}");
+    }
+}

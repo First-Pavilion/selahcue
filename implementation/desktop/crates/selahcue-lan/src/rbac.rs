@@ -156,6 +156,14 @@ pub fn required_permission(cmd: &Command) -> Permission {
         // Operator-only authority (they never touch the audience output).
         | Command::SetStageTemplate { .. }
         | Command::SetStageMessage { .. } => ConfigureOutputs,
+        // Remote Control device management is the operator's authority over WHO may connect and
+        // with what role — the highest control-plane privilege, Operator-only (86ajxer8n).
+        Command::ListRemoteDevices
+        | Command::ApprovePairing { .. }
+        | Command::DenyPairing { .. }
+        | Command::RevokeSession { .. }
+        | Command::SetSessionRole { .. }
+        | Command::NewPairingCode => ManageDevices,
     }
 }
 

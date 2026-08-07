@@ -225,3 +225,150 @@ async fn connections_do_not_leak_server_state() {
     );
     assert_eq!(reg.pending_count(), 0);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn operator_manages_remote_devices_end_to_end() {
+    let (addr, pin, _server, registry) = start_server().await;
+
+    // Pre-seed an Operator session (the device-management authority) and one pending pairing
+    // request for it to approve. (In production the request arrives over the pairing handshake;
+    // here we inject it directly through the shared registry.)
+    {
+        let now = Instant::now();
+        let mut reg = registry.lock().await;
+        reg.offer_pairing("op-code", Role::Operator, now, Duration::from_secs(300));
+        reg.redeem(
+            "op-code",
+            DeviceId("operator".into()),
+            SessionToken::new("tok-op"),
+            now,
+        )
+        .unwrap();
+        reg.submit_request(
+            DeviceId("anna-iphone".into()),
+            "Anna's iPhone",
+            "iOS",
+            "fp-anna",
+            now,
+        )
+        .unwrap();
+    }
+
+    let mut operator = ControlClient::connect(addr, "localhost", pin, "operator", "tok-op")
+        .await
+        .unwrap();
+    assert_eq!(operator.role(), Role::Operator);
+
+    // List: the pre-paired producer + assistant + this operator are all present, and the one
+    // pending request is surfaced with its device-supplied metadata.
+    let (devices, pending) = match operator.command(Command::ListRemoteDevices).await.unwrap() {
+        ServerMessage::RemoteDevices { devices, pending } => (devices, pending),
+        other => panic!("expected RemoteDevices, got {other:?}"),
+    };
+    assert!(devices
+        .iter()
+        .any(|d| d.device_id == "producer" && d.role == Role::Producer));
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].device_id, "anna-iphone");
+    assert_eq!(pending[0].name, "Anna's iPhone");
+
+    // Approve the pending request AS an Assistant → it becomes a live session; pending clears.
+    let (devices, pending) = match operator
+        .command(Command::ApprovePairing {
+            device_id: "anna-iphone".into(),
+            role: Role::Assistant,
+        })
+        .await
+        .unwrap()
+    {
+        ServerMessage::RemoteDevices { devices, pending } => (devices, pending),
+        other => panic!("expected RemoteDevices, got {other:?}"),
+    };
+    assert!(
+        pending.is_empty(),
+        "approved request must clear from pending"
+    );
+    let anna = devices
+        .iter()
+        .find(|d| d.device_id == "anna-iphone")
+        .expect("approved device now paired");
+    assert_eq!(anna.role, Role::Assistant, "approved with the chosen role");
+
+    // Re-role, then revoke.
+    if let ServerMessage::RemoteDevices { devices, .. } = operator
+        .command(Command::SetSessionRole {
+            device_id: "anna-iphone".into(),
+            role: Role::Producer,
+        })
+        .await
+        .unwrap()
+    {
+        let anna = devices
+            .iter()
+            .find(|d| d.device_id == "anna-iphone")
+            .unwrap();
+        assert_eq!(anna.role, Role::Producer, "role updated in place");
+    } else {
+        panic!("expected RemoteDevices");
+    }
+    if let ServerMessage::RemoteDevices { devices, .. } = operator
+        .command(Command::RevokeSession {
+            device_id: "anna-iphone".into(),
+        })
+        .await
+        .unwrap()
+    {
+        assert!(
+            !devices.iter().any(|d| d.device_id == "anna-iphone"),
+            "revoked device is gone"
+        );
+    } else {
+        panic!("expected RemoteDevices");
+    }
+
+    // NewPairingCode mints a fresh single-use code + fingerprint for the "Pair a device" QR.
+    match operator.command(Command::NewPairingCode).await.unwrap() {
+        ServerMessage::PairingCode {
+            code,
+            fingerprint,
+            expires_in_secs,
+        } => {
+            assert_eq!(code.len(), 8, "8 hex chars");
+            assert!(!fingerprint.is_empty());
+            assert_eq!(expires_in_secs, 120);
+        }
+        other => panic!("expected PairingCode, got {other:?}"),
+    }
+
+    operator.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn non_operator_cannot_manage_devices() {
+    let (addr, pin, _server, _registry) = start_server().await;
+    // A Producer holds no ManageDevices permission → every device command is Forbidden at the
+    // single authorize() choke point, never reaching the registry.
+    let mut producer = ControlClient::connect(addr, "localhost", pin, "producer", "tok-prod")
+        .await
+        .unwrap();
+    assert!(matches!(
+        producer.command(Command::ListRemoteDevices).await.unwrap(),
+        ServerMessage::Denied {
+            reason: DenyReason::Forbidden,
+            ..
+        }
+    ));
+    assert!(matches!(
+        producer
+            .command(Command::RevokeSession {
+                device_id: "assistant".into()
+            })
+            .await
+            .unwrap(),
+        ServerMessage::Denied {
+            reason: DenyReason::Forbidden,
+            ..
+        }
+    ));
+    producer.close().await.unwrap();
+}

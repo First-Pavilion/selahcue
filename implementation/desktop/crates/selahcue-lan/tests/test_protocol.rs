@@ -4,7 +4,8 @@
 
 use selahcue_lan::protocol::{
     from_json, to_json, AuthRequest, AuthResponse, Command, DenyReason, LayerVisibility,
-    OutputConfigView, Request, ScaleFit, ScreenView, ServerMessage, ThumbView, VerseView, VERSION,
+    OutputConfigView, RemoteDeviceView, RemotePendingView, Request, ScaleFit, ScreenView,
+    ServerMessage, ThumbView, VerseView, VERSION,
 };
 use selahcue_lan::rbac::Role;
 
@@ -1039,5 +1040,85 @@ fn set_ndi_output_round_trips_and_is_additive() {
         "{j}"
     );
     assert_eq!(from_json::<OutputConfigView>(&j).unwrap(), cfg);
+    assert_eq!(VERSION, 2);
+}
+
+#[test]
+fn remote_device_management_wire_is_stable() {
+    // Operator→host device-management commands (86ajxer8n). These are operator-only and never sent
+    // by the Dart controller, but the operator client depends on these exact tags/fields.
+    assert_eq!(
+        to_json(&Command::ListRemoteDevices).unwrap(),
+        r#"{"cmd":"list_remote_devices"}"#
+    );
+    assert_eq!(
+        to_json(&Command::ApprovePairing {
+            device_id: "dev-ab12".into(),
+            role: Role::Assistant,
+        })
+        .unwrap(),
+        r#"{"cmd":"approve_pairing","device_id":"dev-ab12","role":"assistant"}"#
+    );
+    assert_eq!(
+        to_json(&Command::DenyPairing {
+            device_id: "dev-ab12".into()
+        })
+        .unwrap(),
+        r#"{"cmd":"deny_pairing","device_id":"dev-ab12"}"#
+    );
+    assert_eq!(
+        to_json(&Command::RevokeSession {
+            device_id: "dev-ab12".into()
+        })
+        .unwrap(),
+        r#"{"cmd":"revoke_session","device_id":"dev-ab12"}"#
+    );
+    assert_eq!(
+        to_json(&Command::SetSessionRole {
+            device_id: "dev-ab12".into(),
+            role: Role::Producer,
+        })
+        .unwrap(),
+        r#"{"cmd":"set_session_role","device_id":"dev-ab12","role":"producer"}"#
+    );
+    assert_eq!(
+        to_json(&Command::NewPairingCode).unwrap(),
+        r#"{"cmd":"new_pairing_code"}"#
+    );
+
+    // Replies round-trip and carry the `event` discriminator.
+    let devices = ServerMessage::RemoteDevices {
+        devices: vec![RemoteDeviceView {
+            device_id: "dev-ab12".into(),
+            name: "Booth iPad".into(),
+            platform: "iPadOS".into(),
+            role: Role::Producer,
+            idle_secs: 4,
+            pinned: false,
+        }],
+        pending: vec![RemotePendingView {
+            device_id: "dev-cd34".into(),
+            name: "Anna's iPhone".into(),
+            platform: "iOS".into(),
+            fingerprint: "A1 · B2 · C3 · D4".into(),
+            waiting_secs: 12,
+        }],
+    };
+    let json = to_json(&devices).unwrap();
+    assert!(json.contains(r#""event":"remote_devices""#), "{json}");
+    assert_eq!(
+        from_json::<ServerMessage>(&json).unwrap(),
+        devices,
+        "{json}"
+    );
+
+    let code = ServerMessage::PairingCode {
+        code: "ab12cd34".into(),
+        fingerprint: "A1 · B2".into(),
+        expires_in_secs: 120,
+    };
+    let cj = to_json(&code).unwrap();
+    assert!(cj.contains(r#""event":"pairing_code""#), "{cj}");
+    assert_eq!(from_json::<ServerMessage>(&cj).unwrap(), code, "{cj}");
     assert_eq!(VERSION, 2);
 }

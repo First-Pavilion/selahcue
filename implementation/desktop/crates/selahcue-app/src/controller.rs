@@ -2470,6 +2470,16 @@ impl LiveController {
                     ControllerReply::Deny(DenyReason::BadRequest)
                 }
             }
+            // Remote Control device management is handled at the transport/session layer
+            // (server.rs, which owns the SessionRegistry), NOT the operational controller — the
+            // server intercepts these before the handler, so this arm is a defensive fallback
+            // that never runs in practice (it only keeps the match exhaustive).
+            Command::ListRemoteDevices
+            | Command::ApprovePairing { .. }
+            | Command::DenyPairing { .. }
+            | Command::RevokeSession { .. }
+            | Command::SetSessionRole { .. }
+            | Command::NewPairingCode => ControllerReply::Deny(DenyReason::BadRequest),
         }
     }
 

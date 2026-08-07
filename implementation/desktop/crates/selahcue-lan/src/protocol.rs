@@ -277,6 +277,24 @@ pub enum Command {
     /// Dismiss a queued scripture detection by id without staging it. Requires
     /// `SearchScripture`.
     DismissDetection { detection_id: u64 },
+
+    // --- Remote Control device management (86ajxer8n): operator→host, all Operator-only
+    //     (`ManageDevices`), handled in the server request loop against the SessionRegistry.
+    //     The Dart mobile controller never sends these, so the pinned fixtures stay stable. ---
+    /// List paired controller devices + outstanding pairing requests (reply:
+    /// [`ServerMessage::RemoteDevices`]).
+    ListRemoteDevices,
+    /// Approve a device's pending pairing request, granting it `role` (RBAC assigned at approval).
+    ApprovePairing { device_id: String, role: Role },
+    /// Deny (drop) a device's pending pairing request.
+    DenyPairing { device_id: String },
+    /// Revoke a paired device's session immediately.
+    RevokeSession { device_id: String },
+    /// Change a paired device's role (effective on its next authenticated request).
+    SetSessionRole { device_id: String, role: Role },
+    /// Mint a fresh single-use pairing code + fingerprint for the "Pair a device" QR (reply:
+    /// [`ServerMessage::PairingCode`]).
+    NewPairingCode,
 }
 
 /// A controller → operator request frame.
@@ -371,8 +389,44 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         frame: Option<ThumbView>,
     },
+    /// Reply to [`Command::ListRemoteDevices`] and every device-management mutator: the operator's
+    /// paired devices + outstanding pairing requests for the Remote Control surface (86ajxer8n).
+    RemoteDevices {
+        devices: Vec<RemoteDeviceView>,
+        pending: Vec<RemotePendingView>,
+    },
+    /// Reply to [`Command::NewPairingCode`]: a fresh single-use pairing code + fingerprint for the
+    /// "Pair a device" QR, valid for `expires_in_secs`.
+    PairingCode {
+        code: String,
+        fingerprint: String,
+        expires_in_secs: u64,
+    },
     /// A protocol-level or transport-level error not tied to a single request.
     Error { message: String },
+}
+
+/// A paired controller device for the operator's Remote Control list — a JS-friendly wire view of
+/// [`SessionSummary`](crate::session::SessionSummary) (seconds, not `Duration`; never the token).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteDeviceView {
+    pub device_id: String,
+    pub name: String,
+    pub platform: String,
+    pub role: Role,
+    pub idle_secs: u64,
+    pub pinned: bool,
+}
+
+/// An outstanding pairing request awaiting operator approval — a wire view of
+/// [`PendingRequestSummary`](crate::session::PendingRequestSummary).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemotePendingView {
+    pub device_id: String,
+    pub name: String,
+    pub platform: String,
+    pub fingerprint: String,
+    pub waiting_secs: u64,
 }
 
 /// A single downscaled output thumbnail (86ajtwq28): `w×h` RGBA8 pixels, the bytes carried
