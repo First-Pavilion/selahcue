@@ -81,6 +81,105 @@ impl Backend {
             Backend::Local(s) => Ok(s.go_live()),
         }
     }
+
+    // --- Remote Control device management (86ajxer8n). Only a Remote backend has a host session
+    //     registry; the stand-alone/demo Local backend has no controllers to manage. ---
+    async fn remote_devices(&self) -> Result<RemoteDevicesReply, String> {
+        match self {
+            Backend::Remote(m) => {
+                let (devices, pending) = m
+                    .lock()
+                    .await
+                    .remote_devices()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(RemoteDevicesReply { devices, pending })
+            }
+            Backend::Local(_) => Ok(RemoteDevicesReply::default()),
+        }
+    }
+    async fn approve_pairing(
+        &self,
+        device_id: String,
+        role: String,
+    ) -> Result<RemoteDevicesReply, String> {
+        match self {
+            Backend::Remote(m) => {
+                let (devices, pending) = m
+                    .lock()
+                    .await
+                    .approve_pairing(&device_id, parse_role(&role)?)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(RemoteDevicesReply { devices, pending })
+            }
+            Backend::Local(_) => Err(NO_HOST.into()),
+        }
+    }
+    async fn deny_pairing(&self, device_id: String) -> Result<RemoteDevicesReply, String> {
+        match self {
+            Backend::Remote(m) => {
+                let (devices, pending) = m
+                    .lock()
+                    .await
+                    .deny_pairing(&device_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(RemoteDevicesReply { devices, pending })
+            }
+            Backend::Local(_) => Err(NO_HOST.into()),
+        }
+    }
+    async fn revoke_session(&self, device_id: String) -> Result<RemoteDevicesReply, String> {
+        match self {
+            Backend::Remote(m) => {
+                let (devices, pending) = m
+                    .lock()
+                    .await
+                    .revoke_session(&device_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(RemoteDevicesReply { devices, pending })
+            }
+            Backend::Local(_) => Err(NO_HOST.into()),
+        }
+    }
+    async fn set_session_role(
+        &self,
+        device_id: String,
+        role: String,
+    ) -> Result<RemoteDevicesReply, String> {
+        match self {
+            Backend::Remote(m) => {
+                let (devices, pending) = m
+                    .lock()
+                    .await
+                    .set_session_role(&device_id, parse_role(&role)?)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(RemoteDevicesReply { devices, pending })
+            }
+            Backend::Local(_) => Err(NO_HOST.into()),
+        }
+    }
+    async fn new_pairing_code(&self) -> Result<PairingCodeReply, String> {
+        match self {
+            Backend::Remote(m) => {
+                let (code, fingerprint, expires_in_secs) = m
+                    .lock()
+                    .await
+                    .new_pairing_code()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(PairingCodeReply {
+                    code,
+                    fingerprint,
+                    expires_in_secs,
+                })
+            }
+            Backend::Local(_) => Err(NO_HOST.into()),
+        }
+    }
     /// Present a Design 2.0 authored deck slide on the audience output (the deck editor's
     /// "Present"). `slide_json`/`theme_json` are the serialized `AuthoredSlide` + `Theme` the
     /// canvas preview composed; the host composes them with the same compositor as plan content.
@@ -580,6 +679,74 @@ struct AppState {
     /// The persisted Presentations Library — the set of saved decks the `deck` workspace opens
     /// one of at a time. Locked AFTER `deck` wherever both are held (consistent order, no deadlock).
     library: Mutex<DeckLibrary>,
+}
+
+/// Reply to the Remote Control device commands: the host's paired devices + pending requests.
+#[derive(serde::Serialize, Default)]
+struct RemoteDevicesReply {
+    devices: Vec<selahcue_lan::protocol::RemoteDeviceView>,
+    pending: Vec<selahcue_lan::protocol::RemotePendingView>,
+}
+
+/// Reply to `remote_new_code`: a fresh single-use pairing code + fingerprint for the QR.
+#[derive(serde::Serialize)]
+struct PairingCodeReply {
+    code: String,
+    fingerprint: String,
+    expires_in_secs: u64,
+}
+
+/// Shown when a device command is issued in stand-alone/demo mode (no host connected).
+const NO_HOST: &str = "device management needs a connected output window";
+
+/// Parse a wire role string (as the operator UI sends) into a [`selahcue_lan::Role`].
+fn parse_role(s: &str) -> Result<selahcue_lan::Role, String> {
+    match s {
+        "operator" => Ok(selahcue_lan::Role::Operator),
+        "producer" => Ok(selahcue_lan::Role::Producer),
+        "assistant" => Ok(selahcue_lan::Role::Assistant),
+        "viewer" => Ok(selahcue_lan::Role::Viewer),
+        other => Err(format!("unknown role: {other}")),
+    }
+}
+
+#[tauri::command]
+async fn remote_snapshot(state: State<'_, AppState>) -> Result<RemoteDevicesReply, String> {
+    state.backend.remote_devices().await
+}
+#[tauri::command]
+async fn remote_approve(
+    device_id: String,
+    role: String,
+    state: State<'_, AppState>,
+) -> Result<RemoteDevicesReply, String> {
+    state.backend.approve_pairing(device_id, role).await
+}
+#[tauri::command]
+async fn remote_deny(
+    device_id: String,
+    state: State<'_, AppState>,
+) -> Result<RemoteDevicesReply, String> {
+    state.backend.deny_pairing(device_id).await
+}
+#[tauri::command]
+async fn remote_revoke(
+    device_id: String,
+    state: State<'_, AppState>,
+) -> Result<RemoteDevicesReply, String> {
+    state.backend.revoke_session(device_id).await
+}
+#[tauri::command]
+async fn remote_set_role(
+    device_id: String,
+    role: String,
+    state: State<'_, AppState>,
+) -> Result<RemoteDevicesReply, String> {
+    state.backend.set_session_role(device_id, role).await
+}
+#[tauri::command]
+async fn remote_new_code(state: State<'_, AppState>) -> Result<PairingCodeReply, String> {
+    state.backend.new_pairing_code().await
 }
 
 #[tauri::command]
@@ -1628,6 +1795,12 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            remote_snapshot,
+            remote_approve,
+            remote_deny,
+            remote_revoke,
+            remote_set_role,
+            remote_new_code,
             view,
             next,
             previous,

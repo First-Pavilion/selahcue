@@ -591,6 +591,14 @@ impl From<OperatorStateView> for OperatorView {
 /// operator shell (and, later, the mobile client) drive the on-screen output window —
 /// the host owns the one live state; this is a thin, authenticated remote.
 #[cfg(feature = "server")]
+/// The host's Remote Control snapshot: (paired devices, outstanding pairing requests) — the
+/// operator's device-management view (86ajxer8n).
+#[cfg(feature = "server")]
+pub type RemoteSnapshot = (
+    Vec<selahcue_lan::protocol::RemoteDeviceView>,
+    Vec<selahcue_lan::protocol::RemotePendingView>,
+);
+
 pub struct RemoteOperator {
     client: selahcue_lan::ControlClient,
 }
@@ -630,6 +638,93 @@ impl RemoteOperator {
     /// Commit whatever is staged to the host's Live output.
     pub async fn go_live(&mut self) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::GoLive).await
+    }
+
+    // --- Remote Control device management (86ajxer8n): operator→host, all Operator-only.
+    //     Each mutator returns the fresh (devices, pending) snapshot from the host. ---
+
+    /// List the host's paired controller devices + outstanding pairing requests.
+    pub async fn remote_devices(&mut self) -> Result<RemoteSnapshot, selahcue_lan::TransportError> {
+        self.remote_command(Command::ListRemoteDevices).await
+    }
+
+    /// Approve a pending pairing request, granting it `role`.
+    pub async fn approve_pairing(
+        &mut self,
+        device_id: &str,
+        role: selahcue_lan::Role,
+    ) -> Result<RemoteSnapshot, selahcue_lan::TransportError> {
+        self.remote_command(Command::ApprovePairing {
+            device_id: device_id.into(),
+            role,
+        })
+        .await
+    }
+
+    /// Deny (drop) a pending pairing request.
+    pub async fn deny_pairing(
+        &mut self,
+        device_id: &str,
+    ) -> Result<RemoteSnapshot, selahcue_lan::TransportError> {
+        self.remote_command(Command::DenyPairing {
+            device_id: device_id.into(),
+        })
+        .await
+    }
+
+    /// Revoke a paired device's session immediately.
+    pub async fn revoke_session(
+        &mut self,
+        device_id: &str,
+    ) -> Result<RemoteSnapshot, selahcue_lan::TransportError> {
+        self.remote_command(Command::RevokeSession {
+            device_id: device_id.into(),
+        })
+        .await
+    }
+
+    /// Change a paired device's role.
+    pub async fn set_session_role(
+        &mut self,
+        device_id: &str,
+        role: selahcue_lan::Role,
+    ) -> Result<RemoteSnapshot, selahcue_lan::TransportError> {
+        self.remote_command(Command::SetSessionRole {
+            device_id: device_id.into(),
+            role,
+        })
+        .await
+    }
+
+    /// Mint a fresh single-use pairing code + fingerprint for the "Pair a device" QR.
+    pub async fn new_pairing_code(
+        &mut self,
+    ) -> Result<(String, String, u64), selahcue_lan::TransportError> {
+        use selahcue_lan::protocol::ServerMessage;
+        match self.client.command(Command::NewPairingCode).await? {
+            ServerMessage::PairingCode {
+                code,
+                fingerprint,
+                expires_in_secs,
+            } => Ok((code, fingerprint, expires_in_secs)),
+            other => Err(selahcue_lan::TransportError::Protocol(format!(
+                "expected pairing_code, got: {other:?}"
+            ))),
+        }
+    }
+
+    /// Send a device-management command and parse the host's `RemoteDevices` snapshot reply.
+    async fn remote_command(
+        &mut self,
+        cmd: Command,
+    ) -> Result<RemoteSnapshot, selahcue_lan::TransportError> {
+        use selahcue_lan::protocol::ServerMessage;
+        match self.client.command(cmd).await? {
+            ServerMessage::RemoteDevices { devices, pending } => Ok((devices, pending)),
+            other => Err(selahcue_lan::TransportError::Protocol(format!(
+                "expected remote_devices, got: {other:?}"
+            ))),
+        }
     }
 
     /// Stage a specific plan item (by id) in the host's Preview.

@@ -87,6 +87,18 @@ STUB = r"""
   window.__ev = {};          // event name -> [handlers] (Tauri event stub)
   window.__startCtl = null;  // resolve/reject for a pending start_listening
   window.__renderAvailable = true; // flip to test the Remote/older-host text fallback
+  // Remote Control device-management mock (86ajxer8n): mirrors the host session registry so the
+  // surface's optimistic updates reconcile against consistent snapshots (roles are non-Operator —
+  // the host caps remote devices at Producer).
+  window.__remote = {
+    devices: [
+      { device_id: "dev-aa01", name: "Booth iPad", platform: "iPadOS", role: "producer", idle_secs: 3, pinned: false },
+      { device_id: "dev-bb02", name: "Guest tablet", platform: "iPadOS", role: "viewer", idle_secs: 210, pinned: false },
+    ],
+    pending: [
+      { device_id: "dev-cc03", name: "Anna's iPhone", platform: "iOS", fingerprint: "A1 B2 C3 D4", waiting_secs: 8 },
+    ],
+  };
   // A REAL OperatorView so the boot render path (act->render->syncChrome->renderConsole) runs
   // exactly as in the app — the prior null stub masked the #7 render never firing on launch.
   var V = { plan_name:"Svc", items:[{id:1,kind:"scripture",title:"Genesis 1:13",is_live:true,is_staged:true}],
@@ -136,6 +148,28 @@ STUB = r"""
     if (cmd === "view") return Promise.resolve(JSON.parse(JSON.stringify(V)));
     if (cmd === "preview_theme") return Promise.resolve({rgba: btoa("\x00\x00\x00\xff"), w:1, h:1});
     if (cmd === "pick_image") return Promise.resolve("/tmp/picked.png");
+    if (cmd === "remote_snapshot")
+      return Promise.resolve({devices: window.__remote.devices.slice(), pending: window.__remote.pending.slice()});
+    if (cmd === "remote_approve") {
+      var RA = window.__remote, ri = RA.pending.findIndex(function(p){return p.device_id === args.deviceId;});
+      if (ri >= 0) { var rp = RA.pending.splice(ri,1)[0];
+        RA.devices.push({device_id:rp.device_id, name:rp.name, platform:rp.platform, role:(args.role==="operator"?"producer":args.role), idle_secs:0, pinned:false}); }
+      return Promise.resolve({devices: RA.devices.slice(), pending: RA.pending.slice()});
+    }
+    if (cmd === "remote_deny") {
+      window.__remote.pending = window.__remote.pending.filter(function(p){return p.device_id !== args.deviceId;});
+      return Promise.resolve({devices: window.__remote.devices.slice(), pending: window.__remote.pending.slice()});
+    }
+    if (cmd === "remote_revoke") {
+      window.__remote.devices = window.__remote.devices.filter(function(d){return d.device_id !== args.deviceId;});
+      return Promise.resolve({devices: window.__remote.devices.slice(), pending: window.__remote.pending.slice()});
+    }
+    if (cmd === "remote_set_role") {
+      if (args.role !== "operator") window.__remote.devices.forEach(function(d){ if (d.device_id === args.deviceId) d.role = args.role; });
+      return Promise.resolve({devices: window.__remote.devices.slice(), pending: window.__remote.pending.slice()});
+    }
+    if (cmd === "remote_new_code")
+      return Promise.resolve({code:"AB12CD34", fingerprint:"A1 B2 C3 D4", expires_in_secs:120});
     if (cmd === "render_console") return Promise.resolve(
       window.__renderAvailable
         ? {available:true,
