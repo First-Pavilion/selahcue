@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import '../controllers/live_controller.dart';
 import '../models/design_tokens.dart';
 import '../models/discovery.dart' show pinFingerprint;
+import '../models/rbac.dart';
 import '../models/session.dart';
 import '../models/stored_session.dart';
 import 'pairing_view.dart';
@@ -125,6 +126,9 @@ class _ControllerViewState extends State<ControllerView> {
               ],
             ),
             actions: [
+              // The granted-role chip (the real backend role) — surfaces RBAC
+              // and replaces the old hardcoded "Producer".
+              RoleBadge(live: _live),
               // A wall clock for service-timing awareness (matches the design);
               // it refreshes on each 1s poll rebuild.
               Padding(
@@ -265,14 +269,14 @@ class _AboutSheet extends StatelessWidget {
                 const SizedBox(width: 12),
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: const [
-                    Text('SelahCue',
+                  children: [
+                    const Text('SelahCue',
                         style: TextStyle(
                             fontSize: 17,
                             fontWeight: FontWeight.w700,
                             color: DesignTokens.textPrimary)),
-                    Text('Controller · Producer',
-                        style: TextStyle(
+                    Text('Controller · ${live.role.label}',
+                        style: const TextStyle(
                             fontSize: 12,
                             letterSpacing: 1.5,
                             color: DesignTokens.textMuted)),
@@ -302,7 +306,7 @@ class _AboutSheet extends StatelessWidget {
               ),
             ),
             _row('Host', '${stored.host}:${stored.port}'),
-            _row('Role', 'Producer'),
+            _row('Role', live.role.label),
             _row('Fingerprint', pinFingerprint(stored.pinHex)),
             const SizedBox(height: 16),
             OutlinedButton.icon(
@@ -340,6 +344,42 @@ class _AboutSheet extends StatelessWidget {
                       color: valueColor ?? DesignTokens.textPrimary)),
             ),
           ],
+        ),
+      );
+}
+
+/// The granted-role chip shown in the app bar (the real backend role — the
+/// 7-role design vocabulary is a tracked follow-up). Colour-coded but always
+/// carries the text label (WCAG 1.4.1). Rebuilds with the controller so a role
+/// change on reconnect is reflected.
+class RoleBadge extends StatelessWidget {
+  final LiveController live;
+  const RoleBadge({super.key, required this.live});
+
+  static Color colorFor(MobileRole r) {
+    switch (r) {
+      case MobileRole.operator:
+        return DesignTokens.accentBrand;
+      case MobileRole.producer:
+        return DesignTokens.previewInk;
+      case MobileRole.assistant:
+        return DesignTokens.warnInk;
+      case MobileRole.viewer:
+      case MobileRole.unknown:
+        return DesignTokens.textMuted;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+        listenable: live,
+        builder: (context, _) => Padding(
+          padding: const EdgeInsets.only(right: 6),
+          child: Center(
+            child: StatusBadge(
+                text: live.role.label.toUpperCase(),
+                color: colorFor(live.role)),
+          ),
         ),
       );
 }
