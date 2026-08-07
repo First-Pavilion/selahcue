@@ -8,6 +8,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../models/protocol.dart';
+import '../models/rbac.dart';
 import '../models/session.dart';
 import '../models/stored_session.dart';
 
@@ -42,6 +43,14 @@ class LiveController extends ChangeNotifier {
       _reconnecting ? (_statusError ?? _denial) : (_denial ?? _statusError);
   bool get reconnecting => _reconnecting;
   bool get blackout => _view?.blackout ?? false;
+
+  /// The role the host granted this device. Reads through the CURRENT session,
+  /// so a reconnect that re-roles the device is reflected once it lands.
+  MobileRole get role => _session.grantedRole;
+
+  /// Whether the granted role may perform [capability] (UX gate only; the server
+  /// is still authoritative and denies anything this mirror gets wrong).
+  bool can(Capability capability) => role.can(capability);
 
   void dismissError() {
     _denial = null;

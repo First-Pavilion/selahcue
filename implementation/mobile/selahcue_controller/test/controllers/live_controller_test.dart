@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selahcue_controller/controllers/live_controller.dart';
 import 'package:selahcue_controller/models/protocol.dart';
+import 'package:selahcue_controller/models/rbac.dart';
 import 'package:selahcue_controller/models/session.dart';
 import 'package:selahcue_controller/models/stored_session.dart';
 
@@ -9,6 +10,8 @@ import 'package:selahcue_controller/models/stored_session.dart';
 class FakeSession implements ControllerSession {
   OperatorStateView view;
   ServerMessage Function(Map<String, dynamic> cmd) onCommand;
+  @override
+  final MobileRole grantedRole = MobileRole.producer;
   int commandCount = 0;
   int closeCount = 0;
 

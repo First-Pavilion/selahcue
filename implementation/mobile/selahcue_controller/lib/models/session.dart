@@ -14,6 +14,7 @@ import 'package:crypto/crypto.dart';
 
 import 'pair_uri.dart';
 import 'protocol.dart';
+import 'rbac.dart';
 
 /// Mirrors the Rust client's budgets: transport 10s; pairing additionally waits
 /// through the host's 30s confirmation window.
@@ -41,6 +42,8 @@ class Credentials {
 /// interface so the controller can be unit-tested against a fake without a real
 /// pinned-TLS socket; [SelahSession] is the production implementation.
 abstract interface class ControllerSession {
+  /// The role the host granted this device (parsed; drives UI capability gating).
+  MobileRole get grantedRole;
   Future<ServerMessage> command(Map<String, dynamic> cmd);
   Future<OperatorStateView> operatorState();
   Future<void> close();
@@ -50,8 +53,12 @@ class SelahSession implements ControllerSession {
   final WebSocket _ws;
   final StreamQueue _incoming;
 
-  /// The role the host granted this device.
+  /// The role the host granted this device (raw wire string).
   final String role;
+
+  /// The parsed role that drives client-side capability gating.
+  @override
+  MobileRole get grantedRole => MobileRole.parse(role);
 
   /// Serializes command round-trips (the protocol is lockstep per connection).
   Future<void> _turn = Future.value();

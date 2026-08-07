@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selahcue_controller/controllers/live_controller.dart';
 import 'package:selahcue_controller/models/protocol.dart';
+import 'package:selahcue_controller/models/rbac.dart';
 import 'package:selahcue_controller/models/session.dart';
 import 'package:selahcue_controller/models/stored_session.dart';
 import 'package:selahcue_controller/views/tabs/scripture_tab.dart';
@@ -11,6 +12,8 @@ import 'package:selahcue_controller/views/tabs/scripture_tab.dart';
 /// Romans 8 for get_chapter.
 class _Fake implements ControllerSession {
   final OperatorStateView view;
+  @override
+  final MobileRole grantedRole = MobileRole.producer;
   _Fake(this.view);
 
   @override
