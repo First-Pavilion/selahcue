@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: v2 mobile role-aware controller — consume the granted role and render only role-permitted controls (4-role backend)
 - Role: mobile-engineer
-- Status: DRAFT
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajxuf5j
 - Design ref: Figma 342-124 (Mobile Remote) · RBAC matrix 354-124
@@ -82,13 +82,13 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | `rbac.dart` mirrors `rbac.rs:62-91` role→capability table exactly | `flutter test test/models/rbac_test.dart` | PASS | test output | PENDING |
-| C-002 | yes | Role travels session→controller (`grantedRole`, `can()`) | `flutter test test/controllers/live_controller_rbac_test.dart` | PASS | test output | PENDING |
-| C-003 | yes | `cmdPauseTimer`/`cmdResumeTimer` pinned; wire `v` still 2 | `flutter test test/models/protocol_test.dart` + grep `wireVersion` | PASS + `const int wireVersion = 2` | test output | PENDING |
-| C-004 | yes | App-bar badge + About sheet show the real role (no hardcoded 'Producer') | `flutter test test/views/controller_view_role_test.dart` | PASS | test output | PENDING |
-| C-005 | yes | Live/Scripture/Timer/emergency-strip render only role-permitted controls (Producer/Assistant/Viewer) | `flutter test test/views/live_tab_test.dart test/views/scripture_tab_role_test.dart test/views/timer_tab_test.dart test/views/emergency_strip_test.dart` | PASS | test output | PENDING |
-| C-006 | yes | Full gate green; no backend/wire change | `make mobile-test` + `git diff --name-only` scoped to mobile+docs | analyze clean, tests PASS, no `selahcue-lan` files | CI output | PENDING |
-| C-007 | yes | TIME UP/Reset/7-role omitted; two follow-ups created + linked | review | absent in Timer UI; 86ajxuf81 + 86ajxufbg exist, dependency set | ClickUp | PASS |
+| C-001 | yes | `rbac.dart` mirrors `rbac.rs:62-91` role→capability table exactly | `flutter test test/models/rbac_test.dart` | PASS | rbac_test 4/4 PASS | PASS |
+| C-002 | yes | Role travels session→controller (`grantedRole`, `can()`) | `flutter test test/controllers/live_controller_rbac_test.dart` | PASS | live_controller_rbac_test PASS | PASS |
+| C-003 | yes | `cmdPauseTimer`/`cmdResumeTimer` pinned; wire `v` still 2 | `flutter test test/models/protocol_test.dart` + grep `wireVersion` | PASS + `const int wireVersion = 2` | protocol_test PASS; `wireVersion = 2` | PASS |
+| C-004 | yes | App-bar badge + About sheet show the real role (no hardcoded 'Producer') | `flutter test test/views/controller_view_role_test.dart` | PASS | controller_view_role_test 2/2 PASS | PASS |
+| C-005 | yes | Live/Scripture/Timer/emergency-strip render only role-permitted controls (Producer/Assistant/Viewer) | `flutter test test/views/live_tab_test.dart test/views/scripture_tab_role_test.dart test/views/timer_tab_test.dart test/views/emergency_strip_test.dart` | PASS | live/scripture/timer/emergency role tests PASS | PASS |
+| C-006 | yes | Full gate green; no backend/wire change | `make mobile-test` + `git diff --name-only` scoped to mobile+docs | analyze clean, tests PASS, no `selahcue-lan` files | `make mobile-test` 62/62 PASS; analyze clean; diff = mobile+docs only | PASS |
+| C-007 | yes | TIME UP/Reset/7-role omitted; two follow-ups created + linked | review | absent in Timer UI; 86ajxuf81 + 86ajxufbg exist, dependency set | ClickUp 86ajxuf81, 86ajxufbg (waiting_on) | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -104,13 +104,23 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 ### Iteration 1
 
-- Target criterion:
-- Hypothesis:
-- Change or investigation:
-- Verifier executed:
-- Result:
-- New evidence:
-- Decision: iterate | handoff | blocked | gate-review | complete
+- Target criterion: C-001…C-006 (the full mobile role-awareness build).
+- Hypothesis: a pure Dart mirror of `rbac.rs` + `LiveController.can()` gate lets each
+  v2 screen hide the controls the granted role lacks, with no backend/wire change.
+- Change or investigation: 10-task TDD plan executed — `rbac.dart` mirror; role surfaced via
+  `ControllerSession.grantedRole` → `LiveController.can()`; `pause_timer`/`resume_timer` builders +
+  fixtures; app-bar `RoleBadge` + real About-sheet role; hide-gating on Live transport, emergency
+  strip, Scripture, Timer (+ Pause/Resume); Connect header aligned to v2.
+- Verifier executed: per-task `flutter test <file>`; then `make mobile-test`; `flutter analyze`;
+  `git diff --name-only c6a868b..HEAD`.
+- Result: 62/62 tests PASS; analyze "No issues found"; diff = mobile + docs only; `wireVersion = 2`.
+- New evidence: 11 mobile commits f7106e4…72d3b6f; two follow-up tickets 86ajxuf81 / 86ajxufbg.
+- Deviation: Task 9 shipped the presentation-only Connect header alignment but **no** full-`PairingView`
+  widget test — pumping it starts real mDNS sockets + a ~4s timer (flaky/plugin-hazardous under the
+  test binding); the flow stays covered by existing `discovery`/`pair_uri` unit tests, behaviour
+  untouched. Not a mandatory criterion (C-005 covers Live/Scripture/Timer/emergency only).
+- Decision: gate-review — all automated criteria PASS; independent QA + representative-device
+  screenshots per role are still required before VERIFIED_COMPLETE.
 
 ## Risks and rollback
 
@@ -128,8 +138,10 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-mobile-v2-rbac.md
-- Validator result:
-- Independent verification result:
-- Terminal state:
-- Remaining failed or blocked criteria:
-- ClickUp final evidence comment:
+- Validator result: PASS (7/7 mandatory) at authoring; re-run after status edits.
+- Independent verification result: PENDING — handed to /qa-engineer (or /code-reviewer): device
+  screenshots per role (Producer/Assistant/Viewer) + branch-diff review.
+- Terminal state: GATE_REVIEW.
+- Remaining failed or blocked criteria: none FAIL; all 7 criteria PASS. Independent QA/device check
+  outstanding before VERIFIED_COMPLETE.
+- ClickUp final evidence comment: posted on 86ajxuf5j; story moved to QA.
