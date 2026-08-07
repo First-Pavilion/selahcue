@@ -213,6 +213,13 @@ impl Presenter {
             );
             self.live.apply(EngineCommand::SetScene { frame });
         }
+        if let Some(slide) = self.live_authored.clone() {
+            // Authored slide: its own background wins; the effective theme is only the fallback.
+            // Layer masks don't apply to authored content, so recompose without a mask.
+            let theme = self.effective(self.live_theme.as_ref()).clone();
+            let frame = compose_authored_slide(&slide, &theme, self.width, self.height);
+            self.live.apply(EngineCommand::SetScene { frame });
+        }
     }
 
     /// Set the `main` audience screen's per-screen theme (86ajq321k) and recompose
@@ -239,6 +246,13 @@ impl Presenter {
                 self.height,
                 self.main_layer_mask,
             );
+            self.live.apply(EngineCommand::SetScene { frame });
+        }
+        if let Some(slide) = self.live_authored.clone() {
+            // Authored slide: its own background wins; the effective theme is only the fallback.
+            // Layer masks don't apply to authored content, so recompose without a mask.
+            let theme = self.effective(self.live_theme.as_ref()).clone();
+            let frame = compose_authored_slide(&slide, &theme, self.width, self.height);
             self.live.apply(EngineCommand::SetScene { frame });
         }
     }
@@ -273,6 +287,13 @@ impl Presenter {
                 self.height,
                 self.main_layer_mask,
             );
+            self.live.apply(EngineCommand::SetScene { frame });
+        }
+        if let Some(slide) = self.live_authored.clone() {
+            // Authored slide: its own background wins; the effective theme is only the fallback.
+            // Layer masks don't apply to authored content, so recompose without a mask.
+            let theme = self.effective(self.live_theme.as_ref()).clone();
+            let frame = compose_authored_slide(&slide, &theme, self.width, self.height);
             self.live.apply(EngineCommand::SetScene { frame });
         }
     }
@@ -336,6 +357,13 @@ impl Presenter {
                 self.height,
                 self.main_layer_mask,
             );
+            self.live.apply(EngineCommand::SetScene { frame });
+        }
+        if let Some(slide) = self.live_authored.clone() {
+            // Authored slide: its own background wins; the effective theme is only the fallback.
+            // Layer masks don't apply to authored content, so recompose without a mask.
+            let theme = self.effective(self.live_theme.as_ref()).clone();
+            let frame = compose_authored_slide(&slide, &theme, self.width, self.height);
             self.live.apply(EngineCommand::SetScene { frame });
         }
     }

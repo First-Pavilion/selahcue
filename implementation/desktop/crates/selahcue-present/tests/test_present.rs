@@ -154,6 +154,37 @@ fn an_authored_slide_with_no_elements_mirrors_a_nonblank_background() {
 }
 
 #[test]
+fn a_theme_switch_keeps_a_live_authored_slide_and_recomposes_main() {
+    // A background-LESS authored slide draws its background from the fallback theme, so a theme
+    // switch must RECOMPOSE the retained MAIN live surface (secondaries recompute on demand) — and
+    // must never DROP the authored slide from Live.
+    let mut p = Presenter::new(320, 180, Theme::classic());
+    let mut slide = AuthoredSlide::new(SlideId(9));
+    slide.background = None; // fallback theme supplies the background
+    assert!(p.present_authored(&slide, &Theme::classic()));
+    let classic_px = p.live_output().bytes().to_vec();
+
+    // (1) A GLOBAL theme switch recomposes the bg-less authored slide on the main live surface.
+    p.set_theme(Theme::high_contrast());
+    assert_eq!(
+        p.authored_live_id(),
+        Some(9),
+        "authored slide still live after a global theme switch"
+    );
+    assert_ne!(
+        p.live_output().bytes(),
+        classic_px.as_slice(),
+        "a global theme switch recomposes the bg-less authored slide on the main live surface"
+    );
+
+    // (2) per-screen theme and (3) layer-mask changes also keep it live (no drop, no panic).
+    p.set_main_screen_theme(Some(Theme::lower_third()));
+    assert_eq!(p.authored_live_id(), Some(9), "per-screen theme keeps the authored slide live");
+    p.set_main_layer_mask(LayerMask::ALL);
+    assert_eq!(p.authored_live_id(), Some(9), "a layer-mask change keeps the authored slide live");
+}
+
+#[test]
 fn go_live_with_nothing_staged_is_a_noop() {
     let mut p = presenter();
     assert!(!p.go_live());
