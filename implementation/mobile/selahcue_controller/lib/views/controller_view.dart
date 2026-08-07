@@ -424,6 +424,7 @@ class ConfigSheet extends StatelessWidget {
                       ? '${snap.data!.version} (${snap.data!.buildNumber})'
                       : '…'),
             ),
+            _linkRow('Privacy policy', () => _showPrivacy(context)),
             _linkRow('Open-source licenses',
                 () => showLicensePage(
                       context: context,
@@ -479,6 +480,31 @@ class ConfigSheet extends StatelessWidget {
           ),
         ),
       );
+
+  void _showPrivacy(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: DesignTokens.bgPanel,
+        title: const Text('Privacy'),
+        content: const SingleChildScrollView(
+          child: Text(
+              'SelahCue runs offline-first on your local network. This controller '
+              'talks only to the paired desktop over an encrypted (pinned-TLS) LAN '
+              'link and sends no data to any third party. Sermon audio, '
+              'transcripts, and notes stay on the desktop under your operator’s '
+              'control; retention and any optional cloud features are configured '
+              'and disclosed there. Your organisation can provide the full policy.'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
 
   void _showHelp(BuildContext context) {
     showDialog<void>(

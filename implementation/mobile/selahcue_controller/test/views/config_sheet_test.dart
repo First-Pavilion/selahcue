@@ -95,6 +95,7 @@ void main() {
     expect(find.text('Reduce motion'), findsOneWidget);
     expect(find.textContaining('1.0.0 (128)'), findsOneWidget);
     expect(find.text('Open-source licenses'), findsOneWidget);
+    expect(find.text('Privacy policy'), findsOneWidget); // FR-176
     expect(find.text('Producer'), findsOneWidget); // real granted role
 
     // Toggle Keep screen awake (first Switch) → wakelock enabled.
