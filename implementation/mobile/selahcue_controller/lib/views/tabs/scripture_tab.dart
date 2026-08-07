@@ -12,6 +12,7 @@ import '../../controllers/live_controller.dart';
 import '../../models/bible_books.dart';
 import '../../models/design_tokens.dart';
 import '../../models/protocol.dart';
+import '../../models/rbac.dart';
 
 class ScriptureTab extends StatefulWidget {
   final LiveController live;
@@ -148,6 +149,18 @@ class _ScriptureTabState extends State<ScriptureTab> {
 
   @override
   Widget build(BuildContext context) {
+    // Scripture search/stage requires the SearchScripture capability (Producer/
+    // Assistant). A role without it (Viewer) gets a read-only notice, no field.
+    if (!widget.live.can(Capability.searchScripture)) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text('Scripture control is not part of your role.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: DesignTokens.textMuted)),
+        ),
+      );
+    }
     final view = widget.live.view;
     final options =
         (view?.translations.isNotEmpty ?? false) ? view!.translations : ['KJV'];
