@@ -1066,12 +1066,12 @@
       });
 
       // --- App menu + surface routing (86ajq321f) ---
-      const APP_SURFACES = ["console", "theme-designer", "screens", "plan", "settings"];
+      const APP_SURFACES = ["console", "presentation", "theme-designer", "screens", "remote", "plan", "settings"];
       // Kept in sync with the nav items' .nav-t labels — the topbar surface label + the SR
       // route announcement read from here, so a drift would show a name the menu doesn't use.
       const SURFACE_LABEL = {
-        console: "Live Console", "theme-designer": "Theme Designer",
-        screens: "Screens & Outputs", plan: "Service Plan", settings: "Settings",
+        console: "Live Console", presentation: "Presentation", "theme-designer": "Theme Designer",
+        screens: "Screens & Outputs", remote: "Remote Control", plan: "Service Plan", settings: "Settings",
       };
       const appMenu = document.getElementById("app-menu");
       const appMenuBtn = document.getElementById("app-menu-btn");
@@ -1108,6 +1108,7 @@
           else it.removeAttribute("aria-current");
         });
         closeAppMenu();
+        if (typeof pmLibCloseMenu === "function") pmLibCloseMenu(); // dismiss any open Library ⋯ menu on surface switch (no orphan over the next surface)
         // Move focus INTO the new surface (never leave it on a now-hidden element)
         // and announce the route to assistive tech (NAV-IA §2/§5).
         const surf = document.getElementById("surface-" + name);
@@ -1122,6 +1123,8 @@
         // Refresh the true Preview/Live render when returning to the console (86ajtwq28).
         if (name === "console") scheduleConsoleRender();
         if (name === "screens") scheduleScreenPreviews(); // refresh the per-screen previews (86ajq321k)
+        // The Presentation surface loads its deck view + fits its canvas on activation.
+        if (name === "presentation" && typeof pmActivate === "function") pmActivate();
       }
       function openAppMenu() {
         appMenu.classList.add("open");
@@ -1136,8 +1139,8 @@
       function toggleAppMenu() { isMenuOpen() ? closeAppMenu() : openAppMenu(); }
       appMenuBtn.onclick = toggleAppMenu;
       // Navigate to a menu item's surface. Guards items with no data-surface (an honest
-      // "later" affordance like Presentation, or aria-disabled) so a click can never blank
-      // the router. data-focus scrolls a sub-region of the target surface into view.
+      // "later" affordance, or an aria-disabled item) so a click can never blank the router.
+      // data-focus scrolls a sub-region of the target surface into view.
       const navGo = (it) => {
         if (it.getAttribute("aria-disabled") === "true" || !it.dataset.surface) return;
         showSurface(it.dataset.surface);
@@ -3388,6 +3391,10 @@
           if (window.__cmdPalette) window.__cmdPalette.open();
           return;
         }
+        // A destructive-confirm alertdialog is modal: suppress surface navigation (⌘1–6 / ⌘⇧P) and
+        // everything below it while it is up (its own capture listener handles Esc + the Tab trap).
+        // The emergency blackout / clear-all CHORDS above still pierce — that is deliberate safety.
+        if (document.querySelector(".pm-confirm-back")) return;
         // While a modal (palette / shortcuts) is open, Esc closes it and transport/
         // emergency-arming keys are suppressed (the palette input's own listener drives
         // its arrows/Enter). The emergency CHORDS above still pierce.
@@ -3403,8 +3410,13 @@
         // and the Shortcuts reference REAL (they map by menu order; the disabled "Presentation"
         // item carries no number, so it is filtered out). Works whether the menu is open or not.
         if (mod && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "6") {
+          // The Presentation item is navigable but `data-nodigit` (it carries no ⌘-number, so it
+          // never shifts the six ⌘1–6 targets — its shortcut is ⌘⇧P below).
           const targets = navItems.filter(
-            (it) => it.dataset.surface && it.getAttribute("aria-disabled") !== "true"
+            (it) =>
+              it.dataset.surface &&
+              it.getAttribute("aria-disabled") !== "true" &&
+              !it.dataset.nodigit
           );
           const it = targets[Number(e.key) - 1];
           if (it) {
@@ -3414,6 +3426,22 @@
             navGo(it);
             return;
           }
+        }
+        // ⌘/Ctrl+⇧+P jumps to the Presentation surface (it carries no ⌘-digit — see the filter).
+        if (mod && e.shiftKey && (e.key === "p" || e.key === "P")) {
+          e.preventDefault();
+          disarm();
+          closeAppMenu();
+          showSurface("presentation");
+          return;
+        }
+        // ⌘/Ctrl+⇧+R jumps to the Remote Control surface (also data-nodigit — no ⌘-number).
+        if (mod && e.shiftKey && (e.key === "r" || e.key === "R")) {
+          e.preventDefault();
+          disarm();
+          closeAppMenu();
+          showSurface("remote");
+          return;
         }
         // App menu: F10 opens/closes the surface navigation (reachable anywhere).
         // Cmd/Ctrl+M is intentionally NOT bound — it is the macOS "Minimize window"
@@ -3678,6 +3706,9 @@
         const msg = document.getElementById("transcript-empty-msg");
         const sub = document.getElementById("transcript-empty-sub");
         const status = document.getElementById("transcript-status");
+        const meter = document.getElementById("transcript-meter");
+        const meterFill = document.getElementById("transcript-meter-fill");
+        const meterVal = document.getElementById("transcript-meter-val");
         if (!btn) return;
 
         // A small state machine so the control NEVER sits silently disabled: pressing Start
@@ -3740,9 +3771,22 @@
                     : listening
                       ? hasLines
                         ? "Listening — transcribing on-device."
-                        : "Listening — waiting for speech…" +
-                          (micPct == null ? "" : " (mic " + micPct + "%)")
+                        : "Listening — waiting for speech…"
                       : "";
+          applyMeter();
+        }
+
+        // Update the live mic-level meter (shown only while listening). Called on every stt://level
+        // tick — cheap, and a role=meter value is NOT an aria-live region, so frequent updates never
+        // spam assistive tech (the aria-live status text no longer carries the level). Clamped 0..100.
+        function applyMeter() {
+          if (!meter) return;
+          const listening = sttState === "listening";
+          meter.hidden = !listening;
+          const pct = Math.max(0, Math.min(100, micPct == null ? 0 : micPct));
+          meter.setAttribute("aria-valuenow", String(pct));
+          if (meterFill) meterFill.style.width = pct + "%";
+          if (meterVal) meterVal.textContent = pct + "%";
         }
 
         // The 1s poll reports whether any recognised lines have arrived, so the status can
@@ -3771,15 +3815,16 @@
           // arriving (a level stuck at 0 while speaking ⇒ mic/permission, not the UI).
           window.__TAURI__.event.listen("stt://level", function (e) {
             const p = (e && e.payload) || {};
-            if (typeof p.pct === "number") {
-              micPct = p.pct;
-              if (sttState === "listening" && !hasLines) {
-                // Track a run of silence so a mic that delivers nothing (0% — usually denied
-                // permission) turns into an actionable hint instead of an endless wait.
-                zeroTicks = p.pct === 0 ? zeroTicks + 1 : 0;
-                apply();
-              }
-            }
+            if (typeof p.pct !== "number") return;
+            micPct = p.pct;
+            if (sttState !== "listening") return;
+            applyMeter(); // cheap, frequent — the visual meter
+            // Track a run of silence so a mic that delivers nothing (0% — usually denied
+            // permission) turns into an actionable hint. Only re-render the aria-live status when
+            // that hint actually toggles (avoids announcing on every level tick).
+            const wasNoAudio = zeroTicks >= NO_AUDIO_TICKS;
+            zeroTicks = p.pct === 0 && !hasLines ? zeroTicks + 1 : 0;
+            if (wasNoAudio !== (zeroTicks >= NO_AUDIO_TICKS)) apply();
           });
         }
 
@@ -3897,6 +3942,15 @@
           cmds.push({ label: "Previous item", ico: "◀", sub: "←", run: () => act(() => invoke("previous")) });
           cmds.push({ label: "Blackout output", ico: "■", sub: "B", run: () => toggleBlackout() });
           cmds.push({ label: "Clear output", ico: "✕", sub: "Esc Esc", run: () => clearAll() });
+          // Presentation-surface actions are offered only while that surface is active (they act
+          // on the authored deck) — keyboard-first parity for the slide editor (FR-021/022).
+          const pmActive = document.getElementById("surface-presentation");
+          if (pmActive && pmActive.classList.contains("active")) {
+            cmds.push({ label: "Add slide", ico: "+", run: () => { if (typeof pmAddSlide === "function") pmAddSlide(); } });
+            cmds.push({ label: "Present slide", ico: "▶", run: () => { if (typeof pmPresent === "function") pmPresent(); } });
+            cmds.push({ label: "Undo slide edit", ico: "↶", sub: "⌘Z", run: () => { if (typeof pmUndo === "function") pmUndo(); } });
+            cmds.push({ label: "Redo slide edit", ico: "↷", sub: "⌘⇧Z", run: () => { if (typeof pmRedo === "function") pmRedo(); } });
+          }
           cmds.push({ label: "Keyboard shortcuts", ico: "⌨", run: () => openShortcuts() });
           return cmds;
         };
@@ -4049,3 +4103,1310 @@
           setConn(false);
         }
       }, 1000);
+
+      // =====================================================================================
+      // Presentation & Media (Design 2.0, Figma node 329:124) — the authored slide editor +
+      // media library. Its own render loop (renderPresentation from a DeckView), independent of
+      // the console's render(OperatorView): deck_* commands return a separate DeckView, so the
+      // LAN-shared OperatorView (and its pinned wire fixtures) is never touched. The slide canvas
+      // shows a NATIVE-composited preview (render_deck_slide → blitFrame), never an HTML render.
+      // =====================================================================================
+      let pmDv = null; // last DeckView
+      let pmMediaFilter = "all";
+      let pmMediaQuery = "";
+      let pmDrag = null; // active canvas drag: {index, startX, startY, ox, oy, w, h}
+      let pmRightMode = "media"; // right panel: "media" | "inspector"
+      let pmLastSelKey = null; // (slide id):(element index) of the last selection, for auto-switch
+      let pmReplaceTarget = null; // element index awaiting a media-cell pick to replace its image
+      let pmRowId = 0; // monotonic id source so each inspector control gets a <label for> (a11y)
+      let pmFontsLoading = false; // in-flight guard so concurrent activations don't double-fetch fonts
+
+      const pmEl = (id) => document.getElementById(id);
+
+      let pmLastAct = null; // { fn, opName } of the last deck action, for the error-banner Retry
+      let pmToastTimer = null; // bounded auto-dismiss timer for the action toast
+      let pmFonts = null; // system font families (loaded once, shared by the Text inspector)
+      let pmBusyCount = 0; // in-flight deck-command count (a COUNTER, not a flag, so overlapping
+      // commands don't clobber each other's busy state — the earlier one's finally must not clear
+      // busy while a later one is still running).
+
+      // One round trip: run a deck command and re-render from the returned DeckView. Sets an
+      // `aria-busy` loading state on the canvas for the duration; on rejection shows the error
+      // banner (role=alert) with a Retry. Returns true on success, false on failure (so callers
+      // like delete-with-toast only fire their follow-up when the command actually applied).
+      async function pAct(fn, opName) {
+        pmLastAct = { fn, opName };
+        pmSetBusy(true);
+        try {
+          pmDv = await fn();
+          pmClearError();
+          renderPresentation(pmDv);
+          return true;
+        } catch (e) {
+          console.error("[SelahCue] deck action failed", e);
+          pmShowError(opName);
+          return false;
+        } finally {
+          pmSetBusy(false);
+        }
+      }
+
+      // Reflect the canvas loading state: `aria-busy` + a `.busy` skeleton shimmer while ANY deck
+      // command is in flight (C-004). Reference-counted so overlapping round-trips stay busy until
+      // the LAST one settles. Assistive tech hears "busy"; sighted users see the shimmer.
+      function pmSetBusy(on) {
+        pmBusyCount = Math.max(0, pmBusyCount + (on ? 1 : -1));
+        const box = pmEl("pm-canvas-box");
+        if (!box) return;
+        const busy = pmBusyCount > 0;
+        box.setAttribute("aria-busy", busy ? "true" : "false");
+        box.classList.toggle("busy", busy);
+      }
+
+      // Show the error banner (role=alert) for a rejected deck command; Retry re-runs the last one.
+      // Un-hide FIRST, then set the text: an alert region must be ON the a11y tree when its content
+      // changes to be reliably announced (a `hidden`→populate→unhide order is not — WKWebView/VO).
+      function pmShowError(opName) {
+        const banner = pmEl("pm-error");
+        const msg = pmEl("pm-error-msg");
+        if (!banner || !msg) return;
+        banner.hidden = false;
+        msg.textContent = "Couldn't " + (opName || "complete that action") + " — please retry.";
+      }
+      function pmClearError() {
+        const banner = pmEl("pm-error");
+        if (banner) banner.hidden = true;
+      }
+
+      // A transient action toast (role=status) with an optional action button (e.g. Undo). Bounded:
+      // one toast at a time, auto-dismissed after ~7s (cleared timer, no unbounded stack). Un-hidden
+      // BEFORE its content is set so the live region announces the change (see pmShowError).
+      function pmToast(message, actionLabel, onAction) {
+        const t = pmEl("pm-toast");
+        if (!t) return;
+        if (pmToastTimer) { clearTimeout(pmToastTimer); pmToastTimer = null; }
+        t.hidden = false;
+        t.innerHTML = "";
+        const msg = document.createElement("span");
+        msg.className = "pm-toast-msg";
+        msg.textContent = message;
+        t.appendChild(msg);
+        if (actionLabel && onAction) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "pm-toast-action";
+          btn.textContent = actionLabel;
+          btn.onclick = () => { pmToastDismiss(); onAction(); };
+          t.appendChild(btn);
+        }
+        pmToastTimer = setTimeout(pmToastDismiss, 7000);
+      }
+      function pmToastDismiss() {
+        const t = pmEl("pm-toast");
+        // If focus is on the toast's Undo button when it dismisses (e.g. the 7s timer fires), don't
+        // strand it on <body> — land it on the canvas (⌘Z still undoes). WCAG 2.4.3.
+        if (t && t.contains(document.activeElement)) { const cv = pmEl("pm-canvas"); if (cv) cv.focus(); }
+        if (t) { t.hidden = true; t.innerHTML = ""; }
+        if (pmToastTimer) { clearTimeout(pmToastTimer); pmToastTimer = null; }
+      }
+
+      // A modal confirm dialog (role=alertdialog) for a destructive action: Cancel-focused,
+      // Esc cancels, focus is trapped inside, and the backdrop click cancels (C-001/C-002/C-009).
+      function pmConfirm(opts) {
+        // One modal at a time: never stack confirms (would duplicate the fixed ids + double-trap).
+        if (document.querySelector(".pm-confirm-back")) return;
+        const prevFocus = document.activeElement;
+        const back = document.createElement("div");
+        back.className = "pm-confirm-back";
+        const dlg = document.createElement("div");
+        dlg.className = "pm-confirm";
+        dlg.setAttribute("role", "alertdialog");
+        dlg.setAttribute("aria-modal", "true");
+        const titleId = "pm-confirm-title";
+        const bodyId = "pm-confirm-body";
+        dlg.setAttribute("aria-labelledby", titleId);
+        const h = document.createElement("h2");
+        h.className = "pm-confirm-title";
+        h.id = titleId;
+        h.textContent = opts.title || "Are you sure?";
+        dlg.appendChild(h);
+        const p = document.createElement("p");
+        p.className = "pm-confirm-body";
+        p.id = bodyId;
+        p.textContent = opts.body || "";
+        dlg.appendChild(p);
+        // The safety warning ("… is LIVE", "Used on N slides") MUST be in the accessible description
+        // — otherwise AT announces only the generic body and the consequence is silent (WCAG 4.1.2).
+        let describedBy = bodyId;
+        if (opts.warning) {
+          const w = document.createElement("p");
+          w.className = "pm-confirm-warn";
+          w.id = "pm-confirm-warn";
+          w.textContent = opts.warning;
+          dlg.appendChild(w);
+          describedBy = bodyId + " pm-confirm-warn";
+        }
+        dlg.setAttribute("aria-describedby", describedBy);
+        const row = document.createElement("div");
+        row.className = "pm-confirm-actions";
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "pm-btn-ghost";
+        cancel.textContent = "Cancel";
+        const ok = document.createElement("button");
+        ok.type = "button";
+        ok.className = "pm-btn-danger";
+        ok.textContent = opts.confirmLabel || "Delete";
+        row.appendChild(cancel);
+        row.appendChild(ok);
+        dlg.appendChild(row);
+        back.appendChild(dlg);
+        document.body.appendChild(back);
+
+        const close = () => {
+          document.removeEventListener("keydown", onKey, true);
+          back.remove();
+          if (prevFocus && prevFocus.focus) prevFocus.focus();
+        };
+        cancel.onclick = close;
+        ok.onclick = () => { close(); if (opts.onConfirm) opts.onConfirm(); };
+        back.onmousedown = (ev) => { if (ev.target === back) close(); };
+        // Focus trap + Esc: keep Tab within [cancel, ok]; Esc cancels (WCAG modal semantics).
+        const onKey = (ev) => {
+          if (ev.key === "Escape") { ev.preventDefault(); close(); return; }
+          if (ev.key === "Tab") {
+            const els = [cancel, ok];
+            const i = els.indexOf(document.activeElement);
+            ev.preventDefault();
+            const next = ev.shiftKey ? (i <= 0 ? els.length - 1 : i - 1) : (i >= els.length - 1 ? 0 : i + 1);
+            els[next].focus();
+          }
+        };
+        document.addEventListener("keydown", onKey, true);
+        cancel.focus(); // Cancel-focused: the safe default for a destructive confirm.
+      }
+
+      // Load the machine's font families once (shared with the Text inspector Font picker). After
+      // the async load, re-render the inspector so an open Text element gets its populated picker.
+      async function pmLoadFonts() {
+        if (pmFonts !== null || pmFontsLoading) return; // cached OR already in flight → don't re-fetch
+        pmFontsLoading = true;
+        try {
+          pmFonts = await invoke("system_fonts");
+        } catch (e) {
+          console.error(e);
+          pmFonts = [];
+        }
+        pmFontsLoading = false;
+        if (pmDv && pmRightMode === "inspector") pmRenderInspector(pmDv);
+      }
+
+      // Delete the selected element, then offer an Undo toast (⌘Z-backed) — but ONLY if an element
+      // was actually removed (a stale/out-of-range index is a host no-op → no toast, no misleading
+      // Undo that would pop an unrelated edit). Focus, orphaned when the inspector rebuilds/hides,
+      // lands back on the canvas (WCAG 2.4.3).
+      async function pmDeleteElement(idx) {
+        const before = pmElements().length;
+        const ok = await pAct(() => invoke("deck_remove_element", { index: idx }), "delete the element");
+        if (ok && pmElements().length < before) {
+          if (!document.body.contains(document.activeElement) || document.activeElement === document.body) {
+            const cv = pmEl("pm-canvas"); if (cv) cv.focus();
+          }
+          pmToast("Element deleted", "Undo", () => pmUndo());
+        }
+      }
+
+      // Referenced by showSurface + the command palette (via typeof guards) — keep as bare names.
+      function pmActivate() { pmHideLibrary(); pAct(() => invoke("deck_view"), "load the deck"); pmLoadFonts(); }
+
+      // === Presentations Library (view mode of the Presentation surface) ==========================
+      // A text-input modal (role=dialog) for New / Rename — reuses the confirm modal chrome + trap.
+      function pmPrompt(opts) {
+        if (document.querySelector(".pm-confirm-back")) return;
+        const prevFocus = document.activeElement;
+        const back = document.createElement("div"); back.className = "pm-confirm-back";
+        const dlg = document.createElement("div"); dlg.className = "pm-confirm"; dlg.setAttribute("role", "dialog"); dlg.setAttribute("aria-modal", "true");
+        dlg.setAttribute("aria-labelledby", "pm-prompt-title");
+        const h = document.createElement("h2"); h.className = "pm-confirm-title"; h.id = "pm-prompt-title"; h.textContent = opts.title || "Name"; dlg.appendChild(h);
+        const field = document.createElement("div"); field.style.display = "flex"; field.style.flexDirection = "column"; field.style.gap = "6px";
+        const lab = document.createElement("label"); lab.className = "pm-insp-lbl"; lab.textContent = opts.label || "Name"; lab.htmlFor = "pm-prompt-input";
+        const input = document.createElement("input"); input.type = "text"; input.id = "pm-prompt-input"; input.className = "pm-insp-ctrl"; input.value = opts.value || ""; input.style.width = "100%"; input.style.maxWidth = "none"; input.setAttribute("aria-label", opts.label || "Name");
+        field.appendChild(lab); field.appendChild(input); dlg.appendChild(field);
+        const row = document.createElement("div"); row.className = "pm-confirm-actions";
+        const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "pm-btn-ghost"; cancel.textContent = "Cancel";
+        const ok = document.createElement("button"); ok.type = "button"; ok.className = "pm-btn-primary"; ok.textContent = opts.confirmLabel || "OK";
+        row.appendChild(cancel); row.appendChild(ok); dlg.appendChild(row);
+        back.appendChild(dlg); document.body.appendChild(back);
+        const close = () => { document.removeEventListener("keydown", onKey, true); back.remove(); if (prevFocus && prevFocus.focus) prevFocus.focus(); };
+        const submit = () => { const v = input.value; close(); if (opts.onConfirm) opts.onConfirm(v); };
+        cancel.onclick = close; ok.onclick = submit;
+        back.onmousedown = (ev) => { if (ev.target === back) close(); };
+        const onKey = (ev) => {
+          if (ev.key === "Escape") { ev.preventDefault(); close(); }
+          else if (ev.key === "Enter" && document.activeElement === input) { ev.preventDefault(); submit(); }
+          else if (ev.key === "Tab") { const els = [input, cancel, ok]; const i = els.indexOf(document.activeElement); ev.preventDefault(); const n = ev.shiftKey ? (i <= 0 ? els.length - 1 : i - 1) : (i >= els.length - 1 ? 0 : i + 1); els[n].focus(); }
+        };
+        document.addEventListener("keydown", onKey, true);
+        input.focus(); input.select();
+      }
+
+      let pmLibDecks = [], pmLibOpenId = null, pmLibPersistent = true, pmLibQuery = "", pmLibSort = "name", pmLibMenuCleanup = null;
+      const pmLibBody = () => document.querySelector("#surface-presentation .pm-body");
+      function pmShowLibrary() {
+        pmEl("pm-library").hidden = false;
+        const b = pmLibBody(); if (b) b.style.display = "none";
+        pmLibLoad();
+        const q = pmEl("pm-lib-q"); if (q) q.focus();
+      }
+      function pmHideLibrary() {
+        pmLibCloseMenu();
+        const wasOpen = pmEl("pm-library") && !pmEl("pm-library").hidden;
+        const lib = pmEl("pm-library"); if (lib) lib.hidden = true;
+        const b = pmLibBody(); if (b) b.style.display = "";
+        // Restore focus to the deck-switcher after the view-swap (WCAG 2.4.3) — the card / menu-item /
+        // button that triggered the swap is now hidden, so focus would otherwise fall to <body>.
+        if (wasOpen) { const ds = pmEl("pm-deckswitch"); if (ds) ds.focus(); }
+      }
+      async function pmLibLoad() {
+        const grid = pmEl("pm-lib-grid");
+        grid.setAttribute("aria-busy", "true");
+        pmEl("pm-lib-error").hidden = true;
+        try {
+          pmApplyLibrary(await invoke("deck_list"));
+        } catch (e) {
+          console.error("[SelahCue] deck_list failed", e);
+          grid.innerHTML = ""; pmEl("pm-lib-empty").hidden = true; pmEl("pm-lib-error").hidden = false;
+        } finally {
+          grid.setAttribute("aria-busy", "false");
+        }
+      }
+      function pmApplyLibrary(view) {
+        pmLibDecks = (view && view.decks) || [];
+        pmLibOpenId = view ? view.open : null;
+        pmLibPersistent = view ? view.persistent : true;
+        pmEl("pm-lib-nopersist").hidden = pmLibPersistent !== false;
+        pmRenderLibGrid();
+      }
+      function pmRenderLibGrid() {
+        const grid = pmEl("pm-lib-grid");
+        const q = (pmLibQuery || "").trim().toLowerCase();
+        let decks = pmLibDecks.filter((d) => !q || (d.name || "").toLowerCase().includes(q));
+        decks = decks.slice().sort((a, b) => pmLibSort === "slides" ? (b.slides - a.slides) : (a.name || "").toLowerCase().localeCompare((b.name || "").toLowerCase()));
+        const total = pmLibDecks.length;
+        pmEl("pm-lib-count").textContent = total + " presentation" + (total === 1 ? "" : "s") + (q ? " · " + decks.length + " matching" : "");
+        pmEl("pm-lib-empty").hidden = total !== 0;
+        grid.innerHTML = "";
+        if (total === 0) return; // the empty-state block carries its own CTA
+        if (!q) grid.appendChild(pmLibNewTile());
+        decks.forEach((d) => grid.appendChild(pmLibCard(d)));
+        if (q && decks.length === 0) {
+          const nr = document.createElement("div"); nr.className = "pm-lib-empty-sub"; nr.style.gridColumn = "1 / -1"; nr.style.padding = "26px 4px";
+          nr.textContent = 'No presentations match "' + pmLibQuery + '"'; grid.appendChild(nr);
+        }
+      }
+      function pmLibNewTile() {
+        const t = document.createElement("button"); t.type = "button"; t.className = "pm-lib-new-tile"; t.setAttribute("aria-label", "New presentation");
+        const p = document.createElement("span"); p.className = "pm-lib-new-plus"; p.setAttribute("aria-hidden", "true"); p.textContent = "＋"; t.appendChild(p);
+        const l = document.createElement("span"); l.className = "pm-lib-new-label"; l.textContent = "New presentation"; t.appendChild(l);
+        const s = document.createElement("span"); s.className = "pm-lib-new-sub"; s.textContent = "Start a blank deck"; t.appendChild(s);
+        t.onclick = () => pmLibNew();
+        return t;
+      }
+      function pmLibCard(deck) {
+        const isOpen = deck.id === pmLibOpenId;
+        const name = deck.name || "Untitled presentation";
+        const meta = deck.slides + " slide" + (deck.slides === 1 ? "" : "s");
+        const card = document.createElement("div"); card.className = "pm-lib-card" + (isOpen ? " open" : "");
+        card.setAttribute("role", "listitem"); card.dataset.id = String(deck.id);
+        const open = document.createElement("button"); open.type = "button"; open.className = "pm-lib-open";
+        open.setAttribute("aria-label", "Open " + name + ", " + meta + (isOpen ? " (currently open)" : ""));
+        open.onclick = () => pmLibOpen(deck.id);
+        const th = document.createElement("div"); th.className = "pm-lib-thumb"; th.innerHTML = '<span aria-hidden="true">▦</span>';
+        if (isOpen) { const of = document.createElement("span"); of.className = "pm-lib-openflag"; of.textContent = "OPEN"; th.appendChild(of); }
+        const pill = document.createElement("span"); pill.className = "pm-lib-pill"; pill.textContent = meta; th.appendChild(pill);
+        open.appendChild(th);
+        const info = document.createElement("div"); info.className = "pm-lib-info";
+        const col = document.createElement("div"); col.className = "pm-lib-info-col";
+        const nm = document.createElement("span"); nm.className = "pm-lib-name"; nm.textContent = name; col.appendChild(nm);
+        const mt = document.createElement("span"); mt.className = "pm-lib-meta"; mt.textContent = meta; col.appendChild(mt);
+        info.appendChild(col); open.appendChild(info); card.appendChild(open);
+        const dots = document.createElement("button"); dots.type = "button"; dots.className = "pm-lib-dots"; dots.textContent = "⋯";
+        dots.setAttribute("aria-label", "More actions for " + name); dots.setAttribute("aria-haspopup", "true");
+        dots.onclick = (ev) => { ev.stopPropagation(); pmLibOpenMenu(deck, dots); };
+        card.appendChild(dots);
+        return card;
+      }
+      function pmLibOpenMenu(deck, anchor) {
+        pmLibCloseMenu();
+        const menu = document.createElement("div"); menu.className = "pm-lib-menu"; menu.id = "pm-lib-menu"; menu.setAttribute("role", "menu");
+        const item = (label, fn, danger) => { const b = document.createElement("button"); b.type = "button"; b.setAttribute("role", "menuitem"); if (danger) b.className = "danger"; b.textContent = label; b.onclick = () => { pmLibCloseMenu(); fn(); }; menu.appendChild(b); return b; };
+        const first = item("Open", () => pmLibOpen(deck.id));
+        item("Rename…", () => pmLibRename(deck.id, deck.name));
+        item("Duplicate", () => pmLibDuplicate(deck.id));
+        const div = document.createElement("div"); div.className = "pm-lib-menu-div"; menu.appendChild(div);
+        item("Delete", () => pmLibDelete(deck.id, deck.name), true);
+        document.body.appendChild(menu);
+        const r = anchor.getBoundingClientRect();
+        menu.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - menu.offsetHeight - 8)) + "px";
+        menu.style.left = Math.max(8, Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8)) + "px";
+        first.focus();
+        const onDoc = (e) => { if (!menu.contains(e.target)) pmLibCloseMenu(); };
+        const onKey = (e) => {
+          if (e.key === "Escape") { e.preventDefault(); pmLibCloseMenu(); anchor.focus(); }
+          else if (e.key === "Tab") { e.preventDefault(); pmLibCloseMenu(); anchor.focus(); } // Tab closes the menu and returns to the ⋯ trigger (no orphaned popover)
+          else if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); const items = Array.from(menu.querySelectorAll("button")); let i = items.indexOf(document.activeElement); i = e.key === "ArrowDown" ? (i + 1) % items.length : (i - 1 + items.length) % items.length; items[i].focus(); }
+        };
+        menu.addEventListener("keydown", onKey);
+        setTimeout(() => document.addEventListener("mousedown", onDoc), 0);
+        pmLibMenuCleanup = () => { document.removeEventListener("mousedown", onDoc); if (menu.parentNode) menu.remove(); };
+      }
+      function pmLibCloseMenu() { if (pmLibMenuCleanup) { pmLibMenuCleanup(); pmLibMenuCleanup = null; } }
+      // After a mutating action re-renders the grid, move focus to a stable element (WCAG 2.4.3):
+      // the card / menu-item / dialog trigger that ran the action is now gone, so focus would
+      // otherwise fall to <body>. Prefer the affected deck's card, else the first card, else search.
+      function pmLibFocusDeck(id) {
+        const grid = pmEl("pm-lib-grid"); if (!grid) return;
+        let t = id != null ? grid.querySelector('.pm-lib-card[data-id="' + id + '"] .pm-lib-open') : null;
+        if (!t) t = grid.querySelector(".pm-lib-card .pm-lib-open");
+        if (!t) t = pmEl("pm-lib-q") || pmEl("pm-lib-back");
+        if (t) t.focus();
+      }
+      function pmLibNew() {
+        pmPrompt({
+          title: "New presentation", label: "Name", value: "Untitled presentation", confirmLabel: "Create presentation",
+          onConfirm: async (name) => {
+            try { const dv = await invoke("deck_new", { name: name }); pmDv = dv; renderPresentation(dv); pmHideLibrary(); pmToast("Presentation created"); }
+            catch (e) { console.error(e); pmShowError("create the presentation"); }
+          },
+        });
+      }
+      async function pmLibOpen(id) {
+        try { const dv = await invoke("deck_open", { id: id }); pmDv = dv; renderPresentation(dv); pmHideLibrary(); }
+        catch (e) { console.error(e); pmShowError("open the presentation"); }
+      }
+      function pmLibRename(id, current) {
+        pmPrompt({
+          title: "Rename presentation", label: "Name", value: current || "", confirmLabel: "Rename",
+          onConfirm: async (name) => {
+            try {
+              pmApplyLibrary(await invoke("deck_rename", { id: id, name: name }));
+              if (id === pmLibOpenId) { const m = pmLibDecks.find((d) => d.id === id); if (m && pmDv) { pmDv.name = m.name; const el = pmEl("pm-plan-name"); if (el) el.textContent = m.name; } }
+              pmLibFocusDeck(id); // restore focus to the renamed card (the dialog trigger is gone)
+            } catch (e) { console.error(e); pmShowError("rename the presentation"); }
+          },
+        });
+      }
+      async function pmLibDuplicate(id) {
+        try { pmApplyLibrary(await invoke("deck_duplicate", { id: id })); pmLibFocusDeck(id); }
+        catch (e) { console.error(e); pmShowError("duplicate the presentation"); }
+      }
+      function pmLibDelete(id, name) {
+        const inUse = id === pmLibOpenId;
+        pmConfirm({
+          title: "Delete “" + (name || "Untitled presentation") + "”?",
+          body: "This removes the presentation and its slides from your library. This can’t be undone.",
+          warning: inUse ? "It’s the presentation you have open — deleting it switches the editor to another." : null,
+          confirmLabel: "Delete",
+          onConfirm: async () => {
+            try {
+              pmApplyLibrary(await invoke("deck_delete", { id: id }));
+              if (inUse) { const dv = await invoke("deck_view"); pmDv = dv; renderPresentation(dv); } // editor switched by the host
+              pmToast("Presentation deleted");
+              pmLibFocusDeck(null); // the deleted card is gone → focus the first remaining card / search
+            } catch (e) { console.error(e); pmShowError("delete the presentation"); }
+          },
+        });
+      }
+      function pmAddSlide() { pAct(() => invoke("deck_add_slide")); }
+      // "▶ Present": mark the slide live in the editor AND route it to the native audience output
+      // (deck_go_live now sends the composed slide over the LAN link). A toast confirms it reached
+      // the output; a failure (e.g. no output window) surfaces the error banner via pAct.
+      async function pmPresent() {
+        if (await pAct(() => invoke("deck_go_live"), "present the slide")) {
+          pmToast("Now presenting on the audience output");
+        }
+      }
+      function pmUndo() { pAct(() => invoke("deck_undo")); }
+      function pmRedo() { pAct(() => invoke("deck_redo")); }
+
+      // The selected slide's elements (from the last DeckView), front data for hit-testing.
+      function pmElements() { return (pmDv && pmDv.slide && pmDv.slide.elements) || []; }
+      function pmSelectedElement() {
+        const idx = pmDv && pmDv.slide ? pmDv.slide.selected_element : null;
+        return idx == null ? null : pmElements()[idx];
+      }
+      // Element indices ordered front (highest z) → back, stable within equal z — the order the
+      // keyboard Tab-cycle walks (matches the compositor's paint order).
+      function pmZOrder() {
+        const els = pmElements();
+        // Front (highest z) → back. Tie-break on index DESCENDING to match compose_slide's paint
+        // order (stable sort by z asc then list index → the LATER equal-z element paints in FRONT).
+        return els
+          .map((_, i) => i)
+          .sort((a, b) => (els[b].z || 0) - (els[a].z || 0) || b - a);
+      }
+      // Announce an editor action to assistive tech via the polite live region.
+      function pmAnnounce(msg) {
+        const r = pmEl("pm-live-region");
+        if (r) r.textContent = msg;
+      }
+
+      // --- render -------------------------------------------------------------------------
+      function renderPresentation(dv) {
+        if (!dv) return;
+        pmEl("pm-plan-name").textContent = dv.name || "Presentation";
+        pmEl("pm-plan-count").textContent = "· " + (dv.count || 0) + " slide" + (dv.count === 1 ? "" : "s");
+        pmRenderSlides(dv);
+        // slide position + editor controls
+        const sel = dv.slide;
+        const n = sel ? (dv.slides.findIndex((s) => s.id === sel.id) + 1) : 0;
+        pmEl("pm-slide-pos").textContent = "Slide " + (n || "—") + " / " + (dv.count || "—") + " · 1920×1080";
+        const notes = pmEl("pm-notes");
+        // Do not clobber the notes field while the operator is typing in it.
+        if (document.activeElement !== notes) notes.value = sel ? sel.notes || "" : "";
+        notes.disabled = !sel;
+        const trans = pmEl("pm-transition");
+        trans.value = sel ? sel.transition || "cut" : "cut";
+        trans.disabled = !sel;
+        const auto = pmEl("pm-autoadv");
+        auto.value = sel && sel.auto_advance_secs ? String(sel.auto_advance_secs) : "0";
+        auto.disabled = !sel;
+        // undo/redo enablement
+        pmEl("pm-undo").disabled = !dv.can_undo;
+        pmEl("pm-redo").disabled = !dv.can_redo;
+        pmRenderMedia(dv);
+        pmRenderCanvas();
+        pmSyncRightPanel(dv);
+      }
+
+      // The right column is contextual: Media Library by default, the per-element Inspector when an
+      // element is selected. Selecting an element AUTO-OPENS the Inspector; deselecting returns to
+      // Media. The auto-switch fires only on a CHANGE of selection (so a manual tab switch persists),
+      // and never moves focus (a canvas drag-select must not yank focus off the canvas).
+      function pmSyncRightPanel(dv) {
+        const slide = dv.slide;
+        const selIdx = slide ? slide.selected_element : null;
+        const hasSel = selIdx != null && slide.elements && slide.elements[selIdx];
+        const inspTab = pmEl("pm-tab-inspector");
+        if (hasSel) { inspTab.removeAttribute("aria-disabled"); inspTab.title = ""; }
+        else { inspTab.setAttribute("aria-disabled", "true"); inspTab.title = "Select an element"; }
+        const key = hasSel ? slide.id + ":" + selIdx : null;
+        if (key !== pmLastSelKey) {
+          // A selection/slide change ends any armed image-Replace flow (so a later media pick can
+          // never replace an element the operator is no longer on — review 86ajvjtax #1/#3).
+          if (pmReplaceTarget != null) pmEndReplace();
+          pmLastSelKey = key;
+          pmSetRight(hasSel ? "inspector" : "media");
+          if (hasSel) pmAnnounce("Inspector — " + (slide.elements[selIdx].kind || "") + " element selected");
+        } else if (hasSel && pmRightMode === "inspector") {
+          pmRenderInspector(dv); // same selection, still inspecting → refresh values after an edit
+        } else if (!hasSel && pmRightMode === "inspector") {
+          pmSetRight("media");
+        }
+      }
+
+      function pmSetRight(mode) {
+        pmRightMode = mode;
+        const showInsp = mode === "inspector";
+        pmEl("pm-media-body").hidden = showInsp;
+        pmEl("pm-inspector-body").hidden = !showInsp;
+        const mTab = pmEl("pm-tab-media"), iTab = pmEl("pm-tab-inspector");
+        mTab.setAttribute("aria-selected", showInsp ? "false" : "true");
+        iTab.setAttribute("aria-selected", showInsp ? "true" : "false");
+        mTab.tabIndex = showInsp ? -1 : 0;
+        iTab.tabIndex = showInsp ? 0 : -1;
+        pmEl("pm-panel").setAttribute("aria-labelledby", showInsp ? "pm-tab-inspector" : "pm-tab-media");
+        if (showInsp && pmDv) pmRenderInspector(pmDv);
+      }
+
+      // --- inspector control helpers ---
+      const pmHex = (c) => "#" + [c && c.r, c && c.g, c && c.b].map((v) => (v || 0).toString(16).padStart(2, "0")).join("");
+      const pmFromHex = (h) => ({ r: parseInt(h.slice(1, 3), 16) || 0, g: parseInt(h.slice(3, 5), 16) || 0, b: parseInt(h.slice(5, 7), 16) || 0, a: 255 });
+      function pmUpdate(idx, patch) { pAct(() => invoke("deck_update_element", { index: idx, patch: patch })); }
+      function pmInspRow(labelText, ctrl) {
+        const r = document.createElement("div"); r.className = "pm-insp-row";
+        // A REAL <label for> (not a bare span) so each control has an accessible name (WCAG 4.1.2 /
+        // 3.3.2). A composite control (e.g. the Align button group) is a <span> the `for` can't bind,
+        // but its inner buttons carry their own aria-labels; the aria-label fallback below covers the
+        // form controls (input/select) without overriding one already set (Font/Fit).
+        const l = document.createElement("label"); l.className = "pm-insp-lbl"; l.textContent = labelText;
+        if (!ctrl.id) ctrl.id = "pm-ictl-" + (++pmRowId);
+        l.htmlFor = ctrl.id;
+        if (!ctrl.getAttribute("aria-label")) ctrl.setAttribute("aria-label", labelText);
+        r.appendChild(l); r.appendChild(ctrl); return r;
+      }
+      function pmNum(value, onCommit) {
+        const i = document.createElement("input"); i.type = "number"; i.className = "pm-insp-ctrl num"; i.value = value;
+        i.addEventListener("change", () => { const v = parseInt(i.value, 10); if (!Number.isNaN(v)) onCommit(v); });
+        return i;
+      }
+      function pmSelect(opts, value, onCommit) {
+        const s = document.createElement("select"); s.className = "pm-insp-ctrl";
+        opts.forEach(([val, lbl]) => { const o = document.createElement("option"); o.value = val; o.textContent = lbl; if (String(val) === String(value)) o.selected = true; s.appendChild(o); });
+        s.addEventListener("change", () => onCommit(s.value)); return s;
+      }
+      // The Text inspector's Font-family picker, from `system_fonts` (C-006). "System default"
+      // (value "") clears `font` to null (the bundled Noto Sans). The element's current family is
+      // always shown selected — even a font not installed on THIS machine (labelled so).
+      function pmFontSelect(current, onCommit) {
+        const s = document.createElement("select"); s.className = "pm-insp-ctrl"; s.dataset.ik = "font";
+        s.setAttribute("aria-label", "Font family");
+        const opts = [["", "System default"]];
+        const fams = pmFonts || [];
+        fams.forEach((f) => opts.push([f, f]));
+        // Preserve a chosen family that is not installed here, so it renders selected not blank.
+        if (current && !fams.includes(current)) opts.push([current, current + " (not installed here)"]);
+        const cur = current || "";
+        opts.forEach(([val, lbl]) => { const o = document.createElement("option"); o.value = val; o.textContent = lbl; if (val === cur) o.selected = true; s.appendChild(o); });
+        s.addEventListener("change", () => onCommit(s.value)); return s;
+      }
+      function pmColor(rgba, onCommit) {
+        const i = document.createElement("input"); i.type = "color"; i.className = "pm-insp-ctrl"; i.value = pmHex(rgba || {});
+        i.addEventListener("change", () => onCommit(pmFromHex(i.value))); return i;
+      }
+      function pmArrangeZ(dv, idx, dir) {
+        const els = (dv.slide && dv.slide.elements) || [];
+        const zs = els.map((e) => e.z || 0);
+        const cur = els[idx] ? els[idx].z || 0 : 0;
+        let z = dir === "front" ? Math.max(...zs) + 1 : dir === "back" ? Math.min(...zs) - 1 : dir === "forward" ? cur + 1 : cur - 1;
+        z = Math.max(-128, Math.min(127, z));
+        pAct(() => invoke("deck_set_element_z", { index: idx, z: z }));
+      }
+
+      // --- LAYERS panel (Design 2.0, mirrors the Theme Designer): the slide's elements listed
+      // front→back, each selectable + visibility-toggle + drag-to-reorder. Reuses the shared
+      // `td-layer*` row styling. Reorder commits via deck_reorder_elements (one host round-trip /
+      // one undo); the moved element stays selected (only z changes, never its array index). ---
+      let pmLayerDrag = null;
+      function pmLayerRow(dv, idx, selIdx) {
+        const el = ((dv.slide && dv.slide.elements) || [])[idx];
+        const row = document.createElement("div");
+        row.className = "td-layer" + (idx === selIdx ? " sel" : "");
+        row.setAttribute("role", "listitem");
+        row.tabIndex = 0;
+        row.dataset.idx = String(idx);
+        const visible = el.visible !== false;
+        const glyph = el.kind === "image" ? "🖼" : el.kind === "text" ? "T" : "●";
+        const name = el.kind === "text"
+          ? ((el.text || "").split("\n")[0].slice(0, 24).trim() || "Text")
+          : el.kind === "image" ? (el.name || "Image") : "Shape";
+        const meta = el.kind.charAt(0).toUpperCase() + el.kind.slice(1) + " · z" + (el.z || 0);
+        if (!visible) row.classList.add("layer-hidden");
+        if (idx === selIdx) row.setAttribute("aria-current", "true");
+        row.setAttribute("aria-label", name + " — " + meta + (visible ? "" : " (hidden)") + (idx === selIdx ? " (selected)" : ""));
+        const handle = document.createElement("span"); handle.className = "td-layer-handle"; handle.textContent = "⋮⋮"; handle.setAttribute("aria-hidden", "true");
+        handle.addEventListener("pointerdown", (ev) => pmLayerDragStart(ev, idx));
+        const ico = document.createElement("span"); ico.className = "td-layer-ico"; ico.textContent = glyph; ico.setAttribute("aria-hidden", "true");
+        const bd = document.createElement("div"); bd.className = "td-layer-body";
+        const nm = document.createElement("span"); nm.className = "td-layer-name"; nm.textContent = name;
+        const mt = document.createElement("span"); mt.className = "td-layer-meta"; mt.textContent = meta;
+        bd.appendChild(nm); bd.appendChild(mt);
+        const eye = document.createElement("button"); eye.type = "button"; eye.className = "td-layer-eye"; eye.textContent = visible ? "👁" : "🚫";
+        eye.setAttribute("aria-pressed", visible ? "true" : "false"); eye.setAttribute("aria-label", (visible ? "Hide " : "Show ") + name); eye.title = visible ? "Hide layer" : "Show layer";
+        eye.onclick = (ev) => { ev.stopPropagation(); pAct(() => invoke("deck_toggle_element_visible", { index: idx })); };
+        row.onclick = () => { if (idx !== selIdx) pAct(() => invoke("deck_select_element", { index: idx })); };
+        row.onkeydown = (ev) => {
+          if (ev.target !== row) return; // let the eye button's own Enter/Space fire
+          if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); if (idx !== selIdx) pAct(() => invoke("deck_select_element", { index: idx })); }
+          else if (ev.altKey && (ev.key === "ArrowUp" || ev.key === "ArrowDown")) { ev.preventDefault(); pmArrangeZ(dv, idx, ev.key === "ArrowUp" ? "forward" : "backward"); }
+        };
+        row.appendChild(handle); row.appendChild(ico); row.appendChild(bd); row.appendChild(eye);
+        return row;
+      }
+      function pmRenderLayers(dv, selIdx) {
+        const box = document.createElement("div");
+        box.className = "td-layers pm-layers"; box.id = "pm-layers";
+        box.setAttribute("role", "list"); box.setAttribute("aria-label", "Layers — front to back; drag to reorder");
+        pmZOrder().forEach((idx) => box.appendChild(pmLayerRow(dv, idx, selIdx)));
+        return box;
+      }
+      function pmLayerDragStart(ev, idx) {
+        if (ev.button !== undefined && ev.button !== 0) return;
+        const box = pmEl("pm-layers");
+        const row = ev.target && ev.target.closest(".td-layer");
+        if (!box || !row) return;
+        ev.preventDefault();
+        const rect = row.getBoundingClientRect();
+        const ph = document.createElement("div"); ph.className = "td-layer-placeholder"; ph.style.height = rect.height + "px";
+        box.insertBefore(ph, row);
+        const grabDy = ev.clientY - rect.top;
+        row.classList.add("dragging");
+        row.style.position = "fixed";
+        row.style.left = rect.left + "px";
+        row.style.width = rect.width + "px";
+        row.style.top = rect.top + "px";
+        pmLayerDrag = { idx, box, row, ph, grabDy };
+        box.classList.add("td-layers-dragging");
+        window.addEventListener("pointermove", pmLayerDragMove);
+        window.addEventListener("pointerup", pmLayerDragCommit);
+        window.addEventListener("pointercancel", pmLayerDragCancel);
+      }
+      function pmLayerDragMove(ev) {
+        const D = pmLayerDrag;
+        if (!D) return;
+        D.row.style.top = ev.clientY - D.grabDy + "px";
+        const br = D.box.getBoundingClientRect();
+        if (ev.clientY < br.top + 24) D.box.scrollTop -= 8;
+        else if (ev.clientY > br.bottom - 24) D.box.scrollTop += 8;
+        const kids = Array.from(D.box.children).filter((c) => c !== D.row && c !== D.ph);
+        let ref = null;
+        for (const c of kids) {
+          const r = c.getBoundingClientRect();
+          if (ev.clientY < r.top + r.height / 2) { ref = c; break; }
+        }
+        if (ref) D.box.insertBefore(D.ph, ref);
+        else D.box.appendChild(D.ph);
+      }
+      function pmLayerTeardown() {
+        const D = pmLayerDrag;
+        pmLayerDrag = null;
+        window.removeEventListener("pointermove", pmLayerDragMove);
+        window.removeEventListener("pointerup", pmLayerDragCommit);
+        window.removeEventListener("pointercancel", pmLayerDragCancel);
+        if (D) D.box.classList.remove("td-layers-dragging");
+        return D;
+      }
+      function pmLayerDragCancel() {
+        const D = pmLayerTeardown();
+        if (!D) return;
+        if (D.ph.parentNode) D.ph.parentNode.removeChild(D.ph);
+        D.row.classList.remove("dragging"); D.row.removeAttribute("style");
+        if (pmDv) pmRenderInspector(pmDv); // revert to the real order, no z change
+      }
+      function pmLayerDragCommit() {
+        const D = pmLayerTeardown();
+        if (!D) return;
+        // Read the new FRONT→BACK order from the DOM (placeholder marks the dragged element's slot).
+        const order = [];
+        Array.from(D.box.children).forEach((c) => {
+          if (c === D.row) return; // the lifted original — its real slot is the placeholder
+          if (c === D.ph) order.push(D.idx);
+          else if (c.dataset.idx !== undefined) order.push(Number(c.dataset.idx));
+        });
+        if (D.ph.parentNode) D.ph.parentNode.removeChild(D.ph);
+        D.row.classList.remove("dragging"); D.row.removeAttribute("style");
+        pAct(() => invoke("deck_reorder_elements", { order: order }));
+      }
+      function pmStartReplace(idx) {
+        pmReplaceTarget = idx;
+        pmMediaFilter = "image";
+        document.querySelectorAll("#surface-presentation .pm-mtab").forEach((x) => x.setAttribute("aria-pressed", x.dataset.filter === "image" ? "true" : "false"));
+        pmEl("pm-replace-hint").hidden = false;
+        pmSetRight("media");
+        if (pmDv) pmRenderMedia(pmDv);
+      }
+      // End the armed image-Replace flow: clear the target, hide the hint, and reset the media
+      // filter back to All (so the library isn't left silently stuck on Images).
+      function pmEndReplace() {
+        pmReplaceTarget = null;
+        pmEl("pm-replace-hint").hidden = true;
+        pmMediaFilter = "all";
+        document.querySelectorAll("#surface-presentation .pm-mtab").forEach((x) => x.setAttribute("aria-pressed", x.dataset.filter === "all" ? "true" : "false"));
+      }
+
+      function pmRenderInspector(dv) {
+        const body = pmEl("pm-inspector-body");
+        const slide = dv.slide;
+        const idx = slide ? slide.selected_element : null;
+        const el = idx != null && slide.elements ? slide.elements[idx] : null;
+        // Don't clobber a focused INPUT/TEXTAREA/SELECT mid-edit (a re-render on the same
+        // selection). For a focused BUTTON, rebuild but RESTORE focus to the equivalent control
+        // afterward (its `data-ik`), so keyboard use of Align/Arrange/eye keeps its place (WCAG 2.4.3).
+        const ae0 = document.activeElement;
+        if (body.contains(ae0) && ["INPUT", "TEXTAREA", "SELECT"].indexOf(ae0.tagName) >= 0) return;
+        const focusedIk = body.contains(ae0) && ae0.dataset ? ae0.dataset.ik : null;
+        body.innerHTML = "";
+        if (!el) { const p = document.createElement("p"); p.className = "pm-insp-note"; p.textContent = "Select an element to edit it."; body.appendChild(p); return; }
+        // Serde omits default-valued fields (skip_serializing_if) → default them here so their
+        // controls render selected, not blank (review 86ajvjtax #5).
+        const D = { weight: el.weight != null ? el.weight : 400, variant: el.variant || "rect", corner: el.corner_permille || 0, border: el.border_permille || 0, alignH: el.align_h || "left", alignV: el.align_v || "middle", fit: el.fit || "shrink_to_fit", size: el.size_permille || 90, line: el.line_height_permille || 1100, opacity: el.opacity != null ? el.opacity : 255 };
+        const kindTitle = { text: "Text element", shape: "Shape element", image: "Image element" }[el.kind] || "Element";
+        // header: title · n of m · visibility · delete
+        const hdr = document.createElement("div"); hdr.className = "pm-insp-header";
+        const ttl = document.createElement("span"); ttl.className = "pm-insp-title"; ttl.textContent = kindTitle; hdr.appendChild(ttl);
+        const hr = document.createElement("span"); hr.className = "pm-insp-hdr-r";
+        const cnt = document.createElement("span"); cnt.className = "pm-insp-count"; cnt.textContent = (idx + 1) + " of " + slide.elements.length; hr.appendChild(cnt);
+        const eye = document.createElement("button"); eye.type = "button"; eye.className = "pm-iconbtn"; eye.dataset.ik = "eye"; eye.textContent = el.visible ? "👁" : "🚫"; eye.setAttribute("aria-label", el.visible ? "Hide element" : "Show element"); eye.setAttribute("aria-pressed", el.visible ? "false" : "true"); eye.onclick = () => pAct(() => invoke("deck_toggle_element_visible", { index: idx })); hr.appendChild(eye);
+        const del = document.createElement("button"); del.type = "button"; del.className = "pm-iconbtn danger"; del.dataset.ik = "del"; del.textContent = "🗑"; del.setAttribute("aria-label", "Delete element"); del.onclick = () => pmDeleteElement(idx); hr.appendChild(del);
+        hdr.appendChild(hr); body.appendChild(hdr);
+        // kind-specific
+        if (el.kind === "text") {
+          const ta = document.createElement("textarea"); ta.className = "pm-insp-ctrl"; ta.value = el.text || ""; ta.setAttribute("aria-label", "Text content");
+          ta.addEventListener("change", () => pmUpdate(idx, { text: ta.value })); body.appendChild(ta);
+          body.appendChild(pmInspRow("Size ‰", pmNum(D.size, (v) => pmUpdate(idx, { size_permille: Math.max(1, v) }))));
+          body.appendChild(pmInspRow("Line ‰", pmNum(D.line, (v) => pmUpdate(idx, { line_height_permille: Math.max(1, v) }))));
+          body.appendChild(pmInspRow("Font", pmFontSelect(el.font, (v) => pmUpdate(idx, { font: v || null }))));
+          body.appendChild(pmInspRow("Weight", pmSelect([["400", "Regular"], ["700", "Bold"]], D.weight, (v) => pmUpdate(idx, { weight: parseInt(v, 10) }))));
+          const align = document.createElement("span"); align.className = "pm-insp-align";
+          [["left", "≡"], ["center", "≣"], ["right", "≡"]].forEach(([val, gl]) => { const b = document.createElement("button"); b.type = "button"; b.className = "pm-insp-ctrl"; b.dataset.ik = "align-" + val; b.textContent = gl; b.setAttribute("aria-label", "Align " + val); b.setAttribute("aria-pressed", D.alignH === val ? "true" : "false"); b.onclick = () => pmUpdate(idx, { align_h: val }); align.appendChild(b); });
+          body.appendChild(pmInspRow("Align", align));
+          body.appendChild(pmInspRow("V-align", pmSelect([["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"]], D.alignV, (v) => pmUpdate(idx, { align_v: v }))));
+          body.appendChild(pmInspRow("Colour", pmColor(el.color, (c) => pmUpdate(idx, { color: c }))));
+          body.appendChild(pmInspRow("Fit", pmSelect([["shrink_to_fit", "Shrink to fit"], ["clip", "Clip"]], D.fit, (v) => pmUpdate(idx, { fit: v }))));
+        } else if (el.kind === "shape") {
+          body.appendChild(pmInspRow("Fill", pmColor(el.fill, (c) => pmUpdate(idx, { fill: c }))));
+          body.appendChild(pmInspRow("Border", pmColor(el.border, (c) => pmUpdate(idx, { border: c }))));
+          body.appendChild(pmInspRow("Border ‰", pmNum(D.border, (v) => pmUpdate(idx, { border_permille: Math.max(0, v) }))));
+          body.appendChild(pmInspRow("Corner ‰", pmNum(D.corner, (v) => pmUpdate(idx, { corner_permille: Math.max(0, v) }))));
+          body.appendChild(pmInspRow("Shape", pmSelect([["rect", "Rectangle"], ["rounded_rect", "Rounded"], ["ellipse", "Ellipse"], ["triangle", "Triangle"]], D.variant, (v) => pmUpdate(idx, { variant: v }))));
+        } else if (el.kind === "image") {
+          const info = document.createElement("div"); info.className = "pm-insp-row";
+          const thumb = document.createElement("span"); thumb.className = "pm-insp-thumb"; info.appendChild(thumb);
+          const nm = document.createElement("span"); nm.className = el.missing ? "pm-insp-missing" : "pm-insp-lbl"; nm.textContent = (el.missing ? "⚠ Missing — " : "") + (el.name || "image"); info.appendChild(nm);
+          body.appendChild(info);
+          const rep = document.createElement("button"); rep.type = "button"; rep.className = "pm-insp-ctrl"; rep.dataset.ik = "replace"; rep.style.width = "100%"; rep.style.maxWidth = "none"; rep.textContent = el.missing ? "Relink…" : "Replace…"; rep.onclick = () => pmStartReplace(idx); body.appendChild(rep);
+          // Live Fit control (C-008): Stretch (distort) / Fit (letterbox) / Fill (cover+crop),
+          // driving the additive `fit` on the image element — the raster honours all three.
+          const fitSel = pmSelect([["stretch", "Stretch"], ["fit", "Fit (letterbox)"], ["fill", "Fill (cover)"]], el.fit || "stretch", (v) => pmUpdate(idx, { fit: v }));
+          fitSel.dataset.ik = "imgfit"; fitSel.setAttribute("aria-label", "Image fit");
+          body.appendChild(pmInspRow("Fit", fitSel));
+        }
+        // common: opacity
+        const sect = document.createElement("div"); sect.className = "pm-insp-sect"; sect.textContent = "OPACITY"; body.appendChild(sect);
+        body.appendChild(pmInspRow("Opacity", pmNum(D.opacity, (v) => pmUpdate(idx, { opacity: Math.max(0, Math.min(255, v)) }))));
+        // LAYERS panel: the whole slide's elements front→back — select · toggle · drag-reorder.
+        const lsect = document.createElement("div"); lsect.className = "pm-insp-sect"; lsect.textContent = "LAYERS"; body.appendChild(lsect);
+        body.appendChild(pmRenderLayers(dv, idx));
+        // restore focus to the equivalent control after a button-triggered rebuild (WCAG 2.4.3).
+        if (focusedIk) { const again = body.querySelector('[data-ik="' + focusedIk + '"]'); if (again) again.focus(); }
+      }
+
+      function pmRenderSlides(dv) {
+        const list = pmEl("pm-slide-list");
+        // Preserve keyboard focus across the rebuild (innerHTML wipe drops focus to <body>):
+        // record the focused slide id, restore its card afterward.
+        let focusedId = null;
+        const ae = document.activeElement;
+        if (ae && ae.closest) {
+          const row = ae.closest(".pm-slide");
+          if (row) focusedId = row.dataset.id;
+        }
+        list.innerHTML = "";
+        (dv.slides || []).forEach((s) => {
+          const isLive = s.id === dv.live;
+          const isSel = s.id === dv.selected;
+          const li = document.createElement("li");
+          li.className = "pm-slide" + (isSel ? " sel" : "") + (isLive ? " live" : "");
+          li.dataset.id = s.id;
+          const nEl = document.createElement("span");
+          nEl.className = "pm-slide-n";
+          nEl.textContent = s.n;
+          const card = document.createElement("button");
+          card.type = "button";
+          card.className = "pm-slide-card";
+          // Non-colour state in the accessibility tree: selection + LIVE both in the label.
+          card.setAttribute("aria-label",
+            "Slide " + s.n + (isSel ? " (selected)" : "") + (isLive ? " (live on the audience output)" : ""));
+          if (isSel) card.setAttribute("aria-current", "true");
+          const lines = s.lines && s.lines.length ? s.lines : ["Empty slide"];
+          lines.forEach((t, i) => {
+            const d = document.createElement("div");
+            d.className = i === 0 ? "l0" : "ln";
+            d.textContent = t;
+            card.appendChild(d);
+          });
+          // A visible, non-colour-only LIVE badge on the presented slide.
+          if (isLive) {
+            const badge = document.createElement("span");
+            badge.className = "pm-slide-live-badge";
+            badge.textContent = "LIVE";
+            card.appendChild(badge);
+          }
+          card.onclick = () => pAct(() => invoke("deck_select_slide", { id: s.id }));
+          li.appendChild(nEl);
+          li.appendChild(card);
+          // Delete-slide affordance → a role="alertdialog" confirm (C-001). A deck keeps at least
+          // one slide, so the affordance is disabled (labelled) when this is the only slide.
+          const only = (dv.slides || []).length <= 1;
+          const delBtn = document.createElement("button");
+          delBtn.type = "button";
+          delBtn.className = "pm-slide-del";
+          delBtn.dataset.del = s.id;
+          delBtn.textContent = "🗑";
+          delBtn.setAttribute("aria-label", "Delete slide " + s.n);
+          if (only) {
+            delBtn.disabled = true;
+            delBtn.setAttribute("aria-disabled", "true");
+            delBtn.title = "A deck keeps at least one slide";
+          } else {
+            delBtn.title = "Delete slide " + s.n;
+            delBtn.onclick = (ev) => {
+              ev.stopPropagation();
+              pmConfirm({
+                title: "Delete slide " + s.n + "?",
+                body: "This removes the slide and its elements from the deck. You can undo it.",
+                warning: isLive ? "This slide is LIVE on the audience output right now." : null,
+                confirmLabel: "Delete slide",
+                // Focus lands on Add-slide after the removal (the deleted card's slot is gone — WCAG 2.4.3).
+                onConfirm: async () => {
+                  const ok = await pAct(() => invoke("deck_remove_slide", { id: s.id }), "delete the slide");
+                  if (ok) { const add = pmEl("pm-add-slide"); if (add) add.focus(); }
+                },
+              });
+            };
+          }
+          li.appendChild(delBtn);
+          list.appendChild(li);
+        });
+        // Restore focus to the equivalent slide card if the list had focus before the rebuild.
+        if (focusedId != null) {
+          const again = list.querySelector('.pm-slide[data-id="' + focusedId + '"] .pm-slide-card');
+          if (again) again.focus();
+        }
+      }
+
+      function pmRenderMedia(dv) {
+        const m = (dv && dv.media) || { assets: [], total_label: "—", missing_count: 0, unused_count: 0 };
+        const q = pmMediaQuery.trim().toLowerCase();
+        const match = (a) => {
+          if (pmMediaFilter !== "all" && a.kind !== pmMediaFilter) return false;
+          if (q && !(a.name || "").toLowerCase().includes(q)) return false;
+          return true;
+        };
+        // grid: images + video; audio list: audio.
+        const grid = pmEl("pm-media-grid");
+        grid.innerHTML = "";
+        const visual = m.assets.filter((a) => a.kind !== "audio" && match(a));
+        if (!visual.length) {
+          const empty = document.createElement("div");
+          empty.className = "pm-media-empty";
+          empty.textContent = "No matching media.";
+          grid.appendChild(empty);
+        }
+        // The asset used by the currently-selected image element → mark its cell "in use".
+        const selEl = dv.slide && dv.slide.selected_element != null ? dv.slide.elements[dv.slide.selected_element] : null;
+        const inUsePath = selEl && selEl.kind === "image" ? selEl.source : null;
+        visual.forEach((a) => {
+          const isInUse = a.path && a.path === inUsePath;
+          const cell = document.createElement("div");
+          cell.className = "pm-asset" + (a.missing ? " missing" : "") + (isInUse ? " in-use" : "");
+          cell.setAttribute("role", "listitem");
+          const thumb = document.createElement("button");
+          thumb.type = "button";
+          thumb.className = "pm-asset-thumb";
+          // A non-image, non-missing grid cell (video) is not yet placeable — label it honestly,
+          // not "Add media" (review 86ajvjtax #6). The "in use" state is named, not colour-only (1.4.1).
+          thumb.setAttribute("aria-label",
+            a.missing ? "Missing media " + a.name
+              : a.kind !== "image" ? a.name + ", " + a.kind + " — on-slide playback arrives later"
+                : "Add media " + a.name + (isInUse ? " (in use)" : a.unused ? " (unused)" : ""));
+          if (a.missing) {
+            thumb.innerHTML = '<span aria-hidden="true">⚠</span>';
+          } else if (a.kind === "video") {
+            thumb.innerHTML = '<span class="pm-play" aria-hidden="true">▶</span>';
+            if (a.duration_label) {
+              const b = document.createElement("span");
+              b.className = "pm-badge";
+              b.textContent = a.duration_label;
+              thumb.appendChild(b);
+            }
+          }
+          // Clicking an IMAGE asset either REPLACES the selected image element's source (when a
+          // Replace… flow is armed) or adds it to the current slide (video/audio: no on-slide render).
+          if (!a.missing && a.kind === "image") {
+            thumb.onclick = () => {
+              if (pmReplaceTarget != null) {
+                const t = pmReplaceTarget;
+                pmEndReplace();
+                pmLastSelKey = null; // re-open the Inspector after the replace
+                pAct(() => invoke("deck_replace_element_image", { index: t, mediaId: a.id }));
+              } else {
+                pAct(() => invoke("deck_add_image_element", { mediaId: a.id }));
+              }
+            };
+          } else {
+            // Missing, or a not-yet-placeable video → inert (disabled, not a dead enabled button).
+            thumb.onclick = () => {};
+            thumb.disabled = true;
+            thumb.setAttribute("aria-disabled", "true");
+          }
+          const name = document.createElement("div");
+          name.className = "pm-asset-name";
+          name.textContent = a.name;
+          const meta = document.createElement("div");
+          meta.className = "pm-asset-meta";
+          meta.textContent = a.missing ? "File moved" : a.kind.toUpperCase() + (a.size_label ? " · " + a.size_label : "");
+          // Remove-from-library affordance → a role="alertdialog" confirm that warns when the asset
+          // is still used on k slides (C-002). Removing it there leaves those slides missing media.
+          const rm = document.createElement("button");
+          rm.type = "button";
+          rm.className = "pm-asset-del";
+          rm.textContent = "✕";
+          rm.setAttribute("aria-label", "Remove " + a.name + " from the library" + (a.uses ? " (used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + ")" : ""));
+          rm.title = "Remove from library";
+          rm.onclick = (ev) => {
+            ev.stopPropagation();
+            pmConfirm({
+              title: "Remove " + a.name + "?",
+              body: "This removes the file from the media library. You can undo it.",
+              warning: a.uses ? "Used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + " — removing it leaves " + (a.uses === 1 ? "that slide" : "those slides") + " with missing media." : null,
+              confirmLabel: "Remove",
+              onConfirm: () => pAct(() => invoke("deck_remove_media", { id: a.id }), "remove the media"),
+            });
+          };
+          cell.appendChild(thumb);
+          cell.appendChild(name);
+          cell.appendChild(meta);
+          cell.appendChild(rm);
+          grid.appendChild(cell);
+        });
+        // audio
+        const audio = m.assets.filter((a) => a.kind === "audio" && (pmMediaFilter === "all" || pmMediaFilter === "audio") && (!q || (a.name || "").toLowerCase().includes(q)));
+        const audioWrap = pmEl("pm-media-audio");
+        const audioHead = pmEl("pm-media-audio-h");
+        audioWrap.innerHTML = "";
+        const showAudio = audio.length > 0;
+        audioHead.style.display = showAudio ? "" : "none";
+        audioWrap.style.display = showAudio ? "" : "none";
+        audio.forEach((a) => {
+          const row = document.createElement("div");
+          row.className = "pm-audio-row";
+          row.setAttribute("role", "listitem");
+          row.innerHTML = '<span class="pm-play" aria-hidden="true">▶</span>';
+          const nm = document.createElement("span");
+          nm.className = "pm-audio-name";
+          nm.textContent = a.name;
+          const du = document.createElement("span");
+          du.className = "pm-audio-dur";
+          du.textContent = a.duration_label || "";
+          row.appendChild(nm);
+          row.appendChild(du);
+          audioWrap.appendChild(row);
+        });
+        // footer
+        pmEl("pm-media-total").textContent = (m.total_label || "—") + " of media";
+        const stats = pmEl("pm-media-stats");
+        const parts = [];
+        if (m.missing_count) parts.push(m.missing_count + " missing");
+        if (m.unused_count) parts.push(m.unused_count + " unused");
+        stats.textContent = parts.join(" · ");
+        stats.classList.toggle("warn", m.missing_count > 0);
+      }
+
+      // --- canvas preview + selection overlay ---------------------------------------------
+      function pmRenderCanvas() {
+        const cv = pmEl("pm-canvas");
+        if (!cv) return;
+        invoke("render_deck_slide", { id: null, maxW: 960, maxH: 540 })
+          .then((r) => {
+            if (r && r.available && r.frame && blitFrame(cv, r.frame)) {
+              cv.classList.add("has-render");
+            }
+            pmDrawSelection();
+          })
+          .catch(() => {});
+      }
+
+      function pmDrawSelection() {
+        const selBox = pmEl("pm-sel");
+        const el = pmSelectedElement();
+        const cv = pmEl("pm-canvas");
+        const box = pmEl("pm-canvas-box");
+        if (!selBox || !el || !cv || !box) {
+          if (selBox) selBox.hidden = true;
+          return;
+        }
+        const cr = cv.getBoundingClientRect();
+        const br = box.getBoundingClientRect();
+        const ox = cr.left - br.left;
+        const oy = cr.top - br.top;
+        selBox.hidden = false;
+        selBox.style.left = ox + (el.x / 1000) * cr.width + "px";
+        selBox.style.top = oy + (el.y / 1000) * cr.height + "px";
+        selBox.style.width = (el.w / 1000) * cr.width + "px";
+        selBox.style.height = (el.h / 1000) * cr.height + "px";
+      }
+
+      // Hit-test the topmost (highest z) visible element at a per-mille point.
+      function pmHitTest(xp, yp) {
+        const els = pmElements();
+        let hit = null;
+        els.forEach((e, i) => {
+          if (!e.visible) return;
+          if (xp >= e.x && xp <= e.x + e.w && yp >= e.y && yp <= e.y + e.h) {
+            if (hit == null || e.z >= els[hit].z) hit = i;
+          }
+        });
+        return hit;
+      }
+
+      // --- Inline text editing: double-click a text element to edit its content directly on the
+      // canvas (PowerPoint / Google-Slides style). A textarea is overlaid on the element's rect;
+      // blur or ⌘/Ctrl+Enter COMMITS via deck_set_element_text, Esc CANCELS. One editor at a time. ---
+      let pmTextEditIdx = null;
+      function pmEndTextEdit() {
+        const ta = pmEl("pm-text-edit");
+        pmTextEditIdx = null; // clear FIRST so the removal-triggered blur is a no-op
+        if (ta) ta.remove();
+      }
+      function pmStartTextEdit(idx) {
+        pmEndTextEdit();
+        const el = pmElements()[idx];
+        const cv = pmEl("pm-canvas"), box = pmEl("pm-canvas-box");
+        if (!el || el.kind !== "text" || !cv || !box) return;
+        const cr = cv.getBoundingClientRect(), br = box.getBoundingClientRect();
+        if (!cr.width || !cr.height) return;
+        const ta = document.createElement("textarea");
+        ta.id = "pm-text-edit"; ta.className = "pm-text-edit";
+        ta.value = el.text || "";
+        ta.setAttribute("aria-label", "Edit text content — Enter for a new line, Escape to cancel");
+        ta.style.left = (cr.left - br.left) + (el.x / 1000) * cr.width + "px";
+        ta.style.top = (cr.top - br.top) + (el.y / 1000) * cr.height + "px";
+        ta.style.width = (el.w / 1000) * cr.width + "px";
+        ta.style.height = (el.h / 1000) * cr.height + "px";
+        pmTextEditIdx = idx;
+        box.appendChild(ta);
+        ta.focus();
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+        const commit = () => {
+          if (pmTextEditIdx == null) return;
+          const v = ta.value, i = pmTextEditIdx;
+          pmEndTextEdit();
+          pAct(() => invoke("deck_set_element_text", { index: i, text: v }), "edit the text");
+        };
+        ta.addEventListener("blur", commit);
+        ta.addEventListener("keydown", (ev) => {
+          if (ev.key === "Escape") { ev.preventDefault(); pmEndTextEdit(); cv.focus(); }
+          else if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); commit(); cv.focus(); }
+          // Keep every keystroke inside the editor — app shortcuts (⌘Z / ⌘1–6 / Delete) must not
+          // fire while typing. Plain Enter falls through so it inserts a newline (multi-line text).
+          ev.stopPropagation();
+        });
+      }
+
+      // --- wire the static controls (they exist at load; #surface-presentation is in the DOM) ---
+      (function wirePresentation() {
+        pmEl("pm-add-slide").onclick = pmAddSlide;
+        pmEl("pm-present").onclick = pmPresent;
+        pmEl("pm-undo").onclick = pmUndo;
+        pmEl("pm-redo").onclick = pmRedo;
+        pmEl("pm-import").onclick = () => pAct(() => invoke("deck_import_image"), "import the image");
+        // Error banner: Retry re-runs the last rejected deck action; Dismiss hides it.
+        pmEl("pm-error-retry").onclick = () => { if (pmLastAct) pAct(pmLastAct.fn, pmLastAct.opName); };
+        pmEl("pm-error-dismiss").onclick = pmClearError;
+        // Presentations Library: the deck-switcher opens it; ＋ New creates; the library controls.
+        pmEl("pm-deckswitch").onclick = pmShowLibrary;
+        pmEl("pm-newpres").onclick = pmLibNew;
+        pmEl("pm-lib-back").onclick = pmHideLibrary;
+        pmEl("pm-lib-new").onclick = pmLibNew;
+        pmEl("pm-lib-empty-new").onclick = pmLibNew;
+        pmEl("pm-lib-retry").onclick = pmLibLoad;
+        pmEl("pm-lib-q").addEventListener("input", (e) => { pmLibQuery = e.target.value; pmRenderLibGrid(); });
+        pmEl("pm-lib-sort").addEventListener("change", (e) => { pmLibSort = e.target.value; pmRenderLibGrid(); });
+        // add-content toolbar
+        document.querySelectorAll("#surface-presentation .pm-tool[data-add]").forEach((b) => {
+          // The host handles each kind: "background" adds a full-frame shape behind the content,
+          // "image" adds the first library image (or is a no-op when there is none). A no-op never
+          // corrupts undo/redo (the host snapshots only on a real edit).
+          b.onclick = () => pAct(() => invoke("deck_add_element", { kind: b.dataset.add }));
+        });
+        // per-slide props
+        pmEl("pm-notes").addEventListener("change", (e) =>
+          pAct(() => invoke("deck_set_notes", { notes: e.target.value })));
+        pmEl("pm-transition").addEventListener("change", (e) =>
+          pAct(() => invoke("deck_set_transition", { transition: e.target.value })));
+        pmEl("pm-autoadv").addEventListener("change", (e) => {
+          const secs = parseInt(e.target.value, 10) || 0;
+          pAct(() => invoke("deck_set_auto_advance", { secs: secs > 0 ? secs : null }));
+        });
+        // media filters + search
+        document.querySelectorAll("#surface-presentation .pm-mtab").forEach((t) => {
+          t.onclick = () => {
+            pmMediaFilter = t.dataset.filter;
+            document.querySelectorAll("#surface-presentation .pm-mtab").forEach((x) =>
+              x.setAttribute("aria-pressed", x === t ? "true" : "false"));
+            if (pmDv) pmRenderMedia(pmDv);
+          };
+        });
+        pmEl("pm-media-q").addEventListener("input", (e) => {
+          pmMediaQuery = e.target.value;
+          if (pmDv) pmRenderMedia(pmDv);
+        });
+
+        // Right-panel Media/Inspector tabs (roving tabindex + Left/Right).
+        const mTab = pmEl("pm-tab-media"), iTab = pmEl("pm-tab-inspector");
+        mTab.onclick = () => pmSetRight("media");
+        iTab.onclick = () => { if (iTab.getAttribute("aria-disabled") !== "true") pmSetRight("inspector"); };
+        [mTab, iTab].forEach((t, i, arr) => {
+          t.addEventListener("keydown", (e) => {
+            if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+            e.preventDefault();
+            const other = arr[(i + 1) % 2];
+            if (other.getAttribute("aria-disabled") === "true") return;
+            other.focus();
+            other.click();
+          });
+        });
+        pmEl("pm-replace-cancel").onclick = () => {
+          pmEndReplace();
+          pmLastSelKey = null; // re-open the Inspector for the still-selected element
+          if (pmDv) renderPresentation(pmDv);
+        };
+
+        // canvas: click-to-select + drag-to-move (per-mille), keyboard edits.
+        const cv = pmEl("pm-canvas");
+        cv.tabIndex = 0;
+        const pointToPermille = (ev) => {
+          const cr = cv.getBoundingClientRect();
+          if (!cr.width || !cr.height) return null;
+          const xp = Math.round(((ev.clientX - cr.left) / cr.width) * 1000);
+          const yp = Math.round(((ev.clientY - cr.top) / cr.height) * 1000);
+          return { xp: Math.max(0, Math.min(1000, xp)), yp: Math.max(0, Math.min(1000, yp)) };
+        };
+        cv.addEventListener("pointerdown", (ev) => {
+          cv.focus();
+          const p = pointToPermille(ev);
+          if (!p) return;
+          const idx = pmHitTest(p.xp, p.yp);
+          if (idx == null) {
+            if (pmSelectedElement()) pAct(() => invoke("deck_select_element", { index: null }));
+            return;
+          }
+          const el = pmElements()[idx];
+          pmDrag = { index: idx, grabX: p.xp, grabY: p.yp, ox: el.x, oy: el.y, w: el.w, h: el.h, moved: false };
+          if (cv.setPointerCapture) { try { cv.setPointerCapture(ev.pointerId); } catch (e) {} }
+          if (!pmDv.slide || pmDv.slide.selected_element !== idx) {
+            pAct(() => invoke("deck_select_element", { index: idx }));
+          }
+        });
+        // Minimum element size while resizing (per-mille) — never let a drag collapse an element.
+        const PM_MIN = 20;
+        cv.addEventListener("pointermove", (ev) => {
+          if (!pmDrag) return;
+          const p = pointToPermille(ev);
+          if (!p) return;
+          const dx = p.xp - pmDrag.grabX, dy = p.yp - pmDrag.grabY;
+          let x = pmDrag.ox, y = pmDrag.oy, w = pmDrag.w, h = pmDrag.h;
+          if (pmDrag.handle) {
+            // RESIZE: the grabbed edge/corner moves; the opposite edge stays anchored. Each axis is
+            // clamped into 0..1000 with a PM_MIN floor so it never inverts or leaves the frame.
+            const right = pmDrag.ox + pmDrag.w, bottom = pmDrag.oy + pmDrag.h, d = pmDrag.handle;
+            if (d.indexOf("e") >= 0) w = Math.max(PM_MIN, Math.min(1000 - pmDrag.ox, pmDrag.w + dx));
+            if (d.indexOf("w") >= 0) { x = Math.max(0, Math.min(right - PM_MIN, pmDrag.ox + dx)); w = right - x; }
+            if (d.indexOf("s") >= 0) h = Math.max(PM_MIN, Math.min(1000 - pmDrag.oy, pmDrag.h + dy));
+            if (d.indexOf("n") >= 0) { y = Math.max(0, Math.min(bottom - PM_MIN, pmDrag.oy + dy)); h = bottom - y; }
+          } else {
+            // MOVE: translate, clamped so the top-left stays on the frame.
+            x = Math.max(0, Math.min(1000, pmDrag.ox + dx));
+            y = Math.max(0, Math.min(1000, pmDrag.oy + dy));
+          }
+          pmDrag.nx = x; pmDrag.ny = y; pmDrag.nw = w; pmDrag.nh = h; pmDrag.moved = true;
+          // live overlay feedback (commit on pointerup)
+          const selBox = pmEl("pm-sel"), box = pmEl("pm-canvas-box"), cr = cv.getBoundingClientRect(), br = box.getBoundingClientRect();
+          if (selBox && !selBox.hidden) {
+            selBox.style.left = (cr.left - br.left) + (x / 1000) * cr.width + "px";
+            selBox.style.top = (cr.top - br.top) + (y / 1000) * cr.height + "px";
+            selBox.style.width = (w / 1000) * cr.width + "px";
+            selBox.style.height = (h / 1000) * cr.height + "px";
+          }
+        });
+        const endDrag = () => {
+          if (pmDrag && pmDrag.moved && pmDrag.nx != null) {
+            const d = pmDrag;
+            pAct(() => invoke("deck_move_element", { index: d.index, x: d.nx, y: d.ny, w: d.nw, h: d.nh }));
+          }
+          pmDrag = null;
+        };
+        cv.addEventListener("pointerup", endDrag);
+        cv.addEventListener("pointercancel", () => { pmDrag = null; });
+        // Double-click a TEXT element → inline edit its content on the canvas (PowerPoint-style).
+        cv.addEventListener("dblclick", (ev) => {
+          const p = pointToPermille(ev);
+          if (!p) return;
+          const idx = pmHitTest(p.xp, p.yp);
+          if (idx == null) return;
+          const el = pmElements()[idx];
+          if (el && el.kind === "text") { ev.preventDefault(); pmStartTextEdit(idx); }
+        });
+        // Resize handles on the selection box: start a resize drag (the box/overlay are
+        // pointer-events:none, so these small handles are the only pointer targets there). Capture
+        // the pointer on the canvas so the existing pointermove/up drive the resize + commit.
+        document.querySelectorAll("#pm-sel .pm-h").forEach((hEl) => {
+          hEl.addEventListener("pointerdown", (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const idx = pmDv && pmDv.slide ? pmDv.slide.selected_element : null;
+            if (idx == null) return;
+            const el = pmElements()[idx];
+            if (!el) return;
+            const p = pointToPermille(ev);
+            if (!p) return;
+            pmDrag = { index: idx, handle: hEl.dataset.h, grabX: p.xp, grabY: p.yp, ox: el.x, oy: el.y, w: el.w, h: el.h, moved: false };
+            if (cv.setPointerCapture) { try { cv.setPointerCapture(ev.pointerId); } catch (e) {} }
+          });
+        });
+        cv.addEventListener("keydown", (ev) => {
+          const els = pmElements();
+          const cur = pmDv && pmDv.slide ? pmDv.slide.selected_element : null;
+          // Keyboard SELECTION (WCAG 2.1.1): Tab cycles elements front→back (Shift+Tab reverses);
+          // when nothing is selected, Tab or an arrow selects the topmost element — so a
+          // keyboard-only operator can reach ANY element, not just a just-added one.
+          if (ev.key === "Tab" && els.length) {
+            ev.preventDefault();
+            const order = pmZOrder(); // element indices, front (highest z) → back
+            let pos = cur == null ? -1 : order.indexOf(cur);
+            pos = ev.shiftKey ? (pos - 1 + order.length) % order.length : (pos + 1) % order.length;
+            const next = order[pos];
+            pmAnnounce("Selected " + (els[next].label || els[next].kind) + " element");
+            pAct(() => invoke("deck_select_element", { index: next }));
+            return;
+          }
+          const idx = cur;
+          if (idx == null) {
+            if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].indexOf(ev.key) >= 0 && els.length) {
+              ev.preventDefault();
+              pAct(() => invoke("deck_select_element", { index: pmZOrder()[0] }));
+            }
+            return;
+          }
+          const el = els[idx];
+          if (!el) return;
+          const step = ev.shiftKey ? 50 : 10;
+          const clamp = (v) => Math.max(0, Math.min(1000, v));
+          // Alt+arrows RESIZE (keyboard parity with the drag handles, WCAG 2.1.1): the top-left is
+          // anchored, so Right/Down grow and Left/Up shrink the width/height (floored at PM_MIN=20,
+          // kept within the frame). Shift makes a coarse step. Handled before the plain-arrow move.
+          if (ev.altKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].indexOf(ev.key) >= 0) {
+            ev.preventDefault();
+            let w = el.w, h = el.h;
+            if (ev.key === "ArrowRight") w = Math.min(1000 - el.x, el.w + step);
+            else if (ev.key === "ArrowLeft") w = Math.max(20, el.w - step);
+            else if (ev.key === "ArrowDown") h = Math.min(1000 - el.y, el.h + step);
+            else if (ev.key === "ArrowUp") h = Math.max(20, el.h - step);
+            pAct(() => invoke("deck_move_element", { index: idx, x: el.x, y: el.y, w, h }));
+            return;
+          }
+          const nudge = (dx, dy) => {
+            ev.preventDefault();
+            pAct(() => invoke("deck_move_element", { index: idx, x: clamp(el.x + dx), y: clamp(el.y + dy), w: el.w, h: el.h }));
+          };
+          if (ev.key === "ArrowLeft") nudge(-step, 0);
+          else if (ev.key === "ArrowRight") nudge(step, 0);
+          else if (ev.key === "ArrowUp") nudge(0, -step);
+          else if (ev.key === "ArrowDown") nudge(0, step);
+          else if (ev.key === "Delete" || ev.key === "Backspace") { ev.preventDefault(); pmDeleteElement(idx); }
+          else if (ev.key === "[") { ev.preventDefault(); pAct(() => invoke("deck_set_element_z", { index: idx, z: Math.max(-128, el.z - 1) })); }
+          else if (ev.key === "]") { ev.preventDefault(); pAct(() => invoke("deck_set_element_z", { index: idx, z: Math.min(127, el.z + 1) })); }
+          else if (ev.key === "h" || ev.key === "H") { ev.preventDefault(); pAct(() => invoke("deck_toggle_element_visible", { index: idx })); }
+        });
+
+        // ⌘/Ctrl+Z undo, ⌘/Ctrl+⇧Z redo — only while the Presentation surface is active and not
+        // typing in a field (native text undo wins there) or a modal is open (FR-016, ≥20 steps).
+        document.addEventListener("keydown", (ev) => {
+          const surf = document.getElementById("surface-presentation");
+          if (!surf || !surf.classList.contains("active")) return;
+          if (window.__cmdPalette && window.__cmdPalette.isOpen()) return;
+          if (document.querySelector(".pm-confirm-back")) return; // don't act behind an open confirm/dialog
+          if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
+          if ((ev.key === "n" || ev.key === "N") && !ev.shiftKey) { ev.preventDefault(); pmLibNew(); return; }
+          if (ev.key !== "z" && ev.key !== "Z") return;
+          const t = ev.target;
+          if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+          ev.preventDefault();
+          if (ev.shiftKey) pmRedo();
+          else pmUndo();
+        });
+
+        // Keep the selection overlay aligned when the window resizes.
+        window.addEventListener("resize", () => { if (pmDv) pmDrawSelection(); });
+      })();

@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 185
+EXPECTED_MIN_CHECKS = 319
 
 
 def find_chrome():
@@ -104,10 +104,35 @@ STUB = r"""
     title:{x_permille:60,y_permille:150,w_permille:880,h_permille:110,align_h:"center",align_v:"middle",size_permille:48,line_height_permille:1200,color:{r:242,g:181,b:60,a:255},fit:"shrink_to_fit",visible:true},
     body:{x_permille:60,y_permille:280,w_permille:880,h_permille:560,align_h:"center",align_v:"middle",size_permille:78,line_height_permille:1150,color:{r:255,g:255,b:255,a:255},fit:"shrink_to_fit",visible:true}
   };
+  // A DeckView (Presentation & Media, node 329:124) — the separate operator-local shape the
+  // deck_* commands return (NOT the OperatorView). The stubs below mutate it so the surface's
+  // add/select/edit/undo/media behaviours are exercised end to end.
+  var D = {
+    name:"Sermon: Grace That Feeds", count:2,
+    slides:[
+      {id:1, n:1, lines:["Grace That Feeds"], kind:"text"},
+      {id:2, n:2, lines:["Isaiah 61:5"], kind:"text"}
+    ],
+    selected:2, live:null,
+    slide:{ id:2, elements:[{index:0,kind:"text",label:"Isaiah 61:5",x:80,y:240,w:700,h:90,z:0,visible:true,
+        text:"Isaiah 61:5",size_permille:90,line_height_permille:1100,weight:400,align_h:"left",align_v:"top",
+        color:{r:240,g:240,b:245,a:255},fit:"shrink_to_fit",opacity:255}],
+      selected_element:null, notes:"read slowly", transition:"fade", auto_advance_secs:null, has_background:false },
+    media:{ assets:[
+        {id:1,name:"harvest.jpg",path:"demo://harvest field.jpg",kind:"image",size_label:"2.4 MB",width:1920,height:1080,duration_label:null,missing:false,unused:false,uses:2},
+        {id:2,name:"sunrise.jpg",path:"demo://sunrise.jpg",kind:"image",size_label:"3.1 MB",missing:false,unused:true,uses:0},
+        {id:3,name:"testimony.mp4",path:"demo://testimony.mp4",kind:"video",size_label:"48 MB",duration_label:"2:14",missing:false,unused:true,uses:0},
+        {id:4,name:"baptism.jpg",path:"demo://baptism.jpg",kind:"image",size_label:"2 MB",missing:true,unused:false,uses:1},
+        {id:5,name:"ambient pad.wav",path:"demo://ambient pad.wav",kind:"audio",duration_label:"3:20",missing:false,unused:true,uses:0}
+      ], total_label:"1.2 GB", missing_count:1, unused_count:3 },
+    can_undo:false, can_redo:false
+  };
+  var dClone = function(){ return JSON.parse(JSON.stringify(D)); };
+  var dEdit = function(){ D.can_undo = true; D.can_redo = false; return dClone(); };
   window.__TAURI__ = { core: { invoke: function(cmd, args){
     window.__calls.push({cmd:cmd, args:args});
     if (cmd === "builtin_themes") return Promise.resolve([{name:"Classic", theme:JSON.parse(JSON.stringify(T))}]);
-    if (cmd === "system_fonts") return Promise.resolve([]);
+    if (cmd === "system_fonts") return Promise.resolve(["Arial","Georgia","Helvetica Neue"]);
     if (cmd === "view") return Promise.resolve(JSON.parse(JSON.stringify(V)));
     if (cmd === "preview_theme") return Promise.resolve({rgba: btoa("\x00\x00\x00\xff"), w:1, h:1});
     if (cmd === "pick_image") return Promise.resolve("/tmp/picked.png");
@@ -157,6 +182,114 @@ STUB = r"""
     });
     if (cmd === "approve_detection" || cmd === "dismiss_detection" || cmd === "go_live")
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    // --- Presentation & Media (deck_* commands + render_deck_slide) ---
+    // One-shot rejection hook: lets the driver exercise the error banner (role=alert) + Retry.
+    if (window.__pmRejectOnce && cmd.indexOf("deck_") === 0) { window.__pmRejectOnce = false; return Promise.reject("simulated host rejection"); }
+    // One-shot DEFER hook: hold the next deck command pending so the driver can observe the
+    // in-flight aria-busy loading state, then resolve it. Mirrors a slow host round-trip.
+    if (window.__pmDeferOnce && cmd.indexOf("deck_") === 0) {
+      window.__pmDeferOnce = false;
+      return new Promise(function(res){ window.__pmDeferred = function(){ res(dEdit()); }; });
+    }
+    if (cmd === "deck_view") return Promise.resolve(dClone());
+    // --- Presentations Library (deck_list/new/open/rename/duplicate/delete) ---
+    var LIB = window.__LIB || (window.__LIB = {
+      decks: [
+        {id:1, name:"Sunday Service — Aug 4", slides:24},
+        {id:2, name:"Sermon: Grace That Feeds", slides:2},  // the open deck (matches D)
+        {id:3, name:"Youth Night — Identity", slides:12}
+      ],
+      open: 2, persistent: true, nextId: 4
+    });
+    var libView = function(){ return { decks: LIB.decks.map(function(d){return {id:d.id,name:d.name,slides:d.slides};}), open: LIB.open, persistent: LIB.persistent }; };
+    var libUnique = function(base){ var n=base, k=2; var names=LIB.decks.map(function(d){return d.name;}); while(names.indexOf(n)>=0){ n=base+" ("+k+")"; k++; } return n; };
+    if (cmd === "deck_list") return Promise.resolve(libView());
+    if (cmd === "deck_new") {
+      var nid=LIB.nextId++; var nm=libUnique((args.name&&args.name.trim())||"Untitled presentation");
+      LIB.decks.push({id:nid, name:nm, slides:1}); LIB.open=nid;
+      D.name=nm; D.count=1; return Promise.resolve(dClone()); // DeckView (opens the editor)
+    }
+    if (cmd === "deck_open") {
+      var od=LIB.decks.filter(function(x){return x.id===args.id;})[0];
+      if (od){ LIB.open=od.id; D.name=od.name; D.count=od.slides; } return Promise.resolve(dClone());
+    }
+    if (cmd === "deck_rename") {
+      var rd=LIB.decks.filter(function(x){return x.id===args.id;})[0];
+      if (rd){ rd.name=libUnique((args.name&&args.name.trim())||"Untitled presentation"); if(LIB.open===rd.id) D.name=rd.name; } return Promise.resolve(libView());
+    }
+    if (cmd === "deck_duplicate") {
+      var sd=LIB.decks.filter(function(x){return x.id===args.id;})[0];
+      if (sd){ LIB.decks.push({id:LIB.nextId++, name:libUnique(sd.name+" copy"), slides:sd.slides}); } return Promise.resolve(libView());
+    }
+    if (cmd === "deck_delete") {
+      var wasOpen=(LIB.open===args.id);
+      LIB.decks=LIB.decks.filter(function(x){return x.id!==args.id;});
+      if (wasOpen){ if(LIB.decks.length){ LIB.open=LIB.decks[0].id; D.name=LIB.decks[0].name; D.count=LIB.decks[0].slides; } else { LIB.decks.push({id:LIB.nextId++, name:"Untitled presentation", slides:1}); LIB.open=LIB.decks[0].id; D.name="Untitled presentation"; D.count=1; } }
+      return Promise.resolve(libView());
+    }
+    if (cmd === "render_deck_slide")
+      return Promise.resolve({available:true, frame:{w:2, h:1, rgba: btoa("\x33\x2b\x5a\xff\x1a\x1d\x27\xff")}});
+    if (cmd === "deck_add_slide") {
+      var nid = D.slides.length + 1;
+      D.slides.push({id:nid, n:nid, lines:["Empty slide"], kind:"text"});
+      D.count = D.slides.length; D.selected = nid;
+      D.slide = {id:nid, elements:[], selected_element:null, notes:"", transition:"cut", auto_advance_secs:null, has_background:false};
+      return Promise.resolve(dEdit());
+    }
+    if (cmd === "deck_select_slide") {
+      D.selected = args.id;
+      D.slide = {id:args.id, elements:[], selected_element:null, notes:"", transition:"cut", auto_advance_secs:null, has_background:false};
+      return Promise.resolve(dClone());
+    }
+    if (cmd === "deck_add_element") {
+      var ne = {index:D.slide.elements.length, kind:args.kind, x:200,y:430,w:600,h:160,z:0,visible:true, opacity:255};
+      if (args.kind === "text") { ne.label="Text"; ne.text="Text"; ne.size_permille=90; ne.line_height_permille=1100; ne.weight=400; ne.align_h="left"; ne.align_v="top"; ne.color={r:240,g:240,b:245,a:255}; ne.fit="shrink_to_fit"; }
+      else { ne.label="Shape"; ne.fill={r:124,g:92,b:255,a:255}; ne.border={r:0,g:0,b:0,a:0}; ne.border_permille=0; ne.corner_permille=16; ne.variant="rect"; }
+      D.slide.elements.push(ne);
+      D.slide.selected_element = D.slide.elements.length - 1;
+      return Promise.resolve(dEdit());
+    }
+    if (cmd === "deck_add_image_element") {
+      D.slide.elements.push({index:D.slide.elements.length, kind:"image", label:"img", name:"harvest.jpg", source:"demo://harvest field.jpg", missing:false, x:200,y:250,w:600,h:460,z:0,visible:true, opacity:255, fit:"stretch"});
+      D.slide.selected_element = D.slide.elements.length - 1;
+      return Promise.resolve(dEdit());
+    }
+    if (cmd === "deck_update_element") {
+      var eu = D.slide.elements[args.index]; if (eu) { for (var k in args.patch) eu[k] = args.patch[k]; } return Promise.resolve(dEdit());
+    }
+    if (cmd === "deck_replace_element_image") {
+      var er = D.slide.elements[args.index], ar = D.media.assets.filter(function(a){return a.id===args.mediaId;})[0];
+      if (er && ar) { er.source = ar.path; er.name = ar.name; er.missing = false; } return Promise.resolve(dEdit());
+    }
+    if (cmd === "deck_select_element") { D.slide.selected_element = args.index; return Promise.resolve(dClone()); }
+    if (cmd === "deck_move_element") {
+      var e = D.slide.elements[args.index]; if (e) { e.x=args.x; e.y=args.y; e.w=args.w; e.h=args.h; }
+      D.slide.selected_element = args.index; return Promise.resolve(dEdit());
+    }
+    if (cmd === "deck_set_element_z") { var e2=D.slide.elements[args.index]; if(e2) e2.z=args.z; return Promise.resolve(dEdit()); }
+    if (cmd === "deck_reorder_elements") { var n=D.slide.elements.length; args.order.forEach(function(i,k){ if(D.slide.elements[i]) D.slide.elements[i].z = n-1-k; }); return Promise.resolve(dEdit()); }
+    if (cmd === "deck_set_element_text") { var et=D.slide.elements[args.index]; if(et && et.kind==="text"){ et.text=args.text; et.label=(args.text||"").split("\\n")[0]; } return Promise.resolve(dEdit()); }
+    if (cmd === "deck_toggle_element_visible") { var e3=D.slide.elements[args.index]; if(e3) e3.visible=!e3.visible; return Promise.resolve(dEdit()); }
+    if (cmd === "deck_remove_element") { D.slide.elements.splice(args.index,1); D.slide.selected_element=null; return Promise.resolve(dEdit()); }
+    if (cmd === "deck_set_notes") { D.slide.notes = args.notes; return Promise.resolve(dEdit()); }
+    if (cmd === "deck_set_transition") { D.slide.transition = args.transition; return Promise.resolve(dEdit()); }
+    if (cmd === "deck_set_auto_advance") { D.slide.auto_advance_secs = args.secs; return Promise.resolve(dEdit()); }
+    if (cmd === "deck_undo") { D.can_undo = false; D.can_redo = true; return Promise.resolve(dClone()); }
+    if (cmd === "deck_redo") { D.can_redo = false; D.can_undo = true; return Promise.resolve(dClone()); }
+    if (cmd === "deck_go_live") { D.live = D.selected; return Promise.resolve(dClone()); }
+    if (cmd === "deck_remove_slide") {
+      D.slides = D.slides.filter(function(s){ return s.id !== args.id; });
+      D.count = D.slides.length;
+      D.slides.forEach(function(s, i){ s.n = i + 1; });
+      return Promise.resolve(dEdit());
+    }
+    if (cmd === "deck_duplicate_slide" || cmd === "deck_reorder_slide")
+      return Promise.resolve(dEdit());
+    if (cmd === "deck_import_image") {
+      D.media.assets.push({id:99,name:"picked.png",kind:"image",size_label:"1.0 MB",missing:false,unused:true});
+      D.media.unused_count += 1; return Promise.resolve(dClone());
+    }
+    if (cmd === "deck_remove_media") return Promise.resolve(dClone());
     return Promise.resolve(null);
   } },
   event: { listen: function(name, cb){ (window.__ev[name] = window.__ev[name] || []).push(cb); return Promise.resolve(function(){}); } } };
@@ -776,6 +909,8 @@ DRIVER = r"""
       var lStatus = el("transcript-status");
       ok(lLabel.textContent.indexOf("Start listening") >= 0 && !lBtn.disabled,
          "listen: idle shows 'Start listening', enabled");
+      ok(getComputedStyle(el("transcript-meter")).display === "none",
+         "listen: the mic-level meter is hidden when idle (computed display, not just [hidden])");
       lBtn.click(); // start_listening stays pending (model load) — must show progress, not freeze
       ok(lBtn.disabled && lLabel.textContent.indexOf("Preparing") >= 0,
          "listen: clicking Start immediately shows 'Preparing…' (never a silent dead button)");
@@ -788,14 +923,20 @@ DRIVER = r"""
          "listen: once ready the control flips to 'Stop listening' (enabled)");
       ok(lStatus.textContent.toLowerCase().indexOf("waiting for speech") >= 0,
          "listen: listening but no lines yet -> 'waiting for speech…' (makes empty transcript diagnosable)");
-      // A live mic level surfaces in the waiting status so a dead/denied microphone (peak 0
-      // while speaking) is visibly distinct from a working mic with recognition pending.
+      // A live mic level drives the VISUAL meter (shown only while listening) so a dead/denied
+      // microphone (peak 0 while speaking) is visibly distinct from a working mic with recognition
+      // pending. role=meter + a numeric % (not colour-only).
+      var lMeter = el("transcript-meter");
+      var lMeterFill = el("transcript-meter-fill");
+      var lMeterVal = el("transcript-meter-val");
+      ok(lMeter && getComputedStyle(lMeter).display !== "none" && lMeter.getAttribute("role") === "meter",
+         "listen: the mic-level meter (role=meter) is shown while listening");
       window.__emit("stt://level", { pct: 0 });
-      ok(lStatus.textContent.indexOf("mic 0%") >= 0,
-         "listen: mic level 0 while waiting shows '(mic 0%)' — isolates a dead/denied microphone");
+      ok(lMeter.getAttribute("aria-valuenow") === "0" && lMeterVal.textContent === "0%" && lMeterFill.style.width === "0%",
+         "listen: mic level 0 sets the meter to 0% (isolates a dead/denied microphone)");
       window.__emit("stt://level", { pct: 42 });
-      ok(lStatus.textContent.indexOf("mic 42%") >= 0,
-         "listen: a live mic level shows '(mic 42%)' (audio is arriving; recognition is downstream)");
+      ok(lMeter.getAttribute("aria-valuenow") === "42" && lMeterVal.textContent === "42%" && lMeterFill.style.width === "42%",
+         "listen: a live mic level fills the meter to 42% (audio arriving; recognition downstream)");
       // Sustained 0% (denied mic) turns into an actionable permission hint, not an endless wait.
       var lSub = el("transcript-empty-sub");
       for (var z = 0; z < 14; z++) window.__emit("stt://level", { pct: 0 });
@@ -981,6 +1122,446 @@ DRIVER = r"""
              && c.args.name === "Test NDI" && c.args.enabled === true;
          }),
          "inspector: NDI name + broadcast toggle → set_ndi_output(screen=stream, name, enabled=true)");
+
+      // === Presentation & Media surface (Design 2.0, node 329:124) ===
+      var pmNav = document.querySelector('.nav-item[data-surface="presentation"]');
+      ok(!!pmNav && pmNav.getAttribute("aria-disabled") !== "true", "PM: the Presentation nav item is ACTIVATED (not a disabled 'later' affordance)");
+      ok(pmNav && pmNav.dataset.nodigit, "PM: the Presentation item is data-nodigit (keeps the ⌘1–6 map intact)");
+      pmNav.click();
+      ok(el("surface-presentation").classList.contains("active"), "PM: clicking the nav item activates #surface-presentation");
+      // The surface loads its DeckView + composites the slide canvas (native preview, has-render).
+      await waitFor(function(){ return el("pm-canvas").classList.contains("has-render"); });
+      ok(el("pm-canvas").classList.contains("has-render"), "PM: the slide canvas shows a native composited preview (render_deck_slide → blitFrame)");
+      ok(window.__calls.some(function(c){ return c.cmd === "render_deck_slide"; }), "PM: render_deck_slide drives the preview (compositor stays native, not HTML)");
+      ok(document.querySelectorAll("#pm-slide-list .pm-slide").length === 2, "PM: the SLIDES list renders one row per deck slide");
+      ok(/Slide 2 \/ 2/.test(el("pm-slide-pos").textContent), "PM: the canvas shows 'Slide N / M · 1920×1080'");
+      // Preview→Live isolation (FR-012): editing NEVER changes Live; only Present does.
+      var liveBefore = window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length;
+      document.querySelector('#surface-presentation .pm-tool[data-add="text"]').click();
+      await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_add_element"; }); });
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_add_element" && c.args.kind === "text"; }), "PM: the Text tool adds a text element to the slide");
+      ok(window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length === liveBefore, "PM: editing the slide never goes Live (FR-012 — Live untouched by edits)");
+
+      // === Inspector: selecting/adding an element AUTO-OPENS the right-panel Inspector (design 509:124) ===
+      await waitFor(function(){ return !el("pm-inspector-body").hidden; });
+      ok(!el("pm-inspector-body").hidden && el("pm-tab-inspector").getAttribute("aria-selected") === "true",
+         "PM: adding/selecting an element AUTO-OPENS the Inspector tab");
+      ok(!el("pm-inspector-body").contains(document.activeElement),
+         "PM: the auto-open does NOT move focus into the Inspector (no focus-steal off the canvas, review #9)");
+      ok(el("pm-tab-inspector").getAttribute("aria-disabled") !== "true", "PM: the Inspector tab is enabled when an element is selected");
+      ok(/Text element/.test(el("pm-inspector-body").textContent), "PM: the Inspector binds to the selected element (Text element header)");
+      // A Text inspector control drives deck_update_element.
+      var sizeIn = Array.from(el("pm-inspector-body").querySelectorAll("input[type=number]"))[0];
+      sizeIn.value = "120"; sizeIn.dispatchEvent(new Event("change"));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_update_element" && c.args.patch && c.args.patch.size_permille === 120; }), "PM: an Inspector control drives deck_update_element (size)");
+      var colorIn = el("pm-inspector-body").querySelector("input[type=color]");
+      colorIn.value = "#ff8800"; colorIn.dispatchEvent(new Event("change"));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_update_element" && c.args.patch && c.args.patch.color && c.args.patch.color.r === 255; }), "PM: the Colour control patches deck_update_element with an {r,g,b,a}");
+      var alignBtn = Array.from(el("pm-inspector-body").querySelectorAll("button[aria-label^='Align ']"))[1];
+      alignBtn.focus(); alignBtn.click();
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_update_element" && c.args.patch && c.args.patch.align_h === "center"; }), "PM: an Align button patches align_h");
+      await sleep(20);
+      ok(document.activeElement && document.activeElement.dataset && document.activeElement.dataset.ik === "align-center",
+         "PM: focus is RESTORED to the button after its edit re-renders the inspector (WCAG 2.4.3, review #2)");
+      // The Layers panel (replacing the old Arrange buttons) lists the slide's elements; Alt+↑ on a
+      // layer row raises it in the z-order.
+      var layerRow = el("pm-inspector-body").querySelector("#pm-layers .td-layer");
+      layerRow.focus(); layerRow.dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowUp", altKey:true, bubbles:true}));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_set_element_z"; }), "PM: a Layers-panel Alt+↑ raises the element (deck_set_element_z)");
+      // Manual tab switch: Media ⟷ Inspector. Assert the COMPUTED display, not just the `.hidden`
+      // property — a class `display:flex` can outrank the UA `[hidden]{display:none}` and leave BOTH
+      // panels visible while `.hidden` still reads true (the contextual switch must actually hide one).
+      var disp = function(id){ return getComputedStyle(el(id)).display; };
+      el("pm-tab-media").click();
+      ok(!el("pm-media-body").hidden && el("pm-inspector-body").hidden, "PM: the Media tab switches the right panel back to the library");
+      ok(disp("pm-media-body") !== "none" && disp("pm-inspector-body") === "none", "PM: on Media, ONLY the media library is rendered (inspector display:none)");
+      el("pm-tab-inspector").click();
+      ok(!el("pm-inspector-body").hidden, "PM: the Inspector tab switches back to the inspector");
+      ok(disp("pm-inspector-body") !== "none" && disp("pm-media-body") === "none", "PM: on Inspector, the media library is NOT rendered (media display:none)");
+      // Image inspector + Replace flow.
+      document.querySelector('#surface-presentation .pm-tool[data-add="image"]').click();
+      await waitFor(function(){ return /Image element/.test(el("pm-inspector-body").textContent); });
+      ok(/Image element/.test(el("pm-inspector-body").textContent), "PM: adding an image element opens the Image inspector (source + Replace)");
+      var repBtn = Array.from(el("pm-inspector-body").querySelectorAll("button")).filter(function(b){ return /Replace|Relink/.test(b.textContent); })[0];
+      repBtn.click();
+      ok(!el("pm-replace-hint").hidden && !el("pm-media-body").hidden, "PM: Replace… arms the flow + switches to the media library with a hint");
+      var imgCell = document.querySelector('#pm-media-grid .pm-asset:not(.missing) .pm-asset-thumb');
+      imgCell.click();
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_replace_element_image" && c.args.mediaId === 1 && typeof c.args.index === "number"; }), "PM: picking a media image fires deck_replace_element_image({mediaId, index}) — camelCase→snake arg crossing");
+      // Deselect → the panel returns to Media.
+      await waitFor(function(){ return !el("pm-inspector-body").hidden; }); // replace re-opened the inspector
+      document.querySelector('#surface-presentation .pm-mtab[data-filter="all"]').click(); // reset the media filter after the Replace flow
+      // Add a slide.
+      var slidesBefore = document.querySelectorAll("#pm-slide-list .pm-slide").length;
+      el("pm-add-slide").click();
+      await waitFor(function(){ return document.querySelectorAll("#pm-slide-list .pm-slide").length > slidesBefore; });
+      ok(document.querySelectorAll("#pm-slide-list .pm-slide").length === slidesBefore + 1, "PM: '+ Add slide' adds a slide via deck_add_slide");
+      // Deselect (a fresh slide with no selected element) returns the panel to Media (review #8).
+      await waitFor(function(){ return !el("pm-media-body").hidden; });
+      ok(!el("pm-media-body").hidden && el("pm-inspector-body").hidden, "PM: a slide with no selected element returns the right panel to Media (deselect)");
+      // Select the first slide.
+      document.querySelector('#pm-slide-list .pm-slide .pm-slide-card').click();
+      await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_select_slide"; }); });
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_select_slide"; }), "PM: clicking a slide row selects it (deck_select_slide)");
+      // Per-slide props: transition + auto-advance + notes.
+      el("pm-transition").value = "cut"; el("pm-transition").dispatchEvent(new Event("change"));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_set_transition" && c.args.transition === "cut"; }), "PM: the Transition control drives deck_set_transition");
+      el("pm-autoadv").value = "8"; el("pm-autoadv").dispatchEvent(new Event("change"));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_set_auto_advance" && c.args.secs === 8; }), "PM: Auto-advance drives deck_set_auto_advance(secs)");
+      el("pm-notes").value = "pause here"; el("pm-notes").dispatchEvent(new Event("change"));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_set_notes" && c.args.notes === "pause here"; }), "PM: the speaker-notes field drives deck_set_notes");
+      // Media library: grid + missing/unused footer + filter.
+      ok(document.querySelectorAll("#pm-media-grid .pm-asset").length >= 3, "PM: the media library renders image/video asset cells");
+      ok(document.querySelector("#pm-media-grid .pm-asset.missing"), "PM: a missing asset shows the missing state");
+      ok(document.querySelectorAll("#pm-media-audio .pm-audio-row").length === 1, "PM: audio assets render in the AUDIO list");
+      ok(/1 missing/.test(el("pm-media-stats").textContent) && /3 unused/.test(el("pm-media-stats").textContent), "PM: the footer reports 'N missing · M unused' (from media_usage + missing detection)");
+      ok(el("pm-media-stats").classList.contains("warn"), "PM: the missing count is styled as a warning");
+      document.querySelector('#surface-presentation .pm-mtab[data-filter="image"]').click();
+      ok(!Array.from(document.querySelectorAll("#pm-media-grid .pm-asset .pm-asset-meta")).some(function(m){ return /VIDEO/.test(m.textContent); }), "PM: the Images filter hides video assets");
+      document.querySelector('#surface-presentation .pm-mtab[data-filter="all"]').click();
+      // Undo/redo (buttons + the DeckView's can_undo/redo drive enablement; ≥20 steps supported host-side).
+      ok(el("pm-undo") && !el("pm-undo").disabled, "PM: after edits, Undo is enabled (can_undo)");
+      el("pm-undo").click();
+      await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_undo"; }); });
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_undo"; }), "PM: Undo drives deck_undo");
+      // Present (Preview→Live): sets the live slide AND routes it to the native audience output.
+      el("pm-present").click();
+      await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_go_live"; }); });
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_go_live"; }), "PM: 'Present' takes the slide live (deck_go_live)");
+      // On success a toast confirms it reached the audience output (the fix for "Present did nothing").
+      await waitFor(function(){ return !el("pm-toast").hidden && /presenting/i.test(el("pm-toast").textContent); });
+      ok(!el("pm-toast").hidden && /presenting/i.test(el("pm-toast").textContent), "PM: 'Present' confirms it reached the audience output with a toast");
+      // Canvas keyboard: add an element (which selects it), then nudge / toggle / raise / remove it.
+      document.querySelector('#surface-presentation .pm-tool[data-add="shape"]').click();
+      await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_add_element" && c.args.kind === "shape"; }); });
+      await sleep(20);
+      el("pm-canvas").focus();
+      el("pm-canvas").dispatchEvent(new KeyboardEvent("keydown", {key:"Tab", bubbles:true}));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_select_element"; }), "PM: Tab on the canvas selects/cycles an element (keyboard selection, WCAG 2.1.1)");
+      el("pm-canvas").dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowRight", bubbles:true}));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_move_element"; }), "PM: an arrow key nudges the selected element (deck_move_element)");
+      // Resize: the selection box has drag handles; Alt+arrows resize by keyboard; a handle drag
+      // resizes by pointer. The stub shape is 600×160 ‰ — a grow must report a larger w/h.
+      ok(document.querySelectorAll('#pm-sel .pm-h').length === 8, "PM: the selection box has 8 resize handles");
+      ok(!!document.querySelector('#pm-sel .pm-h[data-h="se"]') && !!document.querySelector('#pm-sel .pm-h[data-h="w"]'), "PM: handles cover corners + edges (data-h)");
+      el("pm-canvas").dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowRight", altKey:true, bubbles:true}));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_move_element" && c.args.w > 600 && c.args.h === 160; }),
+         "PM: Alt+arrow RESIZES the element (width grows, height + origin unchanged — not a move)");
+      // Pointer resize: the canvas collapses to 0×0 in headless (no definite layout), so stub its
+      // getBoundingClientRect to a known 320×180 box → the SE-handle drag maps to a deterministic
+      // per-mille delta (grab 800,590 → move 920,710 ⇒ w 600→720, h 160→280). This exercises the
+      // REAL resize path (pointToPermille + the pointermove resize math), not the layout.
+      var seH = document.querySelector('#pm-sel .pm-h[data-h="se"]');
+      var cnv = el("pm-canvas");
+      var origGBCR = cnv.getBoundingClientRect.bind(cnv);
+      cnv.getBoundingClientRect = function(){ return {left:0, top:0, width:320, height:180, right:320, bottom:180, x:0, y:0}; };
+      var mvBefore = window.__calls.filter(function(c){ return c.cmd === "deck_move_element"; }).length;
+      seH.dispatchEvent(new PointerEvent("pointerdown", {clientX: 256, clientY: 106, pointerId: 7, bubbles: true}));
+      cnv.dispatchEvent(new PointerEvent("pointermove", {clientX: 294, clientY: 128, pointerId: 7, bubbles: true}));
+      cnv.dispatchEvent(new PointerEvent("pointerup", {clientX: 294, clientY: 128, pointerId: 7, bubbles: true}));
+      cnv.getBoundingClientRect = origGBCR;
+      ok(window.__calls.filter(function(c){ return c.cmd === "deck_move_element"; }).slice(mvBefore).some(function(c){ return c.args.w > 600 && c.args.h > 160; }),
+         "PM: dragging the SE handle resizes the element (deck_move_element grows both w and h)");
+      el("pm-canvas").dispatchEvent(new KeyboardEvent("keydown", {key:"h", bubbles:true}));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_toggle_element_visible"; }), "PM: 'H' toggles the selected element's visibility");
+      el("pm-canvas").dispatchEvent(new KeyboardEvent("keydown", {key:"]", bubbles:true}));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_set_element_z"; }), "PM: ']' raises the selected element's z-order");
+      el("pm-canvas").dispatchEvent(new KeyboardEvent("keydown", {key:"Delete", bubbles:true}));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_remove_element"; }), "PM: Delete removes the selected element");
+
+      // === Inline text editing (double-click) + Layers panel (replaces Arrange) ===
+      // A fresh slide with a single text element → deterministic canvas hit-test + layer list.
+      el("pm-add-slide").click();
+      await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_add_slide"; }); });
+      await sleep(20);
+      document.querySelector('#surface-presentation .pm-tool[data-add="text"]').click();
+      await waitFor(function(){ return /Text element/.test(el("pm-inspector-body").textContent); });
+      // -- Inline editor: double-click the (visible) text element on the canvas (stub the 0×0
+      //    headless canvas rect so the hit-test maps to the element). --
+      var cnv2 = el("pm-canvas");
+      var origG2 = cnv2.getBoundingClientRect.bind(cnv2);
+      cnv2.getBoundingClientRect = function(){ return {left:0, top:0, width:320, height:180, right:320, bottom:180, x:0, y:0}; };
+      cnv2.dispatchEvent(new MouseEvent("dblclick", {clientX:160, clientY:92, bubbles:true}));
+      ok(!!el("pm-text-edit") && el("pm-text-edit").tagName === "TEXTAREA", "PM: double-clicking a text element opens an inline textarea editor");
+      el("pm-text-edit").value = "Edited on canvas";
+      el("pm-text-edit").dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", metaKey:true, bubbles:true}));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_set_element_text" && c.args.text === "Edited on canvas"; }), "PM: Cmd+Enter commits the edit via deck_set_element_text");
+      ok(!el("pm-text-edit"), "PM: committing closes the inline editor");
+      await sleep(20);
+      cnv2.dispatchEvent(new MouseEvent("dblclick", {clientX:160, clientY:92, bubbles:true}));
+      var setN = window.__calls.filter(function(c){ return c.cmd === "deck_set_element_text"; }).length;
+      el("pm-text-edit").value = "discarded";
+      el("pm-text-edit").dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
+      ok(!el("pm-text-edit") && window.__calls.filter(function(c){ return c.cmd === "deck_set_element_text"; }).length === setN, "PM: Escape cancels the inline edit (editor closes, no commit)");
+      cnv2.getBoundingClientRect = origG2;
+      await sleep(20);
+      // -- Layers panel (mirrors the Theme Designer): lists elements, eye toggles, handle drag reorders. --
+      ok(!!el("pm-inspector-body").querySelector("#pm-layers"), "PM: the inspector has a LAYERS panel (replacing Arrange)");
+      ok(el("pm-inspector-body").querySelectorAll("#pm-layers .td-layer").length >= 1, "PM: the Layers panel lists the slide's elements front→back");
+      var lEye = el("pm-inspector-body").querySelector("#pm-layers .td-layer .td-layer-eye");
+      var visN = window.__calls.filter(function(c){ return c.cmd === "deck_toggle_element_visible"; }).length;
+      lEye.click();
+      ok(window.__calls.filter(function(c){ return c.cmd === "deck_toggle_element_visible"; }).length === visN + 1, "PM: a Layers-row eye toggles element visibility");
+      await sleep(20);
+      var lh = el("pm-inspector-body").querySelector("#pm-layers .td-layer .td-layer-handle");
+      lh.dispatchEvent(new PointerEvent("pointerdown", {clientX:5, clientY:5, button:0, pointerId:9, bubbles:true}));
+      window.dispatchEvent(new PointerEvent("pointerup", {clientX:5, clientY:40, pointerId:9, bubbles:true}));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_reorder_elements" && Array.isArray(c.args.order); }), "PM: dragging a layer handle reorders via deck_reorder_elements(order)");
+      // Command palette: Presentation actions are offered while the surface is active.
+      window.__cmdPalette.open();
+      await sleep(20);
+      document.getElementById("cmd-input").value = "Add slide";
+      document.getElementById("cmd-input").dispatchEvent(new Event("input"));
+      ok(Array.from(document.querySelectorAll("#cmd-list li")).some(function(li){ return /Add slide/.test(li.textContent); }), "PM: the command palette offers 'Add slide' while Presentation is active");
+      window.__cmdPalette.closeAll();
+      // ⌘⇧P jumps to the Presentation surface from elsewhere.
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"P", metaKey:true, shiftKey:true, bubbles:true}));
+      ok(el("surface-presentation").classList.contains("active"), "PM: ⌘⇧P jumps to the Presentation surface");
+      // The Present-ed slide shows a non-colour-only LIVE badge + names 'live' in its aria-label (review #4).
+      await waitFor(function(){ return !!document.querySelector("#pm-slide-list .pm-slide.live .pm-slide-live-badge"); });
+      var liveCard = document.querySelector("#pm-slide-list .pm-slide.live .pm-slide-card");
+      ok(!!document.querySelector("#pm-slide-list .pm-slide.live .pm-slide-live-badge"), "PM: the live slide shows a non-colour-only LIVE badge");
+      ok(liveCard && /live/i.test(liveCard.getAttribute("aria-label") || ""), "PM: the live slide names 'live' in its aria-label (not colour-only)");
+      // The active media filter reflects aria-pressed (a real toggle-button group, not a fake tablist).
+      ok(document.querySelector('#surface-presentation .pm-mtab[aria-pressed="true"]'), "PM: the media filter marks the active button with aria-pressed");
+
+      // === Remaining states: font picker · image Fit · destructive confirms · system states ===
+
+      // --- C-006 Font-family picker (Text inspector, from system_fonts) ---
+      document.querySelector('#surface-presentation .pm-tool[data-add="text"]').click();
+      await waitFor(function(){ return /Text element/.test(el("pm-inspector-body").textContent); });
+      await waitFor(function(){ var s = el("pm-inspector-body").querySelector('select[data-ik="font"]'); return s && s.options.length >= 4; });
+      var fontSel = el("pm-inspector-body").querySelector('select[data-ik="font"]');
+      ok(!!fontSel, "PM: the Text inspector has a Font-family picker (C-006)");
+      ok(Array.from(fontSel.options).some(function(o){ return o.value === ""; }) && Array.from(fontSel.options).some(function(o){ return o.value === "Georgia"; }),
+         "PM: the Font picker is populated from system_fonts (System default + families)");
+      fontSel.value = "Georgia"; fontSel.dispatchEvent(new Event("change"));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_update_element" && c.args.patch && c.args.patch.font === "Georgia"; }),
+         "PM: choosing a font patches deck_update_element {font}");
+      await sleep(20);
+      fontSel = el("pm-inspector-body").querySelector('select[data-ik="font"]'); // re-query after the re-render
+      fontSel.value = ""; fontSel.dispatchEvent(new Event("change"));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_update_element" && c.args.patch && c.args.patch.font === null; }),
+         "PM: 'System default' clears the font to null (bundled default)");
+
+      // --- C-008 Image Fit control (Stretch / Fit / Fill) ---
+      document.querySelector('#surface-presentation .pm-tool[data-add="image"]').click();
+      await waitFor(function(){ return /Image element/.test(el("pm-inspector-body").textContent); });
+      var fitSel = el("pm-inspector-body").querySelector('select[data-ik="imgfit"]');
+      ok(!!fitSel && fitSel.options.length === 3, "PM: the Image inspector Fit control offers Stretch/Fit/Fill (C-008, not a disabled placeholder)");
+      ok(fitSel && !fitSel.disabled, "PM: the Fit control is live (wired to the render), not a later-seam stub");
+      fitSel.value = "fit"; fitSel.dispatchEvent(new Event("change"));
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_update_element" && c.args.patch && c.args.patch.fit === "fit"; }),
+         "PM: the Fit control patches deck_update_element {fit} (letterbox)");
+
+      // --- C-003 Delete-element Undo toast (role=status) ---
+      await sleep(20);
+      el("pm-inspector-body").querySelector('button[data-ik="del"]').click();
+      await waitFor(function(){ return !el("pm-toast").hidden; });
+      ok(!el("pm-toast").hidden && el("pm-toast").getAttribute("role") === "status", "PM: deleting an element shows a role=status toast (C-003)");
+      ok(/deleted/i.test(el("pm-toast").textContent), "PM: the toast reads 'Element deleted'");
+      var undoBtn = el("pm-toast").querySelector(".pm-toast-action");
+      ok(!!undoBtn && /Undo/.test(undoBtn.textContent), "PM: the toast offers an Undo action");
+      // Before/after delta (deck_undo was already fired earlier by the Undo button, so a bare
+      // `.some()` would be tautological — assert the toast Undo STRICTLY increases the count).
+      var undoN = window.__calls.filter(function(c){ return c.cmd === "deck_undo"; }).length;
+      undoBtn.click();
+      ok(window.__calls.filter(function(c){ return c.cmd === "deck_undo"; }).length === undoN + 1, "PM: the toast Undo drives a fresh deck_undo (⌘Z-backed)");
+
+      // --- C-001 Delete-slide confirm (role=alertdialog, Cancel-focused, Esc cancels) ---
+      await waitFor(function(){ return document.querySelectorAll("#pm-slide-list .pm-slide").length >= 2; });
+      var slideDel = document.querySelector("#pm-slide-list .pm-slide .pm-slide-del:not([disabled])");
+      ok(!!slideDel, "PM: each slide has a delete affordance, enabled while >1 slide (C-001)");
+      slideDel.click();
+      await waitFor(function(){ return !!document.querySelector('.pm-confirm[role="alertdialog"]'); });
+      var dlg = document.querySelector('.pm-confirm[role="alertdialog"]');
+      ok(!!dlg, "PM: delete-slide opens a role=alertdialog confirm");
+      ok(dlg.getAttribute("aria-modal") === "true" && dlg.hasAttribute("aria-labelledby"), "PM: the confirm is aria-modal + labelled (C-009)");
+      ok(document.activeElement && document.activeElement.textContent === "Cancel", "PM: the confirm focuses Cancel (safe default for a destructive action)");
+      var rmSlideBefore = window.__calls.filter(function(c){ return c.cmd === "deck_remove_slide"; }).length;
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
+      ok(!document.querySelector('.pm-confirm[role="alertdialog"]'), "PM: Esc cancels the confirm (C-009 modal semantics)");
+      ok(window.__calls.filter(function(c){ return c.cmd === "deck_remove_slide"; }).length === rmSlideBefore, "PM: cancelling does not remove the slide");
+      document.querySelector("#pm-slide-list .pm-slide .pm-slide-del:not([disabled])").click();
+      await waitFor(function(){ return !!document.querySelector('.pm-confirm[role="alertdialog"]'); });
+      Array.from(document.querySelectorAll('.pm-confirm .pm-btn-danger')).filter(function(b){ return /Delete slide/.test(b.textContent); })[0].click();
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_remove_slide"; }), "PM: confirming delete-slide drives deck_remove_slide");
+
+      // --- C-002 Remove-media confirm with the in-use warning ---
+      el("pm-tab-media").click();
+      await waitFor(function(){ return !el("pm-media-body").hidden; });
+      var inUseCell = Array.from(document.querySelectorAll("#pm-media-grid .pm-asset")).filter(function(cell){
+        var d = cell.querySelector(".pm-asset-del"); return d && /used on 2/i.test(d.getAttribute("aria-label") || ""); })[0];
+      ok(!!inUseCell, "PM: an in-use asset cell has a remove affordance labelling its usage (C-002)");
+      inUseCell.querySelector(".pm-asset-del").click();
+      await waitFor(function(){ return !!document.querySelector('.pm-confirm[role="alertdialog"]'); });
+      ok(!!document.querySelector(".pm-confirm-warn") && /2 slide/i.test(document.querySelector(".pm-confirm-warn").textContent),
+         "PM: removing an in-use asset warns 'Used on 2 slides'");
+      document.querySelector('.pm-confirm .pm-btn-danger').click();
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_remove_media" && c.args.id === 1; }), "PM: confirming remove-media drives deck_remove_media(id)");
+
+      // --- C-004 System states: loading (aria-busy) + error banner (role=alert) + Retry ---
+      // The busy state must actually ENGAGE while a command is in flight, then clear — not merely
+      // exist as an attribute. Defer the next deck command, assert aria-busy="true" + the .busy
+      // shimmer during it, resolve, assert it clears to "false".
+      await waitFor(function(){ return el("pm-canvas-box").getAttribute("aria-busy") === "false"; }); // let prior commands settle
+      ok(el("pm-canvas-box").getAttribute("aria-busy") === "false", "PM: the canvas is not busy at rest");
+      window.__pmDeferOnce = true;
+      document.querySelector('#surface-presentation .pm-tool[data-add="text"]').click();
+      await waitFor(function(){ return el("pm-canvas-box").getAttribute("aria-busy") === "true"; });
+      ok(el("pm-canvas-box").getAttribute("aria-busy") === "true" && el("pm-canvas-box").classList.contains("busy"),
+         "PM: a command in flight sets aria-busy=true + the .busy shimmer (C-004 loading)");
+      if (window.__pmDeferred) window.__pmDeferred();
+      await waitFor(function(){ return el("pm-canvas-box").getAttribute("aria-busy") === "false"; });
+      ok(el("pm-canvas-box").getAttribute("aria-busy") === "false" && !el("pm-canvas-box").classList.contains("busy"),
+         "PM: the busy state clears when the command resolves");
+      window.__pmRejectOnce = true;
+      document.querySelector('#surface-presentation .pm-tool[data-add="text"]').click();
+      await waitFor(function(){ return !el("pm-error").hidden; });
+      ok(!el("pm-error").hidden && el("pm-error").getAttribute("role") === "alert", "PM: a rejected deck command shows a role=alert error banner");
+      ok(/couldn't/i.test(el("pm-error-msg").textContent), "PM: the banner explains what failed (not colour-only)");
+      el("pm-error-retry").click(); // the one-shot reject flag is cleared → the retry succeeds
+      await waitFor(function(){ return el("pm-error").hidden; });
+      ok(el("pm-error").hidden, "PM: Retry re-runs the action and clears the banner on success");
+
+      // === Presentations Library (deck_list / new / open / rename / duplicate / delete) ===
+      ok(!!el("pm-deckswitch"), "PM/Lib: the topbar has a deck-switcher breadcrumb");
+      el("pm-deckswitch").click();
+      await waitFor(function(){ return !el("pm-library").hidden; });
+      ok(!el("pm-library").hidden, "PM/Lib: the deck-switcher opens the Presentations Library");
+      ok(getComputedStyle(document.querySelector("#surface-presentation .pm-body")).display === "none",
+         "PM/Lib: the editor is hidden while the Library is open");
+      await waitFor(function(){ return el("pm-lib-grid").querySelectorAll(".pm-lib-card").length >= 3; });
+      ok(el("pm-lib-grid").querySelectorAll(".pm-lib-card").length === 3, "PM/Lib: deck_list renders one card per presentation");
+      ok(!!el("pm-lib-grid").querySelector(".pm-lib-new-tile"), "PM/Lib: a '＋ New presentation' tile leads the grid");
+      ok(/3 presentations/.test(el("pm-lib-count").textContent), "PM/Lib: the count reflects the library");
+      ok(!!el("pm-lib-grid").querySelector(".pm-lib-card.open .pm-lib-openflag"), "PM/Lib: the open deck's card carries a non-colour-only OPEN flag");
+      // search filters the grid.
+      el("pm-lib-q").value = "youth"; el("pm-lib-q").dispatchEvent(new Event("input"));
+      ok(el("pm-lib-grid").querySelectorAll(".pm-lib-card").length === 1, "PM/Lib: search filters the grid");
+      // a query with no matches shows a 'no results' message (no cards, no New tile).
+      el("pm-lib-q").value = "zzznotacard"; el("pm-lib-q").dispatchEvent(new Event("input"));
+      ok(el("pm-lib-grid").querySelectorAll(".pm-lib-card").length === 0 && /No presentations match/.test(el("pm-lib-grid").textContent), "PM/Lib: a no-match search shows a no-results message");
+      el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input"));
+      // ⋯ menu → Duplicate.
+      el("pm-lib-grid").querySelector(".pm-lib-card .pm-lib-dots").click();
+      await waitFor(function(){ return !!el("pm-lib-menu"); });
+      ok(!!el("pm-lib-menu") && el("pm-lib-menu").getAttribute("role") === "menu", "PM/Lib: the ⋯ menu opens (role=menu, keyboard-navigable)");
+      var dupN = window.__calls.filter(function(c){ return c.cmd === "deck_duplicate"; }).length;
+      Array.from(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /Duplicate/.test(b.textContent); })[0].click();
+      ok(window.__calls.filter(function(c){ return c.cmd === "deck_duplicate"; }).length === dupN + 1, "PM/Lib: ⋯ Duplicate drives deck_duplicate");
+      await waitFor(function(){ return el("pm-lib-grid").querySelectorAll(".pm-lib-card").length === 4; });
+      ok(el("pm-lib-grid").querySelectorAll(".pm-lib-card").length === 4, "PM/Lib: the duplicate appears in the library");
+      // ⋯ Rename → name dialog → deck_rename.
+      el("pm-lib-grid").querySelector(".pm-lib-card .pm-lib-dots").click();
+      await waitFor(function(){ return !!el("pm-lib-menu"); });
+      Array.from(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /Rename/.test(b.textContent); })[0].click();
+      await waitFor(function(){ return !!el("pm-prompt-input"); });
+      ok(!!el("pm-prompt-input") && document.querySelector('.pm-confirm[role="dialog"]'), "PM/Lib: Rename opens a role=dialog name prompt");
+      el("pm-prompt-input").value = "Renamed Deck";
+      Array.from(document.querySelectorAll(".pm-confirm .pm-btn-primary")).slice(-1)[0].click();
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_rename" && c.args.name === "Renamed Deck"; }), "PM/Lib: the Rename dialog drives deck_rename(name)");
+      // ⋯ Delete the OPEN deck → alertdialog confirm → deck_delete(that id) → editor switches.
+      var delCard = el("pm-lib-grid").querySelector(".pm-lib-card.open") || el("pm-lib-grid").querySelector(".pm-lib-card");
+      var wantDelId = Number(delCard.dataset.id);
+      var nameBeforeDelete = el("pm-plan-name").textContent;
+      delCard.querySelector(".pm-lib-dots").click();
+      await waitFor(function(){ return !!el("pm-lib-menu"); });
+      Array.from(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /Delete/.test(b.textContent); })[0].click();
+      await waitFor(function(){ return !!document.querySelector('.pm-confirm[role="alertdialog"]'); });
+      ok(!!document.querySelector('.pm-confirm[role="alertdialog"]'), "PM/Lib: Delete opens a role=alertdialog confirm");
+      document.querySelector(".pm-confirm .pm-btn-danger").click();
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_delete" && c.args.id === wantDelId; }), "PM/Lib: confirming delete drives deck_delete(that card's id)");
+      await waitFor(function(){ return el("pm-plan-name").textContent !== nameBeforeDelete; });
+      ok(el("pm-plan-name").textContent !== nameBeforeDelete, "PM/Lib: deleting the OPEN deck switches the editor to a surviving deck");
+      // ＋ New Presentation → dialog → deck_new → opens the editor.
+      el("pm-lib-new").click();
+      await waitFor(function(){ return !!el("pm-prompt-input"); });
+      el("pm-prompt-input").value = "Fresh Deck";
+      Array.from(document.querySelectorAll(".pm-confirm .pm-btn-primary")).slice(-1)[0].click();
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_new" && c.args.name === "Fresh Deck"; }), "PM/Lib: New Presentation drives deck_new(name)");
+      await waitFor(function(){ return el("pm-library").hidden; });
+      ok(el("pm-library").hidden && getComputedStyle(document.querySelector("#surface-presentation .pm-body")).display !== "none", "PM/Lib: creating a deck returns to the editor");
+      ok(/Fresh Deck/.test(el("pm-plan-name").textContent), "PM/Lib: the deck-switcher shows the new deck's name");
+      // Open a deck from the Library → editor (the CARD'S id crosses + the editor opens on it).
+      el("pm-deckswitch").click();
+      await waitFor(function(){ return !el("pm-library").hidden; });
+      var openCard = el("pm-lib-grid").querySelector(".pm-lib-card");
+      var wantOpenId = Number(openCard.dataset.id);
+      var wantOpenName = openCard.querySelector(".pm-lib-name").textContent;
+      openCard.querySelector(".pm-lib-open").click();
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_open" && c.args.id === wantOpenId; }), "PM/Lib: clicking a card drives deck_open(that card's id)");
+      await waitFor(function(){ return el("pm-library").hidden; });
+      ok(el("pm-library").hidden, "PM/Lib: opening a deck returns to the editor");
+      ok(el("pm-plan-name").textContent === wantOpenName, "PM/Lib: the editor opens on the chosen deck (name matches)");
+      // Not-persistent banner.
+      el("pm-deckswitch").click();
+      await waitFor(function(){ return !el("pm-library").hidden; });
+      window.__LIB.persistent = false;
+      el("pm-lib-retry").click();
+      await waitFor(function(){ return !el("pm-lib-nopersist").hidden; });
+      ok(!el("pm-lib-nopersist").hidden, "PM/Lib: a non-persistent library shows the 'not saved' banner");
+      window.__LIB.persistent = true; el("pm-lib-retry").click();
+      // Error state: a rejected deck_list shows an error + Retry recovers.
+      await waitFor(function(){ return el("pm-lib-nopersist").hidden; });
+      window.__pmRejectOnce = true;
+      el("pm-lib-retry").click();
+      await waitFor(function(){ return !el("pm-lib-error").hidden; });
+      ok(!el("pm-lib-error").hidden && el("pm-lib-error").getAttribute("role") === "alert", "PM/Lib: a failed deck_list shows a role=alert error state");
+      el("pm-lib-retry").click();
+      await waitFor(function(){ return el("pm-lib-error").hidden; });
+      ok(el("pm-lib-error").hidden, "PM/Lib: Retry recovers the library");
+      // Empty state: an empty library shows 'No presentations yet' with a CTA that opens New.
+      window.__LIB.decks = []; window.__LIB.open = 0;
+      el("pm-lib-retry").click();
+      await waitFor(function(){ return !el("pm-lib-empty").hidden; });
+      ok(!el("pm-lib-empty").hidden && el("pm-lib-grid").querySelectorAll(".pm-lib-card").length === 0, "PM/Lib: an empty library shows the 'No presentations yet' state");
+      el("pm-lib-empty-new").click();
+      await waitFor(function(){ return !!el("pm-prompt-input"); });
+      ok(!!el("pm-prompt-input"), "PM/Lib: the empty-state CTA opens the New dialog");
+      el("pm-prompt-input").dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
+      await waitFor(function(){ return !el("pm-prompt-input"); });
+      // ⌘N opens the New presentation dialog (a shipped shortcut the ⋯ menu advertises).
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"n", metaKey:true, bubbles:true}));
+      await waitFor(function(){ return !!el("pm-prompt-input"); });
+      ok(!!el("pm-prompt-input"), "PM/Lib: ⌘N opens the New presentation dialog");
+      el("pm-prompt-input").dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
+      await waitFor(function(){ return !el("pm-prompt-input"); });
+      // ‹ Back to editor.
+      el("pm-lib-back").click();
+      ok(el("pm-library").hidden && getComputedStyle(document.querySelector("#surface-presentation .pm-body")).display !== "none",
+         "PM/Lib: '‹ Back to editor' returns to the editor");
+
+      // The ⌘1-6 surface map is UNCHANGED by activating Presentation: ⌘2 still → Theme Designer.
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"2", metaKey:true, bubbles:true}));
+      ok(el("surface-theme-designer").classList.contains("active") && !el("surface-presentation").classList.contains("active"),
+         "PM: ⌘2 still routes to Theme Designer (data-nodigit keeps the ⌘1–6 map intact)");
+
+      // === Remote Control surface (Design 2.0, Figma 359:124): pair/approve/role/revoke ===
+      document.querySelector('.nav-item[data-surface="remote"]').click();
+      ok(el("surface-remote").classList.contains("active"), "Remote: nav opens the Remote Control surface");
+      var rcN0 = +el("rc-count-n").textContent;
+      ok(document.querySelectorAll("#rc-rows .rc-row").length === rcN0 && rcN0 >= 1,
+         "Remote: the paired-devices table renders and the count chip matches");
+      var rcPend = document.querySelector("#rc-pending .rc-pending-card");
+      ok(!!rcPend, "Remote: a pending pair request is shown with a role picker");
+      rcPend.querySelector(".rc-approve").click();
+      ok(document.querySelectorAll("#rc-pending .rc-pending-card").length === 0 &&
+         +el("rc-count-n").textContent === rcN0 + 1,
+         "Remote: Approve moves the request into paired devices (" + rcN0 + "→" + el("rc-count-n").textContent + ")");
+      var rcRevs = document.querySelectorAll("#rc-rows .rc-revoke");
+      var rcRb = rcRevs[rcRevs.length - 1];
+      var rcRows0 = document.querySelectorAll("#rc-rows .rc-row").length;
+      rcRb.click();
+      ok(rcRb.classList.contains("armed"), "Remote: first Revoke click arms a two-step confirm (destructive)");
+      rcRb.click();
+      ok(document.querySelectorAll("#rc-rows .rc-row").length === rcRows0 - 1,
+         "Remote: second Revoke click removes the device");
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"R", metaKey:true, shiftKey:true, bubbles:true}));
+      ok(el("surface-remote").classList.contains("active"),
+         "Remote: ⌘⇧R jumps to Remote Control (data-nodigit keeps the ⌘1–6 map intact)");
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
     el("__r").textContent = "RESULTS\n"+R.join("\n")+"\nDONE("+R.length+")";
   }

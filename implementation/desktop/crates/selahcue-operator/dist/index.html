@@ -30,10 +30,10 @@
           aria-current="page"><span class="nav-ico" aria-hidden="true">▲</span><span class="nav-txt"><span
               class="nav-t">Live Console</span><span class="nav-d">Operate the service live</span></span><span
             class="nav-key">⌘1</span></button>
-        <button class="nav-item nav-later" role="menuitem" tabindex="-1" aria-disabled="true"
-          data-later="presentation"><span class="nav-ico" aria-hidden="true">▦</span><span class="nav-txt"><span
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="presentation" data-nodigit="1"><span
+            class="nav-ico" aria-hidden="true">▦</span><span class="nav-txt"><span
               class="nav-t">Presentation</span><span class="nav-d">Slides &amp; media</span></span><span
-            class="nav-key nav-key-later">Later</span></button>
+            class="nav-key">⌘⇧P</span></button>
         <button class="nav-item" role="menuitem" tabindex="-1" data-surface="theme-designer" accesskey="2"><span
             class="nav-ico" aria-hidden="true">◈</span><span class="nav-txt"><span class="nav-t">Theme
               Designer</span><span class="nav-d">Output templates</span></span><span class="nav-key">⌘2</span></button>
@@ -41,6 +41,10 @@
             class="nav-ico" aria-hidden="true">▤</span><span class="nav-txt"><span class="nav-t">Screens &amp;
               Outputs</span><span class="nav-d">Displays &amp; health</span></span><span
             class="nav-key">⌘3</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="remote" data-nodigit="1"><span
+            class="nav-ico" aria-hidden="true">⇄</span><span class="nav-txt"><span class="nav-t">Remote
+              Control</span><span class="nav-d">Paired devices &amp; roles</span></span><span
+            class="nav-key">⌘⇧R</span></button>
         <button class="nav-item" role="menuitem" tabindex="-1" data-surface="plan" accesskey="4"><span class="nav-ico"
             aria-hidden="true">☰</span><span class="nav-txt"><span class="nav-t">Service Plan</span><span
               class="nav-d">Order of service</span></span><span class="nav-key">⌘4</span></button>
@@ -139,6 +143,16 @@
               <span class="listen-ico" aria-hidden="true">▶</span>
               <span id="transcript-listen-label">Start listening</span>
             </button>
+          </div>
+          <!-- Live microphone input meter — shown ONLY while listening so the operator can SEE
+               audio reaching the mic (a bar stuck at 0 while speaking ⇒ mic/permission, not the
+               UI). Driven by the host's stt://level event. role=meter with a numeric % readout so
+               it is never colour-only; its value is NOT an aria-live region (no announcement spam). -->
+          <div id="transcript-meter" class="mic-meter" role="meter" aria-label="Microphone input level"
+               aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
+            <span class="mic-meter-ico" aria-hidden="true">🎙</span>
+            <span class="mic-meter-track"><span id="transcript-meter-fill" class="mic-meter-fill"></span></span>
+            <span id="transcript-meter-val" class="mic-meter-val">0%</span>
           </div>
           <p id="transcript-status" class="stream-note" role="status" aria-live="polite"></p>
         </section>
@@ -656,6 +670,155 @@
         </aside>
       </div>
     </section>
+    <!-- Presentation & Media (Design 2.0, Figma node 329:124) — the authored slide editor + media
+         library. Drives the deck/media engine via the deck_* Tauri commands; the slide canvas shows
+         a NATIVE-composited preview (render_deck_slide → base64 → blitFrame), never an HTML render. -->
+    <section id="surface-presentation" class="surface-page" aria-label="Presentation and media">
+      <div class="pm-topbar">
+        <!-- Deck-switcher breadcrumb: names the open deck; opens the Presentations Library. -->
+        <button id="pm-deckswitch" class="pm-deckswitch" type="button" aria-haspopup="true"
+          title="Switch or manage presentations"><span class="pm-plan-ico" aria-hidden="true">▦</span><span
+            id="pm-plan-name">Presentation</span><span id="pm-plan-count" class="pm-plan-count">· — slides</span><span
+            class="pm-deckswitch-caret" aria-hidden="true">▾</span></button>
+        <div class="pm-top-actions">
+          <button id="pm-newpres" class="pm-btn-ghost" type="button" title="New presentation (⌘N)">＋ New</button>
+          <button id="pm-present" class="pm-btn-primary" type="button">▶ Present</button>
+        </div>
+      </div>
+      <!-- Error banner: shown (role=alert) when a deck command is rejected; Retry re-runs it. -->
+      <div id="pm-error" class="pm-error" role="alert" hidden>
+        <span class="pm-error-ico" aria-hidden="true">⚠</span>
+        <span id="pm-error-msg" class="pm-error-msg"></span>
+        <button id="pm-error-retry" class="pm-error-retry" type="button">Retry</button>
+        <button id="pm-error-dismiss" class="pm-error-x" type="button" aria-label="Dismiss">✕</button>
+      </div>
+      <!-- Transient action toast (role=status), e.g. "Element deleted — Undo". -->
+      <div id="pm-toast" class="pm-toast" role="status" aria-live="polite" hidden></div>
+      <!-- Presentations Library (view mode of this surface; hidden while editing). -->
+      <div id="pm-library" class="pm-library" hidden aria-label="Presentations library">
+        <div class="pm-lib-head">
+          <button id="pm-lib-back" class="pm-lib-back" type="button">‹ Back to editor</button>
+          <span class="pm-lib-title"><span class="pm-plan-ico" aria-hidden="true">▦</span> Presentations</span>
+          <span class="pm-lib-spacer"></span>
+          <span class="pm-lib-search"><span class="pm-lib-search-ico" aria-hidden="true">⌕</span><input
+              id="pm-lib-q" class="pm-lib-q" type="search" placeholder="Search presentations"
+              aria-label="Search presentations" /></span>
+          <label class="pm-lib-sort">Sort <select id="pm-lib-sort" class="pm-select">
+              <option value="name">Name</option>
+              <option value="slides">Slides</option>
+            </select></label>
+          <button id="pm-lib-new" class="pm-btn-primary" type="button">＋ New Presentation</button>
+        </div>
+        <div id="pm-lib-nopersist" class="pm-lib-banner" role="status" hidden><span aria-hidden="true">⚠</span>
+          Changes aren't being saved on this machine — the presentation store couldn't open.</div>
+        <div class="pm-lib-body">
+          <div id="pm-lib-count" class="pm-lib-count" aria-live="polite">— presentations</div>
+          <div id="pm-lib-grid" class="pm-lib-grid" role="list" aria-label="Presentations" aria-busy="false"></div>
+          <div id="pm-lib-empty" class="pm-lib-empty" hidden>
+            <div class="pm-lib-empty-ico" aria-hidden="true">▦</div>
+            <div class="pm-lib-empty-title">No presentations yet</div>
+            <p class="pm-lib-empty-sub">Create your first slide deck — a sermon, a song set, or announcements.</p>
+            <button id="pm-lib-empty-new" class="pm-btn-primary" type="button">＋ New Presentation</button>
+          </div>
+          <div id="pm-lib-error" class="pm-lib-error" role="alert" hidden><span>Couldn't load your
+              presentations.</span> <button id="pm-lib-retry" class="pm-error-retry" type="button">Retry</button>
+          </div>
+        </div>
+      </div>
+      <div class="pm-body">
+        <!-- SLIDES rail -->
+        <aside class="pm-slides" aria-label="Slides">
+          <div class="pm-rail-head">SLIDES</div>
+          <ol id="pm-slide-list" class="pm-slide-list" role="list" aria-label="Slide list"></ol>
+          <button id="pm-add-slide" class="pm-add-slide" type="button">+ Add slide</button>
+        </aside>
+        <!-- Slide canvas + editor -->
+        <main class="pm-canvas-zone" aria-label="Slide canvas">
+          <div class="pm-toolbar" role="toolbar" aria-label="Add content and history">
+            <button class="pm-tool" data-add="text" type="button"><span aria-hidden="true">T</span> Text</button>
+            <button class="pm-tool" data-add="shape" type="button"><span aria-hidden="true">▢</span> Shape</button>
+            <button class="pm-tool" data-add="image" type="button"><span aria-hidden="true">🖼</span> Image</button>
+            <button class="pm-tool pm-later" data-later="video" type="button" aria-disabled="true"
+              title="On-slide video is a later increment (ADR-0020)"><span aria-hidden="true">▶</span> Video</button>
+            <button class="pm-tool" data-add="background" type="button"><span aria-hidden="true">🎨</span>
+              Background</button>
+            <span class="pm-tool-div" aria-hidden="true"></span>
+            <button id="pm-undo" class="pm-hist" type="button" aria-label="Undo" title="Undo (⌘Z)"
+              aria-keyshortcuts="Meta+Z Control+Z"><span aria-hidden="true">↶</span></button>
+            <button id="pm-redo" class="pm-hist" type="button" aria-label="Redo" title="Redo (⌘⇧Z)"
+              aria-keyshortcuts="Meta+Shift+Z Control+Shift+Z"><span aria-hidden="true">↷</span></button>
+            <span id="pm-slide-pos" class="pm-slide-pos" aria-live="polite">Slide — / — · 1920×1080</span>
+          </div>
+          <p id="pm-canvas-hint" class="pm-canvas-hint">Click to select · double-click text to edit · drag to
+            move, drag the handles to resize · arrows move, <kbd>Alt</kbd>+arrows resize · <kbd>Tab</kbd>
+            cycles · <kbd>[</kbd>/<kbd>]</kbd> z-order · <kbd>H</kbd> hide · <kbd>Delete</kbd> remove</p>
+          <div id="pm-canvas-box" class="pm-canvas-box">
+            <canvas id="pm-canvas" class="pm-canvas" width="16" height="9"
+              aria-label="Slide preview — editable canvas" aria-describedby="pm-canvas-hint"></canvas>
+            <div id="pm-overlay" class="pm-overlay" aria-hidden="true">
+              <button id="pm-sel" class="pm-sel" type="button" hidden aria-hidden="true" tabindex="-1"><span
+                  class="pm-h" data-h="nw"></span><span class="pm-h" data-h="n"></span><span class="pm-h"
+                  data-h="ne"></span><span class="pm-h" data-h="e"></span><span class="pm-h"
+                  data-h="se"></span><span class="pm-h" data-h="s"></span><span class="pm-h"
+                  data-h="sw"></span><span class="pm-h" data-h="w"></span></button>
+            </div>
+          </div>
+          <div id="pm-live-region" class="sr-only" aria-live="polite"></div>
+          <div class="pm-bottombar">
+            <label class="pm-notes-wrap"><span class="pm-notes-ico" aria-hidden="true">📝</span><span
+                class="sr-only">Speaker notes</span><input id="pm-notes" class="pm-notes" type="text"
+                placeholder="Speaker notes — shown on the stage monitor, never the audience" /></label>
+            <label class="pm-field">Transition <select id="pm-transition" class="pm-select">
+                <option value="cut">Cut</option>
+                <option value="fade">Fade</option>
+              </select></label>
+            <label class="pm-field">Auto-advance <select id="pm-autoadv" class="pm-select">
+                <option value="0">Off</option>
+                <option value="3">3s</option>
+                <option value="5">5s</option>
+                <option value="8">8s</option>
+                <option value="15">15s</option>
+                <option value="30">30s</option>
+              </select></label>
+          </div>
+        </main>
+        <!-- Right panel — contextual: Media Library (default) ⟷ per-element Inspector (on select).
+             Design 509:124 / PRESENTATION-MEDIA-STATES-spec §2. -->
+        <aside class="pm-right" aria-label="Media and inspector">
+          <div class="pm-right-tabs" role="tablist" aria-label="Right panel">
+            <button id="pm-tab-media" class="pm-rtab" role="tab" aria-selected="true" aria-controls="pm-panel"
+              type="button">Media</button>
+            <button id="pm-tab-inspector" class="pm-rtab" role="tab" aria-selected="false" tabindex="-1"
+              aria-controls="pm-panel" aria-disabled="true" type="button">Inspector</button>
+          </div>
+          <div id="pm-panel" class="pm-panel" role="tabpanel" aria-labelledby="pm-tab-media">
+            <!-- Media Library (default mode) -->
+            <div id="pm-media-body" class="pm-media-body">
+              <div class="pm-media-head"><span class="pm-rail-head">MEDIA LIBRARY</span><button id="pm-import"
+                  class="pm-import" type="button">+ Import</button></div>
+              <div class="pm-media-tabs" role="group" aria-label="Filter media by type">
+                <button class="pm-mtab" type="button" data-filter="all" aria-pressed="true">All</button>
+                <button class="pm-mtab" type="button" data-filter="image" aria-pressed="false">Images</button>
+                <button class="pm-mtab" type="button" data-filter="video" aria-pressed="false">Video</button>
+                <button class="pm-mtab" type="button" data-filter="audio" aria-pressed="false">Audio</button>
+              </div>
+              <div id="pm-replace-hint" class="pm-replace-hint" hidden>Pick an image to replace the selected
+                element · <button id="pm-replace-cancel" class="pm-linkbtn" type="button">Cancel</button></div>
+              <div class="pm-media-search"><span aria-hidden="true">⌕</span><label class="sr-only"
+                  for="pm-media-q">Search media</label><input id="pm-media-q" class="pm-media-q" type="search"
+                  placeholder="Search media…" /></div>
+              <div id="pm-media-grid" class="pm-media-grid" role="list" aria-label="Media assets"></div>
+              <div id="pm-media-audio-h" class="pm-media-sect">AUDIO</div>
+              <div id="pm-media-audio" class="pm-media-audio" role="list" aria-label="Audio tracks"></div>
+              <div class="pm-media-foot"><span id="pm-media-total">— of media</span><span id="pm-media-stats"
+                  class="pm-media-stats"></span></div>
+            </div>
+            <!-- Per-element Inspector (bound to the selected element) -->
+            <div id="pm-inspector-body" class="pm-inspector-body" hidden></div>
+          </div>
+        </aside>
+      </div>
+    </section>
     <section id="surface-plan" class="surface-page surface-pad" aria-label="Plan and Library">
       <h1>Plan / Library</h1>
       <p class="coming-soon">A dedicated plan + song/scripture library surface arrives later. Edit the plan inline on
@@ -664,6 +827,81 @@
     <section id="surface-settings" class="surface-page surface-pad" aria-label="Settings">
       <h1>Settings</h1>
       <p class="coming-soon">Application settings arrive later.</p>
+    </section>
+
+    <!-- REMOTE CONTROL surface (Design 2.0, Figma 359:124): pair phones/tablets as controllers,
+         approve a pending pair request with a role, and manage paired devices (role · last seen ·
+         status · revoke). Populated + wired by remote.js. Device data uses a local model with a
+         sample fallback (same pattern as Screens) until the host output window exposes a
+         pairing/session API to the operator — see the handoff. -->
+    <section id="surface-remote" class="surface-page surface-pad" aria-label="Remote Control">
+      <div class="rc-headrow">
+        <div class="rc-lead">
+          <span class="rc-lead-t">Remote Control</span>
+          <span class="rc-lead-d">Pair phones &amp; tablets as controllers over your local network and manage their access.</span>
+        </div>
+        <span class="rc-count" id="rc-count">
+          <span class="rc-count-dot" aria-hidden="true"></span>
+          <span><span id="rc-count-n">0</span> devices paired</span>
+        </span>
+      </div>
+
+      <div class="rc-cols">
+        <!-- LEFT — Pair a device -->
+        <aside class="rc-pair" aria-label="Pair a device">
+          <div class="rc-pair-head">
+            <h2 class="rc-pair-title">Pair a device</h2>
+            <p class="rc-pair-hint">Open the SelahCue app on a phone or tablet and scan this code.</p>
+          </div>
+          <div class="rc-qr-frame">
+            <canvas class="rc-qr" id="rc-qr" width="192" height="192" role="img"
+              aria-label="Single-use pairing QR code"></canvas>
+          </div>
+          <div class="rc-fp-group">
+            <div class="rc-fp-row">
+              <span class="rc-fp-label">Fingerprint</span>
+              <span class="rc-fp" id="rc-fp">— · — · — · —</span>
+            </div>
+            <div class="rc-expiry" id="rc-expiry">
+              <span aria-hidden="true">⏱</span>
+              <span id="rc-expiry-txt">Single-use · expires in 0:00</span>
+            </div>
+          </div>
+          <button type="button" class="rc-newcode" id="rc-newcode">
+            <span aria-hidden="true">↻</span>&nbsp; New code
+          </button>
+          <p class="rc-note rc-note-ok">
+            <span aria-hidden="true">🔒</span>
+            <span>TLS 1.3 · QR-pinned host fingerprint · pairing keys never leave this machine.</span>
+          </p>
+        </aside>
+
+        <!-- RIGHT — pending request + paired devices -->
+        <div class="rc-manage">
+          <h2 class="rc-section-label">Pending request</h2>
+          <div id="rc-pending" class="rc-pending"></div>
+
+          <h2 class="rc-section-label">Paired devices</h2>
+          <div class="rc-table" role="table" aria-label="Paired devices">
+            <div class="rc-thead" role="row">
+              <span class="rc-th rc-c-device" role="columnheader">Device</span>
+              <span class="rc-th rc-c-role" role="columnheader">Role</span>
+              <span class="rc-th rc-c-seen" role="columnheader">Last seen</span>
+              <span class="rc-th rc-c-status" role="columnheader">Status</span>
+              <span class="rc-th rc-c-act" role="columnheader"><span class="sr-only">Actions</span></span>
+            </div>
+            <div id="rc-rows" class="rc-tbody"></div>
+          </div>
+
+          <p class="rc-note">
+            <span aria-hidden="true">🔒</span>
+            <span>Roles are enforced server-side on this desktop (deny-by-default). Changing a role or
+              revoking a device takes effect on that device immediately. Every live command is logged in
+              the audit trail.</span>
+          </p>
+        </div>
+      </div>
+      <span id="rc-live" class="sr-only" aria-live="polite"></span>
     </section>
   </main>
   <footer id="emergency" role="toolbar" aria-label="Emergency controls">
@@ -735,6 +973,7 @@
     </div>
   </div>
   <script src="app.js" defer></script>
+  <script src="remote.js" defer></script>
 </body>
 
 </html>
