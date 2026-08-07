@@ -95,9 +95,10 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Target criterion: C-007 (guard) then C-001
 - Hypothesis: grepping the pinned `selahcue-present` tests for `pm-present`/`pm-lib-back` reveals what must be updated when relocating/removing them; then `pmMode`/`pmSetMode` + landing on library is the smallest first slice.
 - Change or investigation: grep pinned tests; implement Task 7.
-- Verifier executed:
-- Result:
-- Decision: iterate | handoff | blocked | gate-review | complete
+- Verifier executed: `grep pm-present|pm-lib-back` in `selahcue-present/tests/`
+- Result: **CONFIRMED pinned** — `test_tokens.rs:619` pins `id="pm-present"` (in `operator_presentation_media_surface_is_wired`) and `test_tokens.rs:777` pins `id="pm-lib-back"` (in the library-wiring test). Relocating/removing them per the design (Tasks 7/11) REQUIRES updating those two needles in `test_tokens.rs` together (same file also pins the `--sc-*` tokens). Folded into C-007.
+- Reconciliation gotchas confirmed: `blitFrame` returns bool (cache via `canvas.toDataURL()`); tokens `--sc-text-secondary`/`--sc-text-muted`; `#pm-live-region` inside `.pm-body` (grid needs its own); `EXPECTED_MIN_CHECKS=319`; bare arrows/Enter/Space free on the Presentation surface (transport hard-gated to console; canvas nudge is element-focus-gated).
+- Decision: **paused for owner** — implementation is fully mapped, but the shared files it edits (`app.js`/`index.html`/`operator_headless.py`/`test_tokens.rs`) carry the owner's uncommitted concurrent WIP, so the commit strategy + a clean base are an owner-owned coordination decision before extensive edits (avoids the Track-A clobbering repeat). Working tree left UNMODIFIED.
 
 ## Risks and rollback
 
