@@ -11,7 +11,7 @@ use crate::theme::{Fit, VAlign};
 use selahcue_core::timer::Timer;
 use selahcue_engine::engine::{Engine, EngineCommand};
 use selahcue_engine::raster::FrameBuffer;
-use selahcue_engine::scene::{Frame, Layer, Rect, Rgba, TextAlign};
+use selahcue_engine::scene::{Frame, Layer, Rect, Rgba, TextAlign, TextStyle};
 use std::time::{Duration, Instant};
 
 /// A stage/confidence template (the operator picks one per stage screen). Each lays the
@@ -239,6 +239,10 @@ fn fill(f: &mut Frame, x: i32, y: i32, w: u32, h: u32, color: Rgba) {
     });
 }
 
+/// A single line of stage CHROME — labels, the timer readout, the scripture reference, the
+/// message chip. All of it is **bold** (weight 700) to match the confidence-monitor design
+/// (Figma 373-375): heavy, legible at a distance. The bundled Noto Sans is single-weight, so
+/// this is a deterministic embolden — the same face the themed audience output uses for bold.
 #[allow(clippy::too_many_arguments)]
 fn line(f: &mut Frame, x: i32, y: i32, w: u32, px: u32, text: &str, color: Rgba, align: TextAlign) {
     if text.is_empty() {
@@ -252,7 +256,10 @@ fn line(f: &mut Frame, x: i32, y: i32, w: u32, px: u32, text: &str, color: Rgba,
         color,
         align,
         font: None,
-        style: None,
+        style: Some(TextStyle {
+            weight: 700,
+            letter_spacing_px: 0,
+        }),
     });
 }
 
@@ -296,6 +303,7 @@ fn content_region(
     region: Rect,
     align: TextAlign,
     color: Rgba,
+    weight: u16,
 ) {
     let Some(slide) = slide else {
         return;
@@ -312,7 +320,7 @@ fn content_region(
         color,
         Fit::ShrinkToFit,
         None,
-        400,
+        weight,
         0,
     ) {
         f.push(layer);
@@ -345,7 +353,7 @@ fn compose_worship(
         (w as f64 * 0.88) as u32,
         (h as f64 * 0.48) as u32,
     );
-    content_region(frame, current, cur, TextAlign::Center, theme.text);
+    content_region(frame, current, cur, TextAlign::Center, theme.text, 700);
 
     // NEXT chip + the coming line (muted).
     if next.is_some() {
@@ -367,7 +375,7 @@ fn compose_worship(
             (w as f64 * 0.94) as u32 - (nx.max(0) as u32),
             (h as f64 * 0.18) as u32,
         );
-        content_region(frame, next, nrect, TextAlign::Left, theme.muted);
+        content_region(frame, next, nrect, TextAlign::Left, theme.muted, 400);
     }
 
     // Bottom timer bar. TIME UP washes only this region red (spec: worship = region only).
@@ -454,7 +462,7 @@ fn compose_scripture(
         left_w,
         (h as f64 * 0.54) as u32,
     );
-    content_region(frame, current, cur, TextAlign::Left, theme.text);
+    content_region(frame, current, cur, TextAlign::Left, theme.text, 700);
 
     if next.is_some() {
         let ny = (h as f64 * 0.76) as i32;
@@ -467,7 +475,7 @@ fn compose_scripture(
             left_w.saturating_sub(cw + (w as f64 * 0.012) as u32),
             (h as f64 * 0.16) as u32,
         );
-        content_region(frame, next, nrect, TextAlign::Left, theme.muted);
+        content_region(frame, next, nrect, TextAlign::Left, theme.muted, 400);
     }
 
     // Right countdown panel.
@@ -526,7 +534,7 @@ fn compose_scripture(
         TextAlign::Center,
     );
     if let Some(t) = timer {
-        let big = ((h as f64 * 0.14) as u32).max(1);
+        let big = ((h as f64 * 0.16) as u32).max(1);
         line(
             frame,
             px0,
@@ -568,9 +576,9 @@ fn compose_timer_only(
             line(
                 frame,
                 0,
-                (h as f64 * 0.37) as i32,
+                (h as f64 * 0.34) as i32,
                 w,
-                ((h as f64 * 0.22) as u32).max(1),
+                ((h as f64 * 0.28) as u32).max(1),
                 "TIME UP",
                 theme.timer_alert,
                 TextAlign::Center,
@@ -580,9 +588,9 @@ fn compose_timer_only(
             line(
                 frame,
                 0,
-                (h as f64 * 0.33) as i32,
+                (h as f64 * 0.31) as i32,
                 w,
-                ((h as f64 * 0.28) as u32).max(1),
+                ((h as f64 * 0.36) as u32).max(1),
                 &timer_readout(t),
                 t.color(theme),
                 TextAlign::Center,
@@ -641,14 +649,16 @@ fn push_message_overlay(frame: &mut Frame, msg: &str, theme: &StageTheme, w: u32
         TextAlign::Center,
     );
 
-    // The message text — bold, large, auto-fit within the box.
+    // The message text — bold, LARGE (a production note the speaker cannot miss), auto-fit
+    // within the box. The ceiling is the region height itself (not the usual 20% cap), so a
+    // short message fills the box the way the design shows; a long one shrinks to fit.
     let mrect = Rect::new(
         bx + (bw as f64 * 0.06) as i32,
-        by + (bh as f64 * 0.42) as i32,
+        by + (bh as f64 * 0.40) as i32,
         (bw as f64 * 0.88) as u32,
-        (bh as f64 * 0.46) as u32,
+        (bh as f64 * 0.48) as u32,
     );
-    let max_cell = region_max_cell(mrect);
+    let max_cell = mrect.h;
     for layer in autofit_layers(
         &[msg],
         mrect,
