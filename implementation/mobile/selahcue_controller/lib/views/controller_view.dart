@@ -29,7 +29,17 @@ class ControllerView extends StatefulWidget {
   final ControllerSession session;
   final StoredSession stored;
 
-  const ControllerView({super.key, required this.session, required this.stored});
+  /// Optional reconnect factory, forwarded to [LiveController] (a test seam so
+  /// the revoked/reconnect path can be exercised without a real socket).
+  final Future<SelahSession> Function({
+    required String host,
+    required int port,
+    required String pinHex,
+    required Credentials creds,
+  })? connect;
+
+  const ControllerView(
+      {super.key, required this.session, required this.stored, this.connect});
 
   @override
   State<ControllerView> createState() => _ControllerViewState();
@@ -42,7 +52,17 @@ class _ControllerViewState extends State<ControllerView> {
   @override
   void initState() {
     super.initState();
-    _live = LiveController(session: widget.session, stored: widget.stored);
+    _live = LiveController(
+        session: widget.session,
+        stored: widget.stored,
+        connect: widget.connect);
+  }
+
+  /// Leave the revoked device on the pairing screen (credentials were already
+  /// cleared when the revoke was detected).
+  void _repair() {
+    Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const PairingView()));
   }
 
   @override
@@ -142,6 +162,11 @@ class _ControllerViewState extends State<ControllerView> {
     return ListenableBuilder(
       listenable: _live,
       builder: (context, _) {
+        // An admin revoked/unpaired this device — show the terminal re-pair
+        // screen (RBAC enforcement, Figma 357) instead of the console.
+        if (_live.revoked) {
+          return AccessRemovedScreen(onRepair: _repair);
+        }
         final view = _live.view;
         final onAir = view?.liveIndex != null ||
             view?.liveScripture != null ||
@@ -495,6 +520,92 @@ class ConfigSheet extends StatelessWidget {
           ],
         ),
       );
+}
+
+/// Terminal screen shown when an admin revoked/unpaired this device (RBAC
+/// enforcement, Figma 357). The live service is unaffected; the user re-pairs.
+class AccessRemovedScreen extends StatelessWidget {
+  final VoidCallback onRepair;
+  const AccessRemovedScreen({super.key, required this.onRepair});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: DesignTokens.bgBase,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            children: [
+              const Spacer(),
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: DesignTokens.liveFill.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(28),
+                ),
+                alignment: Alignment.center,
+                child: const Icon(Icons.link_off,
+                    color: DesignTokens.liveInk, size: 28),
+              ),
+              const SizedBox(height: 20),
+              const Text('Access removed',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      color: DesignTokens.textPrimary)),
+              const SizedBox(height: 10),
+              const Text(
+                  'An administrator unpaired this device. Your role and keys are '
+                  'no longer valid.',
+                  textAlign: TextAlign.center,
+                  style:
+                      TextStyle(fontSize: 14, color: DesignTokens.textMuted)),
+              const SizedBox(height: 18),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: DesignTokens.previewFill.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: DesignTokens.previewInk),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.check_circle_outline,
+                        color: DesignTokens.previewInk, size: 18),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                          'The live service is unaffected — the desktop keeps '
+                          'running.',
+                          style: TextStyle(
+                              fontSize: 13, color: DesignTokens.previewInk)),
+                    ),
+                  ],
+                ),
+              ),
+              const Spacer(),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: DesignTokens.accentBrand,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  icon: const Icon(Icons.qr_code_scanner),
+                  label: const Text('Scan QR to pair again'),
+                  onPressed: onRepair,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// The granted-role chip shown in the app bar (the real backend role — the
