@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 342
+EXPECTED_MIN_CHECKS = 350
 
 
 def find_chrome():
@@ -90,7 +90,7 @@ STUB = r"""
   // A REAL OperatorView so the boot render path (act->render->syncChrome->renderConsole) runs
   // exactly as in the app — the prior null stub masked the #7 render never firing on launch.
   var V = { plan_name:"Svc", items:[{id:1,kind:"scripture",title:"Genesis 1:13",is_live:true,is_staged:true}],
-    live_index:0, staged_index:0, blackout:false, timer:null, staged_scripture:"Genesis 1:13",
+    live_index:0, staged_index:0, blackout:false, live_authored_id:null, timer:null, staged_scripture:"Genesis 1:13",
     live_scripture:"Genesis 1:13", live_free_text:null,
     outputs:[{role:"main", assigned:true, assigned_key:"d1", display:"Main", width:1920, height:1080}],
     displays:[{key:"d1", name:"Main", width:1920, height:1080}], translations:["KJV"],
@@ -276,7 +276,16 @@ STUB = r"""
     if (cmd === "deck_set_auto_advance") { D.slide.auto_advance_secs = args.secs; return Promise.resolve(dEdit()); }
     if (cmd === "deck_undo") { D.can_undo = false; D.can_redo = true; return Promise.resolve(dClone()); }
     if (cmd === "deck_redo") { D.can_redo = false; D.can_undo = true; return Promise.resolve(dClone()); }
-    if (cmd === "deck_go_live") { D.live = D.selected; return Promise.resolve(dClone()); }
+    if (cmd === "deck_go_live") { D.live = D.selected; V.live_authored_id = D.selected; return Promise.resolve(dClone()); }
+    if (cmd === "deck_go_live_delta") {
+      var gids = D.slides.map(function(s){ return s.id; });
+      var gcur = (V.live_authored_id != null) ? gids.indexOf(V.live_authored_id) : gids.indexOf(D.selected);
+      if (gcur < 0) gcur = 0;
+      var gnx = Math.max(0, Math.min(gids.length - 1, gcur + args.delta));
+      D.selected = gids[gnx]; D.live = gids[gnx]; V.live_authored_id = gids[gnx];
+      return Promise.resolve(dClone());
+    }
+    if (cmd === "output_connected") return Promise.resolve(window.__outputConnected !== false);
     if (cmd === "deck_remove_slide") {
       D.slides = D.slides.filter(function(s){ return s.id !== args.id; });
       D.count = D.slides.length;
@@ -1196,6 +1205,25 @@ DRIVER = r"""
       await waitFor(function(){ return el("pm-grid-tiles").querySelector(".pm-tile.live"); });
       ok(window.__calls.some(function(c){ return c.cmd === "deck_go_live"; }), "PM/B: double-click presents the slide live (deck_go_live)");
       ok(el("pm-grid-tiles").querySelector(".pm-tile.live"), "PM/B: the live slide shows the red LIVE ring");
+      // --- Slice 2: transport + arrows advance live (deck_go_live_delta) + host-truth ring ---
+      await waitFor(function(){ return !el("pm-transport").hidden; });
+      ok(!el("pm-transport").hidden, "PM/B2: the transport bar shows once a slide is live");
+      ok(el("pm-next").getAttribute("aria-disabled") === "true", "PM/B2: Next is disabled at the last live slide");
+      ok(el("pm-prev").getAttribute("aria-disabled") !== "true", "PM/B2: Previous is enabled when not at the first slide");
+      // ◀ Previous advances live via deck_go_live_delta(-1) → host-truth ring moves to slide 1.
+      el("pm-prev").click();
+      await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_go_live_delta" && c.args.delta === -1; }); });
+      ok(true, "PM/B2: Previous advances live via deck_go_live_delta(-1)");
+      await waitFor(function(){ var t = el("pm-grid-tiles").querySelectorAll(".pm-tile")[0]; return t && t.classList.contains("live"); });
+      ok(el("pm-grid-tiles").querySelectorAll(".pm-tile")[0].classList.contains("live"), "PM/B2: host-truth LIVE ring moved to slide 1 (view().live_authored_id)");
+      ok(el("pm-next").getAttribute("aria-disabled") !== "true", "PM/B2: Next re-enables after leaving the last slide");
+      // A keyboard arrow while LIVE advances live (deck_go_live_delta(+1)) → back to slide 2.
+      var deltaBefore = window.__calls.filter(function(c){ return c.cmd === "deck_go_live_delta"; }).length;
+      el("pm-grid-tiles").dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowRight", bubbles:true}));
+      await waitFor(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_go_live_delta"; }).length > deltaBefore; });
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_go_live_delta" && c.args.delta === 1; }), "PM/B2: a keyboard arrow while live advances live (deck_go_live_delta(+1))");
+      await waitFor(function(){ var t = el("pm-grid-tiles").querySelectorAll(".pm-tile")[1]; return t && t.classList.contains("live"); });
+      ok(el("pm-grid-tiles").querySelectorAll(".pm-tile")[1].classList.contains("live"), "PM/B2: arrows advance the LIVE ring (now slide 2)");
       // Edit ▸ → the authoring editor (so the existing editor checks below run).
       el("pm-grid-edit").click();
       ok(getComputedStyle(document.querySelector("#surface-presentation .pm-body")).display !== "none", "PM/B: Edit ▸ opens the editor");

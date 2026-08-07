@@ -4583,6 +4583,8 @@
         }
       }
       let pmGridCursor = null;             // selected slide id (safe — never touches live)
+      let pmGridLiveId = null;             // HOST-truth live authored slide id (drives ring/transport)
+      function pmGridAnnounce(msg) { const r = pmEl("pm-grid-live-region"); if (r) r.textContent = msg; }
       function pmGridTiles() { const g = pmEl("pm-grid-tiles"); return g ? Array.prototype.slice.call(g.querySelectorAll(".pm-tile")) : []; }
       function pmGridSelect(id, focus) {
         if (id == null) return;
@@ -4597,22 +4599,41 @@
       async function pmGridGoLive(id) {
         if (id == null) return;
         // deck_go_live presents the HOST-selected slide, so always select the target first (the
-        // client cursor is not the host's selection). Two round-trips; the ◀▶ transport uses the
-        // atomic deck_go_live_delta instead (later slice).
+        // client cursor is not the host's selection). The ◀▶ transport / live-mode arrows use the
+        // atomic deck_go_live_delta instead.
         await pAct(() => invoke("deck_select_slide", { id: id }), "select the slide");
         pmGridCursor = id;
         await pAct(() => invoke("deck_go_live"), "present the slide");
-        pmGridSyncLive(); // ring reflects the deck's live slide (host-truth upgrade in a later slice)
+        await pmGridSyncLive();
       }
-      function pmGridSyncLive() {
-        const liveId = (pmDv && pmDv.live != null) ? pmDv.live : null;
-        pmGridTiles().forEach((t) => {
+      // Advance the LIVE slide by delta (−1 prev / +1 next) atomically — ◀▶ transport + live arrows.
+      async function pmGridDelta(delta) {
+        await pAct(() => invoke("deck_go_live_delta", { delta: delta }), "advance the live slide");
+        await pmGridSyncLive();
+      }
+      // Ring the LIVE slide from HOST truth (view().live_authored_id — the deck-local annotation can
+      // go stale when the console drives plan content) and drive the transport bar.
+      async function pmGridSyncLive() {
+        let liveId = null;
+        try { const v = await invoke("view"); liveId = (v && v.live_authored_id != null) ? v.live_authored_id : null; }
+        catch (e) { /* keep last-known; the top-bar conn pill reflects a dropped host */ }
+        pmGridLiveId = liveId;
+        const tiles = pmGridTiles();
+        tiles.forEach((t) => {
           const on = Number(t.dataset.id) === liveId;
           t.classList.toggle("live", on);
           let lbl = t.querySelector(".pm-tile-live");
           if (on && !lbl) { lbl = document.createElement("span"); lbl.className = "pm-tile-live"; lbl.textContent = "● LIVE"; t.appendChild(lbl); }
           if (!on && lbl) lbl.remove();
         });
+        const tp = pmEl("pm-transport"); if (tp) tp.hidden = liveId == null;
+        if (liveId != null) {
+          const ids = tiles.map((t) => Number(t.dataset.id)); const idx = ids.indexOf(liveId);
+          const lv = pmEl("pm-tp-live"); if (lv) lv.textContent = "● LIVE — slide " + (idx + 1) + " / " + ids.length;
+          const prev = pmEl("pm-prev"); if (prev) prev.setAttribute("aria-disabled", idx <= 0 ? "true" : "false");
+          const next = pmEl("pm-next"); if (next) next.setAttribute("aria-disabled", idx >= ids.length - 1 ? "true" : "false");
+          pmGridAnnounce("Now live: slide " + (idx + 1) + " of " + ids.length);
+        }
       }
       function pmRenderGrid(dv) {
         pmDv = dv;
@@ -4647,6 +4668,22 @@
         const back = pmEl("pm-grid-back"); if (back) back.onclick = () => { pmSetMode("library"); pmLibLoad(); };
         const edit = pmEl("pm-grid-edit"); if (edit) edit.onclick = () => { pmSetMode("editor"); renderPresentation(pmDv); };
         const eEdit = pmEl("pm-grid-empty-edit"); if (eEdit) eEdit.onclick = () => { pmSetMode("editor"); renderPresentation(pmDv); };
+        const prev = pmEl("pm-prev"); if (prev) prev.onclick = () => { if (prev.getAttribute("aria-disabled") !== "true") pmGridDelta(-1); };
+        const next = pmEl("pm-next"); if (next) next.onclick = () => { if (next.getAttribute("aria-disabled") !== "true") pmGridDelta(1); };
+        tiles.onkeydown = (e) => {
+          const ids = pmGridTiles().map((t) => Number(t.dataset.id));
+          if (!ids.length) return;
+          const i = Math.max(0, ids.indexOf(pmGridCursor == null ? ids[0] : pmGridCursor));
+          if (e.key === "Enter") { e.preventDefault(); pmGridGoLive(ids[i]); return; }
+          const fwd = (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === " ");
+          const back2 = (e.key === "ArrowLeft" || e.key === "ArrowUp");
+          if (!fwd && !back2) return;
+          e.preventDefault();
+          // Owner decision: once a slide is LIVE, arrows advance live directly; before that they
+          // move the (safe) selection cursor.
+          if (pmGridLiveId != null) pmGridDelta(fwd ? 1 : -1);
+          else pmGridSelect(ids[fwd ? Math.min(ids.length - 1, i + 1) : Math.max(0, i - 1)], true);
+        };
       }
 
       function pmLibRename(id, current) {
