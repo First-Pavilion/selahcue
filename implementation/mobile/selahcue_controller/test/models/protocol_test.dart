@@ -54,10 +54,36 @@ void main() {
     expect(jsonEncode(cmdStopTimer()), '{"cmd":"stop_timer"}');
     expect(jsonEncode(cmdPauseTimer()), '{"cmd":"pause_timer"}');
     expect(jsonEncode(cmdResumeTimer()), '{"cmd":"resume_timer"}');
+    expect(jsonEncode(cmdApproveDetection(5)),
+        '{"cmd":"approve_detection","detection_id":5}');
+    expect(jsonEncode(cmdDismissDetection(5)),
+        '{"cmd":"dismiss_detection","detection_id":5}');
     expect(jsonEncode(cmdGetOperatorState()), '{"cmd":"get_operator_state"}');
     // S8-3b — mirrors the Rust `set_theme` fixture exactly.
     expect(jsonEncode(cmdSetTheme('high-contrast')),
         '{"cmd":"set_theme","name":"high-contrast"}');
+  });
+
+  test('operator_state parses detections + transcript + partial (R3/R4)', () {
+    final v = OperatorStateView.fromJson(jsonDecode(
+            '{"plan_name":"Sunday","items":[],"blackout":false,'
+            '"transcript":[{"id":1,"start_ms":0,"end_ms":900,"text":"and we know"}],'
+            '"partial_transcript":"that all things",'
+            '"detections":[{"id":7,"reference":"Romans 8:28","text":"And we know…","confidence":94}]}')
+        as Map<String, dynamic>);
+    expect(v.transcript.single.text, 'and we know');
+    expect(v.partialTranscript, 'that all things');
+    expect(v.detections.single.reference, 'Romans 8:28');
+    expect(v.detections.single.confidence, 94);
+  });
+
+  test('operator_state without the new fields degrades to empty', () {
+    final v = OperatorStateView.fromJson(jsonDecode(
+            '{"plan_name":"Sunday","items":[],"blackout":false}')
+        as Map<String, dynamic>);
+    expect(v.transcript, isEmpty);
+    expect(v.partialTranscript, isNull);
+    expect(v.detections, isEmpty);
   });
 
   test('pair granted parses (Rust fixture)', () {

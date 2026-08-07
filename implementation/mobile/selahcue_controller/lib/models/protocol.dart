@@ -57,6 +57,16 @@ Map<String, dynamic> cmdPauseTimer() => {'cmd': 'pause_timer'};
 Map<String, dynamic> cmdResumeTimer() => {'cmd': 'resume_timer'};
 Map<String, dynamic> cmdStageScripture(String reference, {String? translation}) =>
     {'cmd': 'stage_scripture', 'reference': reference, 'translation': ?translation};
+
+/// Approve a queued scripture detection: stages its verse in Preview (detections
+/// never auto-display — FR-115; the operator goes live when ready). Requires the
+/// SearchScripture capability server-side. `protocol.rs:276`.
+Map<String, dynamic> cmdApproveDetection(int detectionId) =>
+    {'cmd': 'approve_detection', 'detection_id': detectionId};
+
+/// Dismiss a queued scripture detection without staging it. `protocol.rs:279`.
+Map<String, dynamic> cmdDismissDetection(int detectionId) =>
+    {'cmd': 'dismiss_detection', 'detection_id': detectionId};
 Map<String, dynamic> cmdGetOperatorState() => {'cmd': 'get_operator_state'};
 Map<String, dynamic> cmdSetTheme(String name) =>
     {'cmd': 'set_theme', 'name': name};
@@ -139,6 +149,44 @@ class TimerSnapshot {
       );
 }
 
+/// One queued scripture detection awaiting the operator's approval (mirror of
+/// Rust `DetectionView`). Approve stages it in Preview; Reject drops it.
+class DetectionView {
+  final int id;
+  final String reference;
+  final String text;
+
+  /// Whole-percent match confidence (0..100), null when the host reports none.
+  final int? confidence;
+
+  const DetectionView({
+    required this.id,
+    required this.reference,
+    this.text = '',
+    this.confidence,
+  });
+
+  static DetectionView fromJson(Map<String, dynamic> j) => DetectionView(
+        id: j['id'] as int? ?? 0,
+        reference: j['reference'] as String? ?? '',
+        text: j['text'] as String? ?? '',
+        confidence: j['confidence'] as int?,
+      );
+}
+
+/// One finalised live-transcript segment (mirror of Rust `TranscriptSegmentView`).
+class TranscriptSegmentView {
+  final int id;
+  final String text;
+  const TranscriptSegmentView({required this.id, required this.text});
+
+  static TranscriptSegmentView fromJson(Map<String, dynamic> j) =>
+      TranscriptSegmentView(
+        id: j['id'] as int? ?? 0,
+        text: j['text'] as String? ?? '',
+      );
+}
+
 /// The host-authoritative operator view (reply to `get_operator_state`).
 class OperatorStateView {
   final String planName;
@@ -168,6 +216,16 @@ class OperatorStateView {
   /// The theme names THIS host offers (drives the picker). Empty when absent.
   final List<String> themes;
 
+  /// Recent finalised live-transcript segments (bounded tail, oldest first);
+  /// empty when the host has none or doesn't transcribe.
+  final List<TranscriptSegmentView> transcript;
+
+  /// The in-progress (not-yet-finalised) transcript line, if any.
+  final String? partialTranscript;
+
+  /// Pending scripture detections awaiting approval (the Scripture-Operator gate).
+  final List<DetectionView> detections;
+
   const OperatorStateView({
     required this.planName,
     required this.items,
@@ -181,6 +239,9 @@ class OperatorStateView {
     this.translations = const [],
     this.theme = '',
     this.themes = const [],
+    this.transcript = const [],
+    this.partialTranscript,
+    this.detections = const [],
   });
 
   static OperatorStateView fromJson(Map<String, dynamic> j) => OperatorStateView(
@@ -204,6 +265,15 @@ class OperatorStateView {
         theme: j['theme'] as String? ?? '',
         themes: ((j['themes'] as List?) ?? const [])
             .whereType<String>()
+            .toList(),
+        transcript: ((j['transcript'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(TranscriptSegmentView.fromJson)
+            .toList(),
+        partialTranscript: j['partial_transcript'] as String?,
+        detections: ((j['detections'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(DetectionView.fromJson)
             .toList(),
       );
 }
