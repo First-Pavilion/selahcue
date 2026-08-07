@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 359
+EXPECTED_MIN_CHECKS = 365
 
 
 def find_chrome():
@@ -1231,16 +1231,20 @@ DRIVER = r"""
       ok(window.__calls.some(function(c){ return c.cmd === "deck_go_live_delta" && c.args.delta === 1; }), "PM/B2: a keyboard arrow while live advances live (deck_go_live_delta(+1))");
       await waitFor(function(){ var t = el("pm-grid-tiles").querySelectorAll(".pm-tile")[1]; return t && t.classList.contains("live"); });
       ok(el("pm-grid-tiles").querySelectorAll(".pm-tile")[1].classList.contains("live"), "PM/B2: arrows advance the LIVE ring (now slide 2)");
+      ok(el("pm-grid-tiles").querySelectorAll(".pm-tile")[1].tabIndex === 0, "PM/B2: focus/cursor follows live (the live tile is the roving-focus target)");
       // --- Slice 3: §8 states (preview-only, blackout, go-live failure) ---
       // Preview-only honesty: no audience output → a "Preview only" badge, never a false LIVE.
       window.__outputConnected = false;
       el("pm-grid-tiles").querySelectorAll(".pm-tile")[1].dispatchEvent(new MouseEvent("dblclick", {bubbles:true}));
       await waitFor(function(){ return !el("pm-grid-badge").hidden; });
       ok(!el("pm-grid-badge").hidden && el("pm-grid-badge").textContent.indexOf("Preview only") >= 0, "PM/B3: no audience output → 'Preview only' badge (honest, not a false LIVE)");
+      ok(el("pm-grid-tiles").querySelectorAll(".pm-tile")[1].classList.contains("preview") && !el("pm-grid-tiles").querySelectorAll(".pm-tile")[1].classList.contains("live"), "PM/B3: preview-only shows a distinct PREVIEW ring, NOT a true red LIVE ring");
+      ok(el("pm-tp-live").textContent.indexOf("PREVIEW") >= 0, "PM/B3: the transport reads PREVIEW (not LIVE) with no audience output");
       window.__outputConnected = true;
       el("pm-grid-tiles").querySelectorAll(".pm-tile")[1].dispatchEvent(new MouseEvent("dblclick", {bubbles:true}));
       await waitFor(function(){ return el("pm-grid-badge").hidden; });
       ok(el("pm-grid-badge").hidden, "PM/B3: the badge clears once the audience output is connected");
+      ok(el("pm-grid-tiles").querySelectorAll(".pm-tile")[1].classList.contains("live"), "PM/B3: reconnecting restores the true red LIVE ring");
       // Blackout is shown IN WORDS on the transport (never an ambiguous blank).
       V.blackout = true;
       el("pm-grid-tiles").querySelectorAll(".pm-tile")[1].dispatchEvent(new MouseEvent("dblclick", {bubbles:true}));
@@ -1257,8 +1261,8 @@ DRIVER = r"""
       ok(!el("pm-error").hidden, "PM/B3: a rejected present surfaces the error banner (role=alert)");
       ok(el("pm-grid-tiles").querySelectorAll(".pm-tile")[1].classList.contains("live"), "PM/B3: the LIVE ring stays on the prior slide after a failed present (no false ring)");
       if (el("pm-error-dismiss")) el("pm-error-dismiss").click(); // restore for later checks
-      // --- Slice 5: a11y (role=grid, roving tabindex, aria-live, LIVE text label) ---
-      ok(el("pm-grid-tiles").getAttribute("role") === "grid", "PM/B5: the grid is role=grid");
+      // --- Slice 5: a11y (role=listbox, roving tabindex, aria-live, LIVE text label) ---
+      ok(el("pm-grid-tiles").getAttribute("role") === "listbox", "PM/B5: the grid is a role=listbox");
       el("pm-grid-tiles").querySelectorAll(".pm-tile")[0].dispatchEvent(new MouseEvent("click", {bubbles:true}));
       ok(el("pm-grid-tiles").querySelectorAll(".pm-tile")[0].tabIndex === 0 && el("pm-grid-tiles").querySelectorAll(".pm-tile")[1].tabIndex === -1, "PM/B5: roving tabindex (selected tile 0, others -1)");
       ok(/live/i.test(el("pm-grid-live-region").textContent), "PM/B5: live changes are announced via aria-live");
@@ -1558,6 +1562,12 @@ DRIVER = r"""
       el("pm-error-retry").click(); // the one-shot reject flag is cleared → the retry succeeds
       await waitFor(function(){ return el("pm-error").hidden; });
       ok(el("pm-error").hidden, "PM: Retry re-runs the action and clears the banner on success");
+
+      // ‹ Done returns from the editor to the slide grid (the Edit ▸ / ‹ Done round-trip, C-005).
+      ok(!!el("pm-done"), "PM/B4: the editor has a '‹ Done' control");
+      el("pm-done").click();
+      await waitFor(function(){ return !el("pm-grid").hidden; });
+      ok(!el("pm-grid").hidden && getComputedStyle(document.querySelector("#surface-presentation .pm-body")).display === "none", "PM/B4: ‹ Done returns from the editor to the grid");
 
       // === Presentations Library (deck_list / new / open / rename / duplicate / delete) ===
       ok(!!el("pm-deckswitch"), "PM/Lib: the topbar has a deck-switcher breadcrumb");

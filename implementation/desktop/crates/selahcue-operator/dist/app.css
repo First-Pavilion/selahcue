@@ -5460,6 +5460,9 @@
       /* LIVE — red border + glow + the "● LIVE" text label (host-truth). */
       .pm-tile.live { border-color: var(--sc-live-border); box-shadow: 0 0 0 2px var(--sc-live), 0 0 14px var(--sc-live-soft); }
       .pm-tile-live { position: absolute; right: 8px; top: 6px; padding: 2px 6px; border-radius: 999px; background: var(--sc-live-soft); border: 1px solid var(--sc-live-border); color: var(--sc-live); font: 700 10px/1 Inter, system-ui, sans-serif; letter-spacing: .04em; }
+      /* Preview-only present (no audience output): a DISTINCT ring/label, never the red LIVE. */
+      .pm-tile.preview { border-color: var(--sc-primary); box-shadow: 0 0 0 2px var(--sc-primary), 0 0 12px var(--sc-accent-soft); }
+      .pm-tile-live.prev { background: var(--sc-accent-soft); border-color: var(--sc-primary); color: var(--sc-primary-hover); }
       .pm-tile-fail { display: grid; place-items: center; }
       .pm-tile-failmsg { color: var(--sc-text-muted); font-size: 12px; }
       .pm-grid-hint { color: var(--sc-text-muted); font-size: 12px; margin: 0; }

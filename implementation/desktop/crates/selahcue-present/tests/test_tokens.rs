@@ -619,6 +619,7 @@ fn operator_presentation_media_surface_is_wired() {
         "id=\"pm-grid\"",
         "id=\"pm-grid-edit\"",
         "id=\"pm-transport\"",
+        "id=\"pm-done\"",
         // Scoped to the PM toolbar so it can't accidentally match the Theme Designer's add-bar.
         "class=\"pm-tool\" data-add=\"text\"",
         // The contextual right panel: Media ⟷ Inspector tabs + the two bodies (86ajvjtax).

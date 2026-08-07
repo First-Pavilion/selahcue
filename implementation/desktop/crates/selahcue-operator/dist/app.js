@@ -4572,6 +4572,11 @@
         pmThumbCache.set(id, url);
         while (pmThumbCache.size > PM_THUMB_MAX) pmThumbCache.delete(pmThumbCache.keys().next().value);
       }
+      function pmThumbFail(cv) {
+        const t = cv && cv.parentElement; if (!t || t.querySelector(".pm-tile-failmsg")) return;
+        t.classList.add("pm-tile-fail");
+        const s = document.createElement("span"); s.className = "pm-tile-failmsg"; s.textContent = "⚠ Can't preview"; t.appendChild(s);
+      }
       async function pmThumb(id, cv) {
         if (!cv) return;
         if (pmThumbCache.has(id)) {
@@ -4583,9 +4588,8 @@
         try {
           const r = await invoke("render_deck_slide", { id: id, maxW: 320, maxH: 180 });
           if (r && r.available && r.frame && blitFrame(cv, r.frame)) pmThumbPut(id, cv.toDataURL());
-        } catch (e) {
-          const t = cv.parentElement; if (t) { t.classList.add("pm-tile-fail"); const s = document.createElement("span"); s.className = "pm-tile-failmsg"; s.textContent = "⚠ Can't preview"; t.appendChild(s); }
-        }
+          else pmThumbFail(cv); // missing media / no frame → honest "can't preview" tile (not a silent blank)
+        } catch (e) { pmThumbFail(cv); }
       }
       let pmGridCursor = null;             // selected slide id (safe — never touches live)
       let pmGridLiveId = null;             // HOST-truth live authored slide id (drives ring/transport)
@@ -4597,6 +4601,7 @@
         pmGridTiles().forEach((t) => {
           const on = Number(t.dataset.id) === id;
           t.classList.toggle("sel", on);
+          t.setAttribute("aria-selected", on ? "true" : "false");
           t.tabIndex = on ? 0 : -1;
           if (on && focus) t.focus();
         });
@@ -4630,27 +4635,41 @@
         }
         pmGridLiveId = liveId;
         const tiles = pmGridTiles();
-        tiles.forEach((t) => {
-          const on = Number(t.dataset.id) === liveId;
-          t.classList.toggle("live", on);
-          let lbl = t.querySelector(".pm-tile-live");
-          if (on && !lbl) { lbl = document.createElement("span"); lbl.className = "pm-tile-live"; lbl.textContent = "● LIVE"; t.appendChild(lbl); }
-          if (!on && lbl) lbl.remove();
-        });
         const tp = pmEl("pm-transport"); if (tp) tp.hidden = liveId == null;
         const badge = pmEl("pm-grid-badge");
-        if (liveId == null) { if (badge) badge.hidden = true; return; }
-        const ids = tiles.map((t) => Number(t.dataset.id)); const idx = ids.indexOf(liveId);
+        if (liveId == null) {
+          tiles.forEach((t) => { t.classList.remove("live", "preview"); const l = t.querySelector(".pm-tile-live"); if (l) l.remove(); });
+          if (badge) badge.hidden = true;
+          return;
+        }
+        // Honest present state: a true red LIVE ring ONLY when a real audience output is connected;
+        // with no output show a distinct PREVIEW ring + badge, never implying the audience sees a
+        // slide no display is showing (the local backend returns Ok silently — never-surprise, §8/§9).
+        let connected = true; try { connected = await invoke("output_connected"); } catch (e) {}
         const blackedOut = !!(v && v.blackout);
+        const ids = tiles.map((t) => Number(t.dataset.id)); const idx = ids.indexOf(liveId);
+        tiles.forEach((t) => {
+          const on = Number(t.dataset.id) === liveId;
+          t.classList.toggle("live", on && connected);
+          t.classList.toggle("preview", on && !connected);
+          let lbl = t.querySelector(".pm-tile-live");
+          if (on) {
+            if (!lbl) { lbl = document.createElement("span"); lbl.className = "pm-tile-live"; t.appendChild(lbl); }
+            lbl.textContent = connected ? "● LIVE" : "PREVIEW";
+            lbl.classList.toggle("prev", !connected);
+          } else if (lbl) { lbl.remove(); }
+        });
+        // Focus + cursor follow live (spec §6/§9) so arrows/Enter operate from the live slide.
+        pmGridCursor = liveId;
+        tiles.forEach((t) => { const on = Number(t.dataset.id) === liveId; t.classList.toggle("sel", on); t.setAttribute("aria-selected", on ? "true" : "false"); t.tabIndex = on ? 0 : -1; });
+        if (pmMode === "grid" && tiles[idx]) { try { tiles[idx].focus(); } catch (e) {} }
         const lv = pmEl("pm-tp-live");
-        if (lv) { lv.textContent = (blackedOut ? "BLACKED OUT · slide " : "● LIVE — slide ") + (idx + 1) + " / " + ids.length; lv.classList.toggle("blk", blackedOut); }
+        const word = blackedOut ? "BLACKED OUT · slide " : (connected ? "● LIVE — slide " : "PREVIEW — slide ");
+        if (lv) { lv.textContent = word + (idx + 1) + " / " + ids.length; lv.classList.toggle("blk", blackedOut); lv.classList.toggle("prev", !connected && !blackedOut); }
         const prev = pmEl("pm-prev"); if (prev) prev.setAttribute("aria-disabled", idx <= 0 ? "true" : "false");
         const next = pmEl("pm-next"); if (next) next.setAttribute("aria-disabled", idx >= ids.length - 1 ? "true" : "false");
-        // Preview-only honesty: with no real audience output, say so rather than imply a true LIVE
-        // (the local backend returns Ok silently — never surprise the operator, NFR-024 spirit).
-        let connected = true; try { connected = await invoke("output_connected"); } catch (e) {}
         if (badge) { badge.hidden = connected; if (!connected) badge.textContent = "Preview only — no audience output"; }
-        pmGridAnnounce((blackedOut ? "Blacked out; pending slide " : "Now live: slide ") + (idx + 1) + " of " + ids.length + (connected ? "" : " (preview only)"));
+        pmGridAnnounce((blackedOut ? "Blacked out; pending slide " : (connected ? "Now live: slide " : "Preview only — slide ")) + (idx + 1) + " of " + ids.length);
       }
       function pmRenderGrid(dv) {
         pmDv = dv;
@@ -4667,7 +4686,7 @@
           : null;
         slides.forEach((s, i) => {
           const tile = document.createElement("div"); tile.className = "pm-tile"; tile.dataset.id = String(s.id);
-          tile.setAttribute("role", "gridcell"); tile.tabIndex = i === 0 ? 0 : -1;
+          tile.setAttribute("role", "option"); tile.setAttribute("aria-selected", "false"); tile.tabIndex = i === 0 ? 0 : -1;
           tile.setAttribute("aria-label", "Slide " + (i + 1) + (s.lines && s.lines[0] ? ": " + s.lines[0] : ""));
           const cv = document.createElement("canvas"); cv.className = "pm-tile-cv"; cv.width = 320; cv.height = 180; tile.appendChild(cv);
           const n = document.createElement("span"); n.className = "pm-tile-n"; n.textContent = String(i + 1); tile.appendChild(n);
@@ -4683,8 +4702,8 @@
         pmGridSyncLive();
         // Static grid controls (idempotent wiring).
         const back = pmEl("pm-grid-back"); if (back) back.onclick = () => { pmSetMode("library"); pmLibLoad(); };
-        const edit = pmEl("pm-grid-edit"); if (edit) edit.onclick = () => { pmSetMode("editor"); renderPresentation(pmDv); };
-        const eEdit = pmEl("pm-grid-empty-edit"); if (eEdit) eEdit.onclick = () => { pmSetMode("editor"); renderPresentation(pmDv); };
+        const edit = pmEl("pm-grid-edit"); if (edit) edit.onclick = () => { pmThumbCache.clear(); pmSetMode("editor"); renderPresentation(pmDv); };
+        const eEdit = pmEl("pm-grid-empty-edit"); if (eEdit) eEdit.onclick = () => { pmThumbCache.clear(); pmSetMode("editor"); renderPresentation(pmDv); };
         const prev = pmEl("pm-prev"); if (prev) prev.onclick = () => { if (prev.getAttribute("aria-disabled") !== "true") pmGridDelta(-1); };
         const next = pmEl("pm-next"); if (next) next.onclick = () => { if (next.getAttribute("aria-disabled") !== "true") pmGridDelta(1); };
         tiles.onkeydown = (e) => {
@@ -5396,6 +5415,7 @@
       // --- wire the static controls (they exist at load; #surface-presentation is in the DOM) ---
       (function wirePresentation() {
         pmEl("pm-add-slide").onclick = pmAddSlide;
+        if (pmEl("pm-done")) pmEl("pm-done").onclick = () => { pmSetMode("grid"); pmRenderGrid(pmDv); }; // editor → grid
         pmEl("pm-undo").onclick = pmUndo;
         pmEl("pm-redo").onclick = pmRedo;
         pmEl("pm-import").onclick = () => pAct(() => invoke("deck_import_image"), "import the image");
