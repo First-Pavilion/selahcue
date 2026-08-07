@@ -12,6 +12,7 @@ import '../models/design_tokens.dart';
 import '../models/discovery.dart' show pinFingerprint;
 import '../models/rbac.dart';
 import '../models/session.dart';
+import '../models/tab_scope.dart';
 import '../models/stored_session.dart';
 import 'pairing_view.dart';
 import 'tabs/live_tab.dart';
@@ -21,7 +22,9 @@ import 'tabs/timer_tab.dart';
 import 'widgets/mobile_widgets.dart';
 
 class ControllerView extends StatefulWidget {
-  final SelahSession session;
+  // The interface (not the concrete SelahSession) so the shell is widget-testable
+  // with a fake; production callers pass a SelahSession, which implements it.
+  final ControllerSession session;
   final StoredSession stored;
 
   const ControllerView({super.key, required this.session, required this.stored});
@@ -74,7 +77,55 @@ class _ControllerViewState extends State<ControllerView> {
     );
   }
 
-  static const _titles = ['Live', 'Plan', 'Scripture', 'Timer'];
+  Widget _pageFor(ControllerTab tab) {
+    switch (tab) {
+      case ControllerTab.live:
+        return LiveTab(live: _live);
+      case ControllerTab.plan:
+        return PlanTab(live: _live);
+      case ControllerTab.scripture:
+        return ScriptureTab(live: _live);
+      case ControllerTab.timer:
+        return TimerTab(live: _live);
+    }
+  }
+
+  static String _tabTitle(ControllerTab tab) {
+    switch (tab) {
+      case ControllerTab.live:
+        return 'Live';
+      case ControllerTab.plan:
+        return 'Plan';
+      case ControllerTab.scripture:
+        return 'Scripture';
+      case ControllerTab.timer:
+        return 'Timer';
+    }
+  }
+
+  /// Build a bottom-bar destination; a view-only tab gets a muted dot + a
+  /// "view only" tooltip (the ◐ marker from the design).
+  NavigationDestination _destinationFor(TabSpec spec) {
+    final (IconData icon, IconData selected) = switch (spec.tab) {
+      ControllerTab.live => (Icons.play_arrow_outlined, Icons.play_arrow),
+      ControllerTab.plan => (Icons.list_alt_outlined, Icons.list_alt),
+      ControllerTab.scripture => (Icons.menu_book_outlined, Icons.menu_book),
+      ControllerTab.timer => (Icons.timer_outlined, Icons.timer),
+    };
+    final label = _tabTitle(spec.tab);
+    Widget wrap(IconData i) => spec.viewOnly
+        ? Badge(
+            backgroundColor: DesignTokens.textMuted,
+            smallSize: 7,
+            child: Icon(i))
+        : Icon(i);
+    return NavigationDestination(
+      icon: wrap(icon),
+      selectedIcon: wrap(selected),
+      label: label,
+      tooltip: spec.viewOnly ? '$label — view only' : label,
+    );
+  }
 
   /// Local wall-clock as `H:MM`, e.g. `10:42` (24-hour, no leading zero on hour).
   static String _wallClock() {
@@ -91,12 +142,13 @@ class _ControllerViewState extends State<ControllerView> {
         final onAir = view?.liveIndex != null ||
             view?.liveScripture != null ||
             view?.liveFreeText != null;
-        final tabs = [
-          LiveTab(live: _live),
-          PlanTab(live: _live),
-          ScriptureTab(live: _live),
-          TimerTab(live: _live),
-        ];
+        // The bottom bar is role-scoped (Figma 363-124): only the tabs this role
+        // may use are shown. Clamp the selected index so a role change (reconnect)
+        // can never leave it pointing at a now-hidden tab.
+        final specs = visibleTabsFor(_live.role);
+        final tab = _tab.clamp(0, specs.length - 1);
+        final pages = [for (final s in specs) _pageFor(s.tab)];
+        final currentTitle = _tabTitle(specs[tab].tab);
         return Scaffold(
           backgroundColor: DesignTokens.bgBase,
           appBar: AppBar(
@@ -112,7 +164,7 @@ class _ControllerViewState extends State<ControllerView> {
                   child: Text(
                       (view?.planName.isNotEmpty ?? false)
                           ? view!.planName
-                          : _titles[_tab],
+                          : currentTitle,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                           fontSize: 15,
@@ -190,7 +242,7 @@ class _ControllerViewState extends State<ControllerView> {
                     ),
                   ),
                 ),
-              Expanded(child: IndexedStack(index: _tab, children: tabs)),
+              Expanded(child: IndexedStack(index: tab, children: pages)),
               // Persistent emergency chrome — on every tab, above the nav.
               // Hidden entirely for a role that can neither blackout nor clear.
               if (_live.can(Capability.blackout) ||
@@ -201,26 +253,9 @@ class _ControllerViewState extends State<ControllerView> {
           bottomNavigationBar: NavigationBar(
             backgroundColor: DesignTokens.bgPanel,
             indicatorColor: DesignTokens.accentBrand.withValues(alpha: 0.22),
-            selectedIndex: _tab,
+            selectedIndex: tab,
             onDestinationSelected: (i) => setState(() => _tab = i),
-            destinations: const [
-              NavigationDestination(
-                  icon: Icon(Icons.play_arrow_outlined),
-                  selectedIcon: Icon(Icons.play_arrow),
-                  label: 'Live'),
-              NavigationDestination(
-                  icon: Icon(Icons.list_alt_outlined),
-                  selectedIcon: Icon(Icons.list_alt),
-                  label: 'Plan'),
-              NavigationDestination(
-                  icon: Icon(Icons.menu_book_outlined),
-                  selectedIcon: Icon(Icons.menu_book),
-                  label: 'Scripture'),
-              NavigationDestination(
-                  icon: Icon(Icons.timer_outlined),
-                  selectedIcon: Icon(Icons.timer),
-                  label: 'Timer'),
-            ],
+            destinations: [for (final s in specs) _destinationFor(s)],
           ),
         );
       },
