@@ -80,7 +80,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-008 | yes | `output_connected` command + `Backend::is_remote` present and registered | review: grep the command in `generate_handler!` + `is_remote` on `Backend`; `cargo check` clean | present + registered; check clean | command + is_remote in main.rs; operator cargo check clean | PASS |
 | C-009 | yes | §0 contract delivered exactly (command names, arg `delta`, field `live_authored_id`, `output_connected` bool) — incl. the WIRE `OperatorStateView.live_authored_id` needed for the real Remote path (a plan gap closed) | review against delivery-tracks §0 table | exact match | self-review PASS; independent confirm at C-011 | PASS |
 | C-010 | yes | Rust CI gates pass (fmt, clippy -D warnings, present/gpu/app/lan suites; operator check) | `make ci` (Rust portions) | PASS | fmt --check clean (both manifests); clippy -D warnings exit 0 (workspace + operator); present/gpu/app/lan suites + operator go_live_delta green | PASS |
-| C-011 | yes | Independent code review of Track A | /code-reviewer (or requesting-code-review) | approved | HANDOFF — awaiting review (GATE_REVIEW) | PENDING |
+| C-011 | yes | Independent code review of Track A | /code-reviewer (fresh-context independent reviewer) | approved | APPROVED — 0 Track-A blockers/highs; verified mutual-exclusion on every path, go_live_delta clamp safety, wire round-trip, no lock across .await; 1 Low suggestion (else-if for exclusivity clarity) | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -117,10 +117,12 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajxeq0y-present-flow-backend.md`
 - Validator result: PASS (structural)
-- Independent verification result: PENDING — handed to /code-reviewer (C-011)
-- Terminal state: **GATE_REVIEW** (C-001…C-010 PASS; C-011 independent review is a handoff the implementation role cannot self-approve)
-- Remaining failed or blocked criteria: C-011 (independent review) PENDING
-- ClickUp final evidence comment: posted on 86ajxeq0y; task moved to `code review`
+- Independent verification result: **PASS** — fresh-context independent review approved Track A (0 Track-A blockers/highs; 1 Low suggestion). Verified: mutual-exclusion of live_authored/live_slide on every path, go_live_delta clamp safety, live_authored_id wire round-trip, no deck lock held across .await. Corroborated: test_present 26 / go_live_delta 2 / test_controller 1 green.
+- Terminal state: **GATE_REVIEW** — all 11 criteria PASS and independently reviewed; Track A code is QA-ready. NOT declaring VERIFIED_COMPLETE because a clean story-level `make ci` is currently blocked by an EXTERNAL issue (below), not Track A.
+- Remaining failed or blocked criteria: none for Track A.
+- **External blocker (NOT Track A, flagged to owner):** the owner's in-progress Stage/confidence WIP added `stage_template`/`stage_message` to the wire `OperatorStateView` but had not yet propagated them to the 6 `test_protocol.rs` fixture literals, so `cargo test -p selahcue-lan` does not compile in the working tree (owner was observed editing `test_protocol.rs` to fix it). Story-level QA + `make ci` should run once that compiles.
+- **Low suggestion (optional, not applied):** in present.rs the `live_slide` and `live_authored` recompose branches could be `else if` to make the mutual-exclusion self-evident (correct today; no double-apply).
+- ClickUp final evidence comment: posted on 86ajxeq0y; review outcome recorded; task moved to `qa`.
 
 ### Notes / deviations (honest record)
 
