@@ -28,6 +28,10 @@ ndi = ["dep:grafton-ndi"]
 [dependencies]
 fs4 = "0.13"
 mdns-sd = "0.13"
+# Local wall clock for the confidence monitor's Timer-only chrome (date + 12-hour time).
+# `clock` pulls the OS timezone; `std` for Display formatting. Default features off to skip
+# the unused `oldtime`/serde surface.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
 argon2 = { version = "0.5", optional = true }
 getrandom = { version = "0.2", optional = true }

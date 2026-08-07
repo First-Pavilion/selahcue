@@ -1963,6 +1963,14 @@ impl ApplicationHandler for App {
         if due {
             self.next_frame = Some(now + FRAME);
             if let Ok(mut c) = self.controller.lock() {
+                // Feed the confidence monitor its local wall clock (Timer-only chrome, Figma
+                // 374-151) BEFORE ticking, so a minute rollover re-composes the stage in this
+                // same frame. `set_wall_clock` de-dupes internally — no busy redraw.
+                let local = chrono::Local::now();
+                c.set_wall_clock(
+                    &local.format("%A · %B %-d, %Y").to_string(),
+                    &local.format("%-I:%M %p").to_string(),
+                );
                 c.tick(now);
                 // Reconcile + feed the NDI OUTPUT senders from the same live state (holding the
                 // lock once). No-op in the default build (no `ndi` feature → no sinks created).

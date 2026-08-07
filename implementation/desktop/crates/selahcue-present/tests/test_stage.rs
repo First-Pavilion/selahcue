@@ -12,7 +12,7 @@ use selahcue_engine::scene::{Frame, Rgba};
 use selahcue_present::stage::{StageTemplate, MAX_STAGE_MESSAGE_LEN};
 use selahcue_present::{
     compose_identify, compose_slide, compose_stage, Presenter, Slide, StageDisplay, StageTheme,
-    Theme, TimerView,
+    Theme, TimerView, WallClock,
 };
 use std::time::{Duration, Instant};
 
@@ -43,7 +43,7 @@ fn ws(
     w: u32,
     h: u32,
 ) -> Frame {
-    compose_stage(c, n, t, StageTemplate::Worship, None, theme, w, h)
+    compose_stage(c, n, t, StageTemplate::Worship, None, None, theme, w, h)
 }
 
 fn has_color(fb: &FrameBuffer, color: Rgba) -> bool {
@@ -96,8 +96,11 @@ fn stage_current_region_auto_fits_a_long_verse_without_truncation_or_clip() {
     // The confidence monitor must AUTO-FIT (wrap to width + shrink) so the speaker sees
     // the WHOLE verse — parity with the audience output, never truncated or clipped (owner
     // refine). Esther 8:9 is the longest KJV verse.
-    use selahcue_engine::raster::measure_line_width;
-    use selahcue_engine::scene::Layer;
+    use selahcue_engine::raster::{measure_line_width, STAGE_FONT};
+    use selahcue_engine::scene::{FontName, Layer};
+    // The confidence monitor shapes its text in the bundled stage face (Inter), so the
+    // fit check must measure in that same face — not the default — to match what was drawn.
+    let stage_font = FontName::new(STAGE_FONT).unwrap();
     let theme = StageTheme::dark();
     let verse = "Then were the king's scribes called at that time in the third month, that is, \
         the month Sivan, on the three and twentieth day thereof; and it was written according \
@@ -125,7 +128,7 @@ fn stage_current_region_auto_fits_a_long_verse_without_truncation_or_clip() {
     // ...every line fits the region width (no horizontal clip)...
     for (t, px, _, rw) in &texts {
         assert!(
-            measure_line_width(t, *px, None, 700) <= *rw as f32 + 1.0,
+            measure_line_width(t, *px, Some(&stage_font), 700) <= *rw as f32 + 1.0,
             "stage line clips the region width: {t:?}"
         );
     }
@@ -228,6 +231,7 @@ fn stage_templates_render_differently() {
         Some(&t),
         StageTemplate::Worship,
         None,
+        None,
         &theme,
         400,
         240,
@@ -238,6 +242,7 @@ fn stage_templates_render_differently() {
         Some(&t),
         StageTemplate::Scripture,
         None,
+        None,
         &theme,
         400,
         240,
@@ -247,6 +252,7 @@ fn stage_templates_render_differently() {
         None,
         Some(&t),
         StageTemplate::TimerOnly,
+        None,
         None,
         &theme,
         400,
@@ -262,6 +268,144 @@ fn stage_templates_render_differently() {
 }
 
 #[test]
+fn timer_only_shows_service_chrome_wall_clock_and_a_200px_readout() {
+    // Figma 374-151: SERVICE TIMER (top-left) + wall clock (top-right), the live segment
+    // label, a giant ~200px readout, and a "date · 12-hour time" footer.
+    use selahcue_engine::scene::Layer;
+    let theme = StageTheme::dark();
+    let cur = Slide::title("SERMON");
+    let clock = WallClock::new("Sunday · August 3, 2026", "10:42 AM");
+    let t = TimerView {
+        elapsed_secs: 0,
+        remaining_secs: Some(765), // 12:45
+        time_up: false,
+        warn: false,
+        progress: 0.5,
+    };
+    let (w, h) = (1000u32, 563u32);
+    let frame = compose_stage(
+        Some(&cur),
+        None,
+        Some(&t),
+        StageTemplate::TimerOnly,
+        None,
+        Some(&clock),
+        &theme,
+        w,
+        h,
+    );
+    let texts: Vec<(&str, u32)> = frame
+        .layers
+        .iter()
+        .filter_map(|l| match l {
+            Layer::Text { text, px, .. } => Some((text.as_str(), *px)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        texts.iter().any(|(t, _)| *t == "SERVICE TIMER"),
+        "the fixed screen label renders"
+    );
+    assert!(
+        texts.iter().any(|(t, _)| *t == "SERMON"),
+        "the live slide title labels the timer"
+    );
+    assert!(
+        texts.iter().any(|(t, _)| *t == "10:42 AM"),
+        "the header wall clock renders"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|(t, _)| t.contains("Sunday · August 3, 2026") && t.contains("10:42 AM")),
+        "the date + 12-hour time footer renders"
+    );
+    // The countdown is the giant readout — ~200px em (0.49·h line box × FONT_TO_LINE≈0.72).
+    let readout = texts
+        .iter()
+        .find(|(t, _)| *t == "12:45")
+        .expect("the running readout renders as M:SS");
+    let want = (h as f64 * 0.49) as u32;
+    assert!(
+        readout.1.abs_diff(want) <= 2,
+        "readout line-box {} px should be ≈0.49·h ({want} px) for a ~200px em",
+        readout.1
+    );
+}
+
+#[test]
+fn timer_only_omits_clock_chrome_when_no_wall_clock_is_set() {
+    // The wall clock is optional (composition stays clock-free): with no `WallClock`, the
+    // header time and the date footer are simply absent — the timer still renders.
+    use selahcue_engine::scene::Layer;
+    let theme = StageTheme::dark();
+    let t = TimerView {
+        elapsed_secs: 0,
+        remaining_secs: Some(765),
+        time_up: false,
+        warn: false,
+        progress: 0.5,
+    };
+    let with_clock = compose_stage(
+        None,
+        None,
+        Some(&t),
+        StageTemplate::TimerOnly,
+        None,
+        Some(&WallClock::new("Sunday · August 3, 2026", "10:42 AM")),
+        &theme,
+        400,
+        240,
+    );
+    let without = compose_stage(
+        None,
+        None,
+        Some(&t),
+        StageTemplate::TimerOnly,
+        None,
+        None,
+        &theme,
+        400,
+        240,
+    );
+    let count_text = |f: &Frame| {
+        f.layers
+            .iter()
+            .filter(|l| matches!(l, Layer::Text { .. }))
+            .count()
+    };
+    assert!(
+        count_text(&with_clock) > count_text(&without),
+        "the wall clock adds the header time + date footer text layers"
+    );
+    // Still a valid timer screen without a clock: the readout is present.
+    assert!(
+        without
+            .layers
+            .iter()
+            .any(|l| matches!(l, Layer::Text { text, .. } if text == "12:45")),
+        "the readout renders even with no wall clock"
+    );
+}
+
+#[test]
+fn set_clock_round_trips_and_bounds_each_field() {
+    let mut sd = StageDisplay::new(160, 90, StageTheme::dark());
+    assert!(sd.clock().is_none());
+    sd.set_clock(Some(WallClock::new("Sunday · August 3, 2026", "10:42 AM")));
+    assert_eq!(sd.clock().map(|c| c.time()), Some("10:42 AM"));
+    let long = "x".repeat(500);
+    let wc = WallClock::new(&long, &long);
+    assert!(
+        wc.date().chars().count() <= WallClock::MAX_LEN
+            && wc.time().chars().count() <= WallClock::MAX_LEN,
+        "each wall-clock field is length-bounded (no-leak)"
+    );
+    sd.set_clock(None);
+    assert!(sd.clock().is_none());
+}
+
+#[test]
 fn time_up_is_full_screen_for_timer_only_but_region_only_for_worship() {
     // Behaviour spec (375-139): timer-only reddens the whole screen at TIME UP; worship
     // reddens only its bottom bar, leaving the content area untouched.
@@ -271,6 +415,7 @@ fn time_up_is_full_screen_for_timer_only_but_region_only_for_worship() {
         None,
         Some(&timed_up()),
         StageTemplate::TimerOnly,
+        None,
         None,
         &theme,
         200,
@@ -286,6 +431,7 @@ fn time_up_is_full_screen_for_timer_only_but_region_only_for_worship() {
         None,
         Some(&timed_up()),
         StageTemplate::Worship,
+        None,
         None,
         &theme,
         200,
@@ -313,6 +459,7 @@ fn a_production_message_overlays_and_frames_the_stage() {
         None,
         StageTemplate::Worship,
         None,
+        None,
         &theme,
         320,
         200,
@@ -323,6 +470,7 @@ fn a_production_message_overlays_and_frames_the_stage() {
         None,
         StageTemplate::Worship,
         Some("WRAP UP - 2 MIN LEFT"),
+        None,
         &theme,
         320,
         200,
@@ -343,6 +491,7 @@ fn a_production_message_overlays_and_frames_the_stage() {
         None,
         StageTemplate::Worship,
         Some("   "),
+        None,
         &theme,
         320,
         200,

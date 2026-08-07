@@ -11,7 +11,7 @@ use crate::theme::{Fit, VAlign};
 use selahcue_core::timer::Timer;
 use selahcue_engine::engine::{Engine, EngineCommand};
 use selahcue_engine::raster::FrameBuffer;
-use selahcue_engine::scene::{Frame, Layer, Rect, Rgba, TextAlign, TextStyle};
+use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, TextAlign, TextStyle};
 use std::time::{Duration, Instant};
 
 /// A stage/confidence template (the operator picks one per stage screen). Each lays the
@@ -187,6 +187,43 @@ fn format_clock(secs: u32) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
+/// A wall-clock snapshot for the stage chrome — a pre-formatted date line and 12-hour
+/// time-of-day (Figma 374-151: `Sunday · August 3, 2026` / `10:42 AM`). Supplied by the
+/// desktop backend so composition stays **clock-free and deterministic** (parity with the
+/// injected [`Timer`]): the composer never reads the OS clock, it only lays out strings.
+/// Both fields are length-bounded on construction (no-leak — a fixed two-string snapshot,
+/// replaced not accumulated).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WallClock {
+    date: String,
+    time: String,
+}
+
+impl WallClock {
+    /// Longest wall-clock field kept — a formatted date/time never approaches this; the cap
+    /// only defends the no-leak invariant against a pathological caller.
+    pub const MAX_LEN: usize = 48;
+
+    /// A snapshot from a pre-formatted `date` (e.g. `"Sunday · August 3, 2026"`) and 12-hour
+    /// `time` (e.g. `"10:42 AM"`). Both are truncated to [`MAX_LEN`](Self::MAX_LEN) chars.
+    pub fn new(date: &str, time: &str) -> Self {
+        WallClock {
+            date: date.chars().take(Self::MAX_LEN).collect(),
+            time: time.chars().take(Self::MAX_LEN).collect(),
+        }
+    }
+
+    /// The formatted date line (weekday · month day, year).
+    pub fn date(&self) -> &str {
+        &self.date
+    }
+
+    /// The formatted 12-hour time-of-day.
+    pub fn time(&self) -> &str {
+        &self.time
+    }
+}
+
 /// Compose the stage/confidence scene from the current live state, laid out by the chosen
 /// [`StageTemplate`] and with an optional operator `message` overlaid (Figma 373-375 / spec
 /// 375-139). `timer` is the active timer (`None` when none is running). The confidence
@@ -199,6 +236,7 @@ pub fn compose_stage(
     timer: Option<&TimerView>,
     template: StageTemplate,
     message: Option<&str>,
+    clock: Option<&WallClock>,
     theme: &StageTheme,
     width: u32,
     height: u32,
@@ -214,7 +252,9 @@ pub fn compose_stage(
         StageTemplate::Scripture => {
             compose_scripture(&mut frame, current, next, timer, theme, width, height)
         }
-        StageTemplate::TimerOnly => compose_timer_only(&mut frame, timer, theme, width, height),
+        StageTemplate::TimerOnly => {
+            compose_timer_only(&mut frame, current, timer, clock, theme, width, height)
+        }
     }
     // The production message is a stage-only overlay (never the audience) — it dims the
     // scene behind a gold-framed note so the speaker cannot miss it.
@@ -239,10 +279,15 @@ fn fill(f: &mut Frame, x: i32, y: i32, w: u32, h: u32, color: Rgba) {
     });
 }
 
+/// The stage/confidence typeface — the bundled **Inter** face (Figma 373-375). Always `Some`
+/// (a valid, bundled family name); it resolves deterministically in the named-font shaper.
+fn stage_font() -> Option<FontName> {
+    FontName::new(selahcue_engine::raster::STAGE_FONT)
+}
+
 /// A single line of stage CHROME — labels, the timer readout, the scripture reference, the
-/// message chip. All of it is **bold** (weight 700) to match the confidence-monitor design
-/// (Figma 373-375): heavy, legible at a distance. The bundled Noto Sans is single-weight, so
-/// this is a deterministic embolden — the same face the themed audience output uses for bold.
+/// message chip. All of it is **bold** (weight 700) Inter to match the confidence-monitor
+/// design (Figma 373-375): heavy, legible at a distance.
 #[allow(clippy::too_many_arguments)]
 fn line(f: &mut Frame, x: i32, y: i32, w: u32, px: u32, text: &str, color: Rgba, align: TextAlign) {
     if text.is_empty() {
@@ -255,7 +300,7 @@ fn line(f: &mut Frame, x: i32, y: i32, w: u32, px: u32, text: &str, color: Rgba,
         px,
         color,
         align,
-        font: None,
+        font: stage_font(),
         style: Some(TextStyle {
             weight: 700,
             letter_spacing_px: 0,
@@ -319,7 +364,7 @@ fn content_region(
         VAlign::Top,
         color,
         Fit::ShrinkToFit,
-        None,
+        stage_font(),
         weight,
         0,
     ) {
@@ -548,10 +593,14 @@ fn compose_scripture(
     }
 }
 
-// --- Timer-only: a big centred countdown, nothing else. TIME UP takes the whole screen. ---
+// --- Timer-only: a big centred countdown with service chrome (Figma 374-151). Header row
+// (SERVICE TIMER · wall clock), a segment label, the giant readout, and a date+time footer.
+// TIME UP washes the whole screen. ---
 fn compose_timer_only(
     frame: &mut Frame,
+    current: Option<&Slide>,
     timer: Option<&TimerView>,
+    clock: Option<&WallClock>,
     theme: &StageTheme,
     w: u32,
     h: u32,
@@ -561,24 +610,56 @@ fn compose_timer_only(
         // Full-screen solid red wash (never flashing — WCAG 2.3.1).
         fill(frame, 0, 0, w, h, theme.alert_wash);
     }
+
+    // Header, left: the fixed screen label.
     line(
         frame,
         (w as f64 * 0.04) as i32,
-        (h as f64 * 0.06) as i32,
+        (h as f64 * 0.052) as i32,
         w,
-        ((h as f64 * 0.030) as u32).max(1),
+        ((h as f64 * 0.050) as u32).max(1),
         "SERVICE TIMER",
         theme.muted,
         TextAlign::Left,
     );
+    // Header, right: the wall clock (time-of-day), right-aligned to a 0.04·w margin.
+    if let Some(c) = clock.filter(|c| !c.time().is_empty()) {
+        line(
+            frame,
+            0,
+            (h as f64 * 0.045) as i32,
+            (w as f64 * 0.96) as u32,
+            ((h as f64 * 0.068) as u32).max(1),
+            c.time(),
+            theme.text,
+            TextAlign::Right,
+        );
+    }
+
+    // Segment label above the readout — the live slide's title (e.g. "SERMON"); omitted
+    // when nothing is live so the template stays a clean timer.
+    if let Some(title) = current.map(|s| s.title.trim()).filter(|t| !t.is_empty()) {
+        line(
+            frame,
+            0,
+            (h as f64 * 0.27) as i32,
+            w,
+            ((h as f64 * 0.060) as u32).max(1),
+            title,
+            theme.muted,
+            TextAlign::Center,
+        );
+    }
+
+    // The giant readout — Inter bold at ~200px (0.49·h line box → ~0.35·h em, ×FONT_TO_LINE).
     match timer {
         Some(t) if t.time_up => {
             line(
                 frame,
                 0,
-                (h as f64 * 0.34) as i32,
+                (h as f64 * 0.36) as i32,
                 w,
-                ((h as f64 * 0.28) as u32).max(1),
+                ((h as f64 * 0.34) as u32).max(1),
                 "TIME UP",
                 theme.timer_alert,
                 TextAlign::Center,
@@ -588,9 +669,9 @@ fn compose_timer_only(
             line(
                 frame,
                 0,
-                (h as f64 * 0.31) as i32,
+                (h as f64 * 0.30) as i32,
                 w,
-                ((h as f64 * 0.36) as u32).max(1),
+                ((h as f64 * 0.49) as u32).max(1),
                 &timer_readout(t),
                 t.color(theme),
                 TextAlign::Center,
@@ -600,14 +681,33 @@ fn compose_timer_only(
             line(
                 frame,
                 0,
-                (h as f64 * 0.37) as i32,
+                (h as f64 * 0.30) as i32,
                 w,
-                ((h as f64 * 0.20) as u32).max(1),
+                ((h as f64 * 0.49) as u32).max(1),
                 "--:--",
                 theme.muted,
                 TextAlign::Center,
             );
         }
+    }
+
+    // Footer: the date and 12-hour time-of-day, e.g. "Sunday · August 3, 2026 · 10:42 AM".
+    if let Some(c) = clock.filter(|c| !c.date().is_empty()) {
+        let footer = if c.time().is_empty() {
+            c.date().to_string()
+        } else {
+            format!("{} · {}", c.date(), c.time())
+        };
+        line(
+            frame,
+            0,
+            (h as f64 * 0.80) as i32,
+            w,
+            ((h as f64 * 0.072) as u32).max(1),
+            &footer,
+            theme.text,
+            TextAlign::Center,
+        );
     }
 }
 
@@ -668,7 +768,7 @@ fn push_message_overlay(frame: &mut Frame, msg: &str, theme: &StageTheme, w: u32
         VAlign::Top,
         theme.text,
         Fit::ShrinkToFit,
-        None,
+        stage_font(),
         700,
         0,
     ) {
@@ -720,6 +820,7 @@ pub struct StageDisplay {
     theme: StageTheme,
     template: StageTemplate,
     message: Option<String>,
+    clock: Option<WallClock>,
     engine: Engine,
 }
 
@@ -731,6 +832,7 @@ impl StageDisplay {
             theme,
             template: StageTemplate::default(),
             message: None,
+            clock: None,
             engine: Engine::new(width, height),
         }
     }
@@ -761,6 +863,18 @@ impl StageDisplay {
         };
     }
 
+    /// The wall-clock snapshot the confidence monitor renders (Timer-only footer/header), if
+    /// any. Compared by the controller so the monitor only re-composes when the value changes.
+    pub fn clock(&self) -> Option<&WallClock> {
+        self.clock.as_ref()
+    }
+
+    /// Set (or clear, with `None`) the wall-clock snapshot. The desktop backend pushes the
+    /// current local date/time here each refresh; composition itself stays clock-free.
+    pub fn set_clock(&mut self, clock: Option<WallClock>) {
+        self.clock = clock;
+    }
+
     /// Update the monitor from the current live state (`timer` = `None` when no timer
     /// is running), laid out by the current template with any production message overlaid.
     pub fn update(
@@ -775,6 +889,7 @@ impl StageDisplay {
             timer,
             self.template,
             self.message.as_deref(),
+            self.clock.as_ref(),
             &self.theme,
             self.width,
             self.height,

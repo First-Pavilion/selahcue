@@ -23,6 +23,16 @@ use std::cell::RefCell;
 /// (Yoruba/Hausa/Igbo/French/Spanish).
 static FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSans-Latin.ttf");
 
+/// A second BUNDLED family — Inter (OFL, a Latin subset). It is loaded only into the
+/// named-font `FontSystem` (never the default), so a Layer requesting `Family::Name("Inter")`
+/// resolves to this bundled face deterministically — used by the stage/confidence monitor
+/// (Figma 373-375) — while the default (`font: None`, e.g. the audience output) stays exactly
+/// on the bundled Noto Sans, byte-identical as before (NFR-014).
+static INTER_BYTES: &[u8] = include_bytes!("../assets/fonts/Inter-Latin.ttf");
+
+/// The bundled family name to request a Layer in the Inter face (`Family::Name(STAGE_FONT)`).
+pub const STAGE_FONT: &str = "Inter";
+
 /// Font size as a fraction of the line-box (`px`) height. The bundled Noto Sans
 /// has an ascent+descent of ~1.36 em, so a font sized at ~0.72 of the cell keeps
 /// the full glyph box — descenders and dot-below marks included — inside the cell
@@ -91,6 +101,9 @@ pub fn system_font_families() -> Vec<String> {
 fn build_system_fs() -> FontSystem {
     let mut db = cosmic_text::fontdb::Database::new();
     db.load_font_data(FONT_BYTES.to_vec());
+    // Bundled Inter (loaded before the system fonts so `Family::Name("Inter")` resolves to the
+    // bundled face, not a machine-installed Inter) — the stage/confidence typeface.
+    db.load_font_data(INTER_BYTES.to_vec());
     db.load_system_fonts();
     FontSystem::new_with_locale_and_db("en-US".to_string(), db)
 }

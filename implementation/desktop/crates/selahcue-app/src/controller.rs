@@ -18,7 +18,7 @@ use selahcue_lan::protocol::{
 };
 use selahcue_present::{
     AuthoredSlide, FrameBuffer, LayerMask, Presenter, Slide, StageDisplay, StageTheme, Theme,
-    TimerView,
+    TimerView, WallClock,
 };
 use std::time::{Duration, Instant};
 
@@ -1534,6 +1534,23 @@ impl LiveController {
     /// Whether pairing mode (the QR overlay) is currently active.
     pub fn pairing_qr_active(&self) -> bool {
         self.pairing_qr.is_some()
+    }
+
+    /// Push the current local wall clock (a pre-formatted date line and 12-hour time) onto the
+    /// confidence monitor's Timer-only chrome (Figma 374-151). The desktop backend calls this
+    /// each refresh with `chrono::Local::now()`; composition itself never reads the OS clock,
+    /// so the monitor only re-composes when the displayed minute actually changes (no busy
+    /// redraw). Blank strings clear the chrome.
+    pub fn set_wall_clock(&mut self, date: &str, time: &str) {
+        let next = if date.trim().is_empty() && time.trim().is_empty() {
+            None
+        } else {
+            Some(WallClock::new(date.trim(), time.trim()))
+        };
+        if self.stage.clock() != next.as_ref() {
+            self.stage.set_clock(next);
+            self.stage_dirty = true;
+        }
     }
 
     /// The stage/confidence monitor output (a second display surface). Updated by
