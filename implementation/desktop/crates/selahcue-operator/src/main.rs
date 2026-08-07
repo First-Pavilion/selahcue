@@ -30,6 +30,17 @@ use tauri::{Manager, State};
 #[cfg(feature = "stt")]
 mod listening;
 
+/// The Presentation & Media editing workspace (Design 2.0, node 329:124) — the authored deck +
+/// media library the console edits, behind the deck/media Tauri commands.
+mod deck_workspace;
+use deck_workspace::DeckWorkspace;
+
+/// The persisted Presentations Library (design 86ajvpngr) — the set of saved decks + best-effort
+/// SQLite persistence behind the deck_list/new/open/rename/duplicate/delete commands.
+mod deck_library;
+use deck_library::DeckLibrary;
+use selahcue_present::DeckId;
+
 /// Where the operator commands are dispatched: a remote host output window, or an
 /// in-process demo controller.
 enum Backend {
@@ -62,6 +73,24 @@ impl Backend {
         match self {
             Backend::Remote(m) => m.lock().await.go_live().await.map_err(|e| e.to_string()),
             Backend::Local(s) => Ok(s.go_live()),
+        }
+    }
+    /// Present a Design 2.0 authored deck slide on the audience output (the deck editor's
+    /// "Present"). `slide_json`/`theme_json` are the serialized `AuthoredSlide` + `Theme` the
+    /// canvas preview composed; the host composes them with the same compositor as plan content.
+    async fn present_authored_slide(
+        &self,
+        slide_json: String,
+        theme_json: String,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .present_authored_slide(slide_json, theme_json)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.present_authored_slide(&slide_json, &theme_json)),
         }
     }
     async fn clear(&self) -> Result<OperatorView, String> {
@@ -517,6 +546,12 @@ impl Backend {
 
 struct AppState {
     backend: Backend,
+    /// The Presentation & Media workspace (operator-local — its `DeckView` is separate from the
+    /// LAN-shared `OperatorView`, so the pinned cross-language wire fixtures stay untouched).
+    deck: Mutex<DeckWorkspace>,
+    /// The persisted Presentations Library — the set of saved decks the `deck` workspace opens
+    /// one of at a time. Locked AFTER `deck` wherever both are held (consistent order, no deadlock).
+    library: Mutex<DeckLibrary>,
 }
 
 #[tauri::command]
@@ -815,6 +850,410 @@ async fn render_screen(
             }
             Err(e) => Ok(serde_json::json!({ "available": false, "error": e.to_string() })),
         },
+    }
+}
+
+// --- Presentation & Media (Design 2.0, node 329:124) --------------------------------------
+//
+// The deck/media commands drive the operator-local [`DeckWorkspace`] and return a `DeckView`
+// JSON snapshot (NOT the LAN-shared `OperatorView`, so the pinned cross-language wire fixtures
+// stay untouched). All are `async` — a sync `#[tauri::command]` that takes `State` runs on the
+// WebView thread and does not surface its result (same reason as `render_console`); the body is
+// synchronous + holds the std `Mutex` only within the (await-free) call, so the future is `Send`.
+
+/// Lock the deck workspace, apply an edit, autosave the open deck into the library, and return the
+/// fresh `DeckView`. The autosave is a best-effort single-row upsert (idempotent when unchanged);
+/// a poisoned/absent library never blocks or fails the edit (persistence is best-effort). Lock
+/// order is ALWAYS deck→library.
+fn with_deck(
+    state: &State<'_, AppState>,
+    f: impl FnOnce(&mut DeckWorkspace),
+) -> Result<serde_json::Value, String> {
+    let mut ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
+    f(&mut ws);
+    if let Ok(mut lib) = state.library.lock() {
+        lib.store(ws.open_deck());
+    }
+    Ok(ws.view())
+}
+
+/// Open the operator's best-effort deck DB at `<app_data_dir>/selahcue.db3`. Returns `None` on ANY
+/// failure (missing dir, permissions, a DB the default build can't read — e.g. an encrypted file),
+/// so the caller falls back to an in-memory library. (Aligning this path with the desktop bin's
+/// `data_dir()` for a single shared DB is a documented follow-up.)
+fn open_deck_db(app: &tauri::App) -> Option<selahcue_data::Database> {
+    use tauri::Manager;
+    let dir = app.path().app_data_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    selahcue_data::Database::open(dir.join("selahcue.db3")).ok()
+}
+
+/// Lock the deck workspace AND the library (in that order — consistent, no deadlock) and run `f`,
+/// returning its JSON. Used by the library commands that must coordinate the open editor with the
+/// saved set (open/switch/rename/delete).
+fn with_deck_and_library(
+    state: &State<'_, AppState>,
+    f: impl FnOnce(&mut DeckWorkspace, &mut DeckLibrary) -> serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
+    let mut lib = state
+        .library
+        .lock()
+        .map_err(|e| format!("library lock: {e}"))?;
+    Ok(f(&mut ws, &mut lib))
+}
+
+/// The `LibraryView` JSON the Presentations Library renders from: the decks (id · name · slide
+/// count), which one is open, and whether edits are persisted (in-memory fallback → false).
+fn library_view(lib: &DeckLibrary, open_id: DeckId) -> serde_json::Value {
+    let decks: Vec<serde_json::Value> = lib
+        .list()
+        .into_iter()
+        .map(|m| serde_json::json!({ "id": m.id.0, "name": m.name, "slides": m.slides }))
+        .collect();
+    serde_json::json!({ "decks": decks, "open": open_id.0, "persistent": lib.is_persistent() })
+}
+
+/// The Presentations Library list (id · name · slide count · which is open · persistence state).
+#[tauri::command]
+async fn deck_list(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    with_deck_and_library(&state, |ws, lib| library_view(lib, ws.open_deck().id()))
+}
+
+/// Create a new blank presentation (unique id + name) and OPEN it in the editor → returns the
+/// `DeckView` so the surface switches to the new deck.
+#[tauri::command]
+async fn deck_new(name: String, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    with_deck_and_library(&state, |ws, lib| {
+        let deck = lib.create(&name);
+        ws.load_deck(deck);
+        ws.view()
+    })
+}
+
+/// Open an existing presentation by id → saves the outgoing deck, loads the target, returns the
+/// `DeckView`. A no-op (returns the current deck) if `id` is unknown.
+#[tauri::command]
+async fn deck_open(id: u64, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    with_deck_and_library(&state, |ws, lib| {
+        if ws.open_deck().id() == DeckId(id) {
+            return ws.view(); // already open — don't reset the editing session (undo/selection)
+        }
+        lib.store(ws.open_deck()); // persist the deck we are leaving
+        if let Some(deck) = lib.get(DeckId(id)) {
+            ws.load_deck(deck);
+        }
+        ws.view()
+    })
+}
+
+/// Rename a presentation (unique-enforced) → returns the `LibraryView`. If the renamed deck is the
+/// open one, the editor's name is updated in place too.
+#[tauri::command]
+async fn deck_rename(
+    id: u64,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck_and_library(&state, |ws, lib| {
+        if let Some(applied) = lib.rename(DeckId(id), &name) {
+            if ws.open_deck().id() == DeckId(id) {
+                ws.set_open_name(applied);
+            }
+        }
+        library_view(lib, ws.open_deck().id())
+    })
+}
+
+/// Duplicate a presentation into an independent "<name> copy" → returns the `LibraryView` (the copy
+/// is added to the library; the editor stays on the current deck).
+#[tauri::command]
+async fn deck_duplicate(id: u64, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    with_deck_and_library(&state, |ws, lib| {
+        lib.duplicate(DeckId(id));
+        library_view(lib, ws.open_deck().id())
+    })
+}
+
+/// Delete a presentation → returns the `LibraryView`. If the deleted deck was open, the editor
+/// switches to another deck (or a fresh blank one if the library is now empty — never left with no
+/// open deck).
+#[tauri::command]
+async fn deck_delete(id: u64, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    with_deck_and_library(&state, |ws, lib| {
+        let was_open = ws.open_deck().id() == DeckId(id);
+        lib.delete(DeckId(id));
+        if was_open {
+            let next = lib.list().first().and_then(|m| lib.get(m.id));
+            let deck = next.unwrap_or_else(|| lib.create("Untitled presentation"));
+            ws.load_deck(deck);
+        }
+        library_view(lib, ws.open_deck().id())
+    })
+}
+
+#[tauri::command]
+async fn deck_view(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    // Read-only — lock the deck and return its view WITHOUT the library autosave (a read must not
+    // write). Mirrors `render_deck_slide`'s single-lock read path.
+    let ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
+    Ok(ws.view())
+}
+#[tauri::command]
+async fn deck_add_slide(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.add_slide())
+}
+#[tauri::command]
+async fn deck_remove_slide(
+    id: u64,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.remove_slide(id))
+}
+#[tauri::command]
+async fn deck_duplicate_slide(
+    id: u64,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.duplicate_slide(id))
+}
+#[tauri::command]
+async fn deck_reorder_slide(
+    from: usize,
+    to: usize,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.reorder_slide(from, to))
+}
+#[tauri::command]
+async fn deck_select_slide(
+    id: u64,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.select_slide(id))
+}
+#[tauri::command]
+async fn deck_add_element(
+    kind: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.add_element(&kind))
+}
+#[tauri::command]
+async fn deck_add_image_element(
+    media_id: u64,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.add_image_element(media_id))
+}
+#[tauri::command]
+async fn deck_remove_element(
+    index: usize,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.remove_element(index))
+}
+#[tauri::command]
+async fn deck_select_element(
+    index: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.select_element(index))
+}
+#[tauri::command]
+async fn deck_move_element(
+    index: usize,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |ws| ws.move_element(index, x, y, w, h))
+}
+#[tauri::command]
+async fn deck_set_element_z(
+    index: usize,
+    z: i16,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.set_element_z(index, z))
+}
+#[tauri::command]
+async fn deck_reorder_elements(
+    order: Vec<usize>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.reorder_elements(order))
+}
+#[tauri::command]
+async fn deck_toggle_element_visible(
+    index: usize,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.toggle_element_visible(index))
+}
+#[tauri::command]
+async fn deck_set_element_text(
+    index: usize,
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.set_element_text(index, text))
+}
+#[tauri::command]
+async fn deck_update_element(
+    index: usize,
+    patch: serde_json::Value,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.update_element(index, patch))
+}
+#[tauri::command]
+async fn deck_replace_element_image(
+    index: usize,
+    media_id: u64,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.replace_element_image(index, media_id))
+}
+#[tauri::command]
+async fn deck_set_notes(
+    notes: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.set_notes(notes))
+}
+#[tauri::command]
+async fn deck_set_transition(
+    transition: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.set_transition(&transition))
+}
+#[tauri::command]
+async fn deck_set_auto_advance(
+    secs: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.set_auto_advance(secs))
+}
+#[tauri::command]
+async fn deck_undo(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.undo())
+}
+#[tauri::command]
+async fn deck_redo(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.redo())
+}
+/// **Present** the selected deck slide (Design 2.0). Marks it live in the editor (FR-012
+/// Preview→Live annotation) AND routes the composed slide to the native audience output over the
+/// LAN control link — the fix for "clicking Present does nothing on the output".
+#[tauri::command]
+async fn deck_go_live(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    // Capture the editor view + the (slide, theme) payload under the deck/library locks, then
+    // drop them BEFORE the async backend call (they are std Mutexes).
+    let (view, payload) = {
+        let mut ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
+        ws.go_live();
+        if let Ok(mut lib) = state.library.lock() {
+            lib.store(ws.open_deck());
+        }
+        (ws.view(), ws.present_payload())
+    };
+    // Route the composed slide to the audience output (same compositor as the canvas preview). A
+    // transport failure surfaces as the command error so the operator learns the output wasn't
+    // reached; the local live annotation already succeeded regardless.
+    if let Some((slide_json, theme_json)) = payload {
+        state
+            .backend
+            .present_authored_slide(slide_json, theme_json)
+            .await?;
+    }
+    Ok(view)
+}
+/// Advance the LIVE deck slide by `delta` (−1 previous / +1 next), clamped to the deck ends, and
+/// present it to the audience output — atomically, under a single deck-lock acquisition (no
+/// select-then-present race). Drives the presentation grid's ◀ ▶ transport and live-mode arrows.
+#[tauri::command]
+async fn deck_go_live_delta(
+    delta: i32,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let (view, payload) = {
+        let mut ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
+        ws.go_live_delta(delta);
+        if let Ok(mut lib) = state.library.lock() {
+            lib.store(ws.open_deck());
+        }
+        (ws.view(), ws.present_payload())
+    };
+    if let Some((slide_json, theme_json)) = payload {
+        state
+            .backend
+            .present_authored_slide(slide_json, theme_json)
+            .await?;
+    }
+    Ok(view)
+}
+#[tauri::command]
+async fn deck_remove_media(
+    id: u64,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck(&state, |w| w.remove_media(id))
+}
+
+/// Import an image into the media library via the native file picker, recording its real byte
+/// size. Video/audio disk import (and on-output playback) is a deferred affordance (ADR-0020).
+#[tauri::command]
+async fn deck_import_image(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Images", &["png", "jpg", "jpeg"])
+        .blocking_pick_file()
+        .and_then(|fp| fp.into_path().ok());
+    with_deck(&state, |w| {
+        if let Some(path) = picked {
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            w.import_media(
+                path.to_string_lossy().into_owned(),
+                "image",
+                size,
+                None,
+                None,
+                None,
+            );
+        }
+    })
+}
+
+/// Compose the selected (or `id`) slide to base64 RGBA8 for the slide-canvas preview — the same
+/// native compositor as the audience output (read-only; never changes what is on air). Bounded.
+#[tauri::command]
+async fn render_deck_slide(
+    id: Option<u64>,
+    max_w: u32,
+    max_h: u32,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    use base64::Engine;
+    let ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
+    match ws.render_slide(id, max_w, max_h) {
+        Some(fb) => Ok(serde_json::json!({
+            "available": true,
+            "frame": {
+                "w": fb.width(),
+                "h": fb.height(),
+                "rgba": base64::engine::general_purpose::STANDARD.encode(fb.bytes()),
+            }
+        })),
+        None => Ok(serde_json::json!({ "available": true, "frame": serde_json::Value::Null })),
     }
 }
 
@@ -1120,7 +1559,24 @@ fn main() {
             // Connect on the Tauri runtime so the client is bound to the same reactor the
             // async commands run on.
             let backend = tauri::async_runtime::block_on(build_backend());
-            app.manage(AppState { backend });
+            // Best-effort deck persistence: open `<app_data_dir>/selahcue.db3`; on ANY failure the
+            // library runs in memory (editing never blocked). Load the saved library and open a
+            // deck: the most-recent saved deck, or — on first run — adopt the demo deck so the
+            // editor still opens onto content and the library isn't empty.
+            let library = DeckLibrary::load(open_deck_db(app));
+            let mut ws = DeckWorkspace::demo();
+            let mut library = library;
+            if library.is_empty() {
+                let seeded = library.adopt(ws.open_deck().clone());
+                ws.load_deck(seeded);
+            } else if let Some(first) = library.list().first().and_then(|m| library.get(m.id)) {
+                ws.load_deck(first);
+            }
+            app.manage(AppState {
+                backend,
+                deck: Mutex::new(ws),
+                library: Mutex::new(library),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1173,7 +1629,40 @@ fn main() {
             render_screen,
             builtin_themes,
             system_fonts,
-            pick_image
+            pick_image,
+            deck_view,
+            deck_list,
+            deck_new,
+            deck_open,
+            deck_rename,
+            deck_duplicate,
+            deck_delete,
+            deck_add_slide,
+            deck_remove_slide,
+            deck_duplicate_slide,
+            deck_reorder_slide,
+            deck_select_slide,
+            deck_add_element,
+            deck_add_image_element,
+            deck_remove_element,
+            deck_select_element,
+            deck_move_element,
+            deck_set_element_z,
+            deck_reorder_elements,
+            deck_toggle_element_visible,
+            deck_set_element_text,
+            deck_update_element,
+            deck_replace_element_image,
+            deck_set_notes,
+            deck_set_transition,
+            deck_set_auto_advance,
+            deck_undo,
+            deck_redo,
+            deck_go_live,
+            deck_go_live_delta,
+            deck_remove_media,
+            deck_import_image,
+            render_deck_slide
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");
