@@ -797,6 +797,69 @@ fn the_composer_never_panics_on_pathological_input() {
 }
 
 #[test]
+fn time_up_words_pulse_between_two_inks_while_the_wash_stays_steady() {
+    // At TIME UP only the WORDS pulse — a calm one-second bright/dim alternation (0.5 Hz, far
+    // below the WCAG 2.3.1 flash threshold). The red wash behind them is identical every
+    // second; a rapid full-screen strobe would be a seizure risk.
+    let theme = StageTheme::dark();
+    let even = TimerView {
+        elapsed_secs: 4,
+        remaining_secs: Some(0),
+        time_up: true,
+        warn: false,
+        progress: 0.0,
+    };
+    let odd = TimerView {
+        elapsed_secs: 5,
+        ..even
+    };
+    let up = |t: &TimerView, tmpl| {
+        compose_stage(
+            None,
+            None,
+            Some(t),
+            tmpl,
+            None,
+            &StageContext::default(),
+            &theme,
+            400,
+            240,
+        )
+    };
+    for tmpl in [
+        StageTemplate::TimerOnly,
+        StageTemplate::Worship,
+        StageTemplate::Scripture,
+    ] {
+        let fe = render(&up(&even, tmpl));
+        let fo = render(&up(&odd, tmpl));
+        assert_ne!(
+            fe.bytes(),
+            fo.bytes(),
+            "the TIME UP words differ between an even and odd second ({tmpl:?})"
+        );
+        assert_eq!(
+            fe.pixel(3, 3),
+            fo.pixel(3, 3),
+            "the wash/background is identical second-to-second ({tmpl:?})"
+        );
+    }
+    // The two inks are the brightened glow (even second) and the base alert red (odd second).
+    let bright = theme.timer_alert.lerp(Rgba::WHITE, 350);
+    assert!(
+        has_color(&render(&up(&even, StageTemplate::TimerOnly)), bright),
+        "the even second glows brighter than the base alert red"
+    );
+    assert!(
+        has_color(
+            &render(&up(&odd, StageTemplate::TimerOnly)),
+            theme.timer_alert
+        ),
+        "the odd second is the base alert red"
+    );
+}
+
+#[test]
 fn time_up_is_full_screen_for_timer_only_but_region_only_for_worship() {
     // Behaviour spec (375-139): timer-only reddens the whole screen at TIME UP; worship
     // reddens only its bottom bar, leaving the content area untouched.

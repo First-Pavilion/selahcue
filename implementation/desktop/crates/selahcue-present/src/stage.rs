@@ -408,6 +408,19 @@ fn timer_readout(t: &TimerView) -> String {
     }
 }
 
+/// The pulsing ink for the TIME UP **words** — a calm one-second bright/dim alternation
+/// (a 0.5 Hz pulse keyed off the elapsed second, which the stage already re-renders each
+/// second). Only the text pulses; the red wash behind it stays steady. Deliberately slow and
+/// small-area: well below the WCAG 2.3.1 flash threshold, so the alert draws the eye without a
+/// seizure-risk strobe.
+fn time_up_ink(theme: &StageTheme, elapsed_secs: u32) -> Rgba {
+    if elapsed_secs.is_multiple_of(2) {
+        theme.timer_alert.lerp(Rgba::WHITE, 350) // brightened "glow" second
+    } else {
+        theme.timer_alert // base alert red
+    }
+}
+
 /// The top-right header wall clock shared by the worship + scripture templates (Figma
 /// 373-140 / 374-131): the 12-hour time-of-day, right-aligned to a 0.04·w margin. A no-op
 /// until the backend feeds a clock.
@@ -606,6 +619,12 @@ fn compose_worship(
             TextAlign::Left,
         );
         let px = ((band_h as f64 * 0.42) as u32).max(1);
+        // At TIME UP the readout word pulses (the dot + band stay steady).
+        let readout_col = if up {
+            time_up_ink(theme, t.elapsed_secs)
+        } else {
+            col
+        };
         line(
             frame,
             (w as f64 * 0.50) as i32,
@@ -613,7 +632,7 @@ fn compose_worship(
             (w as f64 * 0.46) as u32,
             px,
             &timer_readout(t),
-            col,
+            readout_col,
             TextAlign::Right,
         );
     }
@@ -733,6 +752,13 @@ fn compose_scripture(
     } else {
         ("ON TIME", theme.timer_ok)
     };
+    // At TIME UP the pill LABEL pulses each second; the dot + panel wash stay steady.
+    let elapsed = timer.map(|t| t.elapsed_secs).unwrap_or(0);
+    let pill_label_col = if up {
+        time_up_ink(theme, elapsed)
+    } else {
+        pill_col
+    };
     let pill_px = ((h as f64 * 0.028) as u32).max(1);
     let dot_d = ((pill_px as f64) * 0.5) as u32;
     let pgap = ((pill_px as f64) * 0.4) as u32;
@@ -757,7 +783,7 @@ fn compose_scripture(
         label_w + pill_px,
         pill_px,
         pill,
-        pill_col,
+        pill_label_col,
         TextAlign::Left,
     );
 
@@ -787,7 +813,7 @@ fn compose_scripture(
             read_px.max(1),
             &txt,
             if up {
-                theme.timer_alert
+                time_up_ink(theme, t.elapsed_secs)
             } else {
                 t.color(theme)
             },
@@ -898,7 +924,7 @@ fn compose_timer_only(
                 w,
                 ((h as f64 * 0.34) as u32).max(1),
                 "TIME UP",
-                theme.timer_alert,
+                time_up_ink(theme, t.elapsed_secs),
                 TextAlign::Center,
             );
         }
