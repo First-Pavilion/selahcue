@@ -90,6 +90,14 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 ## Iteration ledger
 
+### Iteration 2 (Slice 1 — Tasks 7–8) — resumed on a clean base 2026-08-07
+
+- Delivered: three-mode state (`pmSetMode`), nav lands on Library, open card → slide GRID, native `render_deck_slide` thumbnails (lazy IO + bounded cache + eager first fold), single-click select (safe), double-click go-live (`deck_go_live`) with red LIVE ring, Edit ▸ / ‹ Presentations nav, grid CSS (`--sc-*` only), grid aria-live region. Commit `51e3f4e`.
+- Verifier: `python3 scripts/operator_headless.py` → **342 checks, 0 FAIL** (driver navigates library→grid→edit; +14 grid checks; `EXPECTED_MIN_CHECKS` 319→342).
+- Fixes vs plan: `pmGridGoLive` always `deck_select_slide` then `deck_go_live` (client cursor ≠ host selection); eager-render first fold (IO doesn't fire in headless).
+- Progress: C-001 (landing+open→grid) and C-002 (grid+thumbnails) substantially met (except `#pm-lib-back` removal, deferred to the relocation slice). C-003/004/005/006 remaining.
+- Decision: iterate — next Slice 2 (host-truth ring `live_authored_id` + `◀▶`/arrows advance live via `deck_go_live_delta` + `output_connected`).
+
 ### Iteration 1
 
 - Target criterion: C-007 (guard) then C-001
