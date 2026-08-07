@@ -12,47 +12,62 @@ import 'package:flutter/material.dart';
 
 import 'models/design_tokens.dart';
 import 'models/session.dart';
+import 'models/settings.dart';
 import 'models/stored_session.dart';
 import 'views/controller_view.dart';
 import 'views/pairing_view.dart';
 
-void main() => runApp(const SelahCueApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Load persisted preferences (and apply keep-awake) before the first frame.
+  final settings = SettingsController();
+  await settings.load();
+  runApp(SelahCueApp(settings: settings));
+}
 
 class SelahCueApp extends StatelessWidget {
-  const SelahCueApp({super.key});
+  final SettingsController settings;
+  const SelahCueApp({super.key, required this.settings});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'SelahCue Controller',
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: DesignTokens.accentBrand,
+    // SettingsScope sits ABOVE MaterialApp so the builder (reduce-motion), the
+    // Config sheet, and action buttons (haptics) can all read it and rebuild.
+    return SettingsScope(
+      settings: settings,
+      child: MaterialApp(
+        title: 'SelahCue Controller',
+        theme: ThemeData(
           brightness: Brightness.dark,
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: DesignTokens.accentBrand,
+            brightness: Brightness.dark,
+          ),
+          scaffoldBackgroundColor: DesignTokens.bgBase,
+          useMaterial3: true,
         ),
-        scaffoldBackgroundColor: DesignTokens.bgBase,
-        useMaterial3: true,
-      ),
-      // Reduced motion (story 86ajp0b3d): when the OS accessibility setting
-      // asks for it, page transitions are disabled app-wide.
-      builder: (context, child) {
-        if (MediaQuery.of(context).disableAnimations && child != null) {
-          return Theme(
-            data: Theme.of(context).copyWith(
-              pageTransitionsTheme: PageTransitionsTheme(
-                builders: {
-                  for (final platform in TargetPlatform.values)
-                    platform: const _NoTransitionsBuilder(),
-                },
+        // Reduced motion (story 86ajp0b3d): the OS accessibility setting OR the
+        // in-app preference (Config → PREFERENCES) disables page transitions.
+        builder: (context, child) {
+          final reduce = MediaQuery.of(context).disableAnimations ||
+              SettingsScope.of(context).reduceMotion;
+          if (reduce && child != null) {
+            return Theme(
+              data: Theme.of(context).copyWith(
+                pageTransitionsTheme: PageTransitionsTheme(
+                  builders: {
+                    for (final platform in TargetPlatform.values)
+                      platform: const _NoTransitionsBuilder(),
+                  },
+                ),
               ),
-            ),
-            child: child,
-          );
-        }
-        return child ?? const SizedBox.shrink();
-      },
-      home: const Launcher(),
+              child: child,
+            );
+          }
+          return child ?? const SizedBox.shrink();
+        },
+        home: const Launcher(),
+      ),
     );
   }
 }

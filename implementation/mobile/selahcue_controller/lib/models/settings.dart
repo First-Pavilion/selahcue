@@ -8,9 +8,13 @@
 /// tests never touch a real platform channel.
 library;
 
+// The injected-dependency constructor deliberately maps public named params to
+// private fields (impossible to express as initializing formals, which can't be
+// named + private), so prefer_initializing_formals is a false positive here.
+// ignore_for_file: prefer_initializing_formals
+
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -151,4 +155,9 @@ class SettingsScope extends InheritedNotifier<SettingsController> {
     assert(scope?.notifier != null, 'No SettingsScope found in the tree');
     return scope!.notifier!;
   }
+
+  /// Null-safe lookup — returns null when no scope is present (e.g. a widget
+  /// test that pumps a sub-tree in isolation), so callers can no-op gracefully.
+  static SettingsController? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<SettingsScope>()?.notifier;
 }
