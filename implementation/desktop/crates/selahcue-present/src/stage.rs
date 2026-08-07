@@ -239,6 +239,7 @@ fn fill(f: &mut Frame, x: i32, y: i32, w: u32, h: u32, color: Rgba) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn line(f: &mut Frame, x: i32, y: i32, w: u32, px: u32, text: &str, color: Rgba, align: TextAlign) {
     if text.is_empty() {
         return;
@@ -463,7 +464,7 @@ fn compose_scripture(
         let nrect = Rect::new(
             nx,
             ny,
-            left_w.saturating_sub((cw + (w as f64 * 0.012) as u32) as u32),
+            left_w.saturating_sub(cw + (w as f64 * 0.012) as u32),
             (h as f64 * 0.16) as u32,
         );
         content_region(frame, next, nrect, TextAlign::Left, theme.muted);
