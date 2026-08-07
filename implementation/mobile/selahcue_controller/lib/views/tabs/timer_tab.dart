@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../../controllers/live_controller.dart';
 import '../../models/design_tokens.dart';
 import '../../models/protocol.dart';
+import '../../models/rbac.dart';
 import '../widgets/mobile_widgets.dart';
 
 class TimerTab extends StatefulWidget {
@@ -38,7 +39,9 @@ class _TimerTabState extends State<TimerTab> {
   @override
   Widget build(BuildContext context) {
     final t = widget.live.view?.timer;
-    final running = t != null;
+    // "A timer exists" (drives the adjust/stop enablement) — distinct from
+    // `t.running` = actively counting (drives the Pause↔Resume label).
+    final hasTimer = t != null;
     final String readout;
     final Color readoutColor;
     String state;
@@ -84,56 +87,76 @@ class _TimerTabState extends State<TimerTab> {
                   const TextStyle(fontSize: 12, color: DesignTokens.textMuted)),
         ),
         const SizedBox(height: 16),
-        Row(
-          children: [
-            Expanded(
-                child: _TBtn('⏱ 5:00',
-                    () => widget.live.act(cmdStartTimer(300)))),
-            const SizedBox(width: 8),
-            Expanded(
-                child: _TBtn('⏱ 10:00',
-                    () => widget.live.act(cmdStartTimer(600)))),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _minutes,
-                keyboardType: TextInputType.number,
-                style: const TextStyle(color: DesignTokens.textPrimary),
-                decoration: const InputDecoration(
-                  isDense: true,
-                  filled: true,
-                  fillColor: DesignTokens.bgBase,
-                  hintText: 'Minutes…',
-                  hintStyle: TextStyle(color: DesignTokens.textMuted),
-                  border: OutlineInputBorder(),
+        // All timer controls require the Timer capability (Producer). The
+        // readout above stays for every role (Monitor). TIME UP / Reset are
+        // omitted this pass — tracked in the backend + mobile follow-ups.
+        if (widget.live.can(Capability.timer)) ...[
+          Row(
+            children: [
+              Expanded(
+                  child: _TBtn('⏱ 5:00',
+                      () => widget.live.act(cmdStartTimer(300)))),
+              const SizedBox(width: 8),
+              Expanded(
+                  child: _TBtn('⏱ 10:00',
+                      () => widget.live.act(cmdStartTimer(600)))),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _minutes,
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(color: DesignTokens.textPrimary),
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    filled: true,
+                    fillColor: DesignTokens.bgBase,
+                    hintText: 'Minutes…',
+                    hintStyle: TextStyle(color: DesignTokens.textMuted),
+                    border: OutlineInputBorder(),
+                  ),
+                  onSubmitted: (_) => _startCustom(),
                 ),
-                onSubmitted: (_) => _startCustom(),
               ),
-            ),
-            const SizedBox(width: 8),
-            OutlinedButton(onPressed: _startCustom, child: const Text('Start')),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-                child: _TBtn('−1:00',
-                    running ? () => widget.live.act(cmdAdjustTimer(-60)) : null)),
-            const SizedBox(width: 8),
-            Expanded(
-                child: _TBtn('+1:00',
-                    running ? () => widget.live.act(cmdAdjustTimer(60)) : null)),
-            const SizedBox(width: 8),
-            Expanded(
-                child: _TBtn('Stop',
-                    running ? () => widget.live.act(cmdStopTimer()) : null)),
-          ],
-        ),
+              const SizedBox(width: 8),
+              OutlinedButton(
+                  onPressed: _startCustom, child: const Text('Start')),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                  child: _TBtn('−1:00',
+                      hasTimer ? () => widget.live.act(cmdAdjustTimer(-60)) : null)),
+              const SizedBox(width: 8),
+              Expanded(
+                  child: _TBtn('+1:00',
+                      hasTimer ? () => widget.live.act(cmdAdjustTimer(60)) : null)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _TBtn(
+                  (t?.running ?? false) ? 'Pause' : 'Resume',
+                  t == null
+                      ? null
+                      : () => widget.live.act(
+                          t.running ? cmdPauseTimer() : cmdResumeTimer()),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                  child: _TBtn('Stop',
+                      hasTimer ? () => widget.live.act(cmdStopTimer()) : null)),
+            ],
+          ),
+        ],
       ],
     );
   }
