@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 353
+EXPECTED_MIN_CHECKS = 359
 
 
 def find_chrome():
@@ -1184,8 +1184,15 @@ DRIVER = r"""
       ok(!el("pm-library").hidden && getComputedStyle(el("pm-library")).display !== "none", "PM/B: presentation nav lands on the Library (visible)");
       ok(el("pm-grid").hidden, "PM/B: the slide grid is hidden until a presentation is opened");
       ok(getComputedStyle(document.querySelector("#surface-presentation .pm-body")).display === "none", "PM/B: the editor body is hidden on the Library");
-      // Open a presentation card → the slide GRID.
+      // Deck-open FAILURE stays on the Library (never a blank grid).
       await waitFor(function(){ return el("pm-lib-grid").querySelector(".pm-lib-open"); });
+      window.__pmRejectOnce = true;
+      el("pm-lib-grid").querySelector(".pm-lib-open").click();
+      await waitFor(function(){ return !el("pm-error").hidden; });
+      ok(el("pm-grid").hidden && !el("pm-library").hidden, "PM/B3: a failed deck_open stays on the Library (no blank grid)");
+      ok(!el("pm-error").hidden, "PM/B3: a failed deck_open surfaces an error");
+      if (el("pm-error-dismiss")) el("pm-error-dismiss").click();
+      // Open a presentation card → the slide GRID.
       el("pm-lib-grid").querySelector(".pm-lib-open").click();
       await waitFor(function(){ return !el("pm-grid").hidden && el("pm-grid-tiles").querySelectorAll(".pm-tile").length > 0; });
       ok(!el("pm-grid").hidden, "PM/B: opening a presentation shows the slide GRID");
@@ -1250,6 +1257,13 @@ DRIVER = r"""
       ok(!el("pm-error").hidden, "PM/B3: a rejected present surfaces the error banner (role=alert)");
       ok(el("pm-grid-tiles").querySelectorAll(".pm-tile")[1].classList.contains("live"), "PM/B3: the LIVE ring stays on the prior slide after a failed present (no false ring)");
       if (el("pm-error-dismiss")) el("pm-error-dismiss").click(); // restore for later checks
+      // --- Slice 5: a11y (role=grid, roving tabindex, aria-live, LIVE text label) ---
+      ok(el("pm-grid-tiles").getAttribute("role") === "grid", "PM/B5: the grid is role=grid");
+      el("pm-grid-tiles").querySelectorAll(".pm-tile")[0].dispatchEvent(new MouseEvent("click", {bubbles:true}));
+      ok(el("pm-grid-tiles").querySelectorAll(".pm-tile")[0].tabIndex === 0 && el("pm-grid-tiles").querySelectorAll(".pm-tile")[1].tabIndex === -1, "PM/B5: roving tabindex (selected tile 0, others -1)");
+      ok(/live/i.test(el("pm-grid-live-region").textContent), "PM/B5: live changes are announced via aria-live");
+      var liveLbl = el("pm-grid-tiles").querySelector(".pm-tile.live .pm-tile-live");
+      ok(liveLbl && /LIVE/.test(liveLbl.textContent), "PM/B5: the LIVE state carries a text label (WCAG 1.4.1, not colour-only)");
       // Edit ▸ → the authoring editor (so the existing editor checks below run).
       el("pm-grid-edit").click();
       ok(getComputedStyle(document.querySelector("#surface-presentation .pm-body")).display !== "none", "PM/B: Edit ▸ opens the editor");
