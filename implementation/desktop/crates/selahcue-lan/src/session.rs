@@ -146,6 +146,14 @@ pub const MAX_ACTIVE_SESSIONS: usize = 256;
 /// [`prune_stale_requests`](SessionRegistry::prune_stale_requests).
 pub const MAX_PENDING_REQUESTS: usize = 64;
 
+/// Hard cap on outstanding pairing-code OFFERS (no-leak): each operator "New code" mints a fresh
+/// code into `pending`, so without a bound repeated presses (or a buggy/hostile mint loop) would
+/// grow the map without limit. [`offer_pairing`](SessionRegistry::offer_pairing) is self-bounding —
+/// it reclaims expired offers on every insert and, if still at this cap, evicts the soonest-to-
+/// expire — so `pending` is bounded regardless of mint rate. Generous vs. any real setup (a couple
+/// of live invite codes at once).
+pub const MAX_PENDING_OFFERS: usize = 256;
+
 /// How long an active session may sit idle (no re-authentication) before
 /// [`prune_idle`](SessionRegistry::prune_idle) reclaims it (audit #8). Generous — far
 /// longer than a service — so an active device is never pruned mid-use, while a dead session
@@ -202,6 +210,21 @@ impl SessionRegistry {
         // valid offer, even if a caller bug produced one.
         if code.is_empty() {
             return;
+        }
+        // Self-bounding (no-unbounded-growth): every operator "New code" mints a fresh code, so
+        // reclaim expired offers on each insert. If still at the hard cap for a NEW code, evict the
+        // soonest-to-expire offer — `pending` is bounded by [`MAX_PENDING_OFFERS`] regardless of
+        // mint rate, without ever displacing a code that is about to be redeemed.
+        self.pending.retain(|_, p| now < p.expires_at);
+        if self.pending.len() >= MAX_PENDING_OFFERS && !self.pending.contains_key(&code) {
+            if let Some(soonest) = self
+                .pending
+                .iter()
+                .min_by_key(|(_, p)| p.expires_at)
+                .map(|(k, _)| k.clone())
+            {
+                self.pending.remove(&soonest);
+            }
         }
         self.pending.insert(
             code,
@@ -340,6 +363,18 @@ impl SessionRegistry {
     /// whether a session was actually removed.
     pub fn revoke(&mut self, device_id: &DeviceId) -> bool {
         self.active.remove(device_id).is_some()
+    }
+
+    /// The device's CURRENT granted [`Role`] iff it still has an active session, refreshing the
+    /// session's idle-TTL (the connection is actively in use). Returns `None` if the session has
+    /// been revoked or reclaimed. The transport calls this per request so a `RevokeSession` /
+    /// `SetSessionRole` by the operator takes effect on an ALREADY-OPEN connection immediately,
+    /// not only on the device's next reconnect. Token-free by design: the connection was already
+    /// authenticated at handshake; this re-derives live authority, not identity.
+    pub fn current_role(&mut self, device_id: &DeviceId, now: Instant) -> Option<Role> {
+        let session = self.active.get_mut(device_id)?;
+        session.last_seen = now;
+        Some(session.role)
     }
 
     /// Whether this device id is already an active session or a pending request. The transport

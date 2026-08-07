@@ -232,12 +232,14 @@ fn redeeming_consumes_the_offer_so_pending_does_not_grow() {
 
 #[test]
 fn expired_offers_are_reclaimed_by_prune() {
+    // Focused on prune_expired: use a count under MAX_PENDING_OFFERS so the self-bounding cap
+    // (covered by `pairing_offers_are_bounded_regardless_of_mint_rate`) does not evict here.
     let mut reg = SessionRegistry::new();
     let t0 = Instant::now();
-    for i in 0..500u32 {
+    for i in 0..200u32 {
         reg.offer_pairing(format!("c{i}"), Role::Viewer, t0, Duration::from_secs(10));
     }
-    assert_eq!(reg.pending_count(), 500);
+    assert_eq!(reg.pending_count(), 200);
     // After they all expire, pruning returns pending to zero — no unbounded growth.
     reg.prune_expired(t0 + Duration::from_secs(11));
     assert_eq!(reg.pending_count(), 0, "expired offers were not reclaimed");
@@ -375,6 +377,55 @@ fn active_sessions_are_hard_capped() {
         )
         .is_ok());
     assert_eq!(reg.active_count(), MAX_ACTIVE_SESSIONS);
+}
+
+#[test]
+fn pairing_offers_are_bounded_regardless_of_mint_rate() {
+    // No-unbounded-growth: every operator "New code" mints a FRESH code into `pending`, so
+    // `offer_pairing` must self-bound the map. (a) minting far more than the cap of NEVER-expiring
+    // codes stays capped at MAX_PENDING_OFFERS; (b) expired offers are reclaimed on each insert.
+    use selahcue_lan::session::MAX_PENDING_OFFERS;
+    let now = Instant::now();
+    let mut reg = SessionRegistry::new();
+
+    // (a) Mint 4x the cap of long-lived codes — the map never exceeds the cap.
+    for i in 0..(MAX_PENDING_OFFERS * 4) {
+        reg.offer_pairing(
+            format!("code-{i}"),
+            Role::Viewer,
+            now,
+            Duration::from_secs(3600),
+        );
+        assert!(
+            reg.pending_count() <= MAX_PENDING_OFFERS,
+            "pending must never exceed the cap (at insert {i}: {})",
+            reg.pending_count()
+        );
+    }
+    assert_eq!(
+        reg.pending_count(),
+        MAX_PENDING_OFFERS,
+        "bounded at the cap"
+    );
+
+    // (b) A fresh registry: expired offers self-reclaim on the next insert (clock-injected).
+    let mut reg = SessionRegistry::new();
+    for i in 0..50 {
+        reg.offer_pairing(
+            format!("short-{i}"),
+            Role::Viewer,
+            now,
+            Duration::from_secs(120),
+        );
+    }
+    assert_eq!(reg.pending_count(), 50);
+    let later = now + Duration::from_secs(200); // all 50 have expired
+    reg.offer_pairing("fresh", Role::Viewer, later, Duration::from_secs(120));
+    assert_eq!(
+        reg.pending_count(),
+        1,
+        "the 50 expired offers are reclaimed when a new code is minted"
+    );
 }
 
 #[test]

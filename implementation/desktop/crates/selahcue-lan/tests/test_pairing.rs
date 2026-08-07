@@ -470,14 +470,16 @@ async fn set_session_role_cannot_promote_a_device_to_operator() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn untrusted_device_name_bidi_and_zero_width_chars_are_stripped() {
     let (addr, pin, _reg) = start_server(true, "CODE1234", Duration::from_secs(60)).await;
-    // A name/platform carrying a right-to-left override + a zero-width space (spoofing vectors).
+    // A name/platform carrying spoofing vectors: RTL override (U+202E) + zero-width space (U+200B),
+    // plus the code points a prior filter MISSED — Arabic letter mark (U+061C, bidi), line separator
+    // (U+2028), soft hyphen (U+00AD), and a Unicode tag character (U+E0041).
     let device = tokio::spawn(async move {
         ControlClient::pair(
             addr,
             "localhost",
             pin,
             "CODE1234",
-            "ab\u{202E}cd\u{200B}",
+            "ab\u{202E}cd\u{200B}\u{061C}\u{2028}\u{00AD}\u{E0041}",
             "i\u{202E}os",
         )
         .await
@@ -489,8 +491,13 @@ async fn untrusted_device_name_bidi_and_zero_width_chars_are_stripped() {
     {
         let p = pending.first().expect("one pending request");
         assert!(
-            !p.name.contains('\u{202E}') && !p.name.contains('\u{200B}'),
-            "bidi/zero-width chars stripped from name: {:?}",
+            !p.name.contains('\u{202E}')
+                && !p.name.contains('\u{200B}')
+                && !p.name.contains('\u{061C}')
+                && !p.name.contains('\u{2028}')
+                && !p.name.contains('\u{00AD}')
+                && !p.name.contains('\u{E0041}'),
+            "bidi/zero-width/format chars stripped from name: {:?}",
             p.name
         );
         assert!(
@@ -600,6 +607,83 @@ async fn new_pairing_code_returns_a_scannable_invite_from_the_endpoint() {
             );
         }
         other => panic!("expected PairingCode, got {other:?}"),
+    }
+    op.close().await.ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revoke_takes_effect_on_an_already_open_connection() {
+    // Security: a revoked device must lose authority on its ALREADY-OPEN connection, not only on a
+    // future reconnect (86ajxer8n). Pair a device (Producer), confirm it can drive the output, then
+    // the operator revokes it — its very next command on the same socket must be refused/closed.
+    let (addr, pin, _reg) = start_server(true, "CODE1234", Duration::from_secs(60)).await;
+    let device = tokio::spawn(async move {
+        ControlClient::pair(addr, "localhost", pin, "CODE1234", "iPad", "iPadOS").await
+    });
+    let mut op = operator(addr, pin).await;
+    let (device_id, _) = wait_for_pending(&mut op).await;
+    op.command(Command::ApprovePairing {
+        device_id: device_id.clone(),
+        role: Role::Producer,
+    })
+    .await
+    .unwrap();
+    let (mut client, _creds) = device.await.unwrap().unwrap();
+    assert!(
+        matches!(
+            client.command(Command::GoLive).await.unwrap(),
+            ServerMessage::Ack { .. }
+        ),
+        "an approved Producer drives the output"
+    );
+
+    op.command(Command::RevokeSession {
+        device_id: device_id.clone(),
+    })
+    .await
+    .unwrap();
+
+    let after = client.command(Command::GoLive).await;
+    assert!(
+        matches!(after, Err(_) | Ok(ServerMessage::Error { .. })),
+        "a revoked device must not keep driving the live output on its open connection: {after:?}"
+    );
+    op.close().await.ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn re_role_downgrade_takes_effect_on_an_open_connection() {
+    // Security: a live re-role (demotion) must apply to the open connection immediately, as the
+    // wire docs promise — a device downgraded Producer -> Viewer can no longer GoLive on its very
+    // next request (Viewer lacks the permission), without needing to reconnect (86ajxer8n).
+    let (addr, pin, _reg) = start_server(true, "CODE1234", Duration::from_secs(60)).await;
+    let device = tokio::spawn(async move {
+        ControlClient::pair(addr, "localhost", pin, "CODE1234", "iPad", "iPadOS").await
+    });
+    let mut op = operator(addr, pin).await;
+    let (device_id, _) = wait_for_pending(&mut op).await;
+    op.command(Command::ApprovePairing {
+        device_id: device_id.clone(),
+        role: Role::Producer,
+    })
+    .await
+    .unwrap();
+    let (mut client, _creds) = device.await.unwrap().unwrap();
+    assert!(matches!(
+        client.command(Command::GoLive).await.unwrap(),
+        ServerMessage::Ack { .. }
+    ));
+
+    op.command(Command::SetSessionRole {
+        device_id: device_id.clone(),
+        role: Role::Viewer,
+    })
+    .await
+    .unwrap();
+
+    match client.command(Command::GoLive).await.unwrap() {
+        ServerMessage::Denied { .. } => {}
+        other => panic!("a demoted Viewer must be denied GoLive on its open connection: {other:?}"),
     }
     op.close().await.ok();
 }

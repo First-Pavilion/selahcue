@@ -293,11 +293,24 @@ impl ControlServer {
         let (mut ws, hello) = tokio::time::timeout(self.handshake_timeout, self.handshake(tcp))
             .await
             .map_err(|_| TransportError::Protocol("handshake/auth timed out".into()))??;
-        let role = match hello {
-            Hello::Auth(auth) => self.authenticate(&mut ws, auth).await?,
-            Hello::Pair(pair) => self.complete_pairing(&mut ws, pair).await?,
+        // Capture BOTH the granted role and the connection's device_id: the request loop
+        // re-derives live authority from the registry per request (keyed by device_id) so an
+        // operator's revoke / re-role takes effect on this open connection immediately (86ajxer8n).
+        let (role, device_id) = match hello {
+            Hello::Auth(auth) => {
+                let device_id = DeviceId(auth.device_id.clone());
+                (self.authenticate(&mut ws, auth).await?, device_id)
+            }
+            Hello::Pair(pair) => {
+                let mut device_id = None;
+                let role = self.complete_pairing(&mut ws, pair, &mut device_id).await?;
+                // complete_pairing only returns Ok after a Granted delivery, which sets device_id.
+                let device_id = device_id
+                    .ok_or_else(|| TransportError::Protocol("paired without a device id".into()))?;
+                (role, device_id)
+            }
         };
-        self.request_loop(&mut ws, role).await
+        self.request_loop(&mut ws, device_id, role).await
     }
 
     /// The pre-auth network phase: TLS handshake, WebSocket handshake (with a bounded
@@ -372,10 +385,13 @@ impl ControlServer {
     /// operator-minted token is pushed to this still-open socket as `Granted` and the connection
     /// continues already authenticated; on deny/timeout/disconnect it is rejected and the pending
     /// request is dropped. Bounded by the pending-request cap + a park timeout (no-leak).
+    /// On a successful `Granted` delivery, `out_device_id` is set to the minted device id so the
+    /// caller can re-derive live authority for this connection in the request loop.
     async fn complete_pairing<S>(
         &self,
         ws: &mut WebSocketStream<S>,
         pair: PairRequest,
+        out_device_id: &mut Option<DeviceId>,
     ) -> Result<Role, TransportError>
     where
         S: AsyncRead + AsyncWrite + Unpin,
@@ -531,6 +547,7 @@ impl ControlServer {
             // Approved: the session already exists (minted by `approve_request` on the operator
             // connection); push the token to this still-parked socket and continue authenticated.
             ParkExit::Decision(Approval::Granted { token, role }) => {
+                *out_device_id = Some(device_id.clone());
                 self.deliver_grant(ws, device_id, token, role).await
             }
             ParkExit::Decision(Approval::Denied) => {
@@ -545,6 +562,7 @@ impl ControlServer {
                 match rx.try_recv() {
                     Ok(Approval::Granted { token, role }) => {
                         drop(reg);
+                        *out_device_id = Some(device_id.clone());
                         self.deliver_grant(ws, device_id, token, role).await
                     }
                     _ => {
@@ -701,12 +719,35 @@ impl ControlServer {
     async fn request_loop<S>(
         &self,
         ws: &mut WebSocketStream<S>,
-        role: Role,
+        device_id: DeviceId,
+        _initial_role: Role,
     ) -> Result<(), TransportError>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
+        // The handshake role (`_initial_role`) is only the authority at connect time; the LIVE role
+        // is re-derived from the registry per request below so revoke/re-role apply immediately.
         while let Some(frame) = ws.next().await {
+            // Re-derive live authority for THIS connection before handling each request: an operator
+            // `RevokeSession`/`SetSessionRole` only mutates the registry, so without this a revoked
+            // or demoted device would keep its old privileges until it reconnected (86ajxer8n). A
+            // revoked (or idle-reclaimed) session closes the connection; a re-role takes effect now.
+            let role = {
+                let now = std::time::Instant::now();
+                match self.registry.lock().await.current_role(&device_id, now) {
+                    Some(r) => r,
+                    None => {
+                        let _ = send_json(
+                            ws,
+                            &ServerMessage::Error {
+                                message: "session revoked".into(),
+                            },
+                        )
+                        .await;
+                        return Ok(());
+                    }
+                }
+            };
             match frame? {
                 Message::Text(text) => {
                     let req: Request = match protocol::from_json(text.as_str()) {
@@ -861,11 +902,17 @@ pub fn generate_pairing_code() -> String {
 fn is_display_unsafe(c: char) -> bool {
     c.is_control()
         || matches!(c,
-            '\u{200B}'..='\u{200F}'   // zero-width space/joiners + LRM/RLM bidi marks
+            '\u{00AD}'                // soft hyphen (invisible line-break hint)
+            | '\u{061C}'              // Arabic letter mark (bidi format)
+            | '\u{180E}'              // Mongolian vowel separator (invisible)
+            | '\u{200B}'..='\u{200F}' // zero-width space/joiners + LRM/RLM bidi marks
+            | '\u{2028}'..='\u{2029}' // line / paragraph separators
             | '\u{202A}'..='\u{202E}' // bidi embeddings + overrides (LRE..RLO)
             | '\u{2060}'..='\u{2064}' // word joiner + invisible math operators
             | '\u{2066}'..='\u{206F}' // bidi isolates + deprecated format chars
-            | '\u{FEFF}') // zero-width no-break space / BOM
+            | '\u{FEFF}'              // zero-width no-break space / BOM
+            | '\u{FFF9}'..='\u{FFFB}' // interlinear annotation anchors
+            | '\u{E0000}'..='\u{E007F}') // tag block (incl. deprecated language tags)
 }
 
 /// Sanitize an untrusted device name for operator display: keep printable
