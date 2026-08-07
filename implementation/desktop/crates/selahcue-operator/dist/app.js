@@ -4601,9 +4601,9 @@
         // deck_go_live presents the HOST-selected slide, so always select the target first (the
         // client cursor is not the host's selection). The ◀▶ transport / live-mode arrows use the
         // atomic deck_go_live_delta instead.
-        await pAct(() => invoke("deck_select_slide", { id: id }), "select the slide");
+        if (!(await pAct(() => invoke("deck_select_slide", { id: id }), "select the slide"))) { await pmGridSyncLive(); return; }
         pmGridCursor = id;
-        await pAct(() => invoke("deck_go_live"), "present the slide");
+        await pAct(() => invoke("deck_go_live"), "present the slide"); // failure → pAct shows the error banner; the ring stays host-truth
         await pmGridSyncLive();
       }
       // Advance the LIVE slide by delta (−1 prev / +1 next) atomically — ◀▶ transport + live arrows.
@@ -4614,9 +4614,15 @@
       // Ring the LIVE slide from HOST truth (view().live_authored_id — the deck-local annotation can
       // go stale when the console drives plan content) and drive the transport bar.
       async function pmGridSyncLive() {
-        let liveId = null;
-        try { const v = await invoke("view"); liveId = (v && v.live_authored_id != null) ? v.live_authored_id : null; }
-        catch (e) { /* keep last-known; the top-bar conn pill reflects a dropped host */ }
+        let v = null, liveId = null;
+        try { v = await invoke("view"); liveId = (v && v.live_authored_id != null) ? v.live_authored_id : null; }
+        catch (e) {
+          // Host link dropped — keep the last-known ring; disable the transport until reconnect.
+          const p = pmEl("pm-prev"), n = pmEl("pm-next");
+          if (p) p.setAttribute("aria-disabled", "true");
+          if (n) n.setAttribute("aria-disabled", "true");
+          return;
+        }
         pmGridLiveId = liveId;
         const tiles = pmGridTiles();
         tiles.forEach((t) => {
@@ -4627,13 +4633,19 @@
           if (!on && lbl) lbl.remove();
         });
         const tp = pmEl("pm-transport"); if (tp) tp.hidden = liveId == null;
-        if (liveId != null) {
-          const ids = tiles.map((t) => Number(t.dataset.id)); const idx = ids.indexOf(liveId);
-          const lv = pmEl("pm-tp-live"); if (lv) lv.textContent = "● LIVE — slide " + (idx + 1) + " / " + ids.length;
-          const prev = pmEl("pm-prev"); if (prev) prev.setAttribute("aria-disabled", idx <= 0 ? "true" : "false");
-          const next = pmEl("pm-next"); if (next) next.setAttribute("aria-disabled", idx >= ids.length - 1 ? "true" : "false");
-          pmGridAnnounce("Now live: slide " + (idx + 1) + " of " + ids.length);
-        }
+        const badge = pmEl("pm-grid-badge");
+        if (liveId == null) { if (badge) badge.hidden = true; return; }
+        const ids = tiles.map((t) => Number(t.dataset.id)); const idx = ids.indexOf(liveId);
+        const blackedOut = !!(v && v.blackout);
+        const lv = pmEl("pm-tp-live");
+        if (lv) { lv.textContent = (blackedOut ? "BLACKED OUT · slide " : "● LIVE — slide ") + (idx + 1) + " / " + ids.length; lv.classList.toggle("blk", blackedOut); }
+        const prev = pmEl("pm-prev"); if (prev) prev.setAttribute("aria-disabled", idx <= 0 ? "true" : "false");
+        const next = pmEl("pm-next"); if (next) next.setAttribute("aria-disabled", idx >= ids.length - 1 ? "true" : "false");
+        // Preview-only honesty: with no real audience output, say so rather than imply a true LIVE
+        // (the local backend returns Ok silently — never surprise the operator, NFR-024 spirit).
+        let connected = true; try { connected = await invoke("output_connected"); } catch (e) {}
+        if (badge) { badge.hidden = connected; if (!connected) badge.textContent = "Preview only — no audience output"; }
+        pmGridAnnounce((blackedOut ? "Blacked out; pending slide " : "Now live: slide ") + (idx + 1) + " of " + ids.length + (connected ? "" : " (preview only)"));
       }
       function pmRenderGrid(dv) {
         pmDv = dv;

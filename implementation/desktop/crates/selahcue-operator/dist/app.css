@@ -5469,6 +5469,7 @@
       .pm-transport { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 10px; background: var(--sc-elevated); border: 1px solid var(--sc-border); border-radius: 12px; }
       .pm-transport[hidden] { display: none; }
       .pm-tp-live { color: var(--sc-live); font: 700 13px/1 Inter, system-ui, sans-serif; }
+      .pm-tp-live.blk { color: var(--sc-warn); }
       .pm-tp-btn { background: var(--sc-surface); border: 1px solid var(--sc-border); color: var(--sc-text); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
       .pm-tp-btn:hover { border-color: var(--sc-border-strong); }
       .pm-tp-btn:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
