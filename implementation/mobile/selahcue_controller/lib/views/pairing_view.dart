@@ -215,7 +215,7 @@ class _PairingViewState extends State<PairingView> {
                     Row(
                       children: [
                         const Expanded(
-                          child: Text('NEARBY HOSTS',
+                          child: Text('DISCOVERED ON YOUR NETWORK',
                               style: TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w800,
