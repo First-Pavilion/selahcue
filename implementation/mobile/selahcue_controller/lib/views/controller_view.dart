@@ -192,7 +192,10 @@ class _ControllerViewState extends State<ControllerView> {
                 ),
               Expanded(child: IndexedStack(index: _tab, children: tabs)),
               // Persistent emergency chrome — on every tab, above the nav.
-              EmergencyStrip(live: _live),
+              // Hidden entirely for a role that can neither blackout nor clear.
+              if (_live.can(Capability.blackout) ||
+                  _live.can(Capability.clearLive))
+                EmergencyStrip(live: _live),
             ],
           ),
           bottomNavigationBar: NavigationBar(
