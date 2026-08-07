@@ -156,7 +156,13 @@
         state.code = { code: code, fp: fp, expiresAt: Date.now() + ttl };
         drawQR("selahcue://pair?code=" + code + "&t=" + Date.now());
         var fpEl = document.getElementById("rc-fp");
-        if (fpEl) fpEl.textContent = fp;
+        if (fpEl) {
+          // Show a readable prefix; the full host cert fingerprint is on hover. (The automatic
+          // TLS-pin check is the real protection; this human check is belt-and-suspenders.)
+          fpEl.textContent = fp.length > 23 ? fp.slice(0, 23) + "…" : fp;
+          fpEl.setAttribute("title",
+            "Host TLS-certificate fingerprint — approve a device only if it shows this same value:\n" + fp);
+        }
         tickCountdown();
         renderPending();
       })

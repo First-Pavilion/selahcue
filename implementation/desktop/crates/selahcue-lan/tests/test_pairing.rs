@@ -509,6 +509,43 @@ async fn untrusted_device_name_bidi_and_zero_width_chars_are_stripped() {
     device.abort();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn new_pairing_code_fingerprint_is_the_real_host_cert_pin() {
+    let (addr, pin, _reg) = start_server(true, "CODE1234", Duration::from_secs(60)).await;
+    // The canonical fingerprint of the host's own cert pin (same value the QR carries) — the
+    // operator verifies THIS against the phone, so it must be the cert pin, never the code.
+    let expected = pin
+        .to_hex()
+        .to_uppercase()
+        .as_bytes()
+        .chunks(2)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect::<Vec<_>>()
+        .join(":");
+
+    let mut op = operator(addr, pin).await;
+    match op.command(Command::NewPairingCode).await.unwrap() {
+        ServerMessage::PairingCode {
+            code,
+            fingerprint,
+            expires_in_secs,
+        } => {
+            assert_eq!(code.len(), 8);
+            assert_eq!(expires_in_secs, 120);
+            assert_eq!(
+                fingerprint, expected,
+                "the pairing fingerprint must be the host TLS-cert SHA-256, not code-derived"
+            );
+            assert!(
+                !fingerprint.contains(&code.to_uppercase()),
+                "the fingerprint must not echo the pairing code"
+            );
+        }
+        other => panic!("expected PairingCode, got {other:?}"),
+    }
+    op.close().await.ok();
+}
+
 #[test]
 fn generated_codes_are_wellformed_and_vary() {
     let a = generate_pairing_code();

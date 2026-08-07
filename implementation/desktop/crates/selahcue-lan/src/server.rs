@@ -138,6 +138,9 @@ pub struct ControlServer {
     pairing: PairingMode,
     /// Rendezvous senders for parked pairing connections (see [`Waiters`]).
     waiters: Waiters,
+    /// The host's TLS-cert SHA-256 fingerprint (canonical colon-separated hex) — the REAL host
+    /// identity the operator verifies the phone pinned, shown with the pairing code (86ajxhuu3).
+    cert_fingerprint: String,
 }
 
 /// Increments the live-connection counter on creation and decrements it on drop —
@@ -192,6 +195,7 @@ impl ControlServer {
             limiter: Arc::new(Semaphore::new(DEFAULT_MAX_CONNECTIONS)),
             pairing: PairingMode::Disabled,
             waiters: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            cert_fingerprint: format_fingerprint(&identity.pin.to_hex()),
         })
     }
 
@@ -430,9 +434,8 @@ impl ControlServer {
             };
             let name = sanitize_device_name(&pair.device_name);
             let platform = sanitize_platform(&pair.platform);
-            // NOTE: the fingerprint is the code-derived placeholder (see `pairing_fingerprint`);
-            // real TLS-cert SHA-256 pinning is deferred to the Part B cert-pinning follow-on.
-            let fingerprint = pairing_fingerprint(&pair.code);
+            // The real host TLS-cert fingerprint the operator verifies against the phone (86ajxhuu3).
+            let fingerprint = self.cert_fingerprint.clone();
             match reg.submit_request(device_id.clone(), name, platform, fingerprint, now) {
                 Ok(()) => {}
                 Err(RequestError::TooManyRequests) => {
@@ -638,7 +641,7 @@ impl ControlServer {
             }
             Command::NewPairingCode => {
                 let code = random_hex(4); // 8 hex chars — short enough for a QR fallback readout
-                let fingerprint = pairing_fingerprint(&code);
+                let fingerprint = self.cert_fingerprint.clone();
                 let ttl = Duration::from_secs(120);
                 // Least-privilege default: a scanning device redeems as Viewer, then the operator
                 // approves/re-roles it. (The role-at-approval handshake is the Part B follow-on.)
@@ -751,16 +754,18 @@ fn remote_snapshot(reg: &SessionRegistry, now: std::time::Instant) -> ServerMess
     }
 }
 
-/// A short, human-readable fingerprint for the "Pair a device" QR, rendered as space-separated hex
-/// pairs (e.g. `A1 · B2 · C3 · D4`). NOTE: derived from the pairing code as a placeholder — the
-/// real TLS-cert SHA-256 pinning belongs to the pairing-handshake redesign (Part B).
-fn pairing_fingerprint(code: &str) -> String {
-    code.to_uppercase()
+/// Format a 64-char cert-pin hex (the host TLS-cert SHA-256) as a canonical, human-comparable
+/// fingerprint: uppercase colon-separated byte pairs (e.g. `AB:12:CD:34:…`). The operator reads
+/// this off the console and confirms it matches what the phone shows for the cert it pinned — a
+/// meaningful host-identity check, unlike the old code-derived placeholder (86ajxhuu3).
+fn format_fingerprint(pin_hex: &str) -> String {
+    pin_hex
+        .to_uppercase()
         .as_bytes()
         .chunks(2)
         .map(|c| String::from_utf8_lossy(c).into_owned())
         .collect::<Vec<_>>()
-        .join(" · ")
+        .join(":")
 }
 
 /// `n` random bytes from the OS CSPRNG as lowercase hex (2n chars). Retries once, then fails
