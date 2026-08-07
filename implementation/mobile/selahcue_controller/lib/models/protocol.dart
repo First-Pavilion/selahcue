@@ -50,6 +50,11 @@ Map<String, dynamic> cmdStartTimer(int seconds) =>
 Map<String, dynamic> cmdStopTimer() => {'cmd': 'stop_timer'};
 Map<String, dynamic> cmdAdjustTimer(int deltaSecs) =>
     {'cmd': 'adjust_timer', 'delta_secs': deltaSecs};
+
+/// Pause / resume a running countdown. Additive unit variants that already exist
+/// server-side (`protocol.rs:64,67`, Timer permission) — no VERSION bump.
+Map<String, dynamic> cmdPauseTimer() => {'cmd': 'pause_timer'};
+Map<String, dynamic> cmdResumeTimer() => {'cmd': 'resume_timer'};
 Map<String, dynamic> cmdStageScripture(String reference, {String? translation}) =>
     {'cmd': 'stage_scripture', 'reference': reference, 'translation': ?translation};
 Map<String, dynamic> cmdGetOperatorState() => {'cmd': 'get_operator_state'};

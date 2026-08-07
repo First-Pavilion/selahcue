@@ -52,6 +52,8 @@ void main() {
     expect(jsonEncode(cmdBlackout(true)), '{"cmd":"blackout","on":true}');
     expect(jsonEncode(cmdStartTimer(300)), '{"cmd":"start_timer","seconds":300}');
     expect(jsonEncode(cmdStopTimer()), '{"cmd":"stop_timer"}');
+    expect(jsonEncode(cmdPauseTimer()), '{"cmd":"pause_timer"}');
+    expect(jsonEncode(cmdResumeTimer()), '{"cmd":"resume_timer"}');
     expect(jsonEncode(cmdGetOperatorState()), '{"cmd":"get_operator_state"}');
     // S8-3b — mirrors the Rust `set_theme` fixture exactly.
     expect(jsonEncode(cmdSetTheme('high-contrast')),
