@@ -64,7 +64,20 @@ fn scenes() -> Vec<Frame> {
         color: Rgba::rgb(31, 176, 122),
     });
 
-    vec![solid, rects, overlap, blackout, translucent, padded]
+    // An authored-slide-like frame (Design 2.0 deck slide): a solid background with z-ordered
+    // element FILLS — the exact Frame shape `compose_authored_slide` produces — so the authored
+    // present path is under the SSIM parity oracle just like plan/scripture content.
+    let mut authored = Frame::new(320, 180).with_background(Rgba::rgb(180, 40, 90));
+    authored.push(Layer::Fill {
+        rect: Rect::new(40, 30, 240, 40),
+        color: Rgba::rgb(240, 240, 245),
+    });
+    authored.push(Layer::Fill {
+        rect: Rect::new(40, 90, 180, 60),
+        color: Rgba::new(124, 92, 255, 200),
+    });
+
+    vec![solid, rects, overlap, blackout, translucent, padded, authored]
 }
 
 #[test]
