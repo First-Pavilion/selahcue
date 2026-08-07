@@ -90,7 +90,7 @@ FREEZE §0 contract (joint, 15 min)
 
 ## Prerequisites (before either skill starts substantive work)
 
-1. **ClickUp story** under epic **Presentation & Slides `86ajp07ce`** (parent for both tracks; or one story with a backend + a frontend sub-task). Record goal IDs, contract paths, engine, and iteration limits per the specialist-skill protocol. *(Outward-facing — create only with owner go-ahead.)*
+1. **ClickUp story** under epic **Presentation & Slides `86ajp07ce`** — created 2026-08-07: story **`86ajxeq0j`** with sub-tasks **`86ajxeq0y`** (Track A backend, in progress) and **`86ajxeq17`** (Track B frontend, ready dev). Recorded on Build Control `86ajnx548`. Record goal IDs, contract paths, engine, and iteration limits on these tasks per the specialist-skill protocol.
 2. **Goal Contracts** under `docs/delivery/goals/` — one per track, decomposing the criteria above; validate each with `python3 scripts/validate_goal_contract.py <contract>` before work and before any completion claim.
 3. Keep the **Build Control** task (`86ajnx548`) updated as batches land.
 
