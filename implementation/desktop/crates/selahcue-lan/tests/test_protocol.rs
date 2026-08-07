@@ -249,6 +249,24 @@ fn request_round_trips_and_stamps_version() {
 }
 
 #[test]
+fn present_authored_slide_round_trips_and_is_additive() {
+    // Deck "Present" (Design 2.0): a slide + theme carried as opaque JSON, mirroring
+    // SetCustomTheme so the wire layer never depends on the presentation crate.
+    let cmd = Command::PresentAuthoredSlide {
+        slide_json: r#"{"id":1}"#.into(),
+        theme_json: "{}".into(),
+    };
+    let json = to_json(&cmd).unwrap();
+    assert_eq!(
+        json,
+        r#"{"cmd":"present_authored_slide","slide_json":"{\"id\":1}","theme_json":"{}"}"#
+    );
+    assert_eq!(from_json::<Command>(&json).unwrap(), cmd);
+    // Additive: a pre-existing command stays byte-identical (the pinned v2 fixtures hold).
+    assert_eq!(to_json(&Command::GoLive).unwrap(), r#"{"cmd":"go_live"}"#);
+}
+
+#[test]
 fn every_command_round_trips() {
     let cmds = [
         Command::GoLive,
@@ -325,6 +343,10 @@ fn every_command_round_trips() {
         },
         Command::ApproveDetection { detection_id: 7 },
         Command::DismissDetection { detection_id: 7 },
+        Command::PresentAuthoredSlide {
+            slide_json: r#"{"id":1}"#.into(),
+            theme_json: "{}".into(),
+        },
     ];
     for c in cmds {
         let json = to_json(&c).unwrap();
@@ -382,6 +404,7 @@ fn transcript_and_detection_view_fields_are_additive() {
         staged_scripture: None,
         live_scripture: None,
         live_free_text: None,
+        live_authored_id: None,
         outputs: vec![],
         displays: vec![],
         translations: vec![],
@@ -593,6 +616,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         staged_scripture: Some("Romans 8:28".into()),
         live_scripture: Some("John 3:16".into()),
         live_free_text: Some("Removed Song".into()),
+        live_authored_id: None,
         outputs: vec![],
         displays: vec![],
         translations: vec![],
@@ -624,6 +648,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         staged_scripture: None,
         live_scripture: None,
         live_free_text: None,
+        live_authored_id: None,
         outputs: vec![selahcue_lan::protocol::OutputStatusView {
             role: "main".into(),
             display: Some("Projector".into()),
@@ -676,6 +701,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         staged_scripture: None,
         live_scripture: None,
         live_free_text: None,
+        live_authored_id: None,
         outputs: vec![],
         displays: vec![],
         translations: vec![],
@@ -709,6 +735,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         staged_scripture: None,
         live_scripture: None,
         live_free_text: None,
+        live_authored_id: None,
         outputs: vec![],
         displays: vec![],
         translations: vec![],
@@ -741,6 +768,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         staged_scripture: None,
         live_scripture: None,
         live_free_text: None,
+        live_authored_id: None,
         outputs: vec![],
         displays: vec![],
         translations: vec![],

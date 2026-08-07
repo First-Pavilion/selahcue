@@ -51,6 +51,12 @@ enum Backend {
 }
 
 impl Backend {
+    /// Whether a REAL audience output window is connected (a Remote backend), as opposed to the
+    /// stand-alone/demo local backend where a present succeeds silently with no physical output.
+    fn is_remote(&self) -> bool {
+        matches!(self, Backend::Remote(_))
+    }
+
     async fn view(&self) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m.lock().await.view().await.map_err(|e| e.to_string()),
@@ -1261,6 +1267,12 @@ async fn render_deck_slide(
 async fn blackout(on: bool, state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.blackout(on).await
 }
+/// Whether a real audience output window is connected. The presentation grid uses this to be
+/// HONEST: with no output it shows "Preview only — no audience output" instead of a true LIVE ring.
+#[tauri::command]
+async fn output_connected(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.backend.is_remote())
+}
 #[tauri::command]
 async fn select(item_id: u64, state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.select(item_id).await
@@ -1662,7 +1674,8 @@ fn main() {
             deck_go_live_delta,
             deck_remove_media,
             deck_import_image,
-            render_deck_slide
+            render_deck_slide,
+            output_connected
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");

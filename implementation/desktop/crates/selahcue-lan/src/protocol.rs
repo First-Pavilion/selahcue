@@ -152,6 +152,18 @@ pub enum Command {
     /// does not depend on the presentation crate; the controller deserializes it).
     /// Malformed JSON is rejected. Operator-only (output config).
     SetCustomTheme { theme_json: String },
+    /// **Present an authored deck slide** (Design 2.0 deck editor, node 329:124) on the LIVE
+    /// audience output. `slide_json` is a serialized `selahcue-present::AuthoredSlide` and
+    /// `theme_json` a serialized `Theme` — both opaque to the wire (this layer does not depend
+    /// on the presentation crate; the controller deserializes them, mirroring
+    /// [`Command::SetCustomTheme`]). The slide is composed with the SAME compositor as
+    /// scripture/plan content and TAKES OVER the live surface (a later plan/scripture Go-Live
+    /// replaces it). Malformed or over-bounds JSON is rejected (the live output is unchanged).
+    /// Requires `GoLive` — it changes what the audience sees (never an escalation).
+    PresentAuthoredSlide {
+        slide_json: String,
+        theme_json: String,
+    },
     /// Set (or clear, with `None`) a plan item's per-item theme OVERRIDE by built-in
     /// name (S8-3d). That item then renders on its own template instead of the global
     /// theme; an unknown item or name is rejected. Operator-only (output config).
@@ -455,6 +467,11 @@ pub struct OperatorStateView {
     /// NOT a scripture). Omitted when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_free_text: Option<String>,
+    /// The id of the authored deck slide on Live (Design 2.0), if an authored slide is presented
+    /// rather than plan/scripture content. Host-truth for the operator grid's LIVE ring. Omitted
+    /// when absent so the pinned v2 fixtures stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_authored_id: Option<u64>,
     /// The physical outputs (main/stage) and their display assignments — filled
     /// by the desktop host; empty (and omitted on the wire) elsewhere.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

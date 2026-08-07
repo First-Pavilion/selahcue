@@ -6,8 +6,8 @@ use selahcue_app::{ControllerReply, LiveController};
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_lan::protocol::{Command, DenyReason, ServerMessage};
 use selahcue_present::{
-    Element, Fit, MediaRef, Rgba, ShapeKind, TextAlign, Theme, VAlign, MAX_ELEMENTS,
-    MAX_TEXT_ELEMENT_LEN,
+    AuthoredSlide, Element, Fit, ImageFit, MediaRef, Rgba, ShapeKind, SlideId, TextAlign, Theme,
+    VAlign, MAX_ELEMENTS, MAX_TEXT_ELEMENT_LEN,
 };
 
 fn controller() -> (LiveController, Vec<u64>) {
@@ -1489,6 +1489,119 @@ fn a_default_theme_session_persists_the_pre_v8_shape() {
     );
 }
 
+/// A full-frame shape of `fill`, for building an authored deck slide whose composed live
+/// output is a single known colour (mirrors the present-crate compose tests).
+fn full_frame_shape(fill: Rgba) -> Element {
+    Element::Shape {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 1000,
+        h_permille: 1000,
+        fill,
+        border: Rgba::new(0, 0, 0, 0),
+        border_permille: 0,
+        opacity: 255,
+        z: 0,
+        variant: ShapeKind::Rect,
+        corner_permille: 0,
+        visible: true,
+    }
+}
+
+#[test]
+fn present_authored_slide_puts_a_deck_slide_on_live_and_takes_over() {
+    let (mut c, _) = controller();
+    // Put a plan item live first, to prove the authored present REPLACES it (the two live
+    // models are mutually exclusive on the single audience surface).
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    assert!(c.presenter().live_slide().is_some(), "a plan slide is live");
+
+    // A deck slide with a full-frame red shape composes to red on the LIVE output.
+    let red = Rgba::rgb(210, 30, 40);
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    slide.elements = vec![full_frame_shape(red)];
+    let slide_json = serde_json::to_string(&slide).unwrap();
+    let theme_json = serde_json::to_string(&Theme::dark()).unwrap();
+    assert_eq!(
+        c.apply(&Command::PresentAuthoredSlide {
+            slide_json,
+            theme_json: theme_json.clone(),
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.presenter().live_output().pixel(160, 90).unwrap(),
+        red,
+        "the audience output shows the presented deck slide"
+    );
+    assert!(
+        c.presenter().live_slide().is_none(),
+        "presenting a deck slide takes over live (no title+body plan slide remains live)"
+    );
+
+    // Malformed slide JSON is rejected and the live output is unchanged (still the red slide).
+    assert_eq!(
+        c.apply(&Command::PresentAuthoredSlide {
+            slide_json: "not-json".into(),
+            theme_json: theme_json.clone(),
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        c.presenter().live_output().pixel(160, 90).unwrap(),
+        red,
+        "a rejected present leaves the live output unchanged"
+    );
+
+    // An over-bounds slide (too many elements) is rejected — no-leak.
+    let mut huge = AuthoredSlide::new(SlideId(2));
+    huge.elements = (0..=MAX_ELEMENTS).map(|_| full_frame_shape(red)).collect();
+    assert_eq!(
+        c.apply(&Command::PresentAuthoredSlide {
+            slide_json: serde_json::to_string(&huge).unwrap(),
+            theme_json,
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest),
+        "an over-bounds slide is rejected (no-leak)"
+    );
+}
+
+#[test]
+fn operator_view_reports_the_live_authored_slide_id() {
+    let (mut c, _) = controller();
+    assert_eq!(
+        c.operator_view().live_authored_id,
+        None,
+        "nothing authored is live initially"
+    );
+
+    let slide = AuthoredSlide::new(SlideId(11));
+    let slide_json = serde_json::to_string(&slide).unwrap();
+    let theme_json = serde_json::to_string(&Theme::dark()).unwrap();
+    assert_eq!(
+        c.apply(&Command::PresentAuthoredSlide {
+            slide_json,
+            theme_json
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.operator_view().live_authored_id,
+        Some(11),
+        "presenting an authored slide surfaces its id as host-truth for the grid ring"
+    );
+
+    // A later plan Go-Live clears the authored-live signal (mutual exclusion, host truth).
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    assert_eq!(
+        c.operator_view().live_authored_id,
+        None,
+        "a plan go-live clears the authored-live signal in the operator view"
+    );
+}
+
 #[test]
 fn set_custom_theme_applies_and_survives_recovery() {
     use std::time::Instant;
@@ -2497,6 +2610,7 @@ fn a_custom_theme_with_an_image_element_applies_recovers_and_is_bounded() {
         opacity: 255,
         z,
         visible: true,
+        fit: ImageFit::Stretch,
     };
     let mut theme = Theme::high_contrast();
     theme.elements.push(image(1)); // in front of the text

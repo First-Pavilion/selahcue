@@ -17,7 +17,8 @@ use selahcue_lan::protocol::{
     MIN_FRAME_RATE,
 };
 use selahcue_present::{
-    FrameBuffer, LayerMask, Presenter, Slide, StageDisplay, StageTheme, Theme, TimerView,
+    AuthoredSlide, FrameBuffer, LayerMask, Presenter, Slide, StageDisplay, StageTheme, Theme,
+    TimerView,
 };
 use std::time::{Duration, Instant};
 
@@ -711,6 +712,28 @@ impl LiveController {
         self.theme_name = "custom".to_string();
         self.custom_theme_json = Some(canonical);
         true
+    }
+
+    /// Present a Design 2.0 authored deck slide (node 329:124) on the LIVE audience output.
+    /// `slide_json`/`theme_json` are a serialized [`AuthoredSlide`] and [`Theme`] (opaque to the
+    /// wire — this layer deserializes them, mirroring [`set_custom_theme`](Self::set_custom_theme)).
+    /// Rejects (Live unchanged) on malformed JSON, an over-bounds slide (element count / text
+    /// length), or an over-bounds theme (no-leak — a hostile/hand-edited payload cannot grow the
+    /// design without limit). Returns whether the slide reached the Live output.
+    fn present_authored_slide(&mut self, slide_json: &str, theme_json: &str) -> bool {
+        let Ok(slide) = serde_json::from_str::<AuthoredSlide>(slide_json) else {
+            return false;
+        };
+        if !slide.within_bounds() {
+            return false;
+        }
+        let Ok(theme) = serde_json::from_str::<Theme>(theme_json) else {
+            return false;
+        };
+        if !theme.elements_bounded() {
+            return false;
+        }
+        self.presenter.present_authored(&slide, &theme)
     }
 
     /// Save a NAMED custom theme into the library (S8-3d follow-up 86ajq4xmy). The name
@@ -1694,6 +1717,7 @@ impl LiveController {
             staged_scripture: self.staged_scripture.clone(),
             live_scripture: self.live_scripture.clone(),
             live_free_text: self.live_free_text.clone(),
+            live_authored_id: self.presenter.authored_live_id(),
             outputs: self.output_status.clone(),
             displays: self.display_status.clone(),
             translations: selahcue_scripture::Translation::ALL
@@ -1900,6 +1924,25 @@ impl LiveController {
                     self.live_free_text = None;
                     self.live_free_body = Vec::new();
                     // Going live from blackout reveals the new content (UX-STATE-MATRIX).
+                    self.blackout = false;
+                    ControllerReply::Ack
+                } else {
+                    ControllerReply::Deny(DenyReason::BadRequest)
+                }
+            }
+            Command::PresentAuthoredSlide {
+                slide_json,
+                theme_json,
+            } => {
+                // Route a Design 2.0 authored deck slide to the LIVE audience output. It takes
+                // over the live surface, so clear the plan/scripture/free-text live cursors
+                // (mirrors Clear) and reveal it (mirrors GoLive's un-blackout). A malformed or
+                // over-bounds payload is rejected — the live output is unchanged.
+                if self.present_authored_slide(slide_json, theme_json) {
+                    self.live_idx = None;
+                    self.live_scripture = None;
+                    self.live_free_text = None;
+                    self.live_free_body = Vec::new();
                     self.blackout = false;
                     ControllerReply::Ack
                 } else {

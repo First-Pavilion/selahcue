@@ -59,6 +59,11 @@ pub struct OperatorView {
     pub live_scripture: Option<String>,
     /// A removed-but-still-on-screen plan item's title on Live (a free slide).
     pub live_free_text: Option<String>,
+    /// The id of the authored deck slide currently on Live (Design 2.0), if an authored slide is
+    /// presented rather than plan/scripture content. Host-truth for the presentation grid's LIVE
+    /// ring — the deck editor's local `live` annotation can go stale when the console drives plan
+    /// content, so the grid rings THIS instead.
+    pub live_authored_id: Option<u64>,
     /// Physical outputs and their display assignments (desktop host only).
     pub outputs: Vec<selahcue_lan::protocol::OutputStatusView>,
     /// Attached physical displays for the assignment picker (desktop host only).
@@ -315,6 +320,15 @@ impl OperatorShell {
             theme_json: theme_json.into(),
         })
     }
+    /// Present a Design 2.0 authored deck slide on the LIVE audience output — the deck editor's
+    /// "Present". `slide_json`/`theme_json` are a serialized `AuthoredSlide` and `Theme` (opaque;
+    /// the controller deserializes + composes them with the same compositor as plan content).
+    pub fn present_authored_slide(&self, slide_json: &str, theme_json: &str) -> OperatorView {
+        self.act(&Command::PresentAuthoredSlide {
+            slide_json: slide_json.into(),
+            theme_json: theme_json.into(),
+        })
+    }
     /// Set (or clear, with an empty name) a plan item's per-item theme override (S8-3d).
     pub fn set_item_theme(&self, item_id: u64, theme: Option<String>) -> OperatorView {
         self.act(&Command::SetItemTheme { item_id, theme })
@@ -507,6 +521,7 @@ impl From<OperatorView> for OperatorStateView {
             staged_scripture: v.staged_scripture,
             live_scripture: v.live_scripture,
             live_free_text: v.live_free_text,
+            live_authored_id: v.live_authored_id,
             outputs: v.outputs,
             displays: v.displays,
             translations: v.translations,
@@ -534,6 +549,7 @@ impl From<OperatorStateView> for OperatorView {
             staged_scripture: v.staged_scripture,
             live_scripture: v.live_scripture,
             live_free_text: v.live_free_text,
+            live_authored_id: v.live_authored_id,
             outputs: v.outputs,
             displays: v.displays,
             translations: v.translations,
@@ -788,6 +804,19 @@ impl RemoteOperator {
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::SetCustomTheme {
             theme_json: theme_json.into(),
+        })
+        .await
+    }
+    /// Present a Design 2.0 authored deck slide on the host's LIVE audience output — the deck
+    /// editor's "Present". `slide_json`/`theme_json` are opaque serialized values.
+    pub async fn present_authored_slide(
+        &mut self,
+        slide_json: String,
+        theme_json: String,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::PresentAuthoredSlide {
+            slide_json,
+            theme_json,
         })
         .await
     }
