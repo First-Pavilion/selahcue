@@ -86,15 +86,22 @@ class SelahSession implements ControllerSession {
       final incoming = StreamQueue(ws);
       ws.add(jsonEncode(
           helloPair(invite.code, deviceName, platform: Platform.operatingSystem)));
-      final reply = await incoming.nextJson(pairTimeout);
-      switch (PairResult.fromJson(reply)) {
-        case PairGranted(:final deviceId, :final token, :final role):
-          return (
-            SelahSession._(ws, incoming, role),
-            Credentials(deviceId: deviceId, token: token),
-          );
-        case PairRejected(:final reason):
-          throw SessionException('pairing rejected: $reason');
+      // The host may send an interim `parked` frame while it awaits the operator's decision
+      // (86ajxhv0q) — keep waiting for the terminal Granted/Rejected.
+      pairing:
+      while (true) {
+        final reply = await incoming.nextJson(pairTimeout);
+        switch (PairResult.fromJson(reply)) {
+          case PairParked():
+            continue pairing;
+          case PairGranted(:final deviceId, :final token, :final role):
+            return (
+              SelahSession._(ws, incoming, role),
+              Credentials(deviceId: deviceId, token: token),
+            );
+          case PairRejected(:final reason):
+            throw SessionException('pairing rejected: $reason');
+        }
       }
     } catch (e) {
       // Never leak the socket on a failed handshake (timeout/reject/malformed).

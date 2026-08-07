@@ -457,6 +457,16 @@ impl ControlServer {
             device_id: device_id.clone(),
         };
 
+        // Signal the device it is parked (an interim frame) so it can show "waiting for the
+        // operator" instead of an opaque wait; the terminal Granted/Rejected follows (86ajxhv0q).
+        // If the socket is already gone, drop the request and bail rather than park a dead peer.
+        if send_json(ws, &PairResponse::Parked).await.is_err() {
+            self.registry.lock().await.deny_request(&device_id);
+            return Err(TransportError::Protocol(
+                "device left before parking".into(),
+            ));
+        }
+
         // Park: await the operator's decision, sending periodic keepalive pings so an idle
         // NAT/firewall does not silently drop the socket across the (up-to-120s) human wait.
         // We do not read here — the client sends nothing while parked, `recv_json` skips our

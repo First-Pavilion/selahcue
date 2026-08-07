@@ -69,6 +69,12 @@ void main() {
     expect(g.role, 'producer');
   });
 
+  test('pair parked parses (interim frame, 86ajxhv0q)', () {
+    final r = PairResult.fromJson(
+        jsonDecode('{"pair":"parked"}') as Map<String, dynamic>);
+    expect(r, isA<PairParked>());
+  });
+
   test('denied parses (Rust fixture)', () {
     final m = ServerMessage.fromJson(
         jsonDecode('{"event":"denied","request_id":7,"reason":"forbidden"}')

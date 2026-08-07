@@ -955,6 +955,11 @@ pub enum PairResponse {
         token: String,
         role: Role,
     },
+    /// Interim: the request is parked, awaiting the operator's approve/deny (86ajxhv0q). Sent ONCE
+    /// right after parking; the terminal `Granted`/`Rejected` follows. Additive — lets the device
+    /// show a "waiting for the operator" state instead of an opaque wait (older clients that don't
+    /// know this variant simply keep waiting for the terminal reply).
+    Parked,
     /// The code was invalid/expired, the host declined, or pairing is not enabled.
     Rejected { reason: DenyReason },
 }
@@ -970,6 +975,7 @@ impl std::fmt::Debug for PairResponse {
                 .field("token", &"<redacted>")
                 .field("role", &role)
                 .finish(),
+            PairResponse::Parked => f.write_str("PairResponse::Parked"),
             PairResponse::Rejected { reason } => f
                 .debug_struct("PairResponse::Rejected")
                 .field("reason", &reason)

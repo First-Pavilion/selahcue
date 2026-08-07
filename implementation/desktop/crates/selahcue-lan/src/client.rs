@@ -138,22 +138,31 @@ impl ControlClient {
                 }),
             )
             .await?;
-            match recv_json::<_, PairResponse>(&mut ws).await? {
-                PairResponse::Granted {
-                    device_id,
-                    token,
-                    role,
-                } => Ok((
-                    Self {
-                        ws,
+            loop {
+                match recv_json::<_, PairResponse>(&mut ws).await? {
+                    // Interim: the host parked our request and is awaiting the operator (86ajxhv0q).
+                    // Keep waiting for the terminal reply (a UI shows "waiting" meanwhile).
+                    PairResponse::Parked => continue,
+                    PairResponse::Granted {
+                        device_id,
+                        token,
                         role,
-                        next_id: 1,
-                    },
-                    PairingCredentials { device_id, token },
-                )),
-                PairResponse::Rejected { reason } => Err(TransportError::Protocol(format!(
-                    "pairing rejected: {reason:?}"
-                ))),
+                    } => {
+                        break Ok((
+                            Self {
+                                ws,
+                                role,
+                                next_id: 1,
+                            },
+                            PairingCredentials { device_id, token },
+                        ))
+                    }
+                    PairResponse::Rejected { reason } => {
+                        break Err(TransportError::Protocol(format!(
+                            "pairing rejected: {reason:?}"
+                        )))
+                    }
+                }
             }
         };
         match tokio::time::timeout(Self::PAIR_TIMEOUT, attempt).await {

@@ -618,6 +618,15 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         to_json(&pair_p).unwrap(),
         r#"{"hello":"pair","v":2,"code":"ABCD2345","device_name":"Phone","platform":"ios"}"#
     );
+    // Interim pairing frame (86ajxhv0q): additive `parked` — Granted/Rejected fixtures unchanged.
+    assert_eq!(
+        to_json(&PairResponse::Parked).unwrap(),
+        r#"{"pair":"parked"}"#
+    );
+    assert_eq!(
+        selahcue_lan::protocol::from_json::<PairResponse>(r#"{"pair":"parked"}"#).unwrap(),
+        PairResponse::Parked
+    );
 
     // The operator_state frame WITH the batch-7y scripture fields, pinned on the
     // serialize side (the skip-if-none fields must keep these exact names — the

@@ -317,6 +317,8 @@ sealed class PairResult {
         );
       case 'rejected':
         return PairRejected(j['reason'] as String? ?? '');
+      case 'parked':
+        return const PairParked();
       default:
         return const PairRejected('malformed reply');
     }
@@ -333,6 +335,12 @@ class PairGranted extends PairResult {
 class PairRejected extends PairResult {
   final String reason;
   const PairRejected(this.reason);
+}
+
+/// Interim reply: the host parked the request and is awaiting the operator's approve/deny
+/// (86ajxhv0q). The client keeps waiting for the terminal Granted/Rejected.
+class PairParked extends PairResult {
+  const PairParked();
 }
 
 /// The reply to an `auth` hello (`{'auth': 'granted'|'rejected'}` tagged).
