@@ -150,6 +150,9 @@ fn operator_webview_is_pinned_to_the_canonical_tokens() {
         "id=\"transcript-log\"",
         "id=\"transcript-partial\"",
         "id=\"transcript-listen\"",
+        // Live mic-level meter (86ajxepha): a role=meter bar driven by stt://level while listening.
+        "id=\"transcript-meter\"",
+        "role=\"meter\"",
         "On-device transcription",
         "id=\"detections\"",
         "id=\"detections-list\"",
@@ -588,4 +591,226 @@ fn design2_palette_meets_wcag_aa() {
         ph >= AA_LARGE,
         "white on primary-hover = {ph:.2} < AA-large {AA_LARGE}"
     );
+}
+
+/// The Presentation & Media surface (Design 2.0, Figma node 329:124) is wired: the activated
+/// nav item, the surface section, its load-bearing ids, and the deck/media bridge commands are
+/// all present. Pinned so a future edit cannot silently drop a hook the surface depends on
+/// (each is a real `getElementById`/`invoke` target). The compositor stays native — the canvas
+/// is a base64 preview (`render_deck_slide` → `blitFrame`), never an HTML render (ADR-0002/0003).
+#[test]
+fn operator_presentation_media_surface_is_wired() {
+    let html = operator_dist("index.html");
+    let js = operator_dist("app.js");
+    // The nav item is ACTIVATED (a real surface, no longer the disabled "later" affordance) but
+    // carries `data-nodigit` so it never shifts the ⌘1–6 map.
+    for needle in [
+        "data-surface=\"presentation\"",
+        "data-nodigit",
+        "id=\"surface-presentation\"",
+        "id=\"pm-slide-list\"",
+        "id=\"pm-canvas\"",
+        "id=\"pm-media-grid\"",
+        "id=\"pm-notes\"",
+        "id=\"pm-transition\"",
+        "id=\"pm-autoadv\"",
+        "id=\"pm-import\"",
+        "id=\"pm-undo\"",
+        "id=\"pm-present\"",
+        // Scoped to the PM toolbar so it can't accidentally match the Theme Designer's add-bar.
+        "class=\"pm-tool\" data-add=\"text\"",
+        // The contextual right panel: Media ⟷ Inspector tabs + the two bodies (86ajvjtax).
+        "id=\"pm-tab-media\"",
+        "id=\"pm-tab-inspector\"",
+        "id=\"pm-inspector-body\"",
+        "id=\"pm-media-body\"",
+    ] {
+        assert!(html.contains(needle), "index.html missing {needle:?}");
+    }
+    // The webview→engine bridge commands + the own render loop.
+    for needle in [
+        // The exact APP_SURFACES + SURFACE_LABEL registration (a bare "presentation" would be a
+        // tautology — the word appears many times; these prove the surface is really registered).
+        "\"console\", \"presentation\"",
+        "presentation: \"Presentation\"",
+        "renderPresentation",
+        "render_deck_slide", // native slide preview
+        "deck_view",
+        "deck_add_slide",
+        "deck_add_element",
+        "deck_move_element",
+        "deck_set_transition",
+        "deck_set_auto_advance",
+        "deck_undo",
+        "deck_go_live",
+        "deck_add_image_element",
+        // The per-element Inspector + its edit/replace bridge (86ajvjtax).
+        "pmRenderInspector",
+        "deck_update_element",
+        "deck_replace_element_image",
+    ] {
+        assert!(js.contains(needle), "app.js missing {needle:?}");
+    }
+    // The Presentation item must NOT be a disabled "later" affordance any more (regression guard).
+    assert!(
+        !html.contains("data-later=\"presentation\""),
+        "the Presentation nav item is activated, not a disabled 'later' affordance"
+    );
+}
+
+/// The Presentation & Media **remaining states** (TASK-presentation-remaining-states): destructive
+/// confirms (delete-slide / remove-media / delete-element toast), the system loading/error states,
+/// the Text font picker, and the live image Fit control. Pinned so a future edit cannot silently
+/// drop one of these designed affordances (each is a real DOM/CSS/bridge hook).
+#[test]
+fn operator_presentation_remaining_states_are_wired() {
+    let html = operator_dist("index.html");
+    let js = operator_dist("app.js");
+    let css = operator_dist("app.css");
+    // Load-bearing markup: the error banner (role=alert) + the action toast (role=status).
+    for needle in [
+        "id=\"pm-error\"",
+        "role=\"alert\"",
+        "id=\"pm-error-retry\"",
+        "id=\"pm-error-dismiss\"",
+        "id=\"pm-toast\"",
+        "role=\"status\"",
+    ] {
+        assert!(html.contains(needle), "index.html missing {needle:?}");
+    }
+    // Behaviour hooks: the confirm dialog, toast, font picker, Fit control, and the destructive
+    // bridge commands the affordances drive.
+    for needle in [
+        "function pmConfirm",       // the role=alertdialog confirm (focus-trap + Esc)
+        "\"alertdialog\"",          // the confirm's ARIA role
+        "function pmToast",         // the "Element deleted — Undo" toast
+        "function pmDeleteElement", // routes delete → toast + undo
+        "function pmFontSelect",    // the Text Font-family picker (C-006)
+        "function pmShowError",     // the error banner (C-004)
+        "function pmSetBusy",       // the aria-busy loading state (C-004)
+        "deck_remove_slide",        // the delete-slide confirm target (C-001)
+        "deck_remove_media",        // the remove-media confirm target (C-002)
+        "\"imgfit\"",               // the live image Fit control (C-008)
+        "pm-slide-del",             // the delete-slide affordance (C-001)
+        "pm-asset-del",             // the remove-media affordance (C-002)
+        "aria-busy",                // the loading state toggled on the canvas
+    ] {
+        assert!(js.contains(needle), "app.js missing {needle:?}");
+    }
+    // The Image Fit control is a LIVE three-way select, not the old disabled "later render seam".
+    assert!(
+        js.contains("Fit (letterbox)") && js.contains("Fill (cover)"),
+        "the Image inspector Fit control offers the letterbox/cover modes (C-008)"
+    );
+    assert!(
+        !js.contains("Aspect-fit (letterbox) is a later render seam"),
+        "the Fit control is live now, not a later-seam placeholder note"
+    );
+    // Styles for each new affordance (so a re-skin can't drop them silently).
+    for needle in [
+        ".pm-error",
+        ".pm-toast",
+        ".pm-confirm",
+        ".pm-btn-danger",
+        ".pm-slide-del",
+        ".pm-asset-del",
+        ".pm-canvas-box.busy",
+    ] {
+        assert!(css.contains(needle), "app.css missing {needle:?}");
+    }
+}
+
+/// The Presentation canvas-editing extensions: on-canvas RESIZE handles + Alt-arrow resize, the
+/// LAYERS panel (drag-reorder, replacing the old Arrange buttons), and double-click-to-edit text.
+/// Pinned so a future edit cannot silently drop one of these interactive affordances.
+#[test]
+fn operator_presentation_canvas_editing_is_wired() {
+    let html = operator_dist("index.html");
+    let js = operator_dist("app.js");
+    let css = operator_dist("app.css");
+    // Markup: the 8 resize handles on the selection box.
+    for needle in [
+        "class=\"pm-h\" data-h=\"nw\"",
+        "data-h=\"se\"",
+        "data-h=\"w\"",
+    ] {
+        assert!(html.contains(needle), "index.html missing {needle:?}");
+    }
+    // Behaviour hooks: resize (handles + keyboard), the Layers panel + its reorder bridge, and the
+    // inline text editor (double-click) + its text bridge.
+    for needle in [
+        "function pmRenderLayers",    // the LAYERS panel (replaces Arrange)
+        "function pmLayerDragCommit", // drag-reorder commit
+        "deck_reorder_elements",      // the reorder bridge command
+        "function pmStartTextEdit",   // double-click inline text editor
+        "deck_set_element_text",      // the inline-edit bridge command
+        "\"dblclick\"",               // the double-click trigger
+        "pmLayerDragStart",           // layer drag start (handle pointerdown)
+    ] {
+        assert!(js.contains(needle), "app.js missing {needle:?}");
+    }
+    // The old Arrange button block must be gone (regression guard — it was replaced by Layers).
+    assert!(
+        !js.contains("pm-insp-arrange") && !js.contains("\"arr-\" + dir"),
+        "the Arrange button block was replaced by the Layers panel"
+    );
+    // Styles for the new affordances.
+    for needle in [".pm-h[data-h=", ".pm-layers", ".pm-text-edit"] {
+        assert!(css.contains(needle), "app.css missing {needle:?}");
+    }
+}
+
+/// The Presentations Library (86ajvt8q7): the deck-switcher breadcrumb opens a library view of the
+/// deck set, wired to the deck_list/new/open/rename/duplicate/delete commands. Pinned so a future
+/// edit cannot silently drop the browse/create/manage affordances or their bridge commands.
+#[test]
+fn operator_presentations_library_is_wired() {
+    let html = operator_dist("index.html");
+    let js = operator_dist("app.js");
+    let css = operator_dist("app.css");
+    // Load-bearing markup: the switcher + the library view container + its states.
+    for needle in [
+        "id=\"pm-deckswitch\"",
+        "id=\"pm-library\"",
+        "id=\"pm-lib-grid\"",
+        "id=\"pm-lib-new\"",
+        "id=\"pm-lib-back\"",
+        "id=\"pm-lib-q\"",
+        "id=\"pm-lib-empty\"",
+        "id=\"pm-lib-error\"",
+        "id=\"pm-lib-nopersist\"",
+    ] {
+        assert!(html.contains(needle), "index.html missing {needle:?}");
+    }
+    // The bridge commands + the behaviour hooks.
+    for needle in [
+        "deck_list",
+        "deck_new",
+        "deck_open",
+        "deck_rename",
+        "deck_duplicate",
+        "deck_delete",
+        "function pmShowLibrary",
+        "function pmRenderLibGrid",
+        "function pmPrompt",       // the New/Rename name dialog
+        "function pmLibOpenMenu",  // the card ⋯ menu
+        "function pmLibFocusDeck", // a11y: restore focus after a mutating action (WCAG 2.4.3)
+    ] {
+        assert!(js.contains(needle), "app.js missing {needle:?}");
+    }
+    // The dead "Add to plan" stub is replaced by the deck-switcher (regression guard).
+    assert!(
+        !html.contains("id=\"pm-addplan\""),
+        "the disabled 'Add to plan' stub was replaced by the deck-switcher"
+    );
+    // Styles for the library affordances.
+    for needle in [
+        ".pm-library",
+        ".pm-lib-card",
+        ".pm-lib-menu",
+        ".pm-deckswitch",
+        ".pm-lib-menu button:focus-visible", // a11y: a visible keyboard-focus outline (WCAG 2.4.7)
+    ] {
+        assert!(css.contains(needle), "app.css missing {needle:?}");
+    }
 }

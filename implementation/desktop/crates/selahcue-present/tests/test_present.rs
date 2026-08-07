@@ -95,7 +95,11 @@ fn present_authored_puts_the_slide_on_live_and_takes_over() {
 #[test]
 fn authored_live_is_tracked_and_cleared_by_a_later_go_live() {
     let mut p = presenter();
-    assert_eq!(p.authored_live_id(), None, "nothing authored is live initially");
+    assert_eq!(
+        p.authored_live_id(),
+        None,
+        "nothing authored is live initially"
+    );
 
     let mut slide = AuthoredSlide::new(SlideId(7));
     slide.background = Some(Background::Solid(Rgba::rgb(180, 40, 90)));
@@ -150,7 +154,9 @@ fn an_authored_slide_with_no_elements_mirrors_a_nonblank_background() {
     slide.background = Some(Background::Solid(Rgba::rgb(10, 90, 200)));
     assert!(p.present_authored(&slide, &Theme::dark()));
     // Never-blank (NFR-024): zero elements still mirrors the background, never black.
-    assert!(!is_black(&p.compose_screen_live(Some(&Theme::classic()), LayerMask::ALL)));
+    assert!(!is_black(
+        &p.compose_screen_live(Some(&Theme::classic()), LayerMask::ALL)
+    ));
 }
 
 #[test]
@@ -179,9 +185,17 @@ fn a_theme_switch_keeps_a_live_authored_slide_and_recomposes_main() {
 
     // (2) per-screen theme and (3) layer-mask changes also keep it live (no drop, no panic).
     p.set_main_screen_theme(Some(Theme::lower_third()));
-    assert_eq!(p.authored_live_id(), Some(9), "per-screen theme keeps the authored slide live");
+    assert_eq!(
+        p.authored_live_id(),
+        Some(9),
+        "per-screen theme keeps the authored slide live"
+    );
     p.set_main_layer_mask(LayerMask::ALL);
-    assert_eq!(p.authored_live_id(), Some(9), "a layer-mask change keeps the authored slide live");
+    assert_eq!(
+        p.authored_live_id(),
+        Some(9),
+        "a layer-mask change keeps the authored slide live"
+    );
 }
 
 #[test]

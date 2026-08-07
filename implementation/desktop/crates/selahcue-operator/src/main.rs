@@ -328,6 +328,28 @@ impl Backend {
             Backend::Local(s) => Ok(s.set_ndi_output(&screen, &name, enabled)),
         }
     }
+    async fn set_stage_template(&self, template: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_stage_template(&template)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_stage_template(&template)),
+        }
+    }
+    async fn set_stage_message(&self, text: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_stage_message(&text)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_stage_message(&text)),
+        }
+    }
     async fn select(&self, item_id: u64) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
@@ -706,6 +728,20 @@ async fn set_ndi_output(
     state: State<'_, AppState>,
 ) -> Result<OperatorView, String> {
     state.backend.set_ndi_output(screen, name, enabled).await
+}
+#[tauri::command]
+async fn set_stage_template(
+    template: String,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_stage_template(template).await
+}
+#[tauri::command]
+async fn set_stage_message(
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_stage_message(text).await
 }
 /// The built-in themes as `[{ name, theme }]` (theme = the serialized `Theme`) so the
 /// Theme Designer edits/previews the REAL built-ins from `theme.rs` — no hand-mirrored
@@ -1636,6 +1672,8 @@ fn main() {
             set_output_safe_area,
             set_screen_layer_visible,
             set_ndi_output,
+            set_stage_template,
+            set_stage_message,
             preview_theme,
             render_console,
             render_screen,

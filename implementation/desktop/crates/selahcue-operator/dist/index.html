@@ -229,7 +229,16 @@
                 id="detections-count" hidden></span></button>
           </div>
           <div class="rpanel" id="rpanel-timer" role="tabpanel" aria-labelledby="rtab-timer">
-            <aside class="side-panel" aria-label="Service timer">
+            <aside class="side-panel" aria-label="Service timer and stage output">
+              <!-- Timer | Stage sub-tabs: the timer AND the stage theme/message are both
+                   stage-output-only, so they share this tab (owner steer). -->
+              <div class="seg" role="tablist" aria-label="Timer or stage output">
+                <button class="seg-btn active" id="seg-timer" type="button" role="tab"
+                  aria-selected="true" aria-controls="stab-timer">Timer</button>
+                <button class="seg-btn" id="seg-stage" type="button" role="tab"
+                  aria-selected="false" aria-controls="stab-stage" tabindex="-1">Stage</button>
+              </div>
+              <div id="stab-timer" class="stab" role="tabpanel" aria-labelledby="seg-timer">
               <div class="rpanel-head">
                 <span id="timer-state" class="status-pill" hidden><span class="status-dot" aria-hidden="true"></span><span
                     id="timer-state-label">RUNNING</span></span>
@@ -270,6 +279,50 @@
             <button id="timer-stop" class="timer-stop-btn">Stop</button>
           </div>
           <span class="timer-note">Shown on the stage output only</span>
+              </div><!-- /stab-timer -->
+              <div id="stab-stage" class="stab" role="tabpanel" aria-labelledby="seg-stage" hidden>
+                <!-- STAGE THEME: one confidence-monitor template per stage screen. Selecting
+                     sends set_stage_template; the card shows each template's TIME-UP behaviour. -->
+                <div class="stage-sec-label">STAGE THEME</div>
+                <div id="stage-themes" class="stage-themes" role="radiogroup"
+                  aria-label="Stage confidence template">
+                  <button class="stage-theme active" type="button" data-template="worship"
+                    role="radio" aria-checked="true">
+                    <span class="stage-tile tile-worship" aria-hidden="true"></span>
+                    <span class="stage-theme-txt"><strong>Worship</strong><span>Lyric now / next + timer bar</span></span>
+                    <span class="stage-theme-tu">TIME UP<small>timer region</small></span>
+                  </button>
+                  <button class="stage-theme" type="button" data-template="scripture"
+                    role="radio" aria-checked="false">
+                    <span class="stage-tile tile-scripture" aria-hidden="true"></span>
+                    <span class="stage-theme-txt"><strong>Scripture</strong><span>Scripture + next + countdown panel</span></span>
+                    <span class="stage-theme-tu">TIME UP<small>panel region</small></span>
+                  </button>
+                  <button class="stage-theme" type="button" data-template="timer-only"
+                    role="radio" aria-checked="false">
+                    <span class="stage-tile tile-timer" aria-hidden="true"></span>
+                    <span class="stage-theme-txt"><strong>Timer-only</strong><span>Big countdown + date, nothing else</span></span>
+                    <span class="stage-theme-tu up">TIME UP<small>full screen</small></span>
+                  </button>
+                </div>
+                <!-- STAGE MESSAGE: an operator→speaker note overlaid on the confidence
+                     monitor only. Preset chip or custom text -> set_stage_message. -->
+                <div class="stage-sec-label">STAGE MESSAGE</div>
+                <div id="stage-presets" class="stage-presets">
+                  <button class="stage-preset" type="button" data-msg="WRAP UP · 2 MIN LEFT">WRAP UP · 2 MIN LEFT</button>
+                  <button class="stage-preset" type="button" data-msg="SLOW DOWN">SLOW DOWN</button>
+                  <button class="stage-preset" type="button" data-msg="WRAP UP NOW">WRAP UP NOW</button>
+                  <button class="stage-preset" type="button" data-msg="GREAT JOB">GREAT JOB</button>
+                </div>
+                <input id="stage-msg-input" class="stage-msg-input" type="text" maxlength="120"
+                  placeholder="Custom message…" aria-label="Custom stage message" />
+                <div class="stage-msg-row">
+                  <button id="stage-msg-send" class="stage-msg-send" type="button">Send to stage</button>
+                  <button id="stage-msg-clear" class="stage-msg-clear" type="button">Clear</button>
+                </div>
+                <div id="stage-msg-active" class="stage-msg-active" role="status" aria-live="polite" hidden></div>
+                <span class="timer-note">Shows on the confidence screen only — never the audience.</span>
+              </div><!-- /stab-stage -->
             </aside>
           </div><!-- /rpanel-timer -->
           <div class="rpanel" id="rpanel-detections" role="tabpanel" aria-labelledby="rtab-detections" hidden>

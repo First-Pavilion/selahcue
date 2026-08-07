@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod compose;
+pub mod deck;
 pub mod present;
 pub mod qr;
 pub mod slide;
@@ -19,7 +20,11 @@ pub mod stage;
 pub mod theme;
 pub mod tokens;
 
-pub use compose::{compose_slide, compose_slide_masked, LayerMask};
+pub use compose::{compose_authored_slide, compose_slide, compose_slide_masked, LayerMask};
+pub use deck::{
+    crossfade, media_usage, AuthoredSlide, DeckId, DeckSession, SlideDeck, SlideId, Transition,
+    UsageReport, MAX_DECK_SLIDES, MAX_NOTES_LEN,
+};
 pub use present::Presenter;
 pub use qr::{compose_qr, qr_modules};
 pub use slide::Slide;
@@ -34,7 +39,7 @@ pub use tokens::{contrast_ratio, SemanticToken, LIVE, NEUTRAL, PREVIEW, WARN};
 /// without depending on `selahcue-engine` directly.
 pub use selahcue_engine::raster::{system_font_families, FrameBuffer};
 pub use selahcue_engine::scene::{
-    FontName, GradientDirection, MediaRef, Rgba, ShapeKind, TextAlign, TextStyle,
+    FontName, GradientDirection, ImageFit, MediaRef, Rgba, ShapeKind, TextAlign, TextStyle,
 };
 
 /// Render a canonical **sample scripture slide** with `theme` into a `width×height`
@@ -51,4 +56,18 @@ pub fn render_sample(theme: &Theme, width: u32, height: u32) -> FrameBuffer {
         ],
     );
     selahcue_engine::raster::render(&compose_slide(&slide, theme, width, height))
+}
+
+/// Compose an authored deck slide (Design 2.0, node 329:124) with `theme` and rasterise it to a
+/// `width×height` [`FrameBuffer`] (RGBA8) — the operator console's slide-canvas preview. Same
+/// native compositor as the audience output (never blank), so the webview draws real pixels
+/// rather than laying the slide out itself (ADR-0002/0003). A thin wrapper over
+/// [`compose_authored_slide`] + the deterministic rasteriser.
+pub fn render_authored_slide(
+    slide: &deck::AuthoredSlide,
+    theme: &Theme,
+    width: u32,
+    height: u32,
+) -> FrameBuffer {
+    selahcue_engine::raster::render(&compose_authored_slide(slide, theme, width, height))
 }

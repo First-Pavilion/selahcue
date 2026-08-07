@@ -49,6 +49,10 @@ fn operator_can_do_every_command() {
         Command::SetTheme {
             name: "classic".into(),
         },
+        Command::PresentAuthoredSlide {
+            slide_json: "{}".into(),
+            theme_json: "{}".into(),
+        },
     ];
     for c in &cmds {
         assert!(authorize(Role::Operator, c), "operator denied {c:?}");
@@ -169,6 +173,20 @@ fn only_privileged_roles_can_go_live() {
     assert!(authorize(Role::Producer, &Command::GoLive));
     assert!(!authorize(Role::Assistant, &Command::GoLive));
     assert!(!authorize(Role::Viewer, &Command::GoLive));
+}
+
+#[test]
+fn present_authored_slide_is_go_live_privilege() {
+    // Presenting a deck slide changes the LIVE audience output, so it carries the GoLive
+    // privilege (Producer+) — never an escalation path for Assistant/Viewer.
+    let present = Command::PresentAuthoredSlide {
+        slide_json: "{}".into(),
+        theme_json: "{}".into(),
+    };
+    assert!(authorize(Role::Operator, &present));
+    assert!(authorize(Role::Producer, &present));
+    assert!(!authorize(Role::Assistant, &present));
+    assert!(!authorize(Role::Viewer, &present));
 }
 
 #[test]
@@ -381,4 +399,15 @@ fn permission_sets_are_strictly_ordered_supersets() {
     // Sanity: Operator uniquely holds ManageDevices.
     assert!(Role::Operator.can(Permission::ManageDevices));
     assert!(!Role::Producer.can(Permission::ManageDevices));
+}
+
+#[test]
+fn manage_devices_is_operator_only() {
+    // The device-management authority (pair / revoke / re-role controllers — the Remote Control
+    // surface, ClickUp 86ajxer8n) is held ONLY by Operator. This is the gate the forthcoming
+    // List/Approve/Deny/Revoke/SetRole device commands map to (deny-by-default for everyone below).
+    assert!(Role::Operator.can(Permission::ManageDevices));
+    assert!(!Role::Producer.can(Permission::ManageDevices));
+    assert!(!Role::Assistant.can(Permission::ManageDevices));
+    assert!(!Role::Viewer.can(Permission::ManageDevices));
 }

@@ -93,6 +93,11 @@ pub struct OperatorView {
     pub partial_transcript: Option<String>,
     /// The pending scripture-detection approval queue (R4) — candidates to one-click stage.
     pub detections: Vec<DetectionView>,
+    /// The stage/confidence template the confidence monitor renders
+    /// (`worship`/`scripture`/`timer-only`) — drives the Live Console's Stage sub-tab.
+    pub stage_template: String,
+    /// The production message shown on the confidence monitor, if any (stage-only).
+    pub stage_message: Option<String>,
 }
 
 /// An ergonomic, UI-facing wrapper over the shared [`LiveController`]. Each action
@@ -454,6 +459,18 @@ impl OperatorShell {
         })
     }
 
+    /// Choose the stage/confidence template (`worship`/`scripture`/`timer-only`).
+    pub fn set_stage_template(&self, template: &str) -> OperatorView {
+        self.act(&Command::SetStageTemplate {
+            template: template.into(),
+        })
+    }
+
+    /// Set (or clear, with a blank string) the stage/confidence production message.
+    pub fn set_stage_message(&self, text: &str) -> OperatorView {
+        self.act(&Command::SetStageMessage { text: text.into() })
+    }
+
     /// Search scripture: reference parse first, then keyword search over the
     /// bundled translation. Each hit carries its verse text (stage by reference).
     pub fn scripture_search(
@@ -533,6 +550,8 @@ impl From<OperatorView> for OperatorStateView {
             transcript: v.transcript,
             partial_transcript: v.partial_transcript,
             detections: v.detections,
+            stage_template: v.stage_template,
+            stage_message: v.stage_message,
         }
     }
 }
@@ -561,6 +580,8 @@ impl From<OperatorStateView> for OperatorView {
             transcript: v.transcript,
             partial_transcript: v.partial_transcript,
             detections: v.detections,
+            stage_template: v.stage_template,
+            stage_message: v.stage_message,
         }
     }
 }
@@ -1001,6 +1022,26 @@ impl RemoteOperator {
             enabled,
         })
         .await
+    }
+
+    /// Choose the stage/confidence template on the host.
+    pub async fn set_stage_template(
+        &mut self,
+        template: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetStageTemplate {
+            template: template.into(),
+        })
+        .await
+    }
+
+    /// Set (or clear) the stage/confidence production message on the host.
+    pub async fn set_stage_message(
+        &mut self,
+        text: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetStageMessage { text: text.into() })
+            .await
     }
 
     /// Search scripture on the host; returns stageable display references.

@@ -166,6 +166,34 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE screen_output_config ADD COLUMN ndi_enabled INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE screen_output_config ADD COLUMN ndi_name    TEXT    NOT NULL DEFAULT '';
     "#,
+    // v15 -> v16: the authored slide-DECK library (Design 2.0 "Presentation & Media", node
+    // 329:124) — reusable presentation documents. One row per deck NAME; `deck_json` is the
+    // canonical serialized `SlideDeck` (name + authored slides + id counter), opaque to the data
+    // layer (it never deserializes it, exactly like `saved_theme.theme_json`). A fresh table, so
+    // an older database opens unchanged and simply starts with no decks.
+    r#"
+    CREATE TABLE deck (
+        name      TEXT PRIMARY KEY,
+        deck_json TEXT NOT NULL
+    );
+    "#,
+    // v16 -> v17: the MEDIA LIBRARY (Design 2.0 node 329:124) — the imported media-asset
+    // registry. Structured columns (not a JSON blob) so storage accounting and missing/unused
+    // queries stay first-class; `kind` is the `MediaKind` string tag; width/height/duration_ms
+    // are NULL when unknown (image has no duration, audio has no pixels). A fresh table, so an
+    // older database opens unchanged and starts with an empty library.
+    r#"
+    CREATE TABLE media_asset (
+        id          INTEGER PRIMARY KEY,
+        path        TEXT    NOT NULL,
+        kind        TEXT    NOT NULL,
+        size_bytes  INTEGER NOT NULL,
+        width       INTEGER,
+        height      INTEGER,
+        duration_ms INTEGER,
+        imported_at INTEGER NOT NULL
+    );
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

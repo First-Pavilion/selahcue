@@ -95,7 +95,7 @@ impl Recognizer for FakeRecognizer {
 }
 
 #[cfg(feature = "whisper")]
-pub use whisper_backend::WhisperRecognizer;
+pub use whisper_backend::{WhisperContext, WhisperRecognizer};
 
 #[cfg(feature = "whisper")]
 mod whisper_backend {
@@ -106,13 +106,16 @@ mod whisper_backend {
     use super::{RecognizedSegment, Recognizer};
     use crate::model::{verify_model, ModelSelection};
     use std::path::Path;
+    use std::sync::Arc;
 
-    use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+    pub use whisper_rs::WhisperContext;
+    use whisper_rs::{FullParams, SamplingStrategy, WhisperContextParameters};
 
-    /// whisper.cpp-backed recognizer. Holds a loaded model context and transcribes each
+    /// whisper.cpp-backed recognizer. Holds a **shared** loaded model context (`Arc`) so a
+    /// stop→start can reuse the resident model instead of reloading it, and transcribes each
     /// utterance with greedy decoding.
     pub struct WhisperRecognizer {
-        ctx: WhisperContext,
+        ctx: Arc<WhisperContext>,
         label: String,
         threads: i32,
     }
@@ -120,8 +123,8 @@ mod whisper_backend {
     impl WhisperRecognizer {
         /// Verify (FR-156) then load a model from `model_path`. The model is SHA-256-checked
         /// against `expected_sha256` **before** it is handed to whisper.cpp — a mismatch
-        /// refuses to load (integrity is enforced here, not left to the caller). Returns an
-        /// error string on verification or load failure rather than panicking.
+        /// refuses to load (integrity is enforced here, not left to the caller). Use this for a
+        /// path whose integrity is NOT already established (e.g. an operator-supplied file).
         pub fn load(
             model_path: &Path,
             expected_sha256: &str,
@@ -129,16 +132,37 @@ mod whisper_backend {
         ) -> Result<Self, String> {
             // FR-156 / ADR-0012: integrity gate before load.
             verify_model(model_path, expected_sha256).map_err(|e| e.to_string())?;
+            Self::load_unverified(model_path, selection)
+        }
+
+        /// Load a model **without** re-hashing it — for a path whose SHA-256 was ALREADY verified
+        /// (the download/cache path verifies on fetch). Re-hashing a ~1.6 GB file on every start
+        /// is pure latency before the mic even opens, so the caller vouches for integrity here.
+        pub fn load_unverified(
+            model_path: &Path,
+            selection: &ModelSelection,
+        ) -> Result<Self, String> {
             let path = model_path
                 .to_str()
                 .ok_or_else(|| "model path is not valid UTF-8".to_string())?;
             let ctx = WhisperContext::new_with_params(path, WhisperContextParameters::default())
                 .map_err(|e| format!("whisper load: {e}"))?;
-            Ok(WhisperRecognizer {
+            Ok(Self::from_context(Arc::new(ctx), selection))
+        }
+
+        /// Build a recognizer around an already-loaded, shared model context — so a stop→start
+        /// reuses the resident model (load once) instead of re-verifying + reloading it.
+        pub fn from_context(ctx: Arc<WhisperContext>, selection: &ModelSelection) -> Self {
+            WhisperRecognizer {
                 ctx,
                 label: format!("whisper-{}", selection.model.as_str()),
                 threads: selection.threads.max(1) as i32,
-            })
+            }
+        }
+
+        /// The shared model context, for caching across capture sessions (bounded: one model).
+        pub fn context(&self) -> Arc<WhisperContext> {
+            Arc::clone(&self.ctx)
         }
     }
 

@@ -841,6 +841,47 @@ DRIVER = r"""
       var rcnt = el("detections-count");
       ok(rcnt && rcnt.hidden === false && rcnt.textContent.indexOf("1") >= 0,
          "tabs: the count badge on the tab shows the unactioned detection count");
+
+      // === Timer | Stage sub-tab: stage theme picker + production-message composer (stage-only) ===
+      rtabTimer.click(); // back to the Service Timer tab
+      var segTimer = el("seg-timer"), segStage = el("seg-stage");
+      var stabTimer = el("stab-timer"), stabStage = el("stab-stage");
+      ok(segTimer && segStage && stabTimer && stabStage, "stage: the Timer|Stage sub-tabs + panels exist");
+      ok(!stabTimer.hidden && stabStage.hidden, "stage: the Timer sub-panel shows first");
+      segStage.click();
+      ok(!stabStage.hidden && stabTimer.hidden && segStage.getAttribute("aria-selected") === "true",
+         "stage: clicking Stage reveals the theme/message panel");
+      // Theme picker -> set_stage_template.
+      var scriptureCard = document.querySelector('#stage-themes .stage-theme[data-template="scripture"]');
+      scriptureCard.click();
+      ok(window.__calls.some(function(c){ return c.cmd === "set_stage_template" && c.args.template === "scripture"; }),
+         "stage: a theme card invokes set_stage_template(scripture)");
+      // Preset chip -> set_stage_message with its text.
+      var preset = document.querySelector('#stage-presets .stage-preset');
+      preset.click();
+      ok(window.__calls.some(function(c){ return c.cmd === "set_stage_message" && c.args.text === preset.dataset.msg; }),
+         "stage: a preset chip invokes set_stage_message with its text");
+      // Custom field + Send -> set_stage_message(custom).
+      el("stage-msg-input").value = "HOLD FOR PRAYER";
+      el("stage-msg-send").click();
+      ok(window.__calls.some(function(c){ return c.cmd === "set_stage_message" && c.args.text === "HOLD FOR PRAYER"; }),
+         "stage: the custom field + Send invokes set_stage_message(custom)");
+      // Clear -> set_stage_message("").
+      el("stage-msg-clear").click();
+      ok(window.__calls.some(function(c){ return c.cmd === "set_stage_message" && c.args.text === ""; }),
+         "stage: Clear invokes set_stage_message with an empty string");
+      // syncStage reflects the host's authoritative template + live message.
+      render(Object.assign({}, baseView, { stage_template: "timer-only", stage_message: "WRAP UP NOW" }));
+      var toCard = document.querySelector('#stage-themes .stage-theme[data-template="timer-only"]');
+      ok(toCard.classList.contains("active") && toCard.getAttribute("aria-checked") === "true",
+         "stage: syncStage marks the host's active template (timer-only)");
+      var msgActive = el("stage-msg-active");
+      ok(msgActive && !msgActive.hidden && msgActive.textContent.indexOf("WRAP UP NOW") >= 0,
+         "stage: syncStage shows the live production message");
+      // Restore the detection the following flow test depends on (do NOT clear it).
+      render(Object.assign({}, baseView, { detections: [
+        { id: 991, reference: "John 3:16", text: "For God so loved the world", confidence: 95 },
+      ] }));
       // A bare detection must NOT display anything: no Preview/Live change, no chapter opened.
       ok(!window.__calls.some(function(c){ return c.cmd === "get_chapter" && c.args && c.args.reference === "John 3:16"; }),
          "flow: a detection does NOT open its chapter or touch Preview/Live (nothing until Stage)");

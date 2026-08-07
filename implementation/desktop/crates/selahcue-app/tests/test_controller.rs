@@ -3466,6 +3466,48 @@ fn delete_is_virtual_only_and_drops_the_theme() {
     );
 }
 
+/// The stage/confidence template + production message flow through `apply` to the operator
+/// view (the Live Console's Stage sub-tab): default is `worship`/none, a set is reflected, an
+/// unknown template falls back (never a panic), and a blank message clears the overlay.
+#[test]
+fn stage_template_and_message_flow_to_the_operator_view() {
+    let mut c = controller_live();
+    let v = c.operator_view();
+    assert_eq!(v.stage_template, "worship", "default stage template");
+    assert_eq!(v.stage_message, None, "no message by default");
+
+    assert_eq!(
+        c.apply(&Command::SetStageTemplate {
+            template: "scripture".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(c.operator_view().stage_template, "scripture");
+    assert_eq!(
+        c.apply(&Command::SetStageTemplate {
+            template: "timer-only".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(c.operator_view().stage_template, "timer-only");
+    // Unknown tag falls back to the default, never panics (untrusted input).
+    c.apply(&Command::SetStageTemplate {
+        template: "not-a-template".into(),
+    });
+    assert_eq!(c.operator_view().stage_template, "worship");
+
+    c.apply(&Command::SetStageMessage {
+        text: "WRAP UP - 2 MIN LEFT".into(),
+    });
+    assert_eq!(
+        c.operator_view().stage_message.as_deref(),
+        Some("WRAP UP - 2 MIN LEFT")
+    );
+    // A blank message clears the overlay.
+    c.apply(&Command::SetStageMessage { text: "  ".into() });
+    assert_eq!(c.operator_view().stage_message, None);
+}
+
 /// The registry is bounded: `AddScreen` is refused at `MAX_SCREENS`, and the registry
 /// never grows past the cap however many adds are attempted (no-leak).
 #[test]

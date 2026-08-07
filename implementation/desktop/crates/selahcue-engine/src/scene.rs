@@ -145,6 +145,11 @@ pub enum Layer {
         source: MediaRef,
         #[serde(default = "opacity_opaque", skip_serializing_if = "is_opaque")]
         opacity: u8,
+        /// How the decoded image is scaled into `rect` (Design 2.0 Inspector Fit). Additive:
+        /// `Stretch` (the default) is omitted from JSON, so an existing image layer stays
+        /// byte-identical.
+        #[serde(default, skip_serializing_if = "ImageFit::is_stretch")]
+        fit: ImageFit,
     },
     /// A parametric **shape** (86ajtwq24) — an ellipse / rounded-rectangle / triangle drawn
     /// within `rect`, filled with `fill` and outlined with `border` (an inset ring of
@@ -188,6 +193,28 @@ pub enum ShapeKind {
     Ellipse,
     RoundedRect,
     Triangle,
+}
+
+/// How a [`Layer::Image`] / `Element::Image` is scaled into its rect (Design 2.0 Inspector Fit).
+/// **`Stretch` is the default** (distort to fill — the historical behaviour), so an existing image's
+/// JSON is byte-identical (the field is omitted when `Stretch`). `Fit` letterboxes (aspect
+/// preserved; the gap shows the background); `Fill` covers the rect and centre-crops the overflow.
+/// All three are pure integer per-pixel (NFR-014, byte-identical cross-OS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageFit {
+    #[default]
+    Stretch,
+    Fit,
+    Fill,
+}
+
+impl ImageFit {
+    /// serde `skip_serializing_if`: the default `Stretch` omits the key (byte-stable). Public so
+    /// `Element::Image` in `selahcue-present` reuses the exact same predicate (one source of truth).
+    pub fn is_stretch(&self) -> bool {
+        matches!(self, ImageFit::Stretch)
+    }
 }
 
 /// The direction of a linear [`Layer::Gradient`] / gradient background (86ajq3225): which way

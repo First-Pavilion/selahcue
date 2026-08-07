@@ -5,7 +5,8 @@
 use selahcue_engine::raster::{render, FrameBuffer};
 use selahcue_present::{
     compose_slide, Background, Element, Fit, FontName, GradientBackground, GradientDirection,
-    ImageBackground, Rgba, ShapeKind, Slide, TextAlign, Theme, VAlign, MAX_TEXT_ELEMENT_LEN,
+    ImageBackground, ImageFit, Rgba, ShapeKind, Slide, TextAlign, Theme, VAlign,
+    MAX_TEXT_ELEMENT_LEN,
 };
 
 /// A full-frame opaque shape element at draw order `z`.
@@ -805,7 +806,7 @@ fn temp_image(w: u32, h: u32, c: Rgba) -> TempImage {
     TempImage(p)
 }
 
-/// A full-frame image element referencing `path`, at draw order `z`.
+/// A full-frame image element referencing `path`, at draw order `z` (default `Stretch` fit).
 fn full_image(path: &std::path::Path, opacity: u8, z: i16) -> Element {
     Element::Image {
         x_permille: 0,
@@ -816,6 +817,7 @@ fn full_image(path: &std::path::Path, opacity: u8, z: i16) -> Element {
         opacity,
         z,
         visible: true,
+        fit: ImageFit::Stretch,
     }
 }
 
@@ -833,6 +835,7 @@ fn an_image_element_composes_to_an_image_layer_with_the_mapped_rect() {
         opacity: 200,
         z: 1,
         visible: true,
+        fit: ImageFit::Stretch,
     });
     let frame = compose_slide(&Slide::new("R", ["B"]), &theme, 1000, 1000);
     let img = frame
@@ -846,6 +849,79 @@ fn an_image_element_composes_to_an_image_layer_with_the_mapped_rect() {
     // Per-mille → pixel at 1000×1000: x=100, y=200, w=500, h=250; opacity threaded.
     assert_eq!((img.0.x, img.0.y, img.0.w, img.0.h), (100, 200, 500, 250));
     assert_eq!(img.1, 200);
+}
+
+#[test]
+fn an_image_element_threads_its_fit_into_the_layer() {
+    use selahcue_engine::scene::Layer;
+    // The element's Fit (Design 2.0 Inspector) must survive compose onto the Layer::Image the
+    // raster honours — for each mode.
+    for fit in [ImageFit::Stretch, ImageFit::Fit, ImageFit::Fill] {
+        let img = temp_image(2, 2, Rgba::WHITE);
+        let mut theme = Theme::classic();
+        theme.elements.push(Element::Image {
+            x_permille: 0,
+            y_permille: 0,
+            w_permille: 1000,
+            h_permille: 1000,
+            source: MediaRef::new(img.path().to_str().unwrap()).unwrap(),
+            opacity: 255,
+            z: 1,
+            visible: true,
+            fit,
+        });
+        let frame = compose_slide(&Slide::new("R", ["B"]), &theme, 100, 100);
+        let layer_fit = frame
+            .layers
+            .iter()
+            .find_map(|l| match l {
+                Layer::Image { fit, .. } => Some(*fit),
+                _ => None,
+            })
+            .expect("an image element composes to a Layer::Image");
+        assert_eq!(layer_fit, fit, "the element Fit threads onto the layer");
+    }
+}
+
+#[test]
+fn a_default_fit_image_element_is_byte_stable() {
+    // Adding `fit` is additive: a `Stretch` (default) image element serialises WITHOUT a `fit`
+    // key, so pinned/existing theme JSON stays byte-identical; a non-default fit does serialise.
+    let stretch = Element::Image {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 500,
+        h_permille: 500,
+        source: MediaRef::new("a.png").unwrap(),
+        opacity: 255,
+        z: 0,
+        visible: true,
+        fit: ImageFit::Stretch,
+    };
+    let json = serde_json::to_string(&stretch).unwrap();
+    assert!(
+        !json.contains("fit"),
+        "default Stretch omits the fit key: {json}"
+    );
+    assert_eq!(serde_json::from_str::<Element>(&json).unwrap(), stretch);
+
+    let fill = Element::Image {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 500,
+        h_permille: 500,
+        source: MediaRef::new("a.png").unwrap(),
+        opacity: 255,
+        z: 0,
+        visible: true,
+        fit: ImageFit::Fill,
+    };
+    let jfill = serde_json::to_string(&fill).unwrap();
+    assert!(
+        jfill.contains(r#""fit":"fill""#),
+        "a non-default fit serialises: {jfill}"
+    );
+    assert_eq!(serde_json::from_str::<Element>(&jfill).unwrap(), fill);
 }
 
 #[test]
@@ -910,6 +986,7 @@ fn a_missing_image_element_renders_the_non_black_placeholder() {
         opacity: 255,
         z: 1,
         visible: true,
+        fit: ImageFit::Stretch,
     });
     let fb = render(&compose_slide(&Slide::new("R", ["B"]), &theme, 64, 64));
     // The placeholder base (64,54,74) fills most of the frame — assert a non-black pixel.

@@ -77,7 +77,15 @@ fn scenes() -> Vec<Frame> {
         color: Rgba::new(124, 92, 255, 200),
     });
 
-    vec![solid, rects, overlap, blackout, translucent, padded, authored]
+    vec![
+        solid,
+        rects,
+        overlap,
+        blackout,
+        translucent,
+        padded,
+        authored,
+    ]
 }
 
 #[test]

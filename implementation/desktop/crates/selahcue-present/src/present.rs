@@ -321,8 +321,15 @@ impl Presenter {
         // background overrides the theme; `screen_theme`/global is only the fallback. Layer masks do
         // not apply — an authored slide's elements ARE the content, not theme-layer categories.
         if let Some(slide) = self.live_authored.as_ref() {
-            let theme = screen_theme.or(self.live_theme.as_ref()).unwrap_or(&self.theme);
-            return raster::render(&compose_authored_slide(slide, theme, self.width, self.height));
+            let theme = screen_theme
+                .or(self.live_theme.as_ref())
+                .unwrap_or(&self.theme);
+            return raster::render(&compose_authored_slide(
+                slide,
+                theme,
+                self.width,
+                self.height,
+            ));
         }
         let Some(slide) = self.live_slide.as_ref() else {
             return raster::render(&Frame::new(self.width, self.height));

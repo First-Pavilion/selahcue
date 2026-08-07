@@ -8,7 +8,9 @@
 
 use crate::slide::Slide;
 use crate::theme::{Background, Band, Element, Fit, RegionStyle, Theme, VAlign};
-use selahcue_engine::scene::{FontName, Frame, Layer, Rect, Rgba, ShapeKind, TextAlign, TextStyle};
+use selahcue_engine::scene::{
+    FontName, Frame, ImageFit, Layer, Rect, Rgba, ShapeKind, TextAlign, TextStyle,
+};
 
 /// Lay out `lines` into a themed [`RegionStyle`] — per-region cell size, line
 /// height, colour, and H+V alignment, resolution-independent. The text block is
@@ -375,11 +377,13 @@ fn element_layers(element: &Element, width: u32, height: u32) -> Vec<Layer> {
             opacity,
             z: _,
             visible: _, // gated in compose_slide; a hidden element emits no layers
+            fit,
         } => {
             // Per-mille → pixel rect (same mapping as `Shape`/`Band`). The engine decodes
-            // `source` through its bounded, deterministic cache and blits it scaled into
-            // this rect at `opacity`; a missing/corrupt/unsupported source draws the
-            // missing-media placeholder (FR-070). Decoded pixels never ride the scene.
+            // `source` through its bounded, deterministic cache and blits it into this rect at
+            // `opacity`, scaled per `fit` (Stretch/Fit/Fill); a missing/corrupt/unsupported
+            // source draws the missing-media placeholder (FR-070). Decoded pixels never ride
+            // the scene.
             let map = |dim: u32, permille: u16| (dim as u64 * permille as u64 / 1000) as u32;
             let rect = Rect::new(
                 map(width, *x_permille) as i32,
@@ -391,6 +395,7 @@ fn element_layers(element: &Element, width: u32, height: u32) -> Vec<Layer> {
                 rect,
                 source: source.clone(),
                 opacity: *opacity,
+                fit: *fit,
             }]
         }
         Element::Text {
@@ -473,6 +478,9 @@ fn push_background(frame: &mut Frame, bg: &Background, width: u32, height: u32) 
             rect: full,
             source: img.source.clone(),
             opacity: 255,
+            // A background historically STRETCHES to fill the full frame; keep it byte-identical
+            // (the per-element Fit control is an element affordance, not a background one).
+            fit: ImageFit::default(),
         }),
     }
 }
@@ -627,6 +635,41 @@ pub fn compose_slide_masked(
     }
     // Front pass: design elements with `z >= 0` composite IN FRONT of the text.
     for e in ordered.iter().filter(|e| e.z() >= 0) {
+        for layer in element_layers(e, width, height) {
+            frame.push(layer);
+        }
+    }
+    frame
+}
+
+/// Compose an **authored slide** (a Design 2.0 deck slide, node 329:124) into a [`Frame`].
+///
+/// Unlike [`compose_slide`] — which lays a title+body into the theme's *regions* — an authored
+/// slide renders **its own** z-ordered layered [`Element`]s over its own [`Background`], with the
+/// audience `theme` supplying only the fallback background (the slide's `background` overrides it
+/// when set). There are no title/body regions: the elements ARE the content (the operator's
+/// canvas). A HIDDEN element (its `visible()` flag) contributes no layer, exactly like
+/// [`compose_slide`]. Pure and deterministic — the same (slide, theme, size) always yields
+/// byte-identical pixels.
+///
+/// **Never blank (NFR-024):** the background always fills the frame (the theme's base colour is
+/// the clear), so a slide with zero elements composes to a valid, non-failing background frame
+/// rather than nothing.
+pub fn compose_authored_slide(
+    slide: &crate::deck::AuthoredSlide,
+    theme: &Theme,
+    width: u32,
+    height: u32,
+) -> Frame {
+    // The slide's own background overrides the theme's; its base colour is the frame clear.
+    let bg = slide.background.as_ref().unwrap_or(&theme.background);
+    let mut frame = Frame::new(width, height).with_background(bg.base_color());
+    push_background(&mut frame, bg, width, height);
+    // Every VISIBLE element, z-ordered (stable sort → list order within equal z), all composited
+    // over the background (no text region to split around, unlike `compose_slide`).
+    let mut ordered: Vec<&Element> = slide.elements.iter().filter(|e| e.visible()).collect();
+    ordered.sort_by_key(|e| e.z());
+    for e in ordered {
         for layer in element_layers(e, width, height) {
             frame.push(layer);
         }

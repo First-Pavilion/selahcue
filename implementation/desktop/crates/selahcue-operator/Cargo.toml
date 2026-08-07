@@ -44,9 +44,19 @@ selahcue-lan = { path = "../selahcue-lan", features = ["server"] }
 selahcue-core = { path = "../selahcue-core" }
 selahcue-scripture = { path = "../selahcue-scripture" }
 selahcue-present = { path = "../selahcue-present" }
+# Persisted deck library (schema v16 `deck` table via `deck_repo`). Default build is unencrypted
+# (`Database::open`); at-rest encryption for the shared DB is a documented follow-up.
+selahcue-data = { path = "../selahcue-data" }
 # On-device STT engine (optional; behind the `stt` feature). Pulls the native whisper.cpp +
 # cpal backends ONLY when `stt` is enabled — the default build never touches them.
 selahcue-stt = { path = "../selahcue-stt", features = ["whisper", "capture", "download"], optional = true }
+
+# macOS gets whisper.cpp Metal GPU acceleration (unioned onto the base `selahcue-stt` features
+# above): the real-time-capable large model runs on the GPU instead of the CPU. Other targets
+# stay CPU-only and `select_model` steps down to a small model for live latency. Only compiled
+# when the `stt` feature enables the optional dep.
+[target.'cfg(target_os = "macos")'.dependencies]
+selahcue-stt = { path = "../selahcue-stt", features = ["metal"], optional = true }
 
 [lints.clippy]
 unwrap_used = "warn"

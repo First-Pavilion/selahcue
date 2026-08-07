@@ -12,7 +12,7 @@ use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_lan::protocol::{Command, ServerMessage};
 use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
 use selahcue_lan::{CertPin, ControlServer, Role, SelfSigned};
-use selahcue_present::Theme;
+use selahcue_present::{AuthoredSlide, Element, Rgba, ShapeKind, SlideId, Theme};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -115,6 +115,59 @@ async fn remote_operator_drives_the_host_and_sees_authoritative_state() {
     let v = op.clear().await.unwrap();
     assert_eq!(v.live_index, None);
     assert_eq!(controller.lock().unwrap().live_index(), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_present_authored_slide_drives_the_host_live_output() {
+    // The deck editor's "Present" over the loopback link: an authored Design 2.0 slide is
+    // composed on the HOST with the same compositor as plan content and shown on the physical
+    // audience output — the fix for "clicking Present does nothing on the output".
+    let (addr, pin, controller) = setup().await;
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "producer", "tok-prod")
+        .await
+        .unwrap();
+
+    // Put a plan item live first, so we prove the deck present REPLACES it on the host.
+    op.next().await.unwrap();
+    op.go_live().await.unwrap();
+    assert_eq!(controller.lock().unwrap().live_index(), Some(0));
+
+    // Present an authored slide (a full-frame red shape) over the wire.
+    let red = Rgba::rgb(210, 30, 40);
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    slide.elements = vec![Element::Shape {
+        x_permille: 0,
+        y_permille: 0,
+        w_permille: 1000,
+        h_permille: 1000,
+        fill: red,
+        border: Rgba::new(0, 0, 0, 0),
+        border_permille: 0,
+        opacity: 255,
+        z: 0,
+        variant: ShapeKind::Rect,
+        corner_permille: 0,
+        visible: true,
+    }];
+    let slide_json = serde_json::to_string(&slide).unwrap();
+    let theme_json = serde_json::to_string(&Theme::dark()).unwrap();
+    op.present_authored_slide(slide_json, theme_json)
+        .await
+        .unwrap();
+
+    // The HOST's audience output now shows the deck slide, and no plan item is live (the
+    // authored slide took over the single live surface).
+    let c = controller.lock().unwrap();
+    assert_eq!(
+        c.presenter().live_output().pixel(160, 90).unwrap(),
+        red,
+        "the host audience output shows the presented deck slide"
+    );
+    assert_eq!(
+        c.live_index(),
+        None,
+        "presenting a deck slide is not a plan item going live"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -9,6 +9,7 @@
 //! Modules:
 //! - [`scripture`] — Bible reference parsing (FR-027).
 //! - [`plan`] — the service-plan domain model (FR-001/002).
+//! - [`media`] — the bounded media-asset library (FR-003; Design 2.0 node 329:124).
 //! - [`timer`] — monotonic-clock timers with a TIME UP state (FR-054/065, NFR-022).
 //! - [`transcript`] — bounded, timestamped transcript segments + the STT provider seam
 //!   (R3; ADR-0010).
@@ -20,6 +21,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod detection;
+pub mod media;
 pub mod plan;
 pub mod scripture;
 pub mod timer;

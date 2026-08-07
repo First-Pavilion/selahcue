@@ -20,6 +20,13 @@ capture = ["dep:cpal"]
 # Real on-device recognition via whisper-rs (whisper.cpp). Off by default so CI needs no
 # native toolchain or model file; accuracy/latency stay spike-gated (S8/S11).
 whisper = ["dep:whisper-rs"]
+# GPU acceleration for whisper.cpp — each forwards to the matching whisper-rs backend and
+# implies `whisper`. When one is compiled in, `HardwareProbe::select_model` picks the large
+# real-time-capable model; a CPU-only build steps down to a small model for live latency
+# (`gpu_acceleration_compiled`). Off by default (CPU); the operator enables `metal` on macOS.
+metal = ["whisper", "whisper-rs/metal"]
+cuda = ["whisper", "whisper-rs/cuda"]
+vulkan = ["whisper", "whisper-rs/vulkan"]
 # Download-on-demand of a pinned model file (ureq + rustls). Pure-Rust — no native toolchain
 # — so this feature compiles without whisper; the downloaded file is SHA-256-verified before
 # use (FR-156). Off by default (offline-first: nothing is fetched unless enabled and invoked).

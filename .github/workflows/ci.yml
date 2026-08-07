@@ -223,10 +223,11 @@ jobs:
             librsvg2-dev libx11-dev libxkbcommon-dev
       - name: Format
         run: cargo fmt --check
-      - name: Check + Clippy
+      - name: Check + Clippy + Test
         run: |
           cargo check
-          cargo clippy -- -D warnings
+          cargo clippy --all-targets -- -D warnings
+          cargo test
       # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
       # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
       # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-

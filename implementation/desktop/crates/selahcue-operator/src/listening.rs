@@ -17,20 +17,35 @@
 //! or downloaded on demand, and **integrity-verified before load** (FR-156 / ADR-0012). Real
 //! accuracy/latency are spike-gated (S8/S11).
 
-use std::path::PathBuf;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use selahcue_core::transcript::ProviderSegment;
-use selahcue_stt::audio::{AudioSource, CpalSource};
-use selahcue_stt::recognizer::WhisperRecognizer;
+use selahcue_stt::audio::{AudioChunk, AudioSource, CpalSource};
+use selahcue_stt::recognizer::{WhisperContext, WhisperRecognizer};
 use selahcue_stt::{pump, EnergyVad, EngineConfig, FeedbackGuard, HardwareProbe, SttEngine};
 use tauri::{AppHandle, Emitter, Manager};
 
-/// Poll cadence for draining captured audio → recognition → ingest. Out-of-band from render.
-const PUMP_INTERVAL: Duration = Duration::from_millis(200);
+/// How often the SOURCE thread drains the mic ring into the hand-off + emits the live level.
+/// Short so the meter stays smooth and the capture ring never overflows (independent of decode).
+const CAPTURE_INTERVAL: Duration = Duration::from_millis(50);
+
+/// How often the RECOGNITION thread polls the hand-off for new audio to transcribe.
+const RECOG_INTERVAL: Duration = Duration::from_millis(30);
+
+/// Sliding-window bound (16 kHz mono samples) for an INTERIM decode — each interim re-decodes at
+/// most the last ~6 s, so the live line stays near real time no matter how long the speaker talks
+/// (the final on close still decodes the whole utterance for accuracy).
+const INTERIM_WINDOW_SAMPLES: usize = 6 * 16_000;
+
+/// Bound on device audio buffered in the source→recognition hand-off (~5 s at 48 kHz stereo). The
+/// hand-off drops OLDEST beyond this if the recognizer falls behind, keeping it near the live edge
+/// (bounded memory — no-leak).
+const HANDOFF_MAX_SAMPLES: usize = 48_000 * 2 * 5;
 
 /// The Tauri event the operator webview listens on for first-run model-download progress, so
 /// the "Start listening" control can show "Downloading model… N%" instead of a dead button
@@ -80,20 +95,110 @@ pub fn is_listening() -> bool {
     worker_lock().is_some()
 }
 
+/// A loaded model context, cached across capture sessions so a stop→start reuses the resident
+/// model instead of re-verifying (~1.6 GB SHA-256) and reloading it — the "one-time" cost the
+/// operator expects. Bounded (FR-101): at most ONE entry (the current model path), and the model
+/// already fits the ≤2 GB resident budget, so the cache never grows.
+static MODEL_CACHE: Mutex<Option<(PathBuf, Arc<WhisperContext>)>> = Mutex::new(None);
+
+fn model_cache_lock() -> std::sync::MutexGuard<'static, Option<(PathBuf, Arc<WhisperContext>)>> {
+    MODEL_CACHE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The resident context for `path`, if one is already loaded (reused across start/stop).
+fn cached_context(path: &Path) -> Option<Arc<WhisperContext>> {
+    let cache = model_cache_lock();
+    cache
+        .as_ref()
+        .and_then(|(p, ctx)| (p == path).then(|| Arc::clone(ctx)))
+}
+
+/// Remember `ctx` as the resident model for `path` (replaces any prior entry — bounded to one).
+fn cache_context(path: PathBuf, ctx: Arc<WhisperContext>) {
+    *model_cache_lock() = Some((path, ctx));
+}
+
+/// A bounded hand-off of captured audio from the SOURCE thread (which owns the `!Send` cpal
+/// stream) to the RECOGNITION thread. When the recognizer falls behind (a long decode), the
+/// OLDEST buffered audio is dropped so the source thread never blocks and the recognizer stays
+/// near the live edge — bounded to [`HANDOFF_MAX_SAMPLES`] (no-leak).
+struct AudioHandoff {
+    inner: Mutex<VecDeque<AudioChunk>>,
+    max_samples: usize,
+}
+
+impl AudioHandoff {
+    fn new(max_samples: usize) -> Self {
+        AudioHandoff {
+            inner: Mutex::new(VecDeque::new()),
+            max_samples: max_samples.max(1),
+        }
+    }
+
+    /// Append a chunk, evicting the oldest until the buffered sample count is within budget.
+    fn push(&self, chunk: AudioChunk) {
+        let mut q = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        q.push_back(chunk);
+        let mut total: usize = q.iter().map(|c| c.samples.len()).sum();
+        while total > self.max_samples && q.len() > 1 {
+            if let Some(old) = q.pop_front() {
+                total -= old.samples.len();
+            }
+        }
+    }
+
+    /// Take everything buffered (in order), leaving the hand-off empty.
+    fn drain(&self) -> Vec<AudioChunk> {
+        let mut q = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        q.drain(..).collect()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+    }
+}
+
 /// Resolve the model (cache/download, integrity-verified) and load the recognizer. Runs on
 /// the worker thread (it can be slow: a large SHA-256 + whisper.cpp load, or a first-run
 /// download). An explicit `SELAHCUE_STT_MODEL` path overrides the download.
 fn load_recognizer(app: &AppHandle) -> Result<WhisperRecognizer, String> {
     let selection = HardwareProbe::detect().select_model();
-    let (model_path, expected_sha) = match std::env::var("SELAHCUE_STT_MODEL") {
+    // Resolve the intended model path WITHOUT downloading or hashing yet, so a warm cache hit
+    // (a prior start this session) skips fetch + verify + reload and reuses the resident context.
+    // An explicit `SELAHCUE_STT_MODEL` overrides the download and must be integrity-gated here
+    // (it is not fetch-verified); the download path is verified once by `fetch_model` itself.
+    let (model_path, env_sha) = match std::env::var("SELAHCUE_STT_MODEL") {
         Ok(path) => {
             let sha = std::env::var("SELAHCUE_STT_MODEL_SHA256").map_err(|_| {
                 "SELAHCUE_STT_MODEL is set — also set SELAHCUE_STT_MODEL_SHA256 (integrity gate, FR-156)"
                     .to_string()
             })?;
-            (PathBuf::from(path), sha)
+            (PathBuf::from(path), Some(sha))
         }
         Err(_) => {
+            let asset = selection.model.asset();
+            // `fetch_model` installs at exactly this path — compute it up front for the cache key.
+            (
+                selahcue_stt::default_cache_dir().join(asset.file_name),
+                None,
+            )
+        }
+    };
+
+    // Reuse a resident model loaded earlier this session — no fetch, no SHA-256, no reload.
+    if let Some(ctx) = cached_context(&model_path) {
+        eprintln!("SelahCue STT: reusing the resident model ({model_path:?}).");
+        return Ok(WhisperRecognizer::from_context(ctx, &selection));
+    }
+
+    // Cache miss (first start this session): ensure the file is present + integrity-verified
+    // ONCE, load it, and cache the context for the next start.
+    let recognizer = match env_sha {
+        Some(sha) => WhisperRecognizer::load(&model_path, &sha, &selection)?,
+        None => {
             let asset = selection.model.asset();
             let cache = selahcue_stt::default_cache_dir();
             eprintln!(
@@ -110,10 +215,14 @@ fn load_recognizer(app: &AppHandle) -> Result<WhisperRecognizer, String> {
                     eprintln!("SelahCue STT: downloading {} … {}%", asset.file_name, pct);
                 }
             })?;
-            (path, asset.sha256.to_string())
+            // `fetch_model` already SHA-256-verified the file (cache hit OR post-download), so we
+            // load WITHOUT re-hashing the multi-hundred-MB/GB file — that redundant hash was the
+            // slow wait before the mic opened.
+            WhisperRecognizer::load_unverified(&path, &selection)?
         }
     };
-    WhisperRecognizer::load(&model_path, &expected_sha, &selection)
+    cache_context(model_path, recognizer.context());
+    Ok(recognizer)
 }
 
 /// Start on-device transcription into `app`'s controller (local or wire-connected host).
@@ -152,19 +261,24 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
     // A handle for the worker thread to emit first-run download progress to the webview.
     let app_worker = app.clone();
     let handle = std::thread::spawn(move || {
-        // Slow, fallible setup on the worker thread (not the executor): model + mic. Report
-        // the outcome so the caller can surface it before we claim to be listening.
-        let recognizer = match load_recognizer(&app_worker) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = ready_tx.send(Err(e));
-                return;
-            }
-        };
+        // Slow, fallible setup on the worker thread (not the executor): mic + model. Report the
+        // outcome so the caller can surface it before we claim to be listening.
+        //
+        // Open the mic FIRST so the OS microphone-permission prompt appears immediately — before
+        // the (first-run) model download/load, not after several seconds of it. The capture ring
+        // is bounded (drops oldest), so audio buffered while the model loads is safely discarded;
+        // draining begins on fresh audio once the recognizer is ready.
         let mut source = match CpalSource::new() {
             Ok(s) => s,
             Err(e) => {
                 let _ = ready_tx.send(Err(format!("microphone unavailable: {e}")));
+                return;
+            }
+        };
+        let recognizer = match load_recognizer(&app_worker) {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = ready_tx.send(Err(e));
                 return;
             }
         };
@@ -175,40 +289,62 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
         let _ = ready_tx.send(Ok(()));
 
         let (mut engine, mut provider) = SttEngine::build(
-            // Stream interims (~0.8 s cadence) so recognised words appear live in the operator's
-            // transcript instead of only when the utterance closes. (Cost grows with the open
-            // buffer; the 10 s force-close bounds it — a sliding-window pass is a perf follow-up.)
+            // Stream interims (~0.8 s cadence) so recognised words appear live; bound each interim
+            // to a sliding window so its cost stays fixed as the utterance grows (the final on
+            // close still decodes the whole utterance). Interims run on the recognition thread.
             EngineConfig {
                 interim_interval_frames: 40,
+                interim_max_samples: INTERIM_WINDOW_SAMPLES,
                 ..EngineConfig::default()
             },
             Box::new(EnergyVad::new()),
             Box::new(recognizer),
             FeedbackGuard::new(),
         );
-        // Throttle the level readout to ~4/sec (every LEVEL_EVERY pump ticks); the callback
-        // keeps the running peak between reads so nothing is missed.
-        const LEVEL_EVERY: u32 = 1;
-        let mut tick: u32 = 0;
-        while !stop_worker.load(Ordering::Relaxed) {
-            engine.drain_source(&mut source);
-            pump(&mut provider, |seg| {
-                let _ = seg_tx.try_send(seg); // bounded; drop under backpressure, never block
-            });
-            // Emit a live mic level so "waiting for speech…" can show whether audio is even
-            // arriving (peak 0 for seconds while speaking ⇒ mic/permission, not the UI).
-            tick = tick.wrapping_add(1);
-            if tick % LEVEL_EVERY == 0 {
-                let pct = (source.peak_level() * 100.0).round().clamp(0.0, 100.0) as u8;
-                let _ = app_worker.emit(LEVEL_EVENT, MicLevel { pct });
+
+        // Decouple recognition from capture so a (potentially slow) decode never freezes the mic
+        // or the level meter. The cpal stream is `!Send`, so the SOURCE stays on THIS thread and a
+        // separate RECOGNITION thread owns the engine, fed by a bounded drop-oldest hand-off.
+        let handoff = Arc::new(AudioHandoff::new(HANDOFF_MAX_SAMPLES));
+        let recog_handoff = Arc::clone(&handoff);
+        let recog_stop = Arc::clone(&stop_worker);
+        let recog = std::thread::spawn(move || {
+            // Recognition loop: transcribe buffered audio → segments → ingest. A long decode here
+            // never stalls capture. When stopping, drain the tail then flush the open utterance.
+            loop {
+                for chunk in recog_handoff.drain() {
+                    engine.process(&chunk);
+                }
+                pump(&mut provider, |seg| {
+                    let _ = seg_tx.try_send(seg); // bounded; drop under backpressure, never block
+                });
+                if recog_stop.load(Ordering::Relaxed) && recog_handoff.is_empty() {
+                    break;
+                }
+                std::thread::sleep(RECOG_INTERVAL);
             }
-            std::thread::sleep(PUMP_INTERVAL);
-        }
-        engine.flush();
-        pump(&mut provider, |seg| {
-            let _ = seg_tx.try_send(seg);
+            engine.flush();
+            pump(&mut provider, |seg| {
+                let _ = seg_tx.try_send(seg);
+            });
+            // `seg_tx` drops here → the drain task ends.
         });
-        // `seg_tx` drops here → the drain task ends.
+
+        // Source loop (this thread): drain the mic ring into the hand-off + emit the live level.
+        // It never touches the recognizer, so the meter + capture stay real time during a decode.
+        while !stop_worker.load(Ordering::Relaxed) {
+            while let Some(chunk) = source.next_chunk() {
+                handoff.push(chunk);
+            }
+            // A live mic level so "waiting for speech…" can show whether audio is arriving (peak 0
+            // for seconds while speaking ⇒ mic/permission, not the UI).
+            let pct = (source.peak_level() * 100.0).round().clamp(0.0, 100.0) as u8;
+            let _ = app_worker.emit(LEVEL_EVENT, MicLevel { pct });
+            std::thread::sleep(CAPTURE_INTERVAL);
+        }
+        // Stop requested: let the recognition thread drain the tail + flush, then join it. The mic
+        // stream (`source`) is dropped when this thread returns, stopping capture.
+        let _ = recog.join();
     });
 
     *worker_lock() = Some(Worker {
@@ -229,5 +365,42 @@ pub fn stop() {
         if let Some(handle) = w.handle.take() {
             let _ = handle.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chunk(samples: usize) -> AudioChunk {
+        AudioChunk::new(vec![0.0; samples], 48_000, 2)
+    }
+
+    fn buffered(h: &AudioHandoff) -> usize {
+        h.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|c| c.samples.len())
+            .sum()
+    }
+
+    #[test]
+    fn audio_handoff_is_bounded_drop_oldest() {
+        // No-leak: pushing far past the budget keeps the buffered sample count bounded by dropping
+        // the OLDEST chunks — the recognizer always works from the most-recent audio (live edge).
+        let max = 10_000;
+        let h = AudioHandoff::new(max);
+        for _ in 0..1_000 {
+            h.push(chunk(1_000)); // 1,000,000 samples pushed into a 10,000-sample budget
+        }
+        assert!(
+            buffered(&h) <= max,
+            "buffered {} exceeds the bound {max}",
+            buffered(&h)
+        );
+        assert!(!h.is_empty(), "keeps the most recent audio");
+        assert!(!h.drain().is_empty());
+        assert!(h.is_empty(), "drain empties the hand-off");
     }
 }

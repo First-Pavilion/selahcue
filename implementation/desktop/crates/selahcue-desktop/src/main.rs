@@ -1111,6 +1111,11 @@ struct App {
     /// each failing screen off to [`NDI_RETRY_BACKOFF`]. Cleared when the screen's config changes
     /// or it succeeds. Bounded by the registry (entries pruned with the sender map).
     ndi_backoff: std::collections::HashMap<String, Instant>,
+    /// Screen ids we've already warned about wanting NDI transmission on a build that can't do
+    /// it (the `ndi` feature is off — [`video_sink::TRANSMIT_AVAILABLE`] is false). Logged once
+    /// per screen so an operator who enables NDI on a non-NDI build learns why nothing shows up
+    /// (e.g. in OBS) instead of silently believing it's on air. Bounded/pruned with the registry.
+    ndi_warned: std::collections::HashSet<String>,
 }
 
 /// Apply one command to the shared controller (a poisoned lock just drops the input
@@ -1130,6 +1135,7 @@ fn reconcile_ndi(
     c: &LiveController,
     senders: &mut std::collections::HashMap<String, video_sink::NdiOutput>,
     backoff: &mut std::collections::HashMap<String, Instant>,
+    warned: &mut std::collections::HashSet<String>,
     now: Instant,
 ) {
     // Drop any sender / backoff whose screen no longer exists in the registry (deleted feed).
@@ -1137,6 +1143,7 @@ fn reconcile_ndi(
         c.screen_registry().iter().map(|s| s.id.as_str()).collect();
     senders.retain(|id, _| live.contains(id.as_str()));
     backoff.retain(|id, _| live.contains(id.as_str()));
+    warned.retain(|id| live.contains(id.as_str()));
 
     // The output resolution (used to construct a sender without a per-screen compose).
     let (out_w, out_h) = {
@@ -1146,6 +1153,17 @@ fn reconcile_ndi(
     for s in c.screen_registry().iter() {
         let cfg = c.output_config(&s.id);
         let want = s.enabled && cfg.ndi_enabled && !cfg.ndi_name.is_empty();
+        // If the operator has asked for NDI but this build can't transmit, say so once per
+        // screen — the config is honoured (persisted + surfaced) but no source reaches the
+        // network, which otherwise looks like a silent failure (nothing shows up in OBS).
+        if want && !video_sink::TRANSMIT_AVAILABLE && warned.insert(s.id.clone()) {
+            eprintln!(
+                "[ndi] screen '{}' is set to broadcast as NDI source \"{}\", but this build has \
+                 no NDI transmission compiled in — no source will appear on the network (e.g. in \
+                 OBS). Run the NDI build to broadcast: `make output-ndi`.",
+                s.id, cfg.ndi_name
+            );
+        }
         // Drop a stale sender (screen disabled / NDI off / renamed) so RAII closes its source;
         // clear any backoff so a re-enable / rename retries construction immediately.
         if senders
@@ -1157,6 +1175,7 @@ fn reconcile_ndi(
         }
         if !want {
             backoff.remove(&s.id);
+            warned.remove(&s.id);
             continue;
         }
         // Create the sender lazily (using the output dims — no per-screen compose to construct),
@@ -1311,6 +1330,7 @@ impl App {
             smoke_done: false,
             ndi_outputs: std::collections::HashMap::new(),
             ndi_backoff: std::collections::HashMap::new(),
+            ndi_warned: std::collections::HashSet::new(),
         }
     }
 
@@ -1946,7 +1966,13 @@ impl ApplicationHandler for App {
                 c.tick(now);
                 // Reconcile + feed the NDI OUTPUT senders from the same live state (holding the
                 // lock once). No-op in the default build (no `ndi` feature → no sinks created).
-                reconcile_ndi(&c, &mut self.ndi_outputs, &mut self.ndi_backoff, now);
+                reconcile_ndi(
+                    &c,
+                    &mut self.ndi_outputs,
+                    &mut self.ndi_backoff,
+                    &mut self.ndi_warned,
+                    now,
+                );
             }
             self.autosave(now);
             self.apply_pending_assignments();

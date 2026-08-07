@@ -30,5 +30,6 @@ pub use fault::Fault;
 pub use media::{decode_png, DecodeError, DecodeLimits, DecodedImage};
 pub use raster::{render, Fit, FrameBuffer};
 pub use scene::{
-    Frame, GradientDirection, Layer, MediaRef, Rect, Rgba, ShapeKind, TextAlign, TextStyle,
+    Frame, GradientDirection, ImageFit, Layer, MediaRef, Rect, Rgba, ShapeKind, TextAlign,
+    TextStyle,
 };

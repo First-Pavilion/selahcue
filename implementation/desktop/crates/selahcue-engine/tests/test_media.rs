@@ -9,8 +9,8 @@ use selahcue_engine::media::{
     image_cache_stats, reset_image_cache, MAX_IMAGE_CACHE_BYTES, MAX_IMAGE_CACHE_ENTRIES,
 };
 use selahcue_engine::{
-    decode_png, render, DecodeError, DecodeLimits, EngineCommand, EngineEvent, Fault, Frame, Layer,
-    MediaRef, Rect, Rgba,
+    decode_png, render, DecodeError, DecodeLimits, EngineCommand, EngineEvent, Fault, Frame,
+    ImageFit, Layer, MediaRef, Rect, Rgba,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -70,6 +70,7 @@ fn image_layer(path: &std::path::Path, rect: Rect, opacity: u8) -> Layer {
         rect,
         source: MediaRef::new(path.to_str().unwrap()).unwrap(),
         opacity,
+        fit: ImageFit::Stretch,
     }
 }
 
@@ -289,6 +290,111 @@ fn out_of_frame_image_rect_is_clipped_without_panicking() {
     );
 }
 
+// --- C-007: Fit modes — Stretch (distort) / Fit (letterbox) / Fill (cover+crop) -------
+
+fn image_layer_fit(path: &std::path::Path, rect: Rect, fit: ImageFit) -> Layer {
+    Layer::Image {
+        rect,
+        source: MediaRef::new(path.to_str().unwrap()).unwrap(),
+        opacity: 255,
+        fit,
+    }
+}
+
+#[test]
+fn fit_letterbox_preserves_aspect_and_leaves_the_gap_showing_the_background() {
+    // A WIDE image (4×2 → aspect 2:1) into a SQUARE 8×8 rect, over a red background. `Fit`
+    // (contain) scales it to 8×4 and centres it vertically (oy=2, sh=4): the band is EXACTLY
+    // rows 2..6; rows 0..2 and 6..8 are the letterbox and must show the RED background beneath
+    // (never black, never the image) — this is an element, not a full-frame surface.
+    let green = Rgba::rgb(0, 255, 0);
+    let red = Rgba::rgb(255, 0, 0);
+    let path = temp_file("fit", "png", &solid_rgba_png(4, 2, green));
+    let mut f = Frame::new(8, 8).with_background(red);
+    f.push(image_layer_fit(&path, Rect::new(0, 0, 8, 8), ImageFit::Fit));
+    let fb = render(&f);
+    // Pin the band geometry EXACTLY (oy=2, sh=4): the boundary rows, not merely "contains row 3"
+    // (a mis-scaled aspect with sh=5/6 would still contain row 3 — this catches it).
+    assert_eq!(fb.pixel(4, 1).unwrap(), red, "row 1 is above the band");
+    assert_eq!(fb.pixel(4, 2).unwrap(), green, "row 2 is the band top");
+    assert_eq!(fb.pixel(4, 5).unwrap(), green, "row 5 is the band bottom");
+    assert_eq!(fb.pixel(4, 6).unwrap(), red, "row 6 is below the band");
+    assert_eq!(fb.pixel(4, 0).unwrap(), red, "top letterbox shows the bg");
+    assert_eq!(
+        fb.pixel(4, 7).unwrap(),
+        red,
+        "bottom letterbox shows the bg"
+    );
+    // Aspect preserved: the image spans the full width across the whole band.
+    assert_eq!(fb.pixel(0, 3).unwrap(), green, "image spans the full width");
+    assert_eq!(fb.pixel(7, 3).unwrap(), green, "image spans the full width");
+}
+
+/// A 4×2 RGBA PNG whose LEFT column (x=0) is `marker` and columns 1..4 are `body` — a
+/// horizontally-varying source so a centre-CROP (Fill) is observable, not just "no gap".
+fn marked_col_png(marker: Rgba, body: Rgba) -> Vec<u8> {
+    let mut d = Vec::with_capacity(4 * 2 * 4);
+    for _y in 0..2 {
+        for x in 0..4 {
+            let c = if x == 0 { marker } else { body };
+            d.extend_from_slice(&[c.r, c.g, c.b, c.a]);
+        }
+    }
+    encode_png(4, 2, png::ColorType::Rgba, &d)
+}
+
+#[test]
+fn fit_fill_covers_the_whole_rect_and_centre_crops_the_overflow() {
+    // A wide 4×2 image whose LEFT column is BLUE and the rest GREEN, into a square 8×8 rect.
+    // `Fill` (cover) scales it to 16×8 and centre-crops (ox=-4): the visible source columns are
+    // sx ∈ {1,2} → the blue marker column is CROPPED AWAY, so every rect pixel is green and none
+    // is blue. Under a (wrong) Stretch the blue column would map to the rect's left edge — so
+    // asserting `pixel(0,y) == green` (not blue) proves the crop happens, not merely "no gap".
+    let green = Rgba::rgb(0, 255, 0);
+    let blue = Rgba::rgb(0, 0, 255);
+    let red = Rgba::rgb(255, 0, 0);
+    let path = temp_file("fill", "png", &marked_col_png(blue, green));
+    let mut f = Frame::new(8, 8).with_background(red);
+    f.push(image_layer_fit(
+        &path,
+        Rect::new(0, 0, 8, 8),
+        ImageFit::Fill,
+    ));
+    let fb = render(&f);
+    for (x, y) in [(0, 0), (7, 0), (0, 7), (7, 7), (4, 4), (0, 4)] {
+        let p = fb.pixel(x, y).unwrap();
+        assert_ne!(p, red, "Fill leaves no background gap at {x},{y}");
+        assert_ne!(
+            p, blue,
+            "Fill centre-crops the marker column at {x},{y} (not Stretch)"
+        );
+        assert_eq!(p, green, "Fill covers with the cropped image at {x},{y}");
+    }
+}
+
+#[test]
+fn fit_stretch_is_the_default_and_distorts_to_fill() {
+    // `Stretch` (the historical default) distorts the 4×2 image to fill the 8×8 rect exactly —
+    // every pixel is the image, and it is byte-identical to the pre-Fit blit path.
+    let green = Rgba::rgb(0, 255, 0);
+    let path = temp_file("stretch", "png", &solid_rgba_png(4, 2, green));
+    let rect = Rect::new(0, 0, 8, 8);
+    let mut stretched = Frame::new(8, 8).with_background(Rgba::rgb(255, 0, 0));
+    stretched.push(image_layer_fit(&path, rect, ImageFit::Stretch));
+    let a = render(&stretched);
+    for (x, y) in [(0, 0), (7, 0), (0, 7), (7, 7), (4, 4)] {
+        assert_eq!(a.pixel(x, y).unwrap(), green, "Stretch fills every pixel");
+    }
+    // Byte-identical to the legacy helper (which uses ImageFit::Stretch under the hood).
+    let mut legacy = Frame::new(8, 8).with_background(Rgba::rgb(255, 0, 0));
+    legacy.push(image_layer(&path, rect, 255));
+    assert_eq!(
+        render(&legacy).bytes(),
+        a.bytes(),
+        "Stretch is the byte-identical legacy path"
+    );
+}
+
 // --- C-004: placeholder + decoder-fault isolation (FR-070, NFR-024) -------------------
 
 fn assert_placeholder_drawn(f: &Frame) {
@@ -309,6 +415,7 @@ fn a_missing_image_draws_the_placeholder_not_a_crash() {
         rect: Rect::new(0, 0, 8, 8),
         source: MediaRef::new("/no/such/file/anywhere.png").unwrap(),
         opacity: 255,
+        fit: ImageFit::Stretch,
     });
     assert_placeholder_drawn(&f);
 }
@@ -330,6 +437,7 @@ fn a_corrupt_or_unsupported_image_draws_the_placeholder() {
         rect: Rect::new(0, 0, 8, 8),
         source: MediaRef::new(upath.to_str().unwrap()).unwrap(),
         opacity: 255,
+        fit: ImageFit::Stretch,
     });
     assert_placeholder_drawn(&f2);
 }
@@ -345,6 +453,7 @@ fn the_placeholder_never_panics_on_an_adversarial_image_rect() {
             rect,
             source: MediaRef::new("/no/such/file/for/overflow.png").unwrap(),
             opacity: 255,
+            fit: ImageFit::Stretch,
         });
         render(&f) // must not panic (dev/test builds have overflow-checks on)
     };
@@ -366,6 +475,44 @@ fn the_placeholder_never_panics_on_an_adversarial_image_rect() {
         fb3.pixel(0, 0).unwrap(),
         Rgba::BLACK,
         "the visible corner draws the placeholder"
+    );
+}
+
+#[test]
+fn fit_modes_never_panic_on_an_adversarial_rect_over_a_real_image() {
+    // The Fit/Fill aspect blit does its own i64 scale math (sw/sh/ox/oy, then ry*ih/sh) — an
+    // EXTREME layer rect over a REAL decoded image must clip, not integer-overflow (FR-173/
+    // NFR-024). The worst intermediate (`ry*ih`) is largest for a 1×N-shaped image, so use both
+    // a very-wide and a very-tall source. Regression for the draw_image/blit_image scale path.
+    let wide = temp_file("adv_wide", "png", &solid_rgba_png(64, 1, Rgba::WHITE));
+    let tall = temp_file("adv_tall", "png", &solid_rgba_png(1, 64, Rgba::WHITE));
+    let rects = [
+        Rect::new(i32::MIN, i32::MIN, u32::MAX, u32::MAX),
+        Rect::new(i32::MIN, 0, u32::MAX, 40),
+        Rect::new(-1_000_000, -1_000_000, u32::MAX, u32::MAX),
+        Rect::new(2_000_000_000, 0, 2_000_000_000, 10), // off-screen, x+w overflows i32
+        Rect::new(-10, -10, 40, 40),                    // partially on-screen
+    ];
+    for path in [&wide, &tall] {
+        for &rect in &rects {
+            for fit in [ImageFit::Stretch, ImageFit::Fit, ImageFit::Fill] {
+                let mut f = Frame::new(64, 64);
+                f.push(image_layer_fit(path, rect, fit));
+                let _ = render(&f); // must not panic (dev/test builds have overflow-checks on)
+            }
+        }
+    }
+    // The whole-frame Fill case still paints the image (never a blank frame).
+    let mut full = Frame::new(64, 64);
+    full.push(image_layer_fit(
+        &wide,
+        Rect::new(0, 0, 64, 64),
+        ImageFit::Fill,
+    ));
+    assert_eq!(
+        render(&full).pixel(32, 32).unwrap(),
+        Rgba::WHITE,
+        "a full-frame Fill still covers the frame with the image"
     );
 }
 
@@ -441,6 +588,7 @@ fn decoded_pixels_never_ride_the_serde_frame() {
         rect: Rect::new(0, 0, 64, 64),
         source: MediaRef::new("/media/very/large/background.png").unwrap(),
         opacity: 255,
+        fit: ImageFit::Stretch,
     });
     let json = serde_json::to_string(&f).unwrap();
     assert!(

@@ -160,9 +160,30 @@
         }
       }
 
+      // Reflect the Stage sub-tab state (active template + live production message) from the
+      // host view — stage-output-only; the host is authoritative.
+      function syncStage(view) {
+        const tpl = view.stage_template || "worship";
+        document.querySelectorAll("#stage-themes .stage-theme").forEach((b) => {
+          const on = b.dataset.template === tpl;
+          b.classList.toggle("active", on);
+          b.setAttribute("aria-checked", on ? "true" : "false");
+        });
+        const msg = view.stage_message || "";
+        const active = document.getElementById("stage-msg-active");
+        if (active) {
+          active.hidden = !msg;
+          active.textContent = msg ? "● On stage: " + msg : "";
+        }
+        document.querySelectorAll("#stage-presets .stage-preset").forEach((b) => {
+          b.classList.toggle("active", !!msg && b.dataset.msg === msg);
+        });
+      }
+
       function syncChrome(view) {
         // Top-bar LIVE chip: on air only when something is actually live.
         document.getElementById("live-chip").classList.toggle("on", view.live_index != null);
+        syncStage(view);
 
         // The HOST's translation list wins: a newer shell against an older host
         // must not offer codes the host will deny (silent stage/search no-ops).
@@ -2859,6 +2880,53 @@
       document.getElementById("timer-10").onclick = () =>
         act(() => invoke("start_timer", { seconds: 600 }));
       document.getElementById("timer-stop").onclick = () => act(() => invoke("stop_timer"));
+
+      // --- Timer | Stage sub-tabs + the stage theme picker / message composer (stage-only) ---
+      (function wireStageTab() {
+        const segTimer = document.getElementById("seg-timer");
+        const segStage = document.getElementById("seg-stage");
+        const panTimer = document.getElementById("stab-timer");
+        const panStage = document.getElementById("stab-stage");
+        if (!segTimer || !segStage || !panTimer || !panStage) return;
+        const showStage = (on) => {
+          segStage.classList.toggle("active", on);
+          segTimer.classList.toggle("active", !on);
+          segStage.setAttribute("aria-selected", on ? "true" : "false");
+          segTimer.setAttribute("aria-selected", on ? "false" : "true");
+          segStage.tabIndex = on ? 0 : -1;
+          segTimer.tabIndex = on ? -1 : 0;
+          panStage.hidden = !on;
+          panTimer.hidden = on;
+        };
+        segTimer.onclick = () => showStage(false);
+        segStage.onclick = () => showStage(true);
+        // Theme picker: one confidence template per stage screen (set_stage_template). The
+        // active card is re-derived from the host view in syncStage, so no optimistic lie.
+        document.querySelectorAll("#stage-themes .stage-theme").forEach((btn) => {
+          btn.onclick = () =>
+            act(() => invoke("set_stage_template", { template: btn.dataset.template }));
+        });
+        // Message: a preset chip sends immediately; the custom field + Send sends its text.
+        document.querySelectorAll("#stage-presets .stage-preset").forEach((btn) => {
+          btn.onclick = () => act(() => invoke("set_stage_message", { text: btn.dataset.msg }));
+        });
+        const input = document.getElementById("stage-msg-input");
+        const send = () => {
+          const text = input.value.trim();
+          if (text) act(() => invoke("set_stage_message", { text }));
+        };
+        document.getElementById("stage-msg-send").onclick = send;
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            send();
+          }
+        });
+        document.getElementById("stage-msg-clear").onclick = () => {
+          input.value = "";
+          act(() => invoke("set_stage_message", { text: "" }));
+        };
+      })();
       // Custom time as HH:MM:SS (Figma 365) — composed to seconds for the existing
       // start_timer command. Each field is sanitised + bounded; total capped at 99h.
       // The custom-time ceiling (23:59:59) — matches the #timer-hh max="23" attribute so the

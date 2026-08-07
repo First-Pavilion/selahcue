@@ -102,7 +102,11 @@ pub fn required_permission(cmd: &Command) -> Permission {
     match cmd {
         // FollowScripture can advance the LIVE output (only when a scripture is already
         // live), so it requires GoLive — never SearchScripture (no escalation, 86ajtwq2b).
-        Command::GoLive | Command::FollowScripture { .. } => GoLive,
+        // PresentAuthoredSlide puts a deck slide on the LIVE audience output — the same
+        // "changes what the audience sees" privilege as GoLive/FollowScripture, no escalation.
+        Command::GoLive
+        | Command::FollowScripture { .. }
+        | Command::PresentAuthoredSlide { .. } => GoLive,
         Command::Next | Command::Previous | Command::SelectItem { .. } => Navigate,
         Command::Clear => ClearLive,
         Command::Blackout { .. } => Blackout,
@@ -147,7 +151,11 @@ pub fn required_permission(cmd: &Command) -> Permission {
         | Command::SetOutputSafeArea { .. }
         | Command::SetScreenLayerVisible { .. }
         // Configuring a screen's NDI output is the SAME output-config authority — Operator-only.
-        | Command::SetNdiOutput { .. } => ConfigureOutputs,
+        | Command::SetNdiOutput { .. }
+        // The stage/confidence template + production message are stage-OUTPUT config — the same
+        // Operator-only authority (they never touch the audience output).
+        | Command::SetStageTemplate { .. }
+        | Command::SetStageMessage { .. } => ConfigureOutputs,
     }
 }
 

@@ -3,7 +3,10 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_lan::rbac::Role;
-use selahcue_lan::session::{DeviceId, PairingError, SessionRegistry, SessionToken};
+use selahcue_lan::session::{
+    ApproveError, DeviceId, PairingError, RequestError, SessionRegistry, SessionToken,
+    MAX_PENDING_REQUESTS,
+};
 use std::time::{Duration, Instant};
 
 fn dev(id: &str) -> DeviceId {
@@ -495,4 +498,217 @@ fn pinned_session_is_exempt_from_idle_reclamation() {
         reg.authenticate(&dev("d1"), "t1").is_none(),
         "the un-pinned idle session is reclaimed"
     );
+}
+
+#[test]
+fn set_role_updates_an_active_session() {
+    let mut reg = SessionRegistry::new();
+    let now = Instant::now();
+    reg.offer_pairing("555000", Role::Assistant, now, Duration::from_secs(60));
+    reg.redeem("555000", dev("ipad"), SessionToken::new("tok"), now)
+        .unwrap();
+    assert_eq!(reg.authenticate(&dev("ipad"), "tok"), Some(Role::Assistant));
+    // Re-role to Producer (the operator's ManageDevices authority) — same token, new role.
+    assert!(reg.set_role(&dev("ipad"), Role::Producer));
+    assert_eq!(reg.authenticate(&dev("ipad"), "tok"), Some(Role::Producer));
+    // An unknown device is not updated (and nothing is created).
+    assert!(!reg.set_role(&dev("ghost"), Role::Operator));
+    assert_eq!(reg.active_count(), 1);
+}
+
+#[test]
+fn sessions_lists_active_devices_without_tokens() {
+    let mut reg = SessionRegistry::new();
+    let t0 = Instant::now();
+    reg.offer_pairing("aaa", Role::Producer, t0, Duration::from_secs(60));
+    reg.redeem("aaa", dev("booth"), SessionToken::new("t1"), t0)
+        .unwrap();
+    reg.offer_pairing("bbb", Role::Viewer, t0, Duration::from_secs(60));
+    reg.redeem("bbb", dev("guest"), SessionToken::new("t2"), t0)
+        .unwrap();
+
+    let later = t0 + Duration::from_secs(90);
+    let list = reg.sessions(later);
+    // Deterministic order (sorted by device id): booth, guest.
+    assert_eq!(list.len(), 2);
+    assert_eq!(list[0].device_id, dev("booth"));
+    assert_eq!(list[0].role, Role::Producer);
+    assert_eq!(list[0].idle_for, Duration::from_secs(90));
+    assert!(!list[0].pinned);
+    assert_eq!(list[1].device_id, dev("guest"));
+    assert_eq!(list[1].role, Role::Viewer);
+
+    // A role change is reflected; a revoke removes the row.
+    reg.set_role(&dev("booth"), Role::Operator);
+    reg.revoke(&dev("guest"));
+    let list2 = reg.sessions(later);
+    assert_eq!(list2.len(), 1);
+    assert_eq!(list2[0].device_id, dev("booth"));
+    assert_eq!(list2[0].role, Role::Operator);
+
+    // touch() (a re-authentication) resets idle_for to ~zero.
+    reg.touch(&dev("booth"), later);
+    assert_eq!(reg.sessions(later)[0].idle_for, Duration::from_secs(0));
+}
+
+// ---- Device-initiated request → operator-approves-with-role flow (Remote Control design) ----
+
+#[test]
+fn request_then_approve_creates_a_session_with_role_and_metadata() {
+    let mut reg = SessionRegistry::new();
+    let now = Instant::now();
+    // A device initiates a pairing request (scanned the QR) with its name/platform + fingerprint.
+    reg.submit_request(
+        dev("anna-iphone"),
+        "Anna's iPhone",
+        "iPhone",
+        "7F·2A·9C",
+        now,
+    )
+    .unwrap();
+    assert_eq!(reg.pending_request_count(), 1);
+    assert_eq!(reg.active_count(), 0); // NOT active until the operator approves
+
+    // The operator sees it in the pending list with the metadata to verify against the phone.
+    let pend = reg.pending_requests(now);
+    assert_eq!(pend.len(), 1);
+    assert_eq!(pend[0].device_id, dev("anna-iphone"));
+    assert_eq!(pend[0].name, "Anna's iPhone");
+    assert_eq!(pend[0].platform, "iPhone");
+    assert_eq!(pend[0].fingerprint, "7F·2A·9C");
+
+    // Operator approves WITH an RBAC role → active session carrying the captured metadata.
+    let role = reg
+        .approve_request(
+            &dev("anna-iphone"),
+            Role::Assistant,
+            SessionToken::new("tok"),
+            now,
+        )
+        .unwrap();
+    assert_eq!(role, Role::Assistant);
+    assert_eq!(reg.pending_request_count(), 0); // request consumed
+    assert_eq!(
+        reg.authenticate(&dev("anna-iphone"), "tok"),
+        Some(Role::Assistant)
+    );
+    let s = reg.sessions(now);
+    assert_eq!(s.len(), 1);
+    assert_eq!(s[0].device_id, dev("anna-iphone"));
+    assert_eq!(s[0].name, "Anna's iPhone");
+    assert_eq!(s[0].platform, "iPhone");
+    assert_eq!(s[0].role, Role::Assistant);
+}
+
+#[test]
+fn deny_request_drops_it_without_a_session() {
+    let mut reg = SessionRegistry::new();
+    let now = Instant::now();
+    reg.submit_request(dev("d"), "D", "Android", "AA·BB·CC", now)
+        .unwrap();
+    assert!(reg.deny_request(&dev("d")));
+    assert_eq!(reg.pending_request_count(), 0);
+    assert_eq!(reg.active_count(), 0);
+    // Denying again (or an unknown device) returns false.
+    assert!(!reg.deny_request(&dev("d")));
+}
+
+#[test]
+fn approving_a_missing_request_fails_closed() {
+    let mut reg = SessionRegistry::new();
+    let now = Instant::now();
+    let res = reg.approve_request(&dev("ghost"), Role::Viewer, SessionToken::new("t"), now);
+    assert_eq!(res, Err(ApproveError::NoSuchRequest));
+    assert_eq!(reg.active_count(), 0);
+}
+
+#[test]
+fn approve_respects_the_active_cap_and_leaves_the_request_to_retry() {
+    use selahcue_lan::session::MAX_ACTIVE_SESSIONS;
+    let mut reg = SessionRegistry::new();
+    let now = Instant::now();
+    // Fill the active map to the cap via the code-flow.
+    for i in 0..MAX_ACTIVE_SESSIONS {
+        let code = format!("c{i}");
+        reg.offer_pairing(&code, Role::Viewer, now, Duration::from_secs(60));
+        reg.redeem(
+            &code,
+            dev(&format!("dev{i}")),
+            SessionToken::new(format!("t{i}")),
+            now,
+        )
+        .unwrap();
+    }
+    assert_eq!(reg.active_count(), MAX_ACTIVE_SESSIONS);
+    // A NEW device's request cannot be approved (cap) — and the request is left intact to retry.
+    reg.submit_request(dev("newdev"), "New", "iPadOS", "11·22·33", now)
+        .unwrap();
+    let res = reg.approve_request(&dev("newdev"), Role::Producer, SessionToken::new("tn"), now);
+    assert_eq!(res, Err(ApproveError::TooManySessions));
+    assert_eq!(reg.pending_request_count(), 1); // retryable, not consumed
+                                                // Freeing a slot lets the retry succeed.
+    reg.revoke(&dev("dev0"));
+    assert!(reg
+        .approve_request(&dev("newdev"), Role::Producer, SessionToken::new("tn"), now)
+        .is_ok());
+    assert_eq!(reg.pending_request_count(), 0);
+}
+
+#[test]
+fn pending_requests_are_bounded() {
+    // No-leak (bounded memory): the pending-request buffer never grows past the cap for NEW devices.
+    let mut reg = SessionRegistry::new();
+    let now = Instant::now();
+    for i in 0..MAX_PENDING_REQUESTS {
+        reg.submit_request(dev(&format!("d{i}")), "x", "y", "f", now)
+            .unwrap();
+    }
+    assert_eq!(reg.pending_request_count(), MAX_PENDING_REQUESTS);
+    // One more NEW device is refused (fail-closed) — the buffer does not grow.
+    assert_eq!(
+        reg.submit_request(dev("overflow"), "x", "y", "f", now),
+        Err(RequestError::TooManyRequests)
+    );
+    assert_eq!(reg.pending_request_count(), MAX_PENDING_REQUESTS);
+    // An ALREADY-queued device may re-submit (replace) without growth.
+    assert!(reg.submit_request(dev("d0"), "x2", "y2", "f2", now).is_ok());
+    assert_eq!(reg.pending_request_count(), MAX_PENDING_REQUESTS);
+}
+
+#[test]
+fn stale_requests_are_pruned() {
+    let mut reg = SessionRegistry::new();
+    let t0 = Instant::now();
+    reg.submit_request(dev("old"), "Old", "iPhone", "f", t0)
+        .unwrap();
+    reg.submit_request(
+        dev("fresh"),
+        "Fresh",
+        "iPhone",
+        "f",
+        t0 + Duration::from_secs(50),
+    )
+    .unwrap();
+    // Prune anything waiting > 60s, as of t0+70s: "old" (70s) goes, "fresh" (20s) stays.
+    let reclaimed = reg.prune_stale_requests(t0 + Duration::from_secs(70), Duration::from_secs(60));
+    assert_eq!(reclaimed, 1);
+    assert_eq!(reg.pending_request_count(), 1);
+    assert_eq!(
+        reg.pending_requests(t0 + Duration::from_secs(70))[0].device_id,
+        dev("fresh")
+    );
+}
+
+#[test]
+fn submit_for_an_active_device_is_a_noop() {
+    let mut reg = SessionRegistry::new();
+    let now = Instant::now();
+    reg.offer_pairing("code", Role::Producer, now, Duration::from_secs(60));
+    reg.redeem("code", dev("paired"), SessionToken::new("t"), now)
+        .unwrap();
+    // Already active → a request is a no-op success (no pending row created).
+    assert!(reg
+        .submit_request(dev("paired"), "P", "iPhone", "f", now)
+        .is_ok());
+    assert_eq!(reg.pending_request_count(), 0);
 }

@@ -67,6 +67,71 @@ pub struct Session {
     /// long-lived loopback connection so `touch` never refreshes it, and with no re-pair path)
     /// must never be idled out from under the host (audit #8). Remote pairings are never pinned.
     pinned: bool,
+    /// Device-supplied display name + platform, captured when the pairing request was submitted
+    /// and carried through approval so the operator's device list can show "Booth iPad · iPadOS"
+    /// (Remote Control design). Empty for sessions created by the legacy `redeem` code-flow.
+    name: String,
+    platform: String,
+}
+
+/// A read-only, token-free summary of one active session — what the operator's device
+/// manager (Remote Control surface, ClickUp 86ajxer8n) needs to list a paired controller
+/// without ever exposing its bearer [`SessionToken`]. `idle_for` is `now - last_seen`; the
+/// caller derives an Online/Idle/Offline status from it (the thresholds are a UI/host policy,
+/// not this pure layer's concern).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub device_id: DeviceId,
+    pub role: Role,
+    /// Device-supplied display name / platform (empty for legacy `redeem`-created sessions).
+    pub name: String,
+    pub platform: String,
+    pub idle_for: Duration,
+    pub pinned: bool,
+}
+
+/// A device-initiated pairing request awaiting operator approval — the "PENDING REQUEST" of the
+/// Remote Control design. A device that scanned the pairing QR (host-authenticated by the pinned
+/// fingerprint at the transport layer) submits one with its name/platform + the pairing
+/// fingerprint the operator verifies against the phone; the operator then **approves it with a
+/// [`Role`]** (RBAC assigned at approval — not baked into a code) or denies it.
+#[derive(Debug, Clone)]
+struct PendingRequest {
+    name: String,
+    platform: String,
+    fingerprint: String,
+    requested_at: Instant,
+}
+
+/// A read-only summary of one pending pairing request (for the operator's "PENDING REQUEST" list).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingRequestSummary {
+    pub device_id: DeviceId,
+    pub name: String,
+    pub platform: String,
+    pub fingerprint: String,
+    /// How long the request has been waiting (`now - requested_at`).
+    pub waiting_for: Duration,
+}
+
+/// Why submitting a pairing request failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestError {
+    /// The pending-request buffer is at [`MAX_PENDING_REQUESTS`] and this is a NEW device — the
+    /// operator must clear (approve/deny) a request before another new device can queue. Bounds
+    /// the buffer so a flood of pair attempts cannot grow it without limit (no-leak).
+    TooManyRequests,
+}
+
+/// Why approving a pairing request failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApproveError {
+    /// No pending request for that device (never submitted, already approved, denied, or pruned).
+    NoSuchRequest,
+    /// The active-session registry is at [`MAX_ACTIVE_SESSIONS`] and this is a NEW device. The
+    /// request is left intact so the operator can retry after freeing a slot (revoking a stale
+    /// session), matching `redeem`'s fail-closed behaviour.
+    TooManySessions,
 }
 
 /// Hard cap on concurrent active (paired) sessions (audit M3 no-leak rule). Far above any
@@ -74,6 +139,12 @@ pub struct Session {
 /// never fires in legitimate use — it only stops the `active` map from accumulating one
 /// permanent entry per distinct device without bound when stale sessions are never revoked.
 pub const MAX_ACTIVE_SESSIONS: usize = 256;
+
+/// Hard cap on outstanding device-initiated pairing requests (no-leak): bounds the pending-request
+/// buffer so a burst of pair attempts cannot grow it without limit. Generous vs. any real setup
+/// (a few volunteers pairing at once); stale requests also self-reclaim via
+/// [`prune_stale_requests`](SessionRegistry::prune_stale_requests).
+pub const MAX_PENDING_REQUESTS: usize = 64;
 
 /// How long an active session may sit idle (no re-authentication) before
 /// [`prune_idle`](SessionRegistry::prune_idle) reclaims it (audit #8). Generous — far
@@ -105,6 +176,9 @@ struct PendingPairing {
 #[derive(Default)]
 pub struct SessionRegistry {
     pending: HashMap<String, PendingPairing>,
+    /// Device-initiated pairing requests awaiting operator approval (keyed by device — one live
+    /// request per device; a re-submit replaces it). Bounded by [`MAX_PENDING_REQUESTS`].
+    requests: HashMap<DeviceId, PendingRequest>,
     active: HashMap<DeviceId, Session>,
 }
 
@@ -188,6 +262,10 @@ impl SessionRegistry {
                         token,
                         last_seen: now,
                         pinned: false,
+                        // The legacy code-flow carries no device metadata; the device-initiated
+                        // request→approve flow populates these instead.
+                        name: String::new(),
+                        platform: String::new(),
                     },
                 );
                 Ok(role)
@@ -262,6 +340,152 @@ impl SessionRegistry {
     /// whether a session was actually removed.
     pub fn revoke(&mut self, device_id: &DeviceId) -> bool {
         self.active.remove(device_id).is_some()
+    }
+
+    /// Change a device's granted [`Role`] in place — the operator re-roles a controller
+    /// (the `ManageDevices` authority; Operator-only at the command layer). Takes effect on
+    /// the device's next authenticated request. Returns whether an active session was updated.
+    pub fn set_role(&mut self, device_id: &DeviceId, role: Role) -> bool {
+        if let Some(session) = self.active.get_mut(device_id) {
+            session.role = role;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A token-free snapshot of every active session, for the operator's device manager.
+    /// Sorted by device id so the listing is deterministic (the `active` map is unordered);
+    /// `idle_for` is `now - last_seen` (saturating, never panics on a backwards clock). Bounded
+    /// by [`MAX_ACTIVE_SESSIONS`] and NEVER exposes a bearer token (no-leak, no sensitive return).
+    pub fn sessions(&self, now: Instant) -> Vec<SessionSummary> {
+        let mut out: Vec<SessionSummary> = self
+            .active
+            .values()
+            .map(|s| SessionSummary {
+                device_id: s.device_id.clone(),
+                role: s.role,
+                name: s.name.clone(),
+                platform: s.platform.clone(),
+                idle_for: now.saturating_duration_since(s.last_seen),
+                pinned: s.pinned,
+            })
+            .collect();
+        out.sort_by(|a, b| a.device_id.0.cmp(&b.device_id.0));
+        out
+    }
+
+    /// Submit a device-initiated pairing request (the device scanned the pairing QR and is
+    /// host-authenticated at the transport layer). Records the device's `name`/`platform` and the
+    /// pairing `fingerprint` the operator verifies against the phone; it does NOT create a session
+    /// — the operator must [`approve_request`](Self::approve_request) it with a role. A re-submit
+    /// from the same device replaces its outstanding request; an already-active device is a no-op.
+    /// Bounded by [`MAX_PENDING_REQUESTS`].
+    pub fn submit_request(
+        &mut self,
+        device_id: DeviceId,
+        name: impl Into<String>,
+        platform: impl Into<String>,
+        fingerprint: impl Into<String>,
+        now: Instant,
+    ) -> Result<(), RequestError> {
+        // An already-active device needs no request (re-roling it is an operator action, not a
+        // fresh pairing) — no-op success, never consuming a request slot.
+        if self.active.contains_key(&device_id) {
+            return Ok(());
+        }
+        // Bound NEW devices; an already-queued device replaces its request (no growth).
+        if !self.requests.contains_key(&device_id) && self.requests.len() >= MAX_PENDING_REQUESTS {
+            return Err(RequestError::TooManyRequests);
+        }
+        self.requests.insert(
+            device_id,
+            PendingRequest {
+                name: name.into(),
+                platform: platform.into(),
+                fingerprint: fingerprint.into(),
+                requested_at: now,
+            },
+        );
+        Ok(())
+    }
+
+    /// A token-free, deterministic (sorted by device id) snapshot of outstanding pairing requests,
+    /// for the operator's "PENDING REQUEST" list. Bounded by [`MAX_PENDING_REQUESTS`].
+    pub fn pending_requests(&self, now: Instant) -> Vec<PendingRequestSummary> {
+        let mut out: Vec<PendingRequestSummary> = self
+            .requests
+            .iter()
+            .map(|(id, r)| PendingRequestSummary {
+                device_id: id.clone(),
+                name: r.name.clone(),
+                platform: r.platform.clone(),
+                fingerprint: r.fingerprint.clone(),
+                waiting_for: now.saturating_duration_since(r.requested_at),
+            })
+            .collect();
+        out.sort_by(|a, b| a.device_id.0.cmp(&b.device_id.0));
+        out
+    }
+
+    /// Number of outstanding pairing requests (so callers can assert the buffer stays bounded).
+    pub fn pending_request_count(&self) -> usize {
+        self.requests.len()
+    }
+
+    /// Approve a device's pending request, assigning it `role` — the operator's RBAC choice at
+    /// approval time (`ManageDevices`-gated at the command layer) — and binding the caller-generated
+    /// `token` to a new active session that carries the device's captured name/platform. Consumes
+    /// the request. Fails closed with [`ApproveError::NoSuchRequest`] if none is outstanding, or
+    /// [`ApproveError::TooManySessions`] if the active cap is reached for a NEW device (the request
+    /// is left intact so the operator can retry after freeing a slot).
+    pub fn approve_request(
+        &mut self,
+        device_id: &DeviceId,
+        role: Role,
+        token: SessionToken,
+        now: Instant,
+    ) -> Result<Role, ApproveError> {
+        let req = self
+            .requests
+            .get(device_id)
+            .ok_or(ApproveError::NoSuchRequest)?;
+        // Bound the active map (audit M3): a NEW device can only pair when there is room. Checked
+        // BEFORE consuming the request so a cap rejection is retryable (unlike the single-use code).
+        if !self.active.contains_key(device_id) && self.active.len() >= MAX_ACTIVE_SESSIONS {
+            return Err(ApproveError::TooManySessions);
+        }
+        let name = req.name.clone();
+        let platform = req.platform.clone();
+        self.requests.remove(device_id);
+        self.active.insert(
+            device_id.clone(),
+            Session {
+                device_id: device_id.clone(),
+                role,
+                token,
+                last_seen: now,
+                pinned: false,
+                name,
+                platform,
+            },
+        );
+        Ok(role)
+    }
+
+    /// Deny (drop) a device's pending request — the operator rejects it. Returns whether a request
+    /// was actually removed.
+    pub fn deny_request(&mut self, device_id: &DeviceId) -> bool {
+        self.requests.remove(device_id).is_some()
+    }
+
+    /// Reclaim pairing requests that have waited longer than `ttl` without an operator decision
+    /// (housekeeping, no-leak — an abandoned request self-clears). Returns the count reclaimed.
+    pub fn prune_stale_requests(&mut self, now: Instant, ttl: Duration) -> usize {
+        let before = self.requests.len();
+        self.requests
+            .retain(|_, r| now.saturating_duration_since(r.requested_at) <= ttl);
+        before - self.requests.len()
     }
 
     /// Number of active (authenticated) sessions.

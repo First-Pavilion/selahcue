@@ -420,6 +420,8 @@ fn transcript_and_detection_view_fields_are_additive() {
             text: "turn to John 3:16".into(),
         }],
         partial_transcript: None,
+        stage_template: String::new(),
+        stage_message: None,
         detections: vec![DetectionView {
             id: 4,
             reference: "John 3:16".into(),
@@ -629,6 +631,8 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        stage_template: String::new(),
+        stage_message: None,
         detections: vec![],
     };
     assert_eq!(
@@ -674,6 +678,8 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        stage_template: String::new(),
+        stage_message: None,
         detections: vec![],
     };
     assert_eq!(
@@ -716,6 +722,8 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        stage_template: String::new(),
+        stage_message: None,
         detections: vec![],
     };
     assert_eq!(
@@ -749,6 +757,8 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        stage_template: String::new(),
+        stage_message: None,
         detections: vec![],
     };
     assert_eq!(
@@ -788,6 +798,8 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        stage_template: String::new(),
+        stage_message: None,
         detections: vec![],
     };
     assert_eq!(

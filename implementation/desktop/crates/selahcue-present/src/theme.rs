@@ -12,7 +12,7 @@
 //! per-role templates + per-item override, and multi-weight fonts are later slices.
 
 use selahcue_engine::scene::{
-    FontName, GradientDirection, MediaRef, Rect, Rgba, ShapeKind, TextAlign,
+    FontName, GradientDirection, ImageFit, MediaRef, Rect, Rgba, ShapeKind, TextAlign,
 };
 use serde::{Deserialize, Serialize};
 
@@ -177,8 +177,9 @@ pub enum Element {
     /// bounded reference to a host-local media file the engine decodes (PNG this batch)
     /// through its size-capped decode cache — the decoded pixels never ride the theme JSON.
     /// A missing / corrupt / unsupported source draws the missing-media placeholder
-    /// (FR-070), never a blank rect or a crash. The image is scaled to FILL its rect
-    /// (stretch); aspect-preserving fit modes are a later slice.
+    /// (FR-070), never a blank rect or a crash. `fit` chooses how the decoded image is scaled
+    /// into its rect (Design 2.0 Inspector Fit): `Stretch` (the default) distorts to fill,
+    /// `Fit` letterboxes (aspect kept; the gap shows the slide behind), `Fill` covers + crops.
     Image {
         x_permille: u16,
         y_permille: u16,
@@ -195,6 +196,11 @@ pub enum Element {
         /// → a shown image's JSON is byte-identical to before this batch).
         #[serde(default = "default_true", skip_serializing_if = "is_true")]
         visible: bool,
+        /// How the decoded image is scaled into its rect (Design 2.0 Inspector Fit). Additive:
+        /// `Stretch` (the default) is omitted from JSON, so an existing image element stays
+        /// byte-identical; `Fit`/`Fill` are the aspect-preserving modes the raster honours.
+        #[serde(default, skip_serializing_if = "ImageFit::is_stretch")]
+        fit: ImageFit,
     },
     /// A free **text box** (86ajq6j64): the operator's own `text`, wrapped + auto-fit into a
     /// per-mille rect exactly like the theme's title/body regions (same [`autofit_layers`]

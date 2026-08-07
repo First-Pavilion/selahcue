@@ -242,6 +242,15 @@ pub enum Command {
         name: String,
         enabled: bool,
     },
+    /// Choose the STAGE / confidence template (`worship` / `scripture` / `timer-only`) — the
+    /// layout the confidence monitor renders and how it behaves at TIME UP (Figma 375-139). An
+    /// unknown tag falls back to the default (`worship`), never a panic. Stage-output config;
+    /// Operator-only (`ConfigureOutputs`).
+    SetStageTemplate { template: String },
+    /// Set (or clear, with a blank/whitespace string) the STAGE / confidence production
+    /// message — an operator→speaker note overlaid on the confidence monitor ONLY (never the
+    /// audience). Bounded host-side (`MAX_STAGE_MESSAGE_LEN`). Stage-output config; Operator-only.
+    SetStageMessage { text: String },
     /// Feed one segment into the live-transcript stream (R3). This is the
     /// STT-provider ingestion channel — the default provider is operator/host-injected
     /// text; a real on-device engine feeds the same path. The detection engine scans
@@ -523,6 +532,15 @@ pub struct OperatorStateView {
     /// one-click stages. Omitted when empty so the pinned v2 fixtures stay byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub detections: Vec<DetectionView>,
+    /// The stage/confidence template the confidence monitor is rendering
+    /// (`worship` / `scripture` / `timer-only`). Empty = the host did not report one (an older
+    /// host); omitted on the wire when empty so the pinned v2 fixtures stay byte-identical.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stage_template: String,
+    /// The production message on the confidence monitor, if any (stage-only). Omitted when
+    /// absent so the pinned v2 fixtures stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_message: Option<String>,
 }
 
 /// serde default/skip for a bool that defaults to `true`: an absent field deserialises as

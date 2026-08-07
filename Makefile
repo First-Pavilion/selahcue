@@ -5,10 +5,14 @@
 # so you can launch and drive the app without remembering the paths and feature flags.
 #
 #   make            # show this help
-#   make launch     # start the output window + operator shell (operator drives the window)
-#   make output     # just the audience output window (native + LAN control server)
+#   make run        # ONE command: output window + operator shell together (NDI + STT auto-on)
+#   make launch     # same as `make run`
+#   make output     # just the audience output window (native + LAN control server; NDI auto)
 #   make operator   # just the Tauri operator shell
 #   make remote CMD=go-live   # send one command to a running output window via the CLI
+#
+# `make run` auto-enables NDI when the SDK is vendored (scripts/fetch_ndi_sdk.sh) and STT when
+# cmake is present, and runs fine without either — force with `make run NDI=1|0 STT=1|0`.
 
 DESKTOP  := implementation/desktop
 OPERATOR := $(DESKTOP)/crates/selahcue-operator
@@ -19,13 +23,27 @@ OP       := --manifest-path $(OPERATOR)/Cargo.toml
 ENDPOINT := $(shell python3 -c "import tempfile,os;print(os.path.join(tempfile.gettempdir(),'selahcue-operator-endpoint.json'))" 2>/dev/null)
 CMD      ?= next
 SECS     ?=
-# On-device STT (whisper.cpp + cpal) for the live transcript. ON by default for the dev RUN
-# targets (launch/run/operator/build-operator) so one command brings up live transcription.
-# It needs cmake + a C/C++ toolchain to compile whisper.cpp, and downloads the model on first
-# use. Skip it (e.g. no cmake) with:  make launch OP_FEATURES=
-# CI/check/clippy always use the default (no-STT) operator build, so this never affects them.
+# On-device STT (whisper.cpp + cpal) for the live transcript, run by the operator shell. It needs
+# cmake + a C/C++ toolchain to compile whisper.cpp (and downloads the model on first use), so the
+# dev RUN targets enable it AUTOMATICALLY when cmake is present and quietly skip it otherwise —
+# `make run` never fails just because the STT toolchain is missing (same UX as NDI above). Force
+# it with STT=1 (errors if cmake is absent) or disable with STT=0; OP_FEATURES=<features> still
+# overrides the operator build directly. CI/check/clippy always use the default (no-STT) operator
+# build, so this never affects them.
+STT ?= auto
+ifeq ($(STT),0)
+OP_FEATURES ?=
+else ifeq ($(STT),1)
 OP_FEATURES ?= stt
+else
+OP_FEATURES ?= $(if $(shell command -v cmake 2>/dev/null),stt,)
+endif
 OPRUN       := $(if $(strip $(OP_FEATURES)),--features $(strip $(OP_FEATURES)),)
+ifeq ($(strip $(OP_FEATURES)),)
+STT_STATUS  := off (run with STT=1, or `brew install cmake`, to enable the live transcript)
+else
+STT_STATUS  := on ($(strip $(OP_FEATURES)))
+endif
 
 # On macOS the operator runs from a signed .app bundle so the on-device STT worker can get
 # microphone access — a raw `cargo run` binary has no bundle identity, so macOS never prompts
@@ -37,8 +55,51 @@ else
 OPERATOR_RUN := $(CARGO) run $(OP) $(OPRUN)
 endif
 
+# NDI OUTPUT (Screens page): broadcast a composed audience feed as an NDI source, built against
+# the REPO-VENDORED NDI SDK so the build is self-contained (no system-installed SDK, no reliance
+# on another app's copy). `make run`/`launch`/`output` enable NDI AUTOMATICALLY when the SDK has
+# been vendored (scripts/fetch_ndi_sdk.sh) and run cleanly without it otherwise; `output-ndi`
+# forces NDI and errors if it isn't vendored. `make ci` never builds the feature (stays
+# native-free). See implementation/desktop/vendor/ndi/README.md.
+ifeq ($(UNAME),Darwin)
+NDI_OS := macos
+else ifeq ($(UNAME),Linux)
+NDI_OS := linux
+else
+NDI_OS := windows
+endif
+NDI_DIR := $(abspath $(DESKTOP)/vendor/ndi/$(NDI_OS))
+ifeq ($(UNAME),Darwin)
+NDI_LOADER := DYLD_FALLBACK_LIBRARY_PATH="$(NDI_DIR)/lib"
+else ifeq ($(UNAME),Linux)
+NDI_LOADER := LD_LIBRARY_PATH="$(NDI_DIR)/lib/x86_64-linux-gnu"
+else
+NDI_LOADER :=
+endif
+
+# Auto-enable NDI for the dev run targets when the SDK has been vendored, so ONE `make run` brings
+# up the output window + operator WITH NDI when it's available — and still runs (NDI off) when it
+# isn't, with a one-line note. Force NDI (or force-off) explicitly with `make run NDI=1` / `NDI=0`.
+NDI ?= auto
+ifeq ($(NDI),0)
+NDI_ON :=
+else ifeq ($(NDI),1)
+NDI_ON := 1
+else
+NDI_ON := $(wildcard $(NDI_DIR)/include/Processing.NDI.Lib.h)
+endif
+ifeq ($(strip $(NDI_ON)),)
+DESKTOP_FEATURES :=
+DESKTOP_ENV :=
+NDI_STATUS := off (no vendored SDK — run scripts/fetch_ndi_sdk.sh to enable NDI output)
+else
+DESKTOP_FEATURES := --features ndi
+DESKTOP_ENV := NDI_SDK_DIR="$(NDI_DIR)" $(NDI_LOADER)
+NDI_STATUS := on (vendored SDK)
+endif
+
 .DEFAULT_GOAL := help
-.PHONY: help launch run output operator operator-headless stt-preflight remote timer stop-timer demo mobile mobile-test ci nfr build build-operator test check clippy fmt clean
+.PHONY: help launch run output output-ndi ndi-preflight operator operator-headless stt-preflight remote timer stop-timer demo mobile mobile-test ci nfr build build-operator test check clippy fmt clean
 
 stt-preflight: ## (internal) verify the toolchain needed for --features stt is present
 ifneq ($(strip $(OP_FEATURES)),)
@@ -46,7 +107,7 @@ ifneq ($(strip $(OP_FEATURES)),)
 	  echo "ERROR: on-device STT (--features $(OP_FEATURES)) needs cmake + a C/C++ toolchain to build whisper.cpp."; \
 	  echo "  macOS:         brew install cmake"; \
 	  echo "  Debian/Ubuntu: sudo apt-get install -y cmake build-essential"; \
-	  echo "  Or run without on-device STT:  make $(MAKECMDGOALS) OP_FEATURES="; \
+	  echo "  Or run without on-device STT:  make $(MAKECMDGOALS) STT=0"; \
 	  exit 1; }
 endif
 
@@ -55,10 +116,12 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | \
 	  awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-launch: stt-preflight build build-operator ## Launch output window + operator shell together (on-device STT on; OP_FEATURES= to skip)
+launch: stt-preflight build build-operator ## Launch EVERYTHING — output window (NDI auto) + operator shell (STT on; OP_FEATURES= to skip)
+	@echo ">> NDI output: $(NDI_STATUS)"
+	@echo ">> on-device STT: $(STT_STATUS)"
 	@echo ">> clearing any stale endpoint and starting the output window…"
 	@rm -f "$(ENDPOINT)"; \
-	$(CARGO) run -q $(WS) -p selahcue-desktop & \
+	$(DESKTOP_ENV) $(CARGO) run -q $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) & \
 	OUT_PID=$$!; \
 	trap 'kill $$OUT_PID 2>/dev/null' EXIT INT TERM; \
 	echo ">> waiting for the output window to advertise its endpoint…"; \
@@ -68,10 +131,21 @@ launch: stt-preflight build build-operator ## Launch output window + operator sh
 	echo ">> operator closed; stopping the output window."; \
 	kill $$OUT_PID 2>/dev/null || true
 
-run: launch ## Alias for `launch`
+run: launch ## Run EVERYTHING with one command (alias for `launch` — output window + operator, NDI auto)
 
-output: ## Run only the output window (native audience output + LAN control server)
-	$(CARGO) run $(WS) -p selahcue-desktop
+output: ## Run only the output window (native audience output + LAN control server; NDI auto)
+	$(DESKTOP_ENV) $(CARGO) run $(WS) -p selahcue-desktop $(DESKTOP_FEATURES)
+
+ndi-preflight: ## (internal) verify the repo-vendored NDI SDK is populated for this OS
+	@test -f "$(NDI_DIR)/include/Processing.NDI.Lib.h" || { \
+	  echo "ERROR: the NDI SDK is not vendored at $(NDI_DIR)."; \
+	  echo "  Install/unzip the NDI SDK (https://ndi.video/), then vendor it into the repo:"; \
+	  echo "      scripts/fetch_ndi_sdk.sh            # or pass the SDK path as an argument"; \
+	  echo "  Details: implementation/desktop/vendor/ndi/README.md"; \
+	  exit 1; }
+
+output-ndi: ndi-preflight ## Force the output window WITH NDI (errors if the SDK isn't vendored; `make run` enables NDI automatically)
+	NDI_SDK_DIR="$(NDI_DIR)" $(NDI_LOADER) $(CARGO) run $(WS) -p selahcue-desktop --features ndi
 
 operator: stt-preflight ## Run only the operator shell (connects to a running output window, else a standalone demo)
 	$(OPERATOR_RUN)
@@ -111,13 +185,14 @@ ci: ## Run the CI gate locally (same gates as .github/workflows/ci.yml, minus th
 	$(CARGO) clippy $(WS) --workspace --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-lan --features server --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-app --features server --all-targets -- -D warnings
-	$(CARGO) clippy $(OP) -- -D warnings
+	$(CARGO) clippy $(OP) --all-targets -- -D warnings
 	$(CARGO) test $(WS) --workspace
 	$(CARGO) test $(WS) -p selahcue-lan --features server
 	$(CARGO) test $(WS) -p selahcue-app --features server
 	$(CARGO) test $(WS) -p selahcue-data --features encryption
 	$(CARGO) test $(WS) -p selahcue-desktop --features encryption
 	$(CARGO) check $(OP)
+	$(CARGO) test $(OP)
 	python3 scripts/operator_headless.py
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 	@echo ""

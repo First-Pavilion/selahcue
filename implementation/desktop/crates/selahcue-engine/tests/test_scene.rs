@@ -2,7 +2,9 @@
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_engine::scene::{Frame, Layer, MediaRef, Rect, Rgba, ShapeKind, TextAlign, TextStyle};
+use selahcue_engine::scene::{
+    Frame, ImageFit, Layer, MediaRef, Rect, Rgba, ShapeKind, TextAlign, TextStyle,
+};
 
 #[test]
 fn luminance_extremes() {
@@ -52,6 +54,7 @@ fn image_layer_is_additive_and_tag_stable() {
         rect: Rect::new(4, 5, 6, 7),
         source: MediaRef::new("/media/logo.png").unwrap(),
         opacity: 255,
+        fit: ImageFit::Stretch,
     };
     let json = serde_json::to_string(&img).unwrap();
     assert!(json.contains(r#""layer":"image""#), "got {json}");
@@ -61,6 +64,11 @@ fn image_layer_is_additive_and_tag_stable() {
         !json.contains("opacity"),
         "opaque opacity is skipped: {json}"
     );
+    // The default `Stretch` fit is skipped → an existing image layer is byte-identical.
+    assert!(
+        !json.contains("fit"),
+        "default Stretch fit is skipped: {json}"
+    );
     let back: Layer = serde_json::from_str(&json).unwrap();
     assert_eq!(back, img);
 
@@ -69,10 +77,27 @@ fn image_layer_is_additive_and_tag_stable() {
         rect: Rect::new(0, 0, 2, 2),
         source: MediaRef::new("a.png").unwrap(),
         opacity: 128,
+        fit: ImageFit::Stretch,
     };
     let j2 = serde_json::to_string(&translucent).unwrap();
     assert!(j2.contains(r#""opacity":128"#), "got {j2}");
     assert_eq!(serde_json::from_str::<Layer>(&j2).unwrap(), translucent);
+
+    // A non-default fit IS serialized snake_case and round-trips (Fit=letterbox, Fill=cover).
+    for (fit, needle) in [
+        (ImageFit::Fit, r#""fit":"fit""#),
+        (ImageFit::Fill, r#""fit":"fill""#),
+    ] {
+        let layer = Layer::Image {
+            rect: Rect::new(1, 1, 8, 8),
+            source: MediaRef::new("b.png").unwrap(),
+            opacity: 255,
+            fit,
+        };
+        let j = serde_json::to_string(&layer).unwrap();
+        assert!(j.contains(needle), "fit serialises snake_case: {j}");
+        assert_eq!(serde_json::from_str::<Layer>(&j).unwrap(), layer);
+    }
 }
 
 #[test]

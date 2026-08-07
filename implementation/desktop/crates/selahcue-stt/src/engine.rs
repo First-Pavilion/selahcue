@@ -47,6 +47,13 @@ pub struct EngineConfig {
     /// A frame is ~20 ms, so `40` ≈ 0.8 s cadence. Costs extra recognizer passes on the open
     /// buffer, so it is off in the default config and enabled by the host that wants it.
     pub interim_interval_frames: usize,
+    /// Cap on the samples an INTERIM re-transcribes: `0` = the whole open utterance (each interim
+    /// re-decodes from the utterance start, so cost grows with the utterance — O(n²) over a long
+    /// monologue). When `> 0`, an interim decodes only the most-recent this-many samples (a
+    /// sliding window), so each interim is BOUNDED work regardless of how long the speaker has
+    /// been talking — keeping the live line near real time. The FINAL on close still decodes the
+    /// whole utterance for accuracy. Only affects interims; `0` preserves the prior behaviour.
+    pub interim_max_samples: usize,
 }
 
 impl Default for EngineConfig {
@@ -56,6 +63,7 @@ impl Default for EngineConfig {
             min_utterance_frames: 3, // ~60 ms of speech minimum
             max_utterance_samples: 10 * TARGET_SAMPLE_RATE as usize, // 10 s force-close
             interim_interval_frames: 0, // interims off by default (opt-in; see the field docs)
+            interim_max_samples: 0,  // 0 = whole utterance (prior behaviour); host may bound it
         }
     }
 }
@@ -208,11 +216,21 @@ impl SttEngine {
     /// false`) — the live "words as you speak" line. Re-run on the growing buffer at the config
     /// cadence; the final on close supersedes it. Empty transcripts are dropped.
     fn emit_interim(&mut self) {
-        let start_ms = self.utt_start_frame * MS_PER_FRAME;
+        // Decode only the recent window when the host bounds it (interim_max_samples), so each
+        // interim is fixed work no matter how long the utterance has grown — the live line stays
+        // near real time. `0` decodes the whole open utterance (prior behaviour). The window's
+        // start is aligned to a frame boundary so its `start_ms` matches the decoded audio.
+        let cap = self.config.interim_max_samples;
+        let win_start = if cap > 0 && self.utterance.len() > cap {
+            (self.utterance.len() - cap) / FRAME_SAMPLES * FRAME_SAMPLES
+        } else {
+            0
+        };
+        let start_ms = (self.utt_start_frame + (win_start / FRAME_SAMPLES) as u64) * MS_PER_FRAME;
         let end_ms = self.frame_index * MS_PER_FRAME;
         let text = self
             .recognizer
-            .transcribe(&self.utterance, start_ms, end_ms)
+            .transcribe(&self.utterance[win_start..], start_ms, end_ms)
             .into_iter()
             .map(|s| s.text)
             .collect::<Vec<_>>()
@@ -345,6 +363,61 @@ mod tests {
         assert!(
             end.iter().any(|s| s.is_final),
             "a final (is_final) segment is emitted when the utterance closes: {end:?}"
+        );
+    }
+
+    #[test]
+    fn interim_window_bounds_the_decoded_samples_but_the_final_sees_the_whole_utterance() {
+        // The real-time fix: with `interim_max_samples` set, each interim decodes at most the
+        // recent window (bounded work no matter how long the speaker talks); the final on close
+        // still decodes the whole utterance for accuracy.
+        use crate::recognizer::{RecognizedSegment, Recognizer};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Recording(Arc<Mutex<Vec<usize>>>);
+        impl Recognizer for Recording {
+            fn label(&self) -> &str {
+                "recording"
+            }
+            fn transcribe(&mut self, samples: &[f32], s: u64, e: u64) -> Vec<RecognizedSegment> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|x| x.into_inner())
+                    .push(samples.len());
+                vec![RecognizedSegment::final_text("x", s, e)]
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let window = 4 * FRAME_SAMPLES; // a small 4-frame sliding window for the test
+        let (mut engine, mut provider) = SttEngine::build(
+            EngineConfig {
+                min_utterance_frames: 1,
+                interim_interval_frames: 2,
+                interim_max_samples: window,
+                ..EngineConfig::default()
+            },
+            Box::new(EnergyVad::new()),
+            Box::new(Recording(Arc::clone(&seen))),
+            FeedbackGuard::new(),
+        );
+        engine.process(&speech_chunk(30)); // long, unbroken speech → the buffer far exceeds the window
+        let _ = provider.poll();
+        {
+            let lens = seen.lock().unwrap();
+            assert!(!lens.is_empty(), "interims fired while speaking");
+            assert!(
+                lens.iter().all(|&n| n <= window),
+                "every interim decodes at most the {window}-sample window, got {lens:?}"
+            );
+        }
+        engine.process(&silence_chunk(20)); // close → the final decodes the WHOLE utterance
+        let _ = provider.poll();
+        let lens = seen.lock().unwrap();
+        assert!(
+            *lens.last().unwrap() > window,
+            "the final decodes the whole utterance (> the interim window): {lens:?}"
         );
     }
 

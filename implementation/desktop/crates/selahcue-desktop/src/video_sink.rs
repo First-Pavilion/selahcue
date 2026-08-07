@@ -12,6 +12,13 @@
 
 use selahcue_engine::raster::FrameBuffer;
 
+/// Whether THIS build can actually transmit NDI on the network — i.e. the `ndi` feature is
+/// compiled in and a native NDI runtime is linked. The default build is `false`: the NDI
+/// *setup* (name/enable) still persists and surfaces, but no source is broadcast, so the host
+/// (and, via it, the operator) can tell the difference between "configured" and "on air"
+/// instead of silently pretending to broadcast. Build to transmit: `--features ndi`.
+pub const TRANSMIT_AVAILABLE: bool = cfg!(feature = "ndi");
+
 /// Receives composed RGBA frames for one output and delivers them (e.g. as an NDI source).
 /// Object-safe so the host holds a `Box<dyn VideoSink>` per enabled output.
 pub trait VideoSink {
@@ -78,19 +85,24 @@ mod ndi_backend {
         frame: VideoFrame,
         sender: Sender,
         _ndi: NDI,
+        // Broadcast frame rate (numerator over 1), kept so a mid-stream resolution change can
+        // rebuild the frame without silently dropping back to a default rate.
+        fps: i32,
     }
 
     impl NdiSink {
         pub fn new(name: &str, w: u32, h: u32, fps: u16) -> Option<Self> {
             let ndi = NDI::new().ok()?;
-            let opts = SenderOptions::builder(name)
-                .clock_video(true)
-                .build()
-                .ok()?;
+            // `SenderOptions::builder(..).build()` returns the options by value (NOT a `Result`),
+            // so it must not be `?`-unwrapped — doing so was a compile error that kept the whole
+            // `ndi` feature from ever building, which is why an "enabled" NDI output never
+            // appeared on the network.
+            let opts = SenderOptions::builder(name).clock_video(true).build();
             let sender = Sender::new(&ndi, &opts).ok()?;
+            let fps = fps.max(1) as i32;
             let frame = VideoFrame::builder()
                 .resolution(w as i32, h as i32)
-                .frame_rate(fps.max(1) as i32, 1)
+                .frame_rate(fps, 1)
                 .pixel_format(PixelFormat::RGBA)
                 .build()
                 .ok()?;
@@ -98,6 +110,7 @@ mod ndi_backend {
                 frame,
                 sender,
                 _ndi: ndi,
+                fps,
             })
         }
     }
@@ -109,6 +122,7 @@ mod ndi_backend {
             if self.frame.width() != w as i32 || self.frame.height() != h as i32 {
                 match VideoFrame::builder()
                     .resolution(w as i32, h as i32)
+                    .frame_rate(self.fps, 1)
                     .pixel_format(PixelFormat::RGBA)
                     .build()
                 {

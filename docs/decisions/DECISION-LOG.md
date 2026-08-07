@@ -4,6 +4,26 @@ Durable record of material product/scope/architecture decisions, with traceabili
 
 ---
 
+## DEC-003 — Slides & Media engine: build the authored-deck + media library, defer live video/audio render
+
+- **Date:** 2026-08-03
+- **Stage:** Stage 8 (Presentation & Slides epic 86ajp07ce)
+- **Decided by:** User (product owner), scoping the /backend-engineer build of the Design-2.0 "Presentation & Media" surface (Figma node 329:124)
+- **Type:** Scope boundary (architecture)
+- **Status:** DECIDED
+
+**Decision.** The Slides/presentations engine is built as **two subsystems this pass** — the authored slide-deck engine (domain model where slides own layered elements + compose + Preview→Live playback + persistence) and the **media library** engine (a bounded registry of image/video/audio assets with import, missing-file and used/unused detection, and storage accounting) — with a **new forward-only SQLite `deck` + `media_asset` schema**. **Live video/audio playback on the audience output is explicitly deferred** to its own story + ADR: the media library *lists* video/audio assets now, but they cannot yet go live.
+
+**User rationale.** Selected "Deck engine + media library" scope with "new deck/document repo" persistence when the engine was scoped; live video-on-output was surfaced as the largest, highest-risk slice and held back.
+
+**Supporting evidence.** Video-on-wgpu is a heavy new subsystem (decode pipeline + frame-clock sync + preserving the NFR-024 never-blank guarantee with a *live* decoder that can stall), out of proportion to a slide-engine slice and interacting with ADR-0016 decode isolation. Per ADR-0002/0003 it renders in the native compositor, never the WebView. See **ADR-0020** for the full realisation + non-goals.
+
+**Affected items.** New: `selahcue-present::deck` (`SlideDeck`/`AuthoredSlide`/`DeckSession`/`crossfade`/`media_usage`), `compose_authored_slide`; `selahcue-core::media` (`MediaLibrary`/`MediaAsset`/`MediaKind`); `selahcue-data` migrations v16 (`deck`) + v17 (`media_asset`) with `deck_repo`/`media_repo`. Deferred (own follow-ups): live video/audio render; the S8-4 in-webview editor + undo/redo; new LAN wire commands to drive decks; FR-029 auto-pagination.
+
+**Reversibility.** Additive throughout (new modules + additive `CREATE TABLE` migrations); no wire or existing-schema change. Video render can be added later without reworking the model (assets already carry kind/duration/dimensions).
+
+---
+
 ## DEC-002 — RBAC: `Clear` (wipe live output) tightened to Producer+ (revised)
 
 - **Date:** 2026-07-23 (original) · **Revised:** 2026-07-24

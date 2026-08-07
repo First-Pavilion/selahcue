@@ -1,0 +1,9 @@
+# The NDI SDK payload is large (~30 MB/platform) and carries the NDI SDK licence, so it is NOT
+# committed by default — populate it with scripts/fetch_ndi_sdk.sh (see README.md).
+# If the team decides on a self-contained checkout, remove these ignores and track the payload
+# via Git LFS instead (and get NDI redistribution sign-off first).
+*/include/
+*/lib/
+# Keep this dir and its docs tracked.
+!README.md
+!.gitignore

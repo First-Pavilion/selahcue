@@ -1763,6 +1763,10 @@ impl LiveController {
                     config: self.output_configs.get(&s.id).cloned().unwrap_or_default(),
                 })
                 .collect(),
+            // The stage/confidence template + production message (stage-only) — drive the Live
+            // Console's Stage sub-tab and the confidence monitor's layout / message overlay.
+            stage_template: self.stage.template().as_tag().to_string(),
+            stage_message: self.stage.message().map(|m| m.to_string()),
             // The bounded recent transcript tail (oldest first) — the log is already
             // capped; this trims the wire payload further.
             transcript: self
@@ -2410,6 +2414,19 @@ impl LiveController {
                 name,
                 enabled,
             } => self.set_ndi_output(screen, name, *enabled),
+            // Stage/confidence template + production message (stage-only). Both mark the stage
+            // dirty so the confidence monitor re-composes on the next tick.
+            Command::SetStageTemplate { template } => {
+                self.stage
+                    .set_template(selahcue_present::stage::StageTemplate::from_tag(template));
+                self.stage_dirty = true;
+                ControllerReply::Ack
+            }
+            Command::SetStageMessage { text } => {
+                self.stage.set_message(text);
+                self.stage_dirty = true;
+                ControllerReply::Ack
+            }
             // --- Live transcript + scripture detection (R3/R4; ADR-0010). Assistive:
             // never touches the render/output path directly — ingestion feeds the
             // out-of-band engine; approving stages to Preview (operator Goes Live). ---

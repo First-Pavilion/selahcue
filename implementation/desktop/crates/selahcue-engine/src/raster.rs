@@ -8,7 +8,9 @@
 
 use crate::media::{self, DecodedImage};
 use crate::scene::FontName;
-use crate::scene::{Frame, GradientDirection, Layer, MediaRef, Rect, Rgba, ShapeKind, TextAlign};
+use crate::scene::{
+    Frame, GradientDirection, ImageFit, Layer, MediaRef, Rect, Rgba, ShapeKind, TextAlign,
+};
 use cosmic_text::{
     Attrs, Buffer, Color as CtColor, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
 };
@@ -766,7 +768,8 @@ pub fn render(frame: &Frame) -> FrameBuffer {
                 rect,
                 source,
                 opacity,
-            } => draw_image(&mut fb, *rect, source, *opacity),
+                fit,
+            } => draw_image(&mut fb, *rect, source, *opacity, *fit),
             Layer::Shape {
                 rect,
                 kind,
@@ -836,9 +839,9 @@ fn draw_gradient(
 /// bounded decode cache and blit the decoded image scaled into `rect` at `opacity`; on a
 /// missing / corrupt / unsupported / over-budget source, draw the missing-media
 /// placeholder instead (FR-070) — never a blank rect, never a crash.
-fn draw_image(fb: &mut FrameBuffer, rect: Rect, source: &MediaRef, opacity: u8) {
+fn draw_image(fb: &mut FrameBuffer, rect: Rect, source: &MediaRef, opacity: u8, fit: ImageFit) {
     media::with_resolved(source, |resolved| match resolved {
-        Some(img) => blit_image(fb, rect, img, opacity),
+        Some(img) => blit_image(fb, rect, img, opacity, fit),
         None => draw_placeholder(fb, rect, opacity),
     });
 }
@@ -853,11 +856,17 @@ fn scale_alpha(color: Rgba, opacity: u8) -> Rgba {
     )
 }
 
-/// Blit `img` scaled into `rect` with **integer nearest-neighbour** sampling (a pure
-/// integer function → deterministic, cross-OS byte-identical; no bilinear divergence),
-/// each source pixel alpha-composited (src-over) at the whole-layer `opacity`. Clipped to
-/// the on-screen intersection of `rect` and the frame, exactly like [`fill_rect`].
-fn blit_image(fb: &mut FrameBuffer, rect: Rect, img: &DecodedImage, opacity: u8) {
+/// Blit `img` into `rect` per `fit`, with **integer nearest-neighbour** sampling (a pure
+/// integer function → deterministic, cross-OS byte-identical; no bilinear divergence), each
+/// source pixel alpha-composited (src-over) at the whole-layer `opacity`. Clipped to the
+/// on-screen intersection of `rect` and the frame, exactly like [`fill_rect`].
+///
+/// - **`Stretch`** (default) distorts to fill the whole rect (the historical, byte-identical path).
+/// - **`Fit`** preserves aspect and letterboxes WITHIN the rect: the scaled image is centred and
+///   the surrounding gap is left untouched, so the slide background shows through (not black bars —
+///   this is an *element*, not a full-frame surface).
+/// - **`Fill`** preserves aspect and covers the rect, centre-cropping the overflow.
+fn blit_image(fb: &mut FrameBuffer, rect: Rect, img: &DecodedImage, opacity: u8, fit: ImageFit) {
     if rect.w == 0 || rect.h == 0 || img.width() == 0 || img.height() == 0 || opacity == 0 {
         return;
     }
@@ -865,15 +874,52 @@ fn blit_image(fb: &mut FrameBuffer, rect: Rect, img: &DecodedImage, opacity: u8)
     let y0 = rect.y.max(0) as u32;
     let x1 = ((rect.x as i64) + rect.w as i64).clamp(0, fb.width as i64) as u32;
     let y1 = ((rect.y as i64) + rect.h as i64).clamp(0, fb.height as i64) as u32;
-    let (iw, ih) = (img.width() as u64, img.height() as u64);
-    let (rw, rh) = (rect.w as u64, rect.h as u64);
+    // All the scale math below is in i64. `iw`/`ih` are decoder-bounded to [1, MAX_DIMENSION]
+    // and `rw`/`rh` to `u32`; the dominating intermediate is `ry * ih < sh * ih ≤ ih² · rw / iw`,
+    // which peaks near ih = MAX_DIMENSION, iw = 1 at ~2.9e17 — ~32× under i64::MAX at the current
+    // 8192 cap. If `MAX_DIMENSION` is ever raised past ~46340, this product needs i128 or a bound.
+    let (iw, ih) = (img.width() as i64, img.height() as i64);
+    let (rw, rh) = (rect.w as i64, rect.h as i64);
+    // The scaled image size (sw × sh) and its top-left offset within the rect (ox, oy). For
+    // `Fit` the image is smaller-or-equal and centred (positive offsets → a gap); for `Fill` it is
+    // larger-or-equal and centred (negative offsets → crop). Aspect is preserved by fixing the
+    // constrained axis to the rect and scaling the other proportionally (integer, deterministic).
+    let (sw, sh, ox, oy) = match fit {
+        ImageFit::Stretch => (rw, rh, 0, 0),
+        ImageFit::Fit => {
+            // contain: fit within → the axis where rw*ih <= rh*iw is width-constrained.
+            let (sw, sh) = if rw * ih <= rh * iw {
+                (rw, (ih * rw / iw).max(1))
+            } else {
+                ((iw * rh / ih).max(1), rh)
+            };
+            (sw, sh, (rw - sw) / 2, (rh - sh) / 2)
+        }
+        ImageFit::Fill => {
+            // cover: fill beyond → the axis where rw*ih >= rh*iw is width-covering.
+            let (sw, sh) = if rw * ih >= rh * iw {
+                (rw, (ih * rw / iw).max(1))
+            } else {
+                ((iw * rh / ih).max(1), rh)
+            };
+            (sw, sh, (rw - sw) / 2, (rh - sh) / 2)
+        }
+    };
     for y in y0..y1 {
-        // Destination offset within the rect (≥ 0 across the clipped span).
-        let dy = (y as i64 - rect.y as i64).max(0) as u64;
-        let sy = ((dy * ih) / rh).min(ih - 1) as u32;
+        let dy = (y as i64 - rect.y as i64).max(0); // 0..rh across the clipped span
+                                                    // Position within the scaled image; skip the letterbox gap (Fit) so the bg shows.
+        let ry = dy - oy;
+        if ry < 0 || ry >= sh {
+            continue;
+        }
+        let sy = ((ry * ih) / sh).clamp(0, ih - 1) as u32;
         for x in x0..x1 {
-            let dx = (x as i64 - rect.x as i64).max(0) as u64;
-            let sx = ((dx * iw) / rw).min(iw - 1) as u32;
+            let dx = (x as i64 - rect.x as i64).max(0);
+            let rx = dx - ox;
+            if rx < 0 || rx >= sw {
+                continue;
+            }
+            let sx = ((rx * iw) / sw).clamp(0, iw - 1) as u32;
             fb.blend(x, y, scale_alpha(img.sample(sx, sy), opacity));
         }
     }

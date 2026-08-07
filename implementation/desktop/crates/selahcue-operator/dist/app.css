@@ -2577,6 +2577,56 @@
         flex: none;
         border-bottom: 1px solid var(--sc-border);
       }
+      /* --- Timer | Stage sub-tabs (segmented) + the stage theme/message controls --- */
+      .seg { display: flex; gap: 3px; padding: 3px; margin-bottom: 12px;
+        background: var(--sc-inset); border: 1px solid var(--line); border-radius: 9px; }
+      .seg-btn { flex: 1; padding: 6px 0; border: 0; border-radius: 7px; background: transparent;
+        color: var(--muted); font: inherit; font-weight: 600; font-size: 13px; cursor: pointer; }
+      .seg-btn.active { background: var(--accent); color: #fff; }
+      .seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .stab[hidden] { display: none; }
+      .stage-sec-label { font-size: 11px; font-weight: 700; letter-spacing: 1px;
+        color: var(--muted); margin: 14px 0 8px; }
+      .stage-themes { display: flex; flex-direction: column; gap: 8px; }
+      .stage-theme { display: flex; align-items: center; gap: 11px; width: 100%; text-align: left;
+        padding: 10px 11px; border: 1px solid var(--line); border-radius: 10px;
+        background: var(--sc-elevated); color: var(--text); cursor: pointer; }
+      .stage-theme:hover:not(.active) { border-color: var(--sc-border-strong); }
+      .stage-theme.active { border-color: var(--accent); border-width: 2px; padding: 9px 10px;
+        background: rgba(110,92,240,.13); }
+      .stage-theme:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .stage-tile { width: 30px; height: 30px; border-radius: 8px; flex: 0 0 auto; }
+      .tile-worship { background: #6e5cf0; }
+      .tile-scripture { background: #f2b84b; }
+      .tile-timer { background: #4aa3ff; }
+      .stage-theme-txt { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
+      .stage-theme-txt strong { font-size: 14px; font-weight: 600; }
+      .stage-theme-txt span { font-size: 12px; color: var(--muted); }
+      .stage-theme-tu { display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+        font-size: 9px; font-weight: 700; letter-spacing: .4px; color: var(--muted); white-space: nowrap; }
+      .stage-theme-tu small { font-size: 10px; font-weight: 600; color: var(--warn-ink); }
+      .stage-theme-tu.up small { color: var(--live-ink); }
+      .stage-presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+      .stage-preset { padding: 6px 11px; border: 1px solid var(--line); border-radius: 999px;
+        background: var(--sc-inset); color: var(--muted); font: inherit; font-size: 11px;
+        font-weight: 600; cursor: pointer; }
+      .stage-preset:hover { color: var(--text); }
+      .stage-preset.active { border-color: var(--accent); color: #b7abff; background: rgba(110,92,240,.14); }
+      .stage-preset:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .stage-msg-input { width: 100%; box-sizing: border-box; padding: 9px 11px; margin-bottom: 8px;
+        border: 1px solid var(--line); border-radius: 8px; background: var(--sc-inset);
+        color: var(--text); font: inherit; font-size: 13px; }
+      .stage-msg-input::placeholder { color: var(--muted); }
+      .stage-msg-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      .stage-msg-row { display: flex; gap: 8px; }
+      .stage-msg-send { flex: 1; padding: 9px 0; border: 0; border-radius: 9px; background: var(--accent);
+        color: #fff; font: inherit; font-weight: 700; font-size: 13px; cursor: pointer; }
+      .stage-msg-clear { padding: 9px 16px; border: 1px solid var(--line); border-radius: 9px;
+        background: var(--sc-inset); color: var(--muted); font: inherit; font-weight: 600;
+        font-size: 13px; cursor: pointer; }
+      .stage-msg-send:focus-visible, .stage-msg-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .stage-msg-active { margin-top: 8px; font-size: 12px; font-weight: 600; color: var(--warn-ink); }
+      .stage-msg-active[hidden] { display: none; }
       .rtab {
         flex: 1;
         appearance: none;

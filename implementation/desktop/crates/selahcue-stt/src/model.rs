@@ -236,7 +236,12 @@ impl HardwareProbe {
     /// future footprint bump can never silently ship an over-budget model. Thread count for
     /// decoding is capped so we never oversubscribe.
     pub fn select_model(&self) -> ModelSelection {
-        let preferred = if self.backend != Backend::Cpu || self.threads >= 4 {
+        // Prefer the large real-time model ONLY when a GPU backend is actually compiled into this
+        // build (`metal`/`cuda`/`vulkan`). The OS-derived `backend` label does not accelerate
+        // decoding on its own — a "Metal" label with no `metal` feature still runs on the CPU,
+        // where the 1.6 GB model is far slower than real time. A CPU-only build therefore steps
+        // down to a small model for live latency (base on a very lean host).
+        let preferred = if gpu_acceleration_compiled() {
             WhisperModel::LargeV3Turbo
         } else if self.threads >= 2 {
             WhisperModel::Small
@@ -261,6 +266,14 @@ impl HardwareProbe {
             backend: self.backend,
         }
     }
+}
+
+/// Whether a whisper.cpp GPU backend is compiled into THIS build (Cargo features `metal` /
+/// `cuda` / `vulkan`). [`HardwareProbe::select_model`] prefers the large real-time model only
+/// when this is true: the OS backend label alone does not accelerate decoding, so a CPU-only
+/// build must step down to a small model to keep live transcription near real time.
+pub const fn gpu_acceleration_compiled() -> bool {
+    cfg!(any(feature = "metal", feature = "cuda", feature = "vulkan"))
 }
 
 /// The default acceleration backend for the build target (a conservative heuristic).
@@ -374,6 +387,39 @@ mod tests {
             threads: 1,
         };
         assert_eq!(probe.select_model().model, WhisperModel::Base);
+    }
+
+    #[test]
+    fn cpu_only_build_uses_a_small_model_not_the_large_one() {
+        // The core perf fix: without a compiled GPU backend, even a many-core host with a
+        // "Metal" OS label must NOT pick the 1.6 GB large model — on the CPU it decodes far
+        // slower than real time. Small is the live-latency choice; base only on a lean host.
+        assert!(
+            !gpu_acceleration_compiled(),
+            "the default test build has no GPU backend feature"
+        );
+        let beefy = HardwareProbe {
+            backend: Backend::Metal,
+            threads: 8,
+        };
+        assert_eq!(
+            beefy.select_model().model,
+            WhisperModel::Small,
+            "a CPU-only build must step down from large-v3-turbo to small"
+        );
+    }
+
+    #[cfg(any(feature = "metal", feature = "cuda", feature = "vulkan"))]
+    #[test]
+    fn gpu_build_prefers_the_large_real_time_model() {
+        // With a GPU backend compiled in, the large real-time-capable model is preferred (it
+        // runs on the GPU, not the CPU). Only exercised in a `--features metal` (etc.) build.
+        assert!(gpu_acceleration_compiled());
+        let probe = HardwareProbe {
+            backend: Backend::Metal,
+            threads: 8,
+        };
+        assert_eq!(probe.select_model().model, WhisperModel::LargeV3Turbo);
     }
 
     #[test]

@@ -9,6 +9,8 @@
 //! - [`db`] — open/configure, integrity, checkpoint, backup.
 //! - [`migrations`] — versioned, append-only schema migrations.
 //! - [`plan_repo`] — [`selahcue_core::plan::ServicePlan`] persistence (FR-001/002).
+//! - [`deck_repo`] — authored slide-deck library persistence (Design 2.0 node 329:124).
+//! - [`media_repo`] — [`selahcue_core::media::MediaLibrary`] persistence (Design 2.0 node 329:124).
 //!
 //! At-rest encryption (FR-154) is behind the `encryption` feature: it compiles
 //! SQLCipher and exposes [`EncryptionKey`] plus [`Database::open_encrypted`].
@@ -16,9 +18,11 @@
 #![forbid(unsafe_code)]
 
 mod db;
+pub mod deck_repo;
 mod error;
 #[cfg(feature = "encryption")]
 mod key;
+pub mod media_repo;
 pub mod migrations;
 pub mod output_repo;
 pub mod plan_repo;
