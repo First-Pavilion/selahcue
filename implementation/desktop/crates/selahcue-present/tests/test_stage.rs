@@ -1,11 +1,15 @@
-//! Stage/confidence monitor: timer state, current/next regions, dual-output
-//! independence, and display identification (FR-037/040).
+//! Stage/confidence monitor: templates (Worship / Scripture / Timer-only), timer state,
+//! current/next regions, the production-message overlay, dual-output independence, and
+//! display identification (FR-037/040; stage templates + message per Figma 373-375 / 375-139).
 
 #![allow(clippy::unwrap_used)]
 
 use selahcue_core::timer::Timer;
 use selahcue_engine::raster::{render, FrameBuffer};
-use selahcue_engine::scene::Rgba;
+use selahcue_engine::scene::{Frame, Rgba};
+// `StageTemplate`/`MAX_STAGE_MESSAGE_LEN` come via the public `stage` module path (rather than
+// a crate-root re-export) so this feature stays isolated from the crate's shared `lib.rs`.
+use selahcue_present::stage::{StageTemplate, MAX_STAGE_MESSAGE_LEN};
 use selahcue_present::{
     compose_identify, compose_slide, compose_stage, Presenter, Slide, StageDisplay, StageTheme,
     Theme, TimerView,
@@ -20,6 +24,26 @@ fn running(progress: f64) -> TimerView {
         warn: false,
         progress,
     }
+}
+
+fn timed_up() -> TimerView {
+    TimerView {
+        time_up: true,
+        progress: 0.0,
+        ..running(0.0)
+    }
+}
+
+/// The default (Worship) template with no message — the shape most tests exercise.
+fn ws(
+    c: Option<&Slide>,
+    n: Option<&Slide>,
+    t: Option<&TimerView>,
+    theme: &StageTheme,
+    w: u32,
+    h: u32,
+) -> Frame {
+    compose_stage(c, n, t, StageTemplate::Worship, None, theme, w, h)
 }
 
 fn has_color(fb: &FrameBuffer, color: Rgba) -> bool {
@@ -46,41 +70,24 @@ fn timer_view_derives_state_from_a_countdown() {
 }
 
 #[test]
-fn timer_bar_colour_reflects_state() {
+fn timer_readout_colour_reflects_state() {
     let theme = StageTheme::dark();
-    // OK (green), full fill.
-    let ok = render(&compose_stage(
-        None,
-        None,
-        Some(&running(1.0)),
-        &theme,
-        200,
-        100,
-    ));
-    assert_eq!(ok.pixel(5, 5).unwrap(), theme.timer_ok);
+    // Worship's bottom timer bar carries the state colour (green / amber / red).
+    let ok = render(&ws(None, None, Some(&running(1.0)), &theme, 200, 100));
+    assert!(has_color(&ok, theme.timer_ok), "on-time renders green");
 
-    // Warn (amber), partial fill.
     let warn = TimerView {
         warn: true,
         progress: 0.2,
         ..running(0.2)
     };
-    let fb = render(&compose_stage(None, None, Some(&warn), &theme, 200, 100));
-    assert_eq!(fb.pixel(5, 5).unwrap(), theme.timer_warn); // inside the fill
-    assert_eq!(fb.pixel(180, 5).unwrap(), theme.track); // beyond the 20% fill
+    let wfb = render(&ws(None, None, Some(&warn), &theme, 200, 100));
+    assert!(has_color(&wfb, theme.timer_warn), "warn renders amber");
 
-    // TIME UP (red), full alert bar.
-    let up = TimerView {
-        time_up: true,
-        progress: 0.0,
-        ..running(0.0)
-    };
-    let fb = render(&compose_stage(None, None, Some(&up), &theme, 200, 100));
-    assert_eq!(fb.pixel(5, 5).unwrap(), theme.timer_alert);
-    assert_eq!(
-        fb.pixel(180, 5).unwrap(),
-        theme.timer_alert,
-        "TIME UP fills the whole bar"
+    let ufb = render(&ws(None, None, Some(&timed_up()), &theme, 200, 100));
+    assert!(
+        has_color(&ufb, theme.alert_wash),
+        "TIME UP washes the bar red"
     );
 }
 
@@ -98,8 +105,9 @@ fn stage_current_region_auto_fits_a_long_verse_without_truncation_or_clip() {
         provinces which are from India unto Ethiopia, an hundred twenty and seven provinces.";
     let current = Slide::new("Esther 8:9 (KJV)", [verse]);
     let (w, h) = (960u32, 540u32);
-    let frame = compose_stage(Some(&current), None, None, &theme, w, h);
-    // With no next slide + no timer, the only Text layers are the current region.
+    // No next slide + no timer -> the only Text layers are the current region (the idle
+    // timer bar draws no caption).
+    let frame = ws(Some(&current), None, None, &theme, w, h);
     let texts: Vec<(&String, u32, i32, u32)> = frame
         .layers
         .iter()
@@ -131,7 +139,7 @@ fn stage_current_region_auto_fits_a_long_verse_without_truncation_or_clip() {
     for word in verse.split_whitespace() {
         assert!(joined.contains(word), "stage dropped the word {word:?}");
     }
-    // ...and nothing overflows the current region (bottom ≈ 0.60·height).
+    // ...and nothing overflows the current region (bottom ≈ 0.58·height).
     let current_bottom = (h as f64 * 0.60) as i32 + 2;
     for (_, px, y, _) in &texts {
         assert!(
@@ -146,71 +154,235 @@ fn current_and_next_regions_show_text_when_present() {
     let theme = StageTheme::dark();
     let current = Slide::title("CURRENT LINE");
     let next = Slide::title("NEXT LINE");
-    let fb = render(&compose_stage(
+    // A larger frame so the muted NEXT region is big enough to leave exact-colour pixels.
+    let fb = render(&ws(
         Some(&current),
         Some(&next),
         Some(&running(1.0)),
         &theme,
-        320,
-        240,
+        640,
+        400,
     ));
     assert!(
         has_color(&fb, theme.text),
-        "stage should render the current/next text"
+        "stage should render the current text"
+    );
+    assert!(
+        has_color(&fb, theme.muted),
+        "the NEXT chip + line render in the muted ink"
     );
 }
 
 #[test]
 fn empty_state_shows_no_text() {
     let theme = StageTheme::dark();
-    let fb = render(&compose_stage(None, None, None, &theme, 320, 240));
+    let fb = render(&ws(None, None, None, &theme, 320, 240));
     assert!(
         !has_color(&fb, theme.text),
-        "with no content and no timer there is no text"
+        "with no content and no timer there is no primary text"
     );
 }
 
 #[test]
 fn a_running_timer_renders_a_numeric_readout() {
-    // The speaker must be able to READ the remaining time, not just see a bar
-    // (regression: the strip once rendered only a fill, no numbers).
+    // The speaker must be able to READ the remaining time, not just see a bar (regression:
+    // the strip once rendered only a fill). The readout carries the state colour.
     let theme = StageTheme::dark();
-    let with_timer = render(&compose_stage(
-        None,
-        None,
-        Some(&running(1.0)),
-        &theme,
-        320,
-        240,
-    ));
+    let with_timer = render(&ws(None, None, Some(&running(1.0)), &theme, 320, 240));
     assert!(
-        has_color(&with_timer, theme.text),
-        "a running countdown renders its M:SS readout in the strip"
+        has_color(&with_timer, theme.timer_ok),
+        "a running countdown renders its M:SS readout in the on-time colour"
     );
-    // TIME UP renders its label over the alert bar.
-    let up = TimerView {
-        time_up: true,
-        progress: 0.0,
-        ..running(0.0)
-    };
-    let up_fb = render(&compose_stage(None, None, Some(&up), &theme, 320, 240));
-    assert!(has_color(&up_fb, theme.text), "TIME UP renders its label");
+    let up_fb = render(&ws(None, None, Some(&timed_up()), &theme, 320, 240));
+    assert!(
+        has_color(&up_fb, theme.alert_wash),
+        "TIME UP washes the timer bar red"
+    );
 }
 
 #[test]
-fn idle_monitor_shows_an_empty_track_not_a_full_bar() {
-    // No running timer -> the strip is the dim track only; it must not be mistakable
-    // for a full (just-started) countdown.
+fn idle_monitor_shows_no_timer_colour_and_no_text() {
+    // No running timer -> the bar is bare (no state fill, no caption); it must not be
+    // mistakable for a full (just-started) countdown.
     let theme = StageTheme::dark();
-    let idle = render(&compose_stage(None, None, None, &theme, 200, 100));
-    assert_eq!(
-        idle.pixel(5, 5).unwrap(),
-        theme.track,
-        "idle strip shows the track"
-    );
+    let idle = render(&ws(None, None, None, &theme, 200, 100));
     assert!(
         !has_color(&idle, theme.timer_ok),
         "no green fill when no timer runs"
+    );
+    assert!(
+        !has_color(&idle, theme.text),
+        "an idle monitor shows no text"
+    );
+}
+
+#[test]
+fn stage_templates_render_differently() {
+    // The operator picks one of three templates; each lays the same state out differently.
+    let theme = StageTheme::dark();
+    let cur = Slide::title("A VERSE OF SCRIPTURE");
+    let t = running(0.5);
+    let worship = render(&compose_stage(
+        Some(&cur),
+        None,
+        Some(&t),
+        StageTemplate::Worship,
+        None,
+        &theme,
+        400,
+        240,
+    ));
+    let scripture = render(&compose_stage(
+        Some(&cur),
+        None,
+        Some(&t),
+        StageTemplate::Scripture,
+        None,
+        &theme,
+        400,
+        240,
+    ));
+    let timer_only = render(&compose_stage(
+        Some(&cur),
+        None,
+        Some(&t),
+        StageTemplate::TimerOnly,
+        None,
+        &theme,
+        400,
+        240,
+    ));
+    assert_ne!(worship.bytes(), scripture.bytes(), "worship != scripture");
+    assert_ne!(worship.bytes(), timer_only.bytes(), "worship != timer-only");
+    assert_ne!(
+        scripture.bytes(),
+        timer_only.bytes(),
+        "scripture != timer-only"
+    );
+}
+
+#[test]
+fn time_up_is_full_screen_for_timer_only_but_region_only_for_worship() {
+    // Behaviour spec (375-139): timer-only reddens the whole screen at TIME UP; worship
+    // reddens only its bottom bar, leaving the content area untouched.
+    let theme = StageTheme::dark();
+    let to = render(&compose_stage(
+        None,
+        None,
+        Some(&timed_up()),
+        StageTemplate::TimerOnly,
+        None,
+        &theme,
+        200,
+        120,
+    ));
+    assert_eq!(
+        to.pixel(3, 3).unwrap(),
+        theme.alert_wash,
+        "timer-only TIME UP washes the whole screen"
+    );
+    let wsu = render(&compose_stage(
+        None,
+        None,
+        Some(&timed_up()),
+        StageTemplate::Worship,
+        None,
+        &theme,
+        200,
+        120,
+    ));
+    assert_eq!(
+        wsu.pixel(3, 3).unwrap(),
+        theme.background,
+        "worship TIME UP does not touch the content area"
+    );
+    assert!(
+        has_color(&wsu, theme.alert_wash),
+        "worship TIME UP reddens the timer bar region"
+    );
+}
+
+#[test]
+fn a_production_message_overlays_and_frames_the_stage() {
+    // A production message is a stage-only overlay: it dims the scene and draws a gold frame.
+    let theme = StageTheme::dark();
+    let cur = Slide::title("NOW LINE");
+    let plain = render(&compose_stage(
+        Some(&cur),
+        None,
+        None,
+        StageTemplate::Worship,
+        None,
+        &theme,
+        320,
+        200,
+    ));
+    let with_msg = render(&compose_stage(
+        Some(&cur),
+        None,
+        None,
+        StageTemplate::Worship,
+        Some("WRAP UP - 2 MIN LEFT"),
+        &theme,
+        320,
+        200,
+    ));
+    assert_ne!(
+        plain.bytes(),
+        with_msg.bytes(),
+        "a message changes the stage output"
+    );
+    assert!(
+        has_color(&with_msg, theme.accent),
+        "the message frame renders in the gold accent"
+    );
+    // A blank message is a no-op (no overlay).
+    let blank = render(&compose_stage(
+        Some(&cur),
+        None,
+        None,
+        StageTemplate::Worship,
+        Some("   "),
+        &theme,
+        320,
+        200,
+    ));
+    assert_eq!(
+        plain.bytes(),
+        blank.bytes(),
+        "a blank message draws no overlay"
+    );
+}
+
+#[test]
+fn set_message_bounds_and_a_blank_clears() {
+    let mut sd = StageDisplay::new(160, 90, StageTheme::dark());
+    assert!(sd.message().is_none());
+    sd.set_message("WRAP UP");
+    assert_eq!(sd.message(), Some("WRAP UP"));
+    sd.set_message("   "); // blank clears the overlay
+    assert!(sd.message().is_none());
+    let long = "x".repeat(500);
+    sd.set_message(&long);
+    assert!(
+        sd.message().unwrap().chars().count() <= MAX_STAGE_MESSAGE_LEN,
+        "the message is bounded (no-leak)"
+    );
+}
+
+#[test]
+fn set_template_switches_the_layout() {
+    let mut sd = StageDisplay::new(200, 120, StageTheme::dark());
+    assert_eq!(sd.template(), StageTemplate::Worship, "default is Worship");
+    let cur = Slide::title("X");
+    sd.update(Some(&cur), None, Some(&running(0.5)));
+    let worship_bytes = sd.output().bytes().to_vec();
+    sd.set_template(StageTemplate::TimerOnly);
+    sd.update(Some(&cur), None, Some(&running(0.5)));
+    assert_ne!(
+        sd.output().bytes(),
+        &worship_bytes[..],
+        "switching the template changes the output"
     );
 }
 
