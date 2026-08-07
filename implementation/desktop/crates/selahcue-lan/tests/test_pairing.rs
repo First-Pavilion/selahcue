@@ -414,6 +414,101 @@ async fn several_devices_park_concurrently_and_are_each_approved() {
     assert_eq!(pending_requests(&reg).await, 0, "all requests cleared");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn set_session_role_cannot_promote_a_device_to_operator() {
+    let (addr, pin, _reg) = start_server(true, "CODE1234", Duration::from_secs(60)).await;
+    let device = tokio::spawn(async move {
+        ControlClient::pair(addr, "localhost", pin, "CODE1234", "climber", "").await
+    });
+    let mut op = operator(addr, pin).await;
+    let (device_id, _) = wait_for_pending(&mut op).await;
+    op.command(Command::ApprovePairing {
+        device_id: device_id.clone(),
+        role: Role::Producer,
+    })
+    .await
+    .unwrap();
+    let (client, _creds) = device.await.unwrap().unwrap();
+    assert_eq!(client.role(), Role::Producer);
+
+    // Re-roling to Operator is refused (the same fail-closed clamp as ApprovePairing) — the
+    // device stays Producer; a remote LAN peer can never gain device-management authority.
+    if let ServerMessage::RemoteDevices { devices, .. } = op
+        .command(Command::SetSessionRole {
+            device_id: device_id.clone(),
+            role: Role::Operator,
+        })
+        .await
+        .unwrap()
+    {
+        let dev = devices.iter().find(|d| d.device_id == device_id).unwrap();
+        assert_eq!(
+            dev.role,
+            Role::Producer,
+            "a remote device must never be re-roled to Operator"
+        );
+    } else {
+        panic!("expected RemoteDevices");
+    }
+    // A valid (non-Operator) re-role still works.
+    if let ServerMessage::RemoteDevices { devices, .. } = op
+        .command(Command::SetSessionRole {
+            device_id: device_id.clone(),
+            role: Role::Assistant,
+        })
+        .await
+        .unwrap()
+    {
+        let dev = devices.iter().find(|d| d.device_id == device_id).unwrap();
+        assert_eq!(dev.role, Role::Assistant);
+    } else {
+        panic!("expected RemoteDevices");
+    }
+    client.close().await.ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn untrusted_device_name_bidi_and_zero_width_chars_are_stripped() {
+    let (addr, pin, _reg) = start_server(true, "CODE1234", Duration::from_secs(60)).await;
+    // A name/platform carrying a right-to-left override + a zero-width space (spoofing vectors).
+    let device = tokio::spawn(async move {
+        ControlClient::pair(
+            addr,
+            "localhost",
+            pin,
+            "CODE1234",
+            "ab\u{202E}cd\u{200B}",
+            "i\u{202E}os",
+        )
+        .await
+    });
+    let mut op = operator(addr, pin).await;
+    let _ = wait_for_pending(&mut op).await;
+    if let ServerMessage::RemoteDevices { pending, .. } =
+        op.command(Command::ListRemoteDevices).await.unwrap()
+    {
+        let p = pending.first().expect("one pending request");
+        assert!(
+            !p.name.contains('\u{202E}') && !p.name.contains('\u{200B}'),
+            "bidi/zero-width chars stripped from name: {:?}",
+            p.name
+        );
+        assert!(
+            !p.platform.contains('\u{202E}'),
+            "bidi chars stripped from platform: {:?}",
+            p.platform
+        );
+        assert!(
+            p.name.contains("abcd"),
+            "visible name preserved: {:?}",
+            p.name
+        );
+    } else {
+        panic!("expected RemoteDevices");
+    }
+    device.abort();
+}
+
 #[test]
 fn generated_codes_are_wellformed_and_vary() {
     let a = generate_pairing_code();

@@ -55,6 +55,10 @@ const PAIRING_PARK_TIMEOUT: Duration = Duration::from_secs(120);
 /// do not silently drop the socket across the (up-to-[`PAIRING_PARK_TIMEOUT`]) human wait.
 const PAIRING_PARK_PING_INTERVAL: Duration = Duration::from_secs(25);
 
+/// Bound on a single keepalive send, so a half-open peer with a full send buffer cannot stall the
+/// park's `select!` (which cannot preempt an in-flight arm body) past its deadline.
+const PING_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Registry-side backstop TTL for pending requests, swept on each new pairing/auth. Set
 /// above [`PAIRING_PARK_TIMEOUT`] so it only reclaims requests orphaned by a task that was
 /// cancelled/aborted without running its inline cleanup (no-leak guarantee).
@@ -397,13 +401,32 @@ impl ControlServer {
             reg.withdraw(&pair.code);
             // Mint a fresh, collision-free server-side device id (checked against active
             // sessions, pending requests, AND currently-parked waiters, all under this lock).
+            // Bounded + fail-closed: `random_hex` returns "" if the OS CSPRNG is broken, so we
+            // never spin forever on a degenerate id (which would wedge the held registry lock).
             let device_id = {
                 let waiters = self.waiters.lock().expect("waiters mutex poisoned");
-                let mut candidate = DeviceId(format!("dev-{}", random_hex(8)));
-                while reg.is_known_device(&candidate) || waiters.contains_key(&candidate) {
-                    candidate = DeviceId(format!("dev-{}", random_hex(8)));
+                let mut minted = None;
+                for _ in 0..16 {
+                    let hex = random_hex(8);
+                    if hex.is_empty() {
+                        break; // CSPRNG failure — bail out and reject below (fail closed)
+                    }
+                    let candidate = DeviceId(format!("dev-{hex}"));
+                    if !reg.is_known_device(&candidate) && !waiters.contains_key(&candidate) {
+                        minted = Some(candidate);
+                        break;
+                    }
                 }
-                candidate
+                minted
+            };
+            let Some(device_id) = device_id else {
+                drop(reg);
+                return reject(
+                    ws,
+                    DenyReason::Unauthenticated,
+                    "could not allocate a device id",
+                )
+                .await;
             };
             let name = sanitize_device_name(&pair.device_name);
             let platform = sanitize_platform(&pair.platform);
@@ -459,8 +482,16 @@ impl ControlServer {
                     },
                     _ = &mut deadline => break ParkExit::Timeout,
                     _ = ping.tick() => {
-                        if ws.send(Message::Ping(Default::default())).await.is_err() {
-                            break ParkExit::Gone; // socket is dead
+                        // Bound the send so a stalled (full-buffer / zero-window) socket can't
+                        // block the whole park past its deadline.
+                        match tokio::time::timeout(
+                            PING_SEND_TIMEOUT,
+                            ws.send(Message::Ping(Default::default())),
+                        )
+                        .await
+                        {
+                            Ok(Ok(())) => {}
+                            _ => break ParkExit::Gone, // send failed or stalled — socket is dead
                         }
                     }
                 }
@@ -471,16 +502,7 @@ impl ControlServer {
             // Approved: the session already exists (minted by `approve_request` on the operator
             // connection); push the token to this still-parked socket and continue authenticated.
             ParkExit::Decision(Approval::Granted { token, role }) => {
-                send_json(
-                    ws,
-                    &PairResponse::Granted {
-                        device_id: device_id.0,
-                        token,
-                        role,
-                    },
-                )
-                .await?;
-                Ok(role)
+                self.deliver_grant(ws, device_id, token, role).await
             }
             ParkExit::Decision(Approval::Denied) => {
                 reject(ws, DenyReason::Forbidden, "operator denied the request").await
@@ -494,16 +516,7 @@ impl ControlServer {
                 match rx.try_recv() {
                     Ok(Approval::Granted { token, role }) => {
                         drop(reg);
-                        send_json(
-                            ws,
-                            &PairResponse::Granted {
-                                device_id: device_id.0,
-                                token,
-                                role,
-                            },
-                        )
-                        .await?;
-                        Ok(role)
+                        self.deliver_grant(ws, device_id, token, role).await
                     }
                     _ => {
                         reg.deny_request(&device_id);
@@ -513,6 +526,38 @@ impl ControlServer {
                 }
             }
         }
+    }
+
+    /// Deliver an approved grant to the parked device. The session already exists (minted by
+    /// `approve_request`); if the socket died before we could hand over the token, revoke the
+    /// session so no undeliverable zombie lingers (bounded, but the exact thing Part B prevents).
+    async fn deliver_grant<S>(
+        &self,
+        ws: &mut WebSocketStream<S>,
+        device_id: DeviceId,
+        token: String,
+        role: Role,
+    ) -> Result<Role, TransportError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        if send_json(
+            ws,
+            &PairResponse::Granted {
+                device_id: device_id.0.clone(),
+                token,
+                role,
+            },
+        )
+        .await
+        .is_err()
+        {
+            self.registry.lock().await.revoke(&device_id);
+            return Err(TransportError::Protocol(
+                "granted but the device left before delivery".into(),
+            ));
+        }
+        Ok(role)
     }
 
     /// Handle a Remote Control device-management command against the [`SessionRegistry`] (the
@@ -530,7 +575,12 @@ impl ControlServer {
                 Some(remote_snapshot(&reg, now))
             }
             Command::SetSessionRole { device_id, role } => {
-                reg.set_role(&DeviceId(device_id.clone()), *role);
+                // Fail-closed, the SAME clamp as ApprovePairing: a remotely-paired device may never
+                // be promoted to Operator (device-management) authority via a re-role either — the
+                // console stays the sole Operator. A no-op keeps the current role.
+                if *role != Role::Operator {
+                    reg.set_role(&DeviceId(device_id.clone()), *role);
+                }
                 Some(remote_snapshot(&reg, now))
             }
             Command::DenyPairing { device_id } => {
@@ -671,9 +721,6 @@ impl ControlServer {
     }
 }
 
-/// `n` random bytes from the OS CSPRNG as lowercase hex (2n chars). Falls back to a
-/// second draw attempt; a CSPRNG that cannot produce bytes is unrecoverable, so the
-/// caller-facing contract stays simple (this is used for token/device-id issuance).
 /// Build the operator's Remote Control snapshot — paired devices + pending requests — as
 /// JS-friendly wire views (seconds instead of `Duration`, and never a session token).
 fn remote_snapshot(reg: &SessionRegistry, now: std::time::Instant) -> ServerMessage {
@@ -716,6 +763,9 @@ fn pairing_fingerprint(code: &str) -> String {
         .join(" · ")
 }
 
+/// `n` random bytes from the OS CSPRNG as lowercase hex (2n chars). Retries once, then fails
+/// CLOSED with an EMPTY string if the CSPRNG cannot produce bytes — callers MUST treat "" as
+/// failure (an empty token/id never authenticates, and pairing rejects a device it can't name).
 fn random_hex(n: usize) -> String {
     let rng = SystemRandom::new();
     let mut bytes = vec![0u8; n];
@@ -758,12 +808,25 @@ pub fn generate_pairing_code() -> String {
         .collect()
 }
 
+/// Characters unsafe to show in the operator's approve/deny UI: control chars (Cc) plus the
+/// zero-width, bidi-control, and other invisible format code points that could spoof or reorder a
+/// device name/platform (e.g. U+202E RIGHT-TO-LEFT OVERRIDE). Filtered from untrusted display text.
+fn is_display_unsafe(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{200B}'..='\u{200F}'   // zero-width space/joiners + LRM/RLM bidi marks
+            | '\u{202A}'..='\u{202E}' // bidi embeddings + overrides (LRE..RLO)
+            | '\u{2060}'..='\u{2064}' // word joiner + invisible math operators
+            | '\u{2066}'..='\u{206F}' // bidi isolates + deprecated format chars
+            | '\u{FEFF}') // zero-width no-break space / BOM
+}
+
 /// Sanitize an untrusted device name for operator display: keep printable
-/// non-control characters, cap the length, and never yield an empty string.
+/// display-safe characters, cap the length, and never yield an empty string.
 fn sanitize_device_name(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !is_display_unsafe(*c))
         .take(MAX_DEVICE_NAME)
         .collect();
     let trimmed = cleaned.trim();
@@ -779,7 +842,7 @@ fn sanitize_device_name(raw: &str) -> String {
 /// empty platform is allowed (it is optional and omitted on the wire).
 fn sanitize_platform(raw: &str) -> String {
     raw.chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !is_display_unsafe(*c))
         .take(MAX_PLATFORM)
         .collect::<String>()
         .trim()
