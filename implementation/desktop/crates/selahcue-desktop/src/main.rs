@@ -2019,19 +2019,23 @@ async fn run_server(
         reg.pin(&DeviceId(device.to_string()));
     }
 
-    // Operator-paced pairing (86ajxer8n): a device that scans the QR and connects parks as a
-    // pending request; the operator approves it (assigning a role) or denies it from the Remote
-    // Control console. The output window no longer prompts for Y/N host confirmation.
-    let server = Arc::new(
-        ControlServer::new(&identity, remote.registry.clone(), handler_for(controller))
-            .map_err(|e| format!("server: {e:?}"))?
-            .with_pairing_requests(),
-    );
     // Bind the LAN so a phone can reach us: joining is gated by pairing (single-use
     // TTL code + host confirmation) behind pinned TLS, so an open port grants nothing.
     let listener = TcpListener::bind("0.0.0.0:0").await?;
     let port = listener.local_addr()?.port();
     let _ = remote.lan.set((port, pin.to_hex()));
+
+    // Operator-paced pairing (86ajxer8n): a device that scans the QR and connects parks as a
+    // pending request; the operator approves it (assigning a role) or denies it from the Remote
+    // Control console. The output window no longer prompts for Y/N host confirmation.
+    // The endpoint (LAN IP + bound port + raw cert pin) lets the operator's "New code" mint a
+    // real, scannable `selahcue://pair?…` QR — the same invite this window shows on-screen.
+    let server = Arc::new(
+        ControlServer::new(&identity, remote.registry.clone(), handler_for(controller))
+            .map_err(|e| format!("server: {e:?}"))?
+            .with_pairing_requests()
+            .with_pairing_endpoint(lan_ip().to_string(), port, pin.to_hex()),
+    );
     // Advertise on mDNS so the phone can FIND us without typing an address
     // (86ajp0b0t). The TXT carries the cert pin — public data (it is printed in
     // every QR invite); joining still requires the TTL pairing code + host

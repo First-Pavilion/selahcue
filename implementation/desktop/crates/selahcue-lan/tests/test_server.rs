@@ -332,6 +332,7 @@ async fn operator_manages_remote_devices_end_to_end() {
             code,
             fingerprint,
             expires_in_secs,
+            uri: _,
         } => {
             assert_eq!(code.len(), 8, "8 hex chars");
             assert!(!fingerprint.is_empty());

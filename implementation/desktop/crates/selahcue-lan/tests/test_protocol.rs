@@ -1138,9 +1138,23 @@ fn remote_device_management_wire_is_stable() {
         code: "ab12cd34".into(),
         fingerprint: "A1 · B2".into(),
         expires_in_secs: 120,
+        uri: Some("selahcue://pair?host=192.168.1.5&port=8443&pin=abcd&code=ab12cd34".into()),
     };
     let cj = to_json(&code).unwrap();
     assert!(cj.contains(r#""event":"pairing_code""#), "{cj}");
     assert_eq!(from_json::<ServerMessage>(&cj).unwrap(), code, "{cj}");
+    // The `uri` is omitted from the wire when absent (older hosts stay forward-compatible).
+    let no_uri = ServerMessage::PairingCode {
+        code: "ab12cd34".into(),
+        fingerprint: "A1 · B2".into(),
+        expires_in_secs: 120,
+        uri: None,
+    };
+    let nj = to_json(&no_uri).unwrap();
+    assert!(
+        !nj.contains("uri"),
+        "absent invite must not serialize a uri field: {nj}"
+    );
+    assert_eq!(from_json::<ServerMessage>(&nj).unwrap(), no_uri, "{nj}");
     assert_eq!(VERSION, 2);
 }

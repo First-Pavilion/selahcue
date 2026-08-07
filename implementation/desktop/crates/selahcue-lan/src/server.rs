@@ -141,6 +141,11 @@ pub struct ControlServer {
     /// The host's TLS-cert SHA-256 fingerprint (canonical colon-separated hex) — the REAL host
     /// identity the operator verifies the phone pinned, shown with the pairing code (86ajxhuu3).
     cert_fingerprint: String,
+    /// The host's own reachable LAN endpoint `(host, port, pin_hex)` — `host` a LAN IP/DNS name,
+    /// `pin_hex` the RAW lowercase-hex cert pin (NOT the colon-separated [`Self::cert_fingerprint`]).
+    /// Set via [`ControlServer::with_pairing_endpoint`]; when present, `NewPairingCode` returns a
+    /// full [`protocol::PairingInvite`] URI so the operator can render a real, scannable QR.
+    pairing_endpoint: Option<(String, u16, String)>,
 }
 
 /// Increments the live-connection counter on creation and decrements it on drop —
@@ -196,7 +201,18 @@ impl ControlServer {
             pairing: PairingMode::Disabled,
             waiters: Arc::new(std::sync::Mutex::new(HashMap::new())),
             cert_fingerprint: format_fingerprint(&identity.pin.to_hex()),
+            pairing_endpoint: None,
         })
+    }
+
+    /// Provide the host's own reachable LAN endpoint so `NewPairingCode` can return a complete,
+    /// scannable `selahcue://pair?…` invite for the operator's QR. `host` is a LAN IP or DNS name,
+    /// `pin_hex` the RAW lowercase-hex cert pin (as [`SelfSigned::pin`]`.to_hex()` yields, and as the
+    /// mobile controller's `PairingInvite::parse_uri` expects — NOT the colon-separated fingerprint).
+    /// Without this the reply's `uri` is `None` and the operator shows the code without a QR.
+    pub fn with_pairing_endpoint(mut self, host: String, port: u16, pin_hex: String) -> Self {
+        self.pairing_endpoint = Some((host, port, pin_hex));
+        self
     }
 
     /// Enable operator-paced over-the-wire pairing (86ajxer8n): a `Pair` hello parks as a
@@ -656,10 +672,26 @@ impl ControlServer {
                 // Least-privilege default: a scanning device redeems as Viewer, then the operator
                 // approves/re-roles it. (The role-at-approval handshake is the Part B follow-on.)
                 reg.offer_pairing(code.clone(), Role::Viewer, now, ttl);
+                // Build the scannable invite from the host's own LAN endpoint — the SAME
+                // `selahcue://pair?…` format the native output window's QR uses and the mobile
+                // controller parses. `None` if no endpoint was configured (older/loopback host).
+                let uri = self
+                    .pairing_endpoint
+                    .as_ref()
+                    .and_then(|(host, port, pin_hex)| {
+                        protocol::PairingInvite {
+                            host: host.clone(),
+                            port: *port,
+                            pin_hex: pin_hex.clone(),
+                            code: code.clone(),
+                        }
+                        .to_uri()
+                    });
                 Some(ServerMessage::PairingCode {
                     code,
                     fingerprint,
                     expires_in_secs: ttl.as_secs(),
+                    uri,
                 })
             }
             _ => None,

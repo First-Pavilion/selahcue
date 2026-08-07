@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../../controllers/live_controller.dart';
 import '../../models/design_tokens.dart';
 import '../../models/protocol.dart';
+import '../../models/rbac.dart';
 import '../widgets/mobile_widgets.dart';
 
 class PlanTab extends StatelessWidget {
@@ -20,6 +21,15 @@ class PlanTab extends StatelessWidget {
     if (view == null) {
       return const Center(child: CircularProgressIndicator());
     }
+    // Plan is role-gated: staging needs Navigate; one-gesture go-live needs
+    // GoLive. A role with neither (Viewer) gets a read-only list.
+    final canStage = live.can(Capability.navigate);
+    final canGoLive = live.can(Capability.goLive);
+    final hint = !canStage
+        ? 'Read-only — your role can view the plan but not stage it.'
+        : canGoLive
+            ? 'Tap to stage in Preview · double-tap to send it live'
+            : 'Tap to stage in Preview';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -49,8 +59,9 @@ class PlanTab extends StatelessWidget {
                 borderRadius: BorderRadius.circular(8),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(8),
-                  onTap: () => live.act(cmdSelectItem(it.id)),
-                  onDoubleTap: () => live.selectAndGoLive(it.id),
+                  onTap: canStage ? () => live.act(cmdSelectItem(it.id)) : null,
+                  onDoubleTap:
+                      canGoLive ? () => live.selectAndGoLive(it.id) : null,
                   child: Container(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -94,10 +105,11 @@ class PlanTab extends StatelessWidget {
             },
           ),
         ),
-        const Padding(
-          padding: EdgeInsets.fromLTRB(16, 8, 16, 12),
-          child: Text('Tap to stage in Preview · double-tap to send it live',
-              style: TextStyle(fontSize: 11, color: DesignTokens.textMuted)),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          child: Text(hint,
+              style:
+                  const TextStyle(fontSize: 11, color: DesignTokens.textMuted)),
         ),
       ],
     );

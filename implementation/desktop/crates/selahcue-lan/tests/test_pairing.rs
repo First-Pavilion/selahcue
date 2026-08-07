@@ -529,9 +529,12 @@ async fn new_pairing_code_fingerprint_is_the_real_host_cert_pin() {
             code,
             fingerprint,
             expires_in_secs,
+            uri,
         } => {
             assert_eq!(code.len(), 8);
             assert_eq!(expires_in_secs, 120);
+            // This server was started without an endpoint, so no scannable invite is offered.
+            assert!(uri.is_none(), "no endpoint configured → no invite URI");
             assert_eq!(
                 fingerprint, expected,
                 "the pairing fingerprint must be the host TLS-cert SHA-256, not code-derived"
@@ -539,6 +542,61 @@ async fn new_pairing_code_fingerprint_is_the_real_host_cert_pin() {
             assert!(
                 !fingerprint.contains(&code.to_uppercase()),
                 "the fingerprint must not echo the pairing code"
+            );
+        }
+        other => panic!("expected PairingCode, got {other:?}"),
+    }
+    op.close().await.ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn new_pairing_code_returns_a_scannable_invite_from_the_endpoint() {
+    // A server that knows its own LAN endpoint returns a full `selahcue://pair?…` invite so the
+    // operator can render a REAL QR — the same payload the mobile controller's parser expects.
+    let identity = SelfSigned::generate(vec!["localhost".into()]).unwrap();
+    let pin = identity.pin;
+    let pin_hex = pin.to_hex();
+    let registry = Arc::new(AsyncMutex::new(SessionRegistry::new()));
+    {
+        let now = Instant::now();
+        let mut reg = registry.lock().await;
+        reg.offer_pairing("op-code", Role::Operator, now, Duration::from_secs(300));
+        reg.redeem(
+            "op-code",
+            DeviceId("operator".into()),
+            SessionToken::new("tok-op"),
+            now,
+        )
+        .unwrap();
+    }
+    let handler = Arc::new(|_role: Role, _cmd: &Command| Reply::Ack);
+    let server = Arc::new(
+        ControlServer::new(&identity, registry.clone(), handler)
+            .unwrap()
+            .with_pairing_requests()
+            .with_pairing_endpoint("192.168.7.20".into(), 55123, pin_hex.clone()),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = server.run(listener).await;
+    });
+
+    let mut op = operator(addr, pin).await;
+    match op.command(Command::NewPairingCode).await.unwrap() {
+        ServerMessage::PairingCode { code, uri, .. } => {
+            let uri = uri.expect("an endpoint-configured server must return an invite URI");
+            let parsed = PairingInvite::parse_uri(&uri)
+                .expect("the invite must be a valid, parseable selahcue://pair URI");
+            assert_eq!(parsed.host, "192.168.7.20");
+            assert_eq!(parsed.port, 55123);
+            assert_eq!(
+                parsed.pin_hex, pin_hex,
+                "the QR must carry the real host cert pin"
+            );
+            assert_eq!(
+                parsed.code, code,
+                "the QR must carry the freshly minted code"
             );
         }
         other => panic!("expected PairingCode, got {other:?}"),

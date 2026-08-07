@@ -696,17 +696,20 @@ impl RemoteOperator {
         .await
     }
 
-    /// Mint a fresh single-use pairing code + fingerprint for the "Pair a device" QR.
+    /// Mint a fresh single-use pairing code + fingerprint for the "Pair a device" QR. The fourth
+    /// element is the full `selahcue://pair?…` invite URI to encode as the scannable QR (`None`
+    /// when the host did not supply its LAN endpoint).
     pub async fn new_pairing_code(
         &mut self,
-    ) -> Result<(String, String, u64), selahcue_lan::TransportError> {
+    ) -> Result<(String, String, u64, Option<String>), selahcue_lan::TransportError> {
         use selahcue_lan::protocol::ServerMessage;
         match self.client.command(Command::NewPairingCode).await? {
             ServerMessage::PairingCode {
                 code,
                 fingerprint,
                 expires_in_secs,
-            } => Ok((code, fingerprint, expires_in_secs)),
+                uri,
+            } => Ok((code, fingerprint, expires_in_secs, uri)),
             other => Err(selahcue_lan::TransportError::Protocol(format!(
                 "expected pairing_code, got: {other:?}"
             ))),

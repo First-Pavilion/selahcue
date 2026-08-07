@@ -116,34 +116,35 @@
     loadSnapshot();
   }
 
-  // Decorative QR: a version-1-style module grid (three finder patterns + a code-seeded data field)
-  // so "New code" visibly changes it. NOT a scannable code — the real single-use pairing QR is
-  // emitted by the host output window; this mirrors it visually.
-  function hashStr(s) {
-    var h = 2166136261 >>> 0;
-    for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
-    return h >>> 0;
-  }
-  function drawQR(payload) {
+  // Paint the REAL, scannable pairing QR the host minted. `qr` is `{ side, modules }` — a row-major
+  // side×side grid of dark-module flags produced by the backend's tested encoder (the same one the
+  // native output window uses) over the `selahcue://pair?host=…&port=…&pin=…&code=…` invite. A quiet
+  // zone is added here. When the host supplies no invite (an older host, or one bound only to
+  // loopback with no LAN), we say so rather than draw a fake code that a phone can't scan.
+  function drawQR(qr) {
     var cv = document.getElementById("rc-qr");
     if (!cv || !cv.getContext) return;
     var ctx = cv.getContext("2d");
-    var W = cv.width, N = 25, m = W / N;
+    var W = cv.width;
     ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, W, W);
+    if (!qr || !qr.side || !qr.modules || qr.modules.length !== qr.side * qr.side) {
+      ctx.fillStyle = "#6b7280";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.font = "13px system-ui, -apple-system, sans-serif";
+      ctx.fillText("Scan the code shown on the", W / 2, W / 2 - 9);
+      ctx.fillText("output window to pair a device", W / 2, W / 2 + 9);
+      return;
+    }
+    var quiet = 4, n = qr.side + quiet * 2, m = W / n;
     ctx.fillStyle = "#0b0d12";
-    var seed = hashStr(payload);
-    function rnd() { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return (seed >>> 8) / 16777216; }
-    function finder(gx, gy) {
-      for (var y = 0; y < 7; y++) for (var x = 0; x < 7; x++) {
-        var on = (x === 0 || x === 6 || y === 0 || y === 6) || (x >= 2 && x <= 4 && y >= 2 && y <= 4);
-        if (on) ctx.fillRect((gx + x) * m, (gy + y) * m, m, m);
+    for (var y = 0; y < qr.side; y++) {
+      for (var x = 0; x < qr.side; x++) {
+        if (!qr.modules[y * qr.side + x]) continue;
+        var px = Math.floor((x + quiet) * m), py = Math.floor((y + quiet) * m);
+        // Overshoot to the next module's edge so anti-aliasing leaves no white seams between cells.
+        ctx.fillRect(px, py, Math.ceil((x + quiet + 1) * m) - px, Math.ceil((y + quiet + 1) * m) - py);
       }
     }
-    for (var y = 0; y < N; y++) for (var x = 0; x < N; x++) {
-      if ((x < 8 && y < 8) || (x >= N - 8 && y < 8) || (x < 8 && y >= N - 8)) continue; // finder zones
-      if (rnd() > 0.5) ctx.fillRect(x * m, y * m, m, m);
-    }
-    finder(0, 0); finder(N - 7, 0); finder(0, N - 7);
   }
 
   // Ask the host to mint a fresh single-use code + fingerprint.
@@ -153,8 +154,8 @@
         var code = (r && r.code) || "";
         var fp = (r && r.fingerprint) || code;
         var ttl = r && r.expires_in_secs ? r.expires_in_secs * 1000 : CODE_TTL;
-        state.code = { code: code, fp: fp, expiresAt: Date.now() + ttl };
-        drawQR("selahcue://pair?code=" + code + "&t=" + Date.now());
+        state.code = { code: code, fp: fp, uri: (r && r.uri) || null, expiresAt: Date.now() + ttl };
+        drawQR(r && r.qr);
         var fpEl = document.getElementById("rc-fp");
         if (fpEl) {
           // Show a readable prefix; the full host cert fingerprint is on hover. (The automatic

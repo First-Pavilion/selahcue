@@ -401,6 +401,13 @@ pub enum ServerMessage {
         code: String,
         fingerprint: String,
         expires_in_secs: u64,
+        /// The full `selahcue://pair?host=…&port=…&pin=…&code=…` invite the operator encodes as the
+        /// scannable QR — the SAME payload the native output window's QR carries and the mobile
+        /// controller's [`PairingInvite::parse_uri`] expects. `None` when the host cannot supply its
+        /// LAN endpoint (an older host, or one built without [`crate::ControlServer::with_pairing_endpoint`]);
+        /// the operator then shows the code without a fake QR rather than an unscannable one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uri: Option<String>,
     },
     /// A protocol-level or transport-level error not tied to a single request.
     Error { message: String },

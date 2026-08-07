@@ -165,17 +165,13 @@ impl Backend {
     async fn new_pairing_code(&self) -> Result<PairingCodeReply, String> {
         match self {
             Backend::Remote(m) => {
-                let (code, fingerprint, expires_in_secs) = m
+                let (code, fingerprint, expires_in_secs, uri) = m
                     .lock()
                     .await
                     .new_pairing_code()
                     .await
                     .map_err(|e| e.to_string())?;
-                Ok(PairingCodeReply {
-                    code,
-                    fingerprint,
-                    expires_in_secs,
-                })
+                Ok(PairingCodeReply::new(code, fingerprint, expires_in_secs, uri))
             }
             Backend::Local(_) => Err(NO_HOST.into()),
         }
@@ -688,12 +684,45 @@ struct RemoteDevicesReply {
     pending: Vec<selahcue_lan::protocol::RemotePendingView>,
 }
 
-/// Reply to `remote_new_code`: a fresh single-use pairing code + fingerprint for the QR.
+/// Reply to `remote_new_code`: a fresh single-use pairing code + fingerprint, plus the REAL
+/// scannable QR the webview paints (the `selahcue://pair?…` invite encoded with the same tested
+/// encoder the native output window uses).
 #[derive(serde::Serialize)]
 struct PairingCodeReply {
     code: String,
     fingerprint: String,
     expires_in_secs: u64,
+    /// The full `selahcue://pair?host=…&port=…&pin=…&code=…` invite (`None` if the host didn't
+    /// supply its LAN endpoint — an older host, or one bound only to loopback).
+    uri: Option<String>,
+    /// The invite encoded as a QR module grid for the webview to paint (`None` when there is no
+    /// `uri` to encode, or the invite is too long for a QR).
+    qr: Option<QrModules>,
+}
+
+/// A QR code as a row-major `side × side` grid of dark-module flags — what the webview paints.
+/// No quiet zone (the webview adds it). Produced by [`selahcue_present::qr_modules`].
+#[derive(serde::Serialize)]
+struct QrModules {
+    side: usize,
+    modules: Vec<bool>,
+}
+
+impl PairingCodeReply {
+    /// Assemble the reply from the wire tuple, encoding the invite URI (if any) into QR modules.
+    fn new(code: String, fingerprint: String, expires_in_secs: u64, uri: Option<String>) -> Self {
+        let qr = uri
+            .as_deref()
+            .and_then(selahcue_present::qr_modules)
+            .map(|(side, modules)| QrModules { side, modules });
+        PairingCodeReply {
+            code,
+            fingerprint,
+            expires_in_secs,
+            uri,
+            qr,
+        }
+    }
 }
 
 /// Shown when a device command is issued in stand-alone/demo mode (no host connected).
