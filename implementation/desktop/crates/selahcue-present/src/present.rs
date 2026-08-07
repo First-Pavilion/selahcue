@@ -288,12 +288,21 @@ impl Presenter {
     /// — the same precedence the physical `main` surface uses, minus main's own per-screen
     /// theme (each screen renders its own design). A blank live surface yields a safe
     /// black frame (matching the main output when idle). Pure: content ⟂ theme, so calling
-    /// it for N screens renders the SAME live item under N different themes at once.
+    /// it for N screens renders the SAME live item under N different themes at once. An authored
+    /// deck slide (Design 2.0) mirrors here too, rendered from its own background/elements — the
+    /// per-screen theme is only the fallback background and the layer mask does not apply.
     pub fn compose_screen_live(
         &self,
         screen_theme: Option<&Theme>,
         mask: LayerMask,
     ) -> FrameBuffer {
+        // An authored deck slide takes over Live and mirrors to EVERY screen (Design 2.0). Its own
+        // background overrides the theme; `screen_theme`/global is only the fallback. Layer masks do
+        // not apply — an authored slide's elements ARE the content, not theme-layer categories.
+        if let Some(slide) = self.live_authored.as_ref() {
+            let theme = screen_theme.or(self.live_theme.as_ref()).unwrap_or(&self.theme);
+            return raster::render(&compose_authored_slide(slide, theme, self.width, self.height));
+        }
         let Some(slide) = self.live_slide.as_ref() else {
             return raster::render(&Frame::new(self.width, self.height));
         };

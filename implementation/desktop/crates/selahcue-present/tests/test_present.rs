@@ -117,6 +117,43 @@ fn authored_live_is_tracked_and_cleared_by_a_later_go_live() {
 }
 
 #[test]
+fn secondary_screens_mirror_a_presented_authored_slide() {
+    let mut p = Presenter::new(320, 180, Theme::classic());
+    let mut slide = AuthoredSlide::new(SlideId(3));
+    let bg = Rgba::rgb(180, 40, 90);
+    slide.background = Some(Background::Solid(bg));
+    assert!(p.present_authored(&slide, &Theme::dark()));
+
+    // A secondary screen mirrors the SAME authored slide — not idle black.
+    let secondary = p.compose_screen_live(Some(&Theme::lower_third()), LayerMask::ALL);
+    assert!(
+        !is_black(&secondary),
+        "a secondary screen mirrors the presented authored slide (not idle black)"
+    );
+    assert_eq!(
+        secondary.pixel(160, 90).unwrap(),
+        bg,
+        "the secondary screen shows the authored slide's own background"
+    );
+    // compose_screen_live(None) still equals the physical main output.
+    assert_eq!(
+        p.compose_screen_live(None, LayerMask::ALL).bytes(),
+        p.live_output().bytes(),
+        "compose_screen_live(None) mirrors the physical main output for an authored slide too"
+    );
+}
+
+#[test]
+fn an_authored_slide_with_no_elements_mirrors_a_nonblank_background() {
+    let mut p = Presenter::new(320, 180, Theme::classic());
+    let mut slide = AuthoredSlide::new(SlideId(4));
+    slide.background = Some(Background::Solid(Rgba::rgb(10, 90, 200)));
+    assert!(p.present_authored(&slide, &Theme::dark()));
+    // Never-blank (NFR-024): zero elements still mirrors the background, never black.
+    assert!(!is_black(&p.compose_screen_live(Some(&Theme::classic()), LayerMask::ALL)));
+}
+
+#[test]
 fn go_live_with_nothing_staged_is_a_noop() {
     let mut p = presenter();
     assert!(!p.go_live());
