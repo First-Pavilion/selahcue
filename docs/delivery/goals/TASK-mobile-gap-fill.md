@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: Mobile gap-fill — scripture-detection approval + access-revoked screen + live transcript view + privacy link
 - Role: mobile-engineer
-- Status: DRAFT
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajxx4uv
 - Design ref: Figma 355 (Role home screens: Scripture-Op approval, transcript) · 357 (Enforcement: access-revoked)
@@ -81,13 +81,13 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | protocol parses detections/transcript/partial; approve/dismiss builders pinned | `flutter test test/models/protocol_test.dart` | PASS | test output | PENDING |
-| C-002 | yes | `SessionRevoked` thrown on AuthRejected; `_reconnect` sets `revoked` + clears creds, stops | `flutter test test/controllers/live_controller_revoked_test.dart` | PASS | test output | PENDING |
-| C-003 | yes | Access-removed screen renders on revoke with a re-pair action | `flutter test test/views/access_removed_test.dart` | PASS | test output | PENDING |
-| C-004 | yes | Scripture approval card shows detections + Approve/Reject send the right commands | `flutter test test/views/scripture_approval_test.dart` | PASS | test output | PENDING |
-| C-005 | yes | Live tab renders the read-only transcript (+ partial) when present | `flutter test test/views/live_transcript_test.dart` | PASS | test output | PENDING |
-| C-006 | yes | Privacy link present in Config/About ABOUT | `flutter test test/views/config_sheet_test.dart` | PASS | test output | PENDING |
-| C-007 | yes | Full gate green; no backend/wire change | `make mobile-test`; `wireVersion = 2` | analyze clean, tests PASS | CI output | PENDING |
+| C-001 | yes | protocol parses detections/transcript/partial; approve/dismiss builders pinned | `flutter test test/models/protocol_test.dart` | PASS | protocol_test 23 PASS | PASS |
+| C-002 | yes | `SessionRevoked` thrown on AuthRejected; `_reconnect` sets `revoked` + clears creds, stops | `flutter test test/controllers/live_controller_revoked_test.dart` | PASS | revoked_test 3/3 PASS | PASS |
+| C-003 | yes | Access-removed screen renders on revoke with a re-pair action | `flutter test test/views/access_removed_test.dart` | PASS | access_removed_test 2/2 PASS (incl. ControllerView revoke path) | PASS |
+| C-004 | yes | Scripture approval card shows detections + Approve/Reject send the right commands | `flutter test test/views/scripture_approval_test.dart` | PASS | scripture_approval_test 3/3 PASS | PASS |
+| C-005 | yes | Live tab renders the read-only transcript (+ partial) when present | `flutter test test/views/live_transcript_test.dart` | PASS | live_transcript_test 2/2 PASS | PASS |
+| C-006 | yes | Privacy link present in Config/About ABOUT | `flutter test test/views/config_sheet_test.dart` | PASS | config_sheet_test PASS | PASS |
+| C-007 | yes | Full gate green; no backend/wire change | `make mobile-test`; `wireVersion = 2` | analyze clean, tests PASS | `make mobile-test` 89/89 PASS; `wireVersion = 2`; commits mobile+docs only | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -103,13 +103,21 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 ### Iteration 1
 
-- Target criterion:
-- Hypothesis:
-- Change or investigation:
-- Verifier executed:
-- Result:
-- New evidence:
-- Decision: iterate | handoff | blocked | gate-review | complete
+- Target criterion: C-001…C-007 (the four serveable, designed gaps).
+- Hypothesis: the backend already ships `detections`/`transcript`/`partial_transcript` +
+  Approve/Dismiss commands + `AuthRejected` on revoke; the mobile just never consumed them, so all
+  four gaps are client-only.
+- Change or investigation: 6-task TDD — protocol models + approve/dismiss builders; `SessionRevoked`
+  + reconnect-stops-on-revoke (`revoked` flag, injected connect fn); Access-removed screen + re-pair;
+  scripture approval card; read-only transcript on Live tab; privacy link.
+- Verifier executed: per-task `flutter test <file>`; `make mobile-test`; `wireVersion` grep; per-commit
+  scope check.
+- Result: 89/89 tests PASS; `wireVersion = 2`; all story commits (90020f4…c537829) mobile+docs only.
+- New evidence: story commits G1–G6; filed tracking tickets 86ajxx4wf (stage msgs), 86ajxx4ww
+  (contested), 86ajxx4x8 (blackout-confirm/sync-gate).
+- Decision: gate-review — all automated criteria PASS; independent QA + device check
+  (trigger a detection → approve/reject; revoke a device → access-removed → re-pair; transcript
+  renders) still required before VERIFIED_COMPLETE.
 
 ## Risks and rollback
 
@@ -125,8 +133,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-mobile-gap-fill.md
-- Validator result:
-- Independent verification result:
-- Terminal state:
-- Remaining failed or blocked criteria:
-- ClickUp final evidence comment:
+- Validator result: PASS (7/7 mandatory) at authoring; re-run after status edits.
+- Independent verification result: PENDING — /qa-engineer (device) + /code-reviewer on the diff.
+- Terminal state: GATE_REVIEW.
+- Remaining failed or blocked criteria: none FAIL; all 7 PASS. Independent QA/device check outstanding.
+- ClickUp final evidence comment: posted on 86ajxx4uv; story moved to QA.
