@@ -6,12 +6,14 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../controllers/live_controller.dart';
 import '../models/design_tokens.dart';
 import '../models/discovery.dart' show pinFingerprint;
 import '../models/rbac.dart';
 import '../models/session.dart';
+import '../models/settings.dart';
 import '../models/tab_scope.dart';
 import '../models/stored_session.dart';
 import 'pairing_view.dart';
@@ -66,9 +68,11 @@ class _ControllerViewState extends State<ControllerView> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (sheetContext) => _AboutSheet(
+      isScrollControlled: true,
+      builder: (sheetContext) => ConfigSheet(
         stored: widget.stored,
         live: _live,
+        settings: SettingsScope.of(context),
         onDisconnect: () {
           Navigator.of(sheetContext).pop(); // close the sheet first
           _unpair();
@@ -267,14 +271,20 @@ class _ControllerViewState extends State<ControllerView> {
 /// certificate fingerprint (for trust verification), live connection status,
 /// and Disconnect (un-pair). Presented as a modal sheet from the top bar so it
 /// never becomes a second navigation surface alongside the bottom tabs.
-class _AboutSheet extends StatelessWidget {
+/// The Config / About session sheet (Figma 363-124), opened from the top-bar ⓘ:
+/// CONNECTION (status/host/role/fingerprint + disconnect), PREFERENCES (keep
+/// awake / haptics / reduce motion), and ABOUT (version / licenses / help).
+class ConfigSheet extends StatelessWidget {
   final StoredSession stored;
   final LiveController live;
+  final SettingsController settings;
   final VoidCallback onDisconnect;
 
-  const _AboutSheet({
+  const ConfigSheet({
+    super.key,
     required this.stored,
     required this.live,
+    required this.settings,
     required this.onDisconnect,
   });
 
@@ -282,7 +292,7 @@ class _AboutSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     return SafeArea(
       top: false,
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -346,7 +356,12 @@ class _AboutSheet extends StatelessWidget {
             _row('Host', '${stored.host}:${stored.port}'),
             _row('Role', live.role.label),
             _row('Fingerprint', pinFingerprint(stored.pinHex)),
-            const SizedBox(height: 16),
+            const Padding(
+              padding: EdgeInsets.only(top: 6, bottom: 12),
+              child: Text('Your role is assigned & managed on the desktop.',
+                  style:
+                      TextStyle(fontSize: 12, color: DesignTokens.textMuted)),
+            ),
             OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
                 foregroundColor: DesignTokens.liveInk,
@@ -357,8 +372,104 @@ class _AboutSheet extends StatelessWidget {
               label: const Text('Disconnect this device'),
               onPressed: onDisconnect,
             ),
+            const Divider(color: DesignTokens.border, height: 28),
+            _sectionLabel('PREFERENCES'),
+            // Rebuilds with the controller so the switches reflect the persisted
+            // state and each toggle applies immediately (keep-awake → wakelock).
+            ListenableBuilder(
+              listenable: settings,
+              builder: (context, _) => Column(
+                children: [
+                  _toggle('Keep screen awake', settings.keepAwake,
+                      settings.setKeepAwake),
+                  _toggle('Haptic feedback', settings.haptics,
+                      settings.setHaptics),
+                  _toggle('Reduce motion', settings.reduceMotion,
+                      settings.setReduceMotion),
+                ],
+              ),
+            ),
+            const Divider(color: DesignTokens.border, height: 28),
+            _sectionLabel('ABOUT'),
+            FutureBuilder<PackageInfo>(
+              future: PackageInfo.fromPlatform(),
+              builder: (context, snap) => _row(
+                  'Version',
+                  snap.hasData
+                      ? '${snap.data!.version} (${snap.data!.buildNumber})'
+                      : '…'),
+            ),
+            _linkRow('Open-source licenses',
+                () => showLicensePage(
+                      context: context,
+                      applicationName: 'SelahCue Controller',
+                    )),
+            _linkRow('Help & support', () => _showHelp(context)),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _sectionLabel(String text) => Padding(
+        padding: const EdgeInsets.only(bottom: 4),
+        child: Text(text,
+            style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.7,
+                color: DesignTokens.textMuted)),
+      );
+
+  Widget _toggle(
+          String label, bool value, Future<void> Function(bool) onChanged) =>
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(label,
+                  style: const TextStyle(
+                      fontSize: 14, color: DesignTokens.textPrimary)),
+            ),
+            Switch(value: value, onChanged: (v) => onChanged(v)),
+          ],
+        ),
+      );
+
+  Widget _linkRow(String label, VoidCallback onTap) => InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(label,
+                    style: const TextStyle(
+                        fontSize: 14, color: DesignTokens.textPrimary)),
+              ),
+              const Icon(Icons.chevron_right,
+                  size: 18, color: DesignTokens.textMuted),
+            ],
+          ),
+        ),
+      );
+
+  void _showHelp(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: DesignTokens.bgPanel,
+        title: const Text('Help & support'),
+        content: const Text(
+            'Pairing, roles, and outputs are managed on the SelahCue desktop. '
+            'Ask your operator or administrator for help with access.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
       ),
     );
   }

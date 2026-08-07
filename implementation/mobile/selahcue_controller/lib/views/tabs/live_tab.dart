@@ -8,6 +8,7 @@ import '../../controllers/live_controller.dart';
 import '../../models/design_tokens.dart';
 import '../../models/protocol.dart';
 import '../../models/rbac.dart';
+import '../../models/settings.dart';
 import '../widgets/mobile_widgets.dart';
 
 class LiveTab extends StatelessWidget {
@@ -78,7 +79,10 @@ class LiveTab extends StatelessWidget {
                       borderRadius: BorderRadius.circular(10),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(10),
-                        onTap: () => live.act(cmdGoLive()),
+                        onTap: () {
+                          SettingsScope.maybeOf(context)?.haptic();
+                          live.act(cmdGoLive());
+                        },
                         child: Container(
                           height: 54,
                           alignment: Alignment.center,

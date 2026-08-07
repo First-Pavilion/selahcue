@@ -10,6 +10,7 @@ import '../../controllers/live_controller.dart';
 import '../../models/design_tokens.dart';
 import '../../models/protocol.dart';
 import '../../models/rbac.dart';
+import '../../models/settings.dart';
 
 /// A LIVE / PREVIEW badge — colour + text label (never colour alone, WCAG 1.4.1).
 class StatusBadge extends StatelessWidget {
@@ -169,7 +170,10 @@ class EmergencyStrip extends StatelessWidget {
                 fill: blackout ? DesignTokens.liveFill : DesignTokens.bgBase,
                 border: blackout ? DesignTokens.liveInk : DesignTokens.border,
                 textColor: blackout ? Colors.white : DesignTokens.textPrimary,
-                onTap: () => live.act(cmdBlackout(!blackout)),
+                onTap: () {
+                  SettingsScope.maybeOf(context)?.haptic();
+                  live.act(cmdBlackout(!blackout));
+                },
               ),
             ),
           if (canBlackout && canClear) const SizedBox(width: 8),
@@ -181,7 +185,10 @@ class EmergencyStrip extends StatelessWidget {
                 fill: DesignTokens.bgBase,
                 border: DesignTokens.liveInk,
                 textColor: DesignTokens.liveInk,
-                onTap: () => live.act(cmdClear()),
+                onTap: () {
+                  SettingsScope.maybeOf(context)?.haptic();
+                  live.act(cmdClear());
+                },
               ),
             ),
         ],
