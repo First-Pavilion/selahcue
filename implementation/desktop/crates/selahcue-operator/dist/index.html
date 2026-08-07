@@ -778,6 +778,33 @@
           </div>
         </div>
       </div>
+      <!-- SLIDE GRID (browse/present mode, Design 2.0): thumbnails of the open deck; single-click
+           selects (safe), double-click / Enter goes live, the ◀ ▶ transport + arrows advance live.
+           Native previews via render_deck_slide. Its own aria-live region (the editor's #pm-live-region
+           is inside .pm-body, hidden in this mode). -->
+      <section id="pm-grid" class="pm-grid" hidden aria-label="Slides">
+        <div class="pm-grid-top">
+          <button id="pm-grid-back" class="pm-lib-back" type="button">‹ Presentations</button>
+          <span class="pm-grid-title"><span id="pm-grid-name">Presentation</span>
+            <span id="pm-grid-count" class="pm-plan-count">· — slides</span></span>
+          <span class="pm-grid-spacer"></span>
+          <span id="pm-grid-badge" class="pm-grid-badge" hidden></span>
+          <button id="pm-grid-edit" class="pm-btn-primary" type="button">Edit ▸</button>
+        </div>
+        <div id="pm-grid-tiles" class="pm-grid-tiles" role="grid" aria-label="Slides"
+          aria-describedby="pm-grid-hint"></div>
+        <p id="pm-grid-hint" class="pm-grid-hint">Double-click a slide to present it live.</p>
+        <div id="pm-grid-empty" class="pm-grid-empty" hidden>
+          <div class="pm-grid-empty-title">This presentation has no slides yet</div>
+          <button id="pm-grid-empty-edit" class="pm-btn-primary" type="button">Edit ▸ to add slides</button>
+        </div>
+        <div id="pm-grid-live-region" class="sr-only" aria-live="polite"></div>
+        <div id="pm-transport" class="pm-transport" role="group" aria-label="Live transport" hidden>
+          <button id="pm-prev" class="pm-tp-btn" type="button" aria-label="Previous slide">◀ Previous</button>
+          <span id="pm-tp-live" class="pm-tp-live" aria-live="polite">● LIVE — slide — / —</span>
+          <button id="pm-next" class="pm-tp-btn" type="button" aria-label="Next slide">Next ▶</button>
+        </div>
+      </section>
       <div class="pm-body">
         <!-- SLIDES rail -->
         <aside class="pm-slides" aria-label="Slides">

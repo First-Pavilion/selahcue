@@ -4385,7 +4385,7 @@
       }
 
       // Referenced by showSurface + the command palette (via typeof guards) — keep as bare names.
-      function pmActivate() { pmHideLibrary(); pAct(() => invoke("deck_view"), "load the deck"); pmLoadFonts(); }
+      function pmActivate() { pmSetMode("library"); pmLibLoad(); pmLoadFonts(); }
 
       // === Presentations Library (view mode of the Presentation surface) ==========================
       // A text-input modal (role=dialog) for New / Rename — reuses the confirm modal chrome + trap.
@@ -4420,17 +4420,24 @@
 
       let pmLibDecks = [], pmLibOpenId = null, pmLibPersistent = true, pmLibQuery = "", pmLibSort = "name", pmLibMenuCleanup = null;
       const pmLibBody = () => document.querySelector("#surface-presentation .pm-body");
+      // Presentation surface has three modes (Design 2.0 browse/present/edit): the Library list, the
+      // slide GRID, and the authoring EDITOR (.pm-body). pmSetMode toggles which one is visible.
+      let pmMode = "library";
+      function pmSetMode(mode) {
+        pmMode = mode;
+        const lib = pmEl("pm-library"); if (lib) lib.hidden = mode !== "library";
+        const grid = pmEl("pm-grid"); if (grid) grid.hidden = mode !== "grid";
+        const b = pmLibBody(); if (b) b.style.display = mode === "editor" ? "" : "none";
+      }
       function pmShowLibrary() {
-        pmEl("pm-library").hidden = false;
-        const b = pmLibBody(); if (b) b.style.display = "none";
+        pmSetMode("library");
         pmLibLoad();
         const q = pmEl("pm-lib-q"); if (q) q.focus();
       }
       function pmHideLibrary() {
         pmLibCloseMenu();
         const wasOpen = pmEl("pm-library") && !pmEl("pm-library").hidden;
-        const lib = pmEl("pm-library"); if (lib) lib.hidden = true;
-        const b = pmLibBody(); if (b) b.style.display = "";
+        pmSetMode("editor");
         // Restore focus to the deck-switcher after the view-swap (WCAG 2.4.3) — the card / menu-item /
         // button that triggered the swap is now hidden, so focus would otherwise fall to <body>.
         if (wasOpen) { const ds = pmEl("pm-deckswitch"); if (ds) ds.focus(); }
@@ -4549,9 +4556,99 @@
         });
       }
       async function pmLibOpen(id) {
-        try { const dv = await invoke("deck_open", { id: id }); pmDv = dv; renderPresentation(dv); pmHideLibrary(); }
+        try { const dv = await invoke("deck_open", { id: id }); pmDv = dv; pmSetMode("grid"); pmRenderGrid(dv); }
         catch (e) { console.error(e); pmShowError("open the presentation"); }
       }
+
+      // --- Slide GRID (Design 2.0 browse/present mode) ---------------------------------------------
+      const PM_THUMB_MAX = 60;             // bounded thumbnail cache (no unbounded growth)
+      const pmThumbCache = new Map();      // slideId -> dataURL
+      function pmThumbPut(id, url) {
+        pmThumbCache.set(id, url);
+        while (pmThumbCache.size > PM_THUMB_MAX) pmThumbCache.delete(pmThumbCache.keys().next().value);
+      }
+      async function pmThumb(id, cv) {
+        if (!cv) return;
+        if (pmThumbCache.has(id)) {
+          const im = new Image();
+          im.onload = () => { try { cv.getContext("2d").drawImage(im, 0, 0, cv.width, cv.height); } catch (e) {} };
+          im.src = pmThumbCache.get(id);
+          return;
+        }
+        try {
+          const r = await invoke("render_deck_slide", { id: id, maxW: 320, maxH: 180 });
+          if (r && r.available && r.frame && blitFrame(cv, r.frame)) pmThumbPut(id, cv.toDataURL());
+        } catch (e) {
+          const t = cv.parentElement; if (t) { t.classList.add("pm-tile-fail"); const s = document.createElement("span"); s.className = "pm-tile-failmsg"; s.textContent = "⚠ Can't preview"; t.appendChild(s); }
+        }
+      }
+      let pmGridCursor = null;             // selected slide id (safe — never touches live)
+      function pmGridTiles() { const g = pmEl("pm-grid-tiles"); return g ? Array.prototype.slice.call(g.querySelectorAll(".pm-tile")) : []; }
+      function pmGridSelect(id, focus) {
+        if (id == null) return;
+        pmGridCursor = id;
+        pmGridTiles().forEach((t) => {
+          const on = Number(t.dataset.id) === id;
+          t.classList.toggle("sel", on);
+          t.tabIndex = on ? 0 : -1;
+          if (on && focus) t.focus();
+        });
+      }
+      async function pmGridGoLive(id) {
+        if (id == null) return;
+        // deck_go_live presents the HOST-selected slide, so always select the target first (the
+        // client cursor is not the host's selection). Two round-trips; the ◀▶ transport uses the
+        // atomic deck_go_live_delta instead (later slice).
+        await pAct(() => invoke("deck_select_slide", { id: id }), "select the slide");
+        pmGridCursor = id;
+        await pAct(() => invoke("deck_go_live"), "present the slide");
+        pmGridSyncLive(); // ring reflects the deck's live slide (host-truth upgrade in a later slice)
+      }
+      function pmGridSyncLive() {
+        const liveId = (pmDv && pmDv.live != null) ? pmDv.live : null;
+        pmGridTiles().forEach((t) => {
+          const on = Number(t.dataset.id) === liveId;
+          t.classList.toggle("live", on);
+          let lbl = t.querySelector(".pm-tile-live");
+          if (on && !lbl) { lbl = document.createElement("span"); lbl.className = "pm-tile-live"; lbl.textContent = "● LIVE"; t.appendChild(lbl); }
+          if (!on && lbl) lbl.remove();
+        });
+      }
+      function pmRenderGrid(dv) {
+        pmDv = dv;
+        const nm = pmEl("pm-grid-name"); if (nm) nm.textContent = dv.name || "Presentation";
+        const ct = pmEl("pm-grid-count"); if (ct) ct.textContent = "· " + (dv.count || 0) + " slides";
+        const tiles = pmEl("pm-grid-tiles"); if (!tiles) return;
+        tiles.innerHTML = "";
+        const slides = dv.slides || [];
+        const empty = slides.length === 0;
+        const emptyBox = pmEl("pm-grid-empty"); if (emptyBox) emptyBox.hidden = !empty;
+        tiles.hidden = empty;
+        const io = ("IntersectionObserver" in window)
+          ? new IntersectionObserver((es) => { es.forEach((e) => { if (e.isIntersecting) { io.unobserve(e.target); pmThumb(Number(e.target.dataset.id), e.target.querySelector("canvas")); } }); })
+          : null;
+        slides.forEach((s, i) => {
+          const tile = document.createElement("div"); tile.className = "pm-tile"; tile.dataset.id = String(s.id);
+          tile.setAttribute("role", "gridcell"); tile.tabIndex = i === 0 ? 0 : -1;
+          tile.setAttribute("aria-label", "Slide " + (i + 1) + (s.lines && s.lines[0] ? ": " + s.lines[0] : ""));
+          const cv = document.createElement("canvas"); cv.className = "pm-tile-cv"; cv.width = 320; cv.height = 180; tile.appendChild(cv);
+          const n = document.createElement("span"); n.className = "pm-tile-n"; n.textContent = String(i + 1); tile.appendChild(n);
+          const id = s.id;
+          tile.onclick = () => pmGridSelect(id, false);
+          tile.ondblclick = () => pmGridGoLive(id);
+          tiles.appendChild(tile);
+          // Eager-render the initial batch (first fold); lazy-load the rest via the observer. This
+          // keeps visible thumbnails immediate (and headless-testable) while staying bounded.
+          if (io && i >= 12) io.observe(tile); else pmThumb(id, cv);
+        });
+        pmGridSelect(dv.selected != null ? dv.selected : (slides[0] && slides[0].id), false);
+        pmGridSyncLive();
+        // Static grid controls (idempotent wiring).
+        const back = pmEl("pm-grid-back"); if (back) back.onclick = () => { pmSetMode("library"); pmLibLoad(); };
+        const edit = pmEl("pm-grid-edit"); if (edit) edit.onclick = () => { pmSetMode("editor"); renderPresentation(pmDv); };
+        const eEdit = pmEl("pm-grid-empty-edit"); if (eEdit) eEdit.onclick = () => { pmSetMode("editor"); renderPresentation(pmDv); };
+      }
+
       function pmLibRename(id, current) {
         pmPrompt({
           title: "Rename presentation", label: "Name", value: current || "", confirmLabel: "Rename",

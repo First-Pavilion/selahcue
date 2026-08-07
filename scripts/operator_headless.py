@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 319
+EXPECTED_MIN_CHECKS = 342
 
 
 def find_chrome():
@@ -1170,6 +1170,36 @@ DRIVER = r"""
       ok(pmNav && pmNav.dataset.nodigit, "PM: the Presentation item is data-nodigit (keeps the ⌘1–6 map intact)");
       pmNav.click();
       ok(el("surface-presentation").classList.contains("active"), "PM: clicking the nav item activates #surface-presentation");
+      // --- Track B: browse/present/edit flow (story 86ajxeq17) ---
+      // Nav lands on the LIBRARY (not the editor); grid + editor are hidden.
+      ok(!el("pm-library").hidden && getComputedStyle(el("pm-library")).display !== "none", "PM/B: presentation nav lands on the Library (visible)");
+      ok(el("pm-grid").hidden, "PM/B: the slide grid is hidden until a presentation is opened");
+      ok(getComputedStyle(document.querySelector("#surface-presentation .pm-body")).display === "none", "PM/B: the editor body is hidden on the Library");
+      // Open a presentation card → the slide GRID.
+      await waitFor(function(){ return el("pm-lib-grid").querySelector(".pm-lib-open"); });
+      el("pm-lib-grid").querySelector(".pm-lib-open").click();
+      await waitFor(function(){ return !el("pm-grid").hidden && el("pm-grid-tiles").querySelectorAll(".pm-tile").length > 0; });
+      ok(!el("pm-grid").hidden, "PM/B: opening a presentation shows the slide GRID");
+      ok(el("pm-library").hidden, "PM/B: the Library is hidden in grid mode");
+      var pmTiles = el("pm-grid-tiles").querySelectorAll(".pm-tile");
+      ok(pmTiles.length === 2, "PM/B: the grid renders one tile per slide (" + pmTiles.length + ")");
+      ok(window.__calls.some(function(c){ return c.cmd === "render_deck_slide"; }), "PM/B: grid thumbnails compose via render_deck_slide");
+      // Single-click SELECTS (safe — no go-live).
+      var glBeforeSel = window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length;
+      pmTiles[0].dispatchEvent(new MouseEvent("click", {bubbles:true}));
+      ok(pmTiles[0].classList.contains("sel"), "PM/B: single-click selects a slide (safe cursor ring)");
+      ok(!pmTiles[0].classList.contains("live"), "PM/B: single-click does NOT go live");
+      ok(window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length === glBeforeSel, "PM/B: single-click fires no deck_go_live");
+      // Double-click PRESENTS live → the red LIVE ring on that tile. (Slide 2 keeps the host
+      // selection at 2 so the editor checks below still read 'Slide 2 / 2'.)
+      pmTiles[1].dispatchEvent(new MouseEvent("dblclick", {bubbles:true}));
+      await waitFor(function(){ return el("pm-grid-tiles").querySelector(".pm-tile.live"); });
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_go_live"; }), "PM/B: double-click presents the slide live (deck_go_live)");
+      ok(el("pm-grid-tiles").querySelector(".pm-tile.live"), "PM/B: the live slide shows the red LIVE ring");
+      // Edit ▸ → the authoring editor (so the existing editor checks below run).
+      el("pm-grid-edit").click();
+      ok(getComputedStyle(document.querySelector("#surface-presentation .pm-body")).display !== "none", "PM/B: Edit ▸ opens the editor");
+      ok(el("pm-grid").hidden, "PM/B: the grid is hidden in editor mode");
       // The surface loads its DeckView + composites the slide canvas (native preview, has-render).
       await waitFor(function(){ return el("pm-canvas").classList.contains("has-render"); });
       ok(el("pm-canvas").classList.contains("has-render"), "PM: the slide canvas shows a native composited preview (render_deck_slide → blitFrame)");
