@@ -16,6 +16,16 @@ class LiveController extends ChangeNotifier {
   ControllerSession _session;
   final StoredSession stored;
 
+  /// How to open a fresh authenticated session on reconnect. Injected so the
+  /// reconnect path is unit-testable without a real socket; defaults to the
+  /// production `SelahSession.connect`.
+  final Future<SelahSession> Function({
+    required String host,
+    required int port,
+    required String pinHex,
+    required Credentials creds,
+  }) _connect;
+
   OperatorStateView? _view;
   // Two independent notices with different lifetimes: a transient connection
   // status (set/cleared by reconnect+refresh) and a *sticky* command denial that
@@ -27,9 +37,19 @@ class LiveController extends ChangeNotifier {
   bool _reconnecting = false;
   bool _refreshing = false;
   bool _disposed = false;
+  bool _revoked = false;
   Timer? _poll;
 
-  LiveController({required this._session, required this.stored}) {
+  LiveController({
+    required this._session,
+    required this.stored,
+    Future<SelahSession> Function({
+      required String host,
+      required int port,
+      required String pinHex,
+      required Credentials creds,
+    })? connect,
+  }) : _connect = connect ?? SelahSession.connect {
     _poll = Timer.periodic(const Duration(seconds: 1), (_) => refresh());
     refresh();
   }
@@ -43,6 +63,10 @@ class LiveController extends ChangeNotifier {
       _reconnecting ? (_statusError ?? _denial) : (_denial ?? _statusError);
   bool get reconnecting => _reconnecting;
   bool get blackout => _view?.blackout ?? false;
+
+  /// The device's credentials were revoked/unpaired by an admin — the app shows
+  /// the "Access removed" screen and offers to re-pair. Terminal for this session.
+  bool get revoked => _revoked;
 
   /// The role the host granted this device. Reads through the CURRENT session,
   /// so a reconnect that re-roles the device is reflected once it lands.
@@ -65,7 +89,7 @@ class LiveController extends ChangeNotifier {
   /// Pull the host-authoritative operator view. Skipped while a previous poll is
   /// still in flight, so a slow link can never build an unbounded command backlog.
   Future<void> refresh() async {
-    if (_reconnecting || _disposed || _refreshing) return;
+    if (_reconnecting || _disposed || _refreshing || _revoked) return;
     _refreshing = true;
     try {
       final view = await _session.operatorState();
@@ -128,7 +152,7 @@ class LiveController extends ChangeNotifier {
 
   /// Send one command, surface a denial as a message, then re-render fresh state.
   Future<void> act(Map<String, dynamic> cmd) async {
-    if (_disposed) return;
+    if (_disposed || _revoked) return;
     try {
       final reply = await _session.command(cmd);
       if (reply is Denied) {
@@ -161,7 +185,7 @@ class LiveController extends ChangeNotifier {
     }
     while (!_disposed) {
       try {
-        final fresh = await SelahSession.connect(
+        final fresh = await _connect(
           host: stored.host,
           port: stored.port,
           pinHex: stored.pinHex,
@@ -174,6 +198,20 @@ class LiveController extends ChangeNotifier {
         _session = fresh;
         _reconnecting = false;
         _statusError = null;
+        _notify();
+        return;
+      } on SessionRevoked {
+        // An admin unpaired/revoked this device — retrying can never succeed.
+        // Stop, drop the dead credentials, and surface the revoked state so the
+        // UI shows "Access removed → pair again". The desktop is unaffected.
+        _revoked = true;
+        _reconnecting = false;
+        _poll?.cancel();
+        try {
+          await StoredSession.clear();
+        } on Object {
+          // best-effort — the revoked state is what matters
+        }
         _notify();
         return;
       } on SessionException {

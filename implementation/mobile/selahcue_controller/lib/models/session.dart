@@ -31,6 +31,14 @@ class SessionException implements Exception {
   String toString() => message;
 }
 
+/// The host **rejected our stored credentials** (auth) — the device was unpaired
+/// or revoked by an admin, so retrying is pointless. A subtype of
+/// [SessionException] so existing catches still handle it, while callers that
+/// want to STOP reconnecting (and prompt a re-pair) can catch it specifically.
+class SessionRevoked extends SessionException {
+  const SessionRevoked(super.message);
+}
+
 /// Credentials issued at pairing time (store securely; reused on reconnect).
 class Credentials {
   final String deviceId;
@@ -133,7 +141,9 @@ class SelahSession implements ControllerSession {
         case AuthGranted(:final role):
           return SelahSession._(ws, incoming, role);
         case AuthRejected(:final reason):
-          throw SessionException('authentication rejected: $reason');
+          // Credentials no longer valid (revoked/unpaired) — distinct from a
+          // transient network failure so the controller stops reconnecting.
+          throw SessionRevoked('authentication rejected: $reason');
       }
     } catch (e) {
       // Never leak the socket on a failed handshake (timeout/reject/malformed).
