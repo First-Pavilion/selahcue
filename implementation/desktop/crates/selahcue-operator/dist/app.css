@@ -2584,7 +2584,13 @@
         color: var(--muted); font: inherit; font-weight: 600; font-size: 13px; cursor: pointer; }
       .seg-btn.active { background: var(--accent); color: #fff; }
       .seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      /* Each sub-tab lays its rows out as a flex column so they get even vertical rhythm
+         (the timer content had no gap mechanism and rendered cramped). The Timer panel uses a
+         uniform gap; the Stage panel carries its own section spacing. `[hidden]` still wins
+         (more specific than the base `.stab`), so the inactive sub-tab stays hidden. */
+      .stab { display: flex; flex-direction: column; }
       .stab[hidden] { display: none; }
+      #stab-timer { gap: 12px; }
       .stage-sec-label { font-size: 11px; font-weight: 700; letter-spacing: 1px;
         color: var(--muted); margin: 14px 0 8px; }
       .stage-themes { display: flex; flex-direction: column; gap: 8px; }
