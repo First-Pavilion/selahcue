@@ -19,7 +19,7 @@
 
 use selahcue_app::{LiveController, OperatorShell, OperatorView, RemoteOperator};
 use selahcue_core::plan::{ItemKind, ServicePlan};
-use selahcue_lan::protocol::ScaleFit;
+use selahcue_lan::protocol::{ContentLinkView, ScaleFit};
 use selahcue_lan::CertPin;
 use selahcue_present::{FrameBuffer, Theme};
 use std::net::SocketAddr;
@@ -246,6 +246,21 @@ impl Backend {
                 .await
                 .map_err(|e| e.to_string()),
             Backend::Local(s) => Ok(s.set_item_theme(item_id, theme)),
+        }
+    }
+    async fn set_item_content(
+        &self,
+        item_id: u64,
+        link: Option<ContentLinkView>,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_item_content(item_id, link)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_item_content(item_id, link)),
         }
     }
     async fn save_theme(&self, name: String, theme_json: String) -> Result<OperatorView, String> {
@@ -880,6 +895,62 @@ fn stt_ready() -> SttReadyReply {
     }
 }
 
+/// Reply to `audio_input`: the default microphone the on-device STT would capture from, for the
+/// Pre-service Check AUDIO section. Queried WITHOUT opening a capture stream. Live signal levels
+/// need a running capture (the `stt://level` event while listening), so this reports device
+/// presence only — never a fabricated level.
+#[derive(serde::Serialize, Default)]
+struct AudioInputReply {
+    /// An input device is present (and STT/capture is compiled into this build).
+    available: bool,
+    /// `"ok"` | `"no_device"` | `"not_in_build"`.
+    state: String,
+    /// Device name (empty when no device / not in this build).
+    name: String,
+    channels: Option<u16>,
+    detail: String,
+}
+
+#[cfg(feature = "stt")]
+#[tauri::command]
+fn audio_input() -> AudioInputReply {
+    match selahcue_stt::audio::default_input_info() {
+        Some(info) => {
+            let ch = info
+                .channels
+                .map(|c| format!(" · {c} ch"))
+                .unwrap_or_default();
+            AudioInputReply {
+                available: true,
+                state: "ok".into(),
+                detail: format!("{}{}", info.name, ch),
+                name: info.name,
+                channels: info.channels,
+            }
+        }
+        None => AudioInputReply {
+            available: false,
+            state: "no_device".into(),
+            name: String::new(),
+            channels: None,
+            detail: "No microphone / input device detected".into(),
+        },
+    }
+}
+
+/// STT/capture is not compiled into this build — report an honest "not in this build".
+#[cfg(not(feature = "stt"))]
+#[tauri::command]
+fn audio_input() -> AudioInputReply {
+    AudioInputReply {
+        available: false,
+        state: "not_in_build".into(),
+        name: String::new(),
+        channels: None,
+        detail: "Audio input check is not enabled in this build".into(),
+    }
+}
+
 #[tauri::command]
 async fn view(state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.view().await
@@ -918,6 +989,14 @@ async fn set_item_theme(
     state: State<'_, AppState>,
 ) -> Result<OperatorView, String> {
     state.backend.set_item_theme(item_id, theme).await
+}
+#[tauri::command]
+async fn set_item_content(
+    item_id: u64,
+    link: Option<ContentLinkView>,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_item_content(item_id, link).await
 }
 #[tauri::command]
 async fn save_theme(
@@ -1935,6 +2014,7 @@ fn main() {
             host_connected,
             disk_free,
             stt_ready,
+            audio_input,
             view,
             next,
             previous,
@@ -1965,6 +2045,7 @@ fn main() {
             set_theme,
             set_custom_theme,
             set_item_theme,
+            set_item_content,
             save_theme,
             delete_theme,
             set_screen_theme,

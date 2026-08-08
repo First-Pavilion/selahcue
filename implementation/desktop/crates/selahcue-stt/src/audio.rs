@@ -154,7 +154,7 @@ pub fn frame_peak(samples: &[f32]) -> f32 {
 }
 
 #[cfg(feature = "capture")]
-pub use cpal_source::CpalSource;
+pub use cpal_source::{default_input_info, AudioDeviceInfo, CpalSource};
 
 #[cfg(feature = "capture")]
 mod cpal_source {
@@ -166,6 +166,28 @@ mod cpal_source {
     use std::sync::{Arc, Mutex};
 
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+    /// The default input device's identity for the Pre-service Check AUDIO section — queried
+    /// WITHOUT opening a capture stream, so it has no audio side effect and is safe to poll.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct AudioDeviceInfo {
+        /// Human-readable device name (as the OS reports it).
+        pub name: String,
+        /// Channel count of the device's default input config, if readable.
+        pub channels: Option<u16>,
+    }
+
+    /// The default input device's name + channels, or `None` when there is no default input
+    /// device. STREAM-FREE: it selects the default device and reads its config but never builds or
+    /// plays a stream — a pre-service readiness probe can call it without capturing any audio.
+    /// (Live signal levels DO need a running stream; those come from the `stt://level` event while
+    /// listening, not from here.)
+    pub fn default_input_info() -> Option<AudioDeviceInfo> {
+        let device = cpal::default_host().default_input_device()?;
+        let name = device.name().ok()?;
+        let channels = device.default_input_config().ok().map(|c| c.channels());
+        Some(AudioDeviceInfo { name, channels })
+    }
 
     /// Live capture from the default input device. The cpal callback pushes samples into a
     /// shared [`PcmRing`] (bounded — a stalled consumer drops oldest, never grows); the

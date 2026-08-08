@@ -25,7 +25,7 @@
   // Last-fetched host data + run bookkeeping. `hostConnected` = the operator is driving a REAL
   // output window (not the stand-alone demo) — the gate that stops the surface reporting readiness
   // (or "network up") when there is no audience output at all.
-  var data = { view: null, remote: null, deck: null, disk: null, stt: null, hostConnected: false, lastCheckedAt: 0 };
+  var data = { view: null, remote: null, deck: null, disk: null, stt: null, audio: null, hostConnected: false, lastCheckedAt: 0 };
   var ticker = null;
   var tickCount = 0;
   var running = false;
@@ -125,10 +125,22 @@
     return { state: "pending", title: "Motion backgrounds cached", detail: PENDING_LATER };
   }
   function checkAudioDevice() {
-    return { state: "pending", title: "Input device", detail: "Audio-device check — " + PENDING_LATER.toLowerCase() };
+    // Real device presence (from audio_input); honest degradation with no device / no STT build.
+    var a = data.audio;
+    var c = { title: "Input device" };
+    if (!a || a.state === "not_in_build") { c.state = "pending"; c.detail = "Audio input check not enabled in this build"; return c; }
+    if (a.state === "no_device") { c.state = "warn"; c.detail = "No microphone / input device detected"; return c; }
+    if (a.state === "ok") { c.state = "ok"; c.detail = a.detail || a.name || "Input device connected"; return c; }
+    c.state = "pending"; c.detail = "Input device — not checked";
+    return c;
   }
   function checkAudioLevels() {
-    return { state: "pending", title: "Signal levels", detail: "Signal-level metering — " + PENDING_LATER.toLowerCase() };
+    // Live signal levels inherently need a running capture stream (the stt://level event while
+    // listening), so this stays an honest "checked while listening" rather than a fabricated dB.
+    var a = data.audio;
+    if (a && a.state === "not_in_build") return { state: "pending", title: "Signal levels", detail: "Audio metering not enabled in this build" };
+    if (a && a.state === "no_device") return { state: "pending", title: "Signal levels", detail: "No input device to meter" };
+    return { state: "pending", title: "Signal levels", detail: "Shown live while listening (start transcription to check)" };
   }
   function checkDisk() {
     var c = { title: "Disk space" };
@@ -326,6 +338,7 @@
       invoke("disk_free"),
       invoke("host_connected"),
       invoke("stt_ready"),
+      invoke("audio_input"),
     ]).then(function (r) {
       data.view = r[0].status === "fulfilled" ? r[0].value : null;
       data.remote = r[1].status === "fulfilled" ? r[1].value : null;
@@ -335,6 +348,7 @@
       // without the command, or the demo, reads as not connected — the honest default).
       data.hostConnected = r[4].status === "fulfilled" && r[4].value === true;
       data.stt = r[5].status === "fulfilled" ? r[5].value : null;
+      data.audio = r[6].status === "fulfilled" ? r[6].value : null;
       data.lastCheckedAt = Date.now();
       running = false;
       render();
