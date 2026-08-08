@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- SelahCue Controller privacy manifest (Apple requirement). The app does not
+	     track users and collects no data that leaves the device to us — it talks
+	     only to the paired desktop on the local network. Grounded in PRIVACY.md.
+	     RELEASE MANAGER: add this file to the Runner target in Xcode (Build Phases
+	     → Copy Bundle Resources) and verify the accessed-API set against Apple's
+	     "required reason API" report for the final build; bundled plugins
+	     (flutter_secure_storage, package_info_plus, etc.) ship their own manifests. -->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array/>
+</dict>
+</plist>
