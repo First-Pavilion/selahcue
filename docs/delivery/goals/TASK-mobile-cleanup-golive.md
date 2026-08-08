@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: Mobile design cleanup + go-live prep — responsive/tablet, logo, splash, privacy/terms, release-prep
 - Role: mobile-engineer
-- Status: DRAFT
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajxxu0r
 - Design ref: docs/design/MOBILE-DESIGN-CLEANUP-handoff.md (/ui-ux-designer handoff)
@@ -69,14 +69,14 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | `ResponsiveBody` caps content at 560 dp on a wide surface; applied to screens | `flutter test test/views/responsive_test.dart` | PASS | test output | PENDING |
-| C-002 | yes | Live tab shows Preview+Live side-by-side ≥600 dp; stacked <600 | `flutter test test/views/live_tab_test.dart` | PASS | test output | PENDING |
-| C-003 | yes | Splash renders the logo + "SelahCue"/"CONTROLLER" (not the "S" box) | `flutter test test/views/splash_test.dart` | PASS | test output | PENDING |
-| C-004 | yes | Logo used in pairing + About headers (image present, "S" box gone) | `flutter test test/views/logo_usage_test.dart` | PASS | test output | PENDING |
-| C-005 | yes | App icons generated from the logo (flutter_launcher_icons config + non-stock icons) | review: config present + `ic_launcher` regenerated | config in pubspec; icons regenerated | files | PENDING |
-| C-006 | yes | Privacy + terms drafts (docs/legal) + in-app screens reachable from Config | `flutter test test/views/config_sheet_test.dart` + files exist | PASS + docs present | test + docs | PENDING |
-| C-007 | yes | Release-prep: iOS PrivacyInfo + store metadata draft + release checklist present | review | files exist | docs/release | PENDING |
-| C-008 | yes | Full gate green | `make mobile-test`; `wireVersion = 2` | analyze clean, tests PASS | CI output | PENDING |
+| C-001 | yes | `ResponsiveBody` caps content at 560 dp on a wide surface; applied to screens | `flutter test test/views/responsive_test.dart` | PASS | test output | PASS |
+| C-002 | yes | Live tab shows Preview+Live side-by-side ≥600 dp; stacked <600 | `flutter test test/views/live_tab_test.dart` | PASS | test output | PASS |
+| C-003 | yes | Splash renders the logo + "SelahCue"/"CONTROLLER" (not the "S" box) | `flutter test test/views/splash_test.dart` | PASS | test output | PASS |
+| C-004 | yes | Logo used in pairing + About headers (image present, "S" box gone) | `flutter test test/views/logo_usage_test.dart` | PASS | test output | PASS |
+| C-005 | yes | App icons generated from the logo (flutter_launcher_icons config + non-stock icons) | review: config present + `ic_launcher` regenerated | config in pubspec; icons regenerated | files | PASS |
+| C-006 | yes | Privacy + terms drafts (docs/legal) + in-app screens reachable from Config | `flutter test test/views/config_sheet_test.dart` + files exist | PASS + docs present | test + docs | PASS |
+| C-007 | yes | Release-prep: iOS PrivacyInfo + store metadata draft + release checklist present | review | files exist | docs/release | PASS |
+| C-008 | yes | Full gate green | `make mobile-test`; `wireVersion = 2` | analyze clean, tests PASS | CI output | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -92,13 +92,19 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 ### Iteration 1
 
-- Target criterion:
-- Hypothesis:
-- Change or investigation:
-- Verifier executed:
-- Result:
-- New evidence:
-- Decision: iterate | handoff | blocked | gate-review | complete
+- Target criterion: C-001…C-008 (design cleanup + go-live prep).
+- Hypothesis: a 560dp ResponsiveBody + LayoutBuilder side-by-side + the brand logo + generators +
+  grounded privacy/terms drafts make the app tablet-correct, branded, and store-ready (minus publish).
+- Change or investigation: /ui-ux-designer handoff spec; ResponsiveBody applied app-wide; Live
+  side-by-side; SplashView + logo in About/pairing; app icons + native splash generated; privacy +
+  terms drafts + in-app screens; iOS PrivacyInfo + store-listing + release checklist; publish
+  follow-up filed.
+- Verifier executed: per-criterion flutter tests; `make mobile-test`; `wireVersion` grep; explicit
+  per-commit scope checks (no owner WIP swept).
+- Result: 95/95 tests PASS; analyze clean; wireVersion=2; all story commits mobile+docs only.
+- New evidence: commits f204fd0…b340b07; publish follow-up 86ajxz3nj.
+- Decision: gate-review — all automated criteria PASS; independent QA (real tablet + phone) +
+  legal sign-off on privacy/terms + the store publish (86ajxz3nj) are owned elsewhere.
 
 ## Risks and rollback
 
@@ -113,8 +119,10 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: python3 scripts/validate_goal_contract.py docs/delivery/goals/TASK-mobile-cleanup-golive.md
-- Validator result:
-- Independent verification result:
-- Terminal state:
-- Remaining failed or blocked criteria:
-- ClickUp final evidence comment:
+- Validator result: PASS (8/8) at authoring; re-run after status edits.
+- Independent verification result: PENDING — /qa-engineer (tablet + phone device check) +
+  /code-reviewer; legal review of docs/legal/*; store publish 86ajxz3nj.
+- Terminal state: GATE_REVIEW.
+- Remaining failed or blocked criteria: none FAIL; all 8 PASS. Owned-elsewhere: legal sign-off +
+  store publish (tracked 86ajxz3nj).
+- ClickUp final evidence comment: posted on 86ajxxu0r; story moved to QA.
