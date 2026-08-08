@@ -212,11 +212,32 @@ class _PairingViewState extends State<PairingView> {
             return ListView(
               padding: const EdgeInsets.all(20),
               children: [
+                // Brand header (design handoff §3): logo mark + wordmark.
+                Row(
+                  children: [
+                    Image.asset(
+                      'assets/selahcue-logo.png',
+                      width: 32,
+                      height: 32,
+                      semanticLabel: '',
+                    ),
+                    const SizedBox(width: 10),
+                    const Text(
+                      'SelahCue',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: DesignTokens.textPrimary,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
                 const Text(
                   'Connect to a host',
                   style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
                     color: DesignTokens.textPrimary,
                   ),
                 ),

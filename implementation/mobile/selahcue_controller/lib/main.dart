@@ -51,7 +51,8 @@ class SelahCueApp extends StatelessWidget {
         // Reduced motion (story 86ajp0b3d): the OS accessibility setting OR the
         // in-app preference (Config → PREFERENCES) disables page transitions.
         builder: (context, child) {
-          final reduce = MediaQuery.of(context).disableAnimations ||
+          final reduce =
+              MediaQuery.of(context).disableAnimations ||
               SettingsScope.of(context).reduceMotion;
           if (reduce && child != null) {
             return Theme(
@@ -85,8 +86,7 @@ class _NoTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> animation,
     Animation<double> secondaryAnimation,
     Widget child,
-  ) =>
-      child;
+  ) => child;
 }
 
 /// Reconnect with stored credentials, or fall into pairing.
@@ -134,8 +134,11 @@ class _LauncherState extends State<Launcher> {
         unawaited(session.close());
         return;
       }
-      Navigator.of(context).pushReplacement(MaterialPageRoute(
-          builder: (_) => ControllerView(session: session, stored: stored)));
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => ControllerView(session: session, stored: stored),
+        ),
+      );
     } on SessionException {
       // Credentials may be revoked or the host moved — go straight to Connect
       // (which explains the situation), rather than stalling on the splash.
@@ -145,9 +148,22 @@ class _LauncherState extends State<Launcher> {
   }
 
   void _goPair() {
-    Navigator.of(context)
-        .pushReplacement(MaterialPageRoute(builder: (_) => const PairingView()));
+    Navigator.of(
+      context,
+    ).pushReplacement(MaterialPageRoute(builder: (_) => const PairingView()));
   }
+
+  @override
+  Widget build(BuildContext context) => SplashView(status: _status);
+}
+
+/// The branded splash (design handoff §2B): logo mark + wordmark + "CONTROLLER"
+/// overline + a slim spinner, on `bgBase`. Stateless so it renders identically
+/// during launch/reconnect and is directly widget-testable. Matches the native
+/// splash so there's no cold-start flash.
+class SplashView extends StatelessWidget {
+  final String? status;
+  const SplashView({super.key, this.status});
 
   @override
   Widget build(BuildContext context) {
@@ -157,42 +173,48 @@ class _LauncherState extends State<Launcher> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(
-                color: DesignTokens.accentBrand,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              alignment: Alignment.center,
-              child: const Text('S',
-                  style: TextStyle(
-                      fontSize: 34,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white)),
+            // The SelahCue brand mark — replaces the old "S" placeholder.
+            // Decorative: the brand name is carried by the wordmark text below.
+            Image.asset(
+              'assets/selahcue-logo.png',
+              width: 104,
+              height: 104,
+              semanticLabel: '',
             ),
-            const SizedBox(height: 18),
-            const Text('SelahCue',
-                style: TextStyle(
-                    fontSize: 26,
-                    fontWeight: FontWeight.w700,
-                    color: DesignTokens.textPrimary)),
-            const Text('Controller',
-                style: TextStyle(
-                    fontSize: 13,
-                    letterSpacing: 3,
-                    color: DesignTokens.textMuted)),
+            const SizedBox(height: 14),
+            const Text(
+              'SelahCue',
+              style: TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.w700,
+                color: DesignTokens.textPrimary,
+              ),
+            ),
+            const Text(
+              'CONTROLLER',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 3,
+                color: DesignTokens.textMuted,
+              ),
+            ),
             const SizedBox(height: 28),
             const SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(strokeWidth: 2)),
-            if (_status != null) ...[
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            if (status != null) ...[
               const SizedBox(height: 16),
-              Text(_status!,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      fontSize: 13, color: DesignTokens.textMuted)),
+              Text(
+                status!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: DesignTokens.textMuted,
+                ),
+              ),
             ],
           ],
         ),

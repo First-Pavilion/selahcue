@@ -365,22 +365,11 @@ class ConfigSheet extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Container(
+                  Image.asset(
+                    'assets/selahcue-logo.png',
                     width: 44,
                     height: 44,
-                    decoration: BoxDecoration(
-                      color: DesignTokens.accentBrand,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    alignment: Alignment.center,
-                    child: const Text(
-                      'S',
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white,
-                      ),
-                    ),
+                    semanticLabel: '',
                   ),
                   const SizedBox(width: 12),
                   Column(

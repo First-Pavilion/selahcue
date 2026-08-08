@@ -97,6 +97,8 @@ void main() {
     expect(find.text('Open-source licenses'), findsOneWidget);
     expect(find.text('Privacy policy'), findsOneWidget); // FR-176
     expect(find.text('Producer'), findsOneWidget); // real granted role
+    expect(find.byType(Image), findsWidgets); // logo mark in the header
+    expect(find.text('S'), findsNothing); // the "S" placeholder box is gone
 
     // Toggle Keep screen awake (first Switch) → wakelock enabled.
     final before = wl.calls.length;
