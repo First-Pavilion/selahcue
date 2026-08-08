@@ -37,6 +37,8 @@ class SelahCueApp extends StatelessWidget {
       settings: settings,
       child: MaterialApp(
         title: 'SelahCue Controller',
+        // No "DEBUG" ribbon over the live-control UI (it overlaps the top-bar).
+        debugShowCheckedModeBanner: false,
         theme: ThemeData(
           brightness: Brightness.dark,
           colorScheme: ColorScheme.fromSeed(
