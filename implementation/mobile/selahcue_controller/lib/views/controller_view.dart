@@ -477,6 +477,7 @@ class ConfigSheet extends StatelessWidget {
                 ),
               ),
               _linkRow('Privacy policy', () => _showPrivacy(context)),
+              _linkRow('Terms of use', () => _showTerms(context)),
               _linkRow(
                 'Open-source licenses',
                 () => showLicensePage(
@@ -566,6 +567,34 @@ class ConfigSheet extends StatelessWidget {
             'transcripts, and notes stay on the desktop under your operator’s '
             'control; retention and any optional cloud features are configured '
             'and disclosed there. Your organisation can provide the full policy.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showTerms(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: DesignTokens.bgPanel,
+        title: const Text('Terms of use'),
+        content: const SingleChildScrollView(
+          child: Text(
+            'SelahCue Controller is a companion remote for a SelahCue desktop you '
+            'are authorised to operate. The desktop stays authoritative and '
+            'enforces your role; use the app only on a network and system you are '
+            'permitted to use. The app is provided “as is”, without warranty; you '
+            'are responsible for content licensing (songs/scripture) and for '
+            'appropriate rehearsal and fallbacks during live production. An '
+            'administrator can revoke your device at any time. Your organisation '
+            'can provide the full Terms of Use.',
           ),
         ),
         actions: [
