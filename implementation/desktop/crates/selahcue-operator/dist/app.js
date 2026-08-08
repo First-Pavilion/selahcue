@@ -1087,11 +1087,11 @@
       });
 
       // --- App menu + surface routing (86ajq321f) ---
-      const APP_SURFACES = ["console", "presentation", "theme-designer", "screens", "remote", "plan", "settings"];
+      const APP_SURFACES = ["console", "preservice", "presentation", "theme-designer", "screens", "remote", "plan", "settings"];
       // Kept in sync with the nav items' .nav-t labels — the topbar surface label + the SR
       // route announcement read from here, so a drift would show a name the menu doesn't use.
       const SURFACE_LABEL = {
-        console: "Live Console", presentation: "Presentation", "theme-designer": "Theme Designer",
+        console: "Live Console", preservice: "Pre-service Check", presentation: "Presentation", "theme-designer": "Theme Designer",
         screens: "Screens & Outputs", remote: "Remote Control", plan: "Service Plan", settings: "Settings",
       };
       const appMenu = document.getElementById("app-menu");
@@ -1146,6 +1146,8 @@
         if (name === "screens") scheduleScreenPreviews(); // refresh the per-screen previews (86ajq321k)
         // The Presentation surface loads its deck view + fits its canvas on activation.
         if (name === "presentation" && typeof pmActivate === "function") pmActivate();
+        // The Pre-service Check runs its checks on activation (and starts a bounded auto-refresh).
+        if (name === "preservice" && typeof psActivate === "function") psActivate();
       }
       function openAppMenu() {
         appMenu.classList.add("open");
@@ -3509,6 +3511,14 @@
           disarm();
           closeAppMenu();
           showSurface("remote");
+          return;
+        }
+        // ⌘/Ctrl+⇧+K jumps to the Pre-service Check surface (data-nodigit — no ⌘-number).
+        if (mod && e.shiftKey && (e.key === "k" || e.key === "K")) {
+          e.preventDefault();
+          disarm();
+          closeAppMenu();
+          showSurface("preservice");
           return;
         }
         // App menu: F10 opens/closes the surface navigation (reachable anywhere).

@@ -171,7 +171,12 @@ impl Backend {
                     .new_pairing_code()
                     .await
                     .map_err(|e| e.to_string())?;
-                Ok(PairingCodeReply::new(code, fingerprint, expires_in_secs, uri))
+                Ok(PairingCodeReply::new(
+                    code,
+                    fingerprint,
+                    expires_in_secs,
+                    uri,
+                ))
             }
             Backend::Local(_) => Err(NO_HOST.into()),
         }
@@ -776,6 +781,43 @@ async fn remote_set_role(
 #[tauri::command]
 async fn remote_new_code(state: State<'_, AppState>) -> Result<PairingCodeReply, String> {
     state.backend.new_pairing_code().await
+}
+
+/// Whether the operator is driving a REAL output window (the `Remote` backend) rather than the
+/// stand-alone in-process demo (`Local`). The Pre-service Check reads this so it never reports
+/// readiness — or a fabricated "network up" — when no output window is actually connected.
+#[tauri::command]
+fn host_connected(state: State<'_, AppState>) -> bool {
+    state.backend.is_remote()
+}
+
+/// Reply to `disk_free`: free + total bytes on the volume backing the operator's **data dir** (the
+/// same `<app_data_dir>` where the deck DB / autosave live — see `open_deck_db`), for the
+/// Pre-service Check storage readiness. `available == 0` (the platform could not report) leaves the
+/// UI to show an honest "couldn't read disk" state rather than a fabricated figure.
+#[derive(serde::Serialize, Default)]
+struct DiskFreeReply {
+    available_bytes: u64,
+    total_bytes: u64,
+}
+
+#[tauri::command]
+fn disk_free(app: tauri::AppHandle) -> DiskFreeReply {
+    use tauri::Manager;
+    // Best-effort, read-only: measure the volume backing the data dir the deck DB uses, falling
+    // back to the working dir if it isn't resolvable/created yet. `fs4` errors on platforms that
+    // cannot report, surfaced as zeros (never a guessed value).
+    let path = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .filter(|p| p.exists())
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    DiskFreeReply {
+        available_bytes: fs4::available_space(&path).unwrap_or(0),
+        total_bytes: fs4::total_space(&path).unwrap_or(0),
+    }
 }
 
 #[tauri::command]
@@ -1830,6 +1872,8 @@ fn main() {
             remote_revoke,
             remote_set_role,
             remote_new_code,
+            host_connected,
+            disk_free,
             view,
             next,
             previous,

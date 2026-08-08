@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 365
+EXPECTED_MIN_CHECKS = 367
 
 
 def find_chrome():
@@ -170,6 +170,9 @@ STUB = r"""
     }
     if (cmd === "remote_new_code")
       return Promise.resolve({code:"AB12CD34", fingerprint:"A1 B2 C3 D4", expires_in_secs:120});
+    if (cmd === "host_connected") return Promise.resolve(!window.__psNoHost); // a real output window (unless the test says otherwise)
+    if (cmd === "disk_free")
+      return Promise.resolve({available_bytes: (window.__psDiskLow ? 0.5 : 42) * 1073741824, total_bytes: 500 * 1073741824}); // 42 GB free (or <1 GB critical when flagged)
     if (cmd === "render_console") return Promise.resolve(
       window.__renderAvailable
         ? {available:true,
@@ -1233,6 +1236,15 @@ DRIVER = r"""
       ok(el("pm-library").hidden, "PM/B: the Library is hidden in grid mode");
       var pmTiles = el("pm-grid-tiles").querySelectorAll(".pm-tile");
       ok(pmTiles.length === 2, "PM/B: the grid renders one tile per slide (" + pmTiles.length + ")");
+      // The 'no slides yet' empty-state must be TRULY hidden when the deck HAS slides. The box
+      // carries an author `display: grid`, which defeats the UA `[hidden]{display:none}` in
+      // WKWebView unless a `.pm-grid-empty[hidden]{display:none}` guard wins — assert the
+      // COMPUTED display, not just the attribute (a stale empty-state otherwise overlays a
+      // populated deck; cf. the .td-ctx/.pm-transport guards).
+      ok(el("pm-grid-empty").hidden && getComputedStyle(el("pm-grid-empty")).display === "none",
+         "PM/B: the 'no slides yet' empty-state is truly hidden when the deck HAS slides (computed display, not just [hidden])");
+      ok(getComputedStyle(el("pm-grid-tiles")).display !== "none",
+         "PM/B: the slide-tiles grid is visible when the deck HAS slides");
       ok(window.__calls.some(function(c){ return c.cmd === "render_deck_slide"; }), "PM/B: grid thumbnails compose via render_deck_slide");
       // Single-click SELECTS (safe — no go-live).
       var glBeforeSel = window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length;
@@ -1713,6 +1725,56 @@ DRIVER = r"""
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"2", metaKey:true, bubbles:true}));
       ok(el("surface-theme-designer").classList.contains("active") && !el("surface-presentation").classList.contains("active"),
          "PM: ⌘2 still routes to Theme Designer (data-nodigit keeps the ⌘1–6 map intact)");
+
+      // === Pre-service Check surface (Design 2.0, Figma 344:124): readiness checklist ===
+      document.querySelector('.nav-item[data-surface="preservice"]').click();
+      ok(el("surface-preservice").classList.contains("active"), "Pre-service: nav opens the surface");
+      await waitFor(function(){ return document.querySelectorAll("#ps-sections .ps-row").length >= 10 && el("ps-passed").textContent !== "0"; });
+      ok(document.querySelectorAll("#ps-sections .ps-row").length === 10,
+         "Pre-service: all 10 checks render across the four sections");
+      ok(document.querySelectorAll("#ps-sections .ps-section").length === 4,
+         "Pre-service: four grouped sections (Displays / Media / Audio / Storage)");
+      ok(el("ps-passed").textContent === "3" && el("ps-warnings").textContent === "1" && el("ps-blocking").textContent === "0",
+         "Pre-service: readiness counts derive from live host data (3 passed · 1 warning · 0 blocking)");
+      ok(el("ps-verdict").textContent === "Safe to start" && el("ps-verdict-card").getAttribute("data-state") === "ok",
+         "Pre-service: 0 blocking → Safe to start (green verdict)");
+      ok(document.querySelectorAll("#ps-review .ps-review-card").length === 1,
+         "Pre-service: the one warning surfaces as a Review-before-start card");
+      var psMediaRow = Array.prototype.slice.call(document.querySelectorAll("#ps-sections .ps-row"))
+        .find(function(r){ return /Slide media present/.test(r.textContent); });
+      ok(psMediaRow && psMediaRow.querySelector(".ps-ico-warn") && psMediaRow.querySelector(".ps-row-action"),
+         "Pre-service: missing-media check is a warning with a Locate fix action");
+      ok(document.querySelectorAll("#ps-sections .ps-ico-pending").length >= 4,
+         "Pre-service: subsystems the host doesn't expose yet show an honest 'not checked' state (never faked)");
+      ok(!el("ps-start").disabled, "Pre-service: Start service enabled when nothing is blocking");
+      // A BLOCKING check (disk critically low) flips the verdict to Not-safe and disables Start.
+      window.__psDiskLow = true;
+      el("ps-rerun").click();
+      await waitFor(function(){ return el("ps-blocking").textContent !== "0"; });
+      ok(el("ps-blocking").textContent === "1" && el("ps-verdict").textContent === "Not safe to start"
+         && el("ps-verdict-card").getAttribute("data-state") === "block" && el("ps-start").disabled,
+         "Pre-service: a blocking check → Not safe to start, red verdict, Start disabled");
+      ok(/Disk space/.test((document.querySelector("#ps-review .ps-review-block") || {}).textContent || ""),
+         "Pre-service: the blocking check leads the Review-before-start list");
+      window.__psDiskLow = false;
+      // NO output window connected → never a green 'Safe to start'; Start is gated.
+      window.__psNoHost = true;
+      el("ps-rerun").click();
+      await waitFor(function(){ return el("ps-verdict").textContent === "No output window"; });
+      ok(el("ps-start").disabled && el("ps-verdict-card").getAttribute("data-state") === "pending",
+         "Pre-service: no output window → not ready, Start disabled (never a false 'Safe to start')");
+      var psNet = Array.prototype.slice.call(document.querySelectorAll("#ps-sections .ps-row"))
+        .find(function(r){ return /Local network & remotes/.test(r.textContent); });
+      ok(psNet && psNet.querySelector(".ps-ico-pending"),
+         "Pre-service: network reads 'not checked' with no host (no fabricated green)");
+      window.__psNoHost = false;
+      el("ps-rerun").click();
+      await waitFor(function(){ return el("ps-verdict").textContent === "Safe to start"; });
+      el("ps-start").click();
+      ok(el("surface-console").classList.contains("active"), "Pre-service: Start service goes to the Live Console");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"K", metaKey:true, shiftKey:true, bubbles:true}));
+      ok(el("surface-preservice").classList.contains("active"),
+         "Pre-service: ⌘⇧K jumps to the surface (data-nodigit keeps the ⌘1–6 map intact)");
 
       // === Remote Control surface (Design 2.0, Figma 359:124): pair/approve/role/revoke ===
       document.querySelector('.nav-item[data-surface="remote"]').click();

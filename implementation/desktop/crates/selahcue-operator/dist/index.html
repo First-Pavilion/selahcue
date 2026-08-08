@@ -30,6 +30,10 @@
           aria-current="page"><span class="nav-ico" aria-hidden="true">▲</span><span class="nav-txt"><span
               class="nav-t">Live Console</span><span class="nav-d">Operate the service live</span></span><span
             class="nav-key">⌘1</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="preservice" data-nodigit="1"><span
+            class="nav-ico" aria-hidden="true">✓</span><span class="nav-txt"><span class="nav-t">Pre-service
+              Check</span><span class="nav-d">Readiness before you start</span></span><span
+            class="nav-key">⌘⇧K</span></button>
         <button class="nav-item" role="menuitem" tabindex="-1" data-surface="presentation" data-nodigit="1"><span
             class="nav-ico" aria-hidden="true">▦</span><span class="nav-txt"><span
               class="nav-t">Presentation</span><span class="nav-d">Slides &amp; media</span></span><span
@@ -908,6 +912,51 @@
       <p class="coming-soon">Application settings arrive later.</p>
     </section>
 
+    <!-- PRE-SERVICE CHECK surface (Design 2.0, Figma 344:124 / story 86ajp0az9, FR-007/008/070):
+         a readiness checklist over Displays & Outputs / Media / Audio / Storage-Network-Providers,
+         plus a Readiness sidebar (verdict dial · passed/warnings/blocking · review cards · Start /
+         Re-run). Populated + wired by preservice.js from real host data (view / remote_snapshot /
+         deck_view) where exposed; checks with no host data yet render an honest "not checked" state
+         (never fabricated values). Nav + ⌘⇧K live in app.js. -->
+    <section id="surface-preservice" class="surface-page surface-pad" aria-label="Pre-service Check">
+      <div class="ps-wrap">
+        <div class="ps-main">
+          <div class="ps-lead">
+            <h1 class="ps-title">Pre-service check</h1>
+            <p class="ps-sub">Everything that must be right before the first slide goes live.</p>
+          </div>
+          <!-- Checklist sections rendered by preservice.js. A polite live region announces the
+               readiness verdict when re-run. -->
+          <div id="ps-sections" class="ps-sections"></div>
+          <p id="ps-live" class="sr-only" role="status" aria-live="polite"></p>
+        </div>
+        <aside class="ps-readiness" aria-label="Readiness summary">
+          <p class="ps-kicker">READINESS</p>
+          <div id="ps-verdict-card" class="ps-verdict-card" data-state="ok">
+            <div id="ps-dial" class="ps-dial" aria-hidden="true"><span class="ps-dial-glyph">✓</span></div>
+            <p id="ps-verdict" class="ps-verdict">Checking…</p>
+            <p id="ps-summary" class="ps-summary">Running pre-service checks…</p>
+          </div>
+          <div class="ps-counts">
+            <div class="ps-count-row"><span class="ps-count-lbl"><span class="ps-dot ps-dot-ok"></span>Passed</span><span
+                id="ps-passed" class="ps-count-pill ps-pill-ok">0</span></div>
+            <div class="ps-count-row"><span class="ps-count-lbl"><span
+                  class="ps-dot ps-dot-warn"></span>Warnings</span><span id="ps-warnings"
+                class="ps-count-pill ps-pill-warn">0</span></div>
+            <div class="ps-count-row"><span class="ps-count-lbl"><span
+                  class="ps-dot ps-dot-block"></span>Blocking</span><span id="ps-blocking"
+                class="ps-count-pill ps-pill-block">0</span></div>
+          </div>
+          <p class="ps-kicker ps-kicker-sm">REVIEW BEFORE START</p>
+          <div id="ps-review" class="ps-review"></div>
+          <div class="ps-spacer"></div>
+          <button id="ps-start" class="ps-start" type="button">▶&nbsp;&nbsp;Start service</button>
+          <button id="ps-rerun" class="ps-rerun" type="button">↻&nbsp;&nbsp;Re-run checks</button>
+          <p id="ps-lastchecked" class="ps-lastchecked">Not checked yet</p>
+        </aside>
+      </div>
+    </section>
+
     <!-- REMOTE CONTROL surface (Design 2.0, Figma 359:124): pair phones/tablets as controllers,
          approve a pending pair request with a role, and manage paired devices (role · last seen ·
          status · revoke). Populated + wired by remote.js. Device data uses a local model with a
@@ -1053,6 +1102,7 @@
     </div>
   </div>
   <script src="app.js" defer></script>
+  <script src="preservice.js" defer></script>
   <script src="remote.js" defer></script>
 </body>
 

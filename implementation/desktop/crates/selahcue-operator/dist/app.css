@@ -537,6 +537,10 @@
         border-radius: 12px;
         padding: 14px;
         overflow-y: auto;
+        /* Grid items default to min-height:auto (won't shrink below content); 0 lets the
+           row cap take effect so this panel scrolls internally instead of pushing the
+           whole surface past the footer. */
+        min-height: 0;
       }
 
       .td-list h2,
@@ -1118,10 +1122,16 @@
       .td-wrap {
         display: grid;
         grid-template-columns: 1fr 360px;
+        /* Bound the single row to the flex height (minmax(0,1fr)) so BOTH columns are
+           height-capped and scroll INTERNALLY. An implicit `auto` row only stays capped
+           in Blink via align-content:stretch; WKWebView lets it grow to content, which
+           overflowed the inspector past the emergency footer. `flex:1; min-height:0`
+           (rule above) sizes the wrap under the header — an added `height:100%` fought
+           that flex sizing in WKWebView, so it is intentionally NOT set here. */
+        grid-template-rows: minmax(0, 1fr);
         gap: 0;
         padding: 0;
         min-height: 0;
-        height: 100%;
       }
 
       /* Topbar */
@@ -1773,13 +1783,22 @@
         align-items: stretch;
       }
 
+      /* Font + weight share this row. As a FLEX row the font <select> collapses to a
+         ~24px sliver: the weight <select> (flex-shrink:0) reports an inflated intrinsic
+         main-size in WKWebView (and Blink), starving the shrinkable font picker. Grid
+         sizes the tracks deterministically — font takes the 1fr, weight its content
+         width — so this can't invert. The colour row keeps the plain flex above. */
+      .td-row2:not(.td-colorrow) {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: stretch;
+      }
+
       .td-row2 > select:first-of-type {
-        flex: 1 1 auto;
         min-width: 0;
       }
 
       .td-weight-field {
-        flex: 0 0 auto;
         width: auto;
       }
 
@@ -5450,6 +5469,10 @@
       .pm-grid-spacer { flex: 1; }
       .pm-grid-title { font: 600 14px/1.2 Inter, system-ui, sans-serif; color: var(--sc-text); }
       .pm-grid-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; overflow-y: auto; align-content: start; }
+      /* The author `display: grid` above beats the UA `[hidden]{display:none}` in WKWebView, so
+         the empty-deck toggle (`tiles.hidden = empty` in pmRenderGrid) needs this guard to win
+         (cf. .pm-transport[hidden] / .td-ctx[hidden]). */
+      .pm-grid-tiles[hidden] { display: none; }
       .pm-tile { position: relative; aspect-ratio: 16 / 9; background: var(--sc-inset); border-radius: 14px; overflow: hidden; cursor: pointer; border: 2px solid transparent; }
       .pm-tile .pm-tile-cv { width: 100%; height: 100%; display: block; }
       .pm-tile-n { position: absolute; left: 8px; top: 6px; font: 600 11px/1 Inter, system-ui, sans-serif; color: var(--sc-text-secondary); text-shadow: 0 1px 2px rgba(0, 0, 0, .6); }
@@ -5467,6 +5490,10 @@
       .pm-tile-failmsg { color: var(--sc-text-muted); font-size: 12px; }
       .pm-grid-hint { color: var(--sc-text-muted); font-size: 12px; margin: 0; }
       .pm-grid-empty { display: grid; place-items: center; gap: 12px; padding: 48px 8px; text-align: center; }
+      /* Without this guard the author `display: grid` defeats [hidden] in WKWebView, so the
+         'no slides yet' box stays visible over a populated deck (`emptyBox.hidden = !empty`
+         in pmRenderGrid has no effect) — the guard makes the attribute actually hide it. */
+      .pm-grid-empty[hidden] { display: none; }
       .pm-grid-empty-title { color: var(--sc-text-secondary); font-size: 15px; }
       .pm-grid-badge { padding: 3px 8px; border-radius: 999px; background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); color: var(--sc-warn); font: 600 11px/1 Inter, system-ui, sans-serif; }
       .pm-transport { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 10px; background: var(--sc-elevated); border: 1px solid var(--sc-border); border-radius: 12px; }
@@ -5477,3 +5504,91 @@
       .pm-tp-btn:hover { border-color: var(--sc-border-strong); }
       .pm-tp-btn:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
       .pm-tp-btn[aria-disabled="true"] { opacity: .4; pointer-events: none; }
+
+      /* ===== Pre-service Check surface (Design 2.0, Figma 344:124 / story 86ajp0az9) ===== */
+      #surface-preservice.surface-pad { padding: 0; overflow: hidden; }
+      .ps-wrap { display: flex; height: 100%; min-height: 0; }
+      .ps-main { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 20px; padding: 24px 28px; overflow-y: auto; }
+      .ps-lead { display: flex; flex-direction: column; gap: 4px; }
+      .ps-title { font: 700 22px/1.2 Inter, system-ui, sans-serif; color: var(--sc-text); margin: 0; }
+      .ps-sub { font: 500 13px/1.4 Inter, system-ui, sans-serif; color: var(--sc-text-muted); margin: 0; }
+      .ps-sections { display: flex; flex-direction: column; gap: 20px; }
+      .ps-section { display: flex; flex-direction: column; gap: 10px; }
+      .ps-section-h { font: 700 12px/1 Inter, system-ui, sans-serif; color: var(--sc-text-muted); letter-spacing: 1px; margin: 0; }
+      .ps-card { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 13px; overflow: hidden; }
+      .ps-divider { height: 1px; background: var(--sc-border); }
+      .ps-row { display: flex; gap: 12px; align-items: center; padding: 13px 15px; }
+      .ps-ico { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 999px; display: flex; align-items: center; justify-content: center; }
+      .ps-ico-glyph { font: 700 13px/1 Inter, system-ui, sans-serif; }
+      .ps-ico-ok { background: var(--sc-preview-soft); border: 1px solid var(--sc-preview-border); color: var(--sc-preview); }
+      .ps-ico-warn { background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); color: var(--sc-warn); }
+      .ps-ico-block { background: var(--sc-live-soft); border: 1px solid var(--sc-live-border); color: var(--sc-live); }
+      .ps-ico-pending { background: var(--sc-elevated); border: 1px solid var(--sc-border); color: var(--sc-text-muted); }
+      .ps-row-body { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+      .ps-row-title { font: 600 14px/1.2 Inter, system-ui, sans-serif; color: var(--sc-text); }
+      .ps-row-detail { font: 500 12px/1.3 Inter, system-ui, sans-serif; color: var(--sc-text-muted); }
+      .ps-detail-warn { color: var(--sc-warn); }
+      .ps-detail-block { color: var(--sc-live); }
+      .ps-row-action { flex: 0 0 auto; background: var(--sc-elevated); border: 1px solid var(--sc-border); color: var(--sc-text-secondary); border-radius: 8px; padding: 8px 13px; font: 600 12px/1 Inter, system-ui, sans-serif; cursor: pointer; }
+      .ps-row-action:hover { border-color: var(--sc-border-strong); color: var(--sc-text); }
+      .ps-row-action:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+
+      /* Readiness sidebar */
+      .ps-readiness { flex: 0 0 380px; width: 380px; background: var(--sc-surface); border-left: 1px solid var(--sc-border); display: flex; flex-direction: column; gap: 16px; padding: 22px 20px; overflow-y: auto; box-sizing: border-box; }
+      .ps-kicker { font: 700 12px/1 Inter, system-ui, sans-serif; color: var(--sc-text-muted); letter-spacing: 1px; margin: 0; }
+      .ps-kicker-sm { font-size: 11px; }
+      .ps-verdict-card { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px; border-radius: 16px; background: var(--sc-preview-soft); border: 1px solid var(--sc-preview-border); }
+      .ps-verdict-card[data-state="warn"] { background: var(--sc-warn-soft); border-color: var(--sc-warn-border); }
+      .ps-verdict-card[data-state="block"] { background: var(--sc-live-soft); border-color: var(--sc-live-border); }
+      .ps-verdict-card[data-state="pending"] { background: var(--sc-elevated); border-color: var(--sc-border); }
+      .ps-dial { width: 86px; height: 84px; border-radius: 999px; background: var(--sc-surface); border: 5px solid var(--sc-preview); display: flex; align-items: center; justify-content: center; }
+      .ps-dial[data-state="warn"] { border-color: var(--sc-warn); }
+      .ps-dial[data-state="block"] { border-color: var(--sc-live); }
+      .ps-dial[data-state="pending"] { border-color: var(--sc-border-strong); }
+      .ps-dial-glyph { font: 700 34px/1 Inter, system-ui, sans-serif; color: var(--sc-preview); }
+      .ps-dial[data-state="warn"] .ps-dial-glyph { color: var(--sc-warn); }
+      .ps-dial[data-state="block"] .ps-dial-glyph { color: var(--sc-live); }
+      .ps-dial[data-state="pending"] .ps-dial-glyph { color: var(--sc-text-muted); }
+      .ps-verdict { font: 700 18px/1 Inter, system-ui, sans-serif; color: var(--sc-text); margin: 0; text-align: center; }
+      .ps-summary { font: 500 12px/1.4 Inter, system-ui, sans-serif; color: var(--sc-text-secondary); margin: 0; text-align: center; }
+      .ps-counts { display: flex; flex-direction: column; gap: 8px; }
+      .ps-count-row { display: flex; align-items: center; justify-content: space-between; background: var(--sc-inset); border: 1px solid var(--sc-border); border-radius: 10px; padding: 11px 13px; }
+      .ps-count-lbl { display: flex; align-items: center; gap: 9px; font: 600 13px/1 Inter, system-ui, sans-serif; color: var(--sc-text-secondary); }
+      .ps-dot { width: 9px; height: 9px; border-radius: 999px; }
+      .ps-dot-ok { background: var(--sc-preview); }
+      .ps-dot-warn { background: var(--sc-warn); }
+      .ps-dot-block { background: var(--sc-live); }
+      .ps-count-pill { border-radius: 999px; padding: 3px 9px; font: 700 12px/1 Inter, system-ui, sans-serif; }
+      .ps-pill-ok { background: var(--sc-preview-soft); border: 1px solid var(--sc-preview-border); color: var(--sc-preview); }
+      .ps-pill-warn { background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); color: var(--sc-warn); }
+      .ps-pill-block { background: var(--sc-live-soft); border: 1px solid var(--sc-live-border); color: var(--sc-live); }
+      .ps-pill-zero { background: var(--sc-elevated); border: 1px solid var(--sc-border); color: var(--sc-text-muted); }
+      .ps-review { display: flex; flex-direction: column; gap: 10px; }
+      .ps-review-empty { font: 500 12px/1.4 Inter, system-ui, sans-serif; color: var(--sc-text-muted); margin: 0; }
+      .ps-review-card { display: flex; gap: 10px; align-items: flex-start; border-radius: 10px; padding: 11px 12px; }
+      .ps-review-warn { background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); }
+      .ps-review-block { background: var(--sc-live-soft); border: 1px solid var(--sc-live-border); }
+      .ps-review-mark { font: 700 13px/1 Inter, system-ui, sans-serif; }
+      .ps-review-warn .ps-review-mark { color: var(--sc-warn); }
+      .ps-review-block .ps-review-mark { color: var(--sc-live); }
+      .ps-review-body { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+      .ps-review-title { font: 600 13px/1.2 Inter, system-ui, sans-serif; color: var(--sc-text); }
+      .ps-review-detail { font: 500 11px/1.35 Inter, system-ui, sans-serif; }
+      .ps-review-warn .ps-review-detail { color: var(--sc-warn); }
+      .ps-review-block .ps-review-detail { color: var(--sc-live); }
+      .ps-spacer { flex: 1 1 auto; min-height: 8px; }
+      .ps-start { background: linear-gradient(to right, var(--sc-primary-hover), var(--sc-primary)); border: none; border-radius: 14px; padding: 17px; font: 700 16px/1 Inter, system-ui, sans-serif; color: #fff; cursor: pointer; width: 100%; }
+      .ps-start:hover { filter: brightness(1.06); }
+      .ps-start:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+      .ps-start:disabled, .ps-start[aria-disabled="true"] { opacity: .45; cursor: not-allowed; filter: none; }
+      .ps-rerun { background: var(--sc-elevated); border: 1px solid var(--sc-border); border-radius: 11px; padding: 13px; font: 600 13px/1 Inter, system-ui, sans-serif; color: var(--sc-text-secondary); cursor: pointer; width: 100%; }
+      .ps-rerun:hover { border-color: var(--sc-border-strong); color: var(--sc-text); }
+      .ps-rerun:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+      .ps-lastchecked { font: 500 11px/1.4 Inter, system-ui, sans-serif; color: var(--sc-text-muted); margin: 0; text-align: center; }
+
+      /* Narrower shells: the readiness sidebar drops under the checklist. */
+      @media (max-width: 900px) {
+        .ps-wrap { flex-direction: column; overflow-y: auto; }
+        .ps-readiness { flex-basis: auto; width: 100%; border-left: none; border-top: 1px solid var(--sc-border); }
+        .ps-main { overflow-y: visible; }
+      }
