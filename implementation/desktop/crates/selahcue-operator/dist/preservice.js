@@ -25,7 +25,7 @@
   // Last-fetched host data + run bookkeeping. `hostConnected` = the operator is driving a REAL
   // output window (not the stand-alone demo) — the gate that stops the surface reporting readiness
   // (or "network up") when there is no audience output at all.
-  var data = { view: null, remote: null, deck: null, disk: null, hostConnected: false, lastCheckedAt: 0 };
+  var data = { view: null, remote: null, deck: null, disk: null, stt: null, hostConnected: false, lastCheckedAt: 0 };
   var ticker = null;
   var tickCount = 0;
   var running = false;
@@ -152,7 +152,17 @@
     return c;
   }
   function checkTranscriptionAi() {
-    return { state: "pending", title: "Transcription & AI", detail: "On-device STT & AI consent — " + PENDING_LATER.toLowerCase() };
+    // The on-device STT readiness is REAL now (from stt_ready); the AI-consent half is still a
+    // deferred product decision, so it's noted honestly rather than claimed.
+    var c = { title: "Transcription & AI" };
+    var s = data.stt;
+    var consent = " · AI consent — later";
+    if (!s || s.state === "not_in_build") { c.state = "pending"; c.detail = "On-device STT not enabled in this build" + consent; return c; }
+    if (s.state === "ready") { c.state = "ok"; c.detail = "On-device STT ready" + (s.model ? " · " + s.model : "") + consent; return c; }
+    if (s.state === "not_downloaded") { c.state = "warn"; c.detail = "On-device STT model not downloaded — transcription unavailable"; c.action = { label: "Settings", surface: "settings" }; return c; }
+    if (s.state === "size_mismatch") { c.state = "warn"; c.detail = "On-device STT model incomplete — it will re-download"; return c; }
+    c.state = "pending"; c.detail = "On-device STT — not checked" + consent;
+    return c;
   }
 
   // Section model → grouped checks, in the Figma order.
@@ -315,6 +325,7 @@
       invoke("deck_view"),
       invoke("disk_free"),
       invoke("host_connected"),
+      invoke("stt_ready"),
     ]).then(function (r) {
       data.view = r[0].status === "fulfilled" ? r[0].value : null;
       data.remote = r[1].status === "fulfilled" ? r[1].value : null;
@@ -323,6 +334,7 @@
       // host_connected returns a bool; treat only an explicit `true` as connected (an older host
       // without the command, or the demo, reads as not connected — the honest default).
       data.hostConnected = r[4].status === "fulfilled" && r[4].value === true;
+      data.stt = r[5].status === "fulfilled" ? r[5].value : null;
       data.lastCheckedAt = Date.now();
       running = false;
       render();

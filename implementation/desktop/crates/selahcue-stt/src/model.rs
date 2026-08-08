@@ -77,6 +77,42 @@ pub fn verify_model(path: &Path, expected_sha256: &str) -> Result<String, ModelE
     }
 }
 
+/// Whether an on-device model file is present and ready to load — a CHEAP pre-service probe that
+/// inspects presence + size only (no read/hash), so it is safe to poll. It is deliberately NOT the
+/// cryptographic gate: full SHA-256 integrity ([`verify_model`]) is still enforced when the model
+/// is actually loaded (FR-156 / ADR-0012). A size match is a strong, cheap signal that a download
+/// completed; a truncated/partial `.part`-style file is caught as [`ModelReadiness::SizeMismatch`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelReadiness {
+    /// No file at the expected path — the model has not been downloaded yet.
+    NotDownloaded,
+    /// A file exists but its size differs from the pinned asset (incomplete or substituted) — it
+    /// will be re-fetched/refused at load.
+    SizeMismatch,
+    /// A file of the pinned size is present at the expected path — ready to load (integrity is
+    /// re-verified at load time).
+    Present,
+}
+
+impl ModelReadiness {
+    /// Whether the model can be loaded without first downloading it.
+    pub fn is_present(self) -> bool {
+        matches!(self, ModelReadiness::Present)
+    }
+}
+
+/// Cheap readiness of the model file at `path` against its pinned `expected_size_bytes`: presence +
+/// size only (a `metadata` stat — no file read, no hashing), so a pre-service check can poll it
+/// without touching a multi-hundred-MB (or GB) file. Full integrity is enforced by [`verify_model`]
+/// at load time; this only answers "is the right-sized model present here yet?".
+pub fn model_readiness(path: &Path, expected_size_bytes: u64) -> ModelReadiness {
+    match path.metadata() {
+        Err(_) => ModelReadiness::NotDownloaded,
+        Ok(m) if m.len() == expected_size_bytes => ModelReadiness::Present,
+        Ok(_) => ModelReadiness::SizeMismatch,
+    }
+}
+
 /// Lowercase-hex encode a byte slice (no external hex dependency).
 fn hex_lower(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -333,6 +369,39 @@ mod tests {
         // Case-insensitive on the expected hash.
         assert!(verify_model(&p, &digest.to_uppercase()).is_ok());
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn model_readiness_reports_present_missing_and_wrong_size() {
+        // Present: a file of exactly the pinned size.
+        let p = temp_path("ready-present");
+        write_file(&p, b"model-bytes"); // 11 bytes
+        assert_eq!(model_readiness(&p, 11), ModelReadiness::Present);
+        assert!(model_readiness(&p, 11).is_present());
+
+        // Size mismatch: right path, wrong size (a truncated/partial or substituted download).
+        assert_eq!(model_readiness(&p, 999), ModelReadiness::SizeMismatch);
+        assert!(!model_readiness(&p, 999).is_present());
+        let _ = std::fs::remove_file(&p);
+
+        // Not downloaded: no file at the path.
+        let missing = temp_path("ready-missing");
+        assert_eq!(model_readiness(&missing, 11), ModelReadiness::NotDownloaded);
+        assert!(!model_readiness(&missing, 11).is_present());
+    }
+
+    #[test]
+    fn every_model_asset_has_a_positive_pinned_size_for_the_readiness_probe() {
+        // The readiness probe compares against `asset().size_bytes`; a zero would make an empty
+        // file read as "Present". Guard the pins.
+        for m in [
+            WhisperModel::LargeV3Turbo,
+            WhisperModel::Medium,
+            WhisperModel::Small,
+            WhisperModel::Base,
+        ] {
+            assert!(m.asset().size_bytes > 0, "{m:?} has a zero pinned size");
+        }
     }
 
     #[test]

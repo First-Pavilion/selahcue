@@ -171,6 +171,7 @@ STUB = r"""
     if (cmd === "remote_new_code")
       return Promise.resolve({code:"AB12CD34", fingerprint:"A1 B2 C3 D4", expires_in_secs:120});
     if (cmd === "host_connected") return Promise.resolve(!window.__psNoHost); // a real output window (unless the test says otherwise)
+    if (cmd === "stt_ready") return Promise.resolve(window.__psStt || {ready:true, state:"ready", model:"Small", detail:"On-device model ready"});
     if (cmd === "disk_free")
       return Promise.resolve({available_bytes: (window.__psDiskLow ? 0.5 : 42) * 1073741824, total_bytes: 500 * 1073741824}); // 42 GB free (or <1 GB critical when flagged)
     if (cmd === "render_console") return Promise.resolve(
@@ -1734,8 +1735,20 @@ DRIVER = r"""
          "Pre-service: all 10 checks render across the four sections");
       ok(document.querySelectorAll("#ps-sections .ps-section").length === 4,
          "Pre-service: four grouped sections (Displays / Media / Audio / Storage)");
-      ok(el("ps-passed").textContent === "3" && el("ps-warnings").textContent === "1" && el("ps-blocking").textContent === "0",
-         "Pre-service: readiness counts derive from live host data (3 passed · 1 warning · 0 blocking)");
+      ok(el("ps-passed").textContent === "4" && el("ps-warnings").textContent === "1" && el("ps-blocking").textContent === "0",
+         "Pre-service: readiness counts derive from live host data (4 passed · 1 warning · 0 blocking)");
+      var psStt = Array.prototype.slice.call(document.querySelectorAll("#ps-sections .ps-row"))
+        .find(function(r){ return /Transcription & AI/.test(r.textContent); });
+      ok(psStt && psStt.querySelector(".ps-ico-ok") && /On-device STT ready/.test(psStt.textContent),
+         "Pre-service: on-device STT ready reflects the real stt_ready probe");
+      // STT model missing → the check becomes an attention warning (not a fabricated pass).
+      window.__psStt = {ready:false, state:"not_downloaded", model:"Small", detail:"On-device model not downloaded yet"};
+      el("ps-rerun").click();
+      await waitFor(function(){ var r=Array.prototype.slice.call(document.querySelectorAll("#ps-sections .ps-row")).find(function(x){return /Transcription & AI/.test(x.textContent);}); return r && r.querySelector(".ps-ico-warn"); });
+      ok(true, "Pre-service: stt_ready 'not downloaded' → attention warning (honest, not a pass)");
+      window.__psStt = null;
+      el("ps-rerun").click();
+      await waitFor(function(){ return el("ps-passed").textContent === "4"; });
       ok(el("ps-verdict").textContent === "Safe to start" && el("ps-verdict-card").getAttribute("data-state") === "ok",
          "Pre-service: 0 blocking → Safe to start (green verdict)");
       ok(document.querySelectorAll("#ps-review .ps-review-card").length === 1,

@@ -44,7 +44,8 @@ pub use audio::{frame_peak, AudioChunk, AudioSource, FakeAudioSource, PcmRing, M
 pub use engine::{EngineConfig, SttEngine};
 pub use guard::FeedbackGuard;
 pub use model::{
-    verify_model, Backend, HardwareProbe, ModelAsset, ModelError, ModelSelection, WhisperModel,
+    model_readiness, verify_model, Backend, HardwareProbe, ModelAsset, ModelError, ModelReadiness,
+    ModelSelection, WhisperModel,
 };
 #[cfg(feature = "download")]
 pub use model_fetch::{default_cache_dir, fetch_model};

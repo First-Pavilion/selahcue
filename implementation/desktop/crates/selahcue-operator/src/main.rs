@@ -820,6 +820,66 @@ fn disk_free(app: tauri::AppHandle) -> DiskFreeReply {
     }
 }
 
+/// Reply to `stt_ready`: whether the on-device transcription model is present (ready to load) for
+/// the Pre-service Check. A cheap presence+size probe (safe to poll); the full SHA-256 integrity
+/// gate still runs when the model is actually loaded (FR-156 / ADR-0012).
+#[derive(serde::Serialize, Default)]
+struct SttReadyReply {
+    ready: bool,
+    /// `"ready"` | `"not_downloaded"` | `"size_mismatch"` | `"not_in_build"`.
+    state: String,
+    /// The selected model variant label (empty when STT is not compiled into this build).
+    model: String,
+    detail: String,
+}
+
+/// Report on-device STT readiness WITHOUT loading the native whisper context or opening audio:
+/// resolve the SAME model + path the worker would use and check the file is present at the pinned
+/// size. An explicit `SELAHCUE_STT_MODEL` override wins (mirrors `listening.rs`).
+#[cfg(feature = "stt")]
+#[tauri::command]
+fn stt_ready() -> SttReadyReply {
+    let selection = selahcue_stt::HardwareProbe::detect().select_model();
+    let asset = selection.model.asset();
+    let path = std::env::var_os("SELAHCUE_STT_MODEL")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| selahcue_stt::default_cache_dir().join(asset.file_name));
+    let model = format!("{:?}", selection.model);
+    match selahcue_stt::model_readiness(&path, asset.size_bytes) {
+        selahcue_stt::ModelReadiness::Present => SttReadyReply {
+            ready: true,
+            state: "ready".into(),
+            model,
+            detail: format!("On-device model ready ({})", asset.file_name),
+        },
+        selahcue_stt::ModelReadiness::NotDownloaded => SttReadyReply {
+            ready: false,
+            state: "not_downloaded".into(),
+            model,
+            detail: "On-device model not downloaded yet".into(),
+        },
+        selahcue_stt::ModelReadiness::SizeMismatch => SttReadyReply {
+            ready: false,
+            state: "size_mismatch".into(),
+            model,
+            detail: "On-device model incomplete — it will re-download".into(),
+        },
+    }
+}
+
+/// STT is not compiled into this build — report an honest "not in this build" (never a guess),
+/// which the Pre-service Check renders as a neutral "not checked" state.
+#[cfg(not(feature = "stt"))]
+#[tauri::command]
+fn stt_ready() -> SttReadyReply {
+    SttReadyReply {
+        ready: false,
+        state: "not_in_build".into(),
+        model: String::new(),
+        detail: "On-device transcription is not enabled in this build".into(),
+    }
+}
+
 #[tauri::command]
 async fn view(state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.view().await
@@ -1874,6 +1934,7 @@ fn main() {
             remote_new_code,
             host_connected,
             disk_free,
+            stt_ready,
             view,
             next,
             previous,
