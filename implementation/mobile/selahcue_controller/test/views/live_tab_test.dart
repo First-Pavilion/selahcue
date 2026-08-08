@@ -63,6 +63,33 @@ void main() {
     live.dispose();
   });
 
+  testWidgets('Preview + Live are side-by-side on a wide (tablet) surface',
+      (tester) async {
+    tester.view.physicalSize = const Size(900, 700);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final live = await _pump(tester, MobileRole.producer);
+    final previewTop = tester.getTopLeft(find.text('PREVIEW · STAGED'));
+    final liveTop = tester.getTopLeft(find.text('● LIVE · ON AIR'));
+    // Same row → aligned tops; Live is to the RIGHT of Preview.
+    expect(liveTop.dy, previewTop.dy);
+    expect(liveTop.dx, greaterThan(previewTop.dx));
+    live.dispose();
+  });
+
+  testWidgets('Preview + Live stack on a narrow (phone) surface', (tester) async {
+    tester.view.physicalSize = const Size(360, 720);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final live = await _pump(tester, MobileRole.producer);
+    final previewTop = tester.getTopLeft(find.text('PREVIEW · STAGED'));
+    final liveTop = tester.getTopLeft(find.text('● LIVE · ON AIR'));
+    expect(liveTop.dy, greaterThan(previewTop.dy)); // Live below Preview
+    live.dispose();
+  });
+
   testWidgets('Viewer sees no transport controls', (tester) async {
     final handle = tester.ensureSemantics();
     final live = await _pump(tester, MobileRole.viewer);
