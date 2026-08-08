@@ -913,7 +913,9 @@ struct AudioInputReply {
 
 #[cfg(feature = "stt")]
 #[tauri::command]
-fn audio_input() -> AudioInputReply {
+async fn audio_input() -> AudioInputReply {
+    // `async` so Tauri runs the (blocking) cpal audio-HAL enumeration on its async runtime rather
+    // than the UI/main thread — a slow HAL query never stalls the operator console.
     match selahcue_stt::audio::default_input_info() {
         Some(info) => {
             let ch = info
@@ -941,7 +943,7 @@ fn audio_input() -> AudioInputReply {
 /// STT/capture is not compiled into this build — report an honest "not in this build".
 #[cfg(not(feature = "stt"))]
 #[tauri::command]
-fn audio_input() -> AudioInputReply {
+async fn audio_input() -> AudioInputReply {
     AudioInputReply {
         available: false,
         state: "not_in_build".into(),

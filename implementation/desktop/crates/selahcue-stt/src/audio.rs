@@ -184,7 +184,11 @@ mod cpal_source {
     /// listening, not from here.)
     pub fn default_input_info() -> Option<AudioDeviceInfo> {
         let device = cpal::default_host().default_input_device()?;
-        let name = device.name().ok()?;
+        // A device IS present — an unreadable name (a transient CoreAudio/WASAPI property-query
+        // failure) must not be reported as "no device". Degrade the name to a placeholder, the same
+        // way `CpalSource::new` does (it still captures from that device), and keep the `?` only for
+        // the genuinely-absent-device case above.
+        let name = device.name().unwrap_or_else(|_| "Input device".to_string());
         let channels = device.default_input_config().ok().map(|c| c.channels());
         Some(AudioDeviceInfo { name, channels })
     }
@@ -275,5 +279,32 @@ mod cpal_source {
             let samples = ring.drain();
             Some(AudioChunk::new(samples, self.sample_rate, self.channels))
         }
+    }
+}
+
+#[cfg(all(test, feature = "capture"))]
+mod capture_tests {
+    //! Smoke tests for the stream-free input-device probe (behind `capture`; run with
+    //! `cargo test --manifest-path .../selahcue-stt/Cargo.toml --features capture`). The device is
+    //! hardware-dependent, so these assert the CONTRACT — no panic, a well-shaped result, and an
+    //! idempotent read with no accumulating stream/state — rather than a specific device. The
+    //! stream-free guarantee itself is by construction (the fn never calls `build_input_stream`).
+    use super::default_input_info;
+
+    #[test]
+    fn default_input_info_is_well_shaped_and_repeatable() {
+        // Never panics; returns a valid Option whether or not a device exists (CI may have none).
+        let info = default_input_info();
+        if let Some(i) = &info {
+            assert!(
+                !i.name.is_empty(),
+                "a present device must carry a non-empty name (placeholder when unreadable)"
+            );
+            if let Some(ch) = i.channels {
+                assert!(ch >= 1, "reported channel count is at least 1");
+            }
+        }
+        // A second call reads consistently — no stream was opened / no state accumulated.
+        assert_eq!(default_input_info(), info);
     }
 }
