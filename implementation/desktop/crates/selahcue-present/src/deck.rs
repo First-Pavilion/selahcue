@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::compose::compose_authored_slide;
+use crate::slide::Slide;
 use crate::theme::{Background, Element, Theme, MAX_ELEMENTS};
 use selahcue_core::media::{MediaId, MediaLibrary};
 use selahcue_engine::raster::FrameBuffer;
@@ -124,6 +125,66 @@ impl AuthoredSlide {
             && self.notes.chars().count() <= MAX_NOTES_LEN
             && self.elements.iter().all(Element::within_bounds)
     }
+
+    /// A [`Slide`] projection of this authored slide for the **confidence/stage** monitor
+    /// (FR-037): an authored slide owns layered elements, not the plain title+body [`Slide`] the
+    /// speaker view renders, so while one is Live the monitor would otherwise go blank. This
+    /// projects a speaker-readable view — every VISIBLE [`Element::Text`] box contributes its
+    /// lines in **reading order** (top-to-bottom, then left-to-right, then `z`), the speaker
+    /// [`notes`](Self::notes) follow (their documented confidence-monitor home).
+    ///
+    /// All of it goes into the **body** (never the title): the stage templates render the body
+    /// through their **shrink-to-fit** band (auto-wrap + scale, zero content loss — parity with a
+    /// scripture verse), whereas a title lands in the fixed-size worship header pill, which is
+    /// sized to its text and clips a long line off the frame edge. Blank lines are dropped and
+    /// hidden boxes / shapes / images contribute nothing. A slide with no visible text and no
+    /// notes projects to a blank slide (background-only) — never a panic. Bounded by the slide's
+    /// own element/notes caps (no-leak); pure and deterministic.
+    ///
+    /// The caller must pass a bounds-checked slide (the `PresentAuthoredSlide` ingress gates on
+    /// [`within_bounds`](Self::within_bounds)); on unbounded input this still never panics but
+    /// allocates proportionally. Second consumer: the operator's deck slide-picker derives its
+    /// label from `body`'s first line — keep the body ordering + notes-fallback stable.
+    pub fn confidence_slide(&self) -> Slide {
+        // Visible text boxes in reading order: top y first, then left x, then z (stable on ties).
+        let mut boxes: Vec<(u16, u16, i16, &str)> = self
+            .elements
+            .iter()
+            .filter_map(|e| match e {
+                Element::Text {
+                    x_permille,
+                    y_permille,
+                    z,
+                    text,
+                    visible: true,
+                    ..
+                } => Some((*y_permille, *x_permille, *z, text.as_str())),
+                _ => None,
+            })
+            .collect();
+        boxes.sort_by_key(|(y, x, z, _)| (*y, *x, *z));
+
+        let mut body: Vec<String> = Vec::new();
+        for (_, _, _, text) in boxes {
+            body.extend(non_blank_lines(text));
+        }
+        // Speaker notes read after the on-screen text (never on the audience output).
+        body.extend(non_blank_lines(&self.notes));
+
+        Slide {
+            title: String::new(),
+            body,
+        }
+    }
+}
+
+/// The non-empty, trimmed lines of `text` (blank lines / paragraph gaps dropped) — the shared
+/// line filter for the confidence projection, matching how the stage templates drop blank lines.
+fn non_blank_lines(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
 }
 
 /// An ordered, bounded deck of [`AuthoredSlide`]s with stable ids — the reusable presentation

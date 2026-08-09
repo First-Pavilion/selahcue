@@ -5,7 +5,7 @@
 use selahcue_present::deck::{
     AuthoredSlide, DeckId, SlideDeck, SlideId, Transition, MAX_DECK_SLIDES, MAX_NOTES_LEN,
 };
-use selahcue_present::{Element, Rgba, ShapeKind};
+use selahcue_present::{Element, Fit, Rgba, ShapeKind, TextAlign, VAlign};
 
 fn a_shape() -> Element {
     Element::Shape {
@@ -261,5 +261,87 @@ fn notes_over_the_cap_are_out_of_bounds() {
     assert!(
         !slide.within_bounds(),
         "notes past the cap are out of bounds"
+    );
+}
+
+// A visible text box at a given vertical position (per-mille), for confidence-projection order.
+fn a_text(text: &str, y_permille: u16) -> Element {
+    Element::Text {
+        x_permille: 100,
+        y_permille,
+        w_permille: 800,
+        h_permille: 200,
+        text: text.to_string(),
+        color: Rgba::WHITE,
+        size_permille: 80,
+        line_height_permille: 1150,
+        align_h: TextAlign::Center,
+        align_v: VAlign::Middle,
+        fit: Fit::ShrinkToFit,
+        opacity: 255,
+        z: 0,
+        font: None,
+        weight: 400,
+        letter_spacing_permille: 0,
+        visible: true,
+    }
+}
+
+#[test]
+fn confidence_slide_reads_text_boxes_top_to_bottom_then_appends_notes() {
+    // The confidence/stage monitor needs a readable view of a live authored deck slide (its own
+    // text can't ride the plain Slide model). Every text box projects — in READING order (topmost
+    // first) — into the BODY, then the speaker notes follow. Body (not title) so the stage
+    // templates render it through their shrink-to-fit band and long text scales instead of
+    // clipping in the fixed header pill.
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    // Added bottom-first on purpose: reading order (top y wins), not insertion order.
+    slide.elements = vec![a_text("world", 700), a_text("Hello", 100)];
+    slide.notes = "Speak slowly".into();
+
+    let conf = slide.confidence_slide();
+    assert_eq!(
+        conf.title, "",
+        "authored text never becomes a fixed-header title (which would clip)"
+    );
+    assert_eq!(
+        conf.body,
+        vec![
+            "Hello".to_string(),
+            "world".to_string(),
+            "Speak slowly".to_string()
+        ],
+        "all slide text (reading order) then speaker notes flow into the shrink-to-fit body"
+    );
+}
+
+#[test]
+fn confidence_slide_skips_hidden_boxes_and_blank_lines() {
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    let mut hidden = a_text("secret", 200);
+    if let Element::Text { visible, .. } = &mut hidden {
+        *visible = false;
+    }
+    // A paragraph gap (blank line) inside a box is collapsed; a hidden box is skipped.
+    slide.elements = vec![a_text("Line one\n\nLine two", 100), hidden];
+
+    let conf = slide.confidence_slide();
+    assert_eq!(conf.title, "");
+    assert_eq!(
+        conf.body,
+        vec!["Line one".to_string(), "Line two".to_string()],
+        "blank paragraph gap dropped and the hidden box contributes nothing"
+    );
+}
+
+#[test]
+fn confidence_slide_of_a_textless_slide_is_blank() {
+    // A shape-only slide with no notes has nothing for a speaker to read — it projects to a
+    // blank confidence slide (background-only), exactly as an empty plan slot would.
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    slide.elements = vec![a_shape()];
+    assert!(
+        slide.confidence_slide().is_blank(),
+        "no text and no notes → a blank confidence slide"
     );
 }

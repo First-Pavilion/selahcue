@@ -431,4 +431,18 @@ impl Presenter {
     pub fn live_slide(&self) -> Option<&Slide> {
         self.live_slide.as_ref()
     }
+
+    /// The title+body [`Slide`] the **confidence/stage** monitor should show for whatever is on
+    /// Live (FR-037): the plain plan/scripture [`live_slide`](Self::live_slide) as-is, or — when
+    /// an authored deck slide has taken over Live (its `live_slide` cleared) — a text+notes
+    /// projection of that slide ([`AuthoredSlide::confidence_slide`]) so the monitor never goes
+    /// blank while an authored slide is presented. `None` only when nothing is Live at all.
+    pub fn confidence_slide(&self) -> Option<Slide> {
+        if let Some(slide) = &self.live_slide {
+            return Some(slide.clone());
+        }
+        self.live_authored
+            .as_ref()
+            .map(AuthoredSlide::confidence_slide)
+    }
 }

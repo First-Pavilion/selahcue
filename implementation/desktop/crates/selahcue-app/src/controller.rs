@@ -1634,14 +1634,14 @@ impl LiveController {
                         // Unencodable data: fall back to the normal scene rather than
                         // freezing a stale frame.
                         self.pairing_qr = None;
-                        let current = self.presenter.live_slide().cloned();
+                        let current = self.presenter.confidence_slide();
                         let next = self.stage_next_slide();
                         self.stage
                             .update(current.as_ref(), next.as_ref(), stage_view.as_ref());
                     }
                 }
                 None => {
-                    let current = self.presenter.live_slide().cloned();
+                    let current = self.presenter.confidence_slide();
                     let next = self.stage_next_slide();
                     self.stage
                         .update(current.as_ref(), next.as_ref(), stage_view.as_ref());

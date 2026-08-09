@@ -11,8 +11,9 @@ use selahcue_engine::scene::{Frame, Rgba};
 // a crate-root re-export) so this feature stays isolated from the crate's shared `lib.rs`.
 use selahcue_present::stage::{StageTemplate, MAX_STAGE_MESSAGE_LEN};
 use selahcue_present::{
-    compose_identify, compose_slide, compose_stage, Presenter, Slide, StageContext, StageDisplay,
-    StageTheme, Theme, TimerView, WallClock,
+    compose_identify, compose_slide, compose_stage, AuthoredSlide, Element, Fit, Presenter, Slide,
+    SlideId, StageContext, StageDisplay, StageTheme, TextAlign, Theme, TimerView, VAlign,
+    WallClock,
 };
 use std::time::{Duration, Instant};
 
@@ -1061,4 +1062,87 @@ fn stage_display_state_is_bounded_over_many_updates() {
     assert_eq!(sd.output().byte_len(), expected);
     sd.identify(3); // still works, no panic
     assert_eq!(sd.output().byte_len(), expected);
+}
+
+// A visible text box for an authored deck slide.
+fn authored_text(text: &str) -> Element {
+    Element::Text {
+        x_permille: 100,
+        y_permille: 300,
+        w_permille: 800,
+        h_permille: 400,
+        text: text.to_string(),
+        color: Rgba::WHITE,
+        size_permille: 80,
+        line_height_permille: 1150,
+        align_h: TextAlign::Center,
+        align_v: VAlign::Middle,
+        fit: Fit::ShrinkToFit,
+        opacity: 255,
+        z: 0,
+        font: None,
+        weight: 400,
+        letter_spacing_permille: 0,
+        visible: true,
+    }
+}
+
+#[test]
+fn authored_slide_text_shrinks_to_fit_the_stage_never_clips() {
+    // A live authored deck slide's own text must scale to fit the confidence monitor exactly like
+    // a scripture verse — the whole thing shown, wrapped + shrunk, never clipped. Regression: the
+    // projection used to route the first line into the fixed-size worship title pill, which clips
+    // a long line on the right (owner report: "slide text on the stage output is clipped").
+    use selahcue_engine::raster::{measure_line_width, STAGE_FONT};
+    use selahcue_engine::scene::{FontName, Layer};
+    let stage_font = FontName::new(STAGE_FONT).unwrap();
+    let theme = StageTheme::dark();
+    // A long first line (a full sermon point) + a second line, in one authored text box.
+    let long = "Point One: The grace of God is sufficient for every trial we face this morning";
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    slide.elements = vec![authored_text(&format!("{long}\nand it never runs dry"))];
+
+    let current = slide.confidence_slide();
+    let (w, h) = (960u32, 540u32);
+    let frame = ws(Some(&current), None, None, &theme, w, h);
+    let texts: Vec<(&String, u32, i32, u32)> = frame
+        .layers
+        .iter()
+        .filter_map(|l| match l {
+            Layer::Text { text, px, rect, .. } => Some((text, *px, rect.x, rect.w)),
+            _ => None,
+        })
+        .collect();
+    // It wrapped into multiple lines (not one clipped line)...
+    assert!(
+        texts.len() >= 2,
+        "the long authored text should wrap into multiple lines, got {}",
+        texts.len()
+    );
+    for (t, px, rx, rw) in &texts {
+        // ...every rendered line fits its region width (shrunk, no in-region clip)...
+        assert!(
+            measure_line_width(t, *px, Some(&stage_font), 700) <= *rw as f32 + 1.0,
+            "authored stage line clips the region width: {t:?}"
+        );
+        // ...and stays on-screen: the OLD projection put this line in the worship title pill,
+        // whose box is sized to the (long) text and runs off the right edge, where the raster
+        // clips it. The shrink-to-fit body band never leaves the frame.
+        assert!(
+            *rx >= 0 && (*rx as u32).saturating_add(*rw) <= w,
+            "authored stage line runs off the {w}px-wide frame (x={rx}, w={rw}): {t:?}"
+        );
+    }
+    // ...and not one word is dropped.
+    let joined = texts
+        .iter()
+        .map(|(t, _, _, _)| t.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    for word in long.split_whitespace() {
+        assert!(
+            joined.contains(word),
+            "authored stage dropped the word {word:?}"
+        );
+    }
 }

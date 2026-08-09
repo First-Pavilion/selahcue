@@ -1541,6 +1541,84 @@ fn full_frame_shape(fill: Rgba) -> Element {
     }
 }
 
+fn authored_text(text: &str) -> Element {
+    Element::Text {
+        x_permille: 100,
+        y_permille: 300,
+        w_permille: 800,
+        h_permille: 400,
+        text: text.to_string(),
+        color: Rgba::WHITE,
+        size_permille: 80,
+        line_height_permille: 1150,
+        align_h: TextAlign::Center,
+        align_v: VAlign::Middle,
+        fit: Fit::ShrinkToFit,
+        opacity: 255,
+        z: 0,
+        font: None,
+        weight: 400,
+        letter_spacing_permille: 0,
+        visible: true,
+    }
+}
+
+#[test]
+fn confidence_monitor_shows_the_live_authored_slide_text() {
+    use std::time::Instant;
+    let (mut c, _) = controller();
+    let theme_json = serde_json::to_string(&Theme::dark()).unwrap();
+
+    // Baseline: an authored slide with NO text/notes — the confidence monitor has no content
+    // to project (only its own chrome), so it renders the idle scene.
+    let empty = AuthoredSlide::new(SlideId(1));
+    c.apply(&Command::PresentAuthoredSlide {
+        slide_json: serde_json::to_string(&empty).unwrap(),
+        theme_json: theme_json.clone(),
+    });
+    c.tick(Instant::now());
+    let idle_stage = c.stage_output().bytes().to_vec();
+
+    // Present an authored deck slide carrying its own text + speaker notes.
+    let mut slide = AuthoredSlide::new(SlideId(2));
+    slide.elements = vec![authored_text("Grace That Feeds")];
+    slide.notes = "Emphasise verse 5".into();
+    assert_eq!(
+        c.apply(&Command::PresentAuthoredSlide {
+            slide_json: serde_json::to_string(&slide).unwrap(),
+            theme_json,
+        }),
+        ControllerReply::Ack
+    );
+
+    // The confidence contract: the live authored slide projects to a readable title+body,
+    // even though it is NOT a plain title+body live slide (regression: used to be blank).
+    assert!(
+        c.presenter().live_slide().is_none(),
+        "an authored slide is live (no plain live slide)"
+    );
+    let conf = c
+        .presenter()
+        .confidence_slide()
+        .expect("a live authored slide feeds the confidence monitor");
+    // The slide text flows into the shrink-to-fit body (not the fixed-header title, which clips).
+    assert_eq!(conf.title, "");
+    assert!(
+        conf.body.contains(&"Grace That Feeds".to_string()),
+        "the authored slide text is in the confidence body: {:?}",
+        conf.body
+    );
+
+    // And it reaches the stage/confidence SURFACE — the composed pixels differ from the
+    // text-less idle case, proving the authored content is actually drawn (FR-037).
+    c.tick(Instant::now());
+    assert_ne!(
+        c.stage_output().bytes(),
+        idle_stage.as_slice(),
+        "the presented authored text must appear on the confidence/stage output"
+    );
+}
+
 #[test]
 fn present_authored_slide_puts_a_deck_slide_on_live_and_takes_over() {
     let (mut c, _) = controller();

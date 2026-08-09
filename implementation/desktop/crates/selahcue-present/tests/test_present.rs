@@ -5,8 +5,8 @@
 use selahcue_engine::analysis::analyze_flashes;
 use selahcue_engine::raster::FrameBuffer;
 use selahcue_present::{
-    AuthoredSlide, Background, LayerMask, Presenter, Rgba, Slide, SlideId, StageDisplay,
-    StageTheme, Theme, TimerView,
+    AuthoredSlide, Background, Element, Fit, LayerMask, Presenter, Rgba, Slide, SlideId,
+    StageDisplay, StageTheme, TextAlign, Theme, TimerView, VAlign,
 };
 use std::time::{Duration, Instant};
 
@@ -647,4 +647,73 @@ fn a_blank_live_composes_a_safe_black_secondary_screen() {
     let fb = p.compose_screen_live(Some(&Theme::classic()), LayerMask::ALL);
     assert_eq!((fb.width(), fb.height()), (320, 180));
     assert!(is_black(&fb), "nothing live → a safe black secondary frame");
+}
+
+fn authored_text(text: &str) -> Element {
+    Element::Text {
+        x_permille: 100,
+        y_permille: 300,
+        w_permille: 800,
+        h_permille: 400,
+        text: text.to_string(),
+        color: Rgba::WHITE,
+        size_permille: 80,
+        line_height_permille: 1150,
+        align_h: TextAlign::Center,
+        align_v: VAlign::Middle,
+        fit: Fit::ShrinkToFit,
+        opacity: 255,
+        z: 0,
+        font: None,
+        weight: 400,
+        letter_spacing_permille: 0,
+        visible: true,
+    }
+}
+
+#[test]
+fn confidence_slide_projects_the_live_authored_slide_instead_of_going_blank() {
+    let mut p = presenter();
+
+    // A plain plan/scripture live slide is the confidence source as usual.
+    p.stage(Slide::new("Verse 1", ["line a"]));
+    p.go_live();
+    assert_eq!(
+        p.confidence_slide().map(|s| s.title),
+        Some("Verse 1".to_string()),
+        "a plain live slide feeds the confidence monitor"
+    );
+
+    // Presenting an authored deck slide clears the plain live slide (mutual exclusion), but the
+    // confidence monitor must NOT go blank — it projects the authored slide's own text + notes.
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    slide.elements = vec![authored_text("Grace That Feeds")];
+    slide.notes = "Emphasise verse 5".into();
+    assert!(p.present_authored(&slide, &Theme::dark()));
+    assert!(
+        p.live_slide().is_none(),
+        "authored present clears the plain live slide (unchanged invariant)"
+    );
+
+    let conf = p
+        .confidence_slide()
+        .expect("a live authored slide still feeds the confidence monitor");
+    // Text + notes land in the BODY (shrink-to-fit band), never the fixed-header title.
+    assert_eq!(conf.title, "");
+    assert_eq!(
+        conf.body,
+        vec![
+            "Grace That Feeds".to_string(),
+            "Emphasise verse 5".to_string()
+        ]
+    );
+}
+
+#[test]
+fn confidence_slide_is_none_when_nothing_is_live() {
+    let p = presenter();
+    assert!(
+        p.confidence_slide().is_none(),
+        "nothing live → no confidence content (the monitor shows only its chrome)"
+    );
 }
