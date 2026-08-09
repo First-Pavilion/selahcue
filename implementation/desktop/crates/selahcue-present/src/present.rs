@@ -41,6 +41,13 @@ pub struct Presenter {
     /// a plan/scripture `go_live` clears this. Retained so secondary screens / NDI can MIRROR the
     /// authored slide (see [`compose_screen_live`](Self::compose_screen_live)) instead of idle black.
     live_authored: Option<AuthoredSlide>,
+    /// The authored deck slide that comes AFTER the live one, supplied by the operator (which owns
+    /// the deck cursor — Approach A keeps the host deck-blind), for the Stage/Confidence monitor's
+    /// deck-aware "next" line ([`authored_next_confidence_slide`](Self::authored_next_confidence_slide)).
+    /// Set only via [`set_authored_next`](Self::set_authored_next) after a present; a fresh
+    /// `present_authored` and a plan `go_live` reset it. `None` at the end of a deck. Never rendered
+    /// to the audience — projected to text only for the confidence monitor.
+    live_authored_next: Option<AuthoredSlide>,
     /// The `main` audience SCREEN's per-screen theme (86ajq321k). `None` = follow the
     /// per-item override / global. When set, it is the strongest signal for the physical
     /// `main` output: the effective theme is `main_screen_theme ?? item_theme ?? global`,
@@ -78,6 +85,7 @@ impl Presenter {
             staged_theme: None,
             live_theme: None,
             live_authored: None,
+            live_authored_next: None,
             main_screen_theme: None,
             main_layer_mask: LayerMask::ALL,
         }
@@ -145,6 +153,7 @@ impl Presenter {
         self.live_slide = Some(slide);
         self.live_theme = self.staged_theme.clone();
         self.live_authored = None;
+        self.live_authored_next = None;
         true
     }
 
@@ -176,6 +185,9 @@ impl Presenter {
         self.live_slide = None;
         self.live_theme = None;
         self.live_authored = Some(slide.clone());
+        // A fresh present resets any stale coming-slide; the operator re-supplies it via
+        // `set_authored_next` (the new slide may be last-in-deck, so the default is "no next").
+        self.live_authored_next = None;
         true
     }
 
@@ -442,6 +454,24 @@ impl Presenter {
             return Some(slide.clone());
         }
         self.live_authored
+            .as_ref()
+            .map(AuthoredSlide::confidence_slide)
+    }
+
+    /// Record the deck slide that comes AFTER the live authored slide (Approach A: the operator,
+    /// which owns the deck cursor, supplies it), for the confidence monitor's "next" line. `None`
+    /// clears it (end of deck / no coming slide). Meaningful only while an authored slide is Live;
+    /// a fresh [`present_authored`](Self::present_authored) and a plan [`go_live`](Self::go_live)
+    /// reset it, so a stale next can never outlive its present.
+    pub fn set_authored_next(&mut self, next: Option<AuthoredSlide>) {
+        self.live_authored_next = next;
+    }
+
+    /// The title+body projection of the COMING authored deck slide for the confidence/stage
+    /// monitor's "next" line ([`AuthoredSlide::confidence_slide`]), or `None` when none is set
+    /// (end of deck, or not in authored playback). Never rendered to the audience.
+    pub fn authored_next_confidence_slide(&self) -> Option<Slide> {
+        self.live_authored_next
             .as_ref()
             .map(AuthoredSlide::confidence_slide)
     }

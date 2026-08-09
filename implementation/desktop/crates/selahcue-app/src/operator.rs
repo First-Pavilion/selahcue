@@ -328,10 +328,16 @@ impl OperatorShell {
     /// Present a Design 2.0 authored deck slide on the LIVE audience output — the deck editor's
     /// "Present". `slide_json`/`theme_json` are a serialized `AuthoredSlide` and `Theme` (opaque;
     /// the controller deserializes + composes them with the same compositor as plan content).
-    pub fn present_authored_slide(&self, slide_json: &str, theme_json: &str) -> OperatorView {
+    pub fn present_authored_slide(
+        &self,
+        slide_json: &str,
+        theme_json: &str,
+        next_slide_json: Option<&str>,
+    ) -> OperatorView {
         self.act(&Command::PresentAuthoredSlide {
             slide_json: slide_json.into(),
             theme_json: theme_json.into(),
+            next_slide_json: next_slide_json.map(Into::into),
         })
     }
     /// Set (or clear, with an empty name) a plan item's per-item theme override (S8-3d).
@@ -932,10 +938,12 @@ impl RemoteOperator {
         &mut self,
         slide_json: String,
         theme_json: String,
+        next_slide_json: Option<String>,
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::PresentAuthoredSlide {
             slide_json,
             theme_json,
+            next_slide_json,
         })
         .await
     }

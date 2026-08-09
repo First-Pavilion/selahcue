@@ -1575,6 +1575,7 @@ fn confidence_monitor_shows_the_live_authored_slide_text() {
     c.apply(&Command::PresentAuthoredSlide {
         slide_json: serde_json::to_string(&empty).unwrap(),
         theme_json: theme_json.clone(),
+        next_slide_json: None,
     });
     c.tick(Instant::now());
     let idle_stage = c.stage_output().bytes().to_vec();
@@ -1587,6 +1588,7 @@ fn confidence_monitor_shows_the_live_authored_slide_text() {
         c.apply(&Command::PresentAuthoredSlide {
             slide_json: serde_json::to_string(&slide).unwrap(),
             theme_json,
+            next_slide_json: None,
         }),
         ControllerReply::Ack
     );
@@ -1620,6 +1622,53 @@ fn confidence_monitor_shows_the_live_authored_slide_text() {
 }
 
 #[test]
+fn confidence_next_shows_the_coming_authored_deck_slide() {
+    // Approach A: the host is deck-blind, so the operator sends the COMING deck slide alongside
+    // the present. The confidence/stage monitor's "next" then shows that slide (not the stale
+    // Preview slide), and a bad/absent next never fails the present.
+    let (mut c, _) = controller();
+    let theme_json = serde_json::to_string(&Theme::dark()).unwrap();
+
+    let mut cur = AuthoredSlide::new(SlideId(1));
+    cur.elements = vec![authored_text("Point One")];
+    let mut next = AuthoredSlide::new(SlideId(2));
+    next.elements = vec![authored_text("Point Two")];
+
+    assert_eq!(
+        c.apply(&Command::PresentAuthoredSlide {
+            slide_json: serde_json::to_string(&cur).unwrap(),
+            theme_json: theme_json.clone(),
+            next_slide_json: Some(serde_json::to_string(&next).unwrap()),
+        }),
+        ControllerReply::Ack
+    );
+    let n = c
+        .stage_next_slide()
+        .expect("a coming deck slide feeds the confidence next");
+    assert!(
+        n.body.contains(&"Point Two".to_string()),
+        "confidence next shows the coming deck slide: {:?}",
+        n.body
+    );
+
+    // A later present with a MALFORMED next drops it (never failing the present); with nothing
+    // staged, the confidence next is then empty.
+    assert_eq!(
+        c.apply(&Command::PresentAuthoredSlide {
+            slide_json: serde_json::to_string(&cur).unwrap(),
+            theme_json,
+            next_slide_json: Some("not-json".into()),
+        }),
+        ControllerReply::Ack,
+        "a malformed coming slide is dropped, never failing the present"
+    );
+    assert!(
+        c.stage_next_slide().is_none(),
+        "a dropped/absent coming slide + nothing staged → no confidence next"
+    );
+}
+
+#[test]
 fn present_authored_slide_puts_a_deck_slide_on_live_and_takes_over() {
     let (mut c, _) = controller();
     // Put a plan item live first, to prove the authored present REPLACES it (the two live
@@ -1638,6 +1687,7 @@ fn present_authored_slide_puts_a_deck_slide_on_live_and_takes_over() {
         c.apply(&Command::PresentAuthoredSlide {
             slide_json,
             theme_json: theme_json.clone(),
+            next_slide_json: None,
         }),
         ControllerReply::Ack
     );
@@ -1656,6 +1706,7 @@ fn present_authored_slide_puts_a_deck_slide_on_live_and_takes_over() {
         c.apply(&Command::PresentAuthoredSlide {
             slide_json: "not-json".into(),
             theme_json: theme_json.clone(),
+            next_slide_json: None,
         }),
         ControllerReply::Deny(DenyReason::BadRequest)
     );
@@ -1672,6 +1723,7 @@ fn present_authored_slide_puts_a_deck_slide_on_live_and_takes_over() {
         c.apply(&Command::PresentAuthoredSlide {
             slide_json: serde_json::to_string(&huge).unwrap(),
             theme_json,
+            next_slide_json: None,
         }),
         ControllerReply::Deny(DenyReason::BadRequest),
         "an over-bounds slide is rejected (no-leak)"
@@ -1693,7 +1745,8 @@ fn operator_view_reports_the_live_authored_slide_id() {
     assert_eq!(
         c.apply(&Command::PresentAuthoredSlide {
             slide_json,
-            theme_json
+            theme_json,
+            next_slide_json: None,
         }),
         ControllerReply::Ack
     );

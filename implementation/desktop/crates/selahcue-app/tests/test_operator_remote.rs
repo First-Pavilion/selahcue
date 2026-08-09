@@ -150,7 +150,7 @@ async fn remote_present_authored_slide_drives_the_host_live_output() {
     }];
     let slide_json = serde_json::to_string(&slide).unwrap();
     let theme_json = serde_json::to_string(&Theme::dark()).unwrap();
-    op.present_authored_slide(slide_json, theme_json)
+    op.present_authored_slide(slide_json, theme_json, None)
         .await
         .unwrap();
 

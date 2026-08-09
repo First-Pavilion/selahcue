@@ -717,3 +717,49 @@ fn confidence_slide_is_none_when_nothing_is_live() {
         "nothing live → no confidence content (the monitor shows only its chrome)"
     );
 }
+
+#[test]
+fn authored_next_projects_the_coming_deck_slide_and_is_reset_correctly() {
+    // Approach A: the host is deck-blind, so the operator supplies the COMING deck slide alongside
+    // the present. The confidence/stage monitor's "next" projects that slide's text+notes via the
+    // same shrink-to-fit projection, and it is reset by a fresh present and by a plan Go-Live.
+    let mut p = presenter();
+    let mut cur = AuthoredSlide::new(SlideId(1));
+    cur.elements = vec![authored_text("Point One")];
+    let mut next = AuthoredSlide::new(SlideId(2));
+    next.elements = vec![authored_text("Point Two")];
+    next.notes = "wrap up".into();
+
+    // A present with no coming slide → no confidence "next".
+    assert!(p.present_authored(&cur, &Theme::dark()));
+    assert!(
+        p.authored_next_confidence_slide().is_none(),
+        "no coming slide supplied → no confidence next"
+    );
+
+    // The operator supplies the coming slide → the "next" projects its text then notes.
+    p.set_authored_next(Some(next.clone()));
+    let projected = p
+        .authored_next_confidence_slide()
+        .expect("a coming slide is set");
+    assert_eq!(
+        projected.body,
+        vec!["Point Two".to_string(), "wrap up".to_string()]
+    );
+
+    // A FRESH present resets the stale next (the new slide may be last-in-deck).
+    assert!(p.present_authored(&cur, &Theme::dark()));
+    assert!(
+        p.authored_next_confidence_slide().is_none(),
+        "a new present clears the prior coming slide"
+    );
+
+    // A plan Go-Live takes over Live and clears the authored next too.
+    p.set_authored_next(Some(next));
+    p.stage(Slide::title("Song"));
+    assert!(p.go_live());
+    assert!(
+        p.authored_next_confidence_slide().is_none(),
+        "a plan go-live clears the authored next"
+    );
+}

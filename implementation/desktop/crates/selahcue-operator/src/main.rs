@@ -188,15 +188,18 @@ impl Backend {
         &self,
         slide_json: String,
         theme_json: String,
+        next_slide_json: Option<String>,
     ) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
                 .lock()
                 .await
-                .present_authored_slide(slide_json, theme_json)
+                .present_authored_slide(slide_json, theme_json, next_slide_json)
                 .await
                 .map_err(|e| e.to_string()),
-            Backend::Local(s) => Ok(s.present_authored_slide(&slide_json, &theme_json)),
+            Backend::Local(s) => {
+                Ok(s.present_authored_slide(&slide_json, &theme_json, next_slide_json.as_deref()))
+            }
         }
     }
     async fn clear(&self) -> Result<OperatorView, String> {
@@ -1585,10 +1588,10 @@ async fn deck_go_live(state: State<'_, AppState>) -> Result<serde_json::Value, S
     // Route the composed slide to the audience output (same compositor as the canvas preview). A
     // transport failure surfaces as the command error so the operator learns the output wasn't
     // reached; the local live annotation already succeeded regardless.
-    if let Some((slide_json, theme_json)) = payload {
+    if let Some((slide_json, theme_json, next_slide_json)) = payload {
         state
             .backend
-            .present_authored_slide(slide_json, theme_json)
+            .present_authored_slide(slide_json, theme_json, next_slide_json)
             .await?;
     }
     Ok(view)
@@ -1609,10 +1612,10 @@ async fn deck_go_live_delta(
         }
         (ws.view(), ws.present_payload())
     };
-    if let Some((slide_json, theme_json)) = payload {
+    if let Some((slide_json, theme_json, next_slide_json)) = payload {
         state
             .backend
-            .present_authored_slide(slide_json, theme_json)
+            .present_authored_slide(slide_json, theme_json, next_slide_json)
             .await?;
     }
     Ok(view)

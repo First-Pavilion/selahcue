@@ -256,14 +256,32 @@ fn present_authored_slide_round_trips_and_is_additive() {
     let cmd = Command::PresentAuthoredSlide {
         slide_json: r#"{"id":1}"#.into(),
         theme_json: "{}".into(),
+        next_slide_json: None,
     };
     let json = to_json(&cmd).unwrap();
+    // Byte-stable: `next_slide_json` is skip-if-none, so a present WITHOUT a coming deck slide
+    // serialises byte-identically to the pinned v2 fixture (existing operators/hosts unaffected).
     assert_eq!(
         json,
         r#"{"cmd":"present_authored_slide","slide_json":"{\"id\":1}","theme_json":"{}"}"#
     );
     assert_eq!(from_json::<Command>(&json).unwrap(), cmd);
-    // Additive: a pre-existing command stays byte-identical (the pinned v2 fixtures hold).
+
+    // Additive: a present WITH the next deck slide carries it as opaque JSON (for the
+    // confidence/stage monitor's "next" line) and round-trips.
+    let with_next = Command::PresentAuthoredSlide {
+        slide_json: r#"{"id":1}"#.into(),
+        theme_json: "{}".into(),
+        next_slide_json: Some(r#"{"id":2}"#.into()),
+    };
+    let jn = to_json(&with_next).unwrap();
+    assert_eq!(
+        jn,
+        r#"{"cmd":"present_authored_slide","slide_json":"{\"id\":1}","theme_json":"{}","next_slide_json":"{\"id\":2}"}"#
+    );
+    assert_eq!(from_json::<Command>(&jn).unwrap(), with_next);
+
+    // A pre-existing command stays byte-identical (the pinned v2 fixtures hold).
     assert_eq!(to_json(&Command::GoLive).unwrap(), r#"{"cmd":"go_live"}"#);
 }
 
@@ -347,6 +365,7 @@ fn every_command_round_trips() {
         Command::PresentAuthoredSlide {
             slide_json: r#"{"id":1}"#.into(),
             theme_json: "{}".into(),
+            next_slide_json: Some(r#"{"id":2}"#.into()),
         },
     ];
     for c in cmds {

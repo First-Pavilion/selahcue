@@ -673,12 +673,20 @@ impl DeckWorkspace {
     /// deck) or serialization fails. The shell's `deck_go_live` sends this over the LAN control
     /// link so "Present" reaches the native output window (the `AuthoredSlide` is composed on the
     /// host with the same compositor as scripture/plan content).
-    pub fn present_payload(&self) -> Option<(String, String)> {
+    pub fn present_payload(&self) -> Option<(String, String, Option<String>)> {
         let sid = self.effective_selected()?;
-        let slide = self.deck.get(sid)?;
+        let idx = self.deck.index_of(sid)?;
+        let slide = self.deck.get_index(idx)?;
         let slide_json = serde_json::to_string(slide).ok()?;
         let theme_json = serde_json::to_string(&self.theme).ok()?;
-        Some((slide_json, theme_json))
+        // The COMING deck slide, sent so the host Stage/Confidence monitor can show a deck-aware
+        // "next" (Approach A — the host is deck-blind; the operator owns the cursor). `None` at the
+        // end of the deck (no wrap).
+        let next_json = self
+            .deck
+            .get_index(idx + 1)
+            .and_then(|next| serde_json::to_string(next).ok());
+        Some((slide_json, theme_json, next_json))
     }
 
     // --- media ------------------------------------------------------------------------------
@@ -1425,19 +1433,38 @@ mod tests {
 
     #[test]
     fn present_payload_is_the_selected_slide_and_theme_or_none_when_empty() {
-        // A populated workspace yields a (slide, theme) pair that round-trips to the SAME types
-        // the host composes — so "Present" reaches the output byte-identically to the canvas.
+        // A populated workspace yields a (slide, theme, next) triple that round-trips to the SAME
+        // types the host composes — so "Present" reaches the output byte-identically to the canvas.
         let ws = DeckWorkspace::demo();
-        let (slide_json, theme_json) = ws.present_payload().expect("demo has a selectable slide");
+        let (slide_json, theme_json, next_json) =
+            ws.present_payload().expect("demo has a selectable slide");
         serde_json::from_str::<selahcue_present::AuthoredSlide>(&slide_json)
             .expect("slide_json is a valid AuthoredSlide");
         serde_json::from_str::<Theme>(&theme_json).expect("theme_json is a valid Theme");
+        // The demo's selected slide is not the last, so the COMING deck slide is supplied (Approach
+        // A) for the host confidence/stage monitor's "next".
+        let next_json = next_json.expect("a non-last selected slide has a coming slide");
+        serde_json::from_str::<selahcue_present::AuthoredSlide>(&next_json)
+            .expect("next_json is a valid AuthoredSlide");
 
         // An empty workspace (no slides) has nothing to present.
         let empty = DeckWorkspace::new_empty_for_test();
         assert!(
             empty.present_payload().is_none(),
             "an empty deck has nothing to present"
+        );
+    }
+
+    #[test]
+    fn present_payload_has_no_coming_slide_at_the_end_of_the_deck() {
+        // At the LAST deck slide there is no next (no wrap), so the confidence "next" falls back to
+        // Preview on the host.
+        let mut ws = DeckWorkspace::demo();
+        ws.go_live_delta(100); // clamp the live/selected pointer to the last slide
+        let (_, _, next_json) = ws.present_payload().expect("a slide is selected");
+        assert!(
+            next_json.is_none(),
+            "the last deck slide has no coming slide"
         );
     }
 

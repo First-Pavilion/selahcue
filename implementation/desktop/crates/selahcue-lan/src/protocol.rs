@@ -160,9 +160,18 @@ pub enum Command {
     /// scripture/plan content and TAKES OVER the live surface (a later plan/scripture Go-Live
     /// replaces it). Malformed or over-bounds JSON is rejected (the live output is unchanged).
     /// Requires `GoLive` — it changes what the audience sees (never an escalation).
+    ///
+    /// `next_slide_json` (additive, skip-if-none) is the serialized `AuthoredSlide` that comes
+    /// AFTER this one in the deck, sent so the host-rendered Stage/Confidence monitor can show a
+    /// deck-aware "next" line (the host stays deck-blind — Approach A — so the operator, which
+    /// owns the deck cursor, supplies it). Absent (`None`) at the end of a deck or from a caller
+    /// that does not provide it; the wire stays byte-identical to the pre-field fixture when it
+    /// is `None`.
     PresentAuthoredSlide {
         slide_json: String,
         theme_json: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_slide_json: Option<String>,
     },
     /// Set (or clear, with `None`) a plan item's per-item theme OVERRIDE by built-in
     /// name (S8-3d). That item then renders on its own template instead of the global

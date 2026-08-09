@@ -6,7 +6,7 @@
 - Parent goal ID: 86ajp07k1 (EPIC — Outputs & Displays)
 - Title: The Stage/Confidence monitor shows the LIVE authored deck slide's own text + speaker notes, shrunk-to-fit like a scripture verse — never blank, never clipped
 - Role: backend-engineer
-- Status: GATE_REVIEW
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajp0aa4 (STORY — Stage / confidence display output; bug logged as a comment/child)
 - Created: 2026-08-09
@@ -81,7 +81,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-005 | yes | No regression in the plain confidence path, stage templates, or any crate | `cargo test --workspace` and `cargo test -p selahcue-app --features server` | all suites pass | gate output bkshrqvfn | PASS |
 | C-006 | yes | Lint + format gates clean | `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings` (+ app `server`) | no diff, no warnings | gate output | PASS |
 | C-007 | yes | New buffering is bounded (no-leak) | review | projection is a transient transform of `MAX_ELEMENTS`/`MAX_TEXT_ELEMENT_LEN`/`MAX_NOTES_LEN`-capped inputs; no persistent buffer | deck.rs confidence_slide | PASS |
-| C-008 | yes | Independent review (code + performance + security) of the diff | 3 independent reviewer passes + owner QA | reviews pass; owner confirms on a real second display | code/perf/security PASS (ClickUp 86ajy4czf review comment); owner QA pending | PENDING |
+| C-008 | yes | Independent review (code + performance + security) of the diff | 3 independent reviewer passes + owner QA | reviews pass; owner confirms on a real second display | code/perf/security PASS (ClickUp 86ajy4czf); owner QA PASSED | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -118,7 +118,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/GOAL-be-confidence-authored-content.md`
 - Validator result: PASS (8 criteria, 8 mandatory).
 - Test evidence: `selahcue-present` all suites 0 failed (test_deck 15, test_present 28, test_stage 28, + others); `selahcue-app --features server` 0 failed (test_controller 111, + others); clippy `-D warnings` (workspace + app `server`) clean; `cargo fmt --check` clean.
-- Independent verification result: PENDING (code-review + owner QA on a real second display).
-- Terminal state: GATE_REVIEW (fix code-complete + locally verified; uncommitted pending owner commit + independent review/QA).
-- Remaining failed or blocked criteria: C-008 (independent review/QA) PENDING.
-- ClickUp final evidence comment: BUG 86ajy4czf created with repro / root cause / fix / QA steps.
+- Independent verification result: PASS — code/performance/security review PASS; owner QA PASSED on a real second display.
+- Terminal state: VERIFIED_COMPLETE (committed `37f3bb8`, pushed to origin/main).
+- Remaining failed or blocked criteria: none.
+- ClickUp final evidence comment: BUG 86ajy4czf — repro/root-cause/fix/QA + review verdict + commit `37f3bb8` + push logged.

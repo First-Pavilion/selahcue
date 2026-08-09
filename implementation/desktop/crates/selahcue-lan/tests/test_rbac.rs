@@ -52,6 +52,7 @@ fn operator_can_do_every_command() {
         Command::PresentAuthoredSlide {
             slide_json: "{}".into(),
             theme_json: "{}".into(),
+            next_slide_json: None,
         },
     ];
     for c in &cmds {
@@ -182,6 +183,7 @@ fn present_authored_slide_is_go_live_privilege() {
     let present = Command::PresentAuthoredSlide {
         slide_json: "{}".into(),
         theme_json: "{}".into(),
+        next_slide_json: None,
     };
     assert!(authorize(Role::Operator, &present));
     assert!(authorize(Role::Producer, &present));

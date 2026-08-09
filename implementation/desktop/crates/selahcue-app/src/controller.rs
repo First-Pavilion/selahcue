@@ -720,7 +720,12 @@ impl LiveController {
     /// Rejects (Live unchanged) on malformed JSON, an over-bounds slide (element count / text
     /// length), or an over-bounds theme (no-leak — a hostile/hand-edited payload cannot grow the
     /// design without limit). Returns whether the slide reached the Live output.
-    fn present_authored_slide(&mut self, slide_json: &str, theme_json: &str) -> bool {
+    fn present_authored_slide(
+        &mut self,
+        slide_json: &str,
+        theme_json: &str,
+        next_slide_json: Option<&str>,
+    ) -> bool {
         let Ok(slide) = serde_json::from_str::<AuthoredSlide>(slide_json) else {
             return false;
         };
@@ -733,7 +738,17 @@ impl LiveController {
         if !theme.elements_bounded() {
             return false;
         }
-        self.presenter.present_authored(&slide, &theme)
+        if !self.presenter.present_authored(&slide, &theme) {
+            return false;
+        }
+        // Best-effort: the COMING deck slide feeds the confidence monitor's "next" (Approach A —
+        // the operator supplies it). A malformed / over-bounds next is simply dropped (no next),
+        // never failing the present — the current slide is already Live.
+        let next = next_slide_json
+            .and_then(|j| serde_json::from_str::<AuthoredSlide>(j).ok())
+            .filter(AuthoredSlide::within_bounds);
+        self.presenter.set_authored_next(next);
+        true
     }
 
     /// Save a NAMED custom theme into the library (S8-3d follow-up 86ajq4xmy). The name
@@ -1662,6 +1677,12 @@ impl LiveController {
                 }
             }
         }
+        // During authored deck playback the operator supplies the COMING deck slide (Approach A —
+        // the host is deck-blind); show its projection so the speaker sees the next deck slide,
+        // not the stale Preview slide. `None` at the end of a deck → falls back to Preview.
+        if let Some(next) = self.presenter.authored_next_confidence_slide() {
+            return Some(next);
+        }
         self.presenter.staged().cloned()
     }
 
@@ -1973,12 +1994,14 @@ impl LiveController {
             Command::PresentAuthoredSlide {
                 slide_json,
                 theme_json,
+                next_slide_json,
             } => {
                 // Route a Design 2.0 authored deck slide to the LIVE audience output. It takes
                 // over the live surface, so clear the plan/scripture/free-text live cursors
                 // (mirrors Clear) and reveal it (mirrors GoLive's un-blackout). A malformed or
-                // over-bounds payload is rejected — the live output is unchanged.
-                if self.present_authored_slide(slide_json, theme_json) {
+                // over-bounds payload is rejected — the live output is unchanged. `next_slide_json`
+                // (the coming deck slide) feeds the confidence monitor's "next" (best-effort).
+                if self.present_authored_slide(slide_json, theme_json, next_slide_json.as_deref()) {
                     self.live_idx = None;
                     self.live_scripture = None;
                     self.live_free_text = None;
