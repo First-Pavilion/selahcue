@@ -1,0 +1,73 @@
+:root {
+  /* Neutrals (Design 2.0) */
+  --sc-base: #0b0d12;
+  --sc-surface: #14161d;
+  --sc-elevated: #1c1f28;
+  --sc-inset: #0f1116;
+  --sc-border: #262a34;
+  --sc-border-strong: #363b47;
+
+  /* Text */
+  --sc-text: #f4f6fb;
+  --sc-text-secondary: #a7aebe;
+  --sc-text-muted: #6b7383;
+
+  /* Brand */
+  --sc-primary: #6e5cf0;
+  --sc-primary-hover: #7e6eff;
+  --sc-accent-soft: #201f3a;
+
+  /* Scripture */
+  --sc-gold: #f2b84b;
+  --sc-gold-soft: #2a2415;
+
+  /* Status */
+  --sc-live: #ff4d4d;
+  --sc-live-soft: #2a1416;
+  --sc-live-border: #5a2327;
+  --sc-preview: #35c08a;
+  --sc-preview-soft: #10231c;
+  --sc-preview-border: #1c3a2e;
+  --sc-warn: #f5a524;
+  --sc-warn-soft: #2a2415;
+  --sc-warn-border: #4a3a15;
+  --sc-info: #38bdf8;
+  --sc-info-soft: #10222b;
+
+  /* Legacy Figma tokens (marketing pages use these) */
+  --bg-base: #0e1116;
+  --bg-panel: #171b22;
+  --bg-elevated: #1e232c;
+  --border: #2b323d;
+  --text-primary: #eef1f6;
+  --text-muted: #9aa4b2;
+  --accent-brand: #5b6bd6;
+  --accent-preview: #2bb673;
+  --accent-live: #ef4444;
+  --accent-warn: #f2b53c;
+
+  /* Typography */
+  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-h1: 700 60px/64px var(--font-family);
+  --font-h2: 700 42px/48px var(--font-family);
+  --font-h3: 600 21px/28px var(--font-family);
+  --font-body: 400 17px/26px var(--font-family);
+  --font-small: 400 15px/22px var(--font-family);
+  --font-eyebrow: 700 13px/16px var(--font-family);
+  --font-micro: 500 11px/14px var(--font-family);
+
+  /* Spacing */
+  --gutter: 96px;
+  --section-padding: 88px;
+  --card-radius: 16px;
+  --pill-radius: 999px;
+  --grid-gap: 24px;
+
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-base: 250ms ease;
+  --transition-slow: 400ms cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* CTA Gradient */
+  --gradient-cta: linear-gradient(135deg, #5b6bd6, #2b2a6b);
+}

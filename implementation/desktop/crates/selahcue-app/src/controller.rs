@@ -11,10 +11,10 @@ use selahcue_core::plan::{ItemId, ServicePlan};
 use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{
-    Command, DenyReason, DetectionView, DisplayView, OutputConfigView, OutputStatusView,
-    SavedThemeView, ScaleFit, ScreenThemeView, ScreenView, ServerMessage, ThumbView, TimerSnapshot,
-    TranscriptSegmentView, VerseView, MAX_FRAME_RATE, MAX_NDI_NAME_LEN, MAX_OUTPUT_DELAY_MS,
-    MIN_FRAME_RATE,
+    Command, ContentLinkView, DenyReason, DetectionView, DisplayView, OutputConfigView,
+    OutputStatusView, SavedThemeView, ScaleFit, ScreenThemeView, ScreenView, ServerMessage,
+    ThumbView, TimerSnapshot, TranscriptSegmentView, VerseView, MAX_FRAME_RATE, MAX_NDI_NAME_LEN,
+    MAX_OUTPUT_DELAY_MS, MIN_FRAME_RATE,
 };
 use selahcue_present::{
     AuthoredSlide, FrameBuffer, LayerMask, Presenter, Slide, StageDisplay, StageTheme, Theme,
@@ -525,11 +525,92 @@ fn stage_reference_for_detection(reference: &str) -> String {
     }
 }
 
-/// Compose the slide for one within-item position (story S8-1). A title-only
-/// item (no stanzas) is its single title slide — the exact pre-8a shape. A song
-/// stanza renders as the item title plus the stanza's wrapped lines, capped by
-/// the same physical budget as scripture slides (pagination is a later slice).
+/// The wire view of a plan item's linked content (ADR-0020 follow-up), so the
+/// operator UI shows link status. Pure mapping of `ItemContent`.
+fn content_link_view(c: &selahcue_core::plan::ItemContent) -> ContentLinkView {
+    use selahcue_core::plan::ItemContent;
+    match c {
+        ItemContent::Scripture {
+            reference,
+            translation,
+            verses_per_slide,
+        } => ContentLinkView {
+            kind: "scripture".to_string(),
+            reference: Some(reference.clone()),
+            translation: translation.clone(),
+            verses_per_slide: *verses_per_slide,
+            id: None,
+            slide_count: None,
+        },
+        ItemContent::Deck {
+            deck_id,
+            slide_count,
+        } => ContentLinkView {
+            kind: "deck".to_string(),
+            reference: None,
+            translation: None,
+            verses_per_slide: None,
+            id: Some(*deck_id),
+            slide_count: *slide_count,
+        },
+        ItemContent::Media { media_id } => ContentLinkView {
+            kind: "media".to_string(),
+            reference: None,
+            translation: None,
+            verses_per_slide: None,
+            id: Some(*media_id),
+            slide_count: None,
+        },
+    }
+}
+
+/// Parse a wire [`ContentLinkView`] into a domain `ItemContent`, or `None` if it is
+/// malformed — an unknown `kind`, a blank/absent scripture reference, or a missing
+/// deck/media id. The `SetItemContent` handler rejects a `None` here (the plan is
+/// left unchanged).
+fn item_content_from_link(link: &ContentLinkView) -> Option<selahcue_core::plan::ItemContent> {
+    use selahcue_core::plan::ItemContent;
+    match link.kind.as_str() {
+        "scripture" => {
+            let reference = link.reference.clone()?;
+            if reference.trim().is_empty() {
+                return None;
+            }
+            Some(ItemContent::Scripture {
+                reference,
+                translation: link.translation.clone(),
+                verses_per_slide: link.verses_per_slide,
+            })
+        }
+        "deck" => Some(ItemContent::Deck {
+            deck_id: link.id?,
+            slide_count: link.slide_count,
+        }),
+        "media" => Some(ItemContent::Media { media_id: link.id? }),
+        _ => None,
+    }
+}
+
+/// Compose the slide for one within-item position (story S8-1). A **scripture-linked**
+/// item (ADR-0020 follow-up) renders its passage from the linked reference/translation,
+/// not its title. A title-only item (no stanzas, no link) is its single title slide —
+/// the exact pre-8a shape. A song stanza renders as the item title plus the stanza's
+/// wrapped lines, capped by the same physical budget as scripture slides (verses-per-slide
+/// pagination is a later slice). A deck/media link falls through to the title slide here —
+/// deck slides are composed by the presenting layer (which holds the deck library).
 fn item_slide(item: &selahcue_core::plan::PlanItem, slide: usize) -> Slide {
+    if let Some(selahcue_core::plan::ItemContent::Scripture {
+        reference,
+        translation,
+        ..
+    }) = &item.content
+    {
+        let t = translation
+            .as_deref()
+            .and_then(selahcue_scripture::Translation::from_code)
+            .unwrap_or_default();
+        return scripture_slide_in(t, reference);
+    }
     if item.stanzas.is_empty() {
         return Slide::title(item.title.clone());
     }
@@ -1748,7 +1829,19 @@ impl LiveController {
                 } else {
                     None
                 },
+                // The STAGED slide, always reported for the staged multi-slide item (even when it is
+                // ALSO live at a different slide) — so the slide picker can mark PREVIEW and LIVE on
+                // different slides. `slide_index` above stays LIVE-first for the plan-row badge.
+                staged_slide_index: (item.slide_count() > 1 && self.staged_idx == Some(i))
+                    .then_some(self.staged_slide as u32),
                 theme: item.theme.clone(),
+                // The linked content (scripture/deck/media), so the operator UI shows
+                // link status (ADR-0020 follow-up). `None` = an unlinked item.
+                link: item.content.as_ref().map(content_link_view),
+                // Owner + planned duration for the run-sheet row (FR-004); `None` passes through
+                // untouched so unassigned/unplanned items stay byte-stable on the wire.
+                owner: item.owner.clone(),
+                planned_secs: item.planned_secs,
             })
             .collect();
         OperatorView {
@@ -1972,6 +2065,18 @@ impl LiveController {
             Command::SelectItem { item_id } => {
                 match self.plan.items().iter().position(|it| it.id.0 == *item_id) {
                     Some(idx) => self.stage_index(idx),
+                    None => ControllerReply::Deny(DenyReason::BadRequest),
+                }
+            }
+            Command::SelectSlide {
+                item_id,
+                slide_index,
+            } => {
+                // Stage a specific within-item slide in Preview (the Live Console slide picker).
+                // Preview only — Live is untouched (FR-012); `stage_slide` clamps the index to the
+                // item's slide count. An unknown item id is rejected, leaving Preview unchanged.
+                match self.plan.items().iter().position(|it| it.id.0 == *item_id) {
+                    Some(idx) => self.stage_slide(idx, *slide_index as usize),
                     None => ControllerReply::Deny(DenyReason::BadRequest),
                 }
             }
@@ -2444,6 +2549,11 @@ impl LiveController {
             Command::SetItemTheme { item_id, theme } => {
                 self.set_item_theme(*item_id, theme.clone())
             }
+            Command::SetItemContent { item_id, link } => self.set_item_content(*item_id, link),
+            Command::SetItemOwner { item_id, owner } => {
+                self.set_item_owner(*item_id, owner.clone())
+            }
+            Command::SetItemDuration { item_id, secs } => self.set_item_duration(*item_id, *secs),
             Command::SaveTheme { name, theme_json } => self.save_theme(name, theme_json),
             Command::DeleteTheme { name } => self.delete_theme(name),
             Command::SetScreenTheme { screen, name } => self.set_screen_theme(screen, name),
@@ -2570,6 +2680,73 @@ impl LiveController {
         if self.staged_idx == Some(idx) {
             self.stage_slide(idx, self.staged_slide);
         }
+        ControllerReply::Ack
+    }
+
+    /// Set (or clear, with a `None` link) a plan item's linked content — the scripture
+    /// passage, deck, or media it shows (ADR-0020 follow-up · plan editing). An unknown
+    /// item id, a malformed link (unknown kind / blank scripture reference / missing
+    /// deck-media id), or a scripture reference that does not parse is rejected with the
+    /// plan unchanged. Editing the plan never touches Live; if the edited item is the one
+    /// staged in Preview, it is re-staged so a newly linked scripture resolves at once.
+    fn set_item_content(
+        &mut self,
+        item_id: u64,
+        link: &Option<ContentLinkView>,
+    ) -> ControllerReply {
+        let Some(idx) = self.index_of(item_id) else {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        };
+        let content = match link {
+            None => None,
+            Some(l) => {
+                let Some(c) = item_content_from_link(l) else {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                };
+                // A scripture link must reference a passage that parses (FR-026) —
+                // reject an unparseable ref rather than store a dangling link.
+                if let selahcue_core::plan::ItemContent::Scripture { reference, .. } = &c {
+                    if selahcue_core::scripture::parse_one(reference).is_err() {
+                        return ControllerReply::Deny(DenyReason::BadRequest);
+                    }
+                }
+                Some(c)
+            }
+        };
+        let _ = self.plan.set_item_content(ItemId(item_id), content);
+        // The link lives ONLY in the plan (not the session snapshot), so mark the plan
+        // dirty — otherwise the desktop never persists it and it is lost on restart.
+        self.plan_dirty = true;
+        // Re-stage in place so a newly linked scripture resolves into Preview (never Live).
+        if self.staged_idx == Some(idx) {
+            self.stage_slide(idx, self.staged_slide);
+        }
+        ControllerReply::Ack
+    }
+
+    /// Set (or clear, with `None`) a plan item's responsible owner/role (FR-004 · plan editing).
+    /// A blank owner clears it (domain-normalized); an unknown item id is rejected with the plan
+    /// unchanged. Plan metadata only — never touches the Live output or the staged slide.
+    fn set_item_owner(&mut self, item_id: u64, owner: Option<String>) -> ControllerReply {
+        if self.plan.set_item_owner(ItemId(item_id), owner).is_err() {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        self.plan_dirty = true;
+        ControllerReply::Ack
+    }
+
+    /// Set (or clear, with `None`) a plan item's planned duration in seconds (FR-004 · plan
+    /// editing). An unknown item id is rejected with the plan unchanged. Plan metadata only —
+    /// never touches the Live output or the staged slide.
+    fn set_item_duration(&mut self, item_id: u64, secs: Option<u32>) -> ControllerReply {
+        if self
+            .plan
+            .set_item_planned_secs(ItemId(item_id), secs)
+            .is_err()
+        {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        self.plan_dirty = true;
         ControllerReply::Ack
     }
 

@@ -12,7 +12,7 @@
 //! suffix on collision) — otherwise an upsert on a name owned by a *different* deck would clobber it.
 
 use selahcue_data::{deck_repo, Database};
-use selahcue_present::{DeckId, SlideDeck};
+use selahcue_present::{render_authored_slide, DeckId, FrameBuffer, SlideDeck, SlideId, Theme};
 
 /// Lightweight row for the Library list (`deck_list`) — never carries the slide bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +20,18 @@ pub struct DeckMeta {
     pub id: DeckId,
     pub name: String,
     pub slides: usize,
+}
+
+/// Lightweight per-slide row for the Live Console slide picker (`plan_deck_slides`,
+/// `LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec.md` §6): the slide's stable id, a speaker-readable
+/// label (its first on-screen text line, falling back to a notes line), and whether it carries
+/// speaker notes. Never the slide bytes — the picker fetches pixels separately, on demand, via
+/// [`DeckLibrary::render_slide`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlideMeta {
+    pub id: SlideId,
+    pub label: Option<String>,
+    pub has_notes: bool,
 }
 
 /// The persisted deck library.
@@ -263,6 +275,72 @@ impl DeckLibrary {
         true
     }
 
+    // --- Live Console slide picker: read-only bridge (LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec §6) --
+
+    /// List a saved deck's slides for the Live Console picker — id + a speaker-readable label + a
+    /// notes flag, in deck order. `None` when the deck id is unknown (the picker renders its
+    /// "presentation missing" state, FR-007). Reads the library only; never loads or mutates the
+    /// open editor [`DeckWorkspace`](crate::deck_workspace::DeckWorkspace). Pure and bounded by the
+    /// deck's own slide/element caps (no-leak).
+    pub fn slide_list(&self, id: DeckId) -> Option<Vec<SlideMeta>> {
+        let deck = self.get(id)?;
+        Some(
+            deck.slides()
+                .iter()
+                .map(|s| SlideMeta {
+                    id: s.id,
+                    label: s.confidence_slide().body.into_iter().next(),
+                    has_notes: !s.notes.is_empty(),
+                })
+                .collect(),
+        )
+    }
+
+    /// Render ONE slide of a saved deck to a bounded RGBA framebuffer for the picker/preview — the
+    /// SAME native compositor and preview theme ([`Theme::dark`]) as the editor canvas, so a
+    /// filmstrip thumbnail matches the editor. `None` when the deck OR slide id is unknown.
+    /// Dimensions are clamped (≤960×540, mirroring the editor's own preview) so a hostile/oversized
+    /// request can never allocate without bound (no-leak). Reads the library only — the open editor
+    /// workspace is never loaded or mutated. Routing these pixels to the physical audience output is
+    /// a separate seam (Dep 2, ADR ~0022); this is Preview/thumbnail composition only.
+    pub fn render_slide(
+        &self,
+        deck_id: DeckId,
+        slide_id: SlideId,
+        max_w: u32,
+        max_h: u32,
+    ) -> Option<FrameBuffer> {
+        let deck = self.get(deck_id)?;
+        let slide = deck.get(slide_id)?;
+        let w = max_w.clamp(1, 960);
+        let h = max_h.clamp(1, 540);
+        Some(render_authored_slide(slide, &Theme::dark(), w, h))
+    }
+
+    /// The `(slide_json, theme_json)` for ONE slide of a SAVED deck — the payload the console sends
+    /// via `present_authored_slide` to route a plan-linked presentation slide to the LIVE audience
+    /// output (the SAME authored-slide present path the deck editor's `deck_go_live` uses, but for a
+    /// plan-linked saved deck rather than the open workspace). `None` when the deck OR slide id is
+    /// unknown or serialization fails. Theme = [`Theme::dark`] (the console preview theme), so the
+    /// audience output matches the filmstrip thumbnail. Reads the library only.
+    pub fn present_payload(
+        &self,
+        deck_id: DeckId,
+        slide_id: SlideId,
+    ) -> Option<(String, String, Option<String>)> {
+        let deck = self.get(deck_id)?;
+        let idx = deck.index_of(slide_id)?;
+        let slide = deck.get_index(idx)?;
+        let slide_json = serde_json::to_string(slide).ok()?;
+        let theme_json = serde_json::to_string(&Theme::dark()).ok()?;
+        // The COMING deck slide feeds the host Stage/Confidence monitor's "next" (Approach A). `None`
+        // at the end of the deck (no wrap).
+        let next_json = deck
+            .get_index(idx + 1)
+            .and_then(|next| serde_json::to_string(next).ok());
+        Some((slide_json, theme_json, next_json))
+    }
+
     // --- persistence (best-effort; a DB error is swallowed, never blocks editing) ---
 
     fn persist_one(&self, deck: &SlideDeck) {
@@ -344,6 +422,130 @@ mod tests {
         assert_eq!(c.name, "Untitled presentation");
         assert_eq!(a.len(), 1, "a blank deck has one editable slide");
         assert_eq!(lib.list().len(), 3);
+    }
+
+    #[test]
+    fn slide_list_lists_slides_with_labels_and_notes_flag() {
+        let mut lib = DeckLibrary::load(None);
+        let mut deck = lib.create("Sermon"); // starts with one editable slide
+        let s2 = deck.add_slide().unwrap();
+        deck.get_mut(s2).unwrap().notes = "Closing prayer".into();
+        lib.store(&deck); // sync the edit back into the library
+
+        let metas = lib
+            .slide_list(deck.id())
+            .expect("a known deck lists its slides");
+        assert_eq!(metas.len(), 2, "both slides listed, in deck order");
+        assert_eq!(metas[1].id, s2);
+        assert!(metas[1].has_notes, "the slide with notes is flagged");
+        assert_eq!(
+            metas[1].label.as_deref(),
+            Some("Closing prayer"),
+            "label falls back to a notes line when there is no on-screen text"
+        );
+        assert!(!metas[0].has_notes, "the default slide carries no notes");
+    }
+
+    #[test]
+    fn slide_list_is_none_for_an_unknown_deck() {
+        let lib = DeckLibrary::load(None);
+        assert!(
+            lib.slide_list(DeckId(999_999)).is_none(),
+            "unknown deck → None"
+        );
+    }
+
+    #[test]
+    fn render_library_slide_is_bounded_and_matches_the_editor_theme() {
+        let mut lib = DeckLibrary::load(None);
+        let deck = lib.create("Sermon");
+        let sid = deck.slides()[0].id;
+
+        let fb = lib
+            .render_slide(deck.id(), sid, 320, 180)
+            .expect("a known deck+slide renders");
+        assert!(
+            fb.width() > 0 && fb.height() > 0,
+            "never a blank/zero frame (NFR-024)"
+        );
+        assert!(
+            fb.width() <= 320 && fb.height() <= 180,
+            "honours the request"
+        );
+
+        // An oversized request is clamped — no unbounded allocation (no-leak).
+        let big = lib
+            .render_slide(deck.id(), sid, 5000, 5000)
+            .expect("renders, clamped");
+        assert!(
+            big.width() <= 960 && big.height() <= 540,
+            "dimensions clamped to the preview bound"
+        );
+    }
+
+    #[test]
+    fn render_library_slide_is_none_for_unknown_deck_or_slide() {
+        let mut lib = DeckLibrary::load(None);
+        let deck = lib.create("Sermon");
+        let sid = deck.slides()[0].id;
+        assert!(
+            lib.render_slide(DeckId(999_999), sid, 320, 180).is_none(),
+            "unknown deck → None"
+        );
+        assert!(
+            lib.render_slide(deck.id(), SlideId(888_888), 320, 180)
+                .is_none(),
+            "unknown slide → None"
+        );
+    }
+
+    #[test]
+    fn present_payload_serialises_a_saved_deck_slide_or_none_for_unknown() {
+        let mut lib = DeckLibrary::load(None);
+        let deck = lib.create("Sermon");
+        let sid = deck.slides()[0].id;
+        let (slide_json, theme_json, next_json) = lib
+            .present_payload(deck.id(), sid)
+            .expect("a known deck+slide yields a present payload");
+        assert!(
+            slide_json.contains("\"id\""),
+            "the slide serialises to JSON"
+        );
+        assert!(!theme_json.is_empty(), "the theme serialises");
+        assert!(
+            next_json.is_none(),
+            "a single-slide deck has no coming slide (end of deck)"
+        );
+        assert!(
+            lib.present_payload(DeckId(999_999), sid).is_none(),
+            "unknown deck → None"
+        );
+        assert!(
+            lib.present_payload(deck.id(), SlideId(888_888)).is_none(),
+            "unknown slide → None"
+        );
+    }
+
+    #[test]
+    fn present_payload_supplies_the_coming_slide_before_the_last() {
+        // Before the last slide, the payload carries the NEXT deck slide (Approach A) so the host
+        // confidence/stage monitor's "next" is deck-aware.
+        let mut lib = DeckLibrary::load(None);
+        let mut deck = lib.create("Deck");
+        deck.add_slide(); // 2 slides now
+        lib.store(&deck);
+        let first = deck.slides()[0].id;
+        let (_, _, next_json) = lib
+            .present_payload(deck.id(), first)
+            .expect("a known deck+slide yields a present payload");
+        let next_json = next_json.expect("a non-last slide has a coming slide");
+        let next: selahcue_present::AuthoredSlide =
+            serde_json::from_str(&next_json).expect("next_json is a valid AuthoredSlide");
+        assert_eq!(
+            next.id,
+            deck.slides()[1].id,
+            "the coming slide is the NEXT slide in deck order"
+        );
     }
 
     #[test]

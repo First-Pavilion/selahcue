@@ -22,8 +22,10 @@ fn schema_version_is_pinned() {
     // v13 = screen registry table; v14 = screen_output_config table (Screens 2.0 inspector);
     // v15 = NDI output columns (ndi_enabled/ndi_name) on screen_output_config;
     // v16 = deck table (authored slide-deck library, Design 2.0 node 329:124);
-    // v17 = media_asset table (media library, Design 2.0 node 329:124).
-    assert_eq!(migrations::target_version(), 17);
+    // v17 = media_asset table (media library, Design 2.0 node 329:124);
+    // v18 = plan_item.content_ref (linked scripture/deck/media, ADR-0020 follow-up);
+    // v19 = providers_setting table (Providers & Privacy settings + consent, node 338:124).
+    assert_eq!(migrations::target_version(), 19);
 }
 
 #[test]
@@ -43,6 +45,8 @@ fn a_pre_saved_theme_database_upgrades_and_gains_the_saved_theme_table() {
              DROP TABLE screen_output_config;
              DROP TABLE deck;
              DROP TABLE media_asset;
+             DROP TABLE providers_setting;
+             ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 10;",
         )
         .unwrap();
@@ -81,6 +85,8 @@ fn a_pre_screen_theme_database_upgrades_and_gains_the_screen_theme_table() {
              DROP TABLE screen_output_config;
              DROP TABLE deck;
              DROP TABLE media_asset;
+             DROP TABLE providers_setting;
+             ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 11;",
         )
         .unwrap();
@@ -119,6 +125,8 @@ fn a_pre_registry_database_upgrades_and_gains_the_screen_table() {
              DROP TABLE screen_output_config;
              DROP TABLE deck;
              DROP TABLE media_asset;
+             DROP TABLE providers_setting;
+             ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 12;",
         )
         .unwrap();
@@ -163,6 +171,8 @@ fn a_pre_per_item_theme_database_upgrades_and_gains_the_plan_item_theme_column()
              DROP TABLE screen_output_config;
              DROP TABLE deck;
              DROP TABLE media_asset;
+             DROP TABLE providers_setting;
+             ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 9;",
         )
         .unwrap();
@@ -204,6 +214,8 @@ fn a_pre_theme_database_upgrades_and_gains_the_theme_columns() {
              DROP TABLE screen_output_config;
              DROP TABLE deck;
              DROP TABLE media_asset;
+             DROP TABLE providers_setting;
+             ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 7;",
         )
         .unwrap();

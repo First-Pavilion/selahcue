@@ -26,6 +26,11 @@ default = []
 # compile-check (CI) needs no native whisper toolchain or model; enable on a whisper-capable
 # machine (`cargo run --features stt`) to drive real transcription from "Start listening".
 stt = ["dep:selahcue-stt"]
+# Live SelahCue cloud path for Providers & Privacy: the real HTTP transport + OS-secret-store
+# account token. OFF by default so the compile-check needs no reqwest/keyring native tree and
+# the shell honestly reports the cloud provider as "not configured" (the live service does not
+# exist yet). Enable to reach a real SelahCue endpoint (`SELAHCUE_CLOUD_URL` + stored token).
+cloud-live = ["selahcue-cloud/http", "selahcue-cloud/keyring"]
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -50,6 +55,11 @@ selahcue-present = { path = "../selahcue-present" }
 # Persisted deck library (schema v16 `deck` table via `deck_repo`). Default build is unencrypted
 # (`Database::open`); at-rest encryption for the shared DB is a documented follow-up.
 selahcue-data = { path = "../selahcue-data" }
+# Providers & Privacy: the SelahCue-hosted cloud client (note-generation seam), consent-gated
+# egress, graceful local fallback, and the account-token secret store (node 338:124). Default
+# build compiles the offline half only (in-memory secret store, no HTTP); the `cloud-live`
+# feature adds the real transport + OS keychain token.
+selahcue-cloud = { path = "../selahcue-cloud" }
 # On-device STT engine (optional; behind the `stt` feature). Pulls the native whisper.cpp +
 # cpal backends ONLY when `stt` is enabled — the default build never touches them.
 selahcue-stt = { path = "../selahcue-stt", features = ["whisper", "capture", "download"], optional = true }

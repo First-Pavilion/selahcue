@@ -21,6 +21,23 @@ fn command_tag_encoding_is_stable() {
         to_json(&Command::SelectItem { item_id: 7 }).unwrap(),
         r#"{"cmd":"select_item","item_id":7}"#
     );
+    // SelectSlide (Live Console slide picker) — additive; pinned cross-language (protocol_test.dart).
+    assert_eq!(
+        to_json(&Command::SelectSlide {
+            item_id: 7,
+            slide_index: 2
+        })
+        .unwrap(),
+        r#"{"cmd":"select_slide","item_id":7,"slide_index":2}"#
+    );
+    assert_eq!(
+        from_json::<Command>(r#"{"cmd":"select_slide","item_id":7,"slide_index":2}"#).unwrap(),
+        Command::SelectSlide {
+            item_id: 7,
+            slide_index: 2
+        },
+        "wire form round-trips back to the command"
+    );
 }
 
 #[test]
@@ -986,12 +1003,16 @@ fn plan_item_view_omits_slide_fields_when_none_keeping_old_fixtures() {
         is_staged: true,
         slide_count: None,
         slide_index: None,
+        staged_slide_index: None,
         theme: None,
+        link: None,
+        owner: None,
+        planned_secs: None,
     };
     assert_eq!(
         to_json(&title_only).unwrap(),
         r#"{"id":1,"kind":"scripture","title":"Romans 8:28","is_live":false,"is_staged":true}"#,
-        "no slide/theme fields emitted → byte-identical to a v5 host's item"
+        "no slide/theme/link/owner/duration fields emitted → byte-identical to a v5 host's item"
     );
     // A multi-slide song emits the two fields.
     let song = PlanItemView {
@@ -1002,7 +1023,11 @@ fn plan_item_view_omits_slide_fields_when_none_keeping_old_fixtures() {
         is_staged: false,
         slide_count: Some(6),
         slide_index: Some(2),
+        staged_slide_index: None,
         theme: Some("lower-third".into()),
+        link: None,
+        owner: None,
+        planned_secs: None,
     };
     let json = to_json(&song).unwrap();
     assert!(json.contains(r#""theme":"lower-third""#), "{json}");
@@ -1044,6 +1069,177 @@ fn add_item_command_carries_optional_song_content() {
     };
     let back: Command = from_json(&to_json(&cmd).unwrap()).unwrap();
     assert_eq!(back, cmd);
+}
+
+// --- Linked content reference on a plan item (ADR-0020 follow-up) ---
+
+#[test]
+fn plan_item_view_carries_a_content_link_additively() {
+    use selahcue_lan::protocol::{ContentLinkView, PlanItemView};
+    // A scripture-linked item emits the nested `link` object (skip-if-none inner fields).
+    let scr = PlanItemView {
+        id: 3,
+        kind: "scripture".into(),
+        title: "Romans 8:28-30".into(),
+        is_live: false,
+        is_staged: false,
+        slide_count: None,
+        slide_index: None,
+        staged_slide_index: None,
+        theme: None,
+        link: Some(ContentLinkView {
+            kind: "scripture".into(),
+            reference: Some("Romans 8:28-30".into()),
+            translation: Some("WEB".into()),
+            verses_per_slide: Some(2),
+            id: None,
+            slide_count: None,
+        }),
+        owner: None,
+        planned_secs: None,
+    };
+    assert_eq!(
+        to_json(&scr).unwrap(),
+        r#"{"id":3,"kind":"scripture","title":"Romans 8:28-30","is_live":false,"is_staged":false,"link":{"kind":"scripture","reference":"Romans 8:28-30","translation":"WEB","verses_per_slide":2}}"#,
+    );
+    assert_eq!(
+        from_json::<PlanItemView>(&to_json(&scr).unwrap()).unwrap(),
+        scr
+    );
+    // A deck link carries just kind + id.
+    let deck = ContentLinkView {
+        kind: "deck".into(),
+        reference: None,
+        translation: None,
+        verses_per_slide: None,
+        id: Some(17),
+        slide_count: None,
+    };
+    assert_eq!(to_json(&deck).unwrap(), r#"{"kind":"deck","id":17}"#);
+}
+
+#[test]
+fn plan_item_view_carries_owner_and_duration_additively() {
+    use selahcue_lan::protocol::PlanItemView;
+    // Unassigned/unplanned → the fields are omitted (byte-stable for an old client).
+    let bare = PlanItemView {
+        id: 5,
+        kind: "song".into(),
+        title: "Hymn".into(),
+        is_live: false,
+        is_staged: false,
+        slide_count: None,
+        slide_index: None,
+        staged_slide_index: None,
+        theme: None,
+        link: None,
+        owner: None,
+        planned_secs: None,
+    };
+    assert_eq!(
+        to_json(&bare).unwrap(),
+        r#"{"id":5,"kind":"song","title":"Hymn","is_live":false,"is_staged":false}"#,
+    );
+    // Assigned + planned → both ride along and round-trip.
+    let full = PlanItemView {
+        id: 6,
+        kind: "scripture".into(),
+        title: "Call to Worship".into(),
+        is_live: false,
+        is_staged: true,
+        slide_count: None,
+        slide_index: None,
+        staged_slide_index: None,
+        theme: None,
+        link: None,
+        owner: Some("Grace".into()),
+        planned_secs: Some(180),
+    };
+    let json = to_json(&full).unwrap();
+    assert!(json.contains(r#""owner":"Grace""#), "{json}");
+    assert!(json.contains(r#""planned_secs":180"#), "{json}");
+    assert_eq!(from_json::<PlanItemView>(&json).unwrap(), full);
+}
+
+#[test]
+fn set_item_content_command_round_trips_and_clears() {
+    use selahcue_lan::protocol::ContentLinkView;
+    // Setting a deck link.
+    let set = Command::SetItemContent {
+        item_id: 4,
+        link: Some(ContentLinkView {
+            kind: "deck".into(),
+            reference: None,
+            translation: None,
+            verses_per_slide: None,
+            id: Some(17),
+            slide_count: None,
+        }),
+    };
+    assert_eq!(
+        to_json(&set).unwrap(),
+        r#"{"cmd":"set_item_content","item_id":4,"link":{"kind":"deck","id":17}}"#,
+    );
+    assert_eq!(from_json::<Command>(&to_json(&set).unwrap()).unwrap(), set);
+    // Clearing a link omits the `link` key entirely.
+    let clear = Command::SetItemContent {
+        item_id: 4,
+        link: None,
+    };
+    assert_eq!(
+        to_json(&clear).unwrap(),
+        r#"{"cmd":"set_item_content","item_id":4}"#,
+    );
+    assert_eq!(
+        from_json::<Command>(&to_json(&clear).unwrap()).unwrap(),
+        clear
+    );
+}
+
+#[test]
+fn set_item_owner_and_duration_commands_round_trip_and_clear() {
+    // Owner: set carries the string; clear omits the key.
+    let set_owner = Command::SetItemOwner {
+        item_id: 4,
+        owner: Some("Grace".into()),
+    };
+    assert_eq!(
+        to_json(&set_owner).unwrap(),
+        r#"{"cmd":"set_item_owner","item_id":4,"owner":"Grace"}"#,
+    );
+    assert_eq!(
+        from_json::<Command>(&to_json(&set_owner).unwrap()).unwrap(),
+        set_owner
+    );
+    assert_eq!(
+        to_json(&Command::SetItemOwner {
+            item_id: 4,
+            owner: None,
+        })
+        .unwrap(),
+        r#"{"cmd":"set_item_owner","item_id":4}"#,
+    );
+    // Duration: set carries the seconds; clear omits the key.
+    let set_dur = Command::SetItemDuration {
+        item_id: 7,
+        secs: Some(240),
+    };
+    assert_eq!(
+        to_json(&set_dur).unwrap(),
+        r#"{"cmd":"set_item_duration","item_id":7,"secs":240}"#,
+    );
+    assert_eq!(
+        from_json::<Command>(&to_json(&set_dur).unwrap()).unwrap(),
+        set_dur
+    );
+    assert_eq!(
+        to_json(&Command::SetItemDuration {
+            item_id: 7,
+            secs: None,
+        })
+        .unwrap(),
+        r#"{"cmd":"set_item_duration","item_id":7}"#,
+    );
 }
 
 #[test]

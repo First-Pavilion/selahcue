@@ -194,6 +194,26 @@ const MIGRATIONS: &[&str] = &[
         imported_at INTEGER NOT NULL
     );
     "#,
+    // v17 -> v18: a plan item's linked CONTENT REFERENCE (ADR-0020 follow-up) — the
+    // scripture passage / deck / media asset it shows, stored as the opaque, reversible
+    // `ItemContent::encode` string (the codec lives in the pure core). NULL = an
+    // *unlinked* / title-only item, identical to every existing row — so an older
+    // database opens unchanged.
+    r#"
+    ALTER TABLE plan_item ADD COLUMN content_ref TEXT;
+    "#,
+    // v18 -> v19: the PROVIDERS & PRIVACY settings + consent store (Settings → Providers
+    // & Privacy, Design 2.0 node 338:124; FR-131/132/137). A flat key-value table (one row
+    // per setting) — the same replace-the-whole-set shape as `saved_theme`, so the pure core
+    // owns the `(key, value)` <-> `ProvidersConfig` mapping and the data layer stays a dumb
+    // store. A fresh table, so an older database opens unchanged and simply starts with no
+    // rows — which the core reads back as the safe defaults (offline-first, cloud OFF).
+    r#"
+    CREATE TABLE providers_setting (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

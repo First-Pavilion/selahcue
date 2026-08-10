@@ -1,0 +1,20 @@
+[project]
+name = "selahcue-api"
+version = "0.1.0"
+description = "Django and Strawberry Platform API for SelahCue licensing and account services"
+requires-python = ">=3.10"
+dependencies = [
+  "Django>=5.2,<5.3",
+  "strawberry-graphql-django>=0.86,<0.87",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "pytest-django>=4.11,<5",
+]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "selahcue_api.settings"
+pythonpath = ["."]
+testpaths = ["tests"]

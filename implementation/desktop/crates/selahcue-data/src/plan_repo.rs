@@ -5,7 +5,7 @@
 
 use crate::{DataError, Database, Result};
 use rusqlite::params;
-use selahcue_core::plan::{ItemId, ItemKind, PlanItem, ServicePlan};
+use selahcue_core::plan::{ItemContent, ItemId, ItemKind, PlanItem, ServicePlan};
 
 /// A lightweight plan listing (id + name), for the library view.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,9 +30,12 @@ pub fn insert(db: &Database, plan: &ServicePlan) -> Result<i64> {
         } else {
             Some(selahcue_core::plan::stanzas_to_text(&item.stanzas))
         };
+        // The linked content reference (scripture/deck/media), encoded by the pure
+        // core codec; NULL = an unlinked item (ADR-0020 follow-up).
+        let content_ref = item.content.as_ref().map(ItemContent::encode);
         tx.execute(
-            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title, planned_secs, owner, content, theme)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title, planned_secs, owner, content, theme, content_ref)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 plan_id,
                 item.id.0 as i64,
@@ -43,6 +46,7 @@ pub fn insert(db: &Database, plan: &ServicePlan) -> Result<i64> {
                 item.owner,
                 content,
                 item.theme,
+                content_ref,
             ],
         )?;
     }
@@ -69,9 +73,12 @@ pub fn update(db: &Database, plan_id: i64, plan: &ServicePlan) -> Result<()> {
         } else {
             Some(selahcue_core::plan::stanzas_to_text(&item.stanzas))
         };
+        // The linked content reference (scripture/deck/media), encoded by the pure
+        // core codec; NULL = an unlinked item (ADR-0020 follow-up).
+        let content_ref = item.content.as_ref().map(ItemContent::encode);
         tx.execute(
-            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title, planned_secs, owner, content, theme)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title, planned_secs, owner, content, theme, content_ref)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 plan_id,
                 item.id.0 as i64,
@@ -82,6 +89,7 @@ pub fn update(db: &Database, plan_id: i64, plan: &ServicePlan) -> Result<()> {
                 item.owner,
                 content,
                 item.theme,
+                content_ref,
             ],
         )?;
     }
@@ -137,7 +145,7 @@ pub fn load(db: &Database, plan_id: i64) -> Result<ServicePlan> {
     // `ord` is UNIQUE per plan; the `item_id` tie-breaker makes the order
     // deterministic even if a future writer ever duplicated an ord.
     let mut stmt = conn.prepare(
-        "SELECT item_id, kind, title, planned_secs, owner, content, theme
+        "SELECT item_id, kind, title, planned_secs, owner, content, theme, content_ref
          FROM plan_item WHERE plan_id = ?1 ORDER BY ord, item_id",
     )?;
     let rows = stmt.query_map(params![plan_id], |r| {
@@ -149,6 +157,7 @@ pub fn load(db: &Database, plan_id: i64) -> Result<ServicePlan> {
             r.get::<_, Option<String>>(4)?,
             r.get::<_, Option<String>>(5)?,
             r.get::<_, Option<String>>(6)?,
+            r.get::<_, Option<String>>(7)?,
         ))
     })?;
 
@@ -161,7 +170,7 @@ pub fn load(db: &Database, plan_id: i64) -> Result<ServicePlan> {
         if items.len() >= selahcue_core::plan::MAX_PLAN_ITEMS {
             break;
         }
-        let (item_id, kind_tag, title, planned, owner, content, theme) = row?;
+        let (item_id, kind_tag, title, planned, owner, content, theme, content_ref) = row?;
         let kind = ItemKind::from_tag(&kind_tag)
             .ok_or_else(|| DataError::Corrupt(format!("unknown item kind '{kind_tag}'")))?;
         // Report out-of-range stored integers as corruption rather than silently
@@ -187,6 +196,10 @@ pub fn load(db: &Database, plan_id: i64) -> Result<ServicePlan> {
                 .unwrap_or_default(),
             // Per-item theme override (S8-3d); NULL = the global theme.
             theme,
+            // Linked content reference (ADR-0020 follow-up). The codec is total, so a
+            // corrupt/unknown stored value loads as `None` (item unlinked) rather than
+            // failing the whole plan load; NULL = an unlinked item.
+            content: content_ref.as_deref().and_then(ItemContent::decode),
         });
     }
 

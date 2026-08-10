@@ -48,6 +48,12 @@ pub enum Command {
     Previous,
     /// Select a specific plan item by id.
     SelectItem { item_id: u64 },
+    /// Stage a specific WITHIN-ITEM slide of a plan item in Preview (the Live Console slide picker,
+    /// `LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec.md` §6). Like [`SelectItem`] but jumps straight to
+    /// slide `slide_index` (clamped to the item's slide count) instead of slide 0 — Preview only,
+    /// never Live (FR-012/FR-115). Additive/back-compatible; the same `Navigate` permission as
+    /// [`SelectItem`]/[`Next`]/[`Previous`] (staging is not an escalation to Live).
+    SelectSlide { item_id: u64, slide_index: u32 },
     /// Clear the live output (return to logo/idle).
     Clear,
     /// Toggle blackout of the live output.
@@ -180,6 +186,32 @@ pub enum Command {
         item_id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         theme: Option<String>,
+    },
+    /// Set (or clear, with `None`) a plan item's linked CONTENT — the scripture
+    /// passage, deck, or media asset it shows (ADR-0020 follow-up · plan editing).
+    /// A `Scripture` link whose reference is blank clears the link (no half-linked
+    /// item). An unknown item id, an unknown `link.kind`, or a scripture reference
+    /// that does not parse is rejected; the plan is unchanged. Operator-only — this
+    /// edits the plan, never the Live output.
+    SetItemContent {
+        item_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        link: Option<ContentLinkView>,
+    },
+    /// Set (or clear, with `None`) a plan item's responsible OWNER/role (FR-004 · plan editing).
+    /// A blank owner clears it; an unknown item id is rejected. Operator-only — plan metadata,
+    /// never the Live output.
+    SetItemOwner {
+        item_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner: Option<String>,
+    },
+    /// Set (or clear, with `None`) a plan item's planned DURATION in seconds (FR-004 · plan
+    /// editing). An unknown item id is rejected. Operator-only — plan metadata, never Live.
+    SetItemDuration {
+        item_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secs: Option<u32>,
     },
     /// Save a NAMED custom theme into the library (Theme Designer "Save changes",
     /// 86ajq4xmy). `theme_json` is a serialized `Theme` (opaque to the wire). An empty/
@@ -470,6 +502,34 @@ impl ThumbView {
     }
 }
 
+/// The content a plan item links (ADR-0020 follow-up): the scripture passage, deck,
+/// or media asset it shows. The wire form of `core::plan::ItemContent`, kept as
+/// plain fields (a `kind` tag + the relevant payload) so the receiving client
+/// renders link status (linked / unlinked / missing) and the reference/deck.
+/// Absent on a [`PlanItemView`] = an *unlinked* / title-only item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentLinkView {
+    /// `"scripture"` | `"deck"` | `"media"`.
+    pub kind: String,
+    /// Scripture link: the canonical reference (e.g. `"Romans 8:28-30"`). Absent for deck/media.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    /// Scripture link: the bundled-translation code (`None` = the plan default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translation: Option<String>,
+    /// Scripture link: verses-per-slide override (`None` = the plan default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verses_per_slide: Option<u16>,
+    /// Deck link: the deck library id. Media link: the media library id. Absent for scripture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    /// Deck link: the deck's slide count, as synced by the deck-owning operator (the host has no
+    /// deck store). Absent for scripture/media or a not-yet-synced link. Lets a presentation report
+    /// its real slide count + stage a specific within-item slide (the Live Console slide picker).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slide_count: Option<u32>,
+}
+
 /// One plan item as the operator UI renders it — the wire form of an item view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanItemView {
@@ -486,13 +546,32 @@ pub struct PlanItemView {
     /// keeps every pinned fixture byte-identical; absent = a single slide.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slide_count: Option<u32>,
-    /// Current within-item slide (0-based), present for the live/staged item.
+    /// Current within-item slide (0-based); for the live/staged item this is the LIVE slide when
+    /// the item is live, else the staged slide (drives the plan-row badge, back-compat).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slide_index: Option<u32>,
+    /// The STAGED (Preview) within-item slide (0-based), present only when this item is staged.
+    /// Distinct from [`slide_index`] so the Live Console slide picker can mark PREVIEW and LIVE on
+    /// DIFFERENT slides of the same presentation (when an item is both staged and live).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_slide_index: Option<u32>,
     /// Per-item theme override (built-in name), if this item overrides the global
     /// theme (S8-3d). Skip-if-none keeps every pinned fixture byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// The content this item links — scripture passage / deck / media (ADR-0020
+    /// follow-up). Absent = an *unlinked* item. Skip-if-none keeps every pinned
+    /// fixture byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<ContentLinkView>,
+    /// Responsible person/role for this item (FR-004); absent = unassigned. Skip-if-none keeps
+    /// every pinned fixture byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Planned duration in seconds (FR-004); absent = unplanned. Skip-if-none keeps every pinned
+    /// fixture byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_secs: Option<u32>,
 }
 
 /// A snapshot of the active timer for the operator UI (`None` when no timer is running).

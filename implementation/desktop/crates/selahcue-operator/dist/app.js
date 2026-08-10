@@ -9,6 +9,10 @@
         // view — the blackout toggle must read true state even while an editor
         // is open.
         syncChrome(view);
+        // Live Console slide picker (LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec): reflect the staged
+        // presentation in the Slides tab + filmstrip. Runs before the plan early-returns (like the
+        // chrome sync) so the picker stays live even with an open plan/theme editor.
+        if (window.__syncSlides) window.__syncSlides(view);
         // The saved-theme library (86ajq4xmy) rides on every view. Refresh the Theme
         // Designer's template list whenever it changes — but never while the save-name
         // field is focused (a mid-type rebuild would clobber the entry), and only after
@@ -58,6 +62,7 @@
           const row = document.createElement("div");
           row.className =
             "item" + (it.is_live ? " is-live" : "") + (it.is_staged ? " is-staged" : "");
+          row.dataset.itemId = it.id; // anchor for post-link-commit focus restore (WCAG 2.4.3)
           row.onclick = () => act(() => invoke("select", { itemId: it.id }));
 
           const main = document.createElement("span");
@@ -79,6 +84,10 @@
               : "");
           main.appendChild(title);
           main.appendChild(kind);
+          // Linked content (ADR-0020): the scripture passage / deck / media this item
+          // shows. Undefined-safe — an unlinked item (no `link`) renders no chip, exactly
+          // as before. A deck whose library entry is gone renders a "missing" chip (FR-007).
+          if (it.link) main.appendChild(planLinkChip(it.link));
 
           const tools = document.createElement("span");
           tools.className = "tools";
@@ -136,6 +145,19 @@
           tools.appendChild(ren);
           tools.appendChild(up);
           tools.appendChild(down);
+          // Link content (ADR-0020): scripture items link a passage; slide-group items link
+          // a deck. Opens a picker that sets the reference/deck via `set_item_content` — a
+          // plan edit that never touches Live (staging happens in Preview on select).
+          if (it.kind === "scripture" || it.kind === "slide_group") {
+            const lnk = miniBtn(it.link ? "🔗" : "＋🔗", (e) => {
+              e.stopPropagation();
+              openLinkModal(it);
+            });
+            lnk.title = it.link ? "Change linked content" : "Link a scripture or presentation";
+            lnk.setAttribute("aria-label", lnk.title);
+            lnk.classList.add("plan-link-btn"); // focus target after a link commit rebuilds the row
+            tools.appendChild(lnk);
+          }
           tools.appendChild(del);
           row.appendChild(tools);
           if (it.is_live) row.appendChild(badge("live", "LIVE"));
@@ -204,11 +226,23 @@
           "staged",
           "Nothing staged"
         );
+        // A deck slide presented via the authored-slide path (the Live Console slide picker's Go
+        // Live) sets live_authored_id and clears live_index — reflect it on the Live panel (the real
+        // slide is on the canvas), titled by the staged presentation, so it isn't shown as idle.
+        const authoredLive = view.live_authored_id != null;
+        const presLive = () => {
+          const s = itemAt(view.staged_index);
+          return {
+            title: s && s.kind === "slide_group" ? s.title : "Presentation",
+            kind: "slide_group",
+          };
+        };
         setPanel(
           "live",
           itemAt(view.live_index) ||
             scriptureAs(view.live_scripture) ||
-            freeAs(view.live_free_text),
+            freeAs(view.live_free_text) ||
+            (authoredLive ? presLive() : null),
           "main output",
           "Output idle"
         );
@@ -453,7 +487,11 @@
           renderDiag("available=false (remote host / no local pixels)");
           return;
         }
-        const okP = drawConsoleFrame("preview-canvas", res.preview);
+        // When a deck slide is staged, the filmstrip owns the Preview panel (real deck pixels), so
+        // skip the host's title composite here — otherwise it would overwrite the slide every cycle.
+        const okP = window.__consoleDeckPreview
+          ? true
+          : drawConsoleFrame("preview-canvas", res.preview);
         const okL = drawConsoleFrame("live-canvas", res.live);
         setConsoleRender(okP || okL);
         if (!(okP || okL)) {
@@ -1148,7 +1186,48 @@
         if (name === "presentation" && typeof pmActivate === "function") pmActivate();
         // The Pre-service Check runs its checks on activation (and starts a bounded auto-refresh).
         if (name === "preservice" && typeof psActivate === "function") psActivate();
+        // The Service Plan builder loads the plan + deck names on activation.
+        if (name === "plan" && typeof planActivate === "function") planActivate();
+        // Settings opens to Providers & Privacy by default (the sidebar's first built page); it loads
+        // the real providers_view() lazily. A caller wanting another page (e.g. ⌘⇧R → Network & Mobile)
+        // calls setSettingsPage() AFTER showSurface, overriding this default.
+        if (name === "settings" && typeof setSettingsPage === "function") setSettingsPage("providers");
       }
+      // Settings sidebar routing (Design 2.0, Figma 338:124). Providers + Network & Mobile are built;
+      // the rest show the shared "coming soon" page. Providers loads lazily via settingsActivate.
+      function setSettingsPage(page, label) {
+        let lbl = label;
+        document.querySelectorAll("#surface-settings .set-nav").forEach((b) => {
+          const on = b.dataset.setpage === page;
+          b.classList.toggle("active", on);
+          if (on) {
+            b.setAttribute("aria-current", "page");
+            if (!lbl) lbl = b.textContent.trim();
+          } else {
+            b.removeAttribute("aria-current");
+          }
+        });
+        const built = { providers: "set-page-providers", network: "set-page-network" };
+        document.querySelectorAll("#surface-settings .set-page").forEach((p) => {
+          p.hidden = true;
+        });
+        if (built[page]) {
+          document.getElementById(built[page]).hidden = false;
+          if (page === "providers" && typeof settingsActivate === "function") settingsActivate();
+        } else {
+          document.getElementById("set-placeholder").hidden = false;
+          document.getElementById("set-ph-title").textContent = lbl || "Settings";
+        }
+      }
+      (function initSettingsSidebar() {
+        const side = document.querySelector("#surface-settings .set-side");
+        if (!side) return;
+        side.querySelectorAll(".set-nav").forEach((b) => {
+          b.onclick = () => setSettingsPage(b.dataset.setpage);
+        });
+        const openRemote = document.getElementById("set-open-remote");
+        if (openRemote) openRemote.onclick = () => showSurface("remote"); // Network & Mobile → devices
+      })();
       function openAppMenu() {
         appMenu.classList.add("open");
         appMenuBtn.setAttribute("aria-expanded", "true");
@@ -2826,10 +2905,16 @@
       // (Theme Designer built-ins + fonts load lazily on first activation — see
       // ensureThemeDesignerLoaded / showSurface, audit L3. Not loaded at boot.)
 
-      function miniBtn(label, onclick) {
+      function miniBtn(label, onclick, ariaLabel) {
         const b = document.createElement("button");
         b.textContent = label;
         b.style.cssText = "padding:2px 8px;margin-left:4px;font-size:11px";
+        // A glyph-only control (↑ ↓ ✏ ✕) has no accessible name; pass ariaLabel so screen
+        // readers announce the action instead of the raw character (WCAG 4.1.2).
+        if (ariaLabel) {
+          b.setAttribute("aria-label", ariaLabel);
+          b.title = ariaLabel;
+        }
         b.onclick = onclick;
         return b;
       }
@@ -2864,7 +2949,16 @@
 
       const goPrev = () => act(() => invoke("previous"));
       const goNext = () => act(() => invoke("next"));
-      const goLive = () => act(() => invoke("go_live"));
+      const goLive = () => {
+        // When a deck slide is staged, GO LIVE routes the ACTUAL slide to the output (authored-slide
+        // present) rather than the plan-item go_live (which would show only the item title).
+        const dp = window.__consoleDeckPreview;
+        if (dp && dp.slideId != null) {
+          act(() => invoke("present_plan_deck_slide", { deckId: dp.deckId, slideId: dp.slideId }));
+        } else {
+          act(() => invoke("go_live"));
+        }
+      };
       document.getElementById("prev").onclick = goPrev;
       document.getElementById("next").onclick = goNext;
       document.getElementById("golive").onclick = goLive;
@@ -3378,14 +3472,8 @@
         }
       };
 
-      document.getElementById("add-item").onclick = () => {
-        const title = document.getElementById("add-title").value.trim();
-        const kind = document.getElementById("add-kind").value;
-        if (title) {
-          act(() => invoke("add_item", { kind, title, content: null }));
-          document.getElementById("add-title").value = "";
-        }
-      };
+      // (The console Service Plan panel's quick-add footer was removed — redundant with the
+      // dedicated Service Plan builder's Add-item palette. Adding items happens in the builder.)
 
       // Top-bar clock (Figma console) — local time, ticks independently.
       const tickClock = () => {
@@ -3505,12 +3593,14 @@
           showSurface("presentation");
           return;
         }
-        // ⌘/Ctrl+⇧+R jumps to the Remote Control surface (also data-nodigit — no ⌘-number).
+        // ⌘/Ctrl+⇧+R opens Settings › Network & Mobile (Remote Control left the top-nav — Figma
+        // 336:124; its surface is reached from there via "Manage devices").
         if (mod && e.shiftKey && (e.key === "r" || e.key === "R")) {
           e.preventDefault();
           disarm();
           closeAppMenu();
-          showSurface("remote");
+          showSurface("settings");
+          if (typeof setSettingsPage === "function") setSettingsPage("network");
           return;
         }
         // ⌘/Ctrl+⇧+K jumps to the Pre-service Check surface (data-nodigit — no ⌘-number).
@@ -3575,7 +3665,7 @@
             break;
           case "Enter":
             e.preventDefault();
-            act(() => invoke("go_live"));
+            goLive(); // routes the staged deck slide via present_authored (else the plan-item go_live)
             break;
           case "b":
           case "B":
@@ -3995,6 +4085,322 @@
         };
       })();
 
+      // --- Center CONTENT tabs: Scriptures | Slides + the presentation slide-picker filmstrip
+      // (LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec §1/§2/§4). Mirrors wireRightTabs (tabs) + pmGrid
+      // (bounded thumb cache, IntersectionObserver lazy render, role=option roving tabindex), but
+      // wired to the plan/console commands: plan_deck_slides · render_plan_deck_slide · select_slide.
+      // Staging is Preview-only (FR-012); only Go Live commits. ---
+      (function wireContentTabs() {
+        const tabs = [
+          document.getElementById("ctab-scriptures"),
+          document.getElementById("ctab-slides"),
+        ];
+        const strip = document.getElementById("slide-strip");
+        if (!tabs[0] || !tabs[1] || !strip) return;
+        const disabled = (t) => t.getAttribute("aria-disabled") === "true";
+        const panelOf = (t) => document.getElementById(t.getAttribute("aria-controls"));
+        window.__activeContentTab = "scriptures";
+        function select(tab, focus) {
+          if (disabled(tab)) return;
+          for (const t of tabs) {
+            const on = t === tab;
+            t.classList.toggle("active", on);
+            t.setAttribute("aria-selected", on ? "true" : "false");
+            t.tabIndex = on ? 0 : -1;
+            const p = panelOf(t);
+            if (p) p.hidden = !on;
+          }
+          window.__activeContentTab = tab === tabs[1] ? "slides" : "scriptures";
+          if (focus) tab.focus();
+        }
+        window.__selectContentTab = (which, focus) =>
+          select(which === "slides" ? tabs[1] : tabs[0], focus);
+        tabs.forEach((t, i) => {
+          t.addEventListener("click", () => select(t, false));
+          t.addEventListener("keydown", (e) => {
+            if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+              e.preventDefault();
+              const d = e.key === "ArrowRight" ? 1 : tabs.length - 1;
+              const target = tabs[(i + d) % tabs.length];
+              if (!disabled(target)) select(target, true);
+            } else if (e.key === "Home") {
+              e.preventDefault();
+              select(tabs[0], true);
+            } else if (e.key === "End") {
+              e.preventDefault();
+              if (!disabled(tabs[tabs.length - 1])) select(tabs[tabs.length - 1], true);
+            }
+          });
+        });
+
+        // Bounded thumbnail cache (mirrors pmGrid's PM_THUMB_MAX — no unbounded growth).
+        const THUMB_MAX = 60;
+        const thumbCache = new Map(); // "deckId:slideId" -> dataURL
+        function thumbPut(key, url) {
+          thumbCache.set(key, url);
+          while (thumbCache.size > THUMB_MAX) thumbCache.delete(thumbCache.keys().next().value);
+        }
+        function thumbFail(cv) {
+          const c = cv && cv.parentElement;
+          if (!c || c.querySelector(".slide-card-fail")) return;
+          const s = document.createElement("span");
+          s.className = "slide-card-fail";
+          s.textContent = "⚠ Can't preview";
+          c.appendChild(s);
+        }
+        async function thumb(deckId, slideId, cv) {
+          if (!cv) return;
+          const key = deckId + ":" + slideId;
+          if (thumbCache.has(key)) {
+            const im = new Image();
+            // Restore the backing store size (a dropped off-screen card was shrunk to 1×1), then
+            // repaint from the bounded cache — no re-render/re-encode.
+            im.onload = () => {
+              try {
+                cv.width = im.naturalWidth || cv.width;
+                cv.height = im.naturalHeight || cv.height;
+                cv.getContext("2d").drawImage(im, 0, 0);
+              } catch (e) {}
+            };
+            im.src = thumbCache.get(key);
+            return;
+          }
+          try {
+            const r = await invoke("render_plan_deck_slide", { deckId: deckId, slideId: slideId, maxW: 320, maxH: 180 });
+            if (r && r.available && r.frame && blitFrame(cv, r.frame)) thumbPut(key, cv.toDataURL());
+            else thumbFail(cv); // missing media / no frame → honest "can't preview" (never a silent blank)
+          } catch (e) { thumbFail(cv); }
+        }
+
+        const S = { deckId: null, itemId: null, slides: [], io: null };
+        const el = (id) => document.getElementById(id);
+        function cards() {
+          return Array.prototype.slice.call(strip.querySelectorAll(".slide-card"));
+        }
+        function stageSlide(i, goLiveToo) {
+          if (S.itemId == null) return;
+          const slide = S.slides[i];
+          if (goLiveToo && S.deckId != null && slide) {
+            // Go Live routes the ACTUAL deck slide to the audience output via the authored-slide
+            // present path (the same mechanism the deck editor uses) — NOT the plan-item go_live,
+            // which would composite only the item title (the host has no deck pixels).
+            act(() => invoke("present_plan_deck_slide", { deckId: S.deckId, slideId: slide.slide_id }));
+          } else {
+            act(() => invoke("select_slide", { itemId: S.itemId, slideIndex: i })); // Preview only (FR-012)
+          }
+        }
+        // Paint the STAGED deck slide into the console Preview panel (#preview-canvas). The host
+        // composites only the plan-item TITLE for a deck (it has no deck pixels), so the console
+        // renders the real slide operator-side; renderConsole skips its own preview draw while a deck
+        // is staged. Cached — re-render only when the staged slide id changes.
+        let lastPreviewKey = null;
+        async function renderPreviewSlide(deckId, slideId) {
+          const cv = document.getElementById("preview-canvas");
+          if (!cv || deckId == null || slideId == null) return;
+          const key = deckId + ":" + slideId;
+          if (key === lastPreviewKey) return;
+          // Render the Preview at full 640×360. Do NOT reuse the 320px filmstrip `thumbCache`
+          // (that blitted an upscaled, blurry thumbnail into the larger Preview panel). Advance
+          // `lastPreviewKey` only AFTER a successful paint, so a transiently-failed render is retried
+          // on the next call rather than leaving Preview stale/blank.
+          try {
+            const r = await invoke("render_plan_deck_slide", { deckId: deckId, slideId: slideId, maxW: 640, maxH: 360 });
+            if (r && r.available && r.frame) {
+              blitFrame(cv, r.frame);
+              lastPreviewKey = key;
+            }
+          } catch (e) {}
+        }
+        window.__resetDeckPreviewKey = function () { lastPreviewKey = null; };
+        // Filmstrip keyboard (set once on the container; survives card rebuilds). Scoped keys
+        // stopPropagation so they don't ALSO fire the global ← Space ⏎ console shortcuts.
+        strip.addEventListener("keydown", (e) => {
+          const cs = cards();
+          if (!cs.length) return;
+          const cur = cs.findIndex((c) => c.tabIndex === 0);
+          const i = cur < 0 ? 0 : cur;
+          // Enter is handled by the global console shortcut (→ goLive() → present the staged deck
+          // slide), so let it bubble — don't double-fire here.
+          let j = null;
+          if (e.key === "ArrowRight" || e.key === "ArrowDown") j = Math.min(cs.length - 1, i + 1);
+          else if (e.key === "ArrowLeft" || e.key === "ArrowUp") j = Math.max(0, i - 1);
+          else if (e.key === "Home") j = 0;
+          else if (e.key === "End") j = cs.length - 1;
+          else return;
+          e.preventDefault(); e.stopPropagation();
+          cs.forEach((c, k) => { c.tabIndex = k === j ? 0 : -1; });
+          cs[j].focus();
+          stageSlide(j, false); // move + stage to Preview
+        });
+
+        function mark(stagedSlide, liveSlideId) {
+          const cs = cards();
+          cs.forEach((c, i) => {
+            const isStaged = i === stagedSlide;
+            // LIVE follows the authored slide actually on the output (live_authored_id), matched by
+            // slide id — so it marks the slide the audience sees, even if it differs from Preview.
+            const isLive = liveSlideId != null && Number(c.dataset.slideId) === liveSlideId;
+            c.classList.toggle("staged", isStaged && !isLive);
+            c.classList.toggle("live", isLive);
+            c.setAttribute("aria-current", isStaged ? "true" : "false");
+            c.tabIndex = isStaged ? 0 : -1;
+            let tag = c.querySelector(".slide-card-tag");
+            if (isStaged || isLive) {
+              if (!tag) { tag = document.createElement("span"); tag.className = "slide-card-tag"; c.appendChild(tag); }
+              tag.classList.toggle("preview", isStaged && !isLive);
+              tag.classList.toggle("live", isLive);
+              tag.textContent = isLive ? "LIVE" : "PREVIEW"; // text, never colour-only
+            } else if (tag) { tag.remove(); }
+            const base = c.dataset.baseLabel || ("Slide " + (i + 1));
+            c.setAttribute("aria-label", base + (isLive ? " (live on the audience output)" : isStaged ? " (preview)" : ""));
+          });
+          const pos = el("slides-pos");
+          if (pos) { pos.hidden = cs.length === 0; pos.textContent = "Preview " + (stagedSlide + 1) + " / " + cs.length; }
+        }
+
+        async function load(deckId, stagedSlide, liveSlide, hostCount, link) {
+          const empty = el("slides-empty");
+          const status = el("slides-status");
+          strip.innerHTML = "";
+          let res = null;
+          try { res = await invoke("plan_deck_slides", { deckId: deckId }); } catch (e) { res = null; }
+          if (!res || !res.available) { // the linked deck was removed (FR-007) → honest missing state
+            strip.hidden = true; empty.hidden = false;
+            el("slides-empty-msg").textContent = "Presentation missing — the linked deck was removed.";
+            el("slides-empty-sub").textContent = "Re-link it from the service plan.";
+            if (status) status.textContent = "Presentation missing.";
+            return;
+          }
+          const slides = res.slides || [];
+          S.slides = slides;
+          // Self-heal (spec §6): the operator owns the deck, so if the host's stored slide count is
+          // absent (a legacy link) or stale (the deck was edited after linking), sync the true count
+          // so per-slide staging clamps correctly. One-shot — after the sync hostCount === real.
+          if (link && slides.length > 0 && hostCount !== slides.length) {
+            const synced = Object.assign({}, link, { slide_count: slides.length });
+            act(() => invoke("set_item_content", { itemId: S.itemId, link: synced }));
+          }
+          if (!slides.length) {
+            strip.hidden = true; empty.hidden = false;
+            el("slides-empty-msg").textContent = "This presentation has no slides yet.";
+            el("slides-empty-sub").textContent = "Open it in Presentations to add slides.";
+            if (status) status.textContent = "";
+            return;
+          }
+          strip.hidden = false; empty.hidden = true;
+          if (status) status.textContent = "";
+          // Release the prior observer before rebuilding (no observer leak on deck switch, Perf-7/L1).
+          if (S.io) { try { S.io.disconnect(); } catch (e) {} S.io = null; }
+          // Windowed thumbnails: render the visible (± margin) cards, and DROP the backing store of a
+          // card that scrolls off-screen (shrink to 1×1) so retained RGBA stays window-bounded, not
+          // O(N slides) (spec §2 bounded-memory). Re-entry repaints cheaply from the bounded cache.
+          const io = ("IntersectionObserver" in window)
+            ? new IntersectionObserver((es) => es.forEach((e) => {
+                const cv2 = e.target.querySelector("canvas");
+                if (e.isIntersecting) {
+                  thumb(deckId, Number(e.target.dataset.slideId), cv2);
+                } else if (cv2 && cv2.width > 1) {
+                  cv2.width = 1; cv2.height = 1; // drop the off-screen backing store
+                }
+              }), { root: strip, rootMargin: "96px" })
+            : null;
+          S.io = io;
+          slides.forEach((s, i) => {
+            const card = document.createElement("div");
+            card.className = "slide-card";
+            card.dataset.slideId = String(s.slide_id);
+            card.dataset.index = String(i);
+            card.setAttribute("role", "option");
+            card.setAttribute("aria-selected", "false");
+            card.tabIndex = i === 0 ? 0 : -1;
+            card.dataset.baseLabel = "Slide " + (i + 1) + " of " + slides.length + (s.label ? " — " + s.label : "");
+            card.setAttribute("aria-label", card.dataset.baseLabel);
+            const cv = document.createElement("canvas"); cv.width = 168; cv.height = 94; card.appendChild(cv);
+            const n = document.createElement("span"); n.className = "slide-card-n"; n.textContent = String(i + 1); card.appendChild(n);
+            card.onclick = () => { cards().forEach((c, k) => { c.tabIndex = k === i ? 0 : -1; }); stageSlide(i, false); };
+            card.ondblclick = () => stageSlide(i, true);
+            strip.appendChild(card);
+            if (io) io.observe(card); else thumb(deckId, s.slide_id, cv);
+          });
+          mark(stagedSlide, liveSlide);
+          // Now that S.slides is fresh, publish the staged slide (for GO LIVE) + paint the Preview panel.
+          const psid = (slides[stagedSlide] || {}).slide_id;
+          window.__consoleDeckPreview = psid != null ? { deckId: deckId, slideId: psid } : null;
+          renderPreviewSlide(deckId, psid);
+        }
+
+        function setEnabled(on, count) {
+          const tab = tabs[1];
+          const pill = el("slides-count");
+          if (on) {
+            tab.removeAttribute("aria-disabled");
+            if (pill && count != null) { pill.hidden = false; pill.textContent = String(count); }
+          } else {
+            tab.setAttribute("aria-disabled", "true");
+            if (pill) pill.hidden = true;
+          }
+        }
+
+        // Inspection hook (bounded-memory verification, spec §2): the thumbnail LRU size, the count of
+        // cards still holding a full-resolution backing store, and a force-render-all that walks every
+        // card so a test can prove the LRU evicts past its cap.
+        window.__slidesDebug = {
+          thumbCacheSize: () => thumbCache.size,
+          liveCanvas: () => cards().filter((c) => { const cv = c.querySelector("canvas"); return cv && cv.width > 1; }).length,
+          renderAll: async () => { for (const c of cards()) { await thumb(S.deckId, Number(c.dataset.slideId), c.querySelector("canvas")); } },
+        };
+
+        // Called from render() on every view. Detects a staged presentation (a slide_group item
+        // linked to a deck), enables + auto-surfaces the Slides tab, (re)loads the filmstrip when the
+        // presentation changes, and re-marks the staged/live slide otherwise.
+        window.__syncSlides = function (view) {
+          const idx = view && view.staged_index;
+          const staged = (idx != null && view.items) ? view.items[idx] : null;
+          const isPres = !!(staged && staged.kind === "slide_group" && staged.link && staged.link.kind === "deck");
+          if (!isPres) {
+            setEnabled(false);
+            S.deckId = null; S.itemId = null;
+            // Hand the Preview panel back to the host composite (renderConsole resumes drawing it).
+            window.__consoleDeckPreview = null;
+            if (window.__resetDeckPreviewKey) window.__resetDeckPreviewKey();
+            if (window.__activeContentTab === "slides") window.__selectContentTab("scriptures", false);
+            return;
+          }
+          const deckId = staged.link.id;
+          const itemId = staged.id;
+          // The STAGED (Preview) cursor: staged_slide_index when present (distinct from slide_index,
+          // which is LIVE-first). Falls back for an older host.
+          const stagedSlide = (staged.staged_slide_index != null)
+            ? staged.staged_slide_index
+            : (staged.slide_index || 0);
+          // LIVE follows the authored slide actually on the output. Presenting a deck slide routes it
+          // via present_authored_slide, which sets live_authored_id (a slide id) — matched by id in
+          // mark(), so PREVIEW (cursor) and LIVE (on-air slide) can be different slides of the deck.
+          const liveSlideId = (view.live_authored_id != null) ? view.live_authored_id : null;
+          setEnabled(true, staged.slide_count != null ? staged.slide_count : (S.slides.length || null));
+          const nameEl = el("slides-deck-name");
+          if (nameEl) nameEl.textContent = staged.title || "Slides";
+          // The staged deck slide (for the global GO LIVE button + the Preview panel render) is
+          // published by load()/mark() below, once S.slides is current for this presentation.
+          if (S.deckId !== deckId || S.itemId !== itemId) {
+            S.deckId = deckId; S.itemId = itemId;
+            // Edge-triggered auto-surface (a NEW presentation was staged) — never steal focus, and
+            // never yank the operator out of a scripture search they're typing.
+            const q = el("scripture-q");
+            if (window.__activeContentTab !== "slides" && !(q && document.activeElement === q)) {
+              window.__selectContentTab("slides", false);
+            }
+            load(deckId, stagedSlide, liveSlideId, staged.slide_count, staged.link);
+          } else {
+            mark(stagedSlide, liveSlideId);
+            // Refresh the staged slide id after any reorder/re-mark, then paint the Preview panel.
+            const sid = (S.slides[stagedSlide] || {}).slide_id;
+            window.__consoleDeckPreview = sid != null ? { deckId: deckId, slideId: sid } : null;
+            renderPreviewSlide(deckId, sid);
+          }
+        };
+      })();
+
       // --- Command palette (⌘K) + Shortcuts modal (app menu → footer buttons). Searches
       // and runs the same navigation / transport / emergency actions the console already
       // exposes — no new host commands, just a faster way to reach them. Exposed to the
@@ -4176,7 +4582,22 @@
       (async () => {
         try { render(await invoke("view")); setConn(true); }
         catch (e) { setConn(false); }
+        // The console's deck-link chips resolve names/missing status against planDecks, which is
+        // otherwise only loaded on the plan surface — so a deck-linked item on the console showed a
+        // generic "▦ presentation" and never the "⚠ missing" state (FR-007). Load the list once at
+        // boot, then bust the render cache so the chips repaint with resolved names (bounded: one
+        // deck_list, cached thereafter).
+        try {
+          await planLoadDecks();
+          lastRendered = "";
+          render(await invoke("view"));
+        } catch (e) { /* offline / no host — chips stay generic, harmless */ }
       })();
+      // "Open in Live ▶" (Service Plan header) is a PURE surface switch to the Live Console — never
+      // a go-live (a plan edit must not commit to Live). It is a plain button, not a .nav-item, so
+      // navGo's .nav-item delegation does not cover it; wire it explicitly, nav-only.
+      const planOpenLive = document.getElementById("plan-open-live");
+      if (planOpenLive) planOpenLive.onclick = () => showSurface("console");
       // Poll so a running countdown ticks in the UI (the host advances it each frame).
       setInterval(async () => {
         try {
@@ -4431,6 +4852,1044 @@
         };
         document.addEventListener("keydown", onKey, true);
         input.focus(); input.select();
+      }
+
+      // === Service-plan content linking (ADR-0020) — link a scripture / deck to a plan item ===
+      // The read side (link status chips) + the write side (a picker → `set_item_content`).
+      // Deck names/missing-status resolve against a lazily-loaded deck list (the console does
+      // not otherwise load it); scripture uses the host's `scripture_search` + translation list.
+      let planDecks = null; // cached [{id,name,slides}] or null (not yet loaded)
+      async function planLoadDecks() {
+        try {
+          const r = await invoke("deck_list");
+          planDecks = (r && r.decks) || [];
+        } catch (e) {
+          console.error(e);
+          // Load FAILED — stay UNRESOLVED (null), not empty. planLinkChip only shows "⚠ missing"
+          // when planDecks is a loaded list lacking the id; leaving it null renders the generic
+          // chip instead of falsely flagging every deck-linked item as missing on a transient error.
+          planDecks = null;
+        }
+        return planDecks || [];
+      }
+      function planDeckName(id) {
+        if (!planDecks) return null;
+        const d = planDecks.find((x) => x.id === id);
+        return d ? d.name : null;
+      }
+      // Translations the host offers — reuse the Scriptures browser's populated <select>
+      // so the picker never invents a code the host can't stage.
+      function planTranslations() {
+        const sel = document.getElementById("translation");
+        if (sel && sel.options.length) return Array.from(sel.options).map((o) => o.value);
+        return ["KJV", "WEB"];
+      }
+      function planLinkChip(link) {
+        const el = document.createElement("span");
+        el.className = "link-chip link-" + link.kind;
+        if (link.kind === "scripture") {
+          el.textContent =
+            "✦ " + (link.reference || "scripture") + (link.translation ? " · " + link.translation : "");
+        } else if (link.kind === "deck") {
+          const name = planDeckName(link.id);
+          if (planDecks && !name) {
+            // The deck list is loaded and this id is gone → the plan item is missing content.
+            el.className = "link-chip link-missing";
+            el.textContent = "⚠ presentation missing";
+          } else {
+            el.textContent = "▦ " + (name || "presentation");
+          }
+        } else if (link.kind === "media") {
+          el.textContent = "▷ media";
+        } else {
+          el.textContent = link.kind;
+        }
+        return el;
+      }
+
+      // A list-body modal (reuses the confirm chrome + focus-trap) that links a scripture
+      // passage or a deck to `item`, or unlinks it. Commits via `set_item_content` — a plan
+      // edit that never changes Live (WKWebView-safe DOM overlay; no <dialog>).
+      function openLinkModal(item) {
+        if (document.querySelector(".pm-confirm-back")) return; // one modal at a time
+        const isScripture = item.kind === "scripture";
+        const prevFocus = document.activeElement;
+        const back = document.createElement("div");
+        back.className = "pm-confirm-back";
+        const dlg = document.createElement("div");
+        dlg.className = "pm-confirm pm-link";
+        dlg.setAttribute("role", "dialog");
+        dlg.setAttribute("aria-modal", "true");
+        dlg.setAttribute("aria-labelledby", "pm-link-title");
+        const h = document.createElement("h2");
+        h.className = "pm-confirm-title";
+        h.id = "pm-link-title";
+        h.textContent = isScripture ? "Link a scripture" : "Link a presentation";
+        dlg.appendChild(h);
+        const sub = document.createElement("p");
+        sub.className = "pm-confirm-body";
+        // Context-neutral copy: this modal opens from BOTH the console (where selecting a row
+        // stages Preview) and the builder (where it does not) — so it must not claim a
+        // select-to-Preview action. It only sets the item's content; it never changes Live (§9).
+        sub.textContent = "Linking sets this item's content — it never changes Live output.";
+        dlg.appendChild(sub);
+        const body = document.createElement("div");
+        body.className = "pm-link-body";
+        dlg.appendChild(body);
+        // Inline error (role=alert): a host-rejected reference/deck leaves the plan UNCHANGED, so
+        // the modal stays open and announces the failure rather than closing on a silent no-op.
+        const err = document.createElement("p");
+        err.className = "pm-link-err";
+        err.setAttribute("role", "alert");
+        err.hidden = true;
+        dlg.appendChild(err);
+        const actions = document.createElement("div");
+        actions.className = "pm-confirm-actions";
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "pm-btn-ghost";
+        cancel.textContent = "Cancel";
+        actions.appendChild(cancel);
+        dlg.appendChild(actions);
+        back.appendChild(dlg);
+        document.body.appendChild(back);
+
+        const close = () => {
+          document.removeEventListener("keydown", onKey, true);
+          back.remove();
+          if (prevFocus && prevFocus.focus) prevFocus.focus();
+        };
+        // Disable every control while a command is in flight (aria-busy so AT knows the dialog is
+        // working) — prevents a double-submit and the close-before-resolve race.
+        const setBusy = (on) => {
+          dlg.setAttribute("aria-busy", on ? "true" : "false");
+          dlg.querySelectorAll("button, input, select").forEach((c) => {
+            c.disabled = on;
+          });
+        };
+        const showErr = (msg) => {
+          err.textContent = msg;
+          err.hidden = false;
+        };
+        const commit = (link) => {
+          err.hidden = true;
+          setBusy(true);
+          // Keep the modal OPEN until the host confirms. set_item_content rejects an unparseable
+          // reference / unknown deck and leaves the plan unchanged, so closing optimistically would
+          // hide the failure. Close only on success; on rejection re-enable + surface an inline
+          // error. The returned OperatorView refreshes the console AND (if open) the builder — a
+          // plan edit that never changes Live.
+          invoke("set_item_content", { itemId: item.id, link })
+            .then((v) => {
+              // Restore focus to the item after the rebuild (WCAG 2.4.3). close() calls
+              // prevFocus.focus() on the opener button, but the following render/planRenderBuilder
+              // DESTROY that button — so re-target focus deliberately AFTER the rebuild: the
+              // run-sheet row on the builder, or the row's link control on the console.
+              const ps = document.getElementById("surface-plan");
+              const planActive = !!(ps && ps.classList.contains("active"));
+              if (planActive) planFocusAfterRender = { kind: "row", id: item.id };
+              close();
+              lastRendered = "";
+              render(v);
+              if (planActive && typeof planRenderBuilder === "function") {
+                planRenderBuilder(v);
+              } else {
+                const btn = document.querySelector('#plan .item[data-item-id="' + item.id + '"] .plan-link-btn');
+                if (btn) btn.focus();
+              }
+            })
+            .catch((e) => {
+              console.error(e);
+              setBusy(false);
+              showErr(
+                link
+                  ? "The host couldn't link that — check the reference or presentation and try again."
+                  : "The host couldn't unlink this item."
+              );
+            });
+        };
+        cancel.onclick = close;
+        back.onmousedown = (ev) => {
+          if (ev.target === back) close();
+        };
+        // Focus trap + Esc (WCAG 2.4.3 / 2.1.1): the background console (which holds live-control
+        // buttons like Go Live / Next) is NOT inert, so Tab MUST be contained within the dialog —
+        // otherwise focus could land on a live-control button behind the backdrop and Enter would
+        // fire it (a live-cueing-invariant breach). The focusable set changes as search hits / deck
+        // rows appear, so it is queried live on each Tab rather than captured once.
+        const onKey = (ev) => {
+          if (ev.key === "Escape") {
+            ev.preventDefault();
+            close();
+            return;
+          }
+          if (ev.key === "Tab") {
+            // Visible + enabled focusables, queried live. Use getClientRects/offset size (not
+            // offsetParent, which is null for a position:fixed dialog) so the trap works in the
+            // real WKWebView shell where the modal is fixed-positioned.
+            const els = Array.prototype.filter.call(
+              dlg.querySelectorAll("button, input, select, [tabindex]"),
+              (n) => !n.disabled && n.tabIndex !== -1 && (n.offsetWidth > 0 || n.offsetHeight > 0 || n.getClientRects().length > 0)
+            );
+            ev.preventDefault();
+            if (!els.length) return;
+            const i = els.indexOf(document.activeElement);
+            const next = ev.shiftKey ? (i <= 0 ? els.length - 1 : i - 1) : (i >= els.length - 1 ? 0 : i + 1);
+            els[next].focus();
+          }
+        };
+        document.addEventListener("keydown", onKey, true);
+        // An already-linked item can be unlinked (clears the reference; the deck/passage is untouched).
+        if (item.link) {
+          const unlink = document.createElement("button");
+          unlink.type = "button";
+          unlink.className = "pm-btn-ghost";
+          unlink.textContent = "Unlink";
+          unlink.onclick = () => commit(null);
+          actions.insertBefore(unlink, cancel);
+        }
+        if (isScripture) {
+          // planScriptureBody ends with input.focus() — keep the reference field focused so a
+          // keyboard operator can type immediately (don't override it with cancel.focus()).
+          planScriptureBody(body, item, commit);
+        } else {
+          // planDeckBody is async (awaits the deck list); focus Cancel while it loads. The primary
+          // action is select-then-confirm, so an initial Cancel focus is the right default here.
+          planDeckBody(body, item, commit);
+          cancel.focus();
+        }
+      }
+
+      function planScriptureBody(wrap, item, commit) {
+        const cur = item.link && item.link.kind === "scripture" ? item.link : {};
+        let chapter = null,
+          vStart = null,
+          vEnd = null,
+          vps = cur.verses_per_slide || null;
+        const row = document.createElement("div");
+        row.className = "pm-link-row";
+        const input = document.createElement("input");
+        input.className = "pm-insp-ctrl";
+        input.type = "text";
+        input.placeholder = "Reference — e.g. Romans 8:28-30";
+        input.value = cur.reference || "";
+        input.setAttribute("aria-label", "Scripture reference");
+        const trans = document.createElement("select");
+        trans.className = "pm-insp-ctrl";
+        trans.setAttribute("aria-label", "Translation");
+        planTranslations().forEach((t) => {
+          const o = document.createElement("option");
+          o.value = t;
+          o.textContent = t;
+          if (cur.translation === t) o.selected = true;
+          trans.appendChild(o);
+        });
+        const browse = document.createElement("button");
+        browse.type = "button";
+        browse.className = "pm-btn-ghost";
+        browse.textContent = "Browse";
+        const go = document.createElement("button");
+        go.type = "button";
+        go.className = "pm-btn-primary";
+        go.textContent = "Link";
+        row.appendChild(input);
+        row.appendChild(trans);
+        row.appendChild(browse);
+        row.appendChild(go);
+        wrap.appendChild(row);
+        const hits = document.createElement("div");
+        hits.className = "pm-link-hits";
+        wrap.appendChild(hits);
+
+        // Verse picker (frame 610:124): chapter nav + verse list with the selected range highlighted
+        // + verses-per-slide + a gold reference preview. Hidden until a chapter is browsed/loaded.
+        // NOTE: no `display` rule on `.pm-verse-picker` in CSS, so the `hidden` attribute still hides it.
+        const picker = document.createElement("div");
+        picker.className = "pm-verse-picker";
+        picker.hidden = true;
+        const head = document.createElement("div");
+        head.className = "pm-verse-head";
+        const chref = document.createElement("span");
+        chref.className = "pm-verse-ref";
+        const nav = document.createElement("span");
+        nav.className = "pm-verse-nav";
+        const prev = document.createElement("button");
+        prev.type = "button";
+        prev.className = "pm-verse-navbtn";
+        prev.textContent = "◀";
+        prev.setAttribute("aria-label", "Previous chapter");
+        const next = document.createElement("button");
+        next.type = "button";
+        next.className = "pm-verse-navbtn";
+        next.textContent = "▶";
+        next.setAttribute("aria-label", "Next chapter");
+        nav.appendChild(prev);
+        nav.appendChild(next);
+        head.appendChild(chref);
+        head.appendChild(nav);
+        const vlist = document.createElement("div");
+        vlist.className = "pm-verse-list";
+        vlist.setAttribute("role", "listbox");
+        vlist.setAttribute("aria-label", "Verses");
+        vlist.setAttribute("aria-multiselectable", "true"); // a contiguous verse RANGE can be selected
+        const foot = document.createElement("div");
+        foot.className = "pm-verse-foot";
+        const vpsLbl = document.createElement("label");
+        vpsLbl.className = "pm-verse-vps";
+        vpsLbl.textContent = "Verses / slide";
+        const vpsIn = document.createElement("input");
+        vpsIn.type = "number";
+        vpsIn.min = "1";
+        vpsIn.className = "pm-insp-ctrl";
+        vpsIn.value = vps || "";
+        vpsIn.setAttribute("aria-label", "Verses per slide");
+        vpsIn.oninput = () => {
+          vps = parseInt(vpsIn.value, 10) || null;
+        };
+        vpsLbl.appendChild(vpsIn);
+        foot.appendChild(vpsLbl);
+        const preview = document.createElement("div");
+        preview.className = "pm-verse-preview";
+        picker.appendChild(head);
+        picker.appendChild(vlist);
+        picker.appendChild(foot);
+        picker.appendChild(preview);
+        wrap.appendChild(picker);
+
+        const refString = () => {
+          if (chapter && vStart != null) {
+            let r = chapter.reference + ":" + vStart;
+            if (vEnd != null && vEnd > vStart) r += "-" + vEnd;
+            return r;
+          }
+          return input.value.trim();
+        };
+        const updatePreview = () => {
+          const r = refString();
+          preview.textContent = r ? "✦ " + r + (trans.value ? " · " + trans.value : "") : "";
+        };
+        const renderVerses = () => {
+          if (!chapter) {
+            picker.hidden = true;
+            return;
+          }
+          picker.hidden = false;
+          chref.textContent = chapter.reference + " (" + chapter.translation + ")";
+          prev.disabled = !chapter.prev;
+          next.disabled = !chapter.next;
+          vlist.innerHTML = "";
+          (chapter.verses || []).forEach(([num, text]) => {
+            const vr = document.createElement("button");
+            vr.type = "button";
+            vr.className = "pm-verse";
+            vr.dataset.vnum = num;
+            vr.setAttribute("role", "option");
+            const inRange = vStart != null && (vEnd != null ? num >= vStart && num <= vEnd : num === vStart);
+            vr.classList.toggle("sel", inRange);
+            vr.setAttribute("aria-selected", inRange ? "true" : "false");
+            const n = document.createElement("span");
+            n.className = "pm-verse-n";
+            n.textContent = num;
+            const t = document.createElement("span");
+            t.className = "pm-verse-t";
+            t.textContent = text;
+            vr.appendChild(n);
+            vr.appendChild(t);
+            vr.onclick = () => {
+              // First click (or after a complete range) sets the start; a later click at/after the
+              // start extends the range; a click before the start resets to a new start.
+              if (vStart == null || vEnd != null) {
+                vStart = num;
+                vEnd = null;
+              } else if (num >= vStart) {
+                vEnd = num;
+              } else {
+                vStart = num;
+                vEnd = null;
+              }
+              renderVerses();
+              updatePreview();
+            };
+            vlist.appendChild(vr);
+          });
+          updatePreview();
+        };
+        const loadCh = async (ref) => {
+          if (!ref) return;
+          try {
+            const ch = await invoke("get_chapter", { reference: ref, translation: trans.value || null });
+            chapter = ch;
+            vStart = ch.verse_start != null ? ch.verse_start : ch.verses && ch.verses[0] ? ch.verses[0][0] : null;
+            vEnd = ch.verse_end != null && ch.verse_end > (ch.verse_start || 0) ? ch.verse_end : null;
+            renderVerses();
+          } catch (e) {
+            console.error(e);
+          }
+        };
+        prev.onclick = () => {
+          if (chapter && chapter.prev) loadCh(chapter.prev);
+        };
+        next.onclick = () => {
+          if (chapter && chapter.next) loadCh(chapter.next);
+        };
+        browse.onclick = () => loadCh(input.value.trim());
+
+        const doLink = () => {
+          const r = refString();
+          if (!r) return;
+          const link = { kind: "scripture", reference: r, translation: trans.value || null };
+          if (vps) link.verses_per_slide = vps;
+          commit(link);
+        };
+        go.onclick = doLink;
+        input.onkeydown = (ev) => {
+          if (ev.key === "Enter") {
+            ev.preventDefault();
+            doLink();
+          }
+        };
+        // Live search: clicking a hit loads its chapter so the operator can refine the verse range.
+        let t = null;
+        input.oninput = () => {
+          // Editing the reference invalidates any browsed/seeded chapter so a freshly-typed reference
+          // wins on Link — otherwise refString() would keep committing the STALE browsed reference.
+          if (chapter) {
+            chapter = null;
+            vStart = null;
+            vEnd = null;
+            renderVerses();
+          }
+          clearTimeout(t);
+          t = setTimeout(async () => {
+            const q = input.value.trim();
+            if (q.length < 2) {
+              hits.textContent = "";
+              return;
+            }
+            try {
+              const res = await invoke("scripture_search", { query: q, translation: trans.value || null });
+              hits.textContent = "";
+              (res || []).slice(0, 8).forEach((hit) => {
+                const b = document.createElement("button");
+                b.type = "button";
+                b.className = "pm-link-hit";
+                const ref = document.createElement("b");
+                ref.textContent = hit.reference;
+                const txt = document.createElement("span");
+                txt.textContent = " " + (hit.text || "").slice(0, 90);
+                b.appendChild(ref);
+                b.appendChild(txt);
+                b.onclick = () => {
+                  input.value = hit.reference;
+                  hits.textContent = "";
+                  loadCh(hit.reference);
+                };
+                hits.appendChild(b);
+              });
+            } catch (e) {
+              console.error(e);
+            }
+          }, 200);
+        };
+        if (cur.reference) loadCh(cur.reference); // editing an existing link → seed its chapter
+        input.focus();
+      }
+
+      async function planDeckBody(wrap, item, commit) {
+        const loading = document.createElement("p");
+        loading.className = "pm-confirm-body";
+        loading.textContent = "Loading presentations…";
+        wrap.appendChild(loading);
+        const decks = await planLoadDecks();
+        loading.remove();
+        const curId = item.link && item.link.kind === "deck" ? item.link.id : null;
+        // Select-then-confirm (handoff §4.2): a click SELECTS a deck (indigo border + a non-colour
+        // "✓ Selected" marker); the footer "Link to item" commits it — a mis-click never commits.
+        // Only PRESELECT a deck that still exists (a Change… on a deleted deck selects nothing).
+        let selId = decks.some((d) => d.id === curId) ? curId : null;
+
+        // Grid / List view toggle (frame 610:390 reuses the Presentations-library grid).
+        const bar = document.createElement("div");
+        bar.className = "pm-deck-bar";
+        const seg = document.createElement("div");
+        seg.className = "pm-deck-seg";
+        seg.setAttribute("role", "group");
+        seg.setAttribute("aria-label", "Presentations view");
+        const grid = document.createElement("div");
+        grid.className = "pm-deck-grid";
+        grid.setAttribute("role", "listbox");
+        grid.setAttribute("aria-label", "Presentations");
+        const setView = (v) => {
+          grid.classList.toggle("as-list", v === "list");
+          Array.prototype.forEach.call(seg.children, (b) => {
+            const on = b.dataset.view === v;
+            b.classList.toggle("on", on);
+            b.setAttribute("aria-pressed", on ? "true" : "false");
+          });
+        };
+        [["grid", "▦ Grid"], ["list", "☰ List"]].forEach(([v, label]) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "pm-deck-seg-btn";
+          b.dataset.view = v;
+          b.textContent = label;
+          b.onclick = () => setView(v);
+          seg.appendChild(b);
+        });
+        bar.appendChild(seg);
+        wrap.appendChild(bar);
+        if (!decks.length) {
+          const note = document.createElement("p");
+          note.className = "pm-confirm-body";
+          note.textContent = "No presentations yet — create one below.";
+          wrap.appendChild(note);
+        }
+        wrap.appendChild(grid);
+
+        const linkBtn = document.createElement("button");
+        linkBtn.type = "button";
+        linkBtn.className = "pm-btn-primary";
+        linkBtn.textContent = "Link to item";
+        const refresh = () => {
+          Array.prototype.forEach.call(grid.querySelectorAll(".pm-link-hit"), (b) => {
+            const on = String(b.dataset.deckId) === String(selId);
+            b.classList.toggle("sel", on);
+            b.setAttribute("aria-selected", on ? "true" : "false");
+            const mark = b.querySelector(".pm-link-sel");
+            if (mark) mark.hidden = !on;
+          });
+          linkBtn.disabled = selId == null;
+        };
+        decks.forEach((d) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "pm-link-hit pm-deck-card";
+          b.dataset.deckId = d.id;
+          b.setAttribute("role", "option");
+          const thumb = document.createElement("span");
+          thumb.className = "pm-deck-thumb";
+          thumb.textContent = "▦";
+          thumb.setAttribute("aria-hidden", "true");
+          const name = document.createElement("b");
+          name.className = "pm-deck-cardname";
+          name.textContent = d.name;
+          const pill = document.createElement("span");
+          pill.className = "pm-deck-pill";
+          pill.textContent = d.slides + (d.slides === 1 ? " slide" : " slides");
+          const sel = document.createElement("span");
+          sel.className = "pm-link-sel";
+          sel.textContent = "✓ Selected";
+          sel.hidden = true;
+          b.appendChild(thumb);
+          b.appendChild(name);
+          b.appendChild(pill);
+          b.appendChild(sel);
+          b.onclick = () => {
+            selId = d.id;
+            refresh();
+            linkBtn.focus();
+          };
+          grid.appendChild(b);
+        });
+        // New-presentation card: creates an "Untitled presentation" and links it (the operator
+        // names/builds it via "Open in editor"). Placed OUTSIDE the role=listbox grid — it is an
+        // action, not a selectable option. Re-entrancy-guarded (no duplicate decks) and aborts if
+        // the dialog was dismissed mid-flight (Escape/Cancel), mirroring commit()'s busy discipline.
+        const newCard = document.createElement("button");
+        newCard.type = "button";
+        newCard.className = "pm-deck-new";
+        newCard.setAttribute("aria-label", "New presentation");
+        const plus = document.createElement("span");
+        plus.className = "pm-deck-thumb";
+        plus.textContent = "＋";
+        plus.setAttribute("aria-hidden", "true");
+        const nlabel = document.createElement("b");
+        nlabel.className = "pm-deck-cardname";
+        nlabel.textContent = "New presentation";
+        newCard.appendChild(plus);
+        newCard.appendChild(nlabel);
+        let newBusy = false;
+        newCard.onclick = async () => {
+          if (newBusy) return; // guard double-activation → no duplicate decks
+          newBusy = true;
+          newCard.disabled = true;
+          try {
+            const before = (planDecks || []).map((d) => d.id);
+            await invoke("deck_new", { name: "Untitled presentation" });
+            const after = await planLoadDecks();
+            if (!newCard.isConnected) return; // dialog dismissed while deck_new was in flight → don't relink
+            const created = after.filter((d) => before.indexOf(d.id) < 0)[0]; // only a genuinely new deck
+            if (created) {
+              // Carry the deck's slide count to the host (it owns no deck store) so the plan item
+              // reports the real count + can stage a specific slide (LIVE-CONSOLE… spec §6).
+              commit({ kind: "deck", id: created.id, slide_count: created.slides }); // success → modal closes
+            } else {
+              newCard.disabled = false;
+              newBusy = false;
+            }
+          } catch (e) {
+            console.error(e);
+            newCard.disabled = false;
+            newBusy = false;
+          }
+        };
+        wrap.appendChild(newCard);
+
+        linkBtn.onclick = () => {
+          if (selId != null) {
+            // Carry the selected deck's slide count to the host (spec §6) so per-slide staging works.
+            const d = (planDecks || []).find((x) => x.id === selId);
+            commit({ kind: "deck", id: selId, slide_count: d ? d.slides : undefined });
+          }
+        };
+        const foot = document.createElement("div");
+        foot.className = "pm-link-foot";
+        foot.appendChild(linkBtn);
+        wrap.appendChild(foot);
+        setView("grid");
+        refresh();
+      }
+
+      // === Service Plan builder (the dedicated `plan` surface) =================================
+      // A three-column editor (Add-item palette · run sheet · item inspector) over the same host
+      // OperatorView the console uses. Editing here never changes Live — "Open in Live" (a nav to
+      // the console) is the only path to the live surfaces; selecting an item stages Preview there.
+      const PLAN_ADD_KINDS = [
+        ["song", "Song"],
+        ["scripture", "Scripture"],
+        ["slide_group", "Presentation"],
+        ["media", "Media"],
+        ["announcement", "Announcement"],
+        ["timer", "Timer"],
+        ["section", "Section"],
+      ];
+      let planSelectedId = null;
+      // After planRenderBuilder blanks + rebuilds the run sheet, keyboard focus would fall to
+      // <body>; this records what the last user action should re-focus (the selected row, or a
+      // moved row's ↑/↓ button) so focus survives the rebuild (WCAG 2.4.3). Null on a background
+      // re-render (poll / link-commit refresh) so it never steals focus.
+      let planFocusAfterRender = null;
+      function planKindLabel(kind) {
+        const f = PLAN_ADD_KINDS.find((k) => k[0] === kind);
+        return f ? f[1] : kind;
+      }
+      function planActivate() {
+        planFocusAfterRender = null; // fresh navigation must not inherit a stale reorder intent
+        buildPlanPalette();
+        // Deck names/missing-status for link chips; then render with resolved names.
+        planLoadDecks().then(() => {
+          if (document.getElementById("plan-b-list")) invoke("view").then(planRenderBuilder).catch(console.error);
+        });
+        invoke("view").then(planRenderBuilder).catch(console.error);
+      }
+      function buildPlanPalette() {
+        const box = document.getElementById("plan-palette-btns");
+        if (!box || box.childElementCount) return; // built once
+        PLAN_ADD_KINDS.forEach(([kind, label]) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "plan-palette-btn";
+          b.textContent = "＋ " + label;
+          b.setAttribute("aria-label", "Add " + label);
+          b.onclick = () => planAddItem(kind, label);
+          box.appendChild(b);
+        });
+      }
+      async function planAddItem(kind, label) {
+        try {
+          const v = await invoke("add_item", { kind, title: label });
+          if (v && v.items && v.items.length) {
+            planSelectedId = v.items[v.items.length - 1].id;
+            planFocusAfterRender = { kind: "row", id: planSelectedId }; // focus the new row
+          }
+          planRenderBuilder(v);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      // Run a plan mutation, then refresh the builder from the returned view.
+      async function planMutate(fn) {
+        try {
+          planRenderBuilder(await fn());
+        } catch (e) {
+          console.error(e);
+          // The caller may have set a focus intent (e.g. a reorder) BEFORE the mutation; a rejected
+          // mutation never re-renders, so clear it — otherwise a later background re-render would
+          // consume the stale intent and steal focus onto an item the operator didn't just touch.
+          planFocusAfterRender = null;
+        }
+      }
+      // Reorder an item to a target index (persists via move_item; the moved row keeps focus). A plan
+      // edit — never a live-control command.
+      function planReorderTo(itemId, toIndex, last) {
+        if (toIndex < 0 || toIndex > last) return;
+        planFocusAfterRender = { kind: "row", id: itemId };
+        planMutate(() => invoke("move_item", { itemId, to: toIndex }));
+      }
+      // === Pointer-based run-sheet drag reorder (frame 611:820) ================================
+      // Pointer events (not HTML5 DnD) for WKWebView reliability + headless testability, mirroring
+      // the Theme Designer LAYERS reorder. A cancelled/2px-threshold drag never reorders; the drop
+      // line shows where the row will land; keyboard reorder is Alt+↑/↓ (below), so the ⠿ handle is
+      // aria-hidden (a pointer affordance only).
+      let planDrag = null;
+      function planRunRows() {
+        return Array.prototype.slice.call(document.querySelectorAll("#plan-b-list .plan-b-row"));
+      }
+      function planStartRowDrag(e, itemId, fromIndex, row) {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const line = document.createElement("div");
+        line.className = "plan-b-dropline";
+        line.setAttribute("aria-hidden", "true");
+        planDrag = {
+          itemId,
+          fromIndex,
+          row,
+          list: document.getElementById("plan-b-list"),
+          line,
+          targetIndex: fromIndex,
+          startY: e.clientY,
+          active: false,
+          pointerId: e.pointerId,
+        };
+        window.addEventListener("pointermove", planDragMove, true);
+        window.addEventListener("pointerup", planDragEnd, true);
+        window.addEventListener("pointercancel", planDragCancel, true);
+      }
+      function planDragMove(e) {
+        if (!planDrag) return;
+        if (!planDrag.active) {
+          if (Math.abs(e.clientY - planDrag.startY) < 2) return; // threshold: a click is not a drag
+          planDrag.active = true;
+          planDrag.row.classList.add("dragging");
+        }
+        const rows = planRunRows();
+        let target = rows.length;
+        for (let k = 0; k < rows.length; k++) {
+          const r = rows[k].getBoundingClientRect();
+          if (e.clientY < r.top + r.height / 2) {
+            target = k;
+            break;
+          }
+        }
+        planDrag.targetIndex = target;
+        if (target >= rows.length) planDrag.list.appendChild(planDrag.line);
+        else planDrag.list.insertBefore(planDrag.line, rows[target]);
+      }
+      function planDragTeardown() {
+        window.removeEventListener("pointermove", planDragMove, true);
+        window.removeEventListener("pointerup", planDragEnd, true);
+        window.removeEventListener("pointercancel", planDragCancel, true);
+        if (planDrag) {
+          if (planDrag.line && planDrag.line.parentNode) planDrag.line.remove();
+          if (planDrag.row) planDrag.row.classList.remove("dragging");
+        }
+        planDrag = null;
+      }
+      function planDragCancel() {
+        planDragTeardown();
+      }
+      function planDragEnd() {
+        if (!planDrag) return;
+        const d = planDrag;
+        planDragTeardown();
+        if (!d.active) return; // never moved past the threshold → treat as a non-drag
+        // Insertion index → move_item target: dropping BELOW the origin shifts by one after removal.
+        let to = d.targetIndex > d.fromIndex ? d.targetIndex - 1 : d.targetIndex;
+        if (to === d.fromIndex) return; // no-op
+        planReorderTo(d.itemId, to, planRunRows().length - 1);
+      }
+      function planRenderBuilder(view) {
+        const list = document.getElementById("plan-b-list");
+        if (!list || !view) return; // not on the plan surface
+        const count = document.getElementById("plan-b-count");
+        if (count) count.textContent = view.items.length + " items";
+        list.innerHTML = "";
+        if (!view.items.length) {
+          // Empty state (handoff §5, frame 611:124): a centered CTA, not a bare line. Template /
+          // Duplicate / Import need backend commands outside this API, so they are shown as honest
+          // "coming soon" affordances rather than omitted (match-the-full-shell).
+          const empty = document.createElement("div");
+          empty.className = "plan-empty";
+          const eh = document.createElement("h3");
+          eh.className = "plan-empty-h";
+          eh.textContent = "Build your service plan";
+          const es = document.createElement("p");
+          es.className = "plan-empty-sub";
+          es.textContent = "Add songs, scriptures, and presentations to the run sheet, then link content to each item.";
+          const ec = document.createElement("button");
+          ec.type = "button";
+          ec.id = "plan-empty-add";
+          ec.className = "pm-btn-primary";
+          ec.textContent = "＋ Add first item";
+          ec.onclick = () => {
+            const first = document.querySelector("#plan-palette-btns .plan-palette-btn");
+            if (first) first.focus();
+          };
+          const el8 = document.createElement("p");
+          el8.className = "plan-empty-later";
+          el8.textContent = "Start from a template · Duplicate a past plan · Import — coming soon";
+          empty.appendChild(eh);
+          empty.appendChild(es);
+          empty.appendChild(ec);
+          empty.appendChild(el8);
+          list.appendChild(empty);
+          planClearInspector();
+          return;
+        }
+        const last = view.items.length - 1;
+        view.items.forEach((it, i) => {
+          const row = document.createElement("div");
+          row.className =
+            "plan-b-row" +
+            (it.id === planSelectedId ? " sel" : "") +
+            (it.is_live ? " is-live" : "") +
+            (it.is_staged ? " is-staged" : "");
+          // An interactive listbox option (not a passive listitem): the row is selectable, and its
+          // selected state is exposed to AT via aria-selected (not border-colour alone). WCAG 1.4.1/4.1.2.
+          row.setAttribute("role", "option");
+          row.setAttribute("aria-selected", it.id === planSelectedId ? "true" : "false");
+          row.dataset.itemId = it.id;
+          row.tabIndex = 0;
+          const main = document.createElement("span");
+          main.className = "plan-b-main";
+          const title = document.createElement("span");
+          title.className = "plan-b-title";
+          title.textContent = it.title;
+          const kind = document.createElement("span");
+          kind.className = "kind kind-" + it.kind;
+          kind.textContent = planKindLabel(it.kind);
+          main.appendChild(title);
+          main.appendChild(kind);
+          if (it.link) main.appendChild(planLinkChip(it.link));
+          // Drag handle (pointer reorder). aria-hidden — keyboard users reorder via Alt+↑/↓ (below),
+          // so the glyph handle is a pointer affordance only and stays out of the tab order / AT tree.
+          const handle = document.createElement("span");
+          handle.className = "plan-b-handle";
+          handle.textContent = "⠿";
+          handle.setAttribute("aria-hidden", "true");
+          handle.title = "Drag to reorder";
+          handle.onpointerdown = (e) => planStartRowDrag(e, it.id, i, row);
+          handle.onclick = (e) => e.stopPropagation(); // a handle interaction must not select the row
+          row.appendChild(handle);
+          row.appendChild(main);
+          const tools = document.createElement("span");
+          tools.className = "plan-b-tools";
+          const up = miniBtn(
+            "↑",
+            (e) => {
+              e.stopPropagation();
+              if (i > 0) {
+                planFocusAfterRender = { kind: "up", id: it.id };
+                planMutate(() => invoke("move_item", { itemId: it.id, to: i - 1 }));
+              }
+            },
+            "Move “" + it.title + "” up"
+          );
+          up.className = "plan-b-up";
+          up.disabled = i === 0;
+          const down = miniBtn(
+            "↓",
+            (e) => {
+              e.stopPropagation();
+              if (i < last) {
+                planFocusAfterRender = { kind: "down", id: it.id };
+                planMutate(() => invoke("move_item", { itemId: it.id, to: i + 1 }));
+              }
+            },
+            "Move “" + it.title + "” down"
+          );
+          down.className = "plan-b-down";
+          down.disabled = i === last;
+          tools.appendChild(up);
+          tools.appendChild(down);
+          row.appendChild(tools);
+          if (it.is_live) row.appendChild(badge("live", "LIVE"));
+          else if (it.is_staged) row.appendChild(badge("preview", "PREVIEW"));
+          const select = () => {
+            planSelectedId = it.id;
+            planFocusAfterRender = { kind: "row", id: it.id };
+            planRenderBuilder(view);
+          };
+          row.onclick = select;
+          row.onkeydown = (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              select();
+              return;
+            }
+            // Alt+↑/↓ reorders the row (NFR-019 keyboard reorder); focus follows the moved row.
+            if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+              e.preventDefault();
+              planReorderTo(it.id, i + (e.key === "ArrowUp" ? -1 : 1), last);
+            }
+          };
+          list.appendChild(row);
+        });
+        // Restore focus after the innerHTML rebuild so keyboard select/reorder doesn't dump focus
+        // to <body> (WCAG 2.4.3). Only fires for an explicit user action that set the intent.
+        if (planFocusAfterRender) {
+          const f = planFocusAfterRender;
+          planFocusAfterRender = null;
+          const trow = list.querySelector('.plan-b-row[data-item-id="' + f.id + '"]');
+          if (trow) {
+            const btn = f.kind === "up" ? trow.querySelector(".plan-b-up") : f.kind === "down" ? trow.querySelector(".plan-b-down") : null;
+            (btn && !btn.disabled ? btn : trow).focus();
+          }
+        }
+        const sel = view.items.find((x) => x.id === planSelectedId);
+        if (sel) planRenderInspector(sel);
+        else planClearInspector();
+      }
+      function planClearInspector() {
+        const box = document.getElementById("plan-b-insp");
+        if (box)
+          box.innerHTML =
+            '<p class="coming-soon">Select an item to edit it and link its scripture or presentation.</p>';
+      }
+      // A richer linked-deck card for the inspector (frame 608:124): name + slide count, resolved
+      // from the loaded deck list; a deleted deck renders the missing treatment.
+      function planDeckCard(link) {
+        const card = document.createElement("div");
+        card.className = "plan-deck-card";
+        const name = planDeckName(link.id);
+        if (planDecks && !name) {
+          card.classList.add("missing");
+          const w = document.createElement("div");
+          w.className = "plan-deck-card-name link-missing";
+          w.textContent = "⚠ presentation missing";
+          const m = document.createElement("div");
+          m.className = "plan-deck-card-meta";
+          m.textContent = "The linked deck was deleted from the library — relink it.";
+          card.appendChild(w);
+          card.appendChild(m);
+          return card;
+        }
+        const deck = planDecks ? planDecks.find((d) => d.id === link.id) : null;
+        const nm = document.createElement("div");
+        nm.className = "plan-deck-card-name";
+        nm.textContent = "▦ " + (name || "Presentation");
+        const meta = document.createElement("div");
+        meta.className = "plan-deck-card-meta";
+        meta.textContent = deck ? deck.slides + (deck.slides === 1 ? " slide" : " slides") : "";
+        card.appendChild(nm);
+        card.appendChild(meta);
+        return card;
+      }
+      function planRenderInspector(it) {
+        const box = document.getElementById("plan-b-insp");
+        if (!box) return;
+        box.innerHTML = "";
+        const kindRow = document.createElement("div");
+        kindRow.className = "plan-insp-kind";
+        const k = document.createElement("span");
+        k.className = "kind kind-" + it.kind;
+        k.textContent = planKindLabel(it.kind);
+        kindRow.appendChild(k);
+        box.appendChild(kindRow);
+        const tl = document.createElement("label");
+        tl.className = "pm-insp-lbl";
+        tl.textContent = "Title";
+        tl.htmlFor = "plan-insp-title";
+        const ti = document.createElement("input");
+        ti.className = "pm-insp-ctrl";
+        ti.id = "plan-insp-title";
+        ti.type = "text";
+        ti.value = it.title;
+        ti.setAttribute("aria-label", "Item title");
+        ti.onkeydown = (e) => {
+          if (e.key === "Enter") {
+            const t = ti.value.trim();
+            if (t && t !== it.title) {
+              planFocusAfterRender = { kind: "row", id: it.id }; // keep focus on the item after the rebuild
+              planMutate(() => invoke("rename_item", { itemId: it.id, title: t }));
+            }
+          }
+        };
+        box.appendChild(tl);
+        box.appendChild(ti);
+        if (it.kind === "scripture" || it.kind === "slide_group") {
+          const ll = document.createElement("div");
+          ll.className = "pm-insp-lbl";
+          ll.textContent = it.kind === "scripture" ? "LINKED SCRIPTURE" : "LINKED PRESENTATION";
+          box.appendChild(ll);
+          const isDeckLink = it.link && it.kind === "slide_group" && it.link.kind === "deck";
+          if (isDeckLink) {
+            box.appendChild(planDeckCard(it.link)); // deck card: name + slide count / missing
+          } else if (it.link) {
+            const chip = planLinkChip(it.link); // scripture reference chip
+            chip.classList.add("plan-insp-chip");
+            box.appendChild(chip);
+          } else {
+            const warn = document.createElement("p");
+            warn.className = "plan-insp-unlinked";
+            warn.textContent =
+              it.kind === "scripture"
+                ? "No reference yet — this item won't display until it's linked."
+                : "No presentation linked — this item will show missing on the audience output.";
+            box.appendChild(warn);
+          }
+          const acts = document.createElement("div");
+          acts.className = "plan-insp-actions";
+          const linkBtn = document.createElement("button");
+          linkBtn.type = "button";
+          linkBtn.className = "pm-btn-primary";
+          linkBtn.textContent = it.link
+            ? "Change…"
+            : it.kind === "scripture"
+            ? "Link a scripture…"
+            : "Link a presentation…";
+          linkBtn.onclick = () => openLinkModal(it);
+          acts.appendChild(linkBtn);
+          // Open in editor: jump to the Presentation surface with this deck open (deck edits happen
+          // there, not in the plan builder). Only for a resolvable deck link.
+          if (isDeckLink && planDeckName(it.link.id)) {
+            const openEd = document.createElement("button");
+            openEd.type = "button";
+            openEd.className = "pm-btn-ghost";
+            openEd.textContent = "Open in editor";
+            openEd.onclick = () => {
+              showSurface("presentation");
+              if (typeof pmLibOpen === "function") pmLibOpen(it.link.id);
+            };
+            acts.appendChild(openEd);
+          }
+          if (it.link) {
+            const un = document.createElement("button");
+            un.type = "button";
+            un.className = "pm-btn-ghost";
+            un.textContent = "Unlink";
+            un.onclick = () => {
+              planFocusAfterRender = { kind: "row", id: it.id }; // keep focus on the item after the rebuild
+              planMutate(() => invoke("set_item_content", { itemId: it.id, link: null }));
+            };
+            acts.appendChild(un);
+          }
+          box.appendChild(acts);
+        }
+        const danger = document.createElement("div");
+        danger.className = "plan-insp-actions plan-insp-danger";
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "pm-btn-danger";
+        del.textContent = "Remove item";
+        del.onclick = () =>
+          pmConfirm({
+            title: "Remove “" + it.title + "”?",
+            body: "Only this run-sheet item is removed — any linked scripture or presentation is untouched.",
+            confirmLabel: "Remove",
+            onConfirm: () => {
+              if (planSelectedId === it.id) planSelectedId = null;
+              planMutate(() => invoke("remove_item", { itemId: it.id }));
+            },
+          });
+        danger.appendChild(del);
+        box.appendChild(danger);
+        const note = document.createElement("p");
+        note.className = "plan-insp-note";
+        note.textContent = "🔒 Editing here never changes Live. Open in Live loads the plan into the console.";
+        box.appendChild(note);
       }
 
       let pmLibDecks = [], pmLibOpenId = null, pmLibPersistent = true, pmLibQuery = "", pmLibSort = "name", pmLibMenuCleanup = null;

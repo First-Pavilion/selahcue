@@ -45,10 +45,10 @@
             class="nav-ico" aria-hidden="true">▤</span><span class="nav-txt"><span class="nav-t">Screens &amp;
               Outputs</span><span class="nav-d">Displays &amp; health</span></span><span
             class="nav-key">⌘3</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="remote" data-nodigit="1"><span
-            class="nav-ico" aria-hidden="true">⇄</span><span class="nav-txt"><span class="nav-t">Remote
-              Control</span><span class="nav-d">Paired devices &amp; roles</span></span><span
-            class="nav-key">⌘⇧R</span></button>
+        <!-- Remote Control is no longer a top-level nav item (App Navigation, Figma 336:124). It is
+             reached from Settings › Network & Mobile → "Manage devices" (the #surface-remote surface
+             stays; ⌘⇧R now opens Settings › Network & Mobile). -->
+
         <button class="nav-item" role="menuitem" tabindex="-1" data-surface="plan" accesskey="4"><span class="nav-ico"
             aria-hidden="true">☰</span><span class="nav-txt"><span class="nav-t">Service Plan</span><span
               class="nav-d">Order of service</span></span><span class="nav-key">⌘4</span></button>
@@ -102,16 +102,6 @@
                app.js can set its text. -->
           <div class="plan-name-sub" id="plan-name">SelahCue Operator</div>
           <div id="plan"></div>
-          <div class="add-row">
-            <select id="add-kind">
-              <option value="song">Song</option>
-              <option value="scripture">Scripture</option>
-              <option value="announcement">Announcement</option>
-              <option value="section">Section</option>
-            </select>
-            <input id="add-title" placeholder="New item title" />
-            <button id="add-item">+ Add</button>
-          </div>
         </section>
         <!-- Live transcript (R3). Segments stream from the host's transcript engine,
              recognised on-device by the STT source that the listen control starts. No
@@ -201,7 +191,19 @@
           <button id="next" aria-label="Next — stage the next plan item"><span class="gl-label">Next ▶</span><span
               class="key">Space</span></button>
         </div>
-        <section id="scriptures" aria-label="Scriptures">
+        <!-- Content source tabs: Scriptures | Slides (LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec §1).
+             Same tablist pattern as the right column; the Slides tab is the presentation slide picker,
+             enabled + auto-selected when a presentation is staged in the plan. -->
+        <section id="content-tabs" class="content-tabs" aria-label="Content">
+          <div class="tabbar content-tabbar" role="tablist" aria-label="Content source">
+            <button class="ctab active" id="ctab-scriptures" type="button" role="tab"
+              aria-selected="true" aria-controls="scriptures">Scriptures</button>
+            <button class="ctab" id="ctab-slides" type="button" role="tab" aria-selected="false"
+              aria-controls="cpanel-slides" tabindex="-1" aria-disabled="true">Slides <span
+                class="count-pill" id="slides-count" hidden></span></button>
+          </div>
+          <section id="scriptures" class="cpanel" role="tabpanel" aria-labelledby="ctab-scriptures"
+            aria-label="Scriptures">
           <div class="scrip-head card-head">
             <h2>Scriptures</h2>
             <select id="translation" aria-label="Bible translation"></select>
@@ -218,6 +220,27 @@
           <span id="scrip-status" role="status" aria-live="polite"></span>
           <span class="scrip-note">↑ ↓ move &amp; stage · ⏎ Enter sends it live · double-click a verse for instant
             live</span>
+          </section>
+          <!-- Slides filmstrip: the staged presentation's slides (plan_deck_slides +
+               render_plan_deck_slide). Click / ← → stages a slide to Preview (select_slide, FR-012);
+               Enter sends it live. Windowed thumbnails, bounded cache. -->
+          <div class="cpanel slides-panel" id="cpanel-slides" role="tabpanel"
+            aria-labelledby="ctab-slides" hidden>
+            <div class="slides-head card-head">
+              <h2 id="slides-deck-name">Slides</h2>
+              <span class="count-pill" id="slides-pos" hidden></span>
+            </div>
+            <div id="slide-strip" class="slide-strip" role="listbox" aria-label="Presentation slides"
+              aria-orientation="horizontal"></div>
+            <div id="slides-empty" class="fwd-empty slides-empty" hidden>
+              <span class="fwd-icon" aria-hidden="true">▦</span>
+              <span class="fwd-msg" id="slides-empty-msg">Select a presentation in the service plan to see its
+                slides.</span>
+              <span class="fwd-sub" id="slides-empty-sub"></span>
+            </div>
+            <span id="slides-status" class="scrip-note" role="status" aria-live="polite"></span>
+            <span class="scrip-note slide-strip-note">← → choose &amp; stage · ⏎ Enter sends it live</span>
+          </div>
         </section>
       </div>
       <!-- RIGHT zone: the service timer (top), recent detections, and outputs. -->
@@ -902,14 +925,121 @@
         </aside>
       </div>
     </section>
-    <section id="surface-plan" class="surface-page surface-pad" aria-label="Plan and Library">
-      <h1>Plan / Library</h1>
-      <p class="coming-soon">A dedicated plan + song/scripture library surface arrives later. Edit the plan inline on
-        the Live Console for now.</p>
+    <section id="surface-plan" class="surface-page surface-pad" aria-label="Service Plan">
+      <div class="plan-builder">
+        <header class="plan-builder-head">
+          <div>
+            <h1>Service Plan</h1>
+            <p class="plan-builder-sub">Build the run sheet — link scriptures &amp; presentations to items. Editing here never changes Live.</p>
+          </div>
+          <button id="plan-open-live" class="pm-btn-primary" type="button">Open in Live ▶</button>
+        </header>
+        <div class="plan-builder-grid">
+          <aside class="plan-col plan-palette" aria-label="Add item">
+            <h2 class="plan-col-h">ADD ITEM</h2>
+            <div id="plan-palette-btns"></div>
+          </aside>
+          <section class="plan-col plan-runsheet" aria-label="Run sheet">
+            <h2 class="plan-col-h">RUN SHEET <span class="count-pill" id="plan-b-count"></span></h2>
+            <div id="plan-b-list" role="listbox" aria-label="Run sheet items"></div>
+          </section>
+          <aside class="plan-col plan-inspector" aria-label="Item inspector">
+            <h2 class="plan-col-h">ITEM</h2>
+            <div id="plan-b-insp"><p class="coming-soon">Select an item to edit it and link its scripture or presentation.</p></div>
+          </aside>
+        </div>
+      </div>
     </section>
+    <!-- SETTINGS surface (Design 2.0, Figma 338:124 — story 86ajxucue / backend 86ajy034h). Only the
+         Providers & Privacy page is designed + backed today; the 8-item settings sidebar is a
+         separate design story and is intentionally not built here (see the FE goal contract).
+         The dynamic regions (#pp-trans, #pp-ai) are rendered by settings.js from the REAL
+         providers_view() backend state — honest not-configured / null-quota affordances, never a
+         fabricated figure. TTS (DEC-001) and the BYOK/Advanced row (hosted-only) are excluded. -->
     <section id="surface-settings" class="surface-page surface-pad" aria-label="Settings">
-      <h1>Settings</h1>
-      <p class="coming-soon">Application settings arrive later.</p>
+      <div class="set-shell">
+        <!-- Settings sidebar (Design 2.0, Figma 338:124). Providers & Privacy + Network & Mobile are
+             built; the rest are honest "designed, coming soon" placeholders (story 86ajxucue). -->
+        <nav class="set-side" aria-label="Settings sections">
+          <div class="set-side-h">SETTINGS</div>
+          <button class="set-nav" data-setpage="general" type="button"><span class="set-ico" aria-hidden="true">⚙</span> General</button>
+          <button class="set-nav active" data-setpage="providers" type="button" aria-current="page"><span class="set-ico" aria-hidden="true">🛡</span> Providers &amp; Privacy</button>
+          <button class="set-nav" data-setpage="scripture" type="button"><span class="set-ico" aria-hidden="true">✦</span> Scripture &amp; Translations</button>
+          <button class="set-nav" data-setpage="outputs" type="button"><span class="set-ico" aria-hidden="true">🖥</span> Outputs &amp; Displays</button>
+          <button class="set-nav" data-setpage="network" type="button"><span class="set-ico" aria-hidden="true">▦</span> Network &amp; Mobile</button>
+          <button class="set-nav" data-setpage="appearance" type="button"><span class="set-ico" aria-hidden="true">◇</span> Appearance</button>
+          <button class="set-nav" data-setpage="security" type="button"><span class="set-ico" aria-hidden="true">🔒</span> Security</button>
+          <button class="set-nav" data-setpage="storage" type="button"><span class="set-ico" aria-hidden="true">💾</span> Storage &amp; Backups</button>
+          <button class="set-nav" data-setpage="about" type="button"><span class="set-ico" aria-hidden="true">ⓘ</span> About &amp; Licensing</button>
+        </nav>
+        <div class="set-body">
+          <!-- Providers & Privacy (built + wired by settings.js — ids preserved) -->
+          <div id="set-page-providers" class="set-page" data-setpage="providers">
+            <div class="pp-wrap">
+              <header class="pp-head">
+                <h1 class="pp-title">Providers &amp; Privacy</h1>
+                <p class="pp-sub">Choose where transcription, AI notes and speech run — and what, if anything, leaves this device.</p>
+              </header>
+
+              <!-- 1 · Offline by default -->
+              <div class="pp-banner pp-banner-ok" role="note">
+                <span class="pp-banner-ico" aria-hidden="true">🔒</span>
+                <div class="pp-banner-body">
+                  <p class="pp-banner-title">Offline by default</p>
+                  <p class="pp-banner-text">Cloud features are opt-in and clearly flagged. Audio and transcripts never leave this device unless you switch a cloud provider on.</p>
+                </div>
+              </div>
+
+              <!-- 2 · Live transcription (radio cards rendered by settings.js) -->
+              <section class="pp-section" aria-labelledby="pp-trans-h">
+                <h2 id="pp-trans-h" class="pp-seclabel">LIVE TRANSCRIPTION</h2>
+                <div id="pp-trans" class="pp-trans-grid" role="radiogroup" aria-label="Live transcription provider"></div>
+              </section>
+
+              <!-- 3 · SelahCue AI · Sermon notes (card body rendered by settings.js) -->
+              <section class="pp-section" aria-labelledby="pp-ai-h">
+                <h2 id="pp-ai-h" class="pp-seclabel">SELAHCUE AI · SERMON NOTES</h2>
+                <div id="pp-ai" class="pp-card pp-ai-card"></div>
+              </section>
+            </div>
+          </div>
+
+          <!-- Network & Mobile (built): LAN defaults + links out to Remote Control · Devices
+               (IA per 86ajxucue — does NOT duplicate QR pairing / per-device access). -->
+          <div id="set-page-network" class="set-page" data-setpage="network" hidden>
+            <header class="pp-head">
+              <h1 class="pp-title">Network &amp; Mobile</h1>
+              <p class="pp-sub">Local-network defaults for mobile controllers. Pairing and per-device access live in Remote Control.</p>
+            </header>
+            <div class="pp-banner pp-banner-ok" role="note">
+              <span class="pp-banner-ico" aria-hidden="true">🔒</span>
+              <div class="pp-banner-body">
+                <p class="pp-banner-title">Controllers connect over your local network</p>
+                <p class="pp-banner-text">Phones and tablets pair over the LAN with a pinned certificate — nothing is exposed to the internet.</p>
+              </div>
+            </div>
+            <section class="pp-section" aria-labelledby="set-net-dev-h">
+              <h2 id="set-net-dev-h" class="pp-seclabel">DEVICES</h2>
+              <div class="set-linkcard">
+                <div class="set-linkcard-body">
+                  <p class="set-linkcard-t">Remote Control · Devices</p>
+                  <p class="set-linkcard-d">Pair phones &amp; tablets, approve requests, and manage each controller's access.</p>
+                </div>
+                <button id="set-open-remote" class="pm-btn-primary" type="button">Manage devices ▶</button>
+              </div>
+            </section>
+          </div>
+
+          <!-- Shared "coming soon" page for the not-yet-built sections (honest, per match-the-shell). -->
+          <div id="set-placeholder" class="set-page set-soon" hidden>
+            <div class="set-soon-inner">
+              <div class="set-soon-ico" aria-hidden="true">🛠</div>
+              <h2 id="set-ph-title" class="set-soon-title"></h2>
+              <p class="set-soon-sub">This settings page is designed (Figma 338:124) and coming soon. Providers &amp; Privacy and Network &amp; Mobile are available now.</p>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- PRE-SERVICE CHECK surface (Design 2.0, Figma 344:124 / story 86ajp0az9, FR-007/008/070):
@@ -1104,6 +1234,7 @@
   <script src="app.js" defer></script>
   <script src="preservice.js" defer></script>
   <script src="remote.js" defer></script>
+  <script src="settings.js" defer></script>
 </body>
 
 </html>

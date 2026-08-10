@@ -3,8 +3,8 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_app::{ControllerReply, LiveController};
-use selahcue_core::plan::{ItemKind, ServicePlan};
-use selahcue_lan::protocol::{Command, DenyReason, ServerMessage};
+use selahcue_core::plan::{ItemContent, ItemKind, ServicePlan};
+use selahcue_lan::protocol::{Command, ContentLinkView, DenyReason, ServerMessage};
 use selahcue_present::{
     AuthoredSlide, Element, Fit, ImageFit, MediaRef, Rgba, ShapeKind, SlideId, TextAlign, Theme,
     VAlign, MAX_ELEMENTS, MAX_TEXT_ELEMENT_LEN,
@@ -1172,6 +1172,167 @@ fn next_advances_slide_within_a_song_before_crossing_items() {
     // Song exhausted → Next crosses to the scripture (item 1).
     c.apply(&Command::Next);
     assert_eq!(c.staged_index(), Some(1), "now on the next plan item");
+}
+
+#[test]
+fn select_slide_jumps_to_a_within_item_slide_in_preview_only() {
+    // The Live Console slide picker (LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec §6): stage a specific
+    // slide of a multi-slide item DIRECTLY (not by stepping Next from slide 0), never touching Live
+    // (FR-012). The multi-stanza song stands in for a multi-slide presentation — the command path
+    // is content-agnostic (it stages whatever slide the item composes at that index).
+    let mut plan = ServicePlan::new("Sunday");
+    let s = plan.add_item(ItemKind::Song, "Way Maker");
+    plan.get_mut(s).unwrap().stanzas = vec![
+        Stanza {
+            lines: vec!["Way maker".into()],
+        },
+        Stanza {
+            lines: vec!["Miracle worker".into()],
+        },
+        Stanza {
+            lines: vec!["Promise keeper".into()],
+        },
+    ];
+    let song_id = s.0;
+    let mut c = LiveController::new(plan, 320, 180, Theme::dark());
+
+    // Jump straight to slide index 2 (the third stanza).
+    assert_eq!(
+        c.apply(&Command::SelectSlide {
+            item_id: song_id,
+            slide_index: 2,
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(c.staged_index(), Some(0), "the song item is staged");
+    assert_eq!(
+        staged_body(&c),
+        vec!["Promise keeper"],
+        "Preview jumped to the third slide"
+    );
+    assert_eq!(c.live_index(), None, "Live is untouched (FR-012)");
+
+    // An out-of-range index is clamped to the last slide — Ack, never a panic or bad request.
+    assert_eq!(
+        c.apply(&Command::SelectSlide {
+            item_id: song_id,
+            slide_index: 99,
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        staged_body(&c),
+        vec!["Promise keeper"],
+        "clamped to the last slide"
+    );
+
+    // An unknown item id is denied and leaves Preview unchanged.
+    assert!(matches!(
+        c.apply(&Command::SelectSlide {
+            item_id: 9999,
+            slide_index: 0,
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    ));
+    assert_eq!(
+        staged_body(&c),
+        vec!["Promise keeper"],
+        "a denied select leaves Preview unchanged"
+    );
+}
+
+#[test]
+fn select_slide_stages_a_real_deck_presentation_slide_and_reports_the_staged_cursor() {
+    // The path the Live Console slide picker ACTUALLY drives (B1/H1 regression): a `slide_group`
+    // item linked to a Deck with the operator-synced slide_count. Before the fix, slide_count()==1
+    // clamped every stage to slide 0 and slide_index was never emitted, so the picker was stuck on
+    // slide 1. Now per-slide staging + the staged cursor work, and Live is never touched (FR-012).
+    let mut plan = ServicePlan::new("Sunday");
+    let d = plan.add_item(ItemKind::SlideGroup, "Sermon Slides");
+    plan.set_item_content(
+        d,
+        Some(ItemContent::Deck {
+            deck_id: 7,
+            slide_count: Some(6),
+        }),
+    )
+    .unwrap();
+    let deck_item = d.0;
+    let mut c = LiveController::new(plan, 320, 180, Theme::dark());
+
+    // The item now advertises the deck's real slide count (the host has no deck store; the operator
+    // synced it at link time).
+    assert_eq!(
+        c.operator_view().items[0].slide_count,
+        Some(6),
+        "the deck slide count is carried to the host item"
+    );
+
+    // Stage slide 3 (0-based) — must NOT clamp to 0.
+    assert_eq!(
+        c.apply(&Command::SelectSlide {
+            item_id: deck_item,
+            slide_index: 3,
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.operator_view().items[0].staged_slide_index,
+        Some(3),
+        "the staged (Preview) cursor tracks the picked slide"
+    );
+    assert_eq!(c.staged_index(), Some(0));
+    assert_eq!(c.live_index(), None, "Live is untouched (FR-012)");
+
+    // Go Live, then stage a DIFFERENT slide → the PREVIEW cursor and the LIVE cursor are DISTINCT (H1).
+    assert_eq!(c.apply(&Command::GoLive), ControllerReply::Ack);
+    assert_eq!(
+        c.apply(&Command::SelectSlide {
+            item_id: deck_item,
+            slide_index: 1,
+        }),
+        ControllerReply::Ack
+    );
+    let v = c.operator_view();
+    assert_eq!(
+        v.items[0].staged_slide_index,
+        Some(1),
+        "PREVIEW cursor moved to slide 1"
+    );
+    assert_eq!(
+        v.items[0].slide_index,
+        Some(3),
+        "slide_index still reports the LIVE slide (3) — not shadowed by the preview move"
+    );
+
+    // A legacy/unsynced deck link (no slide_count) still collapses to one slide — the FE self-heals
+    // by syncing the real count (covered in the webview gate); documented interim.
+    let mut plan2 = ServicePlan::new("Legacy");
+    let d2 = plan2.add_item(ItemKind::SlideGroup, "Old link");
+    plan2
+        .set_item_content(
+            d2,
+            Some(ItemContent::Deck {
+                deck_id: 9,
+                slide_count: None,
+            }),
+        )
+        .unwrap();
+    let mut c2 = LiveController::new(plan2, 320, 180, Theme::dark());
+    assert_eq!(
+        c2.operator_view().items[0].slide_count,
+        None,
+        "an unsynced deck link advertises no count"
+    );
+    c2.apply(&Command::SelectSlide {
+        item_id: d2.0,
+        slide_index: 4,
+    });
+    assert_eq!(
+        c2.operator_view().items[0].staged_slide_index,
+        None,
+        "a single-slide (unsynced) item emits no staged cursor"
+    );
 }
 
 #[test]
@@ -4343,5 +4504,155 @@ fn load_output_configs_normalizes_invalid_or_duplicate_ndi() {
     assert!(
         !c.output_config("stream").ndi_enabled,
         "a duplicate NDI source name is disabled on load"
+    );
+}
+
+#[test]
+fn a_scripture_linked_item_stages_its_verses_and_surfaces_the_link() {
+    // ADR-0020 follow-up: linking a Scripture plan item resolves its passage into
+    // Preview (never Live — plan editing), and the operator view surfaces the link.
+    let (mut c, ids) = controller();
+    let scr = ids[1]; // the "Romans 8:28" Scripture item
+
+    // Title-only until linked: selecting it stages a title slide with no verse body.
+    c.apply(&Command::SelectItem { item_id: scr });
+    assert!(
+        staged_body(&c).is_empty(),
+        "an unlinked scripture item stages title-only, no verses"
+    );
+
+    // Link the passage (plan editing).
+    let link = |reference: &str| ContentLinkView {
+        kind: "scripture".into(),
+        reference: Some(reference.into()),
+        translation: Some("WEB".into()),
+        verses_per_slide: Some(2),
+        id: None,
+        slide_count: None,
+    };
+    let reply = c.apply(&Command::SetItemContent {
+        item_id: scr,
+        link: Some(link("Romans 8:28-30")),
+    });
+    assert!(matches!(reply, ControllerReply::Ack));
+
+    // Preview now resolves the passage's verse text (re-staged in place).
+    let body = staged_body(&c).join(" ");
+    assert!(
+        body.contains("all things work together for good"),
+        "linked passage resolves to verse text on preview: {body}"
+    );
+
+    // The operator view exposes the link so the UI can show its status.
+    let view = c.operator_view();
+    let l = view.items[1].link.as_ref().expect("item is linked");
+    assert_eq!(l.kind, "scripture");
+    assert_eq!(l.reference.as_deref(), Some("Romans 8:28-30"));
+    assert_eq!(l.translation.as_deref(), Some("WEB"));
+    assert_eq!(l.verses_per_slide, Some(2));
+
+    // An unparseable reference is rejected and leaves the existing link untouched.
+    let deny = c.apply(&Command::SetItemContent {
+        item_id: scr,
+        link: Some(link("Not a reference")),
+    });
+    assert!(matches!(
+        deny,
+        ControllerReply::Deny(DenyReason::BadRequest)
+    ));
+    assert_eq!(
+        c.operator_view().items[1]
+            .link
+            .as_ref()
+            .unwrap()
+            .reference
+            .as_deref(),
+        Some("Romans 8:28-30"),
+        "a rejected edit leaves the prior link unchanged"
+    );
+
+    // A deck link surfaces kind + id (deck slides are composed by the presenting layer).
+    let deck = c.apply(&Command::SetItemContent {
+        item_id: ids[0],
+        link: Some(ContentLinkView {
+            kind: "deck".into(),
+            reference: None,
+            translation: None,
+            verses_per_slide: None,
+            id: Some(17),
+            slide_count: None,
+        }),
+    });
+    assert!(matches!(deck, ControllerReply::Ack));
+    let dl = c.operator_view().items[0].link.clone().expect("deck link");
+    assert_eq!((dl.kind.as_str(), dl.id), ("deck", Some(17)));
+}
+
+#[test]
+fn operator_view_surfaces_item_owner_and_planned_duration() {
+    // The domain already stored owner/planned_secs; the operator view now surfaces them on the
+    // run-sheet row (FR-004). Unassigned/unplanned items pass through as `None` (byte-stable).
+    let mut plan = ServicePlan::new("Sunday");
+    let a = plan.add_item(ItemKind::Song, "Opening Song");
+    let b = plan.add_item(ItemKind::Scripture, "Call to Worship");
+    plan.set_item_owner(a, Some("Grace".into())).unwrap();
+    plan.set_item_planned_secs(a, Some(240)).unwrap();
+    let c = LiveController::new(plan, 320, 180, Theme::dark());
+    let items = c.operator_view().items;
+    assert_eq!(items[0].owner.as_deref(), Some("Grace"));
+    assert_eq!(items[0].planned_secs, Some(240));
+    // The second item was never assigned/planned → both stay absent.
+    assert_eq!(items[1].owner, None);
+    assert_eq!(items[1].planned_secs, None);
+    let _ = b;
+}
+
+#[test]
+fn set_item_owner_and_duration_commands_apply_clear_and_reject_unknown() {
+    let (mut c, ids) = controller();
+    // Assign owner + duration to the first item.
+    assert_eq!(
+        c.apply(&Command::SetItemOwner {
+            item_id: ids[0],
+            owner: Some("Grace".into())
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.apply(&Command::SetItemDuration {
+            item_id: ids[0],
+            secs: Some(240)
+        }),
+        ControllerReply::Ack
+    );
+    let item = &c.operator_view().items[0];
+    assert_eq!(item.owner.as_deref(), Some("Grace"));
+    assert_eq!(item.planned_secs, Some(240));
+    // Clearing.
+    c.apply(&Command::SetItemOwner {
+        item_id: ids[0],
+        owner: None,
+    });
+    c.apply(&Command::SetItemDuration {
+        item_id: ids[0],
+        secs: None,
+    });
+    let cleared = &c.operator_view().items[0];
+    assert_eq!(cleared.owner, None);
+    assert_eq!(cleared.planned_secs, None);
+    // An unknown item id is rejected with the plan unchanged.
+    assert_eq!(
+        c.apply(&Command::SetItemOwner {
+            item_id: 9999,
+            owner: Some("x".into())
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        c.apply(&Command::SetItemDuration {
+            item_id: 9999,
+            secs: Some(1)
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
     );
 }

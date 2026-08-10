@@ -8,8 +8,8 @@
 
 use crate::controller::LiveController;
 use selahcue_lan::protocol::{
-    Command, DetectionView, OperatorStateView, PlanItemView, SavedThemeView, ScaleFit,
-    ScreenThemeView, ScreenView, TimerSnapshot, TranscriptSegmentView,
+    Command, ContentLinkView, DetectionView, OperatorStateView, PlanItemView, SavedThemeView,
+    ScaleFit, ScreenThemeView, ScreenView, TimerSnapshot, TranscriptSegmentView,
 };
 use selahcue_present::FrameBuffer;
 use serde::Serialize;
@@ -30,13 +30,30 @@ pub struct ItemView {
     /// Slide count for multi-slide items (songs, S8-1); absent = single slide.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slide_count: Option<u32>,
-    /// Current within-item slide (0-based), present for the live/staged item.
+    /// Current within-item slide (0-based); the LIVE slide when this item is live, else the staged
+    /// slide (drives the plan-row badge). Present for the live/staged item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slide_index: Option<u32>,
+    /// The STAGED (Preview) within-item slide (0-based), present only when this item is staged.
+    /// Distinct from `slide_index` so the Live Console slide picker can mark PREVIEW and LIVE on
+    /// different slides of the same presentation (item both staged and live).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub staged_slide_index: Option<u32>,
     /// Per-item theme override (built-in name), if this item overrides the global
     /// theme (S8-3d); absent = the global theme.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// The content this item links — scripture / deck / media (ADR-0020 follow-up);
+    /// absent = an unlinked item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<ContentLinkView>,
+    /// Responsible person/role for this item (FR-004); absent = unassigned. Skip-if-none
+    /// keeps the run-sheet rows byte-stable for items without an owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Planned duration in seconds (FR-004); absent = unplanned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_secs: Option<u32>,
 }
 
 /// A serializable snapshot of everything the operator UI needs to render: the plan,
@@ -199,6 +216,16 @@ impl OperatorShell {
         self.act(&Command::SelectItem { item_id })
     }
 
+    /// Stage a specific within-item slide of a plan item (by id) in Preview — the Live Console
+    /// slide picker. Preview only; Live is untouched (FR-012). The index is clamped to the item's
+    /// slide count by the controller.
+    pub fn select_slide(&self, item_id: u64, slide_index: u32) -> OperatorView {
+        self.act(&Command::SelectSlide {
+            item_id,
+            slide_index,
+        })
+    }
+
     /// Clear the Live output back to idle.
     pub fn clear(&self) -> OperatorView {
         self.act(&Command::Clear)
@@ -343,6 +370,22 @@ impl OperatorShell {
     /// Set (or clear, with an empty name) a plan item's per-item theme override (S8-3d).
     pub fn set_item_theme(&self, item_id: u64, theme: Option<String>) -> OperatorView {
         self.act(&Command::SetItemTheme { item_id, theme })
+    }
+
+    /// Set (or clear, with `None`) a plan item's linked content — scripture / deck / media
+    /// (ADR-0020 follow-up). A plan edit; never changes Live.
+    pub fn set_item_content(&self, item_id: u64, link: Option<ContentLinkView>) -> OperatorView {
+        self.act(&Command::SetItemContent { item_id, link })
+    }
+
+    /// Set (or clear, with `None`) a plan item's responsible owner/role (FR-004). Plan edit; never Live.
+    pub fn set_item_owner(&self, item_id: u64, owner: Option<String>) -> OperatorView {
+        self.act(&Command::SetItemOwner { item_id, owner })
+    }
+
+    /// Set (or clear, with `None`) a plan item's planned duration in seconds (FR-004). Plan edit; never Live.
+    pub fn set_item_duration(&self, item_id: u64, secs: Option<u32>) -> OperatorView {
+        self.act(&Command::SetItemDuration { item_id, secs })
     }
 
     /// Save a NAMED custom theme into the library (86ajq4xmy).
@@ -512,7 +555,11 @@ impl From<ItemView> for PlanItemView {
             is_staged: i.is_staged,
             slide_count: i.slide_count,
             slide_index: i.slide_index,
+            staged_slide_index: i.staged_slide_index,
             theme: i.theme,
+            link: i.link,
+            owner: i.owner,
+            planned_secs: i.planned_secs,
         }
     }
 }
@@ -527,7 +574,11 @@ impl From<PlanItemView> for ItemView {
             is_staged: i.is_staged,
             slide_count: i.slide_count,
             slide_index: i.slide_index,
+            staged_slide_index: i.staged_slide_index,
             theme: i.theme,
+            link: i.link,
+            owner: i.owner,
+            planned_secs: i.planned_secs,
         }
     }
 }
@@ -744,6 +795,20 @@ impl RemoteOperator {
         self.act(Command::SelectItem { item_id }).await
     }
 
+    /// Stage a specific within-item slide of a plan item (by id) in the host's Preview — the Live
+    /// Console slide picker. Preview only; Live is untouched (FR-012).
+    pub async fn select_slide(
+        &mut self,
+        item_id: u64,
+        slide_index: u32,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SelectSlide {
+            item_id,
+            slide_index,
+        })
+        .await
+    }
+
     /// Clear the host's Live output.
     pub async fn clear(&mut self) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::Clear).await
@@ -954,6 +1019,33 @@ impl RemoteOperator {
         theme: Option<String>,
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::SetItemTheme { item_id, theme }).await
+    }
+
+    /// Set (or clear) a plan item's linked content on the host (ADR-0020 follow-up).
+    pub async fn set_item_content(
+        &mut self,
+        item_id: u64,
+        link: Option<ContentLinkView>,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetItemContent { item_id, link }).await
+    }
+
+    /// Set (or clear, with `None`) a plan item's responsible owner/role over the host link (FR-004).
+    pub async fn set_item_owner(
+        &mut self,
+        item_id: u64,
+        owner: Option<String>,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetItemOwner { item_id, owner }).await
+    }
+
+    /// Set (or clear, with `None`) a plan item's planned duration (seconds) over the host link (FR-004).
+    pub async fn set_item_duration(
+        &mut self,
+        item_id: u64,
+        secs: Option<u32>,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::SetItemDuration { item_id, secs }).await
     }
 
     /// Save a NAMED custom theme into the host's library (86ajq4xmy).

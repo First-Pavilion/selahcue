@@ -1,0 +1,15 @@
+services:
+  marketing-site:
+    build:
+      context: ../marketing
+      dockerfile: Dockerfile
+    container_name: selahcue-marketing-site
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

@@ -11,6 +11,10 @@ fn navigate_cmds() -> Vec<Command> {
         Command::Next,
         Command::Previous,
         Command::SelectItem { item_id: 3 },
+        Command::SelectSlide {
+            item_id: 3,
+            slide_index: 0,
+        },
     ]
 }
 

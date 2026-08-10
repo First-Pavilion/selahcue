@@ -107,7 +107,10 @@ pub fn required_permission(cmd: &Command) -> Permission {
         Command::GoLive
         | Command::FollowScripture { .. }
         | Command::PresentAuthoredSlide { .. } => GoLive,
-        Command::Next | Command::Previous | Command::SelectItem { .. } => Navigate,
+        Command::Next
+        | Command::Previous
+        | Command::SelectItem { .. }
+        | Command::SelectSlide { .. } => Navigate,
         Command::Clear => ClearLive,
         Command::Blackout { .. } => Blackout,
         Command::StartTimer { .. }
@@ -129,7 +132,13 @@ pub fn required_permission(cmd: &Command) -> Permission {
         Command::AddItem { .. }
         | Command::RemoveItem { .. }
         | Command::MoveItem { .. }
-        | Command::RenameItem { .. } => EditPlan,
+        | Command::RenameItem { .. }
+        // Linking a plan item's content (scripture/deck/media) is plan editing, not an
+        // output/go-live authority — the same EditPlan privilege (ADR-0020 follow-up).
+        | Command::SetItemContent { .. }
+        // Owner + planned duration are plan metadata edits — the same EditPlan privilege (FR-004).
+        | Command::SetItemOwner { .. }
+        | Command::SetItemDuration { .. } => EditPlan,
         Command::IdentifyOutputs
         | Command::AssignOutput { .. }
         | Command::SetTheme { .. }

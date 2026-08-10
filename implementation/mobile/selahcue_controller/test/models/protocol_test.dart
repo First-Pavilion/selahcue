@@ -44,6 +44,15 @@ void main() {
     );
   });
 
+  test('request select_slide matches the Rust wire fixture', () {
+    // Live Console slide picker — pinned byte-for-byte against
+    // selahcue-lan/tests/test_protocol.rs (command_tag_encoding_is_stable).
+    expect(
+      jsonEncode(request(7, cmdSelectSlide(7, 2))),
+      '{"v":2,"request_id":7,"command":{"cmd":"select_slide","item_id":7,"slide_index":2}}',
+    );
+  });
+
   test('command shapes are internally tagged', () {
     expect(jsonEncode(cmdNext()), '{"cmd":"next"}');
     expect(jsonEncode(cmdPrevious()), '{"cmd":"previous"}');

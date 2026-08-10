@@ -1,0 +1,37 @@
+[package]
+name = "selahcue-cloud"
+publish.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SelahCue-hosted cloud client: the versioned note-generation / cloud-transcription API contract, a consent-gated NoteProvider over an injected HTTP transport, a deterministic mock transport, graceful local fallback (FR-135), and an OS-secret-store-backed account token (FR-134). Offline-first: nothing leaves the device without opt-in (FR-132)."
+
+[features]
+default = []
+# Real network transport (reqwest, rustls TLS). Off by default so the workspace
+# build + tests stay light and deterministic (they use the in-crate MockTransport);
+# the operator/desktop build turns it on to reach the live SelahCue service.
+http = ["dep:reqwest"]
+# OS-secret-store-backed token (Keychain / Credential Manager / Secret Service) via
+# the same `keyring` crate the DB key uses. Off by default so tests use the
+# in-memory store and need no OS keychain.
+keyring = ["dep:keyring"]
+
+[dependencies]
+selahcue-core = { path = "../selahcue-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "rustls-tls",
+    "json",
+], optional = true }
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+], optional = true }
+
+[lints]
+workspace = true

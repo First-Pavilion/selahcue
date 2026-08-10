@@ -45,6 +45,11 @@ Map<String, dynamic> cmdClear() => {'cmd': 'clear'};
 Map<String, dynamic> cmdBlackout(bool on) => {'cmd': 'blackout', 'on': on};
 Map<String, dynamic> cmdSelectItem(int itemId) =>
     {'cmd': 'select_item', 'item_id': itemId};
+
+/// Stage a specific within-item slide of a plan item in Preview (the Live Console slide picker).
+/// Mirrors the Rust `Command::SelectSlide` wire shape; Preview only, never Live.
+Map<String, dynamic> cmdSelectSlide(int itemId, int slideIndex) =>
+    {'cmd': 'select_slide', 'item_id': itemId, 'slide_index': slideIndex};
 Map<String, dynamic> cmdStartTimer(int seconds) =>
     {'cmd': 'start_timer', 'seconds': seconds};
 Map<String, dynamic> cmdStopTimer() => {'cmd': 'stop_timer'};

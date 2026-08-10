@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 367
+EXPECTED_MIN_CHECKS = 545
 
 
 def find_chrome():
@@ -141,11 +141,48 @@ STUB = r"""
   };
   var dClone = function(){ return JSON.parse(JSON.stringify(D)); };
   var dEdit = function(){ D.can_undo = true; D.can_redo = false; return dClone(); };
+  // Providers & Privacy (Settings, node 338:124) — the operator-local ProvidersView the
+  // providers_* commands return. Mirrors the REAL backend default in a build without `cloud-live`:
+  // on-device is the private default, cloud is OFF, cloud_status is "not_configured", cloud_connected
+  // is false, and quota is null (the live SelahCue service does not exist yet). The driver mutates P
+  // through the commands and flips the cloud_connected/quota fixtures to exercise the honest states.
+  var P = {
+    transcription_mode:"on_device",
+    on_device:{ready:true, state:"ready", model:"Small", detail:"ggml-small.en.bin"},
+    cloud_transcription_consent:false, cloud_notes_consent:false,
+    offline_by_default:true, any_cloud_enabled:false,
+    notes_template:"full_outline",
+    notes_templates:[{value:"full_outline",label:"Full outline + scriptures"},{value:"summary",label:"Short summary"},{value:"bullets",label:"Bullet points"}],
+    preferred_translation:"KJV",
+    translations:[{code:"KJV",name:"King James Version"},{code:"WEB",name:"World English Bible"},{code:"ASV",name:"American Standard Version"}],
+    include:{prayer_points:true, scripture_extraction:true, social_excerpts:false, chapter_markers:true, notable_quotations:true, short_summary:true},
+    cloud_status:"not_configured", cloud_connected:false, account_token_set:false, quota:null
+  };
+  var ppView = function(){
+    P.any_cloud_enabled = !!(P.cloud_transcription_consent || P.cloud_notes_consent);
+    P.cloud_status = P.cloud_connected ? "available" : "not_configured";
+    return JSON.parse(JSON.stringify(P));
+  };
+  window.__pp = P; // exposed so the driver can flip cloud_connected / quota to exercise honest states
   window.__TAURI__ = { core: { invoke: function(cmd, args){
     window.__calls.push({cmd:cmd, args:args});
     if (cmd === "builtin_themes") return Promise.resolve([{name:"Classic", theme:JSON.parse(JSON.stringify(T))}]);
     if (cmd === "system_fonts") return Promise.resolve(["Arial","Georgia","Helvetica Neue"]);
     if (cmd === "view") return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    // Service Plan builder (86ajxxuz9): plan mutations + content-link + scripture search.
+    // Each returns a fresh OperatorView (byte-cloned) so the builder re-render never aliases V;
+    // set_item_content is a PLAN edit (never a live-control command — the invariant check relies
+    // on this staying out of the go_live/next/select/blackout/clear/start_timer set).
+    if (cmd === "set_item_content") {
+      // One-shot rejection hook: lets the driver exercise the "host rejected the link" path
+      // (modal stays open + role=alert), mirroring a reference the host can't parse.
+      if (window.__sicRejectOnce) { window.__sicRejectOnce = false; return Promise.reject("simulated host rejection"); }
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
+    if (cmd === "add_item" || cmd === "move_item" || cmd === "rename_item" || cmd === "remove_item")
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    if (cmd === "scripture_search")
+      return Promise.resolve([{reference:"Romans 8:28", text:"And we know that all things work together for good"}]);
     if (cmd === "preview_theme") return Promise.resolve({rgba: btoa("\x00\x00\x00\xff"), w:1, h:1});
     if (cmd === "pick_image") return Promise.resolve("/tmp/picked.png");
     if (cmd === "remote_snapshot")
@@ -172,6 +209,7 @@ STUB = r"""
       return Promise.resolve({code:"AB12CD34", fingerprint:"A1 B2 C3 D4", expires_in_secs:120});
     if (cmd === "host_connected") return Promise.resolve(!window.__psNoHost); // a real output window (unless the test says otherwise)
     if (cmd === "stt_ready") return Promise.resolve(window.__psStt || {ready:true, state:"ready", model:"Small", detail:"On-device model ready"});
+    if (cmd === "audio_input") return Promise.resolve(window.__psAudio || {available:true, state:"ok", name:"Focusrite Scarlett 2i2", channels:2, detail:"Focusrite Scarlett 2i2 · 2 ch"});
     if (cmd === "disk_free")
       return Promise.resolve({available_bytes: (window.__psDiskLow ? 0.5 : 42) * 1073741824, total_bytes: 500 * 1073741824}); // 42 GB free (or <1 GB critical when flagged)
     if (cmd === "render_console") return Promise.resolve(
@@ -220,6 +258,35 @@ STUB = r"""
     });
     if (cmd === "approve_detection" || cmd === "dismiss_detection" || cmd === "go_live")
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    // --- Live Console slide picker (LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec §6): the read-only
+    // deck-slide bridge + within-item staging the Slides filmstrip drives. deckId 7 = a 3-slide
+    // presentation; deckId 999 = a removed deck (available:false → the "presentation missing" state). ---
+    if (cmd === "plan_deck_slides") {
+      if (args.deckId === 999) return Promise.resolve({available:false});
+      if (args.deckId === 8) { var big=[]; for (var i=0;i<80;i++) big.push({slide_id:200+i, label:"S"+(i+1), has_notes:false}); return Promise.resolve({available:true, slides:big}); } // large deck: bounded-memory test
+      return Promise.resolve({available:true, slides:[
+        {slide_id:101, label:"Grace That Feeds", has_notes:false},
+        {slide_id:102, label:"Isaiah 61:5", has_notes:true},
+        {slide_id:103, label:"Closing", has_notes:false}
+      ]});
+    }
+    if (cmd === "render_plan_deck_slide")
+      return Promise.resolve({available:true, frame:{w:2, h:1, rgba:btoa("\xff\x00\x00\xff\x00\xff\x00\xff")}});
+    if (cmd === "select_slide") { // mirror the host: clamp to the item's slide_count + set the STAGED cursor (never Live)
+      if (V.items[1]) {
+        var _cnt = V.items[1].slide_count || 1;
+        var _k = Math.max(0, Math.min(_cnt - 1, args.slideIndex));
+        V.items[1].staged_slide_index = _k;
+        if (V.live_index !== 1) V.items[1].slide_index = _k; // slide_index is LIVE-first when also live
+      }
+      V.staged_index = 1; V.staged_scripture = null;
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
+    if (cmd === "present_plan_deck_slide") { // route the authored deck slide to Live (mirror present_authored_slide)
+      V.live_authored_id = args.slideId; // the on-air authored slide id drives the filmstrip LIVE marker
+      V.live_index = null;               // present_authored takes over the live surface (clears the plan live item)
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
     // --- Presentation & Media (deck_* commands + render_deck_slide) ---
     // One-shot rejection hook: lets the driver exercise the error banner (role=alert) + Retry.
     if (window.__pmRejectOnce && cmd.indexOf("deck_") === 0) { window.__pmRejectOnce = false; return Promise.reject("simulated host rejection"); }
@@ -337,6 +404,54 @@ STUB = r"""
       D.media.unused_count += 1; return Promise.resolve(dClone());
     }
     if (cmd === "deck_remove_media") return Promise.resolve(dClone());
+    // --- Providers & Privacy (Settings 338:124) ---
+    if (cmd === "providers_view") return Promise.resolve(ppView()); // the resync read is NEVER rejected
+    // One-shot rejection hook for the PP MUTATION commands only (not providers_view): lets the driver
+    // exercise the "host rejected a setting" path — the optimistic control must revert to the
+    // backend-confirmed value (mutate() resyncs), never showing a state the backend didn't confirm.
+    var __ppSet = (cmd==="set_transcription_mode"||cmd==="set_cloud_consent"||cmd==="set_notes_template"||
+                   cmd==="set_preferred_translation"||cmd==="set_include_flag"||
+                   cmd==="set_account_token"||cmd==="clear_account_token");
+    if (__ppSet && window.__ppRejectOnce) { window.__ppRejectOnce = false; return Promise.reject("simulated host rejection"); }
+    if (cmd === "set_transcription_mode") { P.transcription_mode = args.mode; return Promise.resolve(ppView()); }
+    if (cmd === "set_cloud_consent") {
+      if (args.kind === "transcription") P.cloud_transcription_consent = !!args.enabled;
+      else if (args.kind === "notes") P.cloud_notes_consent = !!args.enabled;
+      return Promise.resolve(ppView());
+    }
+    if (cmd === "set_notes_template") { P.notes_template = args.template; return Promise.resolve(ppView()); }
+    if (cmd === "set_preferred_translation") {
+      // Mirror the backend: only an installed code is accepted (unknown → keep current).
+      if (P.translations.some(function(t){ return t.code === args.code; })) P.preferred_translation = args.code;
+      return Promise.resolve(ppView());
+    }
+    if (cmd === "set_include_flag") { if (args.name in P.include) P.include[args.name] = !!args.enabled; return Promise.resolve(ppView()); }
+    if (cmd === "set_account_token") { P.account_token_set = !!(args.token && args.token.length); return Promise.resolve(ppView()); }
+    if (cmd === "clear_account_token") { P.account_token_set = false; return Promise.resolve(ppView()); }
+    if (cmd === "generate_sermon_notes") {
+      // Consent-gated end to end (mirrors the backend): no notes consent → consent_required; else the
+      // driver picks the outcome via window.__ppGen ("ok" | "not_configured" | "quota_exceeded").
+      if (!P.cloud_notes_consent)
+        return Promise.resolve({ok:false, error:"consent_required", message:"cloud notes consent is off"});
+      var g = window.__ppGen || "not_configured";
+      if (g === "ok") return Promise.resolve({
+        ok:true, degraded:false, provider:"SelahCue AI",
+        draft:{title:"Grace That Feeds", summary:"A sermon on provision and grace.",
+          sections:[{heading:"Prayer points", items:["Thank God for provision","Pray for the hungry"]}],
+          scriptures:["Isaiah 61:5","John 6:35"]},
+        quota:{used:13, limit:40, remaining:27, resets_label:"Sep 1"}
+      });
+      if (g === "degraded") return Promise.resolve({
+        ok:true, degraded:true, provider:"SelahCue AI",
+        draft:{title:"Offline outline", summary:null,
+          sections:[{heading:"Outline", items:["point one"]}], scriptures:[]},
+        quota:null
+      });
+      if (g === "quota_exceeded") return Promise.resolve({ok:false, error:"quota_exceeded", message:"monthly limit reached"});
+      if (g === "transport") return Promise.reject("network down"); // invoke rejects → onGenerate .catch → transport
+      if (g === "malformed") return Promise.resolve({ok:false, error:"malformed", message:"bad response"});
+      return Promise.resolve({ok:false, error:"not_configured", message:"the SelahCue cloud service is not configured"});
+    }
     return Promise.resolve(null);
   } },
   event: { listen: function(name, cb){ (window.__ev[name] = window.__ev[name] || []).push(cb); return Promise.resolve(function(){}); } } };
@@ -400,6 +515,90 @@ DRIVER = r"""
       await waitFor(function(){ return !hasRender("preview-panel"); }); // poll for the fallback (audit #11)
       ok(!el("preview-panel").querySelector(".surface").classList.contains("has-render"), "#7 available:false → text fallback (no canvas)");
       window.__renderAvailable = true; // restore for the rest of the run
+
+      // === Live Console slide picker (LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec §1/§2/§4) ===
+      // Default (a scripture is staged): Slides tab disabled + its panel hidden (computed display —
+      // a class rule must not defeat [hidden] in WKWebView).
+      ok(el("ctab-slides").getAttribute("aria-disabled")==="true", "SP: Slides tab disabled when no presentation is staged");
+      ok(getComputedStyle(el("cpanel-slides")).display === "none", "SP: Slides panel hidden by COMPUTED display by default (WKWebView-safe)");
+      ok(el("ctab-scriptures").getAttribute("aria-selected")==="true", "SP: Scriptures is the default active content tab");
+
+      // Stage a presentation (a slide_group item linked to deck 7) in the real view; the 1s poll and
+      // a direct sync agree because V is mutated. The filmstrip auto-surfaces + lists the deck's slides.
+      V.items = [V.items[0], {id:2, kind:"slide_group", title:"Sermon Slides", is_live:false, is_staged:true, slide_count:3, slide_index:0, staged_slide_index:0, link:{kind:"deck", id:7, slide_count:3}}];
+      V.staged_index = 1; V.staged_scripture = null;
+      window.__syncSlides(JSON.parse(JSON.stringify(V)));
+      await waitFor(function(){ return el("slide-strip").querySelectorAll(".slide-card").length === 3; });
+      ok(!el("ctab-slides").hasAttribute("aria-disabled"), "SP: Slides tab enabled when a presentation is staged");
+      ok(el("ctab-slides").getAttribute("aria-selected")==="true", "SP: auto-switched to the Slides tab on staging a presentation");
+      ok(getComputedStyle(el("cpanel-slides")).display !== "none", "SP: Slides panel visible by COMPUTED display when active");
+      ok(getComputedStyle(el("scriptures")).display === "none", "SP: Scriptures panel hidden when Slides is active ([hidden] wins over its flex display)");
+      ok(el("slide-strip").querySelectorAll('[role="option"]').length === 3, "SP: the filmstrip lists all 3 slides as role=option cards");
+      ok(el("slides-count").textContent === "3" && !el("slides-count").hidden, "SP: the Slides tab count badge reflects slide_count");
+      ok((el("slide-strip").querySelector(".slide-card").getAttribute("aria-label")||"").indexOf("Grace That Feeds")>=0, "SP: a slide's aria-label carries its label text");
+      ok(el("slide-strip").querySelectorAll(".slide-card")[0].classList.contains("staged"), "SP: the staged slide (0) is ringed PREVIEW");
+      var __t0 = el("slide-strip").querySelectorAll(".slide-card")[0].querySelector(".slide-card-tag");
+      ok(__t0 && __t0.textContent === "PREVIEW", "SP: PREVIEW is a text tag (never colour-only)");
+      await waitFor(function(){ return window.__calls.some(function(c){return c.cmd==="render_plan_deck_slide" && c.args.deckId===7;}); });
+      ok(window.__calls.some(function(c){return c.cmd==="render_plan_deck_slide" && c.args.deckId===7;}), "SP: thumbnails render lazily via render_plan_deck_slide");
+
+      // Clicking a slide stages it to Preview (select_slide) — NEVER Live (FR-012).
+      var __cb = window.__calls.length;
+      el("slide-strip").querySelectorAll(".slide-card")[2].click();
+      await waitFor(function(){ return window.__calls.some(function(c){return c.cmd==="select_slide" && c.args.slideIndex===2;}); });
+      ok(window.__calls.some(function(c){return c.cmd==="select_slide" && c.args.itemId===2 && c.args.slideIndex===2;}), "SP: clicking slide 3 invokes select_slide{itemId:2, slideIndex:2}");
+      ok(!window.__calls.slice(__cb).some(function(c){return c.cmd==="go_live";}), "SP: a slide click stages Preview only — never go_live (FR-012)");
+      // B1 fix: the PREVIEW ring actually MOVES to the picked slide (it was stuck on slide 1 while the
+      // host clamped every deck stage to 0). Proven end-to-end via staged_slide_index.
+      await waitFor(function(){ return el("slide-strip").querySelectorAll(".slide-card")[2].classList.contains("staged"); });
+      ok(el("slide-strip").querySelectorAll(".slide-card")[2].classList.contains("staged"), "SP: staging slide 3 moves the PREVIEW ring to slide 3 (B1 fixed — no longer stuck on slide 1)");
+      ok(!el("slide-strip").querySelectorAll(".slide-card")[0].classList.contains("staged"), "SP: slide 1 is no longer the staged slide");
+
+      // Enter routes the ACTUAL deck slide to Live via the authored-slide present path (NOT the
+      // plan-item go_live, which would show only the item title). The presented slide is then marked
+      // LIVE by live_authored_id.
+      var __lb = window.__calls.length;
+      el("slide-strip").dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", bubbles:true}));
+      await waitFor(function(){ return window.__calls.slice(__lb).some(function(c){return c.cmd==="present_plan_deck_slide";}); });
+      ok(window.__calls.slice(__lb).some(function(c){return c.cmd==="present_plan_deck_slide" && c.args.deckId===7;}), "SP: Enter routes the REAL deck slide to Live (present_plan_deck_slide, not the plan title)");
+      ok(!window.__calls.slice(__lb).some(function(c){return c.cmd==="go_live";}), "SP: go-live for a deck does NOT use the plan-item go_live (which shows the title)");
+      await waitFor(function(){ return el("slide-strip").querySelector(".slide-card.live") != null; });
+      ok(el("slide-strip").querySelector(".slide-card.live") != null, "SP: the presented slide is marked LIVE (via live_authored_id)");
+      // The global GO LIVE button also routes the staged deck slide (not the plan title).
+      var __gb = window.__calls.length;
+      el("golive").click();
+      await waitFor(function(){ return window.__calls.slice(__gb).some(function(c){return c.cmd==="present_plan_deck_slide";}); });
+      ok(window.__calls.slice(__gb).some(function(c){return c.cmd==="present_plan_deck_slide";}), "SP: the GO LIVE button routes the staged deck slide (present_plan_deck_slide)");
+      ok(window.__consoleDeckPreview && window.__consoleDeckPreview.deckId===7, "SP: the staged deck slide is published for GO LIVE + the Preview panel render");
+
+      // Arrow keys move + stage the neighbouring slide (Preview only).
+      var __ab = window.__calls.length;
+      el("slide-strip").dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowLeft", bubbles:true}));
+      await waitFor(function(){ return window.__calls.slice(__ab).some(function(c){return c.cmd==="select_slide";}); });
+      ok(window.__calls.slice(__ab).some(function(c){return c.cmd==="select_slide";}), "SP: ArrowLeft moves + stages the previous slide (Preview)");
+
+      // A removed linked deck → the honest 'presentation missing' state (no crash, FR-007).
+      V.items[1].link.id = 999;
+      window.__syncSlides(JSON.parse(JSON.stringify(V)));
+      await waitFor(function(){ return !el("slides-empty").hidden; });
+      ok(!el("slides-empty").hidden && el("slides-empty-msg").textContent.toLowerCase().indexOf("missing")>=0, "SP: a removed linked deck shows the honest 'presentation missing' state");
+
+      // Bounded memory (spec §2 / no-leak): a large deck must not retain O(N) thumbnails. Stage an
+      // 80-slide presentation, walk every card, and assert the thumbnail LRU stays capped.
+      V.items = [V.items[0], {id:3, kind:"slide_group", title:"Big Deck", is_live:false, is_staged:true, slide_count:80, slide_index:0, staged_slide_index:0, link:{kind:"deck", id:8, slide_count:80}}];
+      V.staged_index = 1; V.staged_scripture = null;
+      window.__syncSlides(JSON.parse(JSON.stringify(V)));
+      await waitFor(function(){ return el("slide-strip").querySelectorAll(".slide-card").length === 80; });
+      ok(el("slide-strip").querySelectorAll(".slide-card").length === 80, "SP: a large (80-slide) deck lists every card");
+      await window.__slidesDebug.renderAll(); // simulate a full scroll-through: render each card once
+      ok(window.__slidesDebug.thumbCacheSize() <= 60, "SP: the thumbnail cache stays bounded (LRU cap) after rendering 80 slides — no O(N) growth (spec §2, no-leak)");
+
+      // De-stage the presentation (a scripture staged) → Slides disabled + back to Scriptures. Restore V.
+      V.items = [{id:1, kind:"scripture", title:"Genesis 1:13", is_live:true, is_staged:true}];
+      V.staged_index = 0; V.staged_scripture = "Genesis 1:13";
+      window.__syncSlides(JSON.parse(JSON.stringify(V)));
+      ok(el("ctab-slides").getAttribute("aria-disabled")==="true", "SP: Slides tab disabled again when a scripture is staged");
+      ok(el("ctab-scriptures").getAttribute("aria-selected")==="true", "SP: returns to Scriptures when the presentation is de-staged");
 
       // === audit L3: the Theme Designer loads LAZILY on first activation, not at boot ===
       ok(!window.__calls.some(function(c){return c.cmd==="builtin_themes";}),
@@ -1735,12 +1934,16 @@ DRIVER = r"""
          "Pre-service: all 10 checks render across the four sections");
       ok(document.querySelectorAll("#ps-sections .ps-section").length === 4,
          "Pre-service: four grouped sections (Displays / Media / Audio / Storage)");
-      ok(el("ps-passed").textContent === "4" && el("ps-warnings").textContent === "1" && el("ps-blocking").textContent === "0",
-         "Pre-service: readiness counts derive from live host data (4 passed · 1 warning · 0 blocking)");
+      ok(el("ps-passed").textContent === "5" && el("ps-warnings").textContent === "1" && el("ps-blocking").textContent === "0",
+         "Pre-service: readiness counts derive from live host data (5 passed · 1 warning · 0 blocking)");
       var psStt = Array.prototype.slice.call(document.querySelectorAll("#ps-sections .ps-row"))
         .find(function(r){ return /Transcription & AI/.test(r.textContent); });
       ok(psStt && psStt.querySelector(".ps-ico-ok") && /On-device STT ready/.test(psStt.textContent),
          "Pre-service: on-device STT ready reflects the real stt_ready probe");
+      var psAudio = Array.prototype.slice.call(document.querySelectorAll("#ps-sections .ps-row"))
+        .find(function(r){ return /Input device/.test(r.textContent); });
+      ok(psAudio && psAudio.querySelector(".ps-ico-ok") && /Focusrite/.test(psAudio.textContent),
+         "Pre-service: Input device reflects the real audio_input probe (device name)");
       // STT model missing → the check becomes an attention warning (not a fabricated pass).
       window.__psStt = {ready:false, state:"not_downloaded", model:"Small", detail:"On-device model not downloaded yet"};
       el("ps-rerun").click();
@@ -1748,7 +1951,22 @@ DRIVER = r"""
       ok(true, "Pre-service: stt_ready 'not downloaded' → attention warning (honest, not a pass)");
       window.__psStt = null;
       el("ps-rerun").click();
-      await waitFor(function(){ return el("ps-passed").textContent === "4"; });
+      await waitFor(function(){ return el("ps-passed").textContent === "5"; });
+      // No input device → the Input device check becomes an attention warning (not a fabricated pass).
+      window.__psAudio = {available:false, state:"no_device", name:"", channels:null, detail:"No microphone / input device detected"};
+      el("ps-rerun").click();
+      await waitFor(function(){ var r=Array.prototype.slice.call(document.querySelectorAll("#ps-sections .ps-row")).find(function(x){return /Input device/.test(x.textContent);}); return r && r.querySelector(".ps-ico-warn"); });
+      ok(true, "Pre-service: audio_input 'no device' → attention warning (honest, not a pass)");
+      // Default (no-STT) build → 'not_in_build' → honest PENDING, never a fabricated pass.
+      window.__psAudio = {available:false, state:"not_in_build", name:"", channels:null, detail:"Audio input check is not enabled in this build"};
+      el("ps-rerun").click();
+      await waitFor(function(){ var r=Array.prototype.slice.call(document.querySelectorAll("#ps-sections .ps-row")).find(function(x){return /Input device/.test(x.textContent);}); return r && r.querySelector(".ps-ico-pending"); });
+      var psAudioNib = Array.prototype.slice.call(document.querySelectorAll("#ps-sections .ps-row")).find(function(x){return /Input device/.test(x.textContent);});
+      ok(psAudioNib && psAudioNib.querySelector(".ps-ico-pending") && el("ps-passed").textContent === "4",
+         "Pre-service: audio_input 'not_in_build' → honest pending, not counted as passed (default build)");
+      window.__psAudio = null;
+      el("ps-rerun").click();
+      await waitFor(function(){ return el("ps-passed").textContent === "5"; });
       ok(el("ps-verdict").textContent === "Safe to start" && el("ps-verdict-card").getAttribute("data-state") === "ok",
          "Pre-service: 0 blocking → Safe to start (green verdict)");
       ok(document.querySelectorAll("#ps-review .ps-review-card").length === 1,
@@ -1789,9 +2007,17 @@ DRIVER = r"""
       ok(el("surface-preservice").classList.contains("active"),
          "Pre-service: ⌘⇧K jumps to the surface (data-nodigit keeps the ⌘1–6 map intact)");
 
-      // === Remote Control surface (Design 2.0, Figma 359:124): pair/approve/role/revoke ===
-      document.querySelector('.nav-item[data-surface="remote"]').click();
-      ok(el("surface-remote").classList.contains("active"), "Remote: nav opens the Remote Control surface");
+      // === Remote Control (Figma 359:124) — now reached from Settings › Network & Mobile (it left the
+      // top-nav, Figma 336:124), not a top-level nav item: pair/approve/role/revoke ===
+      ok(!document.querySelector('.nav-item[data-surface="remote"]'),
+         "Nav: Remote Control is no longer a top-level nav item (moved under Settings, Figma 336:124)");
+      document.querySelector('.nav-item[data-surface="settings"]').click();
+      setSettingsPage("network");
+      ok(document.getElementById("set-page-network") && !document.getElementById("set-page-network").hidden,
+         "Settings: the Network & Mobile page renders");
+      document.getElementById("set-open-remote").click();
+      ok(el("surface-remote").classList.contains("active"),
+         "Settings › Network & Mobile → 'Manage devices' opens the Remote Control surface");
       var rcN0 = +el("rc-count-n").textContent;
       ok(document.querySelectorAll("#rc-rows .rc-row").length === rcN0 && rcN0 >= 1,
          "Remote: the paired-devices table renders and the count chip matches");
@@ -1811,8 +2037,536 @@ DRIVER = r"""
          "Remote: second Revoke click removes the device");
       document.querySelector('.nav-item[data-surface="console"]').click();
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"R", metaKey:true, shiftKey:true, bubbles:true}));
-      ok(el("surface-remote").classList.contains("active"),
-         "Remote: ⌘⇧R jumps to Remote Control (data-nodigit keeps the ⌘1–6 map intact)");
+      ok(el("surface-settings").classList.contains("active") && !document.getElementById("set-page-network").hidden,
+         "Remote: ⌘⇧R now opens Settings › Network & Mobile (Remote left the top-nav; ⌘1–6 map intact)");
+
+      // === Service Plan builder (86ajxxuz9, Figma 614:124) — the `plan` surface is a real
+      // builder (palette · run sheet · inspector) with link status + link/unlink flows, and a
+      // plan edit NEVER changes Live. The CI driver never navigated here before, so the builder
+      // + link states had zero behavioural coverage; these checks close that gap. ==============
+      var isLiveCtrl = function(c){ return ["go_live","next","select","blackout","clear","start_timer"].indexOf(c.cmd) >= 0; };
+      var ctrlBefore = window.__calls.filter(isLiveCtrl).length;
+      // #6/#7 fix: the console resolves deck-link chips at BOOT (planDecks loaded WITHOUT ever
+      // visiting the plan surface). No plan nav has happened yet, so a non-null resolution here
+      // proves the boot-time load; the boot fixture's deck id 2 is "Sermon: Grace That Feeds".
+      ok(typeof planDeckName === "function" && planDeckName(2) === "Sermon: Grace That Feeds",
+         "SP C-001: the console resolves deck-link names at boot (planDecks loaded before any plan visit)");
+      // This block owns its deck fixture: an earlier library test empties __LIB.decks (the
+      // 'No presentations yet' state), so restore a known list BEFORE planActivate loads it —
+      // deck-link chips resolve names from deck_list, and the picker lists these decks.
+      window.__LIB = window.__LIB || {};
+      window.__LIB.decks = [{id:2, name:"Sermon: Grace That Feeds", slides:2}, {id:5, name:"Youth Night — Identity", slides:12}];
+      window.__LIB.open = 2; window.__LIB.persistent = true; window.__LIB.nextId = 6;
+      document.querySelector('.nav-item[data-surface="plan"]').click(); // showSurface("plan") → planActivate
+      ok(el("surface-plan").classList.contains("active"), "SP: the plan nav opens the Service Plan builder surface");
+      await sleep(60); // let planActivate resolve invoke("view") + invoke("deck_list") (deck names for chips)
+      // C-002: the three builder regions replace the placeholder.
+      var palette = el("plan-palette-btns");
+      ok(palette && palette.querySelectorAll(".plan-palette-btn").length === 7,
+         "SP C-002: the Add-item palette lists all 7 item kinds (got " + (palette ? palette.querySelectorAll(".plan-palette-btn").length : "none") + ")");
+      ok(!!el("plan-b-list") && !!el("plan-b-insp"), "SP C-002: the run sheet + item inspector regions exist");
+      // Palette wiring: clicking a kind sends add_item{kind,title}.
+      palette.querySelector('.plan-palette-btn').click();
+      await sleep(20);
+      ok(window.__calls.some(function(c){return c.cmd==="add_item";}), "SP: a palette button sends add_item to the host");
+      // C-001 / C-005 read side: render a crafted plan covering every link state (scripture-linked,
+      // deck-linked, deck-MISSING, unlinked) and assert the run-sheet chips. planRenderBuilder is a
+      // global (top-level fn), driven directly the same way the M1 checks drive render().
+      var planView = { plan_name:"Sunday", items:[
+        {id:11, kind:"scripture",   title:"Opening Word",  is_live:false, is_staged:true,  link:{kind:"scripture", reference:"John 3:16", translation:"KJV"}},
+        {id:12, kind:"slide_group", title:"Sermon Deck",   is_live:false, is_staged:false, link:{kind:"deck", id:2}},   // resolves to a name
+        {id:13, kind:"slide_group", title:"Old Deck",      is_live:false, is_staged:false, link:{kind:"deck", id:99}},  // id gone → missing
+        {id:14, kind:"scripture",   title:"Closing Prayer",is_live:false, is_staged:false}                              // unlinked
+      ] };
+      planRenderBuilder(planView);
+      var bRows = document.querySelectorAll("#plan-b-list .plan-b-row");
+      ok(bRows.length === 4, "SP C-001: the run sheet renders a typed row per plan item (got " + bRows.length + ")");
+      var sChip = document.querySelector("#plan-b-list .link-scripture");
+      ok(sChip && /John 3:16/.test(sChip.textContent) && /KJV/.test(sChip.textContent),
+         "SP C-001: a scripture-linked item shows its reference + translation chip");
+      var dChips = document.querySelectorAll("#plan-b-list .link-deck");
+      ok(Array.prototype.some.call(dChips, function(c){return /Grace That Feeds/.test(c.textContent);}),
+         "SP C-001: a deck-linked item resolves the deck name from the lazily-loaded deck list");
+      var mChip = document.querySelector("#plan-b-list .link-missing");
+      ok(mChip && /missing/i.test(mChip.textContent), "SP C-001: a deck whose id is gone shows a ⚠ missing chip");
+      // C-005 inspector: a linked scripture item → chip + Change…/Unlink/Remove.
+      document.querySelectorAll("#plan-b-list .plan-b-row")[0].click();
+      var insp = el("plan-b-insp");
+      ok(insp.querySelector(".link-scripture") && /John 3:16/.test(insp.textContent),
+         "SP C-005: selecting a linked item shows its link in the inspector");
+      ok(Array.prototype.some.call(insp.querySelectorAll(".pm-btn-primary"), function(b){return /Change/.test(b.textContent);}),
+         "SP C-005: a linked item's inspector offers Change…");
+      ok(Array.prototype.some.call(insp.querySelectorAll("button"), function(b){return b.textContent==="Unlink";}),
+         "SP C-005: a linked item's inspector offers Unlink");
+      ok(!!insp.querySelector(".pm-btn-danger"), "SP C-005: the inspector offers Remove item");
+      ok(/never changes Live/.test(insp.textContent), "SP C-006: the inspector states editing here never changes Live");
+      // #4 selection is exposed to AT via role=option + aria-selected (not border-colour alone);
+      // #3 keyboard focus survives the list-rebuild (lands on the selected row, not <body>);
+      // #5 the reorder buttons carry an accessible name.
+      var selRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="11"]');
+      ok(selRow && selRow.getAttribute("role") === "option" && selRow.getAttribute("aria-selected") === "true",
+         "SP C-005 a11y: the selected run-sheet row is role=option aria-selected=true");
+      ok(document.querySelector('#plan-b-list .plan-b-row[data-item-id="12"]').getAttribute("aria-selected") === "false",
+         "SP C-005 a11y: an unselected row exposes aria-selected=false");
+      ok(document.activeElement === selRow,
+         "SP C-005 a11y: selecting a row keeps keyboard focus on it (survives the list rebuild)");
+      var upBtn = document.querySelector('#plan-b-list .plan-b-up');
+      ok(upBtn && /move/i.test(upBtn.getAttribute("aria-label") || ""),
+         "SP C-007 a11y: the ↑/↓ reorder buttons have an accessible name");
+      // C-005 unlinked state: distinct warning + a Link… affordance.
+      document.querySelectorAll("#plan-b-list .plan-b-row")[3].click();
+      var insp2 = el("plan-b-insp");
+      ok(!!insp2.querySelector(".plan-insp-unlinked"), "SP C-005: an unlinked scripture item shows the 'no reference yet' warning");
+      ok(/Link a scripture/.test(insp2.textContent), "SP C-005: an unlinked item offers Link a scripture…");
+      // C-003 link-Scripture flow: the modal → set_item_content{kind:scripture,reference,translation}.
+      var sicBefore = window.__calls.filter(function(c){return c.cmd==="set_item_content";}).length;
+      openLinkModal({id:14, kind:"scripture", title:"Closing Prayer"});
+      var lm = document.querySelector(".pm-confirm.pm-link");
+      ok(!!lm && lm.getAttribute("aria-modal")==="true", "SP C-007: the link modal is a labelled aria-modal dialog");
+      // #2 the scripture modal opens with the reference input focused (not Cancel) — a keyboard
+      // operator types the reference immediately.
+      ok(document.activeElement === lm.querySelector('input[aria-label="Scripture reference"]'),
+         "SP C-007 a11y: the scripture link modal opens with the reference input focused (not Cancel)");
+      // #1 focus trap: Tab is contained within the dialog (the background console — which holds
+      // live-control buttons — is NOT inert, so an escaping Tab could reach Go Live). A synthetic
+      // Tab does NOT move focus natively, so asserting "focus stayed inside" would be tautological
+      // (it passes even with the trap removed). Instead assert the trap ACTIVELY wraps focus from
+      // the last control back to the first — that only happens if the Tab handler fired.
+      var lmFoc = Array.prototype.filter.call(lm.querySelectorAll("button, input, select"), function(n){ return !n.disabled; });
+      var lmFirst = lmFoc[0], lmLast = lmFoc[lmFoc.length - 1];
+      lmLast.focus();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+      ok(document.activeElement === lmFirst && lmFirst !== lmLast && lm.contains(document.activeElement),
+         "SP C-007 a11y: Tab from the last control WRAPS to the first (the trap actively contains focus, not a no-op)");
+      var refIn = lm.querySelector('input[aria-label="Scripture reference"]');
+      refIn.value = "Romans 8:28";
+      Array.prototype.filter.call(lm.querySelectorAll(".pm-btn-primary"), function(b){return b.textContent==="Link";})[0].click();
+      await sleep(20);
+      var sic = window.__calls.filter(function(c){return c.cmd==="set_item_content";});
+      ok(sic.length > sicBefore && sic[sic.length-1].args.link && sic[sic.length-1].args.link.kind==="scripture" &&
+         /Romans 8:28/.test(sic[sic.length-1].args.link.reference),
+         "SP C-003: the link-Scripture flow sends set_item_content{link:{kind:scripture,reference}}");
+      // === Frame 610:124 — scripture verse picker (chapter nav + verse list + verses/slide) =====
+      openLinkModal({ id: 14, kind: "scripture", title: "Opening Word" });
+      await sleep(20);
+      var lmV = document.querySelector(".pm-confirm.pm-link");
+      lmV.querySelector('input[aria-label="Scripture reference"]').value = "Isaiah 61:1";
+      Array.prototype.filter.call(lmV.querySelectorAll("button"), function(b){return b.textContent==="Browse";})[0].click();
+      await sleep(30); // get_chapter
+      var vpick = lmV.querySelector(".pm-verse-picker");
+      ok(vpick && !vpick.hidden, "SP2 C-003: Browse opens the verse picker (get_chapter)");
+      ok(!!lmV.querySelector('.pm-verse-navbtn[aria-label="Next chapter"]') && !!lmV.querySelector('.pm-verse-navbtn[aria-label="Previous chapter"]'),
+         "SP2 C-003: the picker has chapter next/prev nav");
+      var vrows = lmV.querySelectorAll(".pm-verse");
+      ok(vrows.length >= 1, "SP2 C-003: the verse list renders");
+      ok(!!lmV.querySelector('.pm-verse-list[aria-multiselectable="true"]'),
+         "SP2 C-006 a11y: the verse list is aria-multiselectable (a contiguous range is selectable)");
+      vrows[0].click();
+      ok(lmV.querySelector(".pm-verse.sel") && lmV.querySelector('.pm-verse[aria-selected="true"]'),
+         "SP2 C-003: clicking a verse highlights the selected range (aria-selected)");
+      ok(/Isaiah 61/.test(lmV.querySelector(".pm-verse-preview").textContent),
+         "SP2 C-003: the gold reference preview reflects the selection");
+      var vpsIn = lmV.querySelector('input[aria-label="Verses per slide"]');
+      ok(!!vpsIn, "SP2 C-003: a verses-per-slide control is present");
+      vpsIn.value = "2"; vpsIn.dispatchEvent(new Event("input", { bubbles: true }));
+      var sicV = window.__calls.filter(function(c){return c.cmd==="set_item_content";}).length;
+      Array.prototype.filter.call(lmV.querySelectorAll(".pm-btn-primary"), function(b){return b.textContent==="Link";})[0].click();
+      await sleep(20);
+      var sicV2 = window.__calls.filter(function(c){return c.cmd==="set_item_content";});
+      ok(sicV2.length > sicV && sicV2[sicV2.length-1].args.link.kind === "scripture" && sicV2[sicV2.length-1].args.link.verses_per_slide === 2,
+         "SP2 C-003: Link commits scripture with the selected reference + verses_per_slide");
+      // SP2 fix: editing the reference AFTER browsing invalidates the stale chapter — the freshly
+      // typed reference wins on Link (was silently committing the browsed one).
+      openLinkModal({ id: 14, kind: "scripture", title: "Opening Word" });
+      await sleep(20);
+      var lmS = document.querySelector(".pm-confirm.pm-link");
+      var sIn = lmS.querySelector('input[aria-label="Scripture reference"]');
+      sIn.value = "Isaiah 61:1";
+      Array.prototype.filter.call(lmS.querySelectorAll("button"), function(b){return b.textContent==="Browse";})[0].click();
+      await sleep(30);
+      ok(!lmS.querySelector(".pm-verse-picker").hidden, "SP2 C-003: precondition — a chapter is browsed");
+      sIn.value = "John 3:16";
+      sIn.dispatchEvent(new Event("input", { bubbles: true }));
+      ok(lmS.querySelector(".pm-verse-picker").hidden,
+         "SP2 C-003: editing the reference invalidates the browsed chapter (picker hides)");
+      var sicS = window.__calls.filter(function(c){return c.cmd==="set_item_content";}).length;
+      Array.prototype.filter.call(lmS.querySelectorAll(".pm-btn-primary"), function(b){return b.textContent==="Link";})[0].click();
+      await sleep(20);
+      var sicS2 = window.__calls.filter(function(c){return c.cmd==="set_item_content";});
+      ok(sicS2.length > sicS && /John 3:16/.test(sicS2[sicS2.length-1].args.link.reference),
+         "SP2 C-003: Link commits the freshly-typed reference, not the stale browsed one");
+      // #8 host-rejection path: a rejected link keeps the modal OPEN and shows a role=alert error
+      // (no silent close on a no-op). The one-shot __sicRejectOnce hook fails the next command.
+      openLinkModal({id:14, kind:"scripture", title:"Closing Prayer"});
+      var lmE = document.querySelector(".pm-confirm.pm-link");
+      lmE.querySelector('input[aria-label="Scripture reference"]').value = "Nope 9:9";
+      window.__sicRejectOnce = true;
+      Array.prototype.filter.call(lmE.querySelectorAll(".pm-btn-primary"), function(b){return b.textContent==="Link";})[0].click();
+      await sleep(30);
+      ok(document.querySelector(".pm-confirm.pm-link") === lmE,
+         "SP C-006: a host-rejected link keeps the modal open (no optimistic close on a silent no-op)");
+      var alertEl = lmE.querySelector(".pm-link-err");
+      ok(alertEl && !alertEl.hidden && alertEl.getAttribute("role") === "alert",
+         "SP C-007: a rejected link surfaces an inline role=alert error");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); // close before the next modal
+      await sleep(10);
+      // C-004 link-Presentation flow: SELECT-then-confirm (handoff §4.2). Clicking a deck selects it
+      // (aria-selected + "✓ Selected", NO commit); the footer "Link to item" → set_item_content{deck}.
+      openLinkModal({id:12, kind:"slide_group", title:"Sermon Deck"});
+      await sleep(40); // planDeckBody awaits the deck list
+      var lm2 = document.querySelector(".pm-confirm.pm-link");
+      var deckHit = lm2.querySelector(".pm-link-hit");
+      ok(!!deckHit, "SP C-004: the link-Presentation modal lists the available decks");
+      // Frame 610:390 — grid picker: grid layout + slide-count pills + New card + Grid/List toggle.
+      ok(!!lm2.querySelector(".pm-deck-grid") && !!lm2.querySelector(".pm-deck-card .pm-deck-pill"),
+         "SP2 C-004: the picker is a grid with per-deck slide-count pills");
+      ok(!!lm2.querySelector(".pm-deck-new"), "SP2 C-004: a New-presentation card is offered");
+      ok(!lm2.querySelector(".pm-deck-grid .pm-deck-new"),
+         "SP2 C-006 a11y: the New card is outside the deck role=listbox (options only)");
+      var listSeg = Array.prototype.filter.call(lm2.querySelectorAll(".pm-deck-seg-btn"), function(b){return b.dataset.view==="list";})[0];
+      ok(!!listSeg, "SP2 C-004: a Grid/List toggle is present");
+      listSeg.click();
+      ok(lm2.querySelector(".pm-deck-grid").classList.contains("as-list"),
+         "SP2 C-004: switching to List re-lays the picker");
+      var linkFoot = lm2.querySelector(".pm-link-foot .pm-btn-primary");
+      ok(!!linkFoot && linkFoot.disabled, "SP C-004: 'Link to item' is disabled until a deck is selected");
+      var sicBeforeDeck = window.__calls.filter(function(c){return c.cmd==="set_item_content";}).length;
+      deckHit.click(); // SELECT (must not commit)
+      ok(window.__calls.filter(function(c){return c.cmd==="set_item_content";}).length === sicBeforeDeck,
+         "SP C-004: selecting a deck does NOT commit (no premature set_item_content)");
+      ok(deckHit.getAttribute("aria-selected") === "true" && deckHit.querySelector(".pm-link-sel") &&
+         !deckHit.querySelector(".pm-link-sel").hidden && !linkFoot.disabled,
+         "SP C-004: a selected deck shows '✓ Selected' + enables 'Link to item'");
+      linkFoot.click(); // CONFIRM
+      await sleep(20);
+      var sic2 = window.__calls.filter(function(c){return c.cmd==="set_item_content";});
+      ok(sic2.length > sicBeforeDeck && sic2[sic2.length-1].args.link && sic2[sic2.length-1].args.link.kind==="deck" &&
+         typeof sic2[sic2.length-1].args.link.id === "number",
+         "SP C-004: 'Link to item' sends set_item_content{link:{kind:deck,id}} (select-then-confirm)");
+      // SP2 New-presentation card: creates a deck (deck_new) and links it immediately.
+      openLinkModal({ id: 12, kind: "slide_group", title: "Sermon Deck" });
+      await sleep(40);
+      var lmN = document.querySelector(".pm-confirm.pm-link");
+      var sicN = window.__calls.filter(function(c){return c.cmd==="set_item_content";}).length;
+      lmN.querySelector(".pm-deck-new").click();
+      await sleep(50); // deck_new → planLoadDecks → commit
+      var sicN2 = window.__calls.filter(function(c){return c.cmd==="set_item_content";});
+      ok(window.__calls.some(function(c){return c.cmd==="deck_new";}) && sicN2.length > sicN &&
+         sicN2[sicN2.length-1].args.link && sicN2[sicN2.length-1].args.link.kind === "deck",
+         "SP2 C-004: the New-presentation card creates + links a deck");
+      // SP2 fix: double-activating the New card creates exactly ONE deck (re-entrancy/disabled guard).
+      openLinkModal({ id: 12, kind: "slide_group", title: "Sermon Deck" });
+      await sleep(40);
+      var lmNN = document.querySelector(".pm-confirm.pm-link");
+      var dnBefore = window.__calls.filter(function(c){return c.cmd==="deck_new";}).length;
+      var nc = lmNN.querySelector(".pm-deck-new");
+      nc.click(); nc.click(); // double-activate
+      await sleep(50);
+      ok(window.__calls.filter(function(c){return c.cmd==="deck_new";}).length === dnBefore + 1,
+         "SP2 C-004: the New card guards double-activation (exactly one deck_new)");
+      // F12b Change… on an item whose linked deck was DELETED: preselect nothing so "Link to item"
+      // stays disabled (no phantom-id re-commit), not enabled with nothing visibly selected.
+      openLinkModal({ id: 20, kind: "slide_group", title: "Ghost Deck", link: { kind: "deck", id: 999999 } });
+      await sleep(40);
+      var lm3 = document.querySelector(".pm-confirm.pm-link");
+      ok(!lm3.querySelector('.pm-link-hit[aria-selected="true"]'),
+         "SP C-004: Change… on a deleted deck preselects nothing (no phantom selection)");
+      ok(lm3.querySelector(".pm-link-foot .pm-btn-primary").disabled,
+         "SP C-004: 'Link to item' stays disabled when the preselected deck is missing");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); // close before the next check
+      await sleep(10);
+      // F11 empty state: an empty plan renders the centered CTA (not a bare line); "Add first item"
+      // focuses the palette; the inspector is cleared.
+      planRenderBuilder({ plan_name: "Empty", items: [] });
+      var emptyEl = document.querySelector("#plan-b-list .plan-empty");
+      ok(!!emptyEl && !!document.getElementById("plan-empty-add"),
+         "SP C-002: an empty plan renders the centered CTA with an 'Add first item' action");
+      ok(/coming soon/i.test(emptyEl.textContent),
+         "SP C-002: the empty state shows honest 'coming soon' affordances (Template/Duplicate/Import)");
+      document.getElementById("plan-empty-add").click();
+      ok(document.activeElement === document.querySelector("#plan-palette-btns .plan-palette-btn"),
+         "SP C-002 a11y: 'Add first item' focuses the Add-item palette");
+      ok(/Select an item/i.test(el("plan-b-insp").textContent), "SP C-002: an empty plan clears the item inspector");
+      // F5: a FAILED deck-list load leaves deck chips GENERIC (planDecks stays null), never a false
+      // "⚠ missing". Reuse the one-shot deck_ rejection hook, reload, and assert the chip is generic.
+      window.__pmRejectOnce = true;
+      await planLoadDecks();
+      ok(!/missing/i.test(planLinkChip({ kind: "deck", id: 987654 }).textContent),
+         "SP C-001: a failed deck-list load renders a generic chip, not a false '⚠ missing'");
+      await planLoadDecks(); // restore the resolved deck list
+      planRenderBuilder(planView); // restore a populated run sheet
+      // === Frame 608:124 — presentation-linked inspector: deck card + Open in editor ============
+      document.querySelector('#plan-b-list .plan-b-row[data-item-id="12"]').click(); // the deck-linked item
+      var dinsp = el("plan-b-insp");
+      var deckCard = dinsp.querySelector(".plan-deck-card");
+      ok(deckCard && /Grace That Feeds/.test(deckCard.textContent) && /slide/.test(deckCard.textContent),
+         "SP2 C-005: a presentation-linked item shows a deck card (name + slide count)");
+      var openEd = Array.prototype.filter.call(dinsp.querySelectorAll("button"), function(b){return b.textContent==="Open in editor";})[0];
+      ok(!!openEd, "SP2 C-005: the deck inspector offers Open in editor");
+      openEd.click();
+      await sleep(30);
+      ok(el("surface-presentation").classList.contains("active"),
+         "SP2 C-005: Open in editor navigates to the Presentation surface with the deck");
+      document.querySelector('.nav-item[data-surface="plan"]').click(); // back to the builder
+      await sleep(40);
+      planRenderBuilder(planView); // restore a populated run sheet after the plan-surface re-activation
+      // === Frame 611:820 — run-sheet reorder (keyboard Alt+↑/↓ + pointer drag) ==================
+      // C-001 keyboard: Alt+↓ on a row reorders it down via move_item{to:i+1}.
+      var r0 = document.querySelector('#plan-b-list .plan-b-row[data-item-id="11"]');
+      r0.focus();
+      var mvBefore = window.__calls.filter(function(c){return c.cmd==="move_item";}).length;
+      r0.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true }));
+      await sleep(20);
+      var mv = window.__calls.filter(function(c){return c.cmd==="move_item";});
+      ok(mv.length > mvBefore && mv[mv.length-1].args.itemId === 11 && mv[mv.length-1].args.to === 1,
+         "SP2 C-001: Alt+↓ reorders the row via move_item{to:i+1}");
+      planRenderBuilder(planView); // restore
+      // C-006 a11y: the drag handle is aria-hidden (Alt+↑/↓ is the keyboard-accessible reorder path).
+      var handle = document.querySelector('#plan-b-list .plan-b-row[data-item-id="11"] .plan-b-handle');
+      ok(handle && handle.getAttribute("aria-hidden") === "true",
+         "SP2 C-006: the drag handle is aria-hidden (Alt+↑/↓ is the accessible reorder path)");
+      // C-002 pointer drag: pointerdown on the handle → move past threshold → drop line renders +
+      // origin row lifts → pointerup reorders via move_item.
+      var pr = document.querySelectorAll('#plan-b-list .plan-b-row');
+      var startRect = pr[0].getBoundingClientRect(), thirdRect = pr[2].getBoundingClientRect();
+      handle.dispatchEvent(new PointerEvent("pointerdown", { button: 0, clientY: startRect.top + 5, bubbles: true, pointerId: 9 }));
+      window.dispatchEvent(new PointerEvent("pointermove", { clientY: thirdRect.top + thirdRect.height * 0.6, bubbles: true, pointerId: 9 }));
+      ok(!!document.querySelector("#plan-b-list .plan-b-dropline"), "SP2 C-002: dragging shows the drop line");
+      ok(document.querySelector('#plan-b-list .plan-b-row[data-item-id="11"]').classList.contains("dragging"),
+         "SP2 C-002: the dragged origin row is marked (lifted)");
+      var mvBefore2 = window.__calls.filter(function(c){return c.cmd==="move_item";}).length;
+      window.dispatchEvent(new PointerEvent("pointerup", { clientY: thirdRect.top + thirdRect.height * 0.6, bubbles: true, pointerId: 9 }));
+      await sleep(20);
+      ok(window.__calls.filter(function(c){return c.cmd==="move_item";}).length > mvBefore2, "SP2 C-002: dropping reorders via move_item");
+      ok(!document.querySelector("#plan-b-list .plan-b-dropline"), "SP2 C-002: the drop line is torn down after drop");
+      // C-002 a cancelled drag never reorders + tears down.
+      planRenderBuilder(planView);
+      var pr2 = document.querySelectorAll('#plan-b-list .plan-b-row');
+      var h2 = pr2[1].querySelector(".plan-b-handle");
+      h2.dispatchEvent(new PointerEvent("pointerdown", { button: 0, clientY: pr2[1].getBoundingClientRect().top + 5, bubbles: true, pointerId: 10 }));
+      window.dispatchEvent(new PointerEvent("pointermove", { clientY: pr2[3].getBoundingClientRect().top + 5, bubbles: true, pointerId: 10 }));
+      var mvBefore3 = window.__calls.filter(function(c){return c.cmd==="move_item";}).length;
+      window.dispatchEvent(new PointerEvent("pointercancel", { pointerId: 10, bubbles: true }));
+      window.dispatchEvent(new PointerEvent("pointerup", { clientY: pr2[3].getBoundingClientRect().top + 5, bubbles: true, pointerId: 10 }));
+      await sleep(10);
+      ok(window.__calls.filter(function(c){return c.cmd==="move_item";}).length === mvBefore3, "SP2 C-002: a cancelled drag does not reorder");
+      ok(!document.querySelector("#plan-b-list .plan-b-dropline"), "SP2 C-002: pointercancel tears down the drop line");
+      planRenderBuilder(planView); // restore before the nav check
+      // #9/#10 "Open in Live ▶" is a real, NAV-ONLY control (it was a dead button) — it switches to
+      // the Live Console and sends no live-control command.
+      el("plan-open-live").click();
+      ok(el("surface-console").classList.contains("active") && !el("surface-plan").classList.contains("active"),
+         "SP C-006: 'Open in Live' navigates to the Live Console (nav-only, not a go-live)");
+      // C-006 invariant: the whole builder session (incl. Open-in-Live) sent NOT ONE live-control command.
+      ok(window.__calls.filter(isLiveCtrl).length === ctrlBefore,
+         "SP C-006: no plan-builder interaction sent a live-control command (staging/linking never changes Live)");
+
+      // === Settings → Providers & Privacy (Figma 338:124, backend 86ajy034h) — the panel renders
+      // REAL providers_view() state and each control invokes the right command. HONESTY is the whole
+      // point of this screen: in this build cloud_status="not_configured", quota=null,
+      // cloud_connected=false → honest "coming soon" + placeholder quota, NEVER a fabricated "12/40".
+      // ==================================================================================
+      var ppCall = function(cmd){ return window.__calls.filter(function(c){return c.cmd===cmd;}); };
+      var ppLast = function(cmd){ var a=ppCall(cmd); return a.length?a[a.length-1]:null; };
+      document.querySelector('.nav-item[data-surface="settings"]').click(); // showSurface → settingsActivate
+      ok(el("surface-settings").classList.contains("active"), "PP: the Settings nav opens the Providers & Privacy surface");
+      // hidden-attr-vs-css-display trap: assert the COMPUTED display, not just the .active class.
+      ok(getComputedStyle(el("surface-settings")).display === "block",
+         "PP C-008: the active Settings surface is computed display:block (not defeated by a display rule)");
+      await sleep(60); // let settingsActivate resolve invoke("providers_view") + render
+      ok(ppCall("providers_view").length > 0, "PP C-001: activation reads real state via providers_view()");
+      ok(!/Application settings arrive later/.test(el("surface-settings").textContent),
+         "PP C-001: the old stub copy is gone");
+
+      // (1) Offline-by-default banner
+      var ppBanner = document.querySelector("#surface-settings .pp-banner-ok");
+      ok(!!ppBanner && /Offline by default/.test(ppBanner.textContent), "PP C-001: the Offline-by-default banner renders");
+      ok(/never leave this device/.test(ppBanner.textContent), "PP C-001: the offline banner carries the honest 'never leave this device' copy");
+
+      // (2) LIVE TRANSCRIPTION radio cards
+      var odCard = el("pp-radio-ondevice"), clCard = el("pp-radio-cloud");
+      ok(!!odCard && !!clCard, "PP C-002: both transcription radio cards render (On-device + Cloud)");
+      ok(odCard.getAttribute("role")==="radio" && clCard.getAttribute("role")==="radio" &&
+         document.querySelector('#pp-trans[role="radiogroup"]'),
+         "PP C-002 a11y: the two cards form a radiogroup of role=radio");
+      ok(odCard.getAttribute("aria-checked")==="true" && clCard.getAttribute("aria-checked")==="false",
+         "PP C-002: On-device is the selected (private) default; Cloud is unselected");
+      ok(/PRIVATE/.test(odCard.textContent) && !!odCard.querySelector(".pp-badge-private"),
+         "PP C-002: the On-device card shows the PRIVATE badge");
+      var odDetail = odCard.querySelector(".pp-radio-detail");
+      ok(!!odDetail && /Small/.test(odDetail.textContent) && /works offline/.test(odDetail.textContent),
+         "PP C-002: the On-device model line is driven from the backend on_device probe (model 'Small')");
+      ok(/OPT-IN/.test(clCard.textContent) && !!clCard.querySelector(".pp-badge-optin"),
+         "PP C-002: the Cloud card shows the OPT-IN badge");
+      var clWarn = clCard.querySelector(".pp-warn");
+      ok(!!clWarn && /Streams live microphone audio/.test(clWarn.textContent),
+         "PP C-002: the Cloud card shows the amber live-audio warning");
+      ok(/currently off/.test(clCard.textContent), "PP C-002: the Cloud footer honestly reads 'currently off' when consent is off");
+
+      // Selecting Cloud is the opt-in gesture: grants transcription consent THEN switches mode.
+      var scBefore = ppCall("set_cloud_consent").length, tmBefore = ppCall("set_transcription_mode").length;
+      el("pp-radio-cloud").click();
+      await sleep(70);
+      var scT = ppCall("set_cloud_consent").filter(function(c){return c.args.kind==="transcription" && c.args.enabled===true;});
+      ok(scT.length > 0, "PP C-002: selecting Cloud grants transcription consent (set_cloud_consent{transcription,true})");
+      ok(ppLast("set_transcription_mode") && ppLast("set_transcription_mode").args.mode==="cloud",
+         "PP C-002: selecting Cloud switches the mode (set_transcription_mode{cloud})");
+      ok(el("pp-radio-cloud").getAttribute("aria-checked")==="true" && /currently on/.test(el("pp-radio-cloud").textContent),
+         "PP C-002: after opt-in the Cloud card is selected and the footer reads 'currently on'");
+      // Selecting On-device switches back AND revokes cloud-transcription consent (audio stays local).
+      el("pp-radio-ondevice").click();
+      await sleep(70);
+      ok(ppLast("set_transcription_mode").args.mode==="on_device",
+         "PP C-002: selecting On-device switches the mode back (set_transcription_mode{on_device})");
+      ok(ppCall("set_cloud_consent").some(function(c){return c.args.kind==="transcription" && c.args.enabled===false;}),
+         "PP C-002: selecting On-device revokes cloud-transcription consent (audio never leaves the device)");
+      ok(el("pp-radio-ondevice").getAttribute("aria-checked")==="true", "PP C-002: On-device is selected again");
+
+      // (3) SelahCue AI — honest status FIRST (no fabricated pills/quota before any live connection).
+      var aiStatus = document.querySelector(".pp-ai-status");
+      ok(!!aiStatus && !/Cloud connected/.test(aiStatus.textContent) && !/Available/.test(aiStatus.textContent),
+         "PP C-006: with cloud_connected=false the Available / Cloud-connected pills are NOT shown");
+      ok(!!aiStatus.querySelector(".pp-pill-muted") && /Coming soon/.test(aiStatus.textContent),
+         "PP C-006: an honest 'Coming soon' pill is shown instead");
+      ok(!/12\s*\/\s*40/.test(el("surface-settings").textContent),
+         "PP C-006: NO fabricated '12 / 40' quota anywhere on the panel");
+      var ppQuota = document.querySelector(".pp-quota");
+      ok(!!ppQuota && ppQuota.classList.contains("pp-quota-empty") && /Not available yet/.test(ppQuota.textContent),
+         "PP C-006: the quota shows an honest placeholder (null quota → 'Not available yet'), not numbers");
+      ok(!!document.querySelector(".pp-badge-included") && /INCLUDED/.test(document.querySelector(".pp-ai-head").textContent),
+         "PP C-001: the SelahCue AI provider card renders with the INCLUDED badge");
+
+      // (3) selects — options + selected value from the backend; each change invokes its command.
+      var tSel = el("pp-template");
+      ok(!!tSel && tSel.tagName==="SELECT" && tSel.options.length===3 && tSel.value==="full_outline",
+         "PP C-003: the notes-template select lists the backend options with the current value selected");
+      ok(tSel.getBoundingClientRect().width > 40,
+         "PP C-003: the template <select> does not collapse to a sliver (WKWebView flex-collapse trap)");
+      tSel.value = "summary"; tSel.dispatchEvent(new Event("change"));
+      await sleep(50);
+      ok(ppLast("set_notes_template") && ppLast("set_notes_template").args.template==="summary",
+         "PP C-003: changing the template invokes set_notes_template{template}");
+      var xSel = el("pp-translation");
+      ok(!!xSel && xSel.tagName==="SELECT" && xSel.value==="KJV" && xSel.classList.contains("pp-select-gold"),
+         "PP C-003: the translation select shows the current (gold) value from the backend");
+      xSel.value = "WEB"; xSel.dispatchEvent(new Event("change"));
+      await sleep(50);
+      ok(ppLast("set_preferred_translation") && ppLast("set_preferred_translation").args.code==="WEB",
+         "PP C-003: changing the translation invokes set_preferred_translation{code}");
+
+      // (3) INCLUDE IN NOTES — 6 switches in two columns; each invokes set_include_flag{name,enabled}.
+      var incCols = document.querySelectorAll("#surface-settings .pp-inc-col");
+      ok(incCols.length===2 && incCols[0].querySelectorAll(".pp-inc-row").length===3 && incCols[1].querySelectorAll(".pp-inc-row").length===3,
+         "PP C-004: the 6 include-in-notes toggles render in two columns of three");
+      var soc = el("pp-inc-social_excerpts");
+      ok(!!soc && soc.getAttribute("role")==="switch" && soc.checked===false,
+         "PP C-004: 'Social excerpts' is a switch reflecting the backend (off)");
+      soc.click(); // check it
+      await sleep(50);
+      var incSoc = ppLast("set_include_flag");
+      ok(incSoc && incSoc.args.name==="social_excerpts" && incSoc.args.enabled===true,
+         "PP C-004: toggling a switch invokes set_include_flag{name:social_excerpts,enabled:true}");
+      el("pp-inc-prayer_points").click(); // was on → turn off
+      await sleep(50);
+      ok(ppLast("set_include_flag").args.name==="prayer_points" && ppLast("set_include_flag").args.enabled===false,
+         "PP C-004: toggling another switch off invokes set_include_flag{name:prayer_points,enabled:false}");
+      // Every one of the remaining flags fires with the correct snake_case name + toggled value
+      // (a wrong name string would be a silent no-op the 2-flag check above would miss).
+      ["scripture_extraction","chapter_markers","notable_quotations","short_summary"].forEach(function(nm){
+        var sw = el("pp-inc-"+nm), before = sw.checked;
+        sw.click(); // checkbox change fires synchronously → the invoke is recorded immediately
+        var last = ppLast("set_include_flag");
+        ok(last && last.args.name===nm && last.args.enabled===(!before),
+           "PP C-004: toggling '"+nm+"' invokes set_include_flag{name:"+nm+", enabled:"+(!before)+"}");
+      });
+      await sleep(40);
+      // (M2 — no-lie on host rejection) a REJECTED mutation must revert the optimistic switch to the
+      // backend-confirmed value (mutate() resyncs via providers_view), never leaving a lying toggle.
+      var rjBackend = window.__pp.include.short_summary; // authoritative value the backend keeps
+      ok(el("pp-inc-short_summary").checked === rjBackend, "PP C-004: (pre) the switch matches the backend value");
+      window.__ppRejectOnce = true;
+      el("pp-inc-short_summary").click(); // optimistic flip → host rejects → resync
+      await sleep(90);
+      ok(window.__pp.include.short_summary === rjBackend,
+         "PP C-004: a rejected set_include_flag leaves the BACKEND value unchanged");
+      ok(el("pp-inc-short_summary").checked === rjBackend,
+         "PP C-004 (M2): after a host rejection the switch REVERTS to the backend value (no silent lie)");
+
+      // (3) Generate — consent-gated end to end.
+      ok(el("pp-consent-notes") && el("pp-consent-notes").getAttribute("role")==="switch" && el("pp-consent-notes").checked===false,
+         "PP C-005: the cloud-notes consent switch reflects the backend (off) before opt-in");
+      // Generate with consent OFF → the backend returns consent_required → prompt to opt in.
+      window.__ppGen = "not_configured";
+      el("pp-generate").click();
+      await sleep(70);
+      var genRes = el("pp-gen-result");
+      ok(!!genRes && !genRes.hidden && genRes.getAttribute("role")==="alert" && /Turn on cloud processing/.test(genRes.textContent),
+         "PP C-005: Generate with consent off surfaces a consent_required prompt (role=alert)");
+      ok(!!el("pp-optin-retry"), "PP C-005: the consent_required prompt offers a one-click 'Opt in & generate'");
+      // Opt in & generate → grants notes consent then retries; the service is not configured → honest 'coming soon'.
+      el("pp-optin-retry").click();
+      await sleep(90);
+      ok(ppCall("set_cloud_consent").some(function(c){return c.args.kind==="notes" && c.args.enabled===true;}),
+         "PP C-005: 'Opt in & generate' grants cloud-notes consent (set_cloud_consent{notes,true})");
+      var genRes2 = el("pp-gen-result");
+      ok(!!genRes2 && genRes2.getAttribute("role")==="status" && /coming soon/i.test(genRes2.textContent),
+         "PP C-005: with consent on but the service not configured, Generate shows an honest 'coming soon'");
+      ok(el("pp-consent-notes").checked===true, "PP C-005: the consent switch now reflects the granted consent");
+      // Now simulate a configured service returning a draft.
+      window.__ppGen = "ok";
+      el("pp-generate").click();
+      await sleep(80);
+      var genOk = el("pp-gen-result");
+      ok(!!genOk && genOk.classList.contains("pp-gen-ok") && /Grace That Feeds/.test(genOk.textContent),
+         "PP C-005: a successful generation renders the returned draft (title + sections)");
+      ok(genOk.querySelectorAll(".pp-gen-list li").length > 0 && /Isaiah 61:5/.test(genOk.textContent),
+         "PP C-005: the draft renders section items + scriptures");
+      ok(/\/\s*40/.test(document.querySelector(".pp-quota").textContent) && /27 remaining/.test(document.querySelector(".pp-quota").textContent),
+         "PP C-006: a server-returned quota drives the meter (real numbers only, after a live response)");
+
+      // (C-005 — the terminal generate outcomes each surface honestly; consent is on from the opt-in above.)
+      window.__ppGen = "quota_exceeded"; el("pp-generate").click(); await sleep(70);
+      var gQ = el("pp-gen-result");
+      ok(gQ.getAttribute("role")==="alert" && /Monthly limit reached/.test(gQ.textContent),
+         "PP C-005: quota_exceeded surfaces 'Monthly limit reached' (role=alert)");
+      window.__ppGen = "transport"; el("pp-generate").click(); await sleep(70);
+      var gT = el("pp-gen-result");
+      ok(gT.getAttribute("role")==="alert" && /Couldn’t generate notes/.test(gT.textContent),
+         "PP C-005: a transport failure (rejected invoke) surfaces 'Couldn’t generate notes' (role=alert)");
+      window.__ppGen = "malformed"; el("pp-generate").click(); await sleep(70);
+      var gM = el("pp-gen-result");
+      ok(gM.getAttribute("role")==="alert" && /Couldn’t generate notes/.test(gM.textContent),
+         "PP C-005: a malformed response surfaces 'Couldn’t generate notes' (role=alert)");
+      // A degraded (local fallback) success renders the draft with a 'Local draft' badge — and,
+      // following the errors above, the result region is role=status, NOT a lingering alert (L1).
+      window.__ppGen = "degraded"; el("pp-generate").click(); await sleep(80);
+      var gD = el("pp-gen-result");
+      ok(gD.classList.contains("pp-gen-ok") && /Local draft/.test(gD.textContent),
+         "PP C-005: a degraded generation renders the draft with a 'Local draft' badge (FR-135)");
+      ok(gD.getAttribute("role")==="status",
+         "PP C-005 (L1): a success after an error is announced as role=status, not a lingering alert");
+      window.__ppGen = "ok"; // restore for any later reads
+
+      // (C-006 positive) flip the backend to a connected+quota state and re-activate: the pills + meter appear.
+      window.__pp.cloud_connected = true;
+      window.__pp.quota = {used:13, limit:40, remaining:27, resets_label:"Sep 1"};
+      document.querySelector('.nav-item[data-surface="settings"]').click();
+      await sleep(60);
+      var aiStatus2 = document.querySelector(".pp-ai-status");
+      ok(/Available/.test(aiStatus2.textContent) && /Cloud connected/.test(aiStatus2.textContent) && !/Coming soon/.test(aiStatus2.textContent),
+         "PP C-006: when cloud_connected=true the Available + Cloud-connected pills render (and 'Coming soon' is gone)");
+      var q2 = document.querySelector(".pp-quota");
+      ok(!q2.classList.contains("pp-quota-empty") && /13/.test(q2.textContent) && /\/\s*40/.test(q2.textContent),
+         "PP C-006: a real quota renders the used/limit meter");
+      window.__pp.cloud_connected = false; window.__pp.quota = null; // restore honest default
+
+      // (C-007) excluded sections are absent.
+      ok(!/Bring your own key/i.test(el("surface-settings").textContent) && !/Text-to-Speech/i.test(el("surface-settings").textContent) && !/BYOK/i.test(el("surface-settings").textContent),
+         "PP C-007: the excluded BYOK/Advanced row and Text-to-Speech section are NOT built");
+
+      // (C-008) layout robustness: the panel does not overflow horizontally past its surface.
+      var ss = el("surface-settings");
+      ok(ss.scrollWidth <= ss.clientWidth + 2, "PP C-008: the Settings body does not overflow horizontally (no sideways scroll)");
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
     el("__r").textContent = "RESULTS\n"+R.join("\n")+"\nDONE("+R.length+")";
   }
@@ -1848,7 +2602,7 @@ try:
     try:
         out = subprocess.run(
             [CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
-             "--virtual-time-budget=6000", "--dump-dom", "file://" + path],
+             "--virtual-time-budget=9000", "--dump-dom", "file://" + path],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=90).stdout
     except subprocess.TimeoutExpired:

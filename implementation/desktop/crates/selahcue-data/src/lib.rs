@@ -26,6 +26,7 @@ pub mod media_repo;
 pub mod migrations;
 pub mod output_repo;
 pub mod plan_repo;
+pub mod providers_repo;
 pub mod saved_theme_repo;
 pub mod screen_config_repo;
 pub mod screen_repo;

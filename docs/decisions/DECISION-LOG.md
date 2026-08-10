@@ -4,6 +4,87 @@ Durable record of material product/scope/architecture decisions, with traceabili
 
 ---
 
+## DEC-006 — Customer identity: self-hosted open-source IdP (Logto) via OIDC
+
+- **Date:** 2026-08-10
+- **Stage:** Customer-identity workstream (resolves the DEC-005 open IdP-technology sub-decision)
+- **Decided by:** User (product owner)
+- **Type:** Architecture (identity)
+- **Status:** DECIDED (technology direction) — implementation approach to be detailed in an ADR
+
+**Decision.** Customer sign-in / identity uses a **self-hostable open-source IdP** — **Logto** as the leading candidate (or a comparable OSS self-hostable IdP, e.g. Zitadel/Keycloak/Authentik/Ory) — integrated via **OIDC**. SelahCue self-hosts the IdP rather than adopting a paid managed provider or building auth from scratch.
+
+**User rationale.** "Use free alternatives… like Logto or something we can even host ourselves." Keeps church identities self-hosted (consistent with the privacy-first, offline-first, no-vendor-lock-in posture and DEC-004's self-hosted model), avoids per-user managed-IdP cost, and avoids owning/hardening bespoke auth code.
+
+**Implications (to be detailed in an ADR + decomposed into tasks).**
+- **Desktop** is a native OIDC client → Authorization Code + **PKCE** flow for account sign-in; the org **enrollment key** remains the secondary/offline-friendly activation path (DEC-004).
+- **Platform API** becomes an OIDC relying party / resource server: validate Logto-issued tokens, map the IdP subject → a SelahCue **CustomerOrg**/account; account-based device activation runs **alongside** the existing enrollment-key `/v1/activations`.
+- **Devops:** self-host + operate Logto (deployment, backup, upgrades, data-residency); auth is one-time online (activation), so offline-first still holds (offline entitlement = license window, DEC-005).
+- Session/token/refresh model, MFA/password-reset (provided by the IdP), and account↔org mapping to be specified in the ADR.
+
+**Still open (for the ADR/architecture).** Final IdP product choice (Logto vs alternatives) after a short evaluation; token-validation model (JWKS/introspection); account↔CustomerOrg mapping + multi-user-per-org roles; self-hosting topology + data residency; migration/coexistence with the enrollment-key path.
+
+**Reversibility.** OIDC is a standard interface, so the specific IdP product is swappable; the enrollment-key activation path already shipped remains valid regardless.
+
+---
+
+## DEC-005 — Account setup: build real customer sign-in / IdP now; offline entitlement = full license window (no separate grace)
+
+- **Date:** 2026-08-09
+- **Stage:** Account-setup / Platform API (post-DEC-004 licensing build)
+- **Decided by:** User (product owner)
+- **Type:** Product + architecture scope (builds on DEC-004)
+- **Status:** DECIDED
+
+**Decision.** For the Desktop **Account setup** flow:
+
+1. **Build real customer sign-in / IdP now** (not deferred). Account sign-in is the primary, shipped activation path; the org **enrollment key stays the secondary/OPTIONAL** bootstrap (per DEC-004). This adds a customer-identity workstream: customer accounts, authentication, sessions, and account-based device activation on the Platform API + a real sign-in on the desktop. (The design already leads with "Sign in to your SelahCue account" as primary; enrollment key is OPTIONAL.)
+2. **Offline entitlement = the full license validity window; no separate offline-grace timer/nudge.** The cached entitlement (device token) is valid until the license itself expires — the token-lifetime==license-window behaviour already built in the device-activation slice. Simplest model; never blocks presentation (NFR-024).
+
+**User rationale.** Chose "build real IdP now" over enrollment-key-first-defer, and "match full license window" over a 30-day/7-day grace, in the account-setup PM decision round.
+
+**Affected items.**
+- Reverses the enrollment-key-first *recommendation* — real sign-in/IdP is now in-scope (previously an open item in the Platform API README + account-setup handoff open-question #1).
+- Offline-grace open question (account-setup handoff #2) → RESOLVED: no separate grace; = license window.
+- New workstream (to be created): **customer identity / account authentication** (Platform API account surfaces + desktop sign-in) under the Platform API epic 86ajy5v6k — this is a substantial addition.
+- Desktop account-setup implementation now integrates a real sign-in path, not a "coming soon" affordance.
+
+**Still open (sub-decisions).** The **IdP technology** (build on Django auth for customer accounts vs adopt a managed IdP — Auth0/Clerk/Cognito/etc.), session/token model, password-reset/MFA, and pricing tiers (OD-04) — route to software-architect + product before building the customer-identity workstream.
+
+**Reversibility.** Reversible before the customer-identity workstream is built; the enrollment-key activation path already shipped remains valid as the secondary path regardless.
+
+---
+
+## DEC-004 — Licensing model: account-identity spine + activation-cached offline entitlement (hybrid)
+
+- **Date:** 2026-08-09
+- **Stage:** Platform API / licensing design (post-MVP monetisation track)
+- **Decided by:** User (product owner)
+- **Type:** Product / monetisation model (resolves a facet of OD-04 and the Platform API "Customer identity model" open decision)
+- **Status:** DECIDED
+
+**Decision.** SelahCue licensing uses an **account-identity spine with account-bound device *instances***, hardened for offline-first:
+
+1. **Account is the identity spine.** A church/org holds a SelahCue account; the plan defines a **device/instance limit**. Cloud features (AI sermon notes, cloud transcription, quota, billing, entitlements) are authenticated and metered against the account — consistent with [DEC-…/Providers & Privacy] "users go through SelahCue, no user keys".
+2. **Each install activates once (online) → the server registers a counted device instance and returns a signed, time-boxed entitlement policy cached on the device.** The app then runs **fully offline within an offline-grace window**, re-validating opportunistically when online. This preserves the offline-first guarantee (NFR-015, CON-2) and the never-blank-live-output invariant (NFR-024): a lapsed network or expired session must never block presentation at service time.
+3. **The app license key is demoted to an *optional org enrollment/bootstrap token*** (offline/bulk/reseller enrollment), **not** the primary licensed unit. The canonical unit is the account-bound device instance; `AppLicenseKey.device_limit` is reinterpreted as the plan's **instance limit**.
+
+**User rationale.** Chose the hybrid explicitly over pure key-only and pure sign-in-only. Account identity is needed for the cloud AI/quota/billing surfaces (already chosen for Providers & Privacy), but pure sign-in would break offline/air-gapped/low-connectivity church booths; the cached signed entitlement + offline grace reconciles the two.
+
+**Supporting evidence.** Offline-first + never-blank guarantees (PRD NFR-015, CON-2, NFR-024); volunteer-first, cross-platform incl. Linux, Global-South positioning (PRD §competitive, OD-04); the Platform API scaffold already models `activation → device token → entitlement manifest → license:refresh` and flags "policy envelope cryptographic suite" + "offline grace" as open owner decisions (`implementation/api/README.md`).
+
+**Affected items.**
+- OD-04 (pricing/positioning) → licensing *model* facet now DECIDED (hybrid); tier/price points still open.
+- Platform API "Customer identity model" open decision → resolved to account-spine + device-instance.
+- Device-activation slice (`POST /v1/activations`) → built as **account-instance registration issuing a device token** (+ a basic entitlement now; the *signed* offline policy-envelope crypto + real account sign-in/IdP remain open owner decisions, built as follow-ups).
+- `AppLicenseKey` reframed as an enrollment/bootstrap token; `device_limit` → instance limit.
+
+**Still open (owner/next):** account sign-in / customer IdP; policy-envelope cryptographic suite + key rotation; offline-grace duration; plan tiers + price points (OD-04 pricing facet).
+
+**Reversibility.** The activation mechanism (device token + cached entitlement) is model-agnostic; if the model changed, the enrollment path (key vs account session) and the instance-limit source would change, not the device-token/entitlement machinery.
+
+---
+
 ## DEC-003 — Slides & Media engine: build the authored-deck + media library, defer live video/audio render
 
 - **Date:** 2026-08-03

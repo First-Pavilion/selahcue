@@ -306,3 +306,58 @@ fn load_is_bounded_to_max_plan_items() {
         "reload is capped at MAX_PLAN_ITEMS"
     );
 }
+
+#[test]
+fn round_trips_a_linked_content_reference() {
+    // ADR-0020 follow-up: a plan item's linked content (scripture ref / deck / media)
+    // persists + reloads; an unlinked item reloads as `None`. Full PlanItem equality
+    // (incl. the new `content` field) covers it.
+    use selahcue_core::plan::ItemContent;
+    let db = Database::open_in_memory().unwrap();
+    let mut p = ServicePlan::new("Linked");
+    let scr = p.add_item(ItemKind::Scripture, "Romans");
+    let deck = p.add_item(ItemKind::SlideGroup, "Sermon");
+    let med = p.add_item(ItemKind::Media, "Testimony");
+    let _bare = p.add_item(ItemKind::Song, "Opening"); // stays unlinked
+    p.set_item_content(
+        scr,
+        Some(ItemContent::Scripture {
+            reference: "Romans 8:28-30".into(),
+            translation: Some("WEB".into()),
+            verses_per_slide: Some(2),
+        }),
+    )
+    .unwrap();
+    p.set_item_content(
+        deck,
+        Some(ItemContent::Deck {
+            deck_id: 17,
+            slide_count: None,
+        }),
+    )
+    .unwrap();
+    p.set_item_content(med, Some(ItemContent::Media { media_id: 4 }))
+        .unwrap();
+
+    let id = insert(&db, &p).unwrap();
+    let loaded = load(&db, id).unwrap();
+    assert_eq!(loaded, p, "every linked content reference round-trips");
+
+    // And it survives the atomic update/replace path too.
+    let mut edited = loaded;
+    edited
+        .set_item_content(
+            deck,
+            Some(ItemContent::Deck {
+                deck_id: 99,
+                slide_count: None,
+            }),
+        )
+        .unwrap();
+    plan_repo::update(&db, id, &edited).unwrap();
+    assert_eq!(
+        load(&db, id).unwrap(),
+        edited,
+        "update replaces the reference"
+    );
+}

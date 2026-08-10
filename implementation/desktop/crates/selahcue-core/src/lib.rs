@@ -13,6 +13,8 @@
 //! - [`timer`] — monotonic-clock timers with a TIME UP state (FR-054/065, NFR-022).
 //! - [`transcript`] — bounded, timestamped transcript segments + the STT provider seam
 //!   (R3; ADR-0010).
+//! - [`providers`] — Providers & Privacy settings/consent + the offline-by-default
+//!   egress gate and the note-generation seam (R3; FR-131/132/135/137).
 //! - [`detection`] — scripture-reference detection over the transcript stream (R4).
 
 #![forbid(unsafe_code)]
@@ -23,6 +25,7 @@
 pub mod detection;
 pub mod media;
 pub mod plan;
+pub mod providers;
 pub mod scripture;
 pub mod timer;
 pub mod transcript;

@@ -1,0 +1,198 @@
+import json
+
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_GET, require_POST
+
+from selahcue_api.apps.devices.services import (
+    ActivateDeviceData,
+    activate_device as _activate_device_service,
+    refresh_license as _refresh_license_service,
+)
+from selahcue_api.graphql.errors import ErrorCode, SAFE_MESSAGES, SafeAPIError
+from selahcue_api.graphql.redaction import assert_no_restricted_payload_fields
+
+
+# SafeAPIError renders itself only inside GraphQL; a plain /v1 Django view must translate its
+# code to an HTTP status. No prior HTTP precedent — this map is the slice's documented choice.
+_STATUS_BY_CODE = {
+    ErrorCode.UNAUTHENTICATED: 401,
+    ErrorCode.PERMISSION_DENIED: 403,
+    ErrorCode.VALIDATION_FAILED: 400,
+    ErrorCode.NOT_FOUND: 404,
+    ErrorCode.CONFLICT: 409,
+    ErrorCode.POLICY_DENIED: 403,
+    ErrorCode.RATE_LIMITED: 429,
+    ErrorCode.NOT_IMPLEMENTED: 501,
+}
+
+
+def command_error_response(*, code: ErrorCode, surface: str, operation: str) -> JsonResponse:
+    """A safe, coded JSON error for a /v1 command, in the same shape as the not-implemented
+    stub. Error payloads never carry secrets, so the redaction assertion is run over them."""
+    payload = {
+        "error": {"code": code.value, "message": SAFE_MESSAGES[code]},
+        "surface": surface,
+        "operation": operation,
+    }
+    assert_no_restricted_payload_fields(payload)
+    return JsonResponse(payload, status=_STATUS_BY_CODE.get(code, 400))
+
+
+def not_implemented_payload(*, surface: str, operation: str) -> dict:
+    payload = {
+        "error": {
+            "code": ErrorCode.NOT_IMPLEMENTED.value,
+            "message": SAFE_MESSAGES[ErrorCode.NOT_IMPLEMENTED],
+        },
+        "surface": surface,
+        "operation": operation,
+    }
+    assert_no_restricted_payload_fields(payload)
+    return payload
+
+
+def not_implemented_response(*, surface: str, operation: str) -> JsonResponse:
+    return JsonResponse(not_implemented_payload(surface=surface, operation=operation), status=501)
+
+
+@csrf_exempt
+@require_POST
+def activate_device(request):
+    """POST /v1/activations — register an account-bound device instance for a presented
+    enrollment key and return a show-once device token (DEC-004). Authenticated by the
+    presented key (`app_key_then_device_token`); the device is its own actor."""
+    try:
+        raw = json.loads(request.body.decode("utf-8") or "{}")
+    except (ValueError, UnicodeDecodeError):
+        return command_error_response(
+            code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation="activation"
+        )
+    if not isinstance(raw, dict):
+        return command_error_response(
+            code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation="activation"
+        )
+
+    data = ActivateDeviceData(
+        idempotency_key=str(raw.get("idempotency_key") or ""),
+        presented_key=str(raw.get("license_key") or ""),
+        device_fingerprint=str(raw.get("device_fingerprint") or ""),
+        platform=str(raw.get("platform") or ""),
+        app_version=str(raw.get("app_version") or ""),
+        display_name=str(raw.get("display_name") or ""),
+    )
+    try:
+        result = _activate_device_service(data)
+    except SafeAPIError as error:
+        return command_error_response(
+            code=error.code, surface="desktop", operation="activation"
+        )
+
+    token = result.device_token
+    # Success payload: the full token is the ONE legitimate place a device token leaves the
+    # system (show-once), so this payload is deliberately NOT run through the redaction assertion.
+    payload = {
+        "created": result.created,
+        "activation_token": result.full_token,  # None on idempotent replay
+        "device": {
+            "device_public_id": result.device.device_public_id,
+            "status": result.device.status,
+            "platform": result.device.platform,
+        },
+        "token": {
+            "masked": token.masked_token if token else None,
+            "prefix": token.token_prefix if token else None,
+            "suffix": token.token_suffix if token else None,
+            "fingerprint": token.token_fingerprint if token else None,
+            "expires_at": token.expires_at.isoformat() if token else None,
+        },
+        "license": {
+            "status": result.license_key.status,
+            "expires_at": result.license_key.expires_at.isoformat(),
+        },
+        "surface": "desktop",
+        "operation": "activation",
+    }
+    return JsonResponse(payload, status=200)
+
+
+def _device_bearer_token(request) -> str:
+    """The device token from `Authorization: Bearer <token>`, falling back to a JSON body
+    `{"device_token": ...}`. Returns "" when absent (→ UNAUTHENTICATED downstream)."""
+    auth = request.headers.get("Authorization", "")
+    # RFC 7235: the auth-scheme is case-insensitive.
+    if auth[:7].lower() == "bearer ":
+        return auth[7:].strip()
+    try:
+        body = json.loads(request.body.decode("utf-8") or "{}")
+    except (ValueError, UnicodeDecodeError):
+        return ""
+    if isinstance(body, dict):
+        return str(body.get("device_token") or "")
+    return ""
+
+
+@csrf_exempt
+@require_POST
+def refresh_license(request):
+    """POST /v1/license:refresh — an authenticated device reads its current license/entitlement
+    status to refresh its cached offline entitlement (DEC-004). Pure read; device-token auth."""
+    try:
+        result = _refresh_license_service(_device_bearer_token(request))
+    except SafeAPIError as error:
+        return command_error_response(
+            code=error.code, surface="desktop", operation="license_refresh"
+        )
+    payload = {
+        "device": {
+            "device_public_id": result.device_public_id,
+            "status": result.device_status,
+        },
+        "license": {
+            "status": result.license_status,
+            "starts_at": result.license_starts_at,
+            "expires_at": result.license_expires_at,
+            "valid_now": result.license_valid_now,
+        },
+        "instances": {"used": result.instances_used, "limit": result.instances_limit},
+        "token": {"expires_at": result.token_expires_at},
+        "entitlement": {
+            "feature_scope": result.feature_scope,
+            "territory": result.territory,
+        },
+        "surface": "desktop",
+        "operation": "license_refresh",
+    }
+    # Refresh returns only status (no token material), so — unlike the activation payload — it is
+    # safe to run the redaction guard as defense-in-depth against a future field addition.
+    assert_no_restricted_payload_fields(payload)
+    return JsonResponse(payload, status=200)
+
+
+@require_GET
+def entitlement_manifest_not_implemented(request):
+    return not_implemented_response(surface="desktop", operation="entitlement_manifest")
+
+
+@csrf_exempt
+@require_POST
+def download_prepare_not_implemented(request):
+    return not_implemented_response(surface="desktop", operation="download_prepare")
+
+
+@csrf_exempt
+@require_POST
+def download_complete_not_implemented(request, lease_id: str):
+    return not_implemented_response(surface="desktop", operation="download_complete")
+
+
+@csrf_exempt
+@require_POST
+def usage_events_not_implemented(request):
+    return not_implemented_response(surface="desktop", operation="usage_events")
+
+
+@csrf_exempt
+@require_POST
+def billing_webhook_not_implemented(request, provider: str):
+    return not_implemented_response(surface="billing_provider", operation="billing_webhook")

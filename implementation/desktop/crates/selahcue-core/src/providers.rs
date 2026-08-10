@@ -1,0 +1,432 @@
+//! Providers & Privacy domain: where transcription and AI sermon-notes run, and
+//! what — if anything — leaves the device (R3; FR-131/132/135/137, NFR-018, CON-5).
+//!
+//! This module is **pure, deterministic, no I/O** — like the rest of the core it
+//! reads no clock, opens no socket, and never panics on untrusted input
+//! (`from_kv` tolerates missing/garbage values by falling back to the safe
+//! default). It owns three things:
+//!
+//! 1. The **settings** an operator chooses ([`ProvidersSettings`]) and the
+//!    **consent** state that ungates cloud egress ([`ConsentState`]), bundled as
+//!    [`ProvidersConfig`] with a `(key, value)` persistence mapping (the repo layer
+//!    stores those pairs exactly like `saved_theme_repo`).
+//! 2. The **privacy invariants** as testable pure functions:
+//!    [`ProvidersConfig::may_stream_cloud_audio`] and
+//!    [`ProvidersConfig::build_note_request`] — the single choke points that decide
+//!    whether anything may leave the device. **Offline by default**: cloud is OFF
+//!    until a per-provider opt-in is set, and a note request is only ever built on
+//!    an explicit Generate and only ever carries the *completed transcript text* —
+//!    there is no audio field, so live audio can never be sent (FR-132: "only your
+//!    completed transcript … never live audio").
+//! 3. The [`NoteProvider`] seam (parallel to [`crate::transcript::TranscriptProvider`])
+//!    behind which the SelahCue-hosted cloud client — or a local fallback — plugs in
+//!    without the core depending on any network runtime.
+
+/// Where live transcription runs. Default is [`TranscriptionMode::OnDevice`]
+/// (Whisper, offline — audio never leaves the machine, FR-101).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TranscriptionMode {
+    /// On-device Whisper. Private; works offline; the always-safe default.
+    #[default]
+    OnDevice,
+    /// A cloud speech service. Streams live microphone audio while active, so it is
+    /// gated behind [`ConsentState::cloud_transcription`] and only ever effective
+    /// when that opt-in is set (see [`ProvidersConfig::may_stream_cloud_audio`]).
+    Cloud,
+}
+
+impl TranscriptionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TranscriptionMode::OnDevice => "on_device",
+            TranscriptionMode::Cloud => "cloud",
+        }
+    }
+
+    /// Parse, tolerating anything unknown by returning the safe default (never panics).
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "cloud" => TranscriptionMode::Cloud,
+            _ => TranscriptionMode::OnDevice,
+        }
+    }
+}
+
+/// The sermon-notes template an operator prefers. Open set kept small and typed so
+/// the value round-trips through persistence and the cloud contract deterministically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NotesTemplate {
+    /// Full outline with in-line scripture references (the design default).
+    #[default]
+    FullOutlineWithScriptures,
+    /// Full outline without scriptures interleaved.
+    FullOutline,
+    /// A concise summary only.
+    Summary,
+    /// A short devotional treatment.
+    Devotional,
+}
+
+impl NotesTemplate {
+    /// Every variant (stable order) — for populating a picker.
+    pub const ALL: [NotesTemplate; 4] = [
+        NotesTemplate::FullOutlineWithScriptures,
+        NotesTemplate::FullOutline,
+        NotesTemplate::Summary,
+        NotesTemplate::Devotional,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NotesTemplate::FullOutlineWithScriptures => "full_outline_scriptures",
+            NotesTemplate::FullOutline => "full_outline",
+            NotesTemplate::Summary => "summary",
+            NotesTemplate::Devotional => "devotional",
+        }
+    }
+
+    /// A human-readable label (matches the design copy).
+    pub fn label(self) -> &'static str {
+        match self {
+            NotesTemplate::FullOutlineWithScriptures => "Full outline + scriptures",
+            NotesTemplate::FullOutline => "Full outline",
+            NotesTemplate::Summary => "Summary",
+            NotesTemplate::Devotional => "Devotional",
+        }
+    }
+
+    /// Parse, tolerating unknown values by returning the default (never panics).
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "full_outline" => NotesTemplate::FullOutline,
+            "summary" => NotesTemplate::Summary,
+            "devotional" => NotesTemplate::Devotional,
+            _ => NotesTemplate::FullOutlineWithScriptures,
+        }
+    }
+}
+
+/// Upper bound on the stored translation code — a short code like `KJV`/`WEBBE`.
+/// Bounds a wire-legal but absurd value (no unbounded memory via settings).
+pub const MAX_TRANSLATION_CODE_LEN: usize = 16;
+
+/// Which sections the AI sermon notes should include. Defaults match the design
+/// (social excerpts OFF by default; the rest ON).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IncludeInNotes {
+    pub prayer_points: bool,
+    pub scripture_extraction: bool,
+    pub social_excerpts: bool,
+    pub chapter_markers: bool,
+    pub notable_quotations: bool,
+    pub short_summary: bool,
+}
+
+impl Default for IncludeInNotes {
+    fn default() -> Self {
+        IncludeInNotes {
+            prayer_points: true,
+            scripture_extraction: true,
+            social_excerpts: false,
+            chapter_markers: true,
+            notable_quotations: true,
+            short_summary: true,
+        }
+    }
+}
+
+/// Operator-chosen Providers & Privacy settings (no consent here — consent lives in
+/// [`ConsentState`] so the egress gate reads only from one place).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvidersSettings {
+    pub transcription_mode: TranscriptionMode,
+    pub notes_template: NotesTemplate,
+    /// Preferred Bible translation code (e.g. `"KJV"`); validated for length here and
+    /// against the installed translation set by the caller.
+    pub preferred_translation: String,
+    pub include: IncludeInNotes,
+}
+
+impl Default for ProvidersSettings {
+    fn default() -> Self {
+        ProvidersSettings {
+            transcription_mode: TranscriptionMode::default(),
+            notes_template: NotesTemplate::default(),
+            // KJV matches the shipped `selahcue-scripture` default and the design.
+            preferred_translation: "KJV".to_string(),
+            include: IncludeInNotes::default(),
+        }
+    }
+}
+
+/// Per-provider cloud opt-in. **Everything defaults to `false`** — the app is offline
+/// by default and no audio/transcript/notes leave the host until one of these is set
+/// (CON-5, FR-132, NFR-018). Changing consent is Administrator-gated at the command
+/// layer (FR-137); this struct is the persisted truth the egress gate reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ConsentState {
+    /// Opt-in to streaming live microphone audio to a cloud speech service.
+    pub cloud_transcription: bool,
+    /// Opt-in to sending the completed transcript to the SelahCue cloud for notes.
+    pub cloud_notes: bool,
+}
+
+impl ConsentState {
+    /// True when *any* cloud egress is permitted — drives the "cloud active" style
+    /// disclosure. When false the app is fully offline.
+    pub fn any_cloud_enabled(self) -> bool {
+        self.cloud_transcription || self.cloud_notes
+    }
+}
+
+/// Options carried on a note-generation request — derived purely from settings.
+/// Deliberately contains no audio and no secrets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteOptions {
+    pub template: NotesTemplate,
+    pub preferred_translation: String,
+    pub include: IncludeInNotes,
+}
+
+impl NoteOptions {
+    pub fn from_settings(s: &ProvidersSettings) -> Self {
+        NoteOptions {
+            template: s.notes_template,
+            preferred_translation: s.preferred_translation.clone(),
+            include: s.include,
+        }
+    }
+}
+
+/// A note-generation request. **Carries only the completed transcript text** — there
+/// is no audio field by construction, so live audio can never be sent (FR-132). Built
+/// only by [`ProvidersConfig::build_note_request`], only on an explicit Generate, and
+/// only once cloud-notes consent is set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteRequest {
+    /// The operator's completed transcript (post-service), never live audio.
+    pub transcript: String,
+    pub options: NoteOptions,
+}
+
+/// One structured section of a generated sermon-note draft.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NoteSection {
+    pub heading: String,
+    pub items: Vec<String>,
+}
+
+/// A generated sermon-note draft. Always labelled AI-generated by the UI (FR-123);
+/// never overwrites the source transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NoteDraft {
+    pub title: String,
+    pub summary: Option<String>,
+    pub sections: Vec<NoteSection>,
+    /// Extracted scripture references (present only when `include.scripture_extraction`).
+    pub scriptures: Vec<String>,
+}
+
+/// Why a note generation could not proceed. Stable, actionable, and — importantly —
+/// carries no secret or transcript content in its message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoteError {
+    /// Cloud-notes consent is not set — nothing was sent.
+    ConsentRequired,
+    /// The cloud provider has no endpoint/account configured — nothing was sent.
+    NotConfigured,
+    /// The monthly quota is exhausted.
+    QuotaExceeded,
+    /// A transport/network failure reaching the provider.
+    Transport(String),
+    /// The provider returned a malformed/unusable response.
+    Malformed(String),
+}
+
+impl core::fmt::Display for NoteError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            NoteError::ConsentRequired => write!(f, "cloud notes consent is required"),
+            NoteError::NotConfigured => write!(f, "cloud notes provider is not configured"),
+            NoteError::QuotaExceeded => write!(f, "monthly note-generation quota exceeded"),
+            NoteError::Transport(e) => write!(f, "note provider transport error: {e}"),
+            NoteError::Malformed(e) => {
+                write!(f, "note provider returned a malformed response: {e}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NoteError {}
+
+/// The monthly note-generation quota, as reported by the provider. Server-owned; the
+/// client only displays it. `remaining` is derived, never trusted from the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Quota {
+    pub used: u32,
+    pub limit: u32,
+    /// A human-readable reset label as supplied by the provider (e.g. `"Sep 1"`).
+    pub resets_label: String,
+}
+
+impl Quota {
+    /// Generations left this period (saturating; never underflows).
+    pub fn remaining(&self) -> u32 {
+        self.limit.saturating_sub(self.used)
+    }
+
+    /// True when no generations remain.
+    pub fn is_exhausted(&self) -> bool {
+        self.remaining() == 0
+    }
+}
+
+/// The note-generation seam. A cloud client (SelahCue-hosted) or a local fallback
+/// implements this; the core never depends on a network runtime.
+pub trait NoteProvider {
+    /// A stable, human-readable provider name for honest disclosure (FR-120/123).
+    fn label(&self) -> &str;
+
+    /// Generate a draft from an already-consent-gated request. Implementations must
+    /// not perform egress for anything not present in `req` (only the completed
+    /// transcript + options are ever sent).
+    fn generate(&self, req: &NoteRequest) -> std::result::Result<NoteDraft, NoteError>;
+}
+
+/// Settings + consent together — the single value the repo persists and the egress
+/// gate reads.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProvidersConfig {
+    pub settings: ProvidersSettings,
+    pub consent: ConsentState,
+}
+
+// Persistence keys — one flat `(key, value)` set stored exactly like `saved_theme`.
+const K_MODE: &str = "transcription_mode";
+const K_TEMPLATE: &str = "notes_template";
+const K_TRANSLATION: &str = "preferred_translation";
+const K_INC_PRAYER: &str = "include.prayer_points";
+const K_INC_SCRIPTURE: &str = "include.scripture_extraction";
+const K_INC_SOCIAL: &str = "include.social_excerpts";
+const K_INC_CHAPTER: &str = "include.chapter_markers";
+const K_INC_QUOTES: &str = "include.notable_quotations";
+const K_INC_SUMMARY: &str = "include.short_summary";
+const K_CONSENT_TRANSCRIPTION: &str = "consent.cloud_transcription";
+const K_CONSENT_NOTES: &str = "consent.cloud_notes";
+
+fn bool_str(b: bool) -> String {
+    if b { "true" } else { "false" }.to_string()
+}
+
+/// Parse a persisted bool, defaulting to `default` for anything unrecognised.
+fn parse_bool(s: &str, default: bool) -> bool {
+    match s {
+        "true" => true,
+        "false" => false,
+        _ => default,
+    }
+}
+
+fn bounded(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+impl ProvidersConfig {
+    /// Serialise to the flat `(key, value)` pairs the repo persists (stable order).
+    pub fn to_kv(&self) -> Vec<(String, String)> {
+        let s = &self.settings;
+        let i = &s.include;
+        let c = &self.consent;
+        vec![
+            (K_MODE.into(), s.transcription_mode.as_str().into()),
+            (K_TEMPLATE.into(), s.notes_template.as_str().into()),
+            (K_TRANSLATION.into(), s.preferred_translation.clone()),
+            (K_INC_PRAYER.into(), bool_str(i.prayer_points)),
+            (K_INC_SCRIPTURE.into(), bool_str(i.scripture_extraction)),
+            (K_INC_SOCIAL.into(), bool_str(i.social_excerpts)),
+            (K_INC_CHAPTER.into(), bool_str(i.chapter_markers)),
+            (K_INC_QUOTES.into(), bool_str(i.notable_quotations)),
+            (K_INC_SUMMARY.into(), bool_str(i.short_summary)),
+            (
+                K_CONSENT_TRANSCRIPTION.into(),
+                bool_str(c.cloud_transcription),
+            ),
+            (K_CONSENT_NOTES.into(), bool_str(c.cloud_notes)),
+        ]
+    }
+
+    /// Rebuild from persisted pairs. **Tolerant by construction**: unknown keys are
+    /// ignored and any missing/garbage value falls back to the safe default — so a
+    /// truncated or hand-edited store can never panic and can never silently *enable*
+    /// cloud egress (a bad consent value parses back to `false`).
+    pub fn from_kv<I, K, V>(pairs: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
+        let mut cfg = ProvidersConfig::default();
+        for (k, v) in pairs {
+            let (k, v) = (k.as_ref(), v.as_ref());
+            match k {
+                K_MODE => cfg.settings.transcription_mode = TranscriptionMode::parse(v),
+                K_TEMPLATE => cfg.settings.notes_template = NotesTemplate::parse(v),
+                K_TRANSLATION => {
+                    cfg.settings.preferred_translation = bounded(v, MAX_TRANSLATION_CODE_LEN)
+                }
+                K_INC_PRAYER => cfg.settings.include.prayer_points = parse_bool(v, true),
+                K_INC_SCRIPTURE => cfg.settings.include.scripture_extraction = parse_bool(v, true),
+                K_INC_SOCIAL => cfg.settings.include.social_excerpts = parse_bool(v, false),
+                K_INC_CHAPTER => cfg.settings.include.chapter_markers = parse_bool(v, true),
+                K_INC_QUOTES => cfg.settings.include.notable_quotations = parse_bool(v, true),
+                K_INC_SUMMARY => cfg.settings.include.short_summary = parse_bool(v, true),
+                // Consent defaults to false for anything not explicitly "true".
+                K_CONSENT_TRANSCRIPTION => cfg.consent.cloud_transcription = parse_bool(v, false),
+                K_CONSENT_NOTES => cfg.consent.cloud_notes = parse_bool(v, false),
+                _ => {} // unknown key — ignore (forward/backward tolerant)
+            }
+        }
+        cfg
+    }
+
+    // ---- Privacy invariants (the egress choke points) ----
+
+    /// Whether live microphone audio may be streamed to a cloud speech service.
+    /// Requires **both** the Cloud transcription mode **and** the opt-in — so the
+    /// default config (OnDevice, no consent) can never stream audio.
+    pub fn may_stream_cloud_audio(&self) -> bool {
+        self.settings.transcription_mode == TranscriptionMode::Cloud
+            && self.consent.cloud_transcription
+    }
+
+    /// Build a consent-gated note-generation request, or explain why not.
+    ///
+    /// - `generate_pressed` models the design's "Nothing is sent until you press
+    ///   Generate": callers pass `true` only from the explicit Generate action.
+    /// - Returns [`NoteError::ConsentRequired`] unless cloud-notes consent is set
+    ///   **and** Generate was pressed.
+    /// - The returned request carries only the completed `transcript` text; there is
+    ///   no path by which live audio can be included.
+    pub fn build_note_request(
+        &self,
+        transcript: &str,
+        generate_pressed: bool,
+    ) -> std::result::Result<NoteRequest, NoteError> {
+        if !self.consent.cloud_notes || !generate_pressed {
+            return Err(NoteError::ConsentRequired);
+        }
+        Ok(NoteRequest {
+            transcript: transcript.to_string(),
+            options: NoteOptions::from_settings(&self.settings),
+        })
+    }
+}
+
+// Tests live in `tests/test_providers.rs` (public-API integration tests).

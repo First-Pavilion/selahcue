@@ -634,7 +634,9 @@ fn operator_presentation_media_surface_is_wired() {
     for needle in [
         // The exact APP_SURFACES + SURFACE_LABEL registration (a bare "presentation" would be a
         // tautology — the word appears many times; these prove the surface is really registered).
-        "\"console\", \"presentation\"",
+        // Adjacency to the following surface (robust to a new surface being inserted before it,
+        // e.g. "preservice" landing between "console" and "presentation" in commit 4585683).
+        "\"presentation\", \"theme-designer\"",
         "presentation: \"Presentation\"",
         "renderPresentation",
         "render_deck_slide", // native slide preview

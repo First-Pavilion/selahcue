@@ -14,6 +14,11 @@
 //! (devices are approved/denied from the operator console). Quit via the window close button.
 
 #![forbid(unsafe_code)]
+// In release builds on Windows, run as a GUI app so no console window appears behind the
+// audience output when the operator auto-launches this binary. No effect on other platforms or in
+// debug builds (dev keeps the console banner). The endpoint file — not stdout — is how the operator
+// discovers this window, so suppressing the console changes no behaviour.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod guard;
 #[cfg(feature = "encryption")]

@@ -8,3 +8,4 @@
 # the webview frontend under dist/ IS hand-written source and must be tracked.
 !/dist/
 !/dist/**
+binaries/

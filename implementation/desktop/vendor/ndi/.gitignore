@@ -7,3 +7,10 @@
 # Keep this dir and its docs tracked.
 !README.md
 !.gitignore
+
+# The Windows NDI HEADERS are committed so CI can build `--features ndi`. The runtime DLL and the
+# generated import lib are produced ON the CI runner from the public NDI runtime redistributable
+# (ndi.link/NDIRedistV6) — never committed. (macOS/Linux payloads stay ignored / fetched via
+# scripts/fetch_ndi_sdk.sh.)
+!windows/
+!windows/include/

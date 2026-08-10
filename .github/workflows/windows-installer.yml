@@ -1,0 +1,117 @@
+# Manual, on-demand build of the downloadable Windows installer bundling the operator console +
+# native output window, with NDI broadcast (--features ndi) and on-device STT (--features stt).
+# Kept OUT of the push/PR matrix (workflow_dispatch only) so it never slows normal CI and only runs
+# when someone clicks "Run workflow".
+#
+# NDI is self-provisioned from PUBLIC sources — no licence-gated developer SDK download needed:
+#   * headers  -> committed under implementation/desktop/vendor/ndi/windows/include
+#   * runtime DLL -> fetched from the public NDI runtime redistributable (ndi.link/NDIRedistV6)
+#   * import .lib -> generated on the runner from the DLL's exports (dumpbin -> .def -> lib)
+name: windows-installer
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: build Windows installer (NDI + STT)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: implementation/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            implementation/desktop
+            implementation/desktop/crates/selahcue-operator
+      # MSVC dev shell so dumpbin + lib (used to generate the NDI import library) are on PATH.
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      # whisper-rs (STT) compiles whisper.cpp: needs cmake + libclang (bindgen). windows-latest
+      # ships both; assert them and export LIBCLANG_PATH so a future image change fails fast here
+      # rather than deep inside the build.
+      - name: Verify STT build deps (cmake + libclang)
+        shell: pwsh
+        run: |
+          cmake --version
+          $llvm = Join-Path $env:ProgramFiles "LLVM\bin"
+          if (-not (Test-Path $llvm)) { throw "LLVM/libclang not found at $llvm" }
+          "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # Self-provision NDI from public sources into a scratch NDI_SDK_DIR (headers + generated
+      # import lib + runtime DLL). grafton-ndi's build.rs reads NDI_SDK_DIR at compile time.
+      - name: Provision NDI (public runtime + generated import lib)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sdk = Join-Path $env:RUNNER_TEMP "ndi-sdk"
+          $inc = Join-Path $sdk "include"
+          $lib = Join-Path $sdk "lib\x64"
+          New-Item -ItemType Directory -Force -Path $inc, $lib | Out-Null
+
+          # 1) Headers (committed, identical across platforms).
+          Copy-Item vendor/ndi/windows/include/*.h $inc -Force
+
+          # 2) Runtime DLL from the PUBLIC NDI runtime redistributable.
+          $rt = Join-Path $env:RUNNER_TEMP "ndi_runtime.exe"
+          Invoke-WebRequest -Uri "https://ndi.link/NDIRedistV6" -OutFile $rt
+          $dll = $null
+          $extract = Join-Path $env:RUNNER_TEMP "ndi_extract"
+          $sevenzip = "C:\Program Files\7-Zip\7z.exe"
+          if (Test-Path $sevenzip) {
+            & $sevenzip x $rt "-o$extract" -y | Out-Null
+            $dll = Get-ChildItem $extract -Recurse -Filter "Processing.NDI.Lib.x64.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $dll) {
+            # Fallback: silent-install the runtime (Inno Setup) and copy the DLL from Program Files.
+            Start-Process -FilePath $rt -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+            $dll = Get-ChildItem "C:\Program Files\NDI" -Recurse -Filter "Processing.NDI.Lib.x64.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $dll) { throw "Could not obtain Processing.NDI.Lib.x64.dll from the NDI runtime redistributable." }
+          Copy-Item $dll.FullName (Join-Path $lib "Processing.NDI.Lib.x64.dll") -Force
+
+          # 3) Generate the import library from the DLL's exports (dumpbin -> .def -> lib).
+          Push-Location $lib
+          $exports = dumpbin /nologo /exports "Processing.NDI.Lib.x64.dll"
+          $names = $exports | ForEach-Object {
+            if ($_ -match '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\S+)') { $matches[1] }
+          } | Where-Object { $_ }
+          if (-not $names) { throw "No exports parsed from the NDI DLL." }
+          (@("EXPORTS") + $names) | Set-Content -Encoding ASCII "Processing.NDI.Lib.x64.def"
+          lib /nologo /def:"Processing.NDI.Lib.x64.def" /machine:x64 /out:"Processing.NDI.Lib.x64.lib"
+          Pop-Location
+          if (-not (Test-Path (Join-Path $lib "Processing.NDI.Lib.x64.lib"))) { throw "Import lib generation failed." }
+
+          "NDI_SDK_DIR=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "NDI provisioned at $sdk ($($names.Count) exports)"
+
+      - name: Build output window (--features ndi)
+        shell: pwsh
+        run: cargo build --release -p selahcue-desktop --features ndi
+
+      - name: Stage the output window as the operator sidecar + NDI DLL
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path crates/selahcue-operator/binaries | Out-Null
+          Copy-Item target/release/selahcue-output.exe `
+            crates/selahcue-operator/binaries/selahcue-output-x86_64-pc-windows-msvc.exe -Force
+          Copy-Item (Join-Path $env:NDI_SDK_DIR "lib\x64\Processing.NDI.Lib.x64.dll") `
+            crates/selahcue-operator/binaries/Processing.NDI.Lib.x64.dll -Force
+
+      - name: Install Tauri CLI v2
+        run: cargo install tauri-cli --version "^2.0" --locked
+
+      - name: Build the installer (--features stt)
+        working-directory: implementation/desktop/crates/selahcue-operator
+        run: cargo tauri build --features stt
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: selahcue-windows-installer
+          path: implementation/desktop/crates/selahcue-operator/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

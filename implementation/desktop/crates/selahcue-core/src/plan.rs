@@ -58,6 +58,117 @@ pub struct Stanza {
     pub lines: Vec<String>,
 }
 
+/// A content reference linked to a plan item — the passage a Scripture item shows,
+/// the deck a Presentation (slide-group) item shows, or the asset a Media item
+/// shows (FR-002 · ADR-0020 follow-up). `None` on a [`PlanItem`] = today's
+/// title-only / stanza behaviour (an *unlinked* item).
+///
+/// Held with **core-visible primitives only** (a canonical reference `String`,
+/// and plain `u64` ids that map to `present::DeckId` / `core::media::MediaId` at
+/// the boundary) so this pure domain layer neither serializes a non-serde
+/// [`crate::scripture::Reference`] nor depends upward on the presentation crate.
+/// The reference is re-parsed on use via [`crate::scripture::parse_one`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ItemContent {
+    /// A linked scripture passage: the canonical reference (e.g. `"Romans 8:28-30"`),
+    /// an optional bundled-translation code (`None` = the plan's default), and an
+    /// optional verses-per-slide override (FR-026 · FR-029).
+    Scripture {
+        reference: String,
+        translation: Option<String>,
+        verses_per_slide: Option<u16>,
+    },
+    /// A linked presentation deck by its library id (maps to `present::DeckId`).
+    /// `slide_count` is the deck's slide count as known by the deck-owning operator at link time
+    /// (the host has no deck store, so it cannot derive it) — `None` for a legacy link or before
+    /// the operator syncs it. It lets a deck presentation report its true slide count / stage a
+    /// specific within-item slide (the Live Console slide picker) rather than collapsing to one slide.
+    Deck {
+        deck_id: u64,
+        slide_count: Option<u32>,
+    },
+    /// A linked media asset by its library id (maps to `core::media::MediaId`).
+    Media { media_id: u64 },
+}
+
+/// Neutralise any control character (especially TAB/CR/LF) in a codec text field by replacing it
+/// with a space. Fields are TAB-delimited, so a stray TAB in a value would shift the field
+/// boundaries on [`ItemContent::decode`] and silently corrupt the round-trip (e.g. a wire-supplied
+/// reference `"Romans 8:28\tKJV"` hijacking the translation field). Scripture references never
+/// legitimately contain control characters, so this makes the "no TAB in a field" invariant true
+/// rather than merely assumed.
+fn sanitize_field(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+impl ItemContent {
+    /// Serialize to a stable, reversible, single-line string for persistence
+    /// (the data layer stores this opaque value in one column — keeping the codec
+    /// pure and in the domain, with no serde in core). Fields are TAB-separated; text fields are
+    /// [`sanitize_field`]-cleaned of control chars so the round-trip is always lossless.
+    pub fn encode(&self) -> String {
+        match self {
+            ItemContent::Scripture {
+                reference,
+                translation,
+                verses_per_slide,
+            } => format!(
+                "scripture\t{}\t{}\t{}",
+                sanitize_field(reference),
+                translation
+                    .as_deref()
+                    .map(sanitize_field)
+                    .unwrap_or_default(),
+                verses_per_slide.map(|v| v.to_string()).unwrap_or_default(),
+            ),
+            ItemContent::Deck {
+                deck_id,
+                slide_count,
+            } => format!(
+                "deck\t{deck_id}\t{}",
+                slide_count.map(|c| c.to_string()).unwrap_or_default()
+            ),
+            ItemContent::Media { media_id } => format!("media\t{media_id}"),
+        }
+    }
+
+    /// Inverse of [`ItemContent::encode`]. Total — any input returns `None` rather
+    /// than panicking (it runs on persisted, possibly-corrupt data). An unparseable
+    /// numeric id or an unknown tag yields `None` (the item loads unlinked).
+    pub fn decode(s: &str) -> Option<ItemContent> {
+        let mut parts = s.split('\t');
+        match parts.next()? {
+            "scripture" => {
+                let reference = parts.next()?.to_string();
+                let translation = parts.next().filter(|t| !t.is_empty()).map(str::to_string);
+                let verses_per_slide = parts
+                    .next()
+                    .filter(|v| !v.is_empty())
+                    .and_then(|v| v.parse().ok());
+                Some(ItemContent::Scripture {
+                    reference,
+                    translation,
+                    verses_per_slide,
+                })
+            }
+            "deck" => Some(ItemContent::Deck {
+                deck_id: parts.next()?.parse().ok()?,
+                // Back-compat: a legacy `deck\t{id}` (no third field) decodes to `None`.
+                slide_count: parts
+                    .next()
+                    .filter(|c| !c.is_empty())
+                    .and_then(|c| c.parse().ok()),
+            }),
+            "media" => Some(ItemContent::Media {
+                media_id: parts.next()?.parse().ok()?,
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// One ordered entry in a service plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanItem {
@@ -75,12 +186,29 @@ pub struct PlanItem {
     /// the audience output renders THIS item on that template instead of the global
     /// theme; `None` = use the global theme (the pre-8-3d behaviour for every item).
     pub theme: Option<String>,
+    /// Optional linked content — the scripture passage, deck, or media asset this
+    /// item shows (ADR-0020 follow-up). `None` = an *unlinked* / title-only item,
+    /// which is exactly the pre-content-reference behaviour for every existing item.
+    pub content: Option<ItemContent>,
 }
 
 impl PlanItem {
-    /// How many slides this item presents as (a title-only item is one slide).
+    /// How many slides this item presents as (a title-only item is one slide). A deck-linked
+    /// presentation reports the deck's slide count as synced by the operator (the host has no deck
+    /// store); a legacy/unsynced deck link falls back to one slide until the operator syncs it.
     pub fn slide_count(&self) -> usize {
-        self.stanzas.len().max(1)
+        match &self.content {
+            Some(ItemContent::Deck {
+                slide_count: Some(c),
+                ..
+            }) => (*c as usize).max(1),
+            // A scripture link renders as a single passage slide (the presenter's `item_slide`
+            // returns one scripture slide regardless of index), so it counts as one — even if the
+            // item also carries stanzas. Otherwise the picker would advertise N slides that all
+            // render the same passage, and LIVE/PREVIEW cursors would be meaningless for the item.
+            Some(ItemContent::Scripture { .. }) => 1,
+            _ => self.stanzas.len().max(1),
+        }
     }
 }
 
@@ -168,6 +296,7 @@ impl ServicePlan {
             owner: None,
             stanzas: Vec::new(),
             theme: None,
+            content: None,
         });
         id
     }
@@ -192,6 +321,7 @@ impl ServicePlan {
                 owner: None,
                 stanzas: Vec::new(),
                 theme: None,
+                content: None,
             },
         );
         id
@@ -234,6 +364,81 @@ impl ServicePlan {
             }
             None => Err(PlanError::NotFound(id)),
         }
+    }
+
+    /// Set (or clear, with `None`) an item's linked content — the scripture passage,
+    /// deck, or media asset it shows (ADR-0020 follow-up). A `Scripture` link whose
+    /// `reference` is blank is treated as *unlinked* (`None`), so an item can't be
+    /// left half-linked. Returns `NotFound` if no item has that id.
+    pub fn set_item_content(
+        &mut self,
+        id: ItemId,
+        content: Option<ItemContent>,
+    ) -> Result<(), PlanError> {
+        let normalized = match content {
+            Some(ItemContent::Scripture { reference, .. }) if reference.trim().is_empty() => None,
+            other => other,
+        };
+        match self.get_mut(id) {
+            Some(item) => {
+                item.content = normalized;
+                Ok(())
+            }
+            None => Err(PlanError::NotFound(id)),
+        }
+    }
+
+    /// Set (or clear, with `None`) an item's responsible owner/role (FR-004). A blank string is
+    /// treated as unassigned (`None`). Returns `NotFound` if no item has that id.
+    pub fn set_item_owner(&mut self, id: ItemId, owner: Option<String>) -> Result<(), PlanError> {
+        match self.get_mut(id) {
+            Some(item) => {
+                item.owner = owner.filter(|o| !o.trim().is_empty());
+                Ok(())
+            }
+            None => Err(PlanError::NotFound(id)),
+        }
+    }
+
+    /// Set (or clear, with `None`) an item's planned duration in seconds (FR-004).
+    /// Returns `NotFound` if no item has that id.
+    pub fn set_item_planned_secs(
+        &mut self,
+        id: ItemId,
+        secs: Option<u32>,
+    ) -> Result<(), PlanError> {
+        match self.get_mut(id) {
+            Some(item) => {
+                item.planned_secs = secs;
+                Ok(())
+            }
+            None => Err(PlanError::NotFound(id)),
+        }
+    }
+
+    /// Item ids whose linked content **cannot be resolved** — the missing-content
+    /// check run at plan open and pre-service (FR-007). Existence is injected (this
+    /// layer has no I/O and no deck/media library): `deck_exists(id)` /
+    /// `media_exists(id)` probe the presenting layer's libraries. A `Scripture` link
+    /// is unresolved when its reference does not parse; an *unlinked* item (`None`)
+    /// is never flagged. Pure and total.
+    pub fn unresolved_content(
+        &self,
+        deck_exists: impl Fn(u64) -> bool,
+        media_exists: impl Fn(u64) -> bool,
+    ) -> Vec<ItemId> {
+        self.items
+            .iter()
+            .filter(|it| match &it.content {
+                Some(ItemContent::Scripture { reference, .. }) => {
+                    crate::scripture::parse_one(reference).is_err()
+                }
+                Some(ItemContent::Deck { deck_id, .. }) => !deck_exists(*deck_id),
+                Some(ItemContent::Media { media_id }) => !media_exists(*media_id),
+                None => false,
+            })
+            .map(|it| it.id)
+            .collect()
     }
 
     /// Read access to an item by id.

@@ -39,7 +39,7 @@ use deck_workspace::DeckWorkspace;
 /// SQLite persistence behind the deck_list/new/open/rename/duplicate/delete commands.
 mod deck_library;
 use deck_library::DeckLibrary;
-use selahcue_present::DeckId;
+use selahcue_present::{DeckId, SlideId};
 
 /// Where the operator commands are dispatched: a remote host output window, or an
 /// in-process demo controller.
@@ -266,6 +266,36 @@ impl Backend {
             Backend::Local(s) => Ok(s.set_item_content(item_id, link)),
         }
     }
+    async fn set_item_owner(
+        &self,
+        item_id: u64,
+        owner: Option<String>,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_item_owner(item_id, owner)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_item_owner(item_id, owner)),
+        }
+    }
+    async fn set_item_duration(
+        &self,
+        item_id: u64,
+        secs: Option<u32>,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .set_item_duration(item_id, secs)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.set_item_duration(item_id, secs)),
+        }
+    }
     async fn save_theme(&self, name: String, theme_json: String) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m
@@ -477,6 +507,17 @@ impl Backend {
                 .await
                 .map_err(|e| e.to_string()),
             Backend::Local(s) => Ok(s.select(item_id)),
+        }
+    }
+    async fn select_slide(&self, item_id: u64, slide_index: u32) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .select_slide(item_id, slide_index)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.select_slide(item_id, slide_index)),
         }
     }
     async fn start_timer(&self, seconds: u32) -> Result<OperatorView, String> {
@@ -698,6 +739,15 @@ struct AppState {
     /// The persisted Presentations Library — the set of saved decks the `deck` workspace opens
     /// one of at a time. Locked AFTER `deck` wherever both are held (consistent order, no deadlock).
     library: Mutex<DeckLibrary>,
+    /// Providers & Privacy settings + consent (node 338:124). Offline-first defaults; the pure core
+    /// owns the egress gate, so nothing here can silently enable cloud egress.
+    providers: Mutex<selahcue_core::providers::ProvidersConfig>,
+    /// Best-effort persistence connection for the providers config (`None` → in-memory only, like
+    /// the deck library's fallback). A second connection to the same WAL DB is safe.
+    providers_db: Option<Mutex<selahcue_data::Database>>,
+    /// The SelahCue account/session token store (FR-134): OS keychain in a `cloud-live` build,
+    /// in-memory otherwise. Never a user-pasted third-party key.
+    secrets: Box<dyn selahcue_cloud::SecretStore + Send + Sync>,
 }
 
 /// Reply to the Remote Control device commands: the host's paired devices + pending requests.
@@ -1002,6 +1052,22 @@ async fn set_item_content(
     state: State<'_, AppState>,
 ) -> Result<OperatorView, String> {
     state.backend.set_item_content(item_id, link).await
+}
+#[tauri::command]
+async fn set_item_owner(
+    item_id: u64,
+    owner: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_item_owner(item_id, owner).await
+}
+#[tauri::command]
+async fn set_item_duration(
+    item_id: u64,
+    secs: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.set_item_duration(item_id, secs).await
 }
 #[tauri::command]
 async fn save_theme(
@@ -1681,6 +1747,96 @@ async fn render_deck_slide(
     }
 }
 
+/// List a plan-linked SAVED deck's slides for the Live Console slide picker (read-only bridge,
+/// `LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec.md` §6). `available:false` when the deck id is unknown
+/// (the linked deck was removed), so the picker shows its "presentation missing" state (FR-007).
+/// Reads the deck library only — the open editor workspace is never touched.
+#[tauri::command]
+async fn plan_deck_slides(
+    deck_id: u64,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let lib = state
+        .library
+        .lock()
+        .map_err(|e| format!("library lock: {e}"))?;
+    match lib.slide_list(DeckId(deck_id)) {
+        Some(slides) => Ok(serde_json::json!({
+            "available": true,
+            "slides": slides
+                .iter()
+                .map(|s| serde_json::json!({
+                    "slide_id": s.id.0,
+                    "label": s.label,
+                    "has_notes": s.has_notes,
+                }))
+                .collect::<Vec<_>>(),
+        })),
+        None => Ok(serde_json::json!({ "available": false })),
+    }
+}
+
+/// Render ONE slide of a plan-linked SAVED deck to bounded RGBA for the picker/preview (read-only;
+/// the SAME compositor + `Theme::dark` preview the editor canvas uses, so a thumbnail matches).
+/// `available:false` when the deck OR slide id is unknown. Off the editor workspace — it is never
+/// loaded or mutated. Routing these pixels to the physical audience output is a separate seam
+/// (Dep 2, ADR ~0022); this is Preview/thumbnail composition only.
+#[tauri::command]
+async fn render_plan_deck_slide(
+    deck_id: u64,
+    slide_id: u64,
+    max_w: u32,
+    max_h: u32,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    use base64::Engine;
+    let lib = state
+        .library
+        .lock()
+        .map_err(|e| format!("library lock: {e}"))?;
+    match lib.render_slide(DeckId(deck_id), SlideId(slide_id), max_w, max_h) {
+        Some(fb) => Ok(serde_json::json!({
+            "available": true,
+            "frame": {
+                "w": fb.width(),
+                "h": fb.height(),
+                "rgba": base64::engine::general_purpose::STANDARD.encode(fb.bytes()),
+            }
+        })),
+        None => Ok(serde_json::json!({ "available": false, "frame": serde_json::Value::Null })),
+    }
+}
+
+/// Route ONE slide of a plan-linked SAVED deck to the LIVE audience output — the SAME authored-slide
+/// present path the deck editor's `deck_go_live` uses, but for a plan-linked deck (the Live Console
+/// slide picker's Go Live). Composes the slide operator-side (`present_payload`) and hands it to the
+/// presenter via `present_authored_slide`; `render_console` then shows the real slide on the Live
+/// panel + the physical audience output. `Err` when the deck/slide id is unknown. Returns the updated
+/// OperatorView (its `live_authored_id` is the presented slide, driving the filmstrip LIVE marker).
+#[tauri::command]
+async fn present_plan_deck_slide(
+    deck_id: u64,
+    slide_id: u64,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    let payload = {
+        let lib = state
+            .library
+            .lock()
+            .map_err(|e| format!("library lock: {e}"))?;
+        lib.present_payload(DeckId(deck_id), SlideId(slide_id))
+    };
+    match payload {
+        Some((slide_json, theme_json, next_slide_json)) => {
+            state
+                .backend
+                .present_authored_slide(slide_json, theme_json, next_slide_json)
+                .await
+        }
+        None => Err("plan deck slide not found".into()),
+    }
+}
+
 #[tauri::command]
 async fn blackout(on: bool, state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.blackout(on).await
@@ -1694,6 +1850,16 @@ async fn output_connected(state: State<'_, AppState>) -> Result<bool, String> {
 #[tauri::command]
 async fn select(item_id: u64, state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.select(item_id).await
+}
+/// Stage a specific within-item slide of a plan item in Preview — the Live Console slide picker
+/// (`LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec.md` §6). Preview only; Live is untouched (FR-012).
+#[tauri::command]
+async fn select_slide(
+    item_id: u64,
+    slide_index: u32,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.select_slide(item_id, slide_index).await
 }
 #[tauri::command]
 async fn start_timer(seconds: u32, state: State<'_, AppState>) -> Result<OperatorView, String> {
@@ -1982,6 +2148,402 @@ fn demo_shell() -> OperatorShell {
     OperatorShell::new(controller)
 }
 
+// --- Providers & Privacy (Settings, Design 2.0 node 338:124) ---------------------------------
+//
+// Where transcription + AI sermon-notes run, and what (if anything) leaves the device
+// (FR-131/132/134/135/137, NFR-018, CON-5). The desktop operator console IS the administrator
+// surface — mobile controllers are role-gated separately via LAN RBAC — so consent changes made
+// here are inherently admin-side (FR-137). The pure core owns the egress gate and the (key,value)
+// mapping; this layer only persists best-effort and renders. Operator-local JSON replies only, so
+// the pinned cross-language LAN wire fixtures stay untouched. All commands are `async` with
+// synchronous, await-free bodies that hold the std `Mutex` briefly (same rule as the deck commands).
+
+/// The keychain/secret-store credential name for the SelahCue account/session token (FR-134).
+const ACCOUNT_TOKEN_NAME: &str = "account_token";
+
+#[derive(serde::Serialize)]
+struct TemplateOption {
+    value: String,
+    label: String,
+}
+
+#[derive(serde::Serialize)]
+struct TranslationOption {
+    code: String,
+    name: String,
+}
+
+#[derive(serde::Serialize)]
+struct IncludeView {
+    prayer_points: bool,
+    scripture_extraction: bool,
+    social_excerpts: bool,
+    chapter_markers: bool,
+    notable_quotations: bool,
+    short_summary: bool,
+}
+
+#[derive(serde::Serialize)]
+struct QuotaView {
+    used: u32,
+    limit: u32,
+    remaining: u32,
+    resets_label: String,
+}
+
+/// The full Providers & Privacy panel state (node 338:124). `quota` is `None` until a live cloud
+/// fetch returns one — never a fabricated figure (the server owns the count, and it does not exist
+/// yet), matching the console's "no guessed numbers" convention.
+#[derive(serde::Serialize)]
+struct ProvidersView {
+    transcription_mode: String,
+    on_device: SttReadyReply,
+    cloud_transcription_consent: bool,
+    cloud_notes_consent: bool,
+    offline_by_default: bool,
+    any_cloud_enabled: bool,
+    notes_template: String,
+    notes_templates: Vec<TemplateOption>,
+    preferred_translation: String,
+    translations: Vec<TranslationOption>,
+    include: IncludeView,
+    /// `"available"` when a base URL + token are present, else `"not_configured"`.
+    cloud_status: String,
+    cloud_connected: bool,
+    account_token_set: bool,
+    quota: Option<QuotaView>,
+}
+
+fn providers_templates() -> Vec<TemplateOption> {
+    selahcue_core::providers::NotesTemplate::ALL
+        .iter()
+        .map(|t| TemplateOption {
+            value: t.as_str().to_string(),
+            label: t.label().to_string(),
+        })
+        .collect()
+}
+
+fn providers_translations() -> Vec<TranslationOption> {
+    selahcue_scripture::Translation::ALL
+        .iter()
+        .map(|t| TranslationOption {
+            code: t.code().to_string(),
+            name: t.name().to_string(),
+        })
+        .collect()
+}
+
+/// The configured SelahCue cloud base URL, or `None` (the honest default — the live service does
+/// not exist). Read from the environment only in a `cloud-live` build.
+#[cfg(feature = "cloud-live")]
+fn cloud_base_url() -> Option<String> {
+    std::env::var("SELAHCUE_CLOUD_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+#[cfg(not(feature = "cloud-live"))]
+fn cloud_base_url() -> Option<String> {
+    None
+}
+
+fn providers_view_of(
+    cfg: &selahcue_core::providers::ProvidersConfig,
+    account_token_set: bool,
+) -> ProvidersView {
+    let cloud_connected = cloud_base_url().is_some() && account_token_set;
+    let inc = cfg.settings.include;
+    ProvidersView {
+        transcription_mode: cfg.settings.transcription_mode.as_str().to_string(),
+        on_device: stt_ready(),
+        cloud_transcription_consent: cfg.consent.cloud_transcription,
+        cloud_notes_consent: cfg.consent.cloud_notes,
+        offline_by_default: true,
+        any_cloud_enabled: cfg.consent.any_cloud_enabled(),
+        notes_template: cfg.settings.notes_template.as_str().to_string(),
+        notes_templates: providers_templates(),
+        preferred_translation: cfg.settings.preferred_translation.clone(),
+        translations: providers_translations(),
+        include: IncludeView {
+            prayer_points: inc.prayer_points,
+            scripture_extraction: inc.scripture_extraction,
+            social_excerpts: inc.social_excerpts,
+            chapter_markers: inc.chapter_markers,
+            notable_quotations: inc.notable_quotations,
+            short_summary: inc.short_summary,
+        },
+        cloud_status: if cloud_connected {
+            "available".to_string()
+        } else {
+            "not_configured".to_string()
+        },
+        cloud_connected,
+        account_token_set,
+        quota: None,
+    }
+}
+
+fn account_token_is_set(state: &State<'_, AppState>) -> bool {
+    state
+        .secrets
+        .get(ACCOUNT_TOKEN_NAME)
+        .ok()
+        .flatten()
+        .map(|t| !t.is_empty())
+        .unwrap_or(false)
+}
+
+/// Lock the providers config, apply an edit, persist best-effort, and return the fresh view.
+/// Persistence failure never blocks the edit (mirrors the deck autosave).
+fn with_providers(
+    state: &State<'_, AppState>,
+    f: impl FnOnce(&mut selahcue_core::providers::ProvidersConfig),
+) -> Result<ProvidersView, String> {
+    let mut cfg = state
+        .providers
+        .lock()
+        .map_err(|e| format!("providers lock: {e}"))?;
+    let before = cfg.clone();
+    f(&mut cfg);
+    // Persist only when the config actually changed — a read-only `providers_view` (fired on every
+    // Settings open / resync) and the token commands (which mutate the keychain, not `cfg`) leave it
+    // unchanged, so they no longer trigger a full DELETE+INSERT to the WAL DB on every call.
+    if *cfg != before {
+        if let Some(db) = &state.providers_db {
+            if let Ok(db) = db.lock() {
+                let _ = selahcue_data::providers_repo::save(&db, &cfg);
+            }
+        }
+    }
+    let token_set = account_token_is_set(state);
+    Ok(providers_view_of(&cfg, token_set))
+}
+
+#[tauri::command]
+async fn providers_view(state: State<'_, AppState>) -> Result<ProvidersView, String> {
+    with_providers(&state, |_| {})
+}
+
+#[tauri::command]
+async fn set_transcription_mode(
+    mode: String,
+    state: State<'_, AppState>,
+) -> Result<ProvidersView, String> {
+    with_providers(&state, |cfg| {
+        cfg.settings.transcription_mode = selahcue_core::providers::TranscriptionMode::parse(&mode)
+    })
+}
+
+/// Set a per-provider cloud opt-in (`kind` = `"transcription"` | `"notes"`). This is the only path
+/// that ungates cloud egress — it is the Administrator (desktop) surface (FR-132/137).
+#[tauri::command]
+async fn set_cloud_consent(
+    kind: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<ProvidersView, String> {
+    with_providers(&state, |cfg| match kind.as_str() {
+        "transcription" => cfg.consent.cloud_transcription = enabled,
+        "notes" => cfg.consent.cloud_notes = enabled,
+        _ => {}
+    })
+}
+
+#[tauri::command]
+async fn set_notes_template(
+    template: String,
+    state: State<'_, AppState>,
+) -> Result<ProvidersView, String> {
+    with_providers(&state, |cfg| {
+        cfg.settings.notes_template = selahcue_core::providers::NotesTemplate::parse(&template)
+    })
+}
+
+/// Set the preferred Bible translation — validated against the INSTALLED set; an unknown code is
+/// ignored (keeps the current value) rather than persisting a dangling choice.
+#[tauri::command]
+async fn set_preferred_translation(
+    code: String,
+    state: State<'_, AppState>,
+) -> Result<ProvidersView, String> {
+    with_providers(&state, |cfg| {
+        if selahcue_scripture::Translation::from_code(&code).is_some() {
+            cfg.settings.preferred_translation = code.clone();
+        }
+    })
+}
+
+#[tauri::command]
+async fn set_include_flag(
+    name: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<ProvidersView, String> {
+    with_providers(&state, |cfg| {
+        let i = &mut cfg.settings.include;
+        match name.as_str() {
+            "prayer_points" => i.prayer_points = enabled,
+            "scripture_extraction" => i.scripture_extraction = enabled,
+            "social_excerpts" => i.social_excerpts = enabled,
+            "chapter_markers" => i.chapter_markers = enabled,
+            "notable_quotations" => i.notable_quotations = enabled,
+            "short_summary" => i.short_summary = enabled,
+            _ => {}
+        }
+    })
+}
+
+/// Store the SelahCue account/session token in the OS secret store (FR-134). The token value is
+/// never logged; only whether one is set is ever surfaced.
+#[tauri::command]
+async fn set_account_token(
+    token: String,
+    state: State<'_, AppState>,
+) -> Result<ProvidersView, String> {
+    let token = selahcue_cloud::Token::new(token);
+    // An empty token means "no account" — purge rather than storing a blank entry that
+    // `account_token_is_set` would then report as unset anyway.
+    if token.is_empty() {
+        state
+            .secrets
+            .remove(ACCOUNT_TOKEN_NAME)
+            .map_err(|e| e.to_string())?;
+    } else {
+        state
+            .secrets
+            .set(ACCOUNT_TOKEN_NAME, &token)
+            .map_err(|e| e.to_string())?;
+    }
+    with_providers(&state, |_| {})
+}
+
+/// Purge the stored account token ("remove key" — FR-134).
+#[tauri::command]
+async fn clear_account_token(state: State<'_, AppState>) -> Result<ProvidersView, String> {
+    state
+        .secrets
+        .remove(ACCOUNT_TOKEN_NAME)
+        .map_err(|e| e.to_string())?;
+    with_providers(&state, |_| {})
+}
+
+/// Map a [`selahcue_core::providers::NoteError`] to a stable, secret-free error code for the UI.
+fn note_error_code(e: &selahcue_core::providers::NoteError) -> &'static str {
+    use selahcue_core::providers::NoteError::*;
+    match e {
+        ConsentRequired => "consent_required",
+        NotConfigured => "not_configured",
+        QuotaExceeded => "quota_exceeded",
+        Transport(_) => "transport",
+        Malformed(_) => "malformed",
+    }
+}
+
+fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
+    serde_json::json!({
+        "title": d.title,
+        "summary": d.summary,
+        "sections": d.sections.iter().map(|s| serde_json::json!({
+            "heading": s.heading, "items": s.items,
+        })).collect::<Vec<_>>(),
+        "scriptures": d.scriptures,
+    })
+}
+
+/// Run note generation with consent gating + graceful fallback. In a `cloud-live` build with a
+/// configured base URL + stored token it calls the real SelahCue service; otherwise it still
+/// honours the consent gate and then reports the honest "not configured" state (no live transport).
+#[cfg(feature = "cloud-live")]
+async fn run_note_generation(
+    cfg: selahcue_core::providers::ProvidersConfig,
+    transcript: String,
+    state: &State<'_, AppState>,
+) -> Result<selahcue_cloud::GenerationOutcome, selahcue_core::providers::NoteError> {
+    let base = cloud_base_url();
+    let token = state.secrets.get(ACCOUNT_TOKEN_NAME).ok().flatten();
+    // Offload the BLOCKING reqwest call onto a blocking thread so a slow/unreachable endpoint
+    // (up to the 30s transport timeout) never stalls a Tokio worker and starves other async
+    // Tauri commands (honours the offload contract in selahcue-cloud/src/transport.rs).
+    tauri::async_runtime::spawn_blocking(move || {
+        let local = selahcue_cloud::LocalNoteProvider::new();
+        match (base, token) {
+            (Some(b), Some(t)) if !t.is_empty() => {
+                let transport = selahcue_cloud::transport::ReqwestTransport::new()
+                    .map_err(|e| selahcue_core::providers::NoteError::Transport(e.to_string()))?;
+                let client = selahcue_cloud::SelahCueCloudClient::new(transport, b, t);
+                selahcue_cloud::generate_sermon_notes(&cfg, &transcript, true, &client, &local)
+            }
+            _ => {
+                // No account/endpoint yet — honour the gate first (ConsentRequired if not opted in),
+                // then report NotConfigured.
+                cfg.build_note_request(&transcript, true)?;
+                Err(selahcue_core::providers::NoteError::NotConfigured)
+            }
+        }
+    })
+    .await
+    .map_err(|e| {
+        selahcue_core::providers::NoteError::Transport(format!("worker join error: {e}"))
+    })?
+}
+
+#[cfg(not(feature = "cloud-live"))]
+async fn run_note_generation(
+    cfg: selahcue_core::providers::ProvidersConfig,
+    transcript: String,
+    _state: &State<'_, AppState>,
+) -> Result<selahcue_cloud::GenerationOutcome, selahcue_core::providers::NoteError> {
+    // Offline build: honour the consent gate (so the UI still gets ConsentRequired vs
+    // NotConfigured correctly), then report the honest "not configured" state — the live
+    // SelahCue service is not compiled in.
+    cfg.build_note_request(&transcript, true)?;
+    Err(selahcue_core::providers::NoteError::NotConfigured)
+}
+
+/// Generate AI sermon notes from a COMPLETED transcript. Consent-gated end-to-end: with cloud-notes
+/// consent off, nothing is sent (returns `consent_required`). The result is operator-local JSON.
+#[tauri::command]
+async fn generate_sermon_notes(
+    transcript: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    // Snapshot the config under the lock, then generate without holding it.
+    let cfg = {
+        state
+            .providers
+            .lock()
+            .map_err(|e| format!("providers lock: {e}"))?
+            .clone()
+    };
+    match run_note_generation(cfg, transcript, &state).await {
+        Ok(outcome) => Ok(serde_json::json!({
+            "ok": true,
+            "degraded": outcome.degraded,
+            "provider": outcome.provider_label,
+            "draft": draft_json(&outcome.draft),
+            "quota": outcome.quota.map(|q| serde_json::json!({
+                "used": q.used, "limit": q.limit, "remaining": q.remaining(), "resets_label": q.resets_label,
+            })),
+        })),
+        Err(e) => Ok(serde_json::json!({
+            "ok": false,
+            "error": note_error_code(&e),
+            "message": e.to_string(),
+        })),
+    }
+}
+
+/// The account-token secret store: OS keychain in a `cloud-live` build (FR-134/NFR-017), an
+/// in-memory store otherwise (nothing to persist until the live service exists).
+#[cfg(feature = "cloud-live")]
+fn make_secret_store() -> Box<dyn selahcue_cloud::SecretStore + Send + Sync> {
+    Box::new(selahcue_cloud::secret::KeyringSecretStore::new("SelahCue"))
+}
+#[cfg(not(feature = "cloud-live"))]
+fn make_secret_store() -> Box<dyn selahcue_cloud::SecretStore + Send + Sync> {
+    Box::new(selahcue_cloud::InMemorySecretStore::new())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -2002,10 +2564,21 @@ fn main() {
             } else if let Some(first) = library.list().first().and_then(|m| library.get(m.id)) {
                 ws.load_deck(first);
             }
+            // Providers & Privacy: open a best-effort connection to the same DB and load the saved
+            // config (empty/absent → the core's offline-first defaults). Persistence failure only
+            // means settings live in memory for the session (never blocks the console).
+            let providers_db = open_deck_db(app);
+            let providers = providers_db
+                .as_ref()
+                .and_then(|db| selahcue_data::providers_repo::load(db).ok())
+                .unwrap_or_default();
             app.manage(AppState {
                 backend,
                 deck: Mutex::new(ws),
                 library: Mutex::new(library),
+                providers: Mutex::new(providers),
+                providers_db: providers_db.map(Mutex::new),
+                secrets: make_secret_store(),
             });
             Ok(())
         })
@@ -2027,6 +2600,7 @@ fn main() {
             clear,
             blackout,
             select,
+            select_slide,
             start_timer,
             stop_timer,
             adjust_timer,
@@ -2051,6 +2625,8 @@ fn main() {
             set_custom_theme,
             set_item_theme,
             set_item_content,
+            set_item_owner,
+            set_item_duration,
             save_theme,
             delete_theme,
             set_screen_theme,
@@ -2106,7 +2682,19 @@ fn main() {
             deck_remove_media,
             deck_import_image,
             render_deck_slide,
-            output_connected
+            plan_deck_slides,
+            render_plan_deck_slide,
+            present_plan_deck_slide,
+            output_connected,
+            providers_view,
+            set_transcription_mode,
+            set_cloud_consent,
+            set_notes_template,
+            set_preferred_translation,
+            set_include_flag,
+            set_account_token,
+            clear_account_token,
+            generate_sermon_notes
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");
