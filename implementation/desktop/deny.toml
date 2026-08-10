@@ -28,6 +28,10 @@ allow = [
   # acknowledgment ("based in part on the work of the Independent JPEG Group") in the
   # app's third-party licenses / about screen.
   "IJG",
+  # Community Data License Agreement – Permissive 2.0 — permissive, no copyleft. Carried
+  # by webpki-roots (Mozilla's bundled root-CA data set) via selahcue-cloud → reqwest →
+  # hyper-rustls (the SelahCue cloud client's TLS trust roots).
+  "CDLA-Permissive-2.0",
 ]
 
 [bans]
