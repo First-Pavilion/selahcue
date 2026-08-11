@@ -23,6 +23,14 @@ allow = [
   "MPL-2.0", # file-level copyleft only; carried by wgpu's DX shader stack
   "OFL-1.1", # font data
   "Ubuntu-font-1.0",
+  # Community Data License Agreement – Permissive 2.0 — permissive, no copyleft. Carried
+  # by webpki-roots (Mozilla's bundled root-CA data set) via selahcue-cloud → reqwest →
+  # hyper-rustls (the SelahCue cloud client's TLS trust roots).
+  "CDLA-Permissive-2.0",
+  # The Unlicense — public-domain dedication (OSI approved, FSF Free/Libre, no copyleft).
+  # Carried by whisper-rs / whisper-rs-sys via selahcue-stt (the operator's on-device STT
+  # readiness probe). Evaluated here because [graph] all-features pulls the STT feature in.
+  "Unlicense",
 ]
 
 [bans]
