@@ -1,16 +1,35 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import secrets
 from dataclasses import dataclass
+from datetime import timedelta
 
+from django.conf import settings
+from django.contrib.auth.hashers import check_password, make_password
 from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.utils import timezone as djtz
 from django.utils.text import slugify
 
-from selahcue_api.apps.accounts.models import CustomerOrg, CustomerStatus
+from selahcue_api.apps.accounts.models import (
+    CredentialToken,
+    CredentialTokenPurpose,
+    CustomerOrg,
+    CustomerRole,
+    CustomerSession,
+    CustomerSessionStatus,
+    CustomerStatus,
+    CustomerUser,
+    CustomerUserStatus,
+)
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.graphql.context import (
     ActorContext,
+    ActorKind,
     StaffPermission,
     require_staff_permission,
     validate_idempotency_key,
@@ -167,3 +186,581 @@ def count_customers(actor: ActorContext | None, *, search: str | None = None) ->
     client sees the real total (not the page size)."""
     require_staff_permission(actor, StaffPermission.VIEW_CUSTOMERS)
     return _customer_search_queryset(search).count()
+
+
+# ---------------------------------------------------------------------------
+# Traditional email/password customer authentication (DEC-007 / ADR-0023).
+#
+# Every credential follows the shipped hashed-credential convention: make_password
+# hash + HMAC-SHA256(SECRET_KEY) fingerprint. Passwords are LOW-entropy → always
+# verified with check_password (PBKDF2). Session / email-verify / reset tokens are
+# HIGH-entropy → resolved by fingerprint + verified with hmac.compare_digest (the
+# authenticate_device_token latency optimisation). No path reveals whether an email
+# or token exists (no-oracle discipline).
+# ---------------------------------------------------------------------------
+
+# Config (overridable via settings; documented in deployments.md). Read at import.
+ACCOUNT_SESSION_TTL = timedelta(seconds=getattr(settings, "ACCOUNT_SESSION_TTL_SECONDS", 30 * 24 * 3600))
+EMAIL_VERIFY_TTL = timedelta(seconds=getattr(settings, "ACCOUNT_EMAIL_VERIFY_TTL_SECONDS", 24 * 3600))
+PASSWORD_RESET_TTL = timedelta(seconds=getattr(settings, "ACCOUNT_PASSWORD_RESET_TTL_SECONDS", 3600))
+LOGIN_LOCKOUT_THRESHOLD = getattr(settings, "ACCOUNT_LOGIN_LOCKOUT_THRESHOLD", 5)
+LOGIN_LOCKOUT_TTL = timedelta(seconds=getattr(settings, "ACCOUNT_LOGIN_LOCKOUT_SECONDS", 900))
+MIN_PASSWORD_LENGTH = getattr(settings, "ACCOUNT_MIN_PASSWORD_LENGTH", 10)
+MAX_PASSWORD_LENGTH = 200
+
+SELF_SIGNUP_ACTOR = "self_signup"
+ACCOUNT_AUDIT_SURFACE = "account_graphql"
+
+# A fixed hash to run check_password against on unknown-email login, so the unknown-email and
+# wrong-password paths take the same PBKDF2 time (no timing oracle on account existence).
+_DUMMY_PASSWORD_HASH = make_password("selahcue-timing-equalizer-not-a-real-password")
+
+
+# --- injectable email delivery seam ---------------------------------------
+class EmailSender:
+    """Delivery seam for account emails. The default is a no-op (no SMTP creds yet, DEC-007);
+    a concrete provider is wired later behind this same interface. Tests override it to capture
+    the show-once raw token that a real email would carry."""
+
+    def send_email_verification(self, user: CustomerUser, raw_token: str) -> None:  # pragma: no cover
+        pass
+
+    def send_password_reset(self, user: CustomerUser, raw_token: str) -> None:  # pragma: no cover
+        pass
+
+    def send_account_exists(self, email: str) -> None:  # pragma: no cover
+        # Sent when a signup targets an already-registered email — so the real owner is notified
+        # without revealing account existence to the (uniform accepted:true) caller.
+        pass
+
+
+_email_sender: EmailSender = EmailSender()
+
+
+def get_email_sender() -> EmailSender:
+    return _email_sender
+
+
+def set_email_sender(sender: EmailSender) -> None:
+    """Override the delivery seam (tests / provider wiring)."""
+    global _email_sender
+    _email_sender = sender
+
+
+# --- credential helpers ----------------------------------------------------
+def _fingerprint(value: str) -> str:
+    # Same HMAC pepper (SECRET_KEY) as the device/license slices.
+    return hmac.new(settings.SECRET_KEY.encode("utf-8"), value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _normalize_email(raw: str) -> str:
+    return (raw or "").strip().lower()
+
+
+def _require_valid_email(raw: str) -> str:
+    email = _normalize_email(raw)
+    try:
+        validate_email(email)
+    except ValidationError as error:
+        raise _validation_error() from error
+    return email
+
+
+def _email_fingerprint(email: str) -> str:
+    return _fingerprint(email)
+
+
+def _validate_password(password: str) -> None:
+    # Length policy only (v1); complexity/breach checks are a later slice. Do NOT strip — spaces
+    # can be intentional — but reject an all-whitespace password.
+    if not isinstance(password, str) or not password.strip():
+        raise _validation_error()
+    if not (MIN_PASSWORD_LENGTH <= len(password) <= MAX_PASSWORD_LENGTH):
+        raise _validation_error()
+
+
+def _generate_token(label: str) -> str:
+    # High-entropy, URL-safe (usable directly in an email link).
+    return f"SC-{label}-{secrets.token_urlsafe(32)}"
+
+
+def _mask(full_token: str) -> tuple[str, str, str]:
+    prefix = full_token[:12]
+    suffix = full_token[-4:]
+    return prefix, suffix, f"{prefix}...{suffix}"
+
+
+def _mint_credential_token(user: CustomerUser, purpose: str, ttl: timedelta) -> str:
+    """Create a single-use CredentialToken and return its raw (show-once) value."""
+    raw = _generate_token("EVF" if purpose == CredentialTokenPurpose.EMAIL_VERIFY else "PRS")
+    _prefix, _suffix, masked = _mask(raw)
+    token = CredentialToken(
+        customer_user=user,
+        purpose=purpose,
+        token_hash=make_password(raw),
+        token_fingerprint=_fingerprint(raw),
+        masked_token=masked,
+        expires_at=djtz.now() + ttl,
+    )
+    try:
+        token.full_clean()
+    except ValidationError as error:
+        raise _validation_error() from error
+    token.save()
+    return raw
+
+
+def _new_session(user: CustomerUser, now) -> tuple[CustomerSession, str]:
+    """Mint an ACTIVE opaque session token (show-once). Returns (session, raw_token)."""
+    raw = _generate_token("ACS")
+    prefix, suffix, masked = _mask(raw)
+    session = CustomerSession(
+        customer_user=user,
+        token_prefix=prefix,
+        token_suffix=suffix,
+        masked_token=masked,
+        token_hash=make_password(raw),
+        token_fingerprint=_fingerprint(raw),
+        status=CustomerSessionStatus.ACTIVE,
+        issued_at=now,
+        expires_at=now + ACCOUNT_SESSION_TTL,
+    )
+    try:
+        session.full_clean()
+    except ValidationError as error:
+        raise _validation_error() from error
+    session.save()
+    return session, raw
+
+
+def _customer_actor(user: CustomerUser) -> ActorContext:
+    return ActorContext(
+        kind=ActorKind.CUSTOMER,
+        actor_id=str(user.id),
+        org_id=str(user.customer_id),
+        role=user.role,
+    )
+
+
+# --- result dataclasses ----------------------------------------------------
+@dataclass(frozen=True)
+class RegisterCustomerUserData:
+    idempotency_key: str
+    email: str
+    password: str
+    org_name: str
+    country: str
+    display_name: str = ""
+    timezone: str = "UTC"
+
+
+@dataclass(frozen=True)
+class AcceptedResult:
+    # Uniform result for no-enumeration endpoints (signup, password-reset request).
+    accepted: bool
+
+
+@dataclass(frozen=True)
+class VerifyEmailResult:
+    verified: bool
+
+
+@dataclass(frozen=True)
+class LoginResult:
+    session_token: str  # show-once opaque token
+    expires_at: str
+    role: str
+    org_id: str
+
+
+@dataclass(frozen=True)
+class RefreshResult:
+    session_token: str  # new (rotated) show-once token
+    expires_at: str
+
+
+@dataclass(frozen=True)
+class LogoutResult:
+    revoked: bool
+
+
+@dataclass(frozen=True)
+class ConfirmPasswordResetResult:
+    reset: bool
+
+
+# --- services --------------------------------------------------------------
+def register_customer_user(data: RegisterCustomerUserData) -> AcceptedResult:
+    """Self-serve signup (DEC-007 product answer): create a NEW CustomerOrg (TRIAL) and its first
+    Admin user atomically, then email a verification token. Returns a UNIFORM accepted:true whether
+    or not the email already exists — no user-enumeration oracle."""
+    idempotency_key = validate_idempotency_key(data.idempotency_key)
+    email = _require_valid_email(data.email)
+    _validate_password(data.password)
+    org_name = " ".join(data.org_name.strip().split())
+    country = data.country.strip().upper()
+    if not org_name or len(country) != 2:
+        raise _validation_error()
+    fingerprint = _email_fingerprint(email)
+    # Namespace the (actor, idempotency_key) guard PER EMAIL: two distinct signups that happen to
+    # pick the same client idempotency key must not alias and swallow one another. Email is the real
+    # identity for self-signup, so the email fingerprint is the correct namespace.
+    self_actor = f"{SELF_SIGNUP_ACTOR}:{fingerprint}"
+    password_hash = make_password(data.password)
+
+    with transaction.atomic():
+        # Idempotency AND no-enumeration in one check: any prior account for this email (a retry OR
+        # an already-registered address) returns the uniform accepted:true without a duplicate.
+        if CustomerUser.objects.filter(email_fingerprint=fingerprint).exists():
+            get_email_sender().send_account_exists(email)
+            return AcceptedResult(accepted=True)
+
+        # Create the org + first Admin under a SINGLE savepoint, so a failure on EITHER rolls BOTH
+        # back — never an orphan org. Retry ONLY a slug collision (fresh slug); a lost email race
+        # converges on the uniform accepted:true.
+        user = None
+        for _attempt in range(4):
+            org = CustomerOrg(
+                name=org_name,
+                slug=_unique_slug(org_name),
+                status=CustomerStatus.TRIAL,
+                primary_contact_email=email,
+                country=country,
+                timezone=data.timezone.strip() or "UTC",
+                plan="TRIAL",
+                seat_limit=1,
+                device_limit=1,
+                created_by_actor_id=self_actor,
+                idempotency_key=idempotency_key,
+            )
+            candidate = CustomerUser(
+                customer=org,
+                email=email,
+                email_fingerprint=fingerprint,
+                password_hash=password_hash,
+                status=CustomerUserStatus.INVITED,
+                role=CustomerRole.ADMIN,  # first (and only) user in a self-serve org is the Admin
+                display_name=" ".join(data.display_name.strip().split()),
+                created_by_actor_id=self_actor,
+                idempotency_key=idempotency_key,
+            )
+            # Field-format validation only; DB unique constraints (+ the IntegrityError branch) decide
+            # collisions, so a racing duplicate never leaks a VALIDATION_FAILED.
+            try:
+                org.full_clean(validate_unique=False)
+                candidate.full_clean(exclude=["customer"], validate_unique=False)
+            except ValidationError as error:
+                raise _validation_error() from error
+            try:
+                with transaction.atomic():
+                    org.save()
+                    candidate.customer = org  # re-bind so customer_id picks up the saved org pk
+                    candidate.save()
+            except IntegrityError:
+                # A concurrent signer won the unique email (or this email's (actor, key)) → idempotent.
+                if CustomerUser.objects.filter(email_fingerprint=fingerprint).exists():
+                    return AcceptedResult(accepted=True)
+                # Otherwise it was a slug collision — recompute a fresh slug and retry.
+                continue
+            user = candidate
+            break
+        if user is None:
+            # Persistent non-email collision (astronomically unlikely) — fail closed, create nothing.
+            raise _validation_error()
+
+        raw_token = _mint_credential_token(user, CredentialTokenPurpose.EMAIL_VERIFY, EMAIL_VERIFY_TTL)
+        record_audit_event(
+            _customer_actor(user),
+            action="customer_user.registered",
+            target_type="customer_user",
+            target_id=str(user.id),
+            request_id=idempotency_key,
+            source_surface=ACCOUNT_AUDIT_SURFACE,
+            after={"org_id": str(org.id), "role": user.role, "status": user.status},
+        )
+        get_email_sender().send_email_verification(user, raw_token)
+        return AcceptedResult(accepted=True)
+
+
+def verify_email(raw_token: str) -> VerifyEmailResult:
+    """Consume an EMAIL_VERIFY token: mark the user ACTIVE + email_verified_at. Every failure
+    (unknown / wrong-purpose / consumed / expired) collapses to VALIDATION_FAILED (no oracle)."""
+    token_value = (raw_token or "").strip()
+    if not token_value:
+        raise _validation_error()
+    fingerprint = _fingerprint(token_value)
+    now = djtz.now()
+    with transaction.atomic():
+        try:
+            token = (
+                CredentialToken.objects.select_for_update()
+                .select_related("customer_user")
+                .get(token_fingerprint=fingerprint)
+            )
+        except CredentialToken.DoesNotExist as error:
+            raise _validation_error() from error
+        if not hmac.compare_digest(token.token_fingerprint, fingerprint):
+            raise _validation_error()
+        if (
+            token.purpose != CredentialTokenPurpose.EMAIL_VERIFY
+            or token.consumed_at is not None
+            or token.expires_at <= now
+        ):
+            raise _validation_error()
+        token.consumed_at = now
+        token.save(update_fields=["consumed_at"])
+        user = token.customer_user
+        user.email_verified_at = now
+        user.status = CustomerUserStatus.ACTIVE
+        user.save(update_fields=["email_verified_at", "status", "updated_at"])
+        record_audit_event(
+            _customer_actor(user),
+            action="customer_user.email_verified",
+            target_type="customer_user",
+            target_id=str(user.id),
+            request_id=token.masked_token,
+            source_surface=ACCOUNT_AUDIT_SURFACE,
+            after={"status": user.status},
+        )
+    return VerifyEmailResult(verified=True)
+
+
+@dataclass(frozen=True)
+class LoginData:
+    email: str
+    password: str
+
+
+def login(data: LoginData) -> LoginResult:
+    """Authenticate email/password and mint a session. Unknown-email and wrong-password are
+    indistinguishable (both UNAUTHENTICATED, equal timing). Unverified/disabled → POLICY_DENIED
+    only AFTER a correct password (so state leaks only to the real owner)."""
+    email = _normalize_email(data.email)
+    fingerprint = _email_fingerprint(email)
+    now = djtz.now()
+
+    # Read (no lock) and run the slow PBKDF2 outside any transaction — holding a row lock across
+    # check_password would serialise all logins for a user for no benefit.
+    user = CustomerUser.objects.filter(email_fingerprint=fingerprint).first()
+    if user is None:
+        # Equalise timing with the wrong-password path; then deny with no oracle.
+        check_password(data.password, _DUMMY_PASSWORD_HASH)
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    if user.locked_until is not None and user.locked_until > now:
+        # Do NOT leak the locked state: a distinct RATE_LIMITED code (429) would be an existence
+        # oracle, since only real accounts can be locked. Equalise timing (run the hash) and deny
+        # with the SAME UNAUTHENTICATED as unknown-email / wrong-password. Lockout still blocks —
+        # even a correct password is refused while locked.
+        check_password(data.password, user.password_hash)
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    if not check_password(data.password, user.password_hash):
+        # Persist the failed attempt in its OWN committed transaction: it MUST survive the raise
+        # below. A single atomic wrapping the whole login would roll the counter back on the raise,
+        # so lockout would never accrue.
+        with transaction.atomic():
+            locked = CustomerUser.objects.select_for_update().get(pk=user.pk)
+            locked.failed_login_count += 1
+            if locked.failed_login_count >= LOGIN_LOCKOUT_THRESHOLD:
+                locked.locked_until = now + LOGIN_LOCKOUT_TTL
+                locked.failed_login_count = 0
+            locked.save(update_fields=["failed_login_count", "locked_until", "updated_at"])
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    if user.email_verified_at is None or user.status != CustomerUserStatus.ACTIVE:
+        raise SafeAPIError(ErrorCode.POLICY_DENIED)
+
+    with transaction.atomic():
+        locked = CustomerUser.objects.select_for_update().get(pk=user.pk)
+        if locked.failed_login_count or locked.locked_until:
+            locked.failed_login_count = 0
+            locked.locked_until = None
+            locked.save(update_fields=["failed_login_count", "locked_until", "updated_at"])
+        session, raw = _new_session(locked, now)
+        record_audit_event(
+            _customer_actor(locked),
+            action="customer_user.logged_in",
+            target_type="customer_session",
+            target_id=str(session.id),
+            request_id=session.token_fingerprint,
+            source_surface=ACCOUNT_AUDIT_SURFACE,
+            after={"masked_token": session.masked_token, "expires_at": session.expires_at.isoformat()},
+        )
+    return LoginResult(
+        session_token=raw,
+        expires_at=session.expires_at.isoformat(),
+        role=locked.role,
+        org_id=str(locked.customer_id),
+    )
+
+
+def authenticate_session(presented_token: str) -> tuple[CustomerSession, CustomerUser]:
+    """Resolve + validate a presented account session token. Any failure → UNAUTHENTICATED with no
+    oracle. Rejects sessions issued before the user's last password change (mass invalidation)."""
+    token_value = (presented_token or "").strip()
+    if not token_value:
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    fingerprint = _fingerprint(token_value)
+    try:
+        session = CustomerSession.objects.select_related("customer_user", "customer_user__customer").get(
+            token_fingerprint=fingerprint
+        )
+    except CustomerSession.DoesNotExist as error:
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED) from error
+    if not hmac.compare_digest(session.token_fingerprint, fingerprint):
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    if session.status != CustomerSessionStatus.ACTIVE:
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    if session.expires_at <= djtz.now():
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    user = session.customer_user
+    if user.status != CustomerUserStatus.ACTIVE:
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    if user.password_changed_at is not None and session.issued_at < user.password_changed_at:
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    return session, user
+
+
+def actor_from_session_token(presented_token: str | None) -> ActorContext | None:
+    """Non-raising resolver for graphql/context.py: presented token → CUSTOMER actor, or None."""
+    if not presented_token:
+        return None
+    try:
+        _session, user = authenticate_session(presented_token)
+    except SafeAPIError:
+        return None
+    return _customer_actor(user)
+
+
+def refresh_session(presented_token: str) -> RefreshResult:
+    """Rotate the session: revoke the presented token, mint a fresh one with an extended window."""
+    now = djtz.now()
+    with transaction.atomic():
+        session, user = authenticate_session(presented_token)
+        session.status = CustomerSessionStatus.REVOKED
+        session.revoked_at = now
+        session.save(update_fields=["status", "revoked_at", "updated_at"])
+        new_session, raw = _new_session(user, now)
+        record_audit_event(
+            _customer_actor(user),
+            action="customer_user.session_refreshed",
+            target_type="customer_session",
+            target_id=str(new_session.id),
+            request_id=new_session.token_fingerprint,
+            source_surface=ACCOUNT_AUDIT_SURFACE,
+            after={"masked_token": new_session.masked_token, "expires_at": new_session.expires_at.isoformat()},
+        )
+    return RefreshResult(session_token=raw, expires_at=new_session.expires_at.isoformat())
+
+
+def logout_session(presented_token: str, *, all_sessions: bool = False) -> LogoutResult:
+    """Revoke the presented session (or every ACTIVE session for the user). Revokes the ACCOUNT
+    session ONLY — never a DeviceToken or cached entitlement (never-blank: device stays live)."""
+    now = djtz.now()
+    with transaction.atomic():
+        session, user = authenticate_session(presented_token)
+        if all_sessions:
+            CustomerSession.objects.filter(
+                customer_user=user, status=CustomerSessionStatus.ACTIVE
+            ).update(status=CustomerSessionStatus.REVOKED, revoked_at=now, updated_at=now)
+        else:
+            session.status = CustomerSessionStatus.REVOKED
+            session.revoked_at = now
+            session.save(update_fields=["status", "revoked_at", "updated_at"])
+        record_audit_event(
+            _customer_actor(user),
+            action="customer_user.logged_out",
+            target_type="customer_user",
+            target_id=str(user.id),
+            request_id=session.token_fingerprint,
+            source_surface=ACCOUNT_AUDIT_SURFACE,
+            after={"all_sessions": all_sessions},
+        )
+    return LogoutResult(revoked=True)
+
+
+def request_password_reset(email: str) -> AcceptedResult:
+    """Always returns accepted:true (no enumeration). When the email matches a user, invalidate any
+    prior unconsumed reset tokens and email a fresh single-use one."""
+    normalized = _require_valid_email(email)
+    fingerprint = _email_fingerprint(normalized)
+    now = djtz.now()
+    with transaction.atomic():
+        user = CustomerUser.objects.filter(email_fingerprint=fingerprint).first()
+        if user is not None:
+            CredentialToken.objects.filter(
+                customer_user=user,
+                purpose=CredentialTokenPurpose.PASSWORD_RESET,
+                consumed_at__isnull=True,
+            ).update(consumed_at=now)
+            raw_token = _mint_credential_token(user, CredentialTokenPurpose.PASSWORD_RESET, PASSWORD_RESET_TTL)
+            record_audit_event(
+                _customer_actor(user),
+                action="customer_user.password_reset_requested",
+                target_type="customer_user",
+                target_id=str(user.id),
+                request_id=_fingerprint(raw_token),
+                source_surface=ACCOUNT_AUDIT_SURFACE,
+                after={},
+            )
+            get_email_sender().send_password_reset(user, raw_token)
+        else:
+            # Equalise timing with the token-minting branch (which runs a PBKDF2 make_password), so
+            # the response time does not reveal whether the email exists.
+            make_password("selahcue-reset-timing-equalizer-not-a-real-token")
+    return AcceptedResult(accepted=True)
+
+
+def confirm_password_reset(raw_token: str, new_password: str) -> ConfirmPasswordResetResult:
+    """Consume a PASSWORD_RESET token, set the new password, and revoke ALL of the user's ACTIVE
+    sessions (invalidation on password change). Token/password failures → VALIDATION_FAILED."""
+    token_value = (raw_token or "").strip()
+    if not token_value:
+        raise _validation_error()
+    _validate_password(new_password)
+    fingerprint = _fingerprint(token_value)
+    now = djtz.now()
+    with transaction.atomic():
+        try:
+            token = (
+                CredentialToken.objects.select_for_update()
+                .select_related("customer_user")
+                .get(token_fingerprint=fingerprint)
+            )
+        except CredentialToken.DoesNotExist as error:
+            raise _validation_error() from error
+        if not hmac.compare_digest(token.token_fingerprint, fingerprint):
+            raise _validation_error()
+        if (
+            token.purpose != CredentialTokenPurpose.PASSWORD_RESET
+            or token.consumed_at is not None
+            or token.expires_at <= now
+        ):
+            raise _validation_error()
+        token.consumed_at = now
+        token.save(update_fields=["consumed_at"])
+        user = token.customer_user
+        user.password_hash = make_password(new_password)
+        user.password_changed_at = now
+        user.failed_login_count = 0
+        user.locked_until = None
+        user.save(
+            update_fields=[
+                "password_hash",
+                "password_changed_at",
+                "failed_login_count",
+                "locked_until",
+                "updated_at",
+            ]
+        )
+        CustomerSession.objects.filter(
+            customer_user=user, status=CustomerSessionStatus.ACTIVE
+        ).update(status=CustomerSessionStatus.REVOKED, revoked_at=now, updated_at=now)
+        record_audit_event(
+            _customer_actor(user),
+            action="customer_user.password_reset_completed",
+            target_type="customer_user",
+            target_id=str(user.id),
+            request_id=token.masked_token,
+            source_surface=ACCOUNT_AUDIT_SURFACE,
+            after={},
+        )
+    return ConfirmPasswordResetResult(reset=True)

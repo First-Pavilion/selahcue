@@ -36,6 +36,12 @@ class ActorContext:
     actor_id: str
     org_id: str | None = None
     staff_permissions: frozenset[StaffPermission] = frozenset()
+    # Customer-user role (ADMIN/MEMBER) for CUSTOMER actors; None for staff/device/service.
+    role: str | None = None
+
+
+# Cookie carrying the opaque account session token for browser clients (HttpOnly/Secure/SameSite).
+ACCOUNT_SESSION_COOKIE = "selahcue_account_session"
 
 
 IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9._:-]{12,128}$")
@@ -60,7 +66,31 @@ def parse_staff_permissions(raw_permissions: str | Iterable[str] | None) -> froz
     return frozenset(permissions)
 
 
+def _read_account_session_token(request) -> str | None:
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        token = auth[len("Bearer ") :].strip()
+        if token:
+            return token
+    cookie = request.COOKIES.get(ACCOUNT_SESSION_COOKIE)
+    return cookie.strip() if cookie else None
+
+
 def actor_from_request(request) -> ActorContext | None:
+    # Production customer auth: an opaque account session token (Authorization: Bearer, or the
+    # HttpOnly cookie) resolves to a CUSTOMER actor. This is the sole customer authenticator once
+    # header-trust is disabled in prod.
+    token = _read_account_session_token(request)
+    if token:
+        # Lazy import: accounts.services imports this module, so import here to avoid a cycle.
+        from selahcue_api.apps.accounts.services import actor_from_session_token
+
+        actor = actor_from_session_token(token)
+        if actor is not None:
+            return actor
+
+    # Dev/test bridge ONLY: trusted actor headers (staff/device), gated by settings and never
+    # enabled in production (SELAHCUE_TRUST_ACTOR_HEADERS=false).
     if not settings.SELAHCUE_TRUST_ACTOR_HEADERS:
         return None
 
@@ -109,6 +139,18 @@ def require_customer_org(actor: ActorContext | None, org_id: str) -> ActorContex
         raise SafeAPIError(ErrorCode.PERMISSION_DENIED)
     if not actor.org_id or actor.org_id != org_id:
         raise SafeAPIError(ErrorCode.NOT_FOUND)
+    return actor
+
+
+def require_customer_role(actor: ActorContext | None, role: str) -> ActorContext:
+    """Authorise a CUSTOMER actor of a specific role (e.g. ADMIN for device management, FR-137).
+    Distinct codes: no actor → UNAUTHENTICATED; wrong kind or insufficient role → PERMISSION_DENIED."""
+    if actor is None:
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    if actor.kind is not ActorKind.CUSTOMER:
+        raise SafeAPIError(ErrorCode.PERMISSION_DENIED)
+    if actor.role != role:
+        raise SafeAPIError(ErrorCode.PERMISSION_DENIED)
     return actor
 
 

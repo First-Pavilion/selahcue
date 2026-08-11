@@ -1,0 +1,41 @@
+# ADR-0023: Customer authentication — SelahCue-owned email/password with opaque server-side sessions
+
+- Status: Accepted
+- Date: 2026-08-11
+- Confidence: High
+- Owner: Software Architect
+- Supersedes: **ADR-0022** (customer identity via self-hosted Logto/OIDC) — abandoned per **DEC-007**
+- Related: **DEC-007** (decision), DEC-005, DEC-004 (`docs/decisions/DECISION-LOG.md`); ADR-0021 (Admin Licensing Platform), ADR-0008 (LAN/secret-store + redaction posture), ADR-0011 (observability/redaction); `docs/design/ACCOUNT-SETUP-HANDOFF.md`; PRD NFR-015/CON-2 (offline-first), NFR-024 (never-blank), NFR-017 (OS-secret-store-only), FR-132 (cloud opt-in), FR-134 (account token store), FR-137 (admin-gated account changes)
+
+## Context
+
+DEC-007 replaces the self-hosted Logto/OIDC identity direction (DEC-006 / ADR-0022) with **traditional email + password authentication owned by SelahCue**, built on the existing Django 5.2 + Strawberry Platform API. The product owner judged operating an IdP (a container + its own Postgres + backups + upgrades + data-residency duties) not worth the cost at this stage: *"too much hassle for Logto — let's just use the authentication mode you recommended; we would handle email verification, 2FA later."*
+
+The API today has **no user/credential/login model** — the only models are `AuditEvent`, `CustomerOrg`, `AppLicenseKey`, `Device`, `DeviceToken`. `CustomerOrg` is a tenant with two *non-unique contact* email fields and no password. The GraphQL account surface (`graphql/account_schema.py`) is a single read-only `account_viewer` query, and the customer authorization choke point `require_customer_org()` (`graphql/context.py`) already exists but is **unreachable** because there is no way to mint a `CUSTOMER` actor. Actor identity in dev/test is asserted via trusted headers gated by `SELAHCUE_TRUST_ACTOR_HEADERS`. There is **no JWT/JWKS/signing-key infrastructure** anywhere; the one shipped bearer-credential precedent is `DeviceToken` (opaque, hashed at rest with `make_password`, looked up by a unique `HMAC-SHA256(SECRET_KEY)` fingerprint, verified with `hmac.compare_digest`).
+
+## Decision
+
+Build a **greenfield identity layer that reuses the repo's existing conventions verbatim** rather than adopting `AUTH_USER_MODEL` or introducing tokens of a new shape.
+
+1. **`CustomerUser` login principal** — a new model in `apps/accounts/` FK'd (`PROTECT`, `related_name='users'`) to the tenant `CustomerOrg`. Holds `email` (globally unique) + `email_fingerprint` (HMAC lookup column) + `password_hash` (`make_password`, never plaintext, never `==`-compared) + `email_verified_at` + `status` {INVITED, ACTIVE, DISABLED} + `role` {ADMIN, MEMBER} + `password_changed_at` + bounded `failed_login_count`/`locked_until` lockout counters + the `(created_by_actor_id, idempotency_key)` idempotency guard. This is the missing principal that makes `ActorKind.CUSTOMER` and `require_customer_org()` reachable in production.
+
+2. **Opaque, server-side, hashed session token — NOT a JWT.** `CustomerSession` is a structural clone of `DeviceToken`: show-once masked triple + `token_hash = make_password(token)` + unique `token_fingerprint = HMAC-SHA256(SECRET_KEY, token)` + `status` {ACTIVE, REVOKED} + issued/expires window. Login mints one and returns the raw token exactly once (as an HttpOnly/Secure/SameSite=Strict cookie satisfying the declared `customer_session_with_csrf` route contract, and/or a keychain-stored `account_token` on desktop). `graphql/context.py` resolves it to `ActorContext(kind=CUSTOMER, actor_id=<CustomerUser id>, org_id=<CustomerOrg id>)` by fingerprint lookup + `compare_digest` (skipping PBKDF2 per request, the documented `authenticate_device_token` optimisation), retiring `SELAHCUE_TRUST_ACTOR_HEADERS` for customers in prod.
+
+3. **`CredentialToken`** — one purpose-discriminated ({EMAIL_VERIFY, PASSWORD_RESET}) show-once table (same storage shape) for email verification and password reset. High-entropy `secrets` tokens, single-use (`consumed_at`), short-lived, delivered once via an **injectable `EmailSender` seam** (console/no-op default; no SMTP creds yet).
+
+4. **No user-enumeration (no-oracle discipline).** Signup and password-reset requests return a uniform `accepted: true` regardless of email existence; login collapses unknown-email and wrong-password to one `UNAUTHENTICATED` (running a dummy `check_password` on unknown email for timing parity); verify/confirm-reset collapse unknown/expired/consumed tokens to one `VALIDATION_FAILED`. Mirrors `_resolve_license_key` and is reinforced by `SafeGraphQLView` re-sanitising outgoing errors.
+
+5. **Account-based device activation (DEC-005)** — an **additive** session-authenticated path (`activateDeviceWithSession`, `require_customer_role(ADMIN)` per FR-137) that resolves the caller's org → active `AppLicenseKey` and **delegates into the unchanged `activate_device`** (same `select_for_update`, double-idempotency, `device_limit` ceiling, show-once `DeviceToken`). The enrollment-key `POST /v1/activations` path is untouched; only the caller's authentication differs.
+
+6. **Email verification IN SCOPE; 2FA DEFERRED** behind a forward-compatible seam (the `CredentialToken.purpose` enum + `status`/`role` `TextChoices` admit a future TOTP purpose/table without reshaping the schema).
+
+## Consequences
+
+- **Positive.** Consistency over novelty: every primitive already exists and is tested in-repo (`make_password`/`check_password`, HMAC fingerprints, `transaction.atomic` + `UniqueConstraint` + IntegrityError-savepoint idempotency, `record_audit_event`, `SafeAPIError`/`ErrorCode`, `KeyringSecretStore`). Opaque server-side sessions give **instant revocation** (logout, password change, seat removal) that a stateless JWT cannot, and need **no signing-key management**. The whole Logto/OIDC operational surface (IdP container/Postgres/backups/upgrades/KMS, JWKS/introspection, PKCE native client, RP-initiated logout) is dropped.
+- **Never-blank / offline-first UNCHANGED.** Identity stays entirely off the render path; account session expiry/logout never revokes the device token or blanks live output (NFR-024). Offline entitlement = full license window (DEC-005).
+- **Negative / cost.** SelahCue now owns the auth crypto and the sign-in/verify/reset UI and their correctness — the trade-off the owner accepted. `select_for_update` guarantees hold only on Postgres (prod), so the account-activation serialisation needs a Postgres-backed test. Rate-limiting/lockout is net-new (must be bounded, per the no-unbounded-growth rule).
+- **Security requirements** (full list in DEC-007 / the implementation Goal Contract): timing-safe compares only; per-IP + per-email-fingerprint throttles; session invalidation on password change (`issued_at < password_changed_at` guard); credential field names added to `redaction.py`; a dedicated security-reviewer pass on the auth/activation endpoints (carried over from ADR-0022).
+
+## Open questions (routed to product — see DEC-007)
+
+Exact `SESSION_TTL`; **self-serve web signup vs invite-only org provisioning** (where the first Admin is created); email-verify/reset token TTLs; email delivery provider; whether `seat_limit` is enforced per-user; multi-org-per-person (v1 = one email → one org via FK).

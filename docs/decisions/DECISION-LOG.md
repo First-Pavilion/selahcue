@@ -4,6 +4,34 @@ Durable record of material product/scope/architecture decisions, with traceabili
 
 ---
 
+## DEC-007 — Customer identity: traditional email/password auth (SelahCue-owned), superseding self-hosted Logto/OIDC
+
+- **Date:** 2026-08-11
+- **Stage:** Customer-identity workstream (Platform API account surface + desktop sign-in) — revises the DEC-006 technology direction
+- **Decided by:** User (product owner)
+- **Type:** Architecture (identity)
+- **Status:** DECIDED
+- **Supersedes:** DEC-006 (self-hosted Logto/OIDC). ADR-0022 (customer-identity via OIDC/Logto) → **Superseded**.
+
+**Decision.** Customer sign-in / identity is built as **traditional email + password authentication owned by SelahCue**, on the existing Django 5.2 + Strawberry Platform API — **not** a self-hosted IdP and **not** OIDC. Concretely: a new `CustomerUser` login principal (email + Django-hashed password + email-verified state) FK'd to the existing tenant `CustomerOrg`; an **opaque, server-side, hashed session token** modelled on the shipped `DeviceToken` (no JWT/JWKS); and email/password mutations on the account GraphQL surface. **Email verification is IN SCOPE now; 2FA is explicitly DEFERRED** (forward-compatible seam left, no second factor built). The org **enrollment key remains the secondary/OPTIONAL activation path** and account sign-in becomes the **primary** activation path (DEC-004/DEC-005 unchanged).
+
+**User rationale.** "Too much hassle for Logto — let's just use the authentication mode you recommended; we would handle email verification, 2FA later." Self-hosting/operating an IdP (container + its own Postgres + backups + upgrades + data residency) was judged not worth the operational cost for the current stage; building on Django's already-present password hashing and the repo's existing hashed-credential conventions is simpler to ship and operate while preserving the privacy-first, offline-first posture.
+
+**Implications.**
+- **Platform API** gains a greenfield identity layer reusing existing seams: `make_password`/`check_password` for passwords (as `AppLicenseKey.secret_hash` / `DeviceToken.token_hash` already do), HMAC-SHA256(SECRET_KEY) fingerprints for deterministic lookup, the `transaction.atomic` + `UniqueConstraint` + IntegrityError-savepoint idempotency pattern, `SafeAPIError`/`ErrorCode` with **no user-enumeration oracle**, and `record_audit_event` on every mutation. Login mints `ActorContext(kind=ActorKind.CUSTOMER, actor_id=<CustomerUser id>, org_id=<CustomerOrg id>)`, making the already-present `require_customer_org()` choke point live and **retiring `SELAHCUE_TRUST_ACTOR_HEADERS` for customers in prod**.
+- **Session model** = opaque hashed token (device-token pattern) delivered as an HttpOnly/Secure/SameSite=Strict cookie (satisfying the already-declared `customer_session_with_csrf` route contract) and/or a keychain-stored `account_token` on desktop; instantly revocable (logout, password change, seat removal). Password change revokes all sessions.
+- **Account-based device activation** (DEC-005) adds a session-authenticated path that resolves the caller's org → its active `AppLicenseKey` → the **unchanged** `activate_device` instance-limit + show-once `DeviceToken` logic, running **alongside** the untouched enrollment-key `POST /v1/activations`.
+- **Devops** DROPS the entire Logto/OIDC operational surface: no IdP container/Postgres/backups/upgrades/KMS, no JWKS/introspection, no PKCE native client, no RP-initiated logout. All `SELAHCUE_OIDC_*` / `LOGTO_*` env keys (marked PLANNED, never WIRED) are removed from `deployments.md`; new keys are `SESSION_TTL`, credential-token TTLs, and an `EMAIL_*` delivery backend (injectable seam; no SMTP creds yet).
+- **Never-blank / offline-first UNCHANGED:** offline entitlement = full license window (DEC-005); account session expiry/logout never revokes the device token or blanks live output (NFR-024).
+
+**Still open (routed to product).** Exact `SESSION_TTL` value; self-serve web signup vs invite-only org provisioning (and where the first Admin is created); email-verify/reset token TTLs; email delivery provider; whether `seat_limit` is enforced per-user; multi-org-per-person (v1 = one email → one org via FK).
+
+**Product answers (2026-08-11).** (1) **Self-serve signup** — `registerCustomerUser` creates a **new `CustomerOrg`** (status/plan TRIAL, `created_by_actor_id='self_signup'`) and its **first Admin** in one atomic op; the desktop A0/A1 design (which assumed the org exists) gains a companion sign-*up* path (FE follow-up). (2) **`SESSION_TTL` = 30 days** (refresh rotates; never shortens the offline device-entitlement window). Defaulted (not blocking, revisable): email-verify token TTL **24h**, password-reset token TTL **1h**, email delivery = injectable no-op/console seam (no SMTP creds yet), `seat_limit` enforcement **dormant**, email uniqueness **global** (one email → one org).
+
+**Reversibility.** SelahCue owns the auth crypto and UI now (the trade-off the owner accepted). The opaque-token session and `CustomerUser` schema are additive/forward-only; a future move to an IdP or to 2FA is a new workstream and does not invalidate the shipped enrollment-key or device-activation paths.
+
+---
+
 ## DEC-006 — Customer identity: self-hosted open-source IdP (Logto) via OIDC
 
 - **Date:** 2026-08-10

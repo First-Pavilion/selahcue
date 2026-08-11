@@ -2,9 +2,9 @@
 
 All hosts, secrets, and environment-specific configuration are supplied via **environment variables** — never hard-coded, never committed. This file documents **the keys** (names, purpose, whether secret, defaults). It contains **no secret values**; provide those per environment (a local `.env` that is git-ignored, your orchestrator's secret store, or the CI/host env).
 
-**Status legend:** `WIRED` = read by the current code today · `PLANNED` = introduced by [ADR-0022](docs/architecture/adr/ADR-0022-customer-identity-oidc-logto.md) (customer identity via self-hosted Logto/OIDC), to be implemented in the customer-identity workstream (epic 86ajy5v6k) · `SECRET` = never log, never commit, treat as a credential.
+**Status legend:** `WIRED` = read by the current code today · `PLANNED` = designed, not yet implemented · `DROPPED` = superseded/abandoned, kept for history · `SECRET` = never log, never commit, treat as a credential.
 
-Grounding: [DEC-004](docs/decisions/DECISION-LOG.md) (licensing/offline entitlement), [DEC-005](docs/decisions/DECISION-LOG.md) (real IdP now; offline = license window), [DEC-006](docs/decisions/DECISION-LOG.md) (self-hosted Logto/OIDC), ADR-0022. Related ops doc: [docs/ops/WINDOWS-INSTALLER.md](docs/ops/WINDOWS-INSTALLER.md).
+Grounding: [DEC-004](docs/decisions/DECISION-LOG.md) (licensing/offline entitlement), [DEC-005](docs/decisions/DECISION-LOG.md) (offline = license window), **[DEC-007](docs/decisions/DECISION-LOG.md) (traditional email/password auth, SelahCue-owned — SUPERSEDES the Logto/OIDC direction of DEC-006/ADR-0022)** / [ADR-0023](docs/architecture/adr/ADR-0023-customer-auth-email-password.md). Related ops doc: [docs/ops/WINDOWS-INSTALLER.md](docs/ops/WINDOWS-INSTALLER.md). **All `SELAHCUE_OIDC_*` / `LOGTO_*` keys below are `DROPPED` (never wired) per DEC-007.**
 
 ---
 
@@ -23,7 +23,7 @@ Grounding: [DEC-004](docs/decisions/DECISION-LOG.md) (licensing/offline entitlem
 | `SECURE_HSTS_SECONDS` | no | no | `31536000` (prod) / `0` (debug) | HSTS max-age. |
 | `SECURE_HSTS_INCLUDE_SUBDOMAINS` | no | no | `true` when not DEBUG | HSTS includeSubDomains. |
 | `SECURE_HSTS_PRELOAD` | no | no | `true` when not DEBUG | HSTS preload. |
-| `SELAHCUE_TRUST_ACTOR_HEADERS` | no | no | = `DJANGO_DEBUG` | **Dev/test bridge only** — trusts `X-SelahCue-Actor-*` headers as the caller identity. **MUST be `false`/unset in prod.** ADR-0022 replaces this with OIDC-token-derived identity. |
+| `SELAHCUE_TRUST_ACTOR_HEADERS` | no | no | = `DJANGO_DEBUG` | **Dev/test bridge only** — trusts `X-SelahCue-Actor-*` headers as the caller identity. **MUST be `false`/unset in prod.** DEC-007/ADR-0023 replace this for customers with the opaque **account session token** (`Authorization: Bearer` / the `selahcue_account_session` cookie); staff IdP is still pending. |
 
 ### 1b. Database (WIRED — `settings.py::_database_config`)
 
@@ -34,23 +34,32 @@ Grounding: [DEC-004](docs/decisions/DECISION-LOG.md) (licensing/offline entitlem
 | `DATABASE_URL` | **prod: yes** | **SECRET** (contains DB password) | — (sqlite fallback) | Postgres DSN (`postgres://user:pass@host:port/name`) for the Platform API in prod. Unset ⇒ bundled SQLite. |
 | `DB_CONN_MAX_AGE` | no | no | `60` | Persistent-connection lifetime (seconds) when `DATABASE_URL` is set. |
 
-### 1c. OIDC relying-party / resource server (PLANNED — ADR-0022, tasks 86ajy7add / 86ajy7ag8)
+### 1c. Customer account auth (WIRED — DEC-007 / ADR-0023, `apps/accounts/services.py` + `settings.py`)
 
-Proposed key names (finalise in the backend task). The Platform API validates Logto-issued access tokens (JWKS-primary; introspection for high-value ops) and maps the token `sub` → `CustomerOrg`/`AccountUser`.
+Traditional email/password auth. All keys are optional (the code falls back to the documented defaults via `getattr`); set them per environment to tune. The **HMAC pepper for session/credential-token fingerprints is `DJANGO_SECRET_KEY`** (§1a) — rotating it invalidates all live account sessions + email-verify/reset tokens (users re-login / re-request), so treat as long-lived.
 
-| Key | Required | Secret | Purpose |
-|---|---|---|---|
-| `SELAHCUE_OIDC_ISSUER` | yes | no | Logto issuer URL (e.g. `https://auth.selahcue.example/oidc`). |
-| `SELAHCUE_OIDC_AUDIENCE` | yes | no | Expected token `aud` — the API resource indicator registered in Logto. |
-| `SELAHCUE_OIDC_JWKS_URL` | no | no | JWKS endpoint (defaults to `<issuer>/jwks` — override only if non-standard). |
-| `SELAHCUE_OIDC_INTROSPECTION_URL` | no | no | Token-introspection endpoint for high-value ops (optional; else JWKS-only). |
-| `LOGTO_MGMT_ENDPOINT` | yes | no | Logto Management API base URL (for JIT provisioning / org + role management). |
-| `LOGTO_MGMT_APP_ID` | yes | no | Machine-to-machine app id the API uses to call the Logto Management API. |
-| `LOGTO_MGMT_APP_SECRET` | yes | **SECRET** | Secret for the M2M Management-API app. |
+| Key | Required | Secret | Default | Purpose |
+|---|---|---|---|---|
+| `ACCOUNT_SESSION_TTL_SECONDS` | no | no | `2592000` (30 days) | Absolute account-session lifetime (DEC-007). `refreshSession` rotates + extends. Independent of — never shortens — the offline device-entitlement window. |
+| `ACCOUNT_EMAIL_VERIFY_TTL_SECONDS` | no | no | `86400` (24h) | Email-verification token lifetime. |
+| `ACCOUNT_PASSWORD_RESET_TTL_SECONDS` | no | no | `3600` (1h) | Password-reset token lifetime. |
+| `ACCOUNT_LOGIN_LOCKOUT_THRESHOLD` | no | no | `5` | Failed logins before a per-user soft lockout. A locked account is refused with the **same `UNAUTHENTICATED`** as any failed login (never a distinct code — that would be an account-existence oracle). Durable (DB-backed on `CustomerUser`), bounded by user count — no in-memory growth. |
+| `ACCOUNT_LOGIN_LOCKOUT_SECONDS` | no | no | `900` (15 min) | Lockout duration once the threshold trips. |
+| `ACCOUNT_MIN_PASSWORD_LENGTH` | no | no | `10` | Minimum password length at signup / reset. |
+
+> **Per-IP / distributed throttling** is an **edge/proxy responsibility** (reverse proxy or WAF rate-limit on `/graphql/account`) — the app enforces the durable per-user lockout above; a shared-store (Redis/DB) per-IP throttle is a tracked hardening follow-up, deliberately not an in-process cache (would not hold across worker processes and would add an unbounded structure).
+
+> **Email delivery** ships as an injectable no-op seam (`EmailSender`) — no SMTP creds today. The concrete provider + its `EMAIL_*` keys are added **in the change that wires them** (DEC-007 defers the provider choice).
+
+### 1d. Customer identity via OIDC/Logto (DROPPED — superseded by DEC-007)
+
+The `SELAHCUE_OIDC_*` and `LOGTO_MGMT_*` relying-party keys (Logto-issued access-token validation, JWKS/introspection, M2M management) are **abandoned** per DEC-007 — never wired. Retained here only so old deploy configs referencing them are understood as no-ops. See §1c for the replacement.
 
 ---
 
-## 2. Logto — self-hosted IdP service (PLANNED — ADR-0022, task 86ajy7aa3 / DevOps)
+## 2. Logto — self-hosted IdP service (DROPPED — superseded by DEC-007)
+
+> **This entire section is abandoned per DEC-007** (traditional email/password auth, no self-hosted IdP). No Logto service is deployed and none of these env vars are used. Kept for history; the runbook `docs/ops/LOGTO-COOLIFY-DEPLOYMENT.md` is likewise superseded.
 
 The IdP is self-hosted (DEC-006). These are Logto's own env vars — see the Logto self-hosting docs for the complete set; the load-bearing ones:
 
@@ -95,7 +104,9 @@ Coolify-managed encrypted offsite backups of the Logto Postgres (identity + sign
 
 > Runtime secrets the desktop *stores* (not env): the SelahCue account/session token and provider tokens live in the **OS keychain** (`KeyringSecretStore`), never in env or files.
 
-### 3b. OIDC native client (PLANNED — ADR-0022, task 86ajy7ak8)
+### 3b. OIDC native client (DROPPED — superseded by DEC-007)
+
+> **Abandoned per DEC-007.** The desktop no longer uses OIDC/PKCE; it signs in against the account GraphQL surface and stores the returned opaque **account session token** in the OS keychain (`account_token`, via `KeyringSecretStore`). None of the `SELAHCUE_OIDC_*` keys below are used.
 
 The desktop is a **PUBLIC OIDC client** → Authorization Code + **PKCE**, **no client secret**. Proposed keys (baked into the build/config, not user secrets):
 

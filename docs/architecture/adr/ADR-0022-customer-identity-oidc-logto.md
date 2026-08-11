@@ -1,6 +1,9 @@
 # ADR-0022: Customer identity via a self-hosted open-source IdP (Logto) over OIDC
 
-- Status: Proposed
+> **⚠️ SUPERSEDED 2026-08-11 by [DEC-007](../../decisions/DECISION-LOG.md) (traditional email/password, SelahCue-owned) and ADR-0023.** The OIDC/Logto direction is abandoned. The technology-independent parts — account is the identity spine, primary account sign-in + secondary enrollment key, account-based device activation, offline entitlement = full license window, never-blank — are carried forward.
+
+
+- Status: Superseded by DEC-007 (2026-08-11)
 - Date: 2026-08-10
 - Confidence: Medium-High
 - Owner: Software Architect

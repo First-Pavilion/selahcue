@@ -18,10 +18,12 @@ from selahcue_api.apps.devices.models import (
     DeviceToken,
     DeviceTokenStatus,
 )
+from selahcue_api.apps.accounts.models import CustomerRole
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.graphql.context import (
     ActorContext,
     ActorKind,
+    require_customer_role,
     validate_idempotency_key,
 )
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
@@ -156,19 +158,22 @@ def _new_device_token(device: Device, license_key: AppLicenseKey) -> tuple[Devic
     return token, full_token
 
 
-def activate_device(data: ActivateDeviceData) -> ActivateDeviceResult:
-    """Register (or idempotently return) a device instance for a presented enrollment key and
-    issue a show-once device token. The device is its own actor (ActorKind.DEVICE) — activation
-    is authenticated by the presented key, not a staff/account session (see DEC-004)."""
-    idempotency_key = validate_idempotency_key(data.idempotency_key)
-    fingerprint = data.device_fingerprint.strip()
-    platform = data.platform.strip()
-    if not fingerprint or not platform:
-        raise _validation_error()
-
-    license_key = _resolve_license_key(data.presented_key)
-    _assert_key_activatable(license_key)
-
+def _activate_device_for_key(
+    license_key: AppLicenseKey,
+    *,
+    idempotency_key: str,
+    device_fingerprint: str,
+    platform: str,
+    app_version: str = "",
+    display_name: str = "",
+    activated_by_actor_id: str | None = None,
+    audit_actor: ActorContext | None = None,
+    source_surface: str = "desktop_v1",
+) -> ActivateDeviceResult:
+    """Core activation for an ALREADY-RESOLVED license key. Shared by the enrollment-key path
+    (activate_device) and the account-session path (activate_device_with_session) so both converge
+    on identical Device + show-once DeviceToken + instance-limit + audit behaviour — only the
+    CALLER authentication and attribution differ."""
     with transaction.atomic():
         # Lock the license-key row so all activations under one key SERIALIZE: this makes the
         # instance-limit count-then-insert atomic (no two concurrent activations can both pass a
@@ -182,7 +187,7 @@ def activate_device(data: ActivateDeviceData) -> ActivateDeviceResult:
         )
         _assert_key_activatable(license_key)
 
-        # Retry-idempotency: same presented key + client idempotency key → the same device,
+        # Retry-idempotency: same key + client idempotency key → the same device,
         # and the token is NOT re-shown (show-once).
         existing = Device.objects.filter(
             license_key=license_key, idempotency_key=idempotency_key
@@ -201,7 +206,7 @@ def activate_device(data: ActivateDeviceData) -> ActivateDeviceResult:
         # Natural identity: a known install (same fingerprint) re-enrolling with a different
         # idempotency key is still one device — return it, do not create a duplicate or a new token.
         known = Device.objects.filter(
-            license_key=license_key, device_fingerprint=fingerprint
+            license_key=license_key, device_fingerprint=device_fingerprint
         ).first()
         if known is not None:
             _assert_device_activatable(known)
@@ -226,12 +231,14 @@ def activate_device(data: ActivateDeviceData) -> ActivateDeviceResult:
             license_key=license_key,
             customer=license_key.customer,
             device_public_id=device_public_id,
-            device_fingerprint=fingerprint,
+            device_fingerprint=device_fingerprint,
             platform=platform,
-            app_version=data.app_version.strip(),
-            display_name=data.display_name.strip(),
+            app_version=app_version.strip(),
+            display_name=display_name.strip(),
             status=DeviceStatus.ACTIVE,
-            activated_by_actor_id=device_public_id,
+            # Enrollment path attributes to the device itself; the account path attributes to the
+            # activating CustomerUser (per-user device attribution, DEC-005).
+            activated_by_actor_id=activated_by_actor_id or device_public_id,
             idempotency_key=idempotency_key,
         )
         try:
@@ -247,14 +254,14 @@ def activate_device(data: ActivateDeviceData) -> ActivateDeviceResult:
             license_key.status = LicenseKeyStatus.ACTIVATED
             license_key.save(update_fields=["status", "updated_at"])
 
-        actor = ActorContext(kind=ActorKind.DEVICE, actor_id=device_public_id)
+        actor = audit_actor or ActorContext(kind=ActorKind.DEVICE, actor_id=device_public_id)
         record_audit_event(
             actor,
             action="device.activated",
             target_type="device",
             target_id=str(device.id),
             request_id=idempotency_key,
-            source_surface="desktop_v1",
+            source_surface=source_surface,
             after={
                 "license_key_id": str(license_key.id),
                 "customer_id": str(license_key.customer_id),
@@ -277,6 +284,88 @@ def activate_device(data: ActivateDeviceData) -> ActivateDeviceResult:
             full_token=full_token,
             created=True,
         )
+
+
+def activate_device(data: ActivateDeviceData) -> ActivateDeviceResult:
+    """Register (or idempotently return) a device instance for a presented enrollment key and
+    issue a show-once device token. The device is its own actor (ActorKind.DEVICE) — activation
+    is authenticated by the presented key, not a staff/account session (see DEC-004)."""
+    idempotency_key = validate_idempotency_key(data.idempotency_key)
+    fingerprint = data.device_fingerprint.strip()
+    platform = data.platform.strip()
+    if not fingerprint or not platform:
+        raise _validation_error()
+
+    license_key = _resolve_license_key(data.presented_key)
+    _assert_key_activatable(license_key)
+    return _activate_device_for_key(
+        license_key,
+        idempotency_key=idempotency_key,
+        device_fingerprint=fingerprint,
+        platform=platform,
+        app_version=data.app_version,
+        display_name=data.display_name,
+    )
+
+
+@dataclass(frozen=True)
+class ActivateDeviceWithSessionData:
+    idempotency_key: str
+    device_fingerprint: str
+    platform: str
+    app_version: str = ""
+    display_name: str = ""
+
+
+def _resolve_org_active_license_key(org_id: str) -> AppLicenseKey:
+    """Resolve the org's currently-activatable license key (DEC-005 account path). NOT_FOUND if the
+    org has no active key — no oracle on which orgs/keys exist. Picks the furthest-out expiry when
+    several are active (best entitlement window)."""
+    now = timezone.now()
+    key = (
+        AppLicenseKey.objects.select_related("customer")
+        .filter(
+            customer_id=org_id,
+            status__in=ACTIVATABLE_KEY_STATUSES,
+            starts_at__lte=now,
+            expires_at__gt=now,
+        )
+        .order_by("-expires_at")
+        .first()
+    )
+    if key is None:
+        raise SafeAPIError(ErrorCode.NOT_FOUND)
+    return key
+
+
+def activate_device_with_session(
+    actor: ActorContext | None, data: ActivateDeviceWithSessionData
+) -> ActivateDeviceResult:
+    """Account-based device activation (DEC-005): a signed-in ADMIN customer activates a device
+    WITHOUT the enrollment key — identity comes from their session. Delegates into the shared core,
+    so the resulting Device + show-once DeviceToken + instance limit are identical to the enrollment
+    path; only the caller auth + per-user attribution differ. Runs ALONGSIDE the untouched
+    POST /v1/activations enrollment path."""
+    # Only Administrators manage devices (FR-137).
+    checked = require_customer_role(actor, CustomerRole.ADMIN)
+    idempotency_key = validate_idempotency_key(data.idempotency_key)
+    fingerprint = data.device_fingerprint.strip()
+    platform = data.platform.strip()
+    if not fingerprint or not platform:
+        raise _validation_error()
+
+    license_key = _resolve_org_active_license_key(checked.org_id)
+    return _activate_device_for_key(
+        license_key,
+        idempotency_key=idempotency_key,
+        device_fingerprint=fingerprint,
+        platform=platform,
+        app_version=data.app_version,
+        display_name=data.display_name,
+        activated_by_actor_id=checked.actor_id,
+        audit_actor=checked,
+        source_surface="account_graphql",
+    )
 
 
 def authenticate_device_token(presented_token: str) -> DeviceToken:

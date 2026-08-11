@@ -27,6 +27,13 @@ RESTRICTED_PAYLOAD_FIELDS = frozenset(
         "code_verifier",
         "authorization_code",
         "client_secret",
+        # Traditional email/password auth (DEC-007 / ADR-0023). Customer credentials must
+        # never appear in an API payload, audit `after`, or log. The only permitted one-time
+        # secret is the direct show-once login/refresh session-token response.
+        "password",
+        "password_hash",
+        "new_password",
+        "current_password",
     }
 )
 
