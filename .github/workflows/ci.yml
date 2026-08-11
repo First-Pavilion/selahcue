@@ -223,6 +223,23 @@ jobs:
             librsvg2-dev libx11-dev libxkbcommon-dev
       - name: Format
         run: cargo fmt --check
+      - name: Stage Tauri sidecar/resource placeholders (compile-check only)
+        # tauri-build validates that the externalBin sidecar (`selahcue-output`) and the NDI
+        # resource dll exist at build time. This job COMPILE-checks the operator (it does not
+        # bundle the app), so empty placeholders satisfy the existence check — the real sidecar is
+        # built in the packaging/release flow. Without this the build script fails on CI
+        # ("resource path `binaries/selahcue-output-<triple>` doesn't exist").
+        shell: bash
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p binaries
+          if [[ "$triple" == *windows* ]]; then
+            : > "binaries/selahcue-output-${triple}.exe"
+          else
+            : > "binaries/selahcue-output-${triple}"
+          fi
+          : > "binaries/Processing.NDI.Lib.x64.dll"
+          echo "staged Tauri placeholders for ${triple}"
       - name: Check + Clippy + Test
         run: |
           cargo check
