@@ -735,6 +735,13 @@ DRIVER = r"""
       // Clean up the text element so later element-count assertions are unaffected.
       el("td-el-del").click(); el("td-el-del").click();
 
+      // The Delete KEY removes the selected element in ONE press (global capture handler), distinct
+      // from the button's two-click arm. Add a throwaway shape and delete it with a single Delete.
+      addShape();
+      var nKbdDel = applied().elements.length;
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"Delete", bubbles:true}));
+      ok(applied().elements.length===nKbdDel-1, "TD: a single Delete keypress removes the selected element");
+
       // FIX: click empty canvas deselects back to region editing.
       var bx = el("td-canvas-box").getBoundingClientRect();
       el("td-canvas-box").dispatchEvent(new PointerEvent("pointerdown",{clientX:bx.left+1,clientY:bx.top+1,bubbles:true}));
@@ -1413,7 +1420,7 @@ DRIVER = r"""
       // === Presentation & Media surface (Design 2.0, node 329:124) ===
       var pmNav = document.querySelector('.nav-item[data-surface="presentation"]');
       ok(!!pmNav && pmNav.getAttribute("aria-disabled") !== "true", "PM: the Presentation nav item is ACTIVATED (not a disabled 'later' affordance)");
-      ok(pmNav && pmNav.dataset.nodigit, "PM: the Presentation item is data-nodigit (keeps the ⌘1–6 map intact)");
+      ok(pmNav && !pmNav.dataset.nodigit && pmNav.querySelector(".nav-key").textContent === "⌘2", "PM: the Presentation item carries ⌘2 (menu-order digit)");
       pmNav.click();
       ok(el("surface-presentation").classList.contains("active"), "PM: clicking the nav item activates #surface-presentation");
       // --- Track B: browse/present/edit flow (story 86ajxeq17) ---
@@ -1698,10 +1705,26 @@ DRIVER = r"""
       document.getElementById("cmd-input").dispatchEvent(new Event("input"));
       ok(Array.from(document.querySelectorAll("#cmd-list li")).some(function(li){ return /Add slide/.test(li.textContent); }), "PM: the command palette offers 'Add slide' while Presentation is active");
       window.__cmdPalette.closeAll();
-      // ⌘⇧P jumps to the Presentation surface from elsewhere.
+
+      // --- Command palette sections (Design 2.0): ACTIONS / NAVIGATE / SCRIPTURES, with the whole
+      //     top-level app menu mirrored under NAVIGATE carrying its ⌘ badges. ---
+      window.__cmdPalette.open();
+      el("cmd-input").value = ""; el("cmd-input").dispatchEvent(new Event("input"));
+      var pGroups = Array.from(document.querySelectorAll("#cmd-list .cmd-group")).map(function(g){ return g.textContent; });
+      ok(pGroups.indexOf("ACTIONS") >= 0 && pGroups.indexOf("NAVIGATE") >= 0, "Palette: renders ACTIONS + NAVIGATE section headers");
+      ok(document.querySelector("#cmd-list .cmd-item").textContent.indexOf("Go Live") >= 0, "Palette: Go Live is the first ACTIONS item");
+      var pItems = Array.from(document.querySelectorAll("#cmd-list .cmd-item")).map(function(li){ return li.textContent; });
+      ok(pItems.some(function(t){ return /Go to Presentation/.test(t) && /⌘2/.test(t); }), "Palette: NAVIGATE mirrors 'Go to Presentation' with its ⌘2 badge");
+      ok(["Live Console","Presentation","Theme Designer","Screens & Outputs","Service Plan","Transcript & Notes","Settings"].every(function(n){ return pItems.some(function(t){ return t.indexOf("Go to "+n) >= 0; }); }), "Palette: NAVIGATE lists all seven top-level app menu items");
+      el("cmd-input").value = "grace"; el("cmd-input").dispatchEvent(new Event("input"));
+      ok(Array.from(document.querySelectorAll("#cmd-list .cmd-group")).some(function(g){ return g.textContent === "SCRIPTURES"; }) &&
+         Array.from(document.querySelectorAll("#cmd-list .cmd-item")).some(function(li){ return /Search "grace" in Bible/.test(li.textContent); }),
+         "Palette: a typed query adds a SCRIPTURES 'Search … in Bible' entry");
+      window.__cmdPalette.closeAll();
+      // ⌘2 jumps to the Presentation surface from elsewhere (menu-order digit).
       document.querySelector('.nav-item[data-surface="console"]').click();
-      document.dispatchEvent(new KeyboardEvent("keydown", {key:"P", metaKey:true, shiftKey:true, bubbles:true}));
-      ok(el("surface-presentation").classList.contains("active"), "PM: ⌘⇧P jumps to the Presentation surface");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"2", metaKey:true, bubbles:true}));
+      ok(el("surface-presentation").classList.contains("active"), "PM: ⌘2 jumps to the Presentation surface");
       // The Present-ed slide shows a non-colour-only LIVE badge + names 'live' in its aria-label (review #4).
       await waitFor(function(){ return !!document.querySelector("#pm-slide-list .pm-slide.live .pm-slide-live-badge"); });
       var liveCard = document.querySelector("#pm-slide-list .pm-slide.live .pm-slide-card");
@@ -1921,14 +1944,15 @@ DRIVER = r"""
       // (The '‹ Back to editor' affordance was removed — the Library is the landing; opening a card
       //  goes to the grid, story 86ajxeq17.)
 
-      // The ⌘1-6 surface map is UNCHANGED by activating Presentation: ⌘2 still → Theme Designer.
-      document.dispatchEvent(new KeyboardEvent("keydown", {key:"2", metaKey:true, bubbles:true}));
+      // The ⌘1–7 surface map follows menu order: ⌘2 → Presentation, ⌘3 → Theme Designer.
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"3", metaKey:true, bubbles:true}));
       ok(el("surface-theme-designer").classList.contains("active") && !el("surface-presentation").classList.contains("active"),
-         "PM: ⌘2 still routes to Theme Designer (data-nodigit keeps the ⌘1–6 map intact)");
+         "PM: ⌘3 routes to Theme Designer (menu-order ⌘1–7 map)");
 
-      // === Pre-service Check surface (Design 2.0, Figma 344:124): readiness checklist ===
-      document.querySelector('.nav-item[data-surface="preservice"]').click();
-      ok(el("surface-preservice").classList.contains("active"), "Pre-service: nav opens the surface");
+      // === Pre-service Check (moved into the Settings sidebar, Design 2.0) ===
+      document.querySelector('.nav-item[data-surface="settings"]').click();
+      document.querySelector('.set-nav[data-setpage="preservice"]').click();
+      ok(el("surface-preservice").classList.contains("active"), "Pre-service: the Settings sidebar entry opens the surface");
       await waitFor(function(){ return document.querySelectorAll("#ps-sections .ps-row").length >= 10 && el("ps-passed").textContent !== "0"; });
       ok(document.querySelectorAll("#ps-sections .ps-row").length === 10,
          "Pre-service: all 10 checks render across the four sections");
@@ -2005,7 +2029,7 @@ DRIVER = r"""
       ok(el("surface-console").classList.contains("active"), "Pre-service: Start service goes to the Live Console");
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"K", metaKey:true, shiftKey:true, bubbles:true}));
       ok(el("surface-preservice").classList.contains("active"),
-         "Pre-service: ⌘⇧K jumps to the surface (data-nodigit keeps the ⌘1–6 map intact)");
+         "Pre-service: ⌘⇧K jumps to the surface (now reached from the Settings sidebar)");
 
       // === Remote Control (Figma 359:124) — now reached from Settings › Network & Mobile (it left the
       // top-nav, Figma 336:124), not a top-level nav item: pair/approve/role/revoke ===
@@ -2038,7 +2062,7 @@ DRIVER = r"""
       document.querySelector('.nav-item[data-surface="console"]').click();
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"R", metaKey:true, shiftKey:true, bubbles:true}));
       ok(el("surface-settings").classList.contains("active") && !document.getElementById("set-page-network").hidden,
-         "Remote: ⌘⇧R now opens Settings › Network & Mobile (Remote left the top-nav; ⌘1–6 map intact)");
+         "Remote: ⌘⇧R now opens Settings › Network & Mobile (Remote left the top-nav; ⌘1–7 map intact)");
 
       // === Service Plan builder (86ajxxuz9, Figma 614:124) — the `plan` surface is a real
       // builder (palette · run sheet · inspector) with link status + link/unlink flows, and a

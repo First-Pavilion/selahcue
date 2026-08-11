@@ -30,36 +30,32 @@
           aria-current="page"><span class="nav-ico" aria-hidden="true">▲</span><span class="nav-txt"><span
               class="nav-t">Live Console</span><span class="nav-d">Operate the service live</span></span><span
             class="nav-key">⌘1</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="preservice" data-nodigit="1"><span
-            class="nav-ico" aria-hidden="true">✓</span><span class="nav-txt"><span class="nav-t">Pre-service
-              Check</span><span class="nav-d">Readiness before you start</span></span><span
-            class="nav-key">⌘⇧K</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="presentation" data-nodigit="1"><span
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="presentation" accesskey="2"><span
             class="nav-ico" aria-hidden="true">▦</span><span class="nav-txt"><span
               class="nav-t">Presentation</span><span class="nav-d">Slides &amp; media</span></span><span
-            class="nav-key">⌘⇧P</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="theme-designer" accesskey="2"><span
+            class="nav-key">⌘2</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="theme-designer" accesskey="3"><span
             class="nav-ico" aria-hidden="true">◈</span><span class="nav-txt"><span class="nav-t">Theme
-              Designer</span><span class="nav-d">Output templates</span></span><span class="nav-key">⌘2</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="screens" accesskey="3"><span
+              Designer</span><span class="nav-d">Output templates</span></span><span class="nav-key">⌘3</span></button>
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="screens" accesskey="4"><span
             class="nav-ico" aria-hidden="true">▤</span><span class="nav-txt"><span class="nav-t">Screens &amp;
               Outputs</span><span class="nav-d">Displays &amp; health</span></span><span
-            class="nav-key">⌘3</span></button>
+            class="nav-key">⌘4</span></button>
         <!-- Remote Control is no longer a top-level nav item (App Navigation, Figma 336:124). It is
              reached from Settings › Network & Mobile → "Manage devices" (the #surface-remote surface
-             stays; ⌘⇧R now opens Settings › Network & Mobile). -->
-
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="plan" accesskey="4"><span class="nav-ico"
+             stays; ⌘⇧R now opens Settings › Network & Mobile). Pre-service Check likewise moved off the
+             top nav into the Settings sidebar (still reachable via ⌘⇧K). -->
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="plan" accesskey="5"><span class="nav-ico"
             aria-hidden="true">☰</span><span class="nav-txt"><span class="nav-t">Service Plan</span><span
-              class="nav-d">Order of service</span></span><span class="nav-key">⌘4</span></button>
+              class="nav-d">Order of service</span></span><span class="nav-key">⌘5</span></button>
         <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" data-focus="transcript"
           accesskey="6"><span class="nav-ico" aria-hidden="true">◎</span><span class="nav-txt"><span
               class="nav-t">Transcript &amp; Notes</span><span class="nav-d">Live transcript · in
-              Console</span></span><span class="nav-key">⌘5</span></button>
+              Console</span></span><span class="nav-key">⌘6</span></button>
         <div class="menu-div" role="separator"></div>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="settings" accesskey="5"><span
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="settings" accesskey="7"><span
             class="nav-ico" aria-hidden="true">⚙</span><span class="nav-txt"><span class="nav-t">Settings</span><span
-              class="nav-d">Providers · privacy · network</span></span><span class="nav-key">⌘6</span></button>
+              class="nav-d">Providers · privacy · network</span></span><span class="nav-key">⌘7</span></button>
         <div class="menu-foot"><button class="menu-foot-btn" type="button" data-open="palette"><span
               class="mfk">⌘K</span> Command palette</button><button class="menu-foot-btn" type="button"
             data-open="shortcuts">Shortcuts</button></div>
@@ -963,6 +959,7 @@
         <nav class="set-side" aria-label="Settings sections">
           <div class="set-side-h">SETTINGS</div>
           <button class="set-nav" data-setpage="general" type="button"><span class="set-ico" aria-hidden="true">⚙</span> General</button>
+          <button class="set-nav" data-setpage="preservice" type="button"><span class="set-ico" aria-hidden="true">✓</span> Pre-service Check</button>
           <button class="set-nav active" data-setpage="providers" type="button" aria-current="page"><span class="set-ico" aria-hidden="true">🛡</span> Providers &amp; Privacy</button>
           <button class="set-nav" data-setpage="scripture" type="button"><span class="set-ico" aria-hidden="true">✦</span> Scripture &amp; Translations</button>
           <button class="set-nav" data-setpage="outputs" type="button"><span class="set-ico" aria-hidden="true">🖥</span> Outputs &amp; Displays</button>
@@ -1225,8 +1222,12 @@
           <dd>App menu</dd>
         </div>
         <div class="sc-row">
-          <dt><kbd>⌘1</kbd>–<kbd>6</kbd></dt>
+          <dt><kbd>⌘1</kbd>–<kbd>7</kbd></dt>
           <dd>Jump to a section</dd>
+        </div>
+        <div class="sc-row">
+          <dt><kbd>⌘⇧K</kbd></dt>
+          <dd>Pre-service Check (in Settings)</dd>
         </div>
       </dl>
     </div>

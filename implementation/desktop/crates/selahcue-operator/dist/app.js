@@ -1223,7 +1223,13 @@
         const side = document.querySelector("#surface-settings .set-side");
         if (!side) return;
         side.querySelectorAll(".set-nav").forEach((b) => {
-          b.onclick = () => setSettingsPage(b.dataset.setpage);
+          // Pre-service Check lives in the Settings sidebar but is a full surface (driven by
+          // preservice.js) — open it directly rather than routing to a Settings sub-page.
+          if (b.dataset.setpage === "preservice") {
+            b.onclick = () => { closeAppMenu(); showSurface("preservice"); };
+          } else {
+            b.onclick = () => setSettingsPage(b.dataset.setpage);
+          }
         });
         const openRemote = document.getElementById("set-open-remote");
         if (openRemote) openRemote.onclick = () => showSurface("remote"); // Network & Mobile → devices
@@ -2329,10 +2335,11 @@
           }
           return;
         }
-        // Delete the selected element.
+        // Delete the selected element (single press — the global capture handler normally gets
+        // here first; this is the focused-canvas fallback).
         if ((e.key === "Delete" || e.key === "Backspace") && tdActiveIsEl()) {
           e.preventDefault();
-          tdDeleteEl();
+          tdDeleteElNow();
           return;
         }
         const d = { ArrowLeft: [-10, 0], ArrowRight: [10, 0], ArrowUp: [0, -10], ArrowDown: [0, 10] }[e.key];
@@ -2653,26 +2660,34 @@
       // z-order via drag-and-drop; tdArrange still backs the keyboard chords + context menu.)
 
       // Delete an element (two-click confirm, mirroring the saved-theme delete pattern).
-      function tdDeleteEl() {
+      // Immediate delete (no arm) — used by the Delete/Backspace key: a keypress is already a
+      // deliberate action, so it removes the selected element in one press.
+      function tdDeleteElNow() {
         if (!tdActiveIsEl()) return;
-        const btn = document.getElementById("td-el-del");
-        if (!tdElDelArm) {
-          tdElDelArm = true;
-          btn.textContent = "Click again to delete";
-          tdAnnounce("Press Delete again to remove this element.");
-          clearTimeout(tdElDelTimer);
-          tdElDelTimer = setTimeout(() => { tdElDelArm = false; btn.textContent = "Delete element"; }, 3000);
-          return;
-        }
         clearTimeout(tdElDelTimer);
         tdElDelArm = false;
-        btn.textContent = "Delete element";
+        const btn = document.getElementById("td-el-del");
+        if (btn) btn.textContent = "Delete element";
         const i = tdSelEl;
         tdEls().splice(i, 1);
         tdSelEl = tdEls().length ? Math.min(i, tdEls().length - 1) : -1;
         tdSync();
         tdPreview();
         tdAnnounce("Element deleted");
+      }
+      // Button path keeps a two-click arm — a stray MOUSE click shouldn't destroy work.
+      function tdDeleteEl() {
+        if (!tdActiveIsEl()) return;
+        const btn = document.getElementById("td-el-del");
+        if (!tdElDelArm) {
+          tdElDelArm = true;
+          btn.textContent = "Click again to delete";
+          tdAnnounce("Click again to remove this element.");
+          clearTimeout(tdElDelTimer);
+          tdElDelTimer = setTimeout(() => { tdElDelArm = false; btn.textContent = "Delete element"; }, 3000);
+          return;
+        }
+        tdDeleteElNow();
       }
       document.getElementById("td-el-del").onclick = tdDeleteEl;
       document.getElementById("td-el-replace").onclick = () => tdPickImage(true);
@@ -3549,7 +3564,7 @@
           if (window.__cmdPalette) window.__cmdPalette.open();
           return;
         }
-        // A destructive-confirm alertdialog is modal: suppress surface navigation (⌘1–6 / ⌘⇧P) and
+        // A destructive-confirm alertdialog is modal: suppress surface navigation (⌘1–7) and
         // everything below it while it is up (its own capture listener handles Esc + the Tab trap).
         // The emergency blackout / clear-all CHORDS above still pierce — that is deliberate safety.
         if (document.querySelector(".pm-confirm-back")) return;
@@ -3564,12 +3579,9 @@
           }
           return;
         }
-        // Global ⌘/Ctrl+1–6 jump to the six navigable sections — makes the menu's ⌘N badges
-        // and the Shortcuts reference REAL (they map by menu order; the disabled "Presentation"
-        // item carries no number, so it is filtered out). Works whether the menu is open or not.
-        if (mod && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "6") {
-          // The Presentation item is navigable but `data-nodigit` (it carries no ⌘-number, so it
-          // never shifts the six ⌘1–6 targets — its shortcut is ⌘⇧P below).
+        // Global ⌘/Ctrl+1–7 jump to the seven navigable sections in menu order — makes the menu's
+        // ⌘N badges and the Shortcuts reference REAL. Works whether the menu is open or not.
+        if (mod && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "7") {
           const targets = navItems.filter(
             (it) =>
               it.dataset.surface &&
@@ -3585,14 +3597,7 @@
             return;
           }
         }
-        // ⌘/Ctrl+⇧+P jumps to the Presentation surface (it carries no ⌘-digit — see the filter).
-        if (mod && e.shiftKey && (e.key === "p" || e.key === "P")) {
-          e.preventDefault();
-          disarm();
-          closeAppMenu();
-          showSurface("presentation");
-          return;
-        }
+        // (Presentation now carries ⌘2 as a normal menu-order digit — no separate ⌘⇧P chord.)
         // ⌘/Ctrl+⇧+R opens Settings › Network & Mobile (Remote Control left the top-nav — Figma
         // 336:124; its surface is reached from there via "Manage devices").
         if (mod && e.shiftKey && (e.key === "r" || e.key === "R")) {
@@ -3603,7 +3608,8 @@
           if (typeof setSettingsPage === "function") setSettingsPage("network");
           return;
         }
-        // ⌘/Ctrl+⇧+K jumps to the Pre-service Check surface (data-nodigit — no ⌘-number).
+        // ⌘/Ctrl+⇧+K jumps to Pre-service Check (moved into the Settings sidebar — the surface
+        // itself stays, so the shortcut still opens it directly).
         if (mod && e.shiftKey && (e.key === "k" || e.key === "K")) {
           e.preventDefault();
           disarm();
@@ -3627,6 +3633,30 @@
         if (isMenuOpen()) {
           if (e.key !== "Escape") disarm();
           return;
+        }
+        // Delete / Backspace removes the SELECTED element in the element editors (Theme Designer /
+        // Presentation) — regardless of which sub-control holds focus, as long as the operator is
+        // not typing in a field. Runs BEFORE the console-only guard below (these surfaces aren't the
+        // console). stopPropagation so the surfaces' own Delete handlers don't ALSO fire (a bubble
+        // re-run would double-delete on the Presentation canvas).
+        if (e.key === "Delete" || e.key === "Backspace") {
+          const t = e.target || {};
+          const typing = t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable;
+          if (!typing) {
+            const onTD = document.getElementById("surface-theme-designer").classList.contains("active");
+            const onPM = document.getElementById("surface-presentation").classList.contains("active");
+            if (onTD && typeof tdActiveIsEl === "function" && tdActiveIsEl()) {
+              e.preventDefault(); e.stopPropagation(); disarm();
+              tdDeleteElNow();
+              return;
+            }
+            const pmSel = (typeof pmDv !== "undefined" && pmDv && pmDv.slide) ? pmDv.slide.selected_element : null;
+            if (onPM && pmSel != null && typeof pmDeleteElement === "function") {
+              e.preventDefault(); e.stopPropagation(); disarm();
+              pmDeleteElement(pmSel);
+              return;
+            }
+          }
         }
         // Transport keys (Space/Enter/arrows/b/Backspace) act on the LIVE CONSOLE
         // ONLY — never while a config surface (Screens/Settings/…) is active, so
@@ -4413,36 +4443,72 @@
         if (!palette || !input || !listEl) return;
         const emptyEl = palette.querySelector(".cmd-empty");
 
-        const commands = () => {
+        // Commands are grouped by `section`; render() lays them out under ACTIONS / NAVIGATE /
+        // SCRIPTURES headers (Design 2.0 command-palette). Same host commands as before — just
+        // sectioned, badged, and with the whole top-level app menu mirrored under NAVIGATE.
+        const commands = (rawQ) => {
+          const q = (rawQ || "").trim();
           const cmds = [];
-          navItems.forEach((it) => {
-            if (!it.dataset.surface || it.getAttribute("aria-disabled") === "true") return;
-            const t = it.querySelector(".nav-t");
-            const name = (t ? t.textContent : it.textContent).trim();
-            cmds.push({ label: "Go to " + name, ico: "→", run: () => navGo(it) });
-          });
-          cmds.push({ label: "Go Live", ico: "●", sub: "⏎", run: () => act(() => invoke("go_live")) });
-          cmds.push({ label: "Next item", ico: "▶", sub: "Space", run: () => act(() => invoke("next")) });
-          cmds.push({ label: "Previous item", ico: "◀", sub: "←", run: () => act(() => invoke("previous")) });
-          cmds.push({ label: "Blackout output", ico: "■", sub: "B", run: () => toggleBlackout() });
-          cmds.push({ label: "Clear output", ico: "✕", sub: "Esc Esc", run: () => clearAll() });
+          // ACTIONS — transport + emergency, keyboard-first parity.
+          cmds.push({ section: "ACTIONS", label: "Go Live", ico: "▶", sub: "⏎", run: () => act(() => invoke("go_live")) });
+          cmds.push({ section: "ACTIONS", label: "Blackout output", ico: "■", sub: "B", run: () => toggleBlackout() });
+          cmds.push({ section: "ACTIONS", label: "Clear all layers", ico: "✕", sub: "Esc Esc", run: () => clearAll() });
+          cmds.push({ section: "ACTIONS", label: "Start service timer", ico: "⏱", run: () => act(() => invoke("start_timer", { seconds: 300 })) });
+          cmds.push({ section: "ACTIONS", label: "Next item", ico: "»", sub: "Space", run: () => act(() => invoke("next")) });
+          cmds.push({ section: "ACTIONS", label: "Previous item", ico: "«", sub: "←", run: () => act(() => invoke("previous")) });
           // Presentation-surface actions are offered only while that surface is active (they act
           // on the authored deck) — keyboard-first parity for the slide editor (FR-021/022).
           const pmActive = document.getElementById("surface-presentation");
           if (pmActive && pmActive.classList.contains("active") && typeof pmMode !== "undefined") {
             if (pmMode === "grid") {
               // Grid mode owns presenting — present the cursor slide (double-click / Enter equivalent).
-              cmds.push({ label: "Present slide", ico: "▶", run: () => { if (typeof pmGridGoLive === "function") pmGridGoLive(pmGridCursor); } });
+              cmds.push({ section: "ACTIONS", label: "Present slide", ico: "▶", run: () => { if (typeof pmGridGoLive === "function") pmGridGoLive(pmGridCursor); } });
             } else if (pmMode === "editor") {
-              cmds.push({ label: "Add slide", ico: "+", run: () => { if (typeof pmAddSlide === "function") pmAddSlide(); } });
-              cmds.push({ label: "Present slide", ico: "▶", run: () => { if (typeof pmPresent === "function") pmPresent(); } });
-              cmds.push({ label: "Undo slide edit", ico: "↶", sub: "⌘Z", run: () => { if (typeof pmUndo === "function") pmUndo(); } });
-              cmds.push({ label: "Redo slide edit", ico: "↷", sub: "⌘⇧Z", run: () => { if (typeof pmRedo === "function") pmRedo(); } });
+              cmds.push({ section: "ACTIONS", label: "Add slide", ico: "+", run: () => { if (typeof pmAddSlide === "function") pmAddSlide(); } });
+              cmds.push({ section: "ACTIONS", label: "Present slide", ico: "▶", run: () => { if (typeof pmPresent === "function") pmPresent(); } });
+              cmds.push({ section: "ACTIONS", label: "Undo slide edit", ico: "↶", sub: "⌘Z", run: () => { if (typeof pmUndo === "function") pmUndo(); } });
+              cmds.push({ section: "ACTIONS", label: "Redo slide edit", ico: "↷", sub: "⌘⇧Z", run: () => { if (typeof pmRedo === "function") pmRedo(); } });
             }
           }
-          cmds.push({ label: "Keyboard shortcuts", ico: "⌨", run: () => openShortcuts() });
+          cmds.push({ section: "ACTIONS", label: "Keyboard shortcuts", ico: "⌨", run: () => openShortcuts() });
+          // NAVIGATE — the whole top-level app menu, mirrored with each item's real icon + ⌘ badge
+          // (read from the menu DOM, so it stays in sync with the ⌘1–⌘7 order automatically).
+          navItems.forEach((it) => {
+            if (!it.dataset.surface || it.getAttribute("aria-disabled") === "true") return;
+            const t = it.querySelector(".nav-t");
+            // Collapse internal whitespace — some nav labels wrap across lines in the markup
+            // (e.g. "Screens &\n Outputs"), which textContent would otherwise carry into the label.
+            const name = (t ? t.textContent : it.textContent).replace(/\s+/g, " ").trim();
+            const icoEl = it.querySelector(".nav-ico");
+            const keyEl = it.querySelector(".nav-key");
+            cmds.push({
+              section: "NAVIGATE",
+              label: "Go to " + name,
+              ico: icoEl ? icoEl.textContent : "→",
+              sub: keyEl ? keyEl.textContent : "",
+              run: () => navGo(it),
+            });
+          });
+          // Pre-service Check left the top nav (now in the Settings sidebar) — keep it reachable
+          // from the palette, and surface its ⌘⇧K shortcut.
+          cmds.push({ section: "NAVIGATE", label: "Go to Pre-service Check", ico: "✓", sub: "⌘⇧K", run: () => showSurface("preservice") });
+          // SCRIPTURES — a live Bible lookup for the typed query, reusing the console's scripture_search.
+          if (q) {
+            cmds.push({
+              section: "SCRIPTURES",
+              label: 'Search "' + q + '" in Bible',
+              ico: "✦",
+              run: () => {
+                showSurface("console");
+                if (typeof window.__selectContentTab === "function") window.__selectContentTab("scriptures", true);
+                const sq = document.getElementById("scripture-q");
+                if (sq) { sq.value = q; sq.dispatchEvent(new Event("input")); sq.focus(); }
+              },
+            });
+          }
           return cmds;
         };
+        const SECTION_ORDER = ["ACTIONS", "NAVIGATE", "SCRIPTURES"];
 
         let filtered = [];
         let active = 0;
@@ -4453,7 +4519,9 @@
           else input.removeAttribute("aria-activedescendant");
         };
         const paint = () => {
-          Array.from(listEl.children).forEach((li, i) => {
+          // Only the .cmd-item rows are selectable — the .cmd-group headers are skipped, so the
+          // active index maps 1:1 onto `filtered`.
+          listEl.querySelectorAll(".cmd-item").forEach((li, i) => {
             const on = i === active;
             li.classList.toggle("active", on);
             li.setAttribute("aria-selected", on ? "true" : "false");
@@ -4462,31 +4530,47 @@
           syncActiveDescendant();
         };
         const render = () => {
-          const q = input.value.trim().toLowerCase();
-          filtered = commands().filter((c) => !q || c.label.toLowerCase().includes(q));
-          if (active >= filtered.length) active = Math.max(0, filtered.length - 1);
+          const raw = input.value.trim();
+          const q = raw.toLowerCase();
+          const matched = commands(raw).filter((c) => !q || c.label.toLowerCase().includes(q));
+          if (active >= matched.length) active = Math.max(0, matched.length - 1);
+          // `filtered` (arrow-nav + runAt index into it) is rebuilt in RENDER order = section order,
+          // so an inserted section header never shifts the selection map.
+          filtered = [];
           listEl.innerHTML = "";
-          filtered.forEach((c, i) => {
-            const li = document.createElement("li");
-            li.className = "cmd-item" + (i === active ? " active" : "");
-            li.id = "cmd-opt-" + i;
-            li.setAttribute("role", "option");
-            li.setAttribute("aria-selected", i === active ? "true" : "false");
-            const ico = document.createElement("span");
-            ico.className = "cmd-item-ico"; ico.setAttribute("aria-hidden", "true");
-            ico.textContent = c.ico || "•";
-            const label = document.createElement("span");
-            label.textContent = c.label; // command labels are static, but textContent regardless
-            li.appendChild(ico);
-            li.appendChild(label);
-            if (c.sub) {
-              const s = document.createElement("span");
-              s.className = "cmd-item-sub"; s.textContent = c.sub;
-              li.appendChild(s);
-            }
-            li.addEventListener("mousemove", () => { if (active !== i) { active = i; paint(); } });
-            li.addEventListener("click", () => runAt(i));
-            listEl.appendChild(li);
+          SECTION_ORDER.forEach((sec) => {
+            const items = matched.filter((c) => (c.section || "ACTIONS") === sec);
+            if (!items.length) return;
+            const head = document.createElement("li");
+            head.className = "cmd-group";
+            head.setAttribute("role", "presentation");
+            head.setAttribute("aria-hidden", "true");
+            head.textContent = sec;
+            listEl.appendChild(head);
+            items.forEach((c) => {
+              const i = filtered.length;
+              filtered.push(c);
+              const li = document.createElement("li");
+              li.className = "cmd-item" + (i === active ? " active" : "");
+              li.id = "cmd-opt-" + i;
+              li.setAttribute("role", "option");
+              li.setAttribute("aria-selected", i === active ? "true" : "false");
+              const ico = document.createElement("span");
+              ico.className = "cmd-item-ico"; ico.setAttribute("aria-hidden", "true");
+              ico.textContent = c.ico || "•";
+              const label = document.createElement("span");
+              label.textContent = c.label; // command labels are static, but textContent regardless
+              li.appendChild(ico);
+              li.appendChild(label);
+              if (c.sub) {
+                const s = document.createElement("span");
+                s.className = "cmd-item-sub"; s.textContent = c.sub;
+                li.appendChild(s);
+              }
+              li.addEventListener("mousemove", () => { if (active !== i) { active = i; paint(); } });
+              li.addEventListener("click", () => runAt(i));
+              listEl.appendChild(li);
+            });
           });
           if (emptyEl) emptyEl.hidden = filtered.length > 0;
           syncActiveDescendant();
