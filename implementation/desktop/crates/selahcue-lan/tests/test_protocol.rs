@@ -464,6 +464,8 @@ fn transcript_and_detection_view_fields_are_additive() {
             reference: "John 3:16".into(),
             text: "For God so loved the world".into(),
             confidence: None,
+            translation: String::new(),
+            source_segment: None,
         }],
     };
     assert_eq!(
@@ -476,6 +478,8 @@ fn transcript_and_detection_view_fields_are_additive() {
         reference: "Jude 3".into(),
         text: String::new(),
         confidence: None,
+        translation: String::new(),
+        source_segment: None,
     };
     assert_eq!(to_json(&bare).unwrap(), r#"{"id":1,"reference":"Jude 3"}"#);
 }
@@ -491,6 +495,8 @@ fn detection_confidence_is_additive() {
         reference: "Romans 8:28".into(),
         text: "And we know".into(),
         confidence: Some(94),
+        translation: String::new(),
+        source_segment: None,
     };
     assert_eq!(
         to_json(&scored).unwrap(),

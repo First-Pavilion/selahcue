@@ -24,7 +24,7 @@ use selahcue_lan::CertPin;
 use selahcue_present::{FrameBuffer, Theme};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 /// On-device STT capture worker driving the live transcript (feature `stt`; OFF by default).
 #[cfg(feature = "stt")]
@@ -606,6 +606,20 @@ impl Backend {
                 .await
                 .map_err(|e| e.to_string()),
             Backend::Local(s) => Ok(s.move_item(item_id, to)),
+        }
+    }
+    async fn plan_undo(&self) -> Result<OperatorView, String> {
+        match self {
+            // The host owns its own plan history; client-side plan undo is not carried over the
+            // wire, so a Remote backend is a safe no-op that returns the current view.
+            Backend::Remote(m) => m.lock().await.view().await.map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.plan_undo()),
+        }
+    }
+    async fn plan_redo(&self) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m.lock().await.view().await.map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.plan_redo()),
         }
     }
     async fn rename_item(&self, item_id: u64, title: String) -> Result<OperatorView, String> {
@@ -1410,6 +1424,20 @@ async fn deck_list(state: State<'_, AppState>) -> Result<serde_json::Value, Stri
     with_deck_and_library(&state, |ws, lib| library_view(lib, ws.open_deck().id()))
 }
 
+/// Global presentation search (⌘/Ctrl+S): match `query` against deck NAMES and slide TEXT across
+/// the whole library, returning at most 50 bounded hits — name matches before per-slide content
+/// matches (see [`DeckLibrary::search`]). Reads the library only (never the open editor).
+#[tauri::command]
+async fn deck_search(
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    with_deck_and_library(
+        &state,
+        |_ws, lib| serde_json::json!({ "hits": lib.search(&query, 50) }),
+    )
+}
+
 /// Create a new blank presentation (unique id + name) and OPEN it in the editor → returns the
 /// `DeckView` so the surface switches to the new deck.
 #[tauri::command]
@@ -1903,6 +1931,14 @@ async fn move_item(
     state.backend.move_item(item_id, to).await
 }
 #[tauri::command]
+async fn plan_undo(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.plan_undo().await
+}
+#[tauri::command]
+async fn plan_redo(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.plan_redo().await
+}
+#[tauri::command]
 async fn rename_item(
     item_id: u64,
     title: String,
@@ -2067,6 +2103,77 @@ async fn start_listening() -> Result<(), String> {
 #[cfg(not(feature = "stt"))]
 #[tauri::command]
 async fn stop_listening() -> Result<(), String> {
+    Ok(())
+}
+
+/// Abort an in-flight model download (sets a flag the fetch loop polls; the partial `.part` file is
+/// discarded, nothing is installed). Safe no-op when nothing is downloading.
+#[cfg(feature = "stt")]
+#[tauri::command]
+async fn cancel_download() -> Result<(), String> {
+    listening::cancel_download();
+    Ok(())
+}
+#[cfg(not(feature = "stt"))]
+#[tauri::command]
+async fn cancel_download() -> Result<(), String> {
+    Ok(())
+}
+
+/// Every translation the app knows, with availability — bundled ones are always available; a
+/// downloadable one (e.g. YLT) is available only once its asset has been fetched. Feeds a future
+/// translation-manager UI; the offline-download modal drives the actual fetch via `download_translation`.
+#[tauri::command]
+async fn list_translations() -> Result<serde_json::Value, String> {
+    let items: Vec<serde_json::Value> = selahcue_scripture::Translation::ALL
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "code": t.code(),
+                "name": t.name(),
+                "downloadable": t.is_downloadable(),
+                "available": selahcue_scripture::is_available(*t),
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "translations": items }))
+}
+
+/// Download a translation asset (by catalog id) on a worker thread, streaming `bible://phase`
+/// events the offline-download modal renders (the SAME dialog the speech model uses). The catalog
+/// URL/sha are owner-supplied; with the placeholder catalog this surfaces the honest failure states.
+#[tauri::command]
+async fn download_translation(id: String, app: tauri::AppHandle) -> Result<(), String> {
+    use selahcue_scripture::download::{self, TranslationFetchError};
+    let asset = download::catalog()
+        .into_iter()
+        .find(|a| a.id == id)
+        .ok_or_else(|| format!("unknown translation '{id}'"))?;
+    let name = asset.name.clone();
+    let cache = download::default_cache_dir();
+    tauri::async_runtime::spawn_blocking(move || {
+        let res = download::fetch_translation(&asset, &cache, |done, total| {
+            let pct = done.saturating_mul(100).checked_div(total).unwrap_or(0) as u8;
+            let _ = app.emit(
+                "bible://phase",
+                serde_json::json!({"phase":"downloading","done":done,"total":total,"pct":pct,"name":name.clone(),"id":id.clone()}),
+            );
+        });
+        let ev = match res {
+            Ok(_) => serde_json::json!({"phase":"ready","name":name,"id":id}),
+            Err(TranslationFetchError::Verify { .. })
+            | Err(TranslationFetchError::BadExpectedHash) => {
+                serde_json::json!({"phase":"failed","reason":"verify","message":"integrity check failed","resumable":false,"bytes_kept":0,"name":name,"id":id})
+            }
+            Err(TranslationFetchError::Network(m)) => {
+                serde_json::json!({"phase":"failed","reason":"connect","message":m,"resumable":false,"bytes_kept":0,"name":name,"id":id})
+            }
+            Err(TranslationFetchError::Io(e)) => {
+                serde_json::json!({"phase":"failed","reason":"other","message":e.to_string(),"resumable":false,"bytes_kept":0,"name":name,"id":id})
+            }
+        };
+        let _ = app.emit("bible://phase", ev);
+    });
     Ok(())
 }
 #[tauri::command]
@@ -2609,6 +2716,8 @@ fn main() {
             add_item,
             remove_item,
             move_item,
+            plan_undo,
+            plan_redo,
             rename_item,
             stage_scripture,
             follow_scripture,
@@ -2619,6 +2728,9 @@ fn main() {
             dismiss_detection,
             start_listening,
             stop_listening,
+            cancel_download,
+            list_translations,
+            download_translation,
             identify_outputs,
             assign_output,
             set_theme,
@@ -2651,6 +2763,7 @@ fn main() {
             pick_image,
             deck_view,
             deck_list,
+            deck_search,
             deck_new,
             deck_open,
             deck_rename,

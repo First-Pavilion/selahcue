@@ -602,11 +602,11 @@ fn design2_palette_meets_wcag_aa() {
 fn operator_presentation_media_surface_is_wired() {
     let html = operator_dist("index.html");
     let js = operator_dist("app.js");
-    // The nav item is ACTIVATED (a real surface, no longer the disabled "later" affordance) but
-    // carries `data-nodigit` so it never shifts the ⌘1–6 map.
+    // The nav item is ACTIVATED (a real surface, no longer the disabled "later" affordance) and,
+    // since the Design 2.0 menu reorder (e8a7513), carries a sequential accesskey in the ⌘1–7 map
+    // (the old `data-nodigit` exclusion was removed when every nav item became digit-mapped).
     for needle in [
         "data-surface=\"presentation\"",
-        "data-nodigit",
         "id=\"surface-presentation\"",
         "id=\"pm-slide-list\"",
         "id=\"pm-canvas\"",

@@ -5,8 +5,8 @@
 
 use selahcue_core::scripture::parse_one;
 use selahcue_scripture::{
-    passage_text, passage_text_in, search, verse_count, verse_count_in, verses, Translation,
-    TRANSLATION,
+    is_available, passage_text, passage_text_in, search, verse_count, verse_count_in, verses,
+    Translation, TRANSLATION,
 };
 
 #[test]
@@ -22,11 +22,15 @@ fn both_protestant_canons_are_bundled_and_kjv_is_the_default() {
     assert_eq!(verse_count_in(Translation::Webbe), 31_098);
     assert_eq!(verse_count_in(Translation::Dby), 31_099);
     assert_eq!(verse_count(), 31_102, "default count is the KJV's");
-    // First and last verses of the canon resolve in EVERY translation (wording
-    // varies legitimately — BBE opens "At the first God made…").
+    // First and last verses of the canon resolve in every BUNDLED translation (wording
+    // varies legitimately — BBE opens "At the first God made…"). Downloadable translations
+    // (YLT) are excluded here: their assets are not present in the test environment.
     let gen = parse_one("Genesis 1:1").unwrap();
     let rev = parse_one("Revelation 22:21").unwrap();
-    for t in Translation::ALL {
+    for t in Translation::ALL
+        .into_iter()
+        .filter(|t| !t.is_downloadable())
+    {
         assert!(
             passage_text_in(t, &gen).unwrap().contains("God"),
             "{} Genesis 1:1",
@@ -48,6 +52,53 @@ fn both_protestant_canons_are_bundled_and_kjv_is_the_default() {
         assert_eq!(Translation::from_code(&t.code().to_lowercase()), Some(t));
     }
     assert_eq!(Translation::from_code("NIV"), None);
+}
+
+#[test]
+fn youngs_literal_translation_is_registered_as_downloadable() {
+    // YLT (Young's Literal Translation, 1898 — public domain) joins the selectable set as the
+    // DOWNLOADABLE exemplar: it is a real, parseable translation code that is not bundled.
+    assert_eq!(Translation::ALL.len(), 6, "YLT joins the translation set");
+    // Parses from the wire/UI code, case-insensitively, with the right code + name.
+    assert_eq!(Translation::from_code("YLT").map(|t| t.code()), Some("YLT"));
+    assert_eq!(
+        Translation::from_code("ylt").map(|t| t.code()),
+        Some("YLT"),
+        "case-insensitive"
+    );
+    assert_eq!(
+        Translation::from_code("YLT").map(|t| t.name()),
+        Some("Young's Literal Translation (1898)")
+    );
+    // Unknown codes still reject.
+    assert_eq!(Translation::from_code("NIV"), None);
+    // Classified downloadable; bundled ones are not (pure classification, no I/O).
+    assert!(Translation::Ylt.is_downloadable());
+    for t in [
+        Translation::Kjv,
+        Translation::Web,
+        Translation::Asv,
+        Translation::Webbe,
+        Translation::Dby,
+    ] {
+        assert!(!t.is_downloadable(), "{} is bundled", t.code());
+        assert!(is_available(t), "{} is always available", t.code());
+    }
+}
+
+#[cfg(not(feature = "download"))]
+#[test]
+fn downloadable_translation_is_unavailable_and_degrades_gracefully_without_the_feature() {
+    // With the `download` feature OFF, YLT exists in the enum but is NEVER available — no
+    // runtime file I/O is compiled — and every lookup degrades to "nothing", never a panic.
+    use selahcue_scripture::verses_in;
+    assert!(!is_available(Translation::Ylt));
+    let r = parse_one("John 3:16").unwrap();
+    assert!(passage_text_in(Translation::Ylt, &r).is_none());
+    assert!(verses_in(Translation::Ylt, &r).is_empty());
+    assert_eq!(verse_count_in(Translation::Ylt), 0);
+    // A chapter/adjacency lookup is None, not a panic.
+    assert!(selahcue_scripture::chapter_in(Translation::Ylt, &r).is_none());
 }
 
 #[test]
@@ -182,7 +233,12 @@ fn no_markup_residue_in_any_bundled_translation() {
     use selahcue_scripture::verses_in;
     let whole_bible = selahcue_core::scripture::parse_one("Genesis 1").unwrap();
     let _ = whole_bible; // per-translation full scans below
-    for t in Translation::ALL {
+                         // BUNDLED translations only: downloadable ones (YLT) have no asset in the test env, so a
+                         // full-canon markup scan does not apply.
+    for t in Translation::ALL
+        .into_iter()
+        .filter(|t| !t.is_downloadable())
+    {
         let mut scanned = 0usize;
         for book in 1..=66u8 {
             for chapter in 1..=200u16 {

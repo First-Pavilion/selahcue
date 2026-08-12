@@ -50,7 +50,7 @@ fs4 = "0.13"
 selahcue-app = { path = "../selahcue-app", features = ["server"] }
 selahcue-lan = { path = "../selahcue-lan", features = ["server"] }
 selahcue-core = { path = "../selahcue-core" }
-selahcue-scripture = { path = "../selahcue-scripture" }
+selahcue-scripture = { path = "../selahcue-scripture", features = ["download"] }
 selahcue-present = { path = "../selahcue-present" }
 # Persisted deck library (schema v16 `deck` table via `deck_repo`). Default build is unencrypted
 # (`Database::open`); at-rest encryption for the shared DB is a documented follow-up.

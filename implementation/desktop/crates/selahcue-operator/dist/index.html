@@ -1185,6 +1185,22 @@
       <div class="cmd-foot" aria-hidden="true"><span>↑ ↓ navigate</span><span>⏎ run</span><span>esc close</span></div>
     </div>
   </div>
+  <!-- Global presentation search (⌘/Ctrl+S): matches deck names + slide text across the library;
+       opening a result loads that presentation in the editor. Mirrors the command-palette chrome. -->
+  <div id="gsearch" class="cmd-overlay" role="dialog" aria-modal="true" aria-label="Search presentations" hidden>
+    <div class="cmd-box" role="document">
+      <div class="cmd-input-row">
+        <span class="cmd-ico" aria-hidden="true">⌕</span>
+        <input id="gsearch-input" type="text" role="combobox" aria-expanded="true" aria-controls="gsearch-list"
+          aria-autocomplete="list" aria-activedescendant="" placeholder="Search presentations by name or slide text…"
+          autocomplete="off" autocapitalize="off" spellcheck="false" />
+        <span class="cmd-esc" aria-hidden="true">esc</span>
+      </div>
+      <ul id="gsearch-list" class="cmd-list" role="listbox" aria-label="Presentation results"></ul>
+      <div id="gsearch-empty" class="cmd-empty" hidden>Type to search your presentations</div>
+      <div class="cmd-foot" aria-hidden="true"><span>↑ ↓ navigate</span><span>⏎ open</span><span>esc close</span></div>
+    </div>
+  </div>
   <!-- Global keyboard shortcuts reference (from the app menu → Shortcuts). -->
   <div id="shortcuts" class="cmd-overlay" role="dialog" aria-modal="true" aria-labelledby="sc-title" hidden>
     <div class="cmd-box sc-box" role="document">
@@ -1232,6 +1248,41 @@
       </dl>
     </div>
   </div>
+  <!-- Offline download modal (Figma 396-124): ONE dialog reused for every first-time offline
+       download — the speech model and any Bible translation. Driven by the host's stt://phase
+       events. The scrim stops above the emergency footer so BLACKOUT / Clear stay reachable
+       (a dialog never traps live output — the console rule). -->
+  <div id="dl-modal-back" class="dl-modal-back" hidden>
+    <div id="dl-modal" class="dl-modal" role="dialog" aria-modal="true" aria-labelledby="dl-modal-title"
+         aria-describedby="dl-modal-note">
+      <div class="dl-modal-head">
+        <span id="dl-modal-ico" class="dl-modal-ico" aria-hidden="true">↓</span>
+        <div class="dl-modal-heads">
+          <h2 id="dl-modal-title" class="dl-modal-title">Downloading speech model</h2>
+          <p id="dl-modal-sub" class="dl-modal-sub">Whisper · English · on-device</p>
+        </div>
+      </div>
+      <div id="dl-modal-progwrap" class="dl-modal-progwrap">
+        <div class="dl-modal-progtrack">
+          <div id="dl-modal-progfill" class="dl-modal-progfill" role="progressbar" aria-valuemin="0"
+               aria-valuemax="100" aria-valuenow="0" aria-label="Download progress"></div>
+        </div>
+        <div class="dl-modal-progmeta">
+          <span id="dl-modal-progbytes">—</span>
+          <span id="dl-modal-progpct" class="dl-modal-progpct">0%</span>
+        </div>
+      </div>
+      <p id="dl-modal-note" class="dl-modal-note">Runs once. SelahCue works fully offline after it finishes.</p>
+      <div id="dl-modal-live" class="sr-only" role="status" aria-live="polite"></div>
+      <div class="dl-modal-actions">
+        <button id="dl-modal-hide" class="dl-btn dl-btn-ghost" type="button">Hide</button>
+        <button id="dl-modal-secondary" class="dl-btn dl-btn-ghost" type="button">Cancel</button>
+        <button id="dl-modal-primary" class="dl-btn dl-btn-primary" type="button" hidden>Start listening</button>
+      </div>
+    </div>
+  </div>
+  <!-- Background pill: shown when the modal is hidden but a download keeps running; re-opens it. -->
+  <button id="dl-pill" class="dl-pill" type="button" hidden></button>
   <script src="app.js" defer></script>
   <script src="preservice.js" defer></script>
   <script src="remote.js" defer></script>

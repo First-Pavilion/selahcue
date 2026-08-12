@@ -48,7 +48,9 @@ pub use model::{
     ModelSelection, WhisperModel,
 };
 #[cfg(feature = "download")]
-pub use model_fetch::{default_cache_dir, fetch_model};
+pub use model_fetch::{
+    default_cache_dir, fetch_model, fetch_model_phased, DownloadPhase, FailReason,
+};
 pub use provider::{SttProvider, MAX_PENDING_SEGMENTS};
 pub use pump::pump;
 pub use recognizer::{FakeRecognizer, RecognizedSegment, Recognizer};

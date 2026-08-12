@@ -736,6 +736,15 @@ pub struct DetectionView {
     /// byte-identical when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<u8>,
+    /// Short code of the translation the verse `text` is in (e.g. `"KJV"`, `"WEB"`), so the
+    /// operator sees WHICH translation the snippet is. Omitted when `text` is (honest-empty on an
+    /// older host or an unresolved reference); additive, so the pinned fixtures stay byte-stable.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub translation: String,
+    /// The transcript segment id this reference was heard in (provenance) — the UI resolves it to
+    /// the spoken phrase + "spoken Ns ago". `None` on an older host; additive + skipped when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_segment: Option<u64>,
 }
 
 /// One saved (named custom) theme in the library (86ajq4xmy).

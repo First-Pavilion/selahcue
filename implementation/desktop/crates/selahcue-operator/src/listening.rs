@@ -61,6 +61,98 @@ struct DownloadProgress {
     pct: u8,
 }
 
+/// The Tauri event carrying the FULL download lifecycle, so the operator's "Offline Download
+/// Modal" (Figma node 396-124) can render a distinct state per phase: downloading (bytes + %),
+/// verifying (SHA-256), ready, or a classified failure. The legacy [`PROGRESS_EVENT`] is still
+/// emitted during downloading, so anything already listening on `stt://progress` keeps working.
+const PHASE_EVENT: &str = "stt://phase";
+
+/// Serializable payload for [`PHASE_EVENT`] — an internally-tagged mirror of
+/// [`selahcue_stt::DownloadPhase`] (that domain enum is serde-free, so the operator maps it here).
+/// The `phase` tag lets the webview switch on the state; the JSON shapes are:
+/// - `{"phase":"downloading","done":N,"total":N,"pct":P}`
+/// - `{"phase":"verifying"}`
+/// - `{"phase":"ready"}`
+/// - `{"phase":"failed","reason":"connect|offline|verify|other","message":"…","resumable":bool,"bytes_kept":N}`
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+enum PhaseEvent {
+    Downloading {
+        done: u64,
+        total: u64,
+        pct: u8,
+    },
+    Verifying,
+    Ready,
+    Failed {
+        reason: FailReasonPayload,
+        message: String,
+        resumable: bool,
+        bytes_kept: u64,
+    },
+}
+
+/// Why a download failed, mirrored from [`selahcue_stt::FailReason`] onto the wire (snake_case):
+/// `connect` (couldn't reach/read the server), `offline` (DNS/no connection), `verify` (integrity
+/// check failed → discarded), `other` (filesystem/config).
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FailReasonPayload {
+    Connect,
+    Offline,
+    Verify,
+    Other,
+}
+
+/// Map a domain [`selahcue_stt::DownloadPhase`] onto the webview events: always emit the rich
+/// [`PHASE_EVENT`]; during downloading ALSO emit the legacy [`PROGRESS_EVENT`] so nothing that
+/// listens on `stt://progress` breaks. Advisory — send errors (no window yet) are ignored, and a
+/// short log line aids first-run debugging.
+fn emit_phase(app: &AppHandle, phase: selahcue_stt::DownloadPhase) {
+    use selahcue_stt::{DownloadPhase as P, FailReason as R};
+    let event = match phase {
+        P::Downloading { done, total } => {
+            let pct = if total > 0 {
+                (done.saturating_mul(100) / total) as u8
+            } else {
+                0
+            };
+            // Keep the original byte-progress event working for existing listeners.
+            let _ = app.emit(PROGRESS_EVENT, DownloadProgress { done, total, pct });
+            eprintln!("SelahCue STT: downloading model … {pct}%");
+            PhaseEvent::Downloading { done, total, pct }
+        }
+        P::Verifying => {
+            eprintln!("SelahCue STT: verifying model integrity (SHA-256)…");
+            PhaseEvent::Verifying
+        }
+        P::Ready => {
+            eprintln!("SelahCue STT: model ready.");
+            PhaseEvent::Ready
+        }
+        P::Failed {
+            reason,
+            message,
+            resumable,
+            bytes_kept,
+        } => {
+            eprintln!("SelahCue STT: download failed ({reason:?}): {message}");
+            PhaseEvent::Failed {
+                reason: match reason {
+                    R::Connect => FailReasonPayload::Connect,
+                    R::Offline => FailReasonPayload::Offline,
+                    R::Verify => FailReasonPayload::Verify,
+                    R::Other => FailReasonPayload::Other,
+                },
+                message,
+                resumable,
+                bytes_kept,
+            }
+        }
+    };
+    let _ = app.emit(PHASE_EVENT, event);
+}
+
 /// The Tauri event carrying a live microphone level (peak percent) while listening, so the
 /// "waiting for speech…" status can show whether audio is actually arriving — a peak stuck at
 /// 0 while the operator speaks points at mic/permission, not the transcript UI.
@@ -83,6 +175,15 @@ struct Worker {
 
 /// The single active worker (at most one — "listening" is a global capture state).
 static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
+
+/// Process-wide CANCEL flag for an in-flight first-run model download. Reset to `false` at the
+/// start of every download attempt (in [`load_recognizer`]) and set to `true` by
+/// [`cancel_download`] (and by [`stop`], so "Stop listening" also aborts a download in progress).
+/// The fetch loop polls it once per streamed chunk; on cancel it removes the partial `.part` file
+/// and returns a terminal `Failed{…"cancelled"}` phase. It is a plain flag — reading/writing it
+/// never takes the worker lock, so cancelling can never deadlock against the worker thread, and it
+/// is a no-op when no download is running (the next download simply resets it before fetching).
+static DOWNLOAD_CANCEL: AtomicBool = AtomicBool::new(false);
 
 /// Lock the worker slot, recovering from a poisoned lock (a prior panic must not make the
 /// worker permanently unstoppable — recover the guard and continue).
@@ -207,14 +308,23 @@ fn load_recognizer(app: &AppHandle) -> Result<WhisperRecognizer, String> {
                 asset.size_bytes / 1_000_000,
                 cache.display()
             );
-            let path = selahcue_stt::fetch_model(&asset, &cache, |done, total| {
-                if total > 0 {
-                    let pct = (done.saturating_mul(100) / total) as u8;
-                    // Advisory progress for the operator UI; ignore send errors (no window yet).
-                    let _ = app.emit(PROGRESS_EVENT, DownloadProgress { done, total, pct });
-                    eprintln!("SelahCue STT: downloading {} … {}%", asset.file_name, pct);
-                }
-            })?;
+            // Fresh attempt: clear any cancel request left over from a previous download before we
+            // start polling, so a stale `true` can't abort this one.
+            DOWNLOAD_CANCEL.store(false, Ordering::SeqCst);
+            let path = selahcue_stt::fetch_model_phased(
+                &asset,
+                &cache,
+                |phase| {
+                    // Drive the phase-aware modal (downloading/verifying/ready/failed) and the
+                    // legacy byte-progress event. Advisory — send errors (no window yet) are
+                    // ignored. On cancel the fetch emits Failed{…"cancelled"} through here so the
+                    // modal can show a cancelled/dismissed state.
+                    emit_phase(app, phase);
+                },
+                // Cooperative cancel: the fetch loop polls this once per chunk. Set by
+                // `cancel_download()` (the modal's Cancel) or `stop()` (Stop listening).
+                || DOWNLOAD_CANCEL.load(Ordering::SeqCst),
+            )?;
             // `fetch_model` already SHA-256-verified the file (cache hit OR post-download), so we
             // load WITHOUT re-hashing the multi-hundred-MB/GB file — that redundant hash was the
             // slow wait before the mic opened.
@@ -354,11 +464,26 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
     ready_rx
 }
 
+/// Request cancellation of an in-flight first-run model download (idempotent; safe when nothing is
+/// downloading). Sets the process-wide [`DOWNLOAD_CANCEL`] flag; the fetch loop polls it once per
+/// chunk, removes its partial `.part` file, and reports a terminal `Failed{…"cancelled"}` phase on
+/// `stt://phase` — which lets the "Offline Download Modal" show a cancelled/dismissed state. It does
+/// NOT take the worker lock (no deadlock against the worker thread), and if no download is running
+/// it is a harmless no-op: the flag is reset at the start of the next download before any polling.
+/// Exposed so `main.rs` can register a Tauri command that the modal's Cancel button invokes.
+pub fn cancel_download() {
+    DOWNLOAD_CANCEL.store(true, Ordering::SeqCst);
+}
+
 /// Stop the capture worker (idempotent). Takes the worker out of the slot BEFORE joining, so
 /// the worker lock is never held across the join; the worker thread only touches the segment
 /// channel and the controller, never this slot — no lock-ordering cycle. Joining the worker
 /// drops its `seg_tx`, which ends the drain task.
 pub fn stop() {
+    // Also abort any in-flight first-run download: during the download the worker is parked inside
+    // `load_recognizer`, not yet in the capture loop, so `w.stop` alone would leave `join()` waiting
+    // for the whole (~1.6 GB) transfer. Cancelling makes the fetch return promptly so stop is snappy.
+    DOWNLOAD_CANCEL.store(true, Ordering::SeqCst);
     let worker = worker_lock().take();
     if let Some(mut w) = worker {
         w.stop.store(true, Ordering::Relaxed);

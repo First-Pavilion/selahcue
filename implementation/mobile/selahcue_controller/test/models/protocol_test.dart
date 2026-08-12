@@ -86,6 +86,24 @@ void main() {
     expect(v.detections.single.confidence, 94);
   });
 
+  test('detection parses the additive provenance fields (translation + source_segment)', () {
+    final v = OperatorStateView.fromJson(jsonDecode(
+            '{"plan_name":"Sunday","items":[],"blackout":false,'
+            '"detections":[{"id":8,"reference":"John 3:16","text":"For God so loved",'
+            '"confidence":95,"translation":"KJV","source_segment":42}]}')
+        as Map<String, dynamic>);
+    final d = v.detections.single;
+    expect(d.translation, 'KJV');
+    expect(d.sourceSegment, 42);
+    // An older host omits them → safe defaults (empty string / null), never a parse failure.
+    final legacy = OperatorStateView.fromJson(jsonDecode(
+            '{"plan_name":"Sunday","items":[],"blackout":false,'
+            '"detections":[{"id":9,"reference":"Jude 3"}]}')
+        as Map<String, dynamic>).detections.single;
+    expect(legacy.translation, '');
+    expect(legacy.sourceSegment, isNull);
+  });
+
   test('operator_state without the new fields degrades to empty', () {
     final v = OperatorStateView.fromJson(jsonDecode(
             '{"plan_name":"Sunday","items":[],"blackout":false}')

@@ -164,11 +164,19 @@ class DetectionView {
   /// Whole-percent match confidence (0..100), null when the host reports none.
   final int? confidence;
 
+  /// Short code of the translation [text] is in (e.g. `KJV`), empty when the host omits it.
+  final String translation;
+
+  /// The transcript segment id this was heard in (provenance), null on an older host.
+  final int? sourceSegment;
+
   const DetectionView({
     required this.id,
     required this.reference,
     this.text = '',
     this.confidence,
+    this.translation = '',
+    this.sourceSegment,
   });
 
   static DetectionView fromJson(Map<String, dynamic> j) => DetectionView(
@@ -176,6 +184,8 @@ class DetectionView {
         reference: j['reference'] as String? ?? '',
         text: j['text'] as String? ?? '',
         confidence: j['confidence'] as int?,
+        translation: j['translation'] as String? ?? '',
+        sourceSegment: j['source_segment'] as int?,
       );
 }
 

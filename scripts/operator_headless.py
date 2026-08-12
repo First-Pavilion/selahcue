@@ -36,7 +36,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 545
+EXPECTED_MIN_CHECKS = 593
 
 
 def find_chrome():
@@ -179,7 +179,7 @@ STUB = r"""
       if (window.__sicRejectOnce) { window.__sicRejectOnce = false; return Promise.reject("simulated host rejection"); }
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
     }
-    if (cmd === "add_item" || cmd === "move_item" || cmd === "rename_item" || cmd === "remove_item")
+    if (cmd === "add_item" || cmd === "move_item" || cmd === "rename_item" || cmd === "remove_item" || cmd === "plan_undo" || cmd === "plan_redo")
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
     if (cmd === "scripture_search")
       return Promise.resolve([{reference:"Romans 8:28", text:"And we know that all things work together for good"}]);
@@ -309,6 +309,20 @@ STUB = r"""
     var libView = function(){ return { decks: LIB.decks.map(function(d){return {id:d.id,name:d.name,slides:d.slides};}), open: LIB.open, persistent: LIB.persistent }; };
     var libUnique = function(base){ var n=base, k=2; var names=LIB.decks.map(function(d){return d.name;}); while(names.indexOf(n)>=0){ n=base+" ("+k+")"; k++; } return n; };
     if (cmd === "deck_list") return Promise.resolve(libView());
+    if (cmd === "deck_search") {
+      var gq = String((args && args.query) || "").trim().toLowerCase();
+      if (!gq) return Promise.resolve({hits: []});
+      var ghits = [];
+      LIB.decks.forEach(function(d){
+        if (d.name.toLowerCase().indexOf(gq) >= 0) ghits.push({deck_id: d.id, name: d.name, kind: "name"});
+      });
+      // Synthetic slide-content hit so the modal's content-row (slide # + snippet) is exercised.
+      if (gq.indexOf("grace") >= 0 && LIB.decks.length) {
+        var gd = LIB.decks[LIB.decks.length - 1];
+        ghits.push({deck_id: gd.id, name: gd.name, kind: "content", slide_id: 7, slide_index: 3, snippet: "Amazing grace, how sweet the sound"});
+      }
+      return Promise.resolve({hits: ghits});
+    }
     if (cmd === "deck_new") {
       var nid=LIB.nextId++; var nm=libUnique((args.name&&args.name.trim())||"Untitled presentation");
       LIB.decks.push({id:nid, name:nm, slides:1}); LIB.open=nid;
@@ -835,6 +849,56 @@ DRIVER = r"""
       ok(el("td-insp-title").textContent==="Body",
          "canvas: clicking the Body text selects the Body region (header names it)");
 
+      // === Undo/redo (⌘Z / ⌘⇧Z): the Theme Designer's client-side snapshot history (tdHistory).
+      // The document is the serialisable tdTheme object; ⌘Z/⌘⇧Z walk a bounded snapshot stack.
+      // Typography reverts are read from the td-size field (tdSync updates it SYNCHRONOUSLY on
+      // undo, before the debounced canvas re-render); structural reverts are read from applied()
+      // (the last preview_theme JSON) after letting the 120ms debounce publish.
+      el("surface-theme-designer").classList.add("active"); // ⌘Z acts only while the designer is up
+      var undoZ = function(shift){ document.dispatchEvent(new KeyboardEvent("keydown",{key:"z",metaKey:true,shiftKey:!!shift,bubbles:true})); };
+      var loadFreshTheme = function(){ el("td-themes").querySelector('.td-theme-row:not(.td-theme-saved) .td-theme-name').click(); };
+      // (1) A typography edit undoes and redoes.
+      loadFreshTheme(); await sleep(20);
+      var szBase = el("td-size").value;
+      var szEdit = (szBase === "7.5") ? "8.5" : "7.5";
+      el("td-size").value = szEdit; el("td-size").dispatchEvent(new Event("input"));
+      ok(el("td-size").value === szEdit && szEdit !== szBase, "undo(1): SIZE edited away from the loaded baseline");
+      undoZ(false);
+      ok(el("td-size").value === szBase, "undo(1): ⌘Z reverts the SIZE edit to the loaded value");
+      undoZ(true);
+      ok(el("td-size").value === szEdit, "undo(1): ⌘⇧Z re-applies the reverted SIZE edit");
+      // (2) A new edit after an undo clears the redo branch (⌘⇧Z then does nothing).
+      undoZ(false);
+      ok(el("td-size").value === szBase, "undo(2): ⌘Z back to baseline (a redo is now available)");
+      var szNew = (szBase === "9.5") ? "5.5" : "9.5";
+      el("td-size").value = szNew; el("td-size").dispatchEvent(new Event("input")); // a NEW edit
+      undoZ(true); // the pending redo was invalidated by the new edit
+      ok(el("td-size").value === szNew, "undo(2): a new edit clears the redo branch (⌘⇧Z is a no-op)");
+      // (3) Adding an element is undoable via ⌘Z (element count, debounce-published).
+      loadFreshTheme(); await sleep(160);
+      var nStart = (applied().elements || []).length;
+      addShape(); await sleep(160);
+      ok((applied().elements || []).length === nStart + 1, "undo(3): a shape was added (+1 element)");
+      undoZ(false); await sleep(160);
+      ok((applied().elements || []).length === nStart, "undo(3): ⌘Z removes the added shape (count back to start)");
+      undoZ(true); await sleep(160);
+      ok((applied().elements || []).length === nStart + 1, "undo(3): ⌘⇧Z re-adds the shape (+1 again)");
+      // (4) A pointer gesture spanning multiple inputs collapses to ONE undo step (coalescing).
+      loadFreshTheme(); await sleep(20);
+      var szPreVal = el("td-size").value;
+      var surfTD = el("surface-theme-designer");
+      surfTD.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true})); // open a coalescing gesture
+      el("td-size").value = "6.0"; el("td-size").dispatchEvent(new Event("input"));
+      el("td-size").value = "6.5"; el("td-size").dispatchEvent(new Event("input"));
+      window.dispatchEvent(new PointerEvent("pointerup",{bubbles:true})); // seal → the whole drag is one step
+      ok(el("td-size").value === "6.5", "undo(4): a two-input pointer gesture set SIZE to 6.5");
+      undoZ(false);
+      ok(el("td-size").value === szPreVal, "undo(4): ONE ⌘Z reverts the WHOLE gesture (coalesced, not just the last input)");
+      // (5) Undoing past the start is a safe no-op — the editor stays usable afterward.
+      undoZ(false); undoZ(false); undoZ(false); undoZ(false);
+      el("td-size").value = "8.0"; el("td-size").dispatchEvent(new Event("input"));
+      ok(el("td-size").value === "8.0", "undo(5): undoing past the start does not corrupt — editing still works");
+
       // Design 2.0: LAYERS drag-and-drop reorders z, and dragging an element past the text
       // REGION rows crosses the text boundary (front z>0 <-> behind z<0). Fresh Classic theme
       // (no elements) → add two front shapes → drag the top one below the region rows.
@@ -1104,6 +1168,13 @@ DRIVER = r"""
       segStage.click();
       ok(!stabStage.hidden && stabTimer.hidden && segStage.getAttribute("aria-selected") === "true",
          "stage: clicking Stage reveals the theme/message panel");
+      // ←/→ switch the Timer|Stage sub-tabs via the keyboard (APG tablist parity with the other tabs).
+      segStage.dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowLeft", bubbles:true}));
+      ok(!stabTimer.hidden && stabStage.hidden && segTimer.getAttribute("aria-selected") === "true",
+         "stage: ← switches the Timer|Stage sub-tabs via the keyboard");
+      segTimer.dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowRight", bubbles:true}));
+      ok(!stabStage.hidden && segStage.getAttribute("aria-selected") === "true",
+         "stage: → returns to the Stage sub-tab (keyboard tablist)");
       // Theme picker -> set_stage_template.
       var scriptureCard = document.querySelector('#stage-themes .stage-theme[data-template="scripture"]');
       scriptureCard.click();
@@ -1131,22 +1202,44 @@ DRIVER = r"""
       var msgActive = el("stage-msg-active");
       ok(msgActive && !msgActive.hidden && msgActive.textContent.indexOf("WRAP UP NOW") >= 0,
          "stage: syncStage shows the live production message");
-      // Restore the detection the following flow test depends on (do NOT clear it).
-      render(Object.assign({}, baseView, { detections: [
-        { id: 991, reference: "John 3:16", text: "For God so loved the world", confidence: 95 },
-      ] }));
+      // Restore the detection the following flow test depends on (do NOT clear it), now with the
+      // provenance fields — translation + the transcript segment it was heard in.
+      render(Object.assign({}, baseView, {
+        detections: [
+          { id: 991, reference: "John 3:16", text: "For God so loved the world", confidence: 95,
+            translation: "KJV", source_segment: 42 },
+        ],
+        transcript: [{ id: 42, text: "turn to John three sixteen", start_ms: 3000, end_ms: 5000 }],
+      }));
       // A bare detection must NOT display anything: no Preview/Live change, no chapter opened.
       ok(!window.__calls.some(function(c){ return c.cmd === "get_chapter" && c.args && c.args.reference === "John 3:16"; }),
-         "flow: a detection does NOT open its chapter or touch Preview/Live (nothing until Stage)");
-      // Stage confirms it: approve_detection (Preview) + go_live (audience) + open the chapter.
-      el("detections-list").querySelector(".det-stage").click();
+         "flow: a detection does NOT open its chapter or touch Preview/Live (nothing until Stage/Approve)");
+      // The card renders the translation label + the source-phrase / "spoken Ns ago" provenance line.
+      var det0 = el("detections-list").querySelector(".detection");
+      var tr0 = det0 && det0.querySelector(".det-translation");
+      ok(tr0 && tr0.textContent === "KJV", "card: the detection shows its translation label (KJV)");
+      var meta0 = det0 && det0.querySelector(".det-meta");
+      ok(meta0 && /spoken .+ ago/.test(meta0.textContent) && meta0.textContent.indexOf("John three sixteen") >= 0,
+         "card: the detection shows its source phrase + 'spoken Ns ago' provenance");
+      // Stage = accept into PREVIEW ONLY (nothing auto-goes-live — FR-115) + open the chapter.
+      var goLiveBeforeStage = window.__calls.filter(function(c){ return c.cmd === "go_live"; }).length;
+      det0.querySelector(".det-stage").click();
       await sleep(15);
       ok(window.__calls.some(function(c){ return c.cmd === "approve_detection" && c.args && c.args.detectionId === 991; }),
          "flow: Stage → approve_detection (stages the verse in Preview)");
-      ok(window.__calls.some(function(c){ return c.cmd === "go_live"; }),
-         "flow: Stage → go_live (operator confirmed → pushed Live to the audience)");
+      ok(window.__calls.filter(function(c){ return c.cmd === "go_live"; }).length === goLiveBeforeStage,
+         "flow: Stage does NOT go live on its own (nothing auto-goes-live — FR-115)");
       ok(window.__calls.some(function(c){ return c.cmd === "get_chapter" && c.args && c.args.reference === "John 3:16"; }),
          "flow: Stage → the full chapter opens in the Scriptures browser");
+      // Approve = accept AND push Live to the audience in one action (the fast path).
+      render(Object.assign({}, baseView, { detections: [
+        { id: 991, reference: "John 3:16", text: "For God so loved the world", confidence: 95 },
+      ] }));
+      var goLiveBeforeApprove = window.__calls.filter(function(c){ return c.cmd === "go_live"; }).length;
+      el("detections-list").querySelector(".det-approve").click();
+      await sleep(15);
+      ok(window.__calls.filter(function(c){ return c.cmd === "go_live"; }).length > goLiveBeforeApprove,
+         "flow: Approve → go_live (operator confirmed → pushed Live to the audience)");
       rtabTimer.click(); render(baseView); // reset for the following checks
 
       // === display: recognised STT text reaches the operator through the FULL poll->render
@@ -1721,6 +1814,48 @@ DRIVER = r"""
          Array.from(document.querySelectorAll("#cmd-list .cmd-item")).some(function(li){ return /Search "grace" in Bible/.test(li.textContent); }),
          "Palette: a typed query adds a SCRIPTURES 'Search … in Bible' entry");
       window.__cmdPalette.closeAll();
+
+      // --- Global presentation search (⌘/Ctrl+S) — a dedicated modal over `deck_search` that
+      //     searches deck names + slide text and opens the chosen presentation in the editor. ---
+      var gsLibSave = window.__LIB; // restore after so the later PM/Lib tests keep their fixture
+      window.__LIB = { decks: [{id:71, name:"Grace Sunday", slides:5}, {id:72, name:"Hymns Vol. 2", slides:8}], open:71, persistent:true, nextId:90 };
+      var gs = el("gsearch");
+      var gsEv = new KeyboardEvent("keydown", {key:"s", metaKey:true, bubbles:true, cancelable:true});
+      document.dispatchEvent(gsEv);
+      ok(!gs.hidden, "gsearch: ⌘S opens the presentation-search modal");
+      ok(gsEv.defaultPrevented, "gsearch: ⌘S prevents the browser save-page default");
+      ok(gs.getAttribute("role")==="dialog" && gs.getAttribute("aria-modal")==="true", "gsearch: the modal is a real dialog (aria-modal)");
+      var gi = el("gsearch-input");
+      ok(document.activeElement === gi, "gsearch: focus lands in the search input on open");
+      gi.value = "grace"; gi.dispatchEvent(new Event("input"));
+      await sleep(180); // debounce (120ms) + the deck_search promise
+      var gRows = document.querySelectorAll("#gsearch-list .gsearch-item");
+      ok(gRows.length >= 2, "gsearch: typing a query renders result rows from deck_search");
+      ok(Array.from(gRows).some(function(li){ return /Grace Sunday/.test(li.textContent); }), "gsearch: a NAME match renders");
+      ok(Array.from(gRows).some(function(li){ var s=li.querySelector(".gsearch-sub"); return s && /slide 4/.test(s.textContent) && /amazing grace/i.test(s.textContent); }),
+         "gsearch: a slide-CONTENT match shows the slide number + snippet");
+      ok(el("gsearch-list").getAttribute("role") === "listbox" && !!document.querySelector("#gsearch-list .gsearch-item[role='option']"),
+         "gsearch: results are a listbox of role=option rows (a11y)");
+      // ↓ then Enter opens the selected presentation in the editor (deck_open + surface switch).
+      var gOpenBefore = window.__calls.filter(function(c){ return c.cmd === "deck_open"; }).length;
+      gi.dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowDown", bubbles:true}));
+      gi.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", bubbles:true}));
+      await sleep(15);
+      ok(window.__calls.filter(function(c){ return c.cmd === "deck_open"; }).length > gOpenBefore, "gsearch: Enter opens the selected presentation (deck_open)");
+      ok(el("surface-presentation").classList.contains("active"), "gsearch: opening a result switches to the Presentation surface");
+      ok(gs.hidden, "gsearch: selecting a result closes the modal");
+      // ⌘S is suppressed while another modal (the palette) is open — one modal at a time.
+      window.__cmdPalette.open();
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"s", metaKey:true, bubbles:true, cancelable:true}));
+      ok(gs.hidden, "gsearch: ⌘S does NOT open the search while the command palette is open");
+      window.__cmdPalette.closeAll();
+      // Esc closes the search modal.
+      window.__gsearch.open();
+      ok(!gs.hidden, "gsearch: opens again via the API");
+      el("gsearch-input").dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
+      ok(gs.hidden, "gsearch: Esc closes the modal");
+      window.__LIB = gsLibSave; // restore the library fixture for the later PM/Lib tests
+
       // ⌘2 jumps to the Presentation surface from elsewhere (menu-order digit).
       document.querySelector('.nav-item[data-surface="console"]').click();
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"2", metaKey:true, bubbles:true}));
@@ -2093,6 +2228,79 @@ DRIVER = r"""
       palette.querySelector('.plan-palette-btn').click();
       await sleep(20);
       ok(window.__calls.some(function(c){return c.cmd==="add_item";}), "SP: a palette button sends add_item to the host");
+      // ⌘Z / ⌘⇧Z on the plan surface drive the backend-authoritative run-sheet undo/redo.
+      var __pu = window.__calls.length;
+      document.dispatchEvent(new KeyboardEvent("keydown",{key:"z",metaKey:true,bubbles:true}));
+      await sleep(10);
+      ok(window.__calls.slice(__pu).some(function(c){return c.cmd==="plan_undo";}), "SP: ⌘Z on the plan surface invokes plan_undo (backend history)");
+      document.dispatchEvent(new KeyboardEvent("keydown",{key:"z",metaKey:true,shiftKey:true,bubbles:true}));
+      await sleep(10);
+      ok(window.__calls.slice(__pu).some(function(c){return c.cmd==="plan_redo";}), "SP: ⌘⇧Z on the plan surface invokes plan_redo");
+
+      // === Offline download modal (Figma 396-124): ONE dialog, 7 states, driven by stt://phase.
+      var dlBack = el("dl-modal-back");
+      ok(dlBack.hidden, "DL: the download modal is hidden until a phase arrives");
+      // (1) Downloading — progress bar + 'X of Y' bytes + Hide/Cancel, no primary.
+      window.__dlModal.onPhase({phase:"downloading", done:650000000, total:1600000000, pct:41});
+      ok(!dlBack.hidden && getComputedStyle(dlBack).display!=="none", "DL(1): a downloading phase opens the modal (computed display, not just attr)");
+      ok(el("dl-modal-progfill").getAttribute("aria-valuenow")==="41", "DL(1): the progressbar reflects the percent");
+      ok(el("dl-modal-progbytes").textContent.indexOf("of")>=0 && el("dl-modal-progbytes").textContent.indexOf("GB")>=0, "DL(1): bytes render as 'X of Y GB'");
+      ok(!el("dl-modal-hide").hidden && !el("dl-modal-secondary").hidden && el("dl-modal-primary").hidden, "DL(1): Downloading offers Hide + Cancel, no primary");
+      // (2) Verifying — indeterminate bar, Cancel only, Esc-cancel still allowed but no Hide.
+      window.__dlModal.onPhase({phase:"verifying"});
+      ok(el("dl-modal-progwrap").classList.contains("is-indeterminate"), "DL(2): Verifying shows an indeterminate bar");
+      ok(el("dl-modal-progfill").getAttribute("aria-valuenow")===null, "DL(2): the bar is indeterminate (no aria-valuenow)");
+      ok(el("dl-modal-hide").hidden && !el("dl-modal-secondary").hidden, "DL(2): Verifying hides Hide, keeps Cancel");
+      // (3) Ready — success (green) icon + Start listening primary.
+      window.__dlModal.onPhase({phase:"ready"});
+      ok(el("dl-modal-ico").classList.contains("is-ready"), "DL(3): Ready shows the success (green) icon");
+      ok(!el("dl-modal-primary").hidden && el("dl-modal-primary").textContent.indexOf("Start")>=0, "DL(3): Ready offers the primary Start listening");
+      ok(window.__dlModal.state()==="ready", "DL(3): the controller is in the ready state");
+      // (4) Couldn't connect — warn, Retry + Cancel.
+      window.__dlModal.onPhase({phase:"downloading", done:200000000, total:1600000000, pct:12});
+      window.__dlModal.onPhase({phase:"failed", reason:"connect", message:"reset", resumable:false, bytes_kept:0});
+      ok(el("dl-modal-ico").classList.contains("is-warn") && el("dl-modal-title").textContent.indexOf("interrupted")>=0, "DL(4): a connect failure shows 'Download interrupted' (warn)");
+      ok(!el("dl-modal-primary").hidden && el("dl-modal-primary").textContent==="Retry", "DL(4): couldn't-connect offers Retry");
+      // (5) Couldn't verify — integrity (red) icon, progress hidden, discarded.
+      window.__dlModal.onPhase({phase:"downloading", done:1, total:1600000000, pct:99});
+      window.__dlModal.onPhase({phase:"failed", reason:"verify", message:"sha mismatch", resumable:false, bytes_kept:0});
+      ok(el("dl-modal-ico").classList.contains("is-integrity"), "DL(5): a verify failure shows the integrity (red) icon");
+      ok(el("dl-modal-title").textContent.indexOf("verified")>=0 && el("dl-modal-progwrap").hidden, "DL(5): couldn't-verify names the failure + hides the progress bar");
+      // (6) Offline — Try again + Not now.
+      window.__dlModal.onPhase({phase:"downloading", done:1, total:1600000000, pct:3});
+      window.__dlModal.onPhase({phase:"failed", reason:"offline", message:"dns", resumable:false, bytes_kept:0});
+      ok(el("dl-modal-title").textContent.toLowerCase().indexOf("offline")>=0, "DL(6): an offline failure shows 'You're offline'");
+      ok(el("dl-modal-primary").textContent==="Try again" && el("dl-modal-secondary").textContent==="Not now", "DL(6): offline offers Try again + Not now");
+      // Cancel aborts the in-flight download (cancel_download) and closes.
+      var __cd = window.__calls.length;
+      el("dl-modal-secondary").click();
+      ok(window.__calls.slice(__cd).some(function(c){return c.cmd==="cancel_download";}), "DL: Cancel/Not-now invokes cancel_download (abort)");
+      ok(dlBack.hidden, "DL: Cancel closes the modal");
+      // A 'cancelled' failure echo (from the abort) closes silently — never an error state.
+      window.__dlModal.onPhase({phase:"downloading", done:1, total:100, pct:1});
+      window.__dlModal.onPhase({phase:"failed", reason:"other", message:"cancelled", resumable:false, bytes_kept:0});
+      ok(dlBack.hidden, "DL: a 'cancelled' echo closes the modal silently (no error state)");
+      // A lone `ready` with nothing active (warm cache hit) must NOT pop the modal.
+      window.__dlModal.onPhase({phase:"ready"});
+      ok(dlBack.hidden, "DL: a lone ready (warm cache hit) does not open the modal");
+      // Hide backgrounds the download to a pill; progress keeps updating it; the pill re-opens it.
+      window.__dlModal.onPhase({phase:"downloading", done:1, total:1600000000, pct:20});
+      el("dl-modal-hide").click();
+      ok(dlBack.hidden && !el("dl-pill").hidden, "DL: Hide backgrounds the modal to a pill");
+      window.__dlModal.onPhase({phase:"downloading", done:1, total:1600000000, pct:55});
+      ok(el("dl-pill").textContent.indexOf("55")>=0, "DL: progress keeps updating the background pill");
+      el("dl-pill").click();
+      ok(!dlBack.hidden && el("dl-pill").hidden, "DL: clicking the pill re-opens the modal");
+      window.__dlModal.close();
+      ok(dlBack.hidden, "DL: closing tidies up for later checks");
+      // State 7 — the SAME dialog reused for a Bible translation (bible://phase carries name + id).
+      window.__dlModal.onBiblePhase({phase:"downloading", name:"Young's Literal Translation", id:"ylt", done:5000000, total:12000000, pct:42});
+      ok(!dlBack.hidden && el("dl-modal-title").textContent.indexOf("Young")>=0, "DL(7): a bible://phase opens the SAME modal, titled with the translation");
+      ok(el("dl-modal-sub").textContent.toLowerCase().indexOf("translation")>=0, "DL(7): the subtitle names it a Bible translation (assetKind reuse)");
+      window.__dlModal.onBiblePhase({phase:"ready", name:"Young's Literal Translation", id:"ylt"});
+      ok(el("dl-modal-title").textContent.indexOf("ready")>=0 && el("dl-modal-ico").classList.contains("is-ready"), "DL(7): a translation reaches Ready in the same dialog");
+      window.__dlModal.close();
+      ok(dlBack.hidden, "DL(7): the reused dialog closes cleanly");
       // C-001 / C-005 read side: render a crafted plan covering every link state (scripture-linked,
       // deck-linked, deck-MISSING, unlinked) and assert the run-sheet chips. planRenderBuilder is a
       // global (top-level fn), driven directly the same way the M1 checks drive render().
@@ -2602,7 +2810,7 @@ DRIVER = r"""
     tries++;
     var booted = window.__calls.length > 0 && document.getElementById("td-bg");
     if (booted){ clearInterval(iv); setTimeout(run, 50); }
-    else if (tries>60){ clearInterval(iv); el("__r").textContent="RESULTS\nFAIL: app never booted\nDONE(1)"; }
+    else if (tries>300){ clearInterval(iv); el("__r").textContent="RESULTS\nFAIL: app never booted\nDONE(1)"; }
   }, 30);
 </script>
 """

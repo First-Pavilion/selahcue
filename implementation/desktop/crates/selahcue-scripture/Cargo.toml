@@ -6,9 +6,24 @@ edition.workspace = true
 license.workspace = true
 description = "Bundled public-domain scripture text (WEB) with lookup and keyword search"
 
+[features]
+default = []
+# Download-on-demand of a pinned Bible-translation asset (ureq + sha2). Pure-Rust — no
+# native toolchain — so it compiles anywhere; the downloaded file is SHA-256-verified before
+# it is installed. OFF by default so the crate stays pure (bundled text only, no I/O) unless
+# this is enabled AND explicitly invoked. Downloaded translations expose a verified file PATH
+# only; they are NOT wired into the compiled `Translation` enum, the per-translation
+# quote-match index, or the LAN wire protocol (that integration is out of scope by design).
+download = ["dep:ureq", "dep:sha2"]
+
 [dependencies]
 selahcue-core = { path = "../selahcue-core" }
 flate2 = "1"
+# Streaming SHA-256 for translation-asset integrity verification (feature `download`).
+# MIT/Apache-2.0; already in the workspace lock (selahcue-lan).
+sha2 = { version = "0.10", optional = true }
+# Blocking HTTP(S) client (rustls) for translation download-on-demand (feature `download`).
+ureq = { version = "2", optional = true }
 
 [lints]
 workspace = true

@@ -206,10 +206,11 @@ fn build_index(verses: &[crate::Verse]) -> QuoteIndex {
 fn quote_index(t: Translation) -> &'static QuoteIndex {
     // One cell per translation; the array length is coupled to the variant count below.
     const _: () = assert!(
-        Translation::ALL.len() == 5,
+        Translation::ALL.len() == 6,
         "resize CELLS to match Translation"
     );
-    static CELLS: [OnceLock<QuoteIndex>; 5] = [
+    static CELLS: [OnceLock<QuoteIndex>; 6] = [
+        OnceLock::new(),
         OnceLock::new(),
         OnceLock::new(),
         OnceLock::new(),

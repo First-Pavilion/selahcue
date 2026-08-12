@@ -22,6 +22,34 @@ pub struct DeckMeta {
     pub slides: usize,
 }
 
+/// One hit from the global presentation search (`deck_search`): the matched deck (id + name) and —
+/// for a SLIDE-CONTENT match — the matched slide's id/index + a short snippet of the matched line.
+/// A NAME match carries no slide fields. Serializes to the JSON the search modal renders.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SearchHit {
+    pub deck_id: u64,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slide_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slide_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    /// `"name"` for a title match, `"content"` for a slide-text match.
+    pub kind: &'static str,
+}
+
+/// A short, char-boundary-safe excerpt of `line`, capped to `max` chars (ellipsis when trimmed).
+/// Slide text lines are short, so the first window is enough context for a search snippet.
+fn search_snippet(line: &str, max: usize) -> String {
+    if line.chars().count() > max {
+        let head: String = line.chars().take(max).collect();
+        format!("{head}…")
+    } else {
+        line.to_string()
+    }
+}
+
 /// Lightweight per-slide row for the Live Console slide picker (`plan_deck_slides`,
 /// `LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec.md` §6): the slide's stable id, a speaker-readable
 /// label (its first on-screen text line, falling back to a notes line), and whether it carries
@@ -296,6 +324,62 @@ impl DeckLibrary {
         )
     }
 
+    /// Global presentation search (`deck_search`): case-insensitive substring match on deck NAME and
+    /// each slide's on-screen text, returning at most `limit` hits — NAME matches (whole deck) before
+    /// per-slide CONTENT matches (one hit per matching slide). Decks are visited name-sorted (same
+    /// deterministic order as [`list`](Self::list)). Bounded by `limit` and each deck's own slide/
+    /// element caps; `confidence_slide()` is a cheap text extraction (no pixel render), so scanning
+    /// the whole library is safe. An empty/whitespace query returns no hits. Reads the library only —
+    /// never touches the open editor workspace.
+    pub fn search(&self, query: &str, limit: usize) -> Vec<SearchHit> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let mut order: Vec<&SlideDeck> = self.decks.iter().collect();
+        order.sort_by_key(|d| d.name.to_lowercase());
+        let mut hits: Vec<SearchHit> = Vec::new();
+        for deck in order {
+            if hits.len() >= limit {
+                break;
+            }
+            // NAME match — the whole presentation.
+            if deck.name.to_lowercase().contains(&q) {
+                hits.push(SearchHit {
+                    deck_id: deck.id().0,
+                    name: deck.name.clone(),
+                    slide_id: None,
+                    slide_index: None,
+                    snippet: None,
+                    kind: "name",
+                });
+            }
+            // CONTENT match — the first matching text line of each slide (one hit per slide).
+            for (i, slide) in deck.slides().iter().enumerate() {
+                if hits.len() >= limit {
+                    break;
+                }
+                let matched = slide
+                    .confidence_slide()
+                    .body
+                    .into_iter()
+                    .find(|line| line.to_lowercase().contains(&q));
+                if let Some(line) = matched {
+                    hits.push(SearchHit {
+                        deck_id: deck.id().0,
+                        name: deck.name.clone(),
+                        slide_id: Some(slide.id.0),
+                        slide_index: Some(i),
+                        snippet: Some(search_snippet(&line, 80)),
+                        kind: "content",
+                    });
+                }
+            }
+        }
+        hits.truncate(limit);
+        hits
+    }
+
     /// Render ONE slide of a saved deck to a bounded RGBA framebuffer for the picker/preview — the
     /// SAME native compositor and preview theme ([`Theme::dark`]) as the editor canvas, so a
     /// filmstrip thumbnail matches the editor. `None` when the deck OR slide id is unknown.
@@ -444,6 +528,81 @@ mod tests {
             "label falls back to a notes line when there is no on-screen text"
         );
         assert!(!metas[0].has_notes, "the default slide carries no notes");
+    }
+
+    /// A visible slide text box carrying `s` (mirrors the editor's `text_element` seed) so a test
+    /// can author searchable on-screen content.
+    fn text_el(s: &str) -> selahcue_present::Element {
+        use selahcue_present::{Element, Fit, Rgba, TextAlign, VAlign};
+        Element::Text {
+            x_permille: 100,
+            y_permille: 100,
+            w_permille: 800,
+            h_permille: 200,
+            text: s.to_string(),
+            color: Rgba::rgb(240, 240, 245),
+            size_permille: 90,
+            line_height_permille: 1100,
+            align_h: TextAlign::Left,
+            align_v: VAlign::Top,
+            fit: Fit::ShrinkToFit,
+            opacity: 255,
+            z: 0,
+            font: None,
+            weight: 400,
+            letter_spacing_permille: 0,
+            visible: true,
+        }
+    }
+
+    #[test]
+    fn search_matches_names_and_slide_content_and_is_bounded() {
+        let mut lib = DeckLibrary::load(None);
+        // A deck whose NAME matches "grace".
+        lib.create("Grace Fellowship");
+        // A deck whose name does NOT match, but a slide's on-screen TEXT contains "amazing grace".
+        let mut hymns = lib.create("Hymnbook"); // one blank slide
+        let sid = hymns.slides()[0].id;
+        hymns
+            .get_mut(sid)
+            .unwrap()
+            .elements
+            .push(text_el("Amazing Grace, how sweet the sound"));
+        lib.store(&hymns); // sync the authored text back into the library
+
+        // NAME query → a name hit (whole deck, no slide fields).
+        let by_name = lib.search("grace", 50);
+        assert!(
+            by_name
+                .iter()
+                .any(|h| h.name == "Grace Fellowship" && h.kind == "name" && h.slide_id.is_none()),
+            "a deck whose NAME matches is a name hit"
+        );
+
+        // CONTENT query → a content hit via slide text, with the matched slide id/index + a snippet.
+        let by_content = lib.search("amazing grace", 50);
+        let hit = by_content
+            .iter()
+            .find(|h| h.kind == "content")
+            .expect("a slide-content hit");
+        assert_eq!(hit.name, "Hymnbook");
+        assert!(hit.slide_id.is_some() && hit.slide_index == Some(0));
+        assert!(hit
+            .snippet
+            .as_deref()
+            .unwrap()
+            .to_lowercase()
+            .contains("amazing grace"));
+
+        // No match / empty query → no hits (empty query never scans).
+        assert!(lib.search("zzz-not-found", 50).is_empty());
+        assert!(lib.search("   ", 50).is_empty());
+
+        // The result cap is honoured (both decks match "e"; cap to 1).
+        assert!(
+            lib.search("e", 1).len() <= 1,
+            "search is bounded by the limit"
+        );
     }
 
     #[test]

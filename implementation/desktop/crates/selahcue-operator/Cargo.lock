@@ -3533,6 +3533,8 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "selahcue-core",
+ "sha2",
+ "ureq",
 ]
 
 [[package]]

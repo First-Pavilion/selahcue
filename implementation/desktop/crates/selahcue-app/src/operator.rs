@@ -289,6 +289,26 @@ impl OperatorShell {
         })
     }
 
+    /// Undo the last Service-Plan edit (plan-editing · undo/redo). Restores the plan DOCUMENT
+    /// only — never changes what is on the Live audience output. Returns the fresh view.
+    pub fn plan_undo(&self) -> OperatorView {
+        self.with(|c| {
+            c.undo_plan();
+            c.tick(std::time::Instant::now());
+            c.operator_view()
+        })
+    }
+
+    /// Redo the last undone Service-Plan edit (the inverse of [`plan_undo`](Self::plan_undo)).
+    /// Restores the plan DOCUMENT only — never changes the Live audience output.
+    pub fn plan_redo(&self) -> OperatorView {
+        self.with(|c| {
+            c.redo_plan();
+            c.tick(std::time::Instant::now());
+            c.operator_view()
+        })
+    }
+
     /// Stage a scripture reference in Preview (its verse text composes from the
     /// chosen bundled translation; `None` = the KJV default).
     pub fn stage_scripture(&self, reference: &str, translation: Option<&str>) -> OperatorView {
@@ -1361,5 +1381,31 @@ impl RemoteOperator {
                 "expected operator_state, got: {other:?}"
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod plan_undo_shell_tests {
+    //! The operator shell's Service-Plan undo/redo actions (plan-editing · undo/redo) — a thin
+    //! wrapper over the controller's `undo_plan`/`redo_plan` that returns the fresh view.
+    use super::*;
+    use selahcue_core::plan::ServicePlan;
+    use selahcue_present::Theme;
+
+    fn shell() -> OperatorShell {
+        let c = LiveController::new(ServicePlan::new("Test"), 320, 180, Theme::dark());
+        OperatorShell::new(Arc::new(Mutex::new(c)))
+    }
+
+    #[test]
+    fn plan_undo_and_redo_restore_the_plan_via_the_shell() {
+        let sh = shell();
+        sh.add_item("song", "One", None);
+        sh.add_item("song", "Two", None);
+        assert_eq!(sh.view().items.len(), 2);
+        let v = sh.plan_undo();
+        assert_eq!(v.items.len(), 1, "undo peels back the last add");
+        let v = sh.plan_redo();
+        assert_eq!(v.items.len(), 2, "redo restores it");
     }
 }

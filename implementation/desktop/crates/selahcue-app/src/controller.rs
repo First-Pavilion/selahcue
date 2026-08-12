@@ -134,6 +134,14 @@ pub struct LiveController {
     state_dirty: bool,
     /// Set by plan-edit commands; the host persists the plan when it sees this.
     plan_dirty: bool,
+    /// Service-Plan undo history (plan-editing · undo/redo): whole-plan snapshots taken BEFORE
+    /// each real plan edit, newest last. `undo_plan` pops here and pushes the current plan onto
+    /// `plan_redo`. Bounded by [`MAX_PLAN_UNDO`] (oldest dropped) — no unbounded growth.
+    plan_undo: Vec<ServicePlan>,
+    /// The redo counterpart of [`plan_undo`](Self::plan_undo): plans peeled off by `undo_plan`,
+    /// replayed by `redo_plan`. Cleared whenever a fresh plan edit is recorded (a new edit
+    /// invalidates the redo branch). Bounded by [`MAX_PLAN_UNDO`].
+    plan_redo: Vec<ServicePlan>,
     /// The scripture reference staged in Preview, if Preview holds one (non-plan slide).
     staged_scripture: Option<String>,
     /// The scripture reference on the Live output, if Live shows one (verse text
@@ -233,6 +241,11 @@ pub const AUDIENCE_SCREENS: [&str; 1] = ["main"];
 /// [`AUDIENCE_SCREENS`] was a fixed const before the registry). At most **8** outputs: the
 /// two physical built-ins (`main` + `stage`) plus up to six virtual audience feeds.
 pub const MAX_SCREENS: usize = 8;
+
+/// The hard cap on the Service-Plan undo/redo history depth (no-leak · plan-editing · undo/redo).
+/// Each entry is a whole [`ServicePlan`] snapshot, so the stack cannot grow without limit — the
+/// oldest entry is dropped once a push would exceed this. Mirrors the deck workspace's `MAX_UNDO`.
+const MAX_PLAN_UNDO: usize = 60;
 
 /// A screen's role in the registry (Screens page — dynamic registry). Audience-class
 /// roles (`Main`/`LowerThird`/`Stream`) render the live content under a per-screen theme
@@ -680,6 +693,8 @@ impl LiveController {
             display_status: Vec::new(),
             state_dirty: false,
             plan_dirty: false,
+            plan_undo: Vec::new(),
+            plan_redo: Vec::new(),
             staged_scripture: None,
             live_scripture: None,
             live_free_text: None,
@@ -1939,16 +1954,32 @@ impl LiveController {
                 .transcript
                 .detections()
                 .pending()
-                .map(|d| DetectionView {
-                    id: d.id,
-                    reference: d.reference.clone(),
-                    text: scripture::parse_one(&d.reference)
+                .map(|d| {
+                    let text = scripture::parse_one(&d.reference)
                         .ok()
                         .and_then(|r| selahcue_scripture::passage_text(&r))
-                        .unwrap_or_default(),
-                    // R4 confidence: NAMED_REFERENCE_CONFIDENCE for an explicitly-spoken
-                    // reference, or the fuzzy quote matcher's coverage score for a paraphrase.
-                    confidence: Some(d.confidence),
+                        .unwrap_or_default();
+                    // Label the snippet with the translation it is in (the host default) — honest-
+                    // empty when the verse text itself is unresolved, so the two stay consistent.
+                    let translation = if text.is_empty() {
+                        String::new()
+                    } else {
+                        selahcue_scripture::Translation::default()
+                            .code()
+                            .to_string()
+                    };
+                    DetectionView {
+                        id: d.id,
+                        reference: d.reference.clone(),
+                        text,
+                        // R4 confidence: NAMED_REFERENCE_CONFIDENCE for an explicitly-spoken
+                        // reference, or the fuzzy quote matcher's coverage score for a paraphrase.
+                        confidence: Some(d.confidence),
+                        translation,
+                        // Provenance: the transcript segment the reference was heard in — the UI
+                        // resolves the spoken phrase + "spoken Ns ago" from the transcript tail.
+                        source_segment: Some(d.source_segment),
+                    }
                 })
                 .collect(),
         }
@@ -2014,8 +2045,15 @@ impl LiveController {
             | Command::DismissDetection { .. } => {}
             _ => self.state_dirty = true,
         }
+        // Snapshot the plan before a plan-EDITING command so the edit can be undone (plan-editing
+        // · undo/redo). Cloned up front but RECORDED only post-dispatch, once the edit is known to
+        // apply (Ack) AND to have actually changed the plan document — a denied or no-op edit
+        // records nothing and preserves the redo stack (no phantom history). Transport/timer/theme
+        // /screen commands are not plan edits, so they never touch this history. The presenter's
+        // Live output is never part of the snapshot — undo restores the plan DOCUMENT, not Live.
+        let plan_before = Self::is_plan_edit(command).then(|| self.plan.clone());
         let len = self.plan.len();
-        match command {
+        let reply = match command {
             Command::Next => {
                 if len == 0 {
                     return ControllerReply::Deny(DenyReason::BadRequest);
@@ -2649,7 +2687,101 @@ impl LiveController {
             | Command::RevokeSession { .. }
             | Command::SetSessionRole { .. }
             | Command::NewPairingCode => ControllerReply::Deny(DenyReason::BadRequest),
+        };
+        // Record the undo entry only for a real, applied plan edit (see `plan_before` above).
+        // Bounded by MAX_PLAN_UNDO — the oldest snapshot is dropped rather than growing forever.
+        if let Some(before) = plan_before {
+            if matches!(reply, ControllerReply::Ack) && self.plan != before {
+                self.plan_undo.push(before);
+                if self.plan_undo.len() > MAX_PLAN_UNDO {
+                    self.plan_undo.remove(0);
+                }
+                self.plan_redo.clear();
+            }
         }
+        reply
+    }
+
+    /// Whether `command` is a plan-EDITING command whose effect participates in the Service-Plan
+    /// undo/redo history (plan-editing · undo/redo). Exactly the commands that mutate the plan
+    /// document; transport (`Next`/`GoLive`/`Stage*`), timer, theme-library, and screen commands
+    /// are deliberately absent — undo must ignore them.
+    fn is_plan_edit(command: &Command) -> bool {
+        matches!(
+            command,
+            Command::AddItem { .. }
+                | Command::RemoveItem { .. }
+                | Command::MoveItem { .. }
+                | Command::RenameItem { .. }
+                | Command::SetItemTheme { .. }
+                | Command::SetItemContent { .. }
+                | Command::SetItemOwner { .. }
+                | Command::SetItemDuration { .. }
+        )
+    }
+
+    /// Undo the last Service-Plan edit (plan-editing · undo/redo): restore the previous plan
+    /// document, banking the current plan onto the redo stack. A no-op on an empty history.
+    ///
+    /// INVARIANT: this restores the plan DOCUMENT only and NEVER changes what is on the Live
+    /// audience output — the presenter keeps its already-rendered Live slide (FR-012 spirit;
+    /// NFR-024 never-blank). Only the plan-index bookkeeping is reconciled against the restored
+    /// plan (see [`reconcile_plan_cursors`](Self::reconcile_plan_cursors)). Bounded by
+    /// [`MAX_PLAN_UNDO`].
+    pub fn undo_plan(&mut self) {
+        if let Some(prev) = self.plan_undo.pop() {
+            self.plan_redo.push(std::mem::replace(&mut self.plan, prev));
+            if self.plan_redo.len() > MAX_PLAN_UNDO {
+                self.plan_redo.remove(0);
+            }
+            self.after_plan_swap();
+        }
+    }
+
+    /// Redo the last undone Service-Plan edit (the inverse of [`undo_plan`](Self::undo_plan)):
+    /// restore the next plan document, banking the current plan back onto the undo stack. A no-op
+    /// on an empty redo stack. Same Live-integrity invariant as `undo_plan`. Bounded by
+    /// [`MAX_PLAN_UNDO`].
+    pub fn redo_plan(&mut self) {
+        if let Some(next) = self.plan_redo.pop() {
+            self.plan_undo.push(std::mem::replace(&mut self.plan, next));
+            if self.plan_undo.len() > MAX_PLAN_UNDO {
+                self.plan_undo.remove(0);
+            }
+            self.after_plan_swap();
+        }
+    }
+
+    /// Shared bookkeeping after an undo/redo swaps in a different plan document: reconcile the
+    /// cursors against it and mark the plan (persist) + stage (confidence-monitor) dirty. The
+    /// Live output is untouched here — the presenter keeps its rendered slide.
+    fn after_plan_swap(&mut self) {
+        self.reconcile_plan_cursors();
+        self.plan_dirty = true;
+        self.stage_dirty = true;
+    }
+
+    /// Clamp the live/preview/navigation cursors to the (just-restored) plan so no index points
+    /// past the end and each within-item slide position fits its item — the same invariants
+    /// `RemoveItem` reconciles after a plan change. An index that no longer exists becomes `None`;
+    /// a slide position is clamped to its item's `slide_count()`. Never touches the Live output.
+    fn reconcile_plan_cursors(&mut self) {
+        let len = self.plan.len();
+        let in_range = |v: Option<usize>| v.filter(|i| *i < len);
+        self.live_idx = in_range(self.live_idx);
+        self.staged_idx = in_range(self.staged_idx);
+        self.plan_cursor = in_range(self.plan_cursor);
+        // Clamp each slide position to its item's slide count (a shrunk item must not leave a
+        // stale over-range position). A cursor with no item keeps its position untouched.
+        let clamp_slide = |plan: &ServicePlan, idx: Option<usize>, slide: usize| -> usize {
+            match idx {
+                Some(i) => slide.min(plan.items()[i].slide_count().saturating_sub(1)),
+                None => slide,
+            }
+        };
+        self.live_slide = clamp_slide(&self.plan, self.live_idx, self.live_slide);
+        self.staged_slide = clamp_slide(&self.plan, self.staged_idx, self.staged_slide);
+        self.cursor_slide = clamp_slide(&self.plan, self.plan_cursor, self.cursor_slide);
     }
 
     /// Set (or clear, with `None`) a plan item's per-item theme override (S8-3d). An
@@ -2774,4 +2906,137 @@ pub fn handler_for(
             message: "controller unavailable".into(),
         })),
     })
+}
+
+#[cfg(test)]
+mod plan_undo_tests {
+    //! Service-Plan undo/redo (86 plan-editing · undo/redo). White-box: the bounded-history
+    //! and no-phantom invariants read the private `plan_undo`/`plan_redo` stacks directly,
+    //! mirroring the deck workspace's proven undo tests. Undo restores the plan DOCUMENT only
+    //! and never changes the Live audience output (FR-012).
+    use super::*;
+    use selahcue_core::plan::ItemKind;
+
+    fn fresh() -> LiveController {
+        LiveController::new(ServicePlan::new("Test"), 320, 180, Theme::dark())
+    }
+
+    fn add(c: &mut LiveController, title: &str) {
+        assert_eq!(
+            c.apply(&Command::AddItem {
+                kind: ItemKind::Song.as_tag().into(),
+                title: title.into(),
+                content: None,
+            }),
+            ControllerReply::Ack
+        );
+    }
+
+    #[test]
+    fn undo_and_redo_restore_the_plan_document() {
+        let mut c = fresh();
+        add(&mut c, "One");
+        add(&mut c, "Two");
+        add(&mut c, "Three");
+        assert_eq!(c.plan().len(), 3);
+        c.undo_plan();
+        c.undo_plan();
+        assert_eq!(c.plan().len(), 1, "two undos peel back to a single item");
+        c.redo_plan();
+        assert_eq!(c.plan().len(), 2, "redo restores the second add");
+        c.redo_plan();
+        assert_eq!(c.plan().len(), 3, "redo restores the third add");
+    }
+
+    #[test]
+    fn plan_undo_history_is_bounded_and_recovers_at_least_twenty_steps() {
+        // No-leak: many edits never grow the undo stack past MAX_PLAN_UNDO, and >=20 steps are
+        // recoverable. A starting item keeps the plan non-empty so undo never underflows.
+        let mut c = fresh();
+        add(&mut c, "Base");
+        let base = c.plan().len();
+        for i in 0..(MAX_PLAN_UNDO + 40) {
+            add(&mut c, &format!("Item {i}"));
+        }
+        assert!(
+            c.plan_undo.len() <= MAX_PLAN_UNDO,
+            "undo stack stays bounded (no unbounded growth)"
+        );
+        let before = c.plan().len();
+        for _ in 0..20 {
+            c.undo_plan();
+        }
+        assert_eq!(
+            c.plan().len(),
+            before - 20,
+            ">=20 undo steps are recoverable"
+        );
+        assert!(
+            c.plan().len() >= base,
+            "undo never goes below the starting plan"
+        );
+    }
+
+    #[test]
+    fn a_denied_plan_edit_never_pushes_a_phantom_undo_or_wipes_redo() {
+        // A denied/no-op edit must record NOTHING — no phantom undo entry, redo preserved.
+        let mut c = fresh();
+        add(&mut c, "One"); // one real edit
+        c.undo_plan(); // now redo carries one entry
+        assert!(!c.plan_redo.is_empty(), "precondition: redo is populated");
+        let undo_before = c.plan_undo.len();
+        // RemoveItem on an unknown id is denied — it must not touch the history.
+        assert_eq!(
+            c.apply(&Command::RemoveItem { item_id: 999_999 }),
+            ControllerReply::Deny(DenyReason::BadRequest)
+        );
+        assert_eq!(
+            c.plan_undo.len(),
+            undo_before,
+            "a denied edit records no undo entry"
+        );
+        assert!(
+            !c.plan_redo.is_empty(),
+            "a denied edit never wipes the redo stack"
+        );
+    }
+
+    #[test]
+    fn undo_of_an_unrelated_edit_leaves_live_output_and_cursors_valid() {
+        // Live-integrity: with an item live, undoing an UNRELATED plan edit restores the plan
+        // DOCUMENT but never changes the rendered Live output (FR-012 / NFR-024).
+        let mut c = fresh();
+        add(&mut c, "One");
+        add(&mut c, "Two");
+        let id_one = c.plan().items()[0].id.0;
+        c.apply(&Command::SelectItem { item_id: id_one });
+        c.apply(&Command::GoLive);
+        assert_eq!(c.live_index(), Some(0));
+        let live_before = c.presenter().live_output().bytes().to_vec();
+        // An unrelated edit (append a third item), then undo it.
+        add(&mut c, "Three");
+        assert_eq!(c.plan().len(), 3);
+        c.undo_plan();
+        assert_eq!(c.plan().len(), 2, "undo removes the unrelated add");
+        assert_eq!(
+            c.presenter().live_output().bytes(),
+            live_before.as_slice(),
+            "undo never changes the Live audience output"
+        );
+        assert_eq!(c.live_index(), Some(0), "the live cursor stays valid");
+        // Every surviving cursor is in range for the restored plan (no panic / no overflow).
+        let len = c.plan().len();
+        assert!(c.live_index().is_none_or(|i| i < len));
+        assert!(c.staged_index().is_none_or(|i| i < len));
+    }
+
+    #[test]
+    fn undo_and_redo_on_a_fresh_controller_are_safe_noops() {
+        let mut c = fresh();
+        c.undo_plan();
+        c.redo_plan();
+        assert_eq!(c.plan().len(), 0);
+        assert!(c.plan_undo.is_empty());
+        assert!(c.plan_redo.is_empty());
+    }
 }

@@ -1298,6 +1298,104 @@
       let tdSelEl = -1; // selected element index into tdTheme.elements, or -1 = a region (86ajq6j4p)
       let tdElDelArm = false; // two-click element-delete arm (reset on every selection change)
       let tdElDelTimer = null;
+
+      // === Theme Designer undo/redo (client-side snapshot history, ⌘Z / ⌘⇧Z) =================
+      // The whole editable document is the serialisable `tdTheme` object, so history is a bounded
+      // stack of JSON snapshots. Capture is DIFF-ON-RENDER: tdSync()/tdPreview() run after every
+      // edit and ask tdHistory.note() whether tdTheme changed since the last committed state. A
+      // pointer drag or a typing burst COALESCES into ONE step — pointerdown/focusin unseals,
+      // pointerup/change/blur seals — so dragging a slider isn't one undo entry per pixel. Bounded
+      // (no unbounded growth): both stacks are capped at TD_HISTORY_MAX.
+      const TD_HISTORY_MAX = 60; // matches the deck's MAX_UNDO; each entry is one bounded theme JSON
+      const tdHistory = {
+        undo: [],
+        redo: [],
+        baseline: null, // JSON of tdTheme as of the last committed state (null = uninitialised)
+        sealed: true, // false while a gesture coalesces changes (commit deferred to seal())
+        applying: false, // true while undo/redo swaps state (suppresses capture)
+        // Start a fresh document (theme load / switch): drop history so ⌘Z can't cross themes.
+        reset() {
+          this.undo.length = 0;
+          this.redo.length = 0;
+          this.baseline = tdTheme ? JSON.stringify(tdTheme) : null;
+          this.sealed = true;
+        },
+        // Called after any potential mutation. Commits the pre-edit baseline once tdTheme has
+        // actually changed AND we are neither mid-gesture nor mid-undo.
+        note() {
+          if (this.applying || !tdTheme) return;
+          const cur = JSON.stringify(tdTheme);
+          if (this.baseline === null) { this.baseline = cur; return; } // first sight: seed baseline
+          if (cur === this.baseline) return; // nothing changed
+          if (!this.sealed) return; // mid-gesture: defer the commit to seal()
+          this.undo.push(this.baseline);
+          if (this.undo.length > TD_HISTORY_MAX) this.undo.shift();
+          this.redo.length = 0; // a new edit invalidates the redo branch
+          this.baseline = cur;
+        },
+        openGesture() { this.sealed = false; },
+        seal() { if (!this.sealed) { this.sealed = true; this.note(); } },
+        canUndo() { return this.undo.length > 0; },
+        canRedo() { return this.redo.length > 0; },
+        undoAct() {
+          if (!this.undo.length || !tdTheme) return false;
+          this.redo.push(JSON.stringify(tdTheme));
+          if (this.redo.length > TD_HISTORY_MAX) this.redo.shift();
+          this._apply(this.undo.pop());
+          return true;
+        },
+        redoAct() {
+          if (!this.redo.length || !tdTheme) return false;
+          this.undo.push(JSON.stringify(tdTheme));
+          if (this.undo.length > TD_HISTORY_MAX) this.undo.shift();
+          this._apply(this.redo.pop());
+          return true;
+        },
+        _apply(snapJson) {
+          this.applying = true; // suppress note() while the re-render touches tdSync/tdPreview
+          tdTheme = JSON.parse(snapJson);
+          this.baseline = snapJson;
+          this.sealed = true;
+          const n = tdEls().length; // the restored theme may hold fewer elements than the selection
+          if (tdSelEl >= n) tdSelEl = n - 1; // -1 when none → a region is active
+          if (tdSelEl < -1) tdSelEl = -1;
+          tdRerenderAll();
+          this.applying = false;
+        },
+      };
+      // Re-render the whole designer from tdTheme (mirrors the theme-load path + the selection box).
+      function tdRerenderAll() {
+        tdSync(); // inspector + LAYERS + background + region controls
+        tdPreview(); // canvas raster
+        tdDrawSel(); // selection overlay
+      }
+      // Keyboard + gesture wiring for Theme Designer undo/redo. Gesture coalescing makes a drag or
+      // a typing burst one step; ⌘Z / ⌘⇧Z (Ctrl on Win/Linux) act while the designer is active and
+      // focus is not in a text field (native field-undo wins there).
+      (function tdWireHistory() {
+        const surf = document.getElementById("surface-theme-designer");
+        if (!surf) return;
+        surf.addEventListener("pointerdown", () => tdHistory.openGesture(), true);
+        surf.addEventListener("focusin", () => tdHistory.openGesture());
+        surf.addEventListener("change", () => tdHistory.seal());
+        surf.addEventListener("focusout", () => tdHistory.seal());
+        // A drag can end outside the surface — seal on the window pointerup (no-op if already sealed).
+        window.addEventListener("pointerup", () => tdHistory.seal(), true);
+        document.addEventListener("keydown", (ev) => {
+          if (!surf.classList.contains("active")) return;
+          if (window.__cmdPalette && window.__cmdPalette.isOpen()) return;
+          if (document.querySelector(".pm-confirm-back")) return; // a modal dialog owns keys
+          if (isMenuOpen()) return;
+          if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
+          if (ev.key !== "z" && ev.key !== "Z") return;
+          const t = ev.target;
+          if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+          ev.preventDefault();
+          if (ev.shiftKey) tdAnnounce(tdHistory.redoAct() ? "Redo" : "Nothing to redo");
+          else tdAnnounce(tdHistory.undoAct() ? "Undo" : "Nothing to undo");
+        });
+      })();
+
       let tdSelected = ""; // the selected TEMPLATE name (built-in or saved), "" = a new/unsaved theme
       let tdSelectedKind = ""; // "builtin" | "saved" | "" — disambiguates a saved theme that shares a built-in's name
       let tdConfirmDel = null; // saved-theme name in the two-click delete-confirm state
@@ -1379,6 +1477,7 @@
         tdSelectedKind = tdSelected ? "builtin" : "";
         tdTheme = tdSelected ? JSON.parse(JSON.stringify(TD_BUILTINS[tdSelected])) : null;
         tdSelEl = -1; // clear any element selection when the theme changes
+        tdHistory.reset(); // a loaded theme is a fresh document — no undo across the switch
         tdList();
         tdSync();
         tdPreview();
@@ -1435,6 +1534,7 @@
             tdSelectedKind = "builtin";
             tdTheme = JSON.parse(JSON.stringify(TD_BUILTINS[name]));
             tdSelEl = -1;
+            tdHistory.reset(); // fresh document on load — no undo across the switch
             tdSync();
             tdPreview();
             tdList();
@@ -1475,6 +1575,7 @@
             tdSelectedKind = "saved";
             tdTheme = parsed;
             tdSelEl = -1;
+            tdHistory.reset(); // fresh document on load — no undo across the switch
             tdSync();
             tdPreview();
             tdList();
@@ -1610,6 +1711,7 @@
       }
 
       function tdSync() {
+        tdHistory.note(); // structural edits (add/delete/paste/reorder/toggle) land here first
         if (!tdTheme) return;
         const isEl = tdActiveIsEl();
         // Toggle inspector mode: the region-only controls (alignment + text/typography) hide
@@ -2021,6 +2123,7 @@
 
       let tdTimer = null;
       function tdPreview() {
+        tdHistory.note(); // fold any edit that led here into undo history (coalesced by gesture)
         if (!tdTheme) return;
         clearTimeout(tdTimer);
         tdTimer = setTimeout(async () => {
@@ -3011,6 +3114,26 @@
         };
         segTimer.onclick = () => showStage(false);
         segStage.onclick = () => showStage(true);
+        // ←/→ (and Home/End) move between the two sub-tabs — the APG tablist pattern, matching
+        // the content + right-column tablists. Keyboard selection also moves focus to the new tab.
+        [segTimer, segStage].forEach((tab) => {
+          tab.addEventListener("keydown", (e) => {
+            if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+              e.preventDefault();
+              const toStage = tab === segTimer; // two tabs: either arrow flips to the other
+              showStage(toStage);
+              (toStage ? segStage : segTimer).focus();
+            } else if (e.key === "Home") {
+              e.preventDefault();
+              showStage(false);
+              segTimer.focus();
+            } else if (e.key === "End") {
+              e.preventDefault();
+              showStage(true);
+              segStage.focus();
+            }
+          });
+        });
         // Theme picker: one confidence template per stage screen (set_stage_template). The
         // active card is re-derived from the host view in syncStage, so no optimistic lie.
         document.querySelectorAll("#stage-themes .stage-theme").forEach((btn) => {
@@ -3579,6 +3702,25 @@
           }
           return;
         }
+        // While the presentation-search modal is open, Esc closes it and other global keys are
+        // suppressed (its own input drives arrows/Enter). The emergency CHORDS above still pierce.
+        if (window.__gsearch && window.__gsearch.isOpen()) {
+          disarm();
+          if (e.key === "Escape") {
+            e.preventDefault();
+            window.__gsearch.close();
+          }
+          return;
+        }
+        // Presentation search: ⌘/Ctrl+S opens the global search modal from anywhere (overriding the
+        // browser save-page). Suppressed above while a confirm/palette/search modal is already open.
+        if (mod && !e.shiftKey && !e.altKey && (e.key === "s" || e.key === "S")) {
+          e.preventDefault();
+          disarm();
+          closeAppMenu();
+          if (window.__gsearch) window.__gsearch.open();
+          return;
+        }
         // Global ⌘/Ctrl+1–7 jump to the seven navigable sections in menu order — makes the menu's
         // ⌘N badges and the Shortcuts reference REAL. Works whether the menu is open or not.
         if (mod && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "7") {
@@ -3807,6 +3949,13 @@
         log.scrollTop = log.scrollHeight; // keep the newest line in view
       }
 
+      // Compact "spoken Ns ago" formatter for a detection's provenance line.
+      function fmtAgo(secs) {
+        if (secs < 60) return secs + "s";
+        if (secs < 3600) return Math.floor(secs / 60) + "m";
+        return Math.floor(secs / 3600) + "h";
+      }
+
       function syncDetections(view) {
         // Newest detection first: the host queues them oldest-first, so reverse for display.
         const dets = (Array.isArray(view.detections) ? view.detections : []).slice().reverse();
@@ -3840,6 +3989,14 @@
           ref.className = "ref";
           ref.textContent = d.reference;
           head.appendChild(ref);
+          // Translation label — WHICH translation the snippet is in (card spec: reference ·
+          // translation · match-%). Honest-empty when the host omits it.
+          if (d.translation) {
+            const tr = document.createElement("span");
+            tr.className = "det-translation";
+            tr.textContent = d.translation;
+            head.appendChild(tr);
+          }
           // Match-% pill — ONLY when the host supplied a real confidence (honest-empty
           // until R4 scoring lands); green when confident, amber tint when fuzzy.
           if (typeof d.confidence === "number") {
@@ -3858,29 +4015,65 @@
             row.appendChild(snip);
           }
 
+          // Provenance meta: the spoken phrase (source transcript segment) + "spoken Ns ago".
+          const meta = document.createElement("div");
+          meta.className = "det-meta";
+          const seg =
+            typeof d.source_segment === "number" && Array.isArray(view.transcript)
+              ? view.transcript.find((s) => s.id === d.source_segment)
+              : null;
+          const metaParts = [];
+          if (seg && seg.text) {
+            const phrase = seg.text.length > 48 ? seg.text.slice(0, 48) + "…" : seg.text;
+            metaParts.push("“" + phrase + "”");
+          } else {
+            metaParts.push("Live transcript");
+          }
+          if (seg && typeof seg.start_ms === "number") {
+            const nowMs = view.transcript.reduce(
+              (mx, s) => Math.max(mx, s.end_ms || s.start_ms || 0),
+              0
+            );
+            const agoS = Math.max(0, Math.round((nowMs - seg.start_ms) / 1000));
+            metaParts.push("spoken " + fmtAgo(agoS) + " ago");
+          }
+          meta.textContent = metaParts.join(" · "); // untrusted phrase → textContent, never innerHTML
+          row.appendChild(meta);
+
           const actions = document.createElement("div");
           actions.className = "detection-actions";
-          // Stage = the operator's confirmation (FR-115): it stages the verse in Preview AND
-          // pushes it Live to the audience in one action, then opens its full chapter in the
-          // Scriptures browser. A bare detection never displays anything on its own.
-          const approve = document.createElement("button");
-          approve.className = "det-stage";
-          approve.type = "button";
-          approve.textContent = "Stage";
-          approve.setAttribute("aria-label", "Stage " + d.reference + " and show it live");
-          approve.onclick = () =>
+          // Three operator-confirmed actions (FR-115 — a detection never displays on its own).
+          // approve_detection dequeues + stages the verse in PREVIEW; only GoLive commits to the
+          // audience. So: Stage = review in Preview first; Approve = stage AND go live in one; both
+          // dequeue. Dismiss discards without staging.
+          const mkAction = (label, cls, aria, run) => {
+            const b = document.createElement("button");
+            b.type = "button";
+            if (cls) b.className = cls;
+            b.textContent = label;
+            b.setAttribute("aria-label", aria);
+            b.onclick = run;
+            return b;
+          };
+          const stage = mkAction("Stage", "det-stage", "Stage " + d.reference + " in Preview", () =>
+            act(async () => {
+              const v = await invoke("approve_detection", { detectionId: d.id }); // Preview only
+              if (window.__openChapterForStage) window.__openChapterForStage(d.reference);
+              return v;
+            })
+          );
+          const approve = mkAction("Approve", "det-approve", "Approve " + d.reference + " and show it live", () =>
             act(async () => {
               await invoke("approve_detection", { detectionId: d.id }); // stage in Preview
               const v = await invoke("go_live"); // confirmed → push to the audience output
               if (window.__openChapterForStage) window.__openChapterForStage(d.reference);
               return v;
-            });
-          const dismiss = document.createElement("button");
-          dismiss.type = "button";
-          dismiss.textContent = "Dismiss";
-          dismiss.setAttribute("aria-label", "Dismiss " + d.reference);
-          dismiss.onclick = () =>
-            act(() => invoke("dismiss_detection", { detectionId: d.id }));
+            })
+          );
+          const dismiss = mkAction("Dismiss", "", "Dismiss " + d.reference, () =>
+            act(() => invoke("dismiss_detection", { detectionId: d.id }))
+          );
+          actions.appendChild(stage);
           actions.appendChild(approve);
           actions.appendChild(dismiss);
           row.appendChild(actions);
@@ -4060,6 +4253,228 @@
           apply();
         });
         apply();
+      })();
+
+      // === Offline download modal (Figma 396-124) — ONE dialog for every first-time offline
+      // download, driven by the host's `stt://phase` events (downloading / verifying / ready /
+      // failed{connect|offline|verify}). The same states serve the Whisper model and any Bible
+      // translation (assetKind). Hide backgrounds the download to a pill; Cancel aborts it
+      // (cancel_download) + stops the pending listen; Retry re-runs it. The scrim never covers the
+      // emergency footer, so BLACKOUT / Clear stay reachable. ---
+      (function wireDownloadModal() {
+        const back = document.getElementById("dl-modal-back");
+        const dialog = document.getElementById("dl-modal");
+        if (!back || !dialog) return;
+        const $ = (id) => document.getElementById(id);
+        const ico = $("dl-modal-ico"), title = $("dl-modal-title"), sub = $("dl-modal-sub");
+        const progwrap = $("dl-modal-progwrap"), progfill = $("dl-modal-progfill");
+        const progbytes = $("dl-modal-progbytes"), progpct = $("dl-modal-progpct");
+        const note = $("dl-modal-note"), live = $("dl-modal-live");
+        const btnHide = $("dl-modal-hide"), btnSecondary = $("dl-modal-secondary"), btnPrimary = $("dl-modal-primary");
+        const pill = $("dl-pill");
+
+        // Asset descriptors — the SAME dialog serves the Whisper model + (later) a Bible translation.
+        const MODEL = {
+          title: "speech model",
+          sub: "Whisper · English · on-device",
+          note: "Runs once. SelahCue works fully offline after it finishes.",
+          readyTitle: "Speech model ready",
+          readySub: "Installed · verified",
+          readyNote: "On-device transcription is ready. Listening will start now.",
+          offlineNote: "Connect to the internet once to download the speech model. After that, transcription runs fully offline.",
+          retry: () => { try { invoke("start_listening"); } catch (e) {} },
+        };
+        let asset = MODEL; // current descriptor (model now; a translation reuses this dialog)
+        // State 7: the SAME dialog for a Bible translation. Built from the bible://phase payload
+        // (name + catalog id); Retry re-invokes download_translation with that id.
+        function translationAsset(p) {
+          const t = (p && p.name) || "translation";
+          const id = p && p.id;
+          return {
+            title: t,
+            sub: "Bible translation · offline text",
+            note: "Runs once per translation. Read and search it offline afterward.",
+            readyTitle: t + " ready",
+            readySub: "Installed · verified",
+            readyNote: "This translation is ready to read and search offline.",
+            offlineNote: "Connect to the internet once to download " + t + ". After that, it reads fully offline.",
+            retry: id ? (() => { try { invoke("download_translation", { id: id }); } catch (e) {} }) : null,
+          };
+        }
+        let state = "idle", active = false, backgrounded = false, lastPayload = null;
+        let lastPct = 0, lastTotal = 0, lastDone = 0, lastAnnounced = -1;
+        let readyTimer = null, prevFocus = null;
+
+        function fmtBytes(n) {
+          if (!n || n < 0) return "0 MB";
+          const gb = n / 1e9;
+          if (gb >= 1) return (Math.round(gb * 10) / 10 + "").replace(/\.0$/, "") + " GB";
+          return Math.round(n / 1e6) + " MB";
+        }
+        function announce(msg) { if (live) live.textContent = msg; }
+        function btn(el, show, label, disabled) {
+          if (!show) { el.hidden = true; return; }
+          el.hidden = false; if (label != null) el.textContent = label; el.disabled = !!disabled;
+        }
+        function focusMain() {
+          setTimeout(() => {
+            const t = !btnPrimary.hidden ? btnPrimary : (!btnSecondary.hidden ? btnSecondary : btnHide);
+            if (t && !t.hidden) try { t.focus(); } catch (e) {}
+          }, 0);
+        }
+        function openModal() {
+          if (back.hidden) { prevFocus = document.activeElement; back.hidden = false; }
+          pill.hidden = true; backgrounded = false;
+        }
+        function closeModal() {
+          clearTimeout(readyTimer);
+          back.hidden = true; pill.hidden = true; state = "idle"; active = false; backgrounded = false;
+          if (prevFocus && prevFocus.focus) try { prevFocus.focus(); } catch (e) {}
+        }
+        function hideToBackground() {
+          back.hidden = true; backgrounded = true; pill.hidden = false;
+          pill.textContent = "Downloading… " + lastPct + "%";
+          try { pill.focus(); } catch (e) {}
+        }
+        function renderDownloading() {
+          state = "downloading";
+          ico.textContent = "↓"; ico.className = "dl-modal-ico";
+          title.textContent = "Downloading " + asset.title; sub.textContent = asset.sub;
+          progwrap.hidden = false; progwrap.classList.remove("is-indeterminate");
+          progfill.className = "dl-modal-progfill";
+          progfill.style.width = lastPct + "%"; progfill.setAttribute("aria-valuenow", String(lastPct));
+          progbytes.textContent = lastTotal ? (fmtBytes(lastDone) + " of " + fmtBytes(lastTotal)) : "Starting…";
+          progpct.hidden = false; progpct.textContent = lastPct + "%";
+          note.textContent = asset.note;
+          btn(btnHide, true, "Hide"); btn(btnSecondary, true, "Cancel"); btn(btnPrimary, false);
+          const step = Math.floor(lastPct / 10);
+          if (step !== lastAnnounced) { lastAnnounced = step; announce("Downloading " + asset.title + ", " + lastPct + " percent"); }
+        }
+        function renderVerifying() {
+          state = "verifying";
+          ico.textContent = "↻"; ico.className = "dl-modal-ico";
+          title.textContent = "Verifying " + asset.title; sub.textContent = "Checking integrity…";
+          progwrap.hidden = false; progwrap.classList.add("is-indeterminate");
+          progfill.className = "dl-modal-progfill"; progfill.removeAttribute("aria-valuenow");
+          progbytes.textContent = "Making sure it's complete & untampered"; progpct.hidden = true;
+          note.textContent = "This guards against a corrupted or tampered file. Takes a few seconds.";
+          // No Hide during verify, and Esc is suppressed (can't safely abort a verify).
+          btn(btnHide, false); btn(btnSecondary, true, "Cancel"); btn(btnPrimary, false);
+          announce("Verifying " + asset.title);
+        }
+        function renderReady() {
+          state = "ready";
+          ico.textContent = "✓"; ico.className = "dl-modal-ico is-ready";
+          title.textContent = asset.readyTitle; sub.textContent = asset.readySub;
+          progwrap.hidden = false; progwrap.classList.remove("is-indeterminate");
+          progfill.className = "dl-modal-progfill is-ready";
+          progfill.style.width = "100%"; progfill.setAttribute("aria-valuenow", "100");
+          progbytes.textContent = "Integrity verified"; progpct.hidden = true;
+          note.textContent = asset.readyNote;
+          btn(btnHide, false); btn(btnSecondary, false); btn(btnPrimary, true, "Start listening");
+          announce(asset.readyTitle);
+          clearTimeout(readyTimer); readyTimer = setTimeout(() => { if (state === "ready") closeModal(); }, 1500);
+          focusMain();
+        }
+        function renderFailed(reason) {
+          if (reason === "verify") {
+            state = "couldnt-verify";
+            ico.textContent = "!"; ico.className = "dl-modal-ico is-integrity";
+            title.textContent = "Download couldn’t be verified"; sub.textContent = "Discarded for your safety";
+            progwrap.hidden = true;
+            note.textContent = "The file didn’t match its security checksum, so SelahCue deleted it and installed nothing. This is usually a bad connection — try again.";
+          } else if (reason === "offline") {
+            state = "offline";
+            ico.textContent = "⚠"; ico.className = "dl-modal-ico is-warn";
+            title.textContent = "You’re offline"; sub.textContent = "Connection needed one time";
+            progwrap.hidden = true; note.textContent = asset.offlineNote;
+          } else { // connect / other
+            state = "couldnt-connect";
+            ico.textContent = "!"; ico.className = "dl-modal-ico is-warn";
+            title.textContent = "Download interrupted"; sub.textContent = lastPct ? ("Paused at " + lastPct + "%") : "Paused";
+            progwrap.hidden = false; progwrap.classList.remove("is-indeterminate");
+            progfill.className = "dl-modal-progfill is-warn"; progfill.style.width = lastPct + "%";
+            progbytes.textContent = "Waiting to reconnect…"; progpct.hidden = true;
+            note.textContent = "Couldn’t reach the download server. Check your connection — try again.";
+          }
+          const secondary = reason === "offline" ? "Not now" : "Cancel";
+          const primary = reason === "offline" ? "Try again" : "Retry";
+          btn(btnHide, false); btn(btnSecondary, true, secondary); btn(btnPrimary, true, primary);
+          announce(title.textContent + ". " + sub.textContent);
+          focusMain();
+        }
+        function reRender() {
+          if (state === "downloading") renderDownloading();
+          else if (state === "verifying") renderVerifying();
+          else if (state === "ready") renderReady();
+          else if (lastPayload && lastPayload.phase === "failed") renderFailed(lastPayload.reason);
+        }
+        // Drive the dialog from a host phase event. Exposed on window for the headless harness.
+        function onPhase(p) {
+          if (!p || !p.phase) return;
+          lastPayload = p;
+          if (p.phase === "downloading") {
+            if (typeof p.pct === "number") lastPct = p.pct;
+            if (p.total) lastTotal = p.total;
+            if (typeof p.done === "number") lastDone = p.done;
+            active = true;
+          } else if (p.phase === "verifying") {
+            active = true;
+          } else if (p.phase === "ready" && !active) {
+            return; // a warm cache hit emits a lone `ready` — never pop a modal just to say so
+          }
+          if (backgrounded && (p.phase === "downloading" || p.phase === "verifying")) {
+            pill.textContent = p.phase === "verifying" ? "Verifying…" : ("Downloading… " + lastPct + "%");
+            return; // stay backgrounded while it progresses; ready/failed re-surfaces below
+          }
+          backgrounded = false;
+          if (p.phase === "downloading") { openModal(); renderDownloading(); }
+          else if (p.phase === "verifying") { openModal(); renderVerifying(); }
+          else if (p.phase === "ready") { openModal(); renderReady(); active = false; }
+          else if (p.phase === "failed") {
+            if (p.message === "cancelled") { closeModal(); return; } // user cancel — just close
+            openModal(); renderFailed(p.reason); active = false;
+          }
+        }
+
+        btnHide.addEventListener("click", hideToBackground);
+        pill.addEventListener("click", () => { pill.hidden = true; openModal(); reRender(); focusMain(); });
+        btnSecondary.addEventListener("click", () => {
+          // Cancel / Not now — abort the in-flight download + stop the pending listen, then close.
+          try { invoke("cancel_download"); } catch (e) {}
+          try { invoke("stop_listening"); } catch (e) {}
+          closeModal();
+        });
+        btnPrimary.addEventListener("click", () => {
+          if (state === "ready") { closeModal(); return; } // Start listening — already underway
+          // Retry / Try again — re-run the download+listen flow; incoming phases re-render the dialog.
+          if (asset.retry) asset.retry();
+        });
+        // Focus trap + Esc=Cancel (never during Verifying — can't safely abort a verify).
+        dialog.addEventListener("keydown", (ev) => {
+          if (ev.key === "Escape") {
+            if (state !== "verifying" && !btnSecondary.hidden) { ev.preventDefault(); btnSecondary.click(); }
+            return;
+          }
+          if (ev.key !== "Tab") return;
+          const f = Array.prototype.filter.call(dialog.querySelectorAll("button"), (b) => !b.hidden && !b.disabled);
+          if (!f.length) return;
+          const first = f[0], last = f[f.length - 1];
+          if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+          else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+        });
+
+        // The SAME dialog serves the speech model (stt://phase) and any Bible translation
+        // (bible://phase, whose payload carries the translation name + catalog id). Each wrapper
+        // sets the asset descriptor, then runs the shared state machine.
+        function onModelPhase(p) { asset = MODEL; onPhase(p || {}); }
+        function onBiblePhase(p) { asset = translationAsset(p || {}); onPhase(p || {}); }
+        if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) {
+          window.__TAURI__.event.listen("stt://phase", (e) => onModelPhase((e && e.payload) || {}));
+          window.__TAURI__.event.listen("bible://phase", (e) => onBiblePhase((e && e.payload) || {}));
+        }
+        // Test/refresh hook for the headless behavioural harness.
+        window.__dlModal = { onPhase: onModelPhase, onBiblePhase: onBiblePhase, close: closeModal, hide: hideToBackground, state: () => state };
       })();
 
       // --- Right column tabs: Service Timer | Detected Scriptures (Figma 430:124). Tabbing
@@ -4646,6 +5061,135 @@
           isOpen: () => !palette.hidden || (shortcuts && !shortcuts.hidden),
           closeAll: () => { closePalette(); closeShortcuts(); },
         };
+      })();
+
+      // --- Global presentation search (⌘/Ctrl+S): a dedicated modal that searches deck NAMES +
+      // slide TEXT across the operator-local library (host `deck_search`), and opens the chosen
+      // presentation in the editor. Mirrors the command-palette modal a11y (dialog / listbox /
+      // ↑↓ / Enter / Esc; roving active option). Exposed as window.__gsearch for the global keymap. ---
+      (function wireGlobalSearch() {
+        const modal = document.getElementById("gsearch");
+        const input = document.getElementById("gsearch-input");
+        const listEl = document.getElementById("gsearch-list");
+        const emptyEl = document.getElementById("gsearch-empty");
+        if (!modal || !input || !listEl) return;
+
+        let results = [];
+        let active = 0;
+        let seq = 0; // request sequence — drop stale async responses (a slow query can't clobber a newer one)
+        let debounceTimer = null;
+        let opener = null;
+
+        const syncActiveDescendant = () => {
+          if (results.length) input.setAttribute("aria-activedescendant", "gs-opt-" + active);
+          else input.removeAttribute("aria-activedescendant");
+        };
+        const paint = () => {
+          listEl.querySelectorAll(".gsearch-item").forEach((li, i) => {
+            const on = i === active;
+            li.classList.toggle("active", on);
+            li.setAttribute("aria-selected", on ? "true" : "false");
+            if (on && li.scrollIntoView) li.scrollIntoView({ block: "nearest" });
+          });
+          syncActiveDescendant();
+        };
+        const render = () => {
+          listEl.innerHTML = "";
+          results.forEach((r, i) => {
+            const li = document.createElement("li");
+            li.className = "cmd-item gsearch-item" + (i === active ? " active" : "");
+            li.id = "gs-opt-" + i;
+            li.setAttribute("role", "option");
+            li.setAttribute("aria-selected", i === active ? "true" : "false");
+            const ico = document.createElement("span");
+            ico.className = "cmd-item-ico"; ico.setAttribute("aria-hidden", "true");
+            ico.textContent = "▦";
+            const text = document.createElement("span");
+            text.className = "gsearch-text";
+            const name = document.createElement("span");
+            name.className = "gsearch-name";
+            name.textContent = r.name; // untrusted deck name → textContent
+            text.appendChild(name);
+            let aria = r.name;
+            if (r.kind === "content" && r.snippet) {
+              const where = typeof r.slide_index === "number" ? "slide " + (r.slide_index + 1) + " · " : "";
+              const sub = document.createElement("span");
+              sub.className = "gsearch-sub";
+              sub.textContent = where + "“" + r.snippet + "”"; // untrusted slide text → textContent
+              text.appendChild(sub);
+              aria = r.name + " — " + where + r.snippet;
+            }
+            li.setAttribute("aria-label", aria);
+            li.appendChild(ico);
+            li.appendChild(text);
+            li.addEventListener("mousemove", () => { if (active !== i) { active = i; paint(); } });
+            li.addEventListener("click", () => openAt(i));
+            listEl.appendChild(li);
+          });
+          if (emptyEl) {
+            const q = input.value.trim();
+            if (results.length > 0) {
+              emptyEl.hidden = true;
+            } else {
+              emptyEl.hidden = false;
+              emptyEl.textContent = q
+                ? "No presentations match “" + q + "”"
+                : "Type to search your presentations";
+            }
+          }
+          syncActiveDescendant();
+        };
+        const search = () => {
+          const q = input.value.trim();
+          const mine = ++seq;
+          if (!q) { results = []; active = 0; render(); return; }
+          Promise.resolve(invoke("deck_search", { query: q }))
+            .then((res) => {
+              if (mine !== seq) return; // superseded by a newer query
+              results = res && Array.isArray(res.hits) ? res.hits : [];
+              active = 0;
+              render();
+            })
+            .catch(() => { if (mine === seq) { results = []; render(); } });
+        };
+        const openAt = (i) => {
+          const r = results[i];
+          if (!r) return;
+          close();
+          showSurface("presentation");
+          // Reuse the existing open-into-editor flow (deck_open → grid render).
+          if (typeof pmLibOpen === "function") pmLibOpen(r.deck_id);
+          else invoke("deck_open", { id: r.deck_id });
+        };
+
+        function open() {
+          opener = document.activeElement;
+          closeAppMenu();
+          modal.hidden = false;
+          input.value = ""; results = []; active = 0; render();
+          input.focus();
+        }
+        function close() {
+          modal.hidden = true;
+          if (opener && opener.focus && document.contains(opener) && opener.offsetParent !== null) opener.focus();
+          opener = null;
+        }
+        const isOpen = () => !modal.hidden;
+
+        input.addEventListener("input", () => {
+          if (debounceTimer) clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(search, 120); // debounce the host round-trip
+        });
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "ArrowDown") { e.preventDefault(); active = Math.min(results.length - 1, active + 1); paint(); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); active = Math.max(0, active - 1); paint(); }
+          else if (e.key === "Enter") { e.preventDefault(); openAt(active); }
+          else if (e.key === "Escape") { e.preventDefault(); close(); }
+          else if (e.key === "Tab") { e.preventDefault(); } // trap focus (aria-modal: #gsearch-input is the only tabbable node)
+        });
+        modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
+
+        window.__gsearch = { open, close, isOpen };
       })();
 
       // Host connection pill: green "Connected" while the view poll succeeds; amber
@@ -5603,6 +6147,28 @@
           planFocusAfterRender = null;
         }
       }
+      // Plan run-sheet undo/redo (⌘Z / ⌘⇧Z) — backend-authoritative (the LiveController plan
+      // history). A plan EDIT is undone, never a live-control action; the host reconciles cursors so
+      // the audience output never changes on undo. Remote-host mode is a safe no-op (the host owns
+      // its own history). Mirrors the Presentation deck undo (pmUndo/pmRedo) + the Theme Designer.
+      function planUndo() { planMutate(() => invoke("plan_undo")); }
+      function planRedo() { planMutate(() => invoke("plan_redo")); }
+      (function planWireUndo() {
+        document.addEventListener("keydown", (ev) => {
+          const surf = document.getElementById("surface-plan");
+          if (!surf || !surf.classList.contains("active")) return;
+          if (window.__cmdPalette && window.__cmdPalette.isOpen()) return;
+          if (document.querySelector(".pm-confirm-back")) return; // a modal dialog owns keys
+          if (isMenuOpen()) return;
+          if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
+          if (ev.key !== "z" && ev.key !== "Z") return;
+          const t = ev.target;
+          if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+          ev.preventDefault();
+          if (ev.shiftKey) planRedo();
+          else planUndo();
+        });
+      })();
       // Reorder an item to a target index (persists via move_item; the moved row keeps focus). A plan
       // edit — never a live-control command.
       function planReorderTo(itemId, toIndex, last) {
