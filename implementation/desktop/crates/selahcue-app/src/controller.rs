@@ -1885,8 +1885,15 @@ impl LiveController {
             live_authored_id: self.presenter.authored_live_id(),
             outputs: self.output_status.clone(),
             displays: self.display_status.clone(),
+            // Advertise only translations that can actually be rendered RIGHT NOW: bundled
+            // translations are always available; a downloadable one (YLT) is withheld until its
+            // verified asset is present (in the host, compiled without the `download` feature, it
+            // is never available). This keeps an unavailable translation out of the operator
+            // picker AND out of the cross-language wire list — matching download.rs's documented
+            // boundary — so it can never be selected into a verse-less "title-only" slide.
             translations: selahcue_scripture::Translation::ALL
                 .iter()
+                .filter(|t| selahcue_scripture::is_available(**t))
                 .map(|t| t.code().to_string())
                 .collect(),
             theme: self.theme_name.clone(),
@@ -2285,6 +2292,12 @@ impl LiveController {
                         None => return ControllerReply::Deny(DenyReason::BadRequest),
                     },
                 };
+                // LAN peers are untrusted: a client can name a real-but-unavailable translation
+                // (a downloadable one whose asset isn't present). Composing it would yield a
+                // verse-less "title-only" slide yet still Ack — reject it instead of staging blank.
+                if !selahcue_scripture::is_available(t) {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
                 self.presenter.stage(scripture_slide_in(t, reference));
                 self.staged_idx = None; // a scripture slide is not a plan index
                 self.staged_scripture = Some(reference.clone());
@@ -2301,6 +2314,12 @@ impl LiveController {
                         None => return ControllerReply::Deny(DenyReason::BadRequest),
                     },
                 };
+                // Untrusted peer + never push blank to the audience: reject an unavailable
+                // translation before it could be staged and (when a scripture is live) followed
+                // straight onto Live as a verse-less slide. See StageScripture above.
+                if !selahcue_scripture::is_available(t) {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
                 // Always stage the verse in Preview (identical to StageScripture).
                 self.presenter.stage(scripture_slide_in(t, reference));
                 self.staged_idx = None;

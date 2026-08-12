@@ -120,12 +120,15 @@ jobs:
         run: |
           cargo clippy -p selahcue-lan --features server --all-targets -- -D warnings
           cargo clippy -p selahcue-app --features server --all-targets -- -D warnings
+          cargo clippy -p selahcue-scripture --features download --all-targets -- -D warnings
       - name: Test (workspace, incl. GPU parity where an adapter exists)
         run: cargo test --workspace
       - name: Test (LAN server + app server features — E2E over real TLS)
         run: |
           cargo test -p selahcue-lan --features server
           cargo test -p selahcue-app --features server
+      - name: Test (scripture download — feature-gated, loopback only)
+        run: cargo test -p selahcue-scripture --features download
       - name: Test (at-rest encryption — SQLCipher + vendored OpenSSL)
         # The vendored OpenSSL build needs perl+nasm on Windows; covered on the
         # other two OSes (the feature is platform-independent Rust).

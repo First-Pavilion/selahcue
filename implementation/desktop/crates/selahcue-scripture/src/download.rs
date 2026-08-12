@@ -21,6 +21,7 @@
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
@@ -30,6 +31,18 @@ pub const HASH_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Bytes streamed per read/write while downloading (bounds transient download memory).
 pub const DL_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Hard ceiling on a single translation download when the pinned `size_bytes` is unknown (`0`):
+/// a backstop so an unbounded/never-ending stream cannot fill the disk. A real pinned asset caps
+/// at its EXACT `size_bytes` instead (a correct download is exactly that many bytes, since the
+/// bytes must match the pinned SHA-256); this ceiling only applies when no size is pinned.
+pub const DL_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Connect/read timeouts for a translation download: a stalled connection or a trickling stream
+/// must not hang the fetch indefinitely (paired with the size cap, which bounds a fast, endless
+/// stream that never stalls).
+const DL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const DL_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A pinned, downloadable Bible-translation asset: a stable id, a display name, the cache
 /// file name, the source URL, the expected size, and the pinned lowercase-hex SHA-256 the
@@ -55,6 +68,10 @@ pub struct TranslationAsset {
 pub enum TranslationFetchError {
     /// The download itself failed (unreachable host, HTTP error, stream read error, …).
     Network(String),
+    /// The stream exceeded its size ceiling (the pinned `size_bytes`, or the hard backstop) before
+    /// the integrity gate — the transfer was aborted and the partial file discarded, so an
+    /// oversized/never-ending stream can never fill the disk.
+    TooLarge { limit: u64 },
     /// The pinned expected hash is not valid lowercase-hex SHA-256 (64 hex chars).
     BadExpectedHash,
     /// The downloaded bytes' SHA-256 did not match the pinned digest — the file was discarded.
@@ -67,6 +84,12 @@ impl std::fmt::Display for TranslationFetchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TranslationFetchError::Network(e) => write!(f, "translation download failed: {e}"),
+            TranslationFetchError::TooLarge { limit } => {
+                write!(
+                    f,
+                    "translation download exceeded the {limit}-byte size limit"
+                )
+            }
             TranslationFetchError::BadExpectedHash => {
                 write!(f, "pinned translation hash is not a 64-char hex SHA-256")
             }
@@ -190,6 +213,39 @@ fn verify_file(path: &Path, expected_sha256: &str) -> Result<String, Translation
     }
 }
 
+/// Stream `reader` into the file at `tmp`, writing at most `max_bytes` before aborting with
+/// [`TranslationFetchError::TooLarge`] — so an oversized/never-ending stream can't fill the disk
+/// (the integrity gate only runs after EOF). Reads/writes in bounded [`DL_CHUNK_BYTES`] chunks and
+/// reports progress as `(bytes_written, total)`. Never loads the whole file into memory.
+fn stream_capped<R: Read>(
+    reader: &mut R,
+    tmp: &Path,
+    max_bytes: u64,
+    total: u64,
+    progress: &dyn Fn(u64, u64),
+) -> Result<(), TranslationFetchError> {
+    let mut file = File::create(tmp).map_err(TranslationFetchError::Io)?;
+    let mut buf = [0u8; DL_CHUNK_BYTES];
+    let mut done: u64 = 0;
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| TranslationFetchError::Network(format!("read stream: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        if done.saturating_add(n as u64) > max_bytes {
+            return Err(TranslationFetchError::TooLarge { limit: max_bytes });
+        }
+        file.write_all(&buf[..n])
+            .map_err(TranslationFetchError::Io)?;
+        done = done.saturating_add(n as u64);
+        progress(done, total);
+    }
+    file.flush().map_err(TranslationFetchError::Io)?;
+    Ok(())
+}
+
 /// Resolve `asset` to a verified local translation file under `cache_dir`.
 ///
 /// - **Cache hit**: if the file already exists and its SHA-256 matches the pin, return it —
@@ -209,7 +265,22 @@ pub fn fetch_translation(
     fs::create_dir_all(cache_dir).map_err(TranslationFetchError::Io)?;
 
     let tmp = cache_dir.join(format!("{}.part", asset.file_name));
-    let resp = ureq::get(&asset.url)
+    // Bounded transfer: a correct download is EXACTLY `size_bytes` (it must match the pinned
+    // SHA-256), so cap there when it is known; otherwise fall back to the hard backstop. This
+    // rejects a hostile/compromised mirror's oversized or never-ending stream BEFORE it can fill
+    // the disk — the SHA-256 gate only runs after EOF — and the connect/read timeouts bound a
+    // stalled or trickling connection.
+    let max_bytes = if asset.size_bytes > 0 {
+        asset.size_bytes
+    } else {
+        DL_MAX_BYTES
+    };
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(DL_CONNECT_TIMEOUT)
+        .timeout_read(DL_READ_TIMEOUT)
+        .build();
+    let resp = agent
+        .get(&asset.url)
         .call()
         .map_err(|e| TranslationFetchError::Network(format!("download {}: {e}", asset.url)))?;
     let total: u64 = resp
@@ -217,24 +288,12 @@ pub fn fetch_translation(
         .and_then(|s| s.parse().ok())
         .unwrap_or(asset.size_bytes);
 
+    // Stream to the `.part` file, capping the total. ANY error here (network, I/O, or over-cap)
+    // discards the partial file, so a failed download never orphans bytes on disk.
     let mut reader = resp.into_reader();
-    {
-        let mut file = File::create(&tmp).map_err(TranslationFetchError::Io)?;
-        let mut buf = [0u8; DL_CHUNK_BYTES];
-        let mut done: u64 = 0;
-        loop {
-            let n = reader
-                .read(&mut buf)
-                .map_err(|e| TranslationFetchError::Network(format!("read stream: {e}")))?;
-            if n == 0 {
-                break;
-            }
-            file.write_all(&buf[..n])
-                .map_err(TranslationFetchError::Io)?;
-            done = done.saturating_add(n as u64);
-            progress(done, total);
-        }
-        let _ = file.flush();
+    if let Err(e) = stream_capped(&mut reader, &tmp, max_bytes, total, &progress) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
     }
 
     // Integrity gate: the downloaded bytes must match the pinned SHA-256.

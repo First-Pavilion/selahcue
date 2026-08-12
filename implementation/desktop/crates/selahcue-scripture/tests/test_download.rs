@@ -9,6 +9,9 @@
 //! unaffected.
 #![cfg(feature = "download")]
 #![allow(clippy::unwrap_used)]
+// Test guards like `assert!(1_000_000 > HASH_CHUNK_BYTES, ...)` assert on compile-time constants
+// on purpose (they pin a fixture invariant) — allowed here, as `unwrap_used` is above.
+#![allow(clippy::assertions_on_constants)]
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -176,6 +179,42 @@ fn verify_failure_discards_the_bad_file_and_errors() {
     assert!(
         !dir.join("asv.asset.part").exists(),
         "a .part was left behind"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn oversized_stream_is_capped_before_verification_and_leaves_no_partial() {
+    // Bounded disk: a hostile/misconfigured mirror streams FAR more bytes than the pinned size.
+    // The fetcher must abort on the size ceiling BEFORE the (post-EOF) SHA-256 gate — so an
+    // oversized / never-ending stream can never fill the disk — and must discard the `.part`.
+    let dir = tmp_dir("toobig");
+    let body = vec![b'x'; 200_000]; // 200 KB streamed...
+    let url = serve_once(body);
+
+    let asset = TranslationAsset {
+        id: "big".into(),
+        name: "Oversized".into(),
+        file_name: "big.asset".into(),
+        url,
+        size_bytes: 1_024, // ...but the pin says 1 KB — the transfer must be capped here.
+        sha256: "0".repeat(64),
+    };
+
+    let err =
+        fetch_translation(&asset, &dir, |_, _| {}).expect_err("must reject an oversized stream");
+    assert!(
+        matches!(err, TranslationFetchError::TooLarge { limit } if limit == 1_024),
+        "expected TooLarge {{ limit: 1024 }} before verification, got {err:?}"
+    );
+    // Nothing installed, and the partial file was discarded (no orphaned bytes on disk).
+    assert!(
+        !dir.join("big.asset").exists(),
+        "an oversized file was installed"
+    );
+    assert!(
+        !dir.join("big.asset.part").exists(),
+        "a .part was left behind after the over-cap abort"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

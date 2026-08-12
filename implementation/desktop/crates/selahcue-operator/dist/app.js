@@ -5171,8 +5171,14 @@
         }
         function close() {
           modal.hidden = true;
-          if (opener && opener.focus && document.contains(opener) && opener.offsetParent !== null) opener.focus();
-          opener = null;
+          if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; } // no host round-trip after close
+          // Restore focus to the opener; fall back to the app-menu button when the opener is gone
+          // or not focusable (e.g. a position:fixed control like the download pill, whose
+          // offsetParent is null) — mirrors the command palette's restoreFocus so keyboard focus
+          // is never dropped to <body>.
+          const o = opener; opener = null;
+          if (o && o.focus && document.contains(o) && o.offsetParent !== null) { o.focus(); }
+          else { const mb = document.getElementById("app-menu-btn"); if (mb) mb.focus(); }
         }
         const isOpen = () => !modal.hidden;
 

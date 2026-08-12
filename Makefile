@@ -185,12 +185,14 @@ ci: ## Run the CI gate locally (same gates as .github/workflows/ci.yml, minus th
 	$(CARGO) clippy $(WS) --workspace --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-lan --features server --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-app --features server --all-targets -- -D warnings
+	$(CARGO) clippy $(WS) -p selahcue-scripture --features download --all-targets -- -D warnings
 	$(CARGO) clippy $(OP) --all-targets -- -D warnings
 	$(CARGO) test $(WS) --workspace
 	$(CARGO) test $(WS) -p selahcue-lan --features server
 	$(CARGO) test $(WS) -p selahcue-app --features server
 	$(CARGO) test $(WS) -p selahcue-data --features encryption
 	$(CARGO) test $(WS) -p selahcue-desktop --features encryption
+	$(CARGO) test $(WS) -p selahcue-scripture --features download
 	$(CARGO) check $(OP)
 	$(CARGO) test $(OP)
 	python3 scripts/operator_headless.py

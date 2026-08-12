@@ -2168,6 +2168,9 @@ async fn download_translation(id: String, app: tauri::AppHandle) -> Result<(), S
             Err(TranslationFetchError::Network(m)) => {
                 serde_json::json!({"phase":"failed","reason":"connect","message":m,"resumable":false,"bytes_kept":0,"name":name,"id":id})
             }
+            Err(e @ TranslationFetchError::TooLarge { .. }) => {
+                serde_json::json!({"phase":"failed","reason":"other","message":e.to_string(),"resumable":false,"bytes_kept":0,"name":name,"id":id})
+            }
             Err(TranslationFetchError::Io(e)) => {
                 serde_json::json!({"phase":"failed","reason":"other","message":e.to_string(),"resumable":false,"bytes_kept":0,"name":name,"id":id})
             }
