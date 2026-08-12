@@ -6,7 +6,7 @@
 - Parent goal ID: 86ajvpngr (Presentations Library)
 - Title: Global presentation search — ⌘/Ctrl+S opens a search modal that finds presentations by NAME and SLIDE CONTENT (operator-local deck library), and opens the chosen deck in the editor
 - Role: backend-engineer (+ frontend-engineer for the modal)
-- Status: GATE_REVIEW
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: TBD — link to the Presentations Library epic on next ClickUp sync
 - Created: 2026-08-12
@@ -115,3 +115,19 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Verifier: `python3 scripts/operator_headless.py` → **612 checks, 0 FAIL** (incl. 14 gsearch tests).
   `cargo test ...selahcue-operator search` (unit) + `cargo check`/`clippy`/`fmt` clean.
 - Result: C-001..C-006 PASS. Remaining: independent code-review + the commit decision.
+
+### Iteration 3 — committed + independent review gate satisfied → VERIFIED_COMPLETE
+
+- The feature (+ concurrent WIP, per the owner's "commit all") landed as **54d085a** on `main` after a
+  full `make ci` gate (fmt, clippy -D warnings, all Rust suites incl. server/encryption, operator
+  check, headless 612/0, flutter analyze + 97 tests).
+- Independent verification (required: yes) ran as a **6-dimension adversarial review workflow** over the
+  committed diff (each finding re-derived from the actual code before counting): 14 raw → **3 confirmed**.
+  One touched this feature — the gsearch modal dropped keyboard focus to `<body>` when the opener was a
+  `position:fixed` control (offsetParent null). Fixed by mirroring the command palette's `restoreFocus`
+  fallback to `#app-menu-btn` (+ clearing the pending debounce on close). The other two were in the
+  concurrently-committed platform WIP (scripture download size cap; unavailable-translation advertising).
+- All fixes landed as **8ced3b7**; re-verified green by the same `make ci` gate (now also running
+  `selahcue-scripture --features download` — clippy + the new bounded-memory `oversized_stream…` test).
+- Result: C-001..C-006 PASS + independent review satisfied + remediations re-reviewed → VERIFIED_COMPLETE.
+  (Both commits are local-only; push awaits the owner.)
