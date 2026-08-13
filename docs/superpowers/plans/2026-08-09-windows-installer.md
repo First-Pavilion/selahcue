@@ -23,6 +23,18 @@ original Tasks 5–6:
 
 Tasks 1–2 (operator auto-launch wiring) remain deferred until `operator/main.rs` WIP settles.
 
+## Revision note (2026-08-13, deferral closed)
+
+Tasks 1–2 are **now implemented** (`src/autolaunch.rs` + the `setup`-hook wiring). The deferral
+shipped an installer whose only entry point was the console: nothing spawned the bundled
+`selahcue-output.exe`, so `build_backend()` found no endpoint file, fell back to
+`Backend::Local(demo_shell())` — a controller whose `display_status` is empty because only
+`selahcue-desktop` ever calls `set_output_status` — and the Screens surface honestly reported
+"No display assigned" for Audience and Stage. Runtime-verified on macOS by staging a real sidecar
+beside the operator's debug exe: the console spawned it, waited for the endpoint, and logged
+`connected to output window at 127.0.0.1:<port>`. Any installer built before this change needs a
+rebuild.
+
 ## Global Constraints
 
 - Operator crate lint: `clippy::unwrap_used = "warn"` — no `.unwrap()`; degrade gracefully. (`.expect()` is allowed; only `unwrap_used` is set.)

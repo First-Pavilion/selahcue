@@ -39,11 +39,18 @@ confirm:
    are siblings in the install root (if the DLL landed in a nested `resources/` subdir, adjust the
    `bundle.resources` mapping in `tauri.conf.json`).
 3. NDI broadcast actually appears on an NDI receiver on the LAN.
+4. The **Audience** and **Stage** windows open by themselves and the Screens page names a real
+   monitor for each. If both rows read "No display assigned" and no output windows appeared, the
+   operator could not start `selahcue-output.exe` — check it is a sibling of
+   `selahcue-operator.exe` in the install root (see §What's inside).
 
-## Note on auto-launch (pending)
+## Auto-launch
 
-The one-click auto-launch (the operator spawning + connecting to the output window on startup) is
-implemented in the operator crate as a separate step (plan Tasks 1–2), deferred until the
-operator's in-flight changes settle. Until it lands, the installer bundles both executables but the
-operator connects only if the output window is already running; otherwise it shows the demo
-backend. See `docs/superpowers/plans/2026-08-09-windows-installer.md`.
+On startup the operator spawns the sibling `selahcue-output.exe`, waits up to ~10s for its loopback
+endpoint file, then connects over pinned TLS (`src/autolaunch.rs`). Quitting the console terminates
+the output window, so no orphan process is left behind. This preserves the two-process model of
+ADR-0002/0003 — the audience compositor is native, never the WebView.
+
+In a dev run the sibling binary does not exist beside `target/…/selahcue-operator`, so the spawn is
+a no-op and the console behaves as before: it connects to a separately started output window
+(`make output`), or falls back to the stand-alone demo backend.

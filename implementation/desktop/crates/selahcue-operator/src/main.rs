@@ -26,6 +26,10 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
+/// Bring-up of the bundled native output window that sits beside the operator in a packaged
+/// install (ADR-0002/0003: the audience compositor is a separate process, never the WebView).
+mod autolaunch;
+
 /// On-device STT capture worker driving the live transcript (feature `stt`; OFF by default).
 #[cfg(feature = "stt")]
 mod listening;
@@ -2202,9 +2206,14 @@ struct Endpoint {
     token: String,
 }
 
+/// The loopback endpoint descriptor path shared with the output window (both processes agree on
+/// `temp_dir()/selahcue-operator-endpoint.json`).
+fn endpoint_file_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("selahcue-operator-endpoint.json")
+}
+
 fn read_endpoint() -> Option<Endpoint> {
-    let path = std::env::temp_dir().join("selahcue-operator-endpoint.json");
-    let data = std::fs::read_to_string(path).ok()?;
+    let data = std::fs::read_to_string(endpoint_file_path()).ok()?;
     serde_json::from_str(&data).ok()
 }
 
@@ -2658,6 +2667,27 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // Packaged install: bring up the bundled output window (a sibling binary) BEFORE we
+            // build the backend, so `build_backend()` finds its fresh loopback endpoint and
+            // connects instead of falling back to the demo. In a dev run the sibling is absent,
+            // so this is a no-op and today's behaviour is unchanged (ADR-0002/0003: separate
+            // native compositor process, never rendered in the WebView).
+            let output = std::env::current_exe()
+                .ok()
+                .and_then(|exe| autolaunch::spawn_output_window(&exe, &endpoint_file_path()))
+                .map(Arc::new);
+            if let Some(output) = &output {
+                // Terminate the bundled output window when the operator window is destroyed, so
+                // quitting the console does not orphan the audience-output process.
+                if let Some(win) = app.get_webview_window("main") {
+                    let output = Arc::clone(output);
+                    win.on_window_event(move |event| {
+                        if matches!(event, tauri::WindowEvent::Destroyed) {
+                            output.kill();
+                        }
+                    });
+                }
+            }
             // Connect on the Tauri runtime so the client is bound to the same reactor the
             // async commands run on.
             let backend = tauri::async_runtime::block_on(build_backend());
