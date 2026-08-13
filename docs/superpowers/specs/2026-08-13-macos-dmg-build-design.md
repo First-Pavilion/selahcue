@@ -40,7 +40,7 @@ These were checked against the actual artefacts in this repo, and they shape the
 | Its install name is already `@rpath/libndi.dylib` | `otool -D` | No `install_name_tool` surgery on the library |
 | The NDI-linked output binary has **zero `LC_RPATH` entries** | `otool -l target/debug/selahcue-output` | **Must add an rpath** — see Risk R1 |
 | The dylib is built for **minos 13.0** | `otool -l` → `LC_BUILD_VERSION` | `LSMinimumSystemVersion` must rise 11.0 → 13.0 |
-| The dylib is 28 MB | `ls -lh` | Exceeds GitHub's 64 KB secret limit → Git LFS |
+| The dylib is 28 MB | `ls -lh` | Far past GitHub's per-secret size limit → Git LFS |
 | `make` relies on `DYLD_FALLBACK_LIBRARY_PATH` for dev NDI runs | `Makefile` `NDI_LOADER` | Confirms the missing-rpath finding independently |
 
 ## Architecture
@@ -86,8 +86,8 @@ old one first. Worth a line in the ops doc.
 
 ### 3. NDI delivery via Git LFS
 
-The 28 MB dylib cannot be a secret and is not publicly self-provisionable the way the Windows
-runtime redistributable is (the Apple SDK is the licence-gated one that returned HTTP 403 during the
+The 28 MB dylib is far too large to pass as a CI secret, and is not publicly self-provisionable the
+way the Windows runtime redistributable is (the Apple SDK is the licence-gated one that returned HTTP 403 during the
 Windows work). So:
 
 - Re-add `.gitattributes` with an LFS rule for `vendor/ndi/macos/lib/*.dylib`. **This reverses the
