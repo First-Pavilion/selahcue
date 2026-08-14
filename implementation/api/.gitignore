@@ -11,6 +11,11 @@ db.sqlite3
 db.sqlite3-journal
 *.sqlite3
 
+# Editable-install build metadata (`pip install -e .`, used by the CI job and local dev)
+*.egg-info/
+build/
+dist/
+
 # Virtualenvs
 .venv/
 venv/
