@@ -167,6 +167,17 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 # and turning it on in a real deployment would move email sending back into the request.
 # Tests that need `.delay()` to execute synchronously flip it through the `settings` fixture.
 CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
+if CELERY_TASK_ALWAYS_EAGER and ENVIRONMENT == "prod":
+    # Guarded like SECRET_KEY above. Eager mode runs every task inline in the web process,
+    # which puts SMTP back on the request path and undoes the decoupling this whole worker
+    # exists for — a signup would then 500 whenever the mail provider is slow. It is a
+    # test/debug lever, so an env var must not be able to switch it on in production.
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured(
+        "CELERY_TASK_ALWAYS_EAGER must not be enabled when ENVIRONMENT='prod': it moves "
+        "task execution (including SMTP) back into the request path."
+    )
 # Only meaningful while eager: re-raise task exceptions in the caller instead of burying them
 # in an EagerResult, so an inline failure surfaces as a test failure rather than silence.
 CELERY_TASK_EAGER_PROPAGATES = env_bool("CELERY_TASK_EAGER_PROPAGATES", CELERY_TASK_ALWAYS_EAGER)

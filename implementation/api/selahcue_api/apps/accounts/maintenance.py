@@ -23,18 +23,25 @@ def sweep_expired_credentials(batch_size: int = 1000) -> dict[str, int]:
     """
     now = timezone.now()
 
+    # `delete()` returns (TOTAL rows removed, {model label: count}). Reporting the total under
+    # a per-model label is only correct while nothing cascades off these tables; the first
+    # model to FK either with on_delete=CASCADE would silently inflate these numbers, and the
+    # job's own output is the only signal anyone watches. Read the per-label counts instead.
     session_ids = list(
         CustomerSession.objects.filter(expires_at__lt=now)
         .order_by("id")
         .values_list("id", flat=True)[:batch_size]
     )
-    sessions, _ = CustomerSession.objects.filter(id__in=session_ids).delete()
+    _, session_counts = CustomerSession.objects.filter(id__in=session_ids).delete()
 
     token_ids = list(
         CredentialToken.objects.filter(expires_at__lt=now)
         .order_by("id")
         .values_list("id", flat=True)[:batch_size]
     )
-    tokens, _ = CredentialToken.objects.filter(id__in=token_ids).delete()
+    _, token_counts = CredentialToken.objects.filter(id__in=token_ids).delete()
 
-    return {"sessions": sessions, "credential_tokens": tokens}
+    return {
+        "sessions": session_counts.get(CustomerSession._meta.label, 0),
+        "credential_tokens": token_counts.get(CredentialToken._meta.label, 0),
+    }

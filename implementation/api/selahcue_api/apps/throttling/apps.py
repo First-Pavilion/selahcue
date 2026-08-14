@@ -6,3 +6,7 @@ class SelahCueThrottlingConfig(AppConfig):
     label = "selahcue_throttling"
     name = "selahcue_api.apps.throttling"
     verbose_name = "SelahCue Throttling"
+
+    def ready(self):
+        # Importing the module is what registers the check with the framework.
+        from selahcue_api.apps.throttling import checks  # noqa: F401

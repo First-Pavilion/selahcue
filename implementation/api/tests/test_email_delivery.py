@@ -77,3 +77,76 @@ def test_enqueue_failure_does_not_break_the_caller(monkeypatch):
         email = "church@example.test"
 
     sender.send_email_verification(FakeUser(), "tok")  # must not raise
+
+
+# --- dispatch wiring ------------------------------------------------------
+class FakeUser:
+    email = "church@example.test"
+
+
+def test_verification_dispatch_runs_the_verification_task_with_email_then_token(settings):
+    """The `CeleryEmailSender` happy path was untested: wiring `send_email_verification` to
+    the RESET task, or swapping `(email, raw_token)` to `(raw_token, email)`, was invisible.
+    Running the task eagerly proves the whole chain — right task, right argument order, right
+    recipient, right URL."""
+    from selahcue_api.apps.accounts import email as email_module
+    from selahcue_api.celery import app as celery_app
+
+    settings.CELERY_TASK_ALWAYS_EAGER = True
+    settings.CELERY_TASK_EAGER_PROPAGATES = True
+    celery_app.conf.task_always_eager = True
+    celery_app.conf.task_eager_propagates = True
+    try:
+        mail.outbox.clear()
+        email_module.CeleryEmailSender().send_email_verification(FakeUser(), "raw-verify-token")
+    finally:
+        celery_app.conf.task_always_eager = False
+        celery_app.conf.task_eager_propagates = False
+
+    assert len(mail.outbox) == 1
+    message = mail.outbox[0]
+    assert message.to == ["church@example.test"], "the email argument must be the recipient"
+    assert "/verify?token=raw-verify-token" in message.body, (
+        "wrong task or swapped arguments: the token must land in the VERIFY url"
+    )
+    assert "/reset?token=" not in message.body
+
+
+def test_reset_dispatch_runs_the_reset_task(settings):
+    from selahcue_api.apps.accounts import email as email_module
+    from selahcue_api.celery import app as celery_app
+
+    settings.CELERY_TASK_ALWAYS_EAGER = True
+    celery_app.conf.task_always_eager = True
+    try:
+        mail.outbox.clear()
+        email_module.CeleryEmailSender().send_password_reset(FakeUser(), "raw-reset-token")
+    finally:
+        celery_app.conf.task_always_eager = False
+
+    assert len(mail.outbox) == 1
+    assert "/reset?token=raw-reset-token" in mail.outbox[0].body
+    assert "/verify?token=" not in mail.outbox[0].body
+
+
+def test_task_arguments_are_redacted_in_the_queued_message(monkeypatch):
+    """Celery stamps `saferepr(args)` into the message headers, and the worker prints it on
+    every `Received task: ...` line at `--loglevel=info` — which is what compose runs. Without
+    an explicit repr the raw verification/reset token is written to worker logs in clear."""
+    from selahcue_api.apps.accounts.tasks import send_verification_email_task
+
+    captured = {}
+
+    def fake_send_task(name, args=None, kwargs=None, **options):
+        captured.update(name=name, args=args, kwargs=kwargs, options=options)
+        return None
+
+    monkeypatch.setattr(send_verification_email_task.app, "send_task", fake_send_task)
+    send_verification_email_task.delay("church@example.test", "super-secret-raw-token")
+
+    # The worker still receives the real arguments — redaction is about the log, not the payload.
+    assert captured["args"] == ("church@example.test", "super-secret-raw-token")
+    argsrepr = captured["options"]["argsrepr"]
+    assert "super-secret-raw-token" not in argsrepr, argsrepr
+    assert "church@example.test" not in argsrepr, argsrepr
+    assert captured["options"]["kwargsrepr"] == "{}"

@@ -77,8 +77,24 @@ def test_concurrent_activations_cannot_exceed_the_device_limit():
     key, full_key = _seed_license_key(tag="conc", device_limit=1)
 
     errors = []
+    # Without this the two threads may run start-to-finish one after the other and still
+    # satisfy both assertions below — the test would pass having never produced a race at all.
+    # The barrier makes both threads enter `activate_device` together, so the select_for_update
+    # window is genuinely contended. Timeout so a thread that dies before arriving fails the
+    # test instead of hanging the suite.
+    start = threading.Barrier(2, timeout=30)
+
+    barrier_failures = []
 
     def activate(n):
+        try:
+            start.wait()
+        except threading.BrokenBarrierError as exc:
+            # Kept OUT of `errors`: a barrier that never formed means the race never ran, and
+            # counting it as a rejected activation would be the false pass this guards against.
+            barrier_failures.append(exc)
+            connections.close_all()
+            return
         try:
             activate_device(
                 ActivateDeviceData(
@@ -102,6 +118,7 @@ def test_concurrent_activations_cannot_exceed_the_device_limit():
     for t in threads:
         t.join()
 
+    assert barrier_failures == [], f"the two activations never overlapped: {barrier_failures}"
     active = Device.objects.filter(license_key=key, status=DeviceStatus.ACTIVE).count()
     assert active == 1, f"instance limit exceeded: {active} active devices, errors={errors}"
     assert len(errors) == 1, "exactly one activation should have been rejected"

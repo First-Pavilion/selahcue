@@ -412,7 +412,10 @@ def register_customer_user(data: RegisterCustomerUserData) -> AcceptedResult:
         # Idempotency AND no-enumeration in one check: any prior account for this email (a retry OR
         # an already-registered address) returns the uniform accepted:true without a duplicate.
         if CustomerUser.objects.filter(email_fingerprint=fingerprint).exists():
-            get_email_sender().send_account_exists(email)
+            # on_commit, not inline: the sender now publishes to Redis for a worker to pick up.
+            # Dispatching inside the transaction would queue a real email that a rollback then
+            # un-does, and the recipient would act on a message about state that never existed.
+            transaction.on_commit(lambda: get_email_sender().send_account_exists(email))
             return AcceptedResult(accepted=True)
 
         # Create the org + first Admin under a SINGLE savepoint, so a failure on EITHER rolls BOTH
@@ -478,7 +481,13 @@ def register_customer_user(data: RegisterCustomerUserData) -> AcceptedResult:
             source_surface=ACCOUNT_AUDIT_SURFACE,
             after={"org_id": str(org.id), "role": user.role, "status": user.status},
         )
-        get_email_sender().send_email_verification(user, raw_token)
+        # on_commit: a rollback after this point would otherwise leave a verification email
+        # queued carrying a token whose CredentialToken row no longer exists — the recipient
+        # gets a link that fails validation with no way to tell why.
+        verified_user, verify_token = user, raw_token
+        transaction.on_commit(
+            lambda: get_email_sender().send_email_verification(verified_user, verify_token)
+        )
         return AcceptedResult(accepted=True)
 
 
@@ -701,7 +710,12 @@ def request_password_reset(email: str) -> AcceptedResult:
                 source_surface=ACCOUNT_AUDIT_SURFACE,
                 after={},
             )
-            get_email_sender().send_password_reset(user, raw_token)
+            # on_commit: same reason as signup — a rolled-back reset must not leave a live
+            # email pointing at a token row that was never committed.
+            reset_user, reset_token = user, raw_token
+            transaction.on_commit(
+                lambda: get_email_sender().send_password_reset(reset_user, reset_token)
+            )
         else:
             # Equalise timing with the token-minting branch (which runs a PBKDF2 make_password), so
             # the response time does not reveal whether the email exists.

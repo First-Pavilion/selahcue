@@ -92,6 +92,10 @@ class DeviceToken(models.Model):
         ]
         indexes = [
             models.Index(fields=["device", "status"]),
+            # The hourly revocation cascade filters on `status` ALONE. The composite above
+            # leads with `device`, so it cannot serve that predicate at all — the query had
+            # no usable index and grew linearly with the fleet.
+            models.Index(fields=["status"], name="device_token_status_idx"),
         ]
 
     def __str__(self) -> str:

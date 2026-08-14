@@ -8,7 +8,8 @@ import json
 
 import pytest
 from django.contrib.auth.hashers import check_password, make_password
-from django.test import override_settings
+from django.db import transaction
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from selahcue_api.apps.accounts import services
@@ -29,12 +30,20 @@ def post_account(client, query, variables=None, *, bearer=None):
     extra = {}
     if bearer is not None:
         extra["HTTP_AUTHORIZATION"] = f"Bearer {bearer}"
-    return client.post(
-        "/graphql/account",
-        data=json.dumps({"query": query, "variables": variables or {}}),
-        content_type="application/json",
-        **extra,
-    )
+    # Email dispatch is registered with `transaction.on_commit` so a rolled-back signup or
+    # reset cannot leave a live email pointing at a token row that was never committed. Under
+    # `django_db`'s rollback the outer atomic never commits, so those callbacks would never
+    # run and the capturing sender would see nothing. `captureOnCommitCallbacks` is Django's
+    # own API for exactly this: it runs the callbacks that are still pending at the end of the
+    # request — callbacks discarded by a rolled-back savepoint are NOT among them, so the
+    # rollback property this fix exists for is still enforced here, not papered over.
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        return client.post(
+            "/graphql/account",
+            data=json.dumps({"query": query, "variables": variables or {}}),
+            content_type="application/json",
+            **extra,
+        )
 
 
 def body(response):
@@ -192,6 +201,37 @@ def test_signup_audit_failure_rolls_back_everything(client, sender, monkeypatch)
     post_account(client, REGISTER, register_input())
     assert CustomerUser.objects.count() == 0
     assert CustomerOrg.objects.count() == 0
+    assert sender.verify_tokens == [], "a rolled-back signup must not send a verification email"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_rolled_back_signup_queues_no_verification_email(sender):
+    """The dispatch is registered with `transaction.on_commit`, so it must not fire when the
+    surrounding transaction rolls back. This ran inline until now: the email was published to
+    Redis mid-transaction, and a rollback left a real message in the broker carrying a token
+    for a CredentialToken row that no longer existed — the recipient got a link that fails
+    validation with no explanation.
+
+    `transaction=True` because a rollback has to be a REAL one: under the default
+    `django_db` the test's own atomic block never commits, so nothing here would be observable.
+    """
+    with pytest.raises(RuntimeError):
+        with transaction.atomic():
+            services.register_customer_user(
+                services.RegisterCustomerUserData(
+                    idempotency_key="rollback-0001",
+                    email="rollback@grace.example",
+                    password="correct-horse-battery",
+                    org_name="Rollback Chapel",
+                    country="NG",
+                )
+            )
+            raise RuntimeError("caller aborted after the signup succeeded")
+
+    assert CustomerUser.objects.filter(email="rollback@grace.example").count() == 0
+    assert sender.verify_tokens == [], (
+        "the verification email was dispatched for a signup that never committed"
+    )
 
 
 # --- AUTH-3: email verification -------------------------------------------
