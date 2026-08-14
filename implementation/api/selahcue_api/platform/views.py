@@ -82,7 +82,12 @@ def activate_device(request):
     # system (show-once), so this payload is deliberately NOT run through the redaction assertion.
     payload = {
         "created": result.created,
-        "activation_token": result.full_token,  # None on idempotent replay
+        # True when an existing device was issued a REPLACEMENT token (its own was expired or
+        # revoked). The client should overwrite whatever it had cached: the old one is now
+        # REVOKED, not merely stale.
+        "reminted": result.reminted,
+        # None only when the device already holds a usable token (show-once replay).
+        "activation_token": result.full_token,
         "device": {
             "device_public_id": result.device.device_public_id,
             "status": result.device.status,

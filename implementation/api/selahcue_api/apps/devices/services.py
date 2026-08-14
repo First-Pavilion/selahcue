@@ -70,9 +70,14 @@ class ActivateDeviceResult:
     device: Device
     device_token: DeviceToken
     license_key: AppLicenseKey
-    # The full token is returned only on first creation (show-once); None on idempotent replay.
+    # The full token is returned when one is minted — on first creation, and on a re-mint
+    # (show-once each time). None on an idempotent replay of a device that already holds a
+    # usable token.
     full_token: str | None
     created: bool
+    # True when an EXISTING device was issued a replacement token because the one it held was
+    # expired, revoked or missing. Mutually exclusive with `created`.
+    reminted: bool = False
 
 
 def _validation_error() -> SafeAPIError:
@@ -158,6 +163,133 @@ def _new_device_token(device: Device, license_key: AppLicenseKey) -> tuple[Devic
     return token, full_token
 
 
+def _live_token(device: Device) -> DeviceToken | None:
+    """The device's currently USABLE token, or None.
+
+    "Usable" is the same predicate `authenticate_device_token` enforces — ACTIVE and not
+    past `expires_at` — so this can never disagree with what the device would actually be
+    able to authenticate with.
+    """
+    return (
+        device.tokens.filter(
+            status=DeviceTokenStatus.ACTIVE, expires_at__gt=timezone.now()
+        )
+        .order_by("-issued_at", "-id")
+        .first()
+    )
+
+
+def _remint_device_token(
+    device: Device,
+    license_key: AppLicenseKey,
+    *,
+    idempotency_key: str,
+    audit_actor: ActorContext | None,
+    source_surface: str,
+) -> tuple[DeviceToken, str]:
+    """Issue a REPLACEMENT token for an existing device that holds no usable one.
+
+    AUTHORISATION (the one non-obvious part of this slice). Re-mint is authorised by exactly
+    the evidence that authorises a FIRST activation and by nothing else: this function is
+    reachable only from `_activate_device_for_key`, whose two callers are `activate_device`
+    (a presented enrollment key, resolved by fingerprint and confirmed with `check_password`)
+    and `activate_device_with_session` (a valid ADMIN account session). The device's own dead
+    token is never read, never compared, and never sufficient — `authenticate_device_token`
+    deliberately has NO re-mint path, so a token can never be the credential that revives
+    itself. That also keeps re-mint useless as a revocation bypass: the licence-status gate
+    (`_assert_key_activatable`) has already run under the row lock before we get here.
+
+    The new expiry comes from `license_key.expires_at` as re-read under that lock, so it
+    tracks the licence's CURRENT window rather than the value frozen at first activation.
+    """
+    now = timezone.now()
+    superseded = list(
+        DeviceToken.objects.filter(device=device)
+        .exclude(status=DeviceTokenStatus.REVOKED)
+        .order_by("-issued_at", "-id")
+        .values_list("token_fingerprint", flat=True)
+    )
+    # Supersede EVERY prior token, not just the expired one: a replayed pre-renewal token has
+    # to be refused on its status, not merely on a lapsed clock, so that the rejection stays
+    # true even if a later change ever moves an expiry forward.
+    DeviceToken.objects.filter(device=device).exclude(
+        status=DeviceTokenStatus.REVOKED
+    ).update(status=DeviceTokenStatus.REVOKED, updated_at=now)
+
+    token, full_token = _new_device_token(device, license_key)
+
+    actor = audit_actor or ActorContext(kind=ActorKind.DEVICE, actor_id=device.device_public_id)
+    record_audit_event(
+        actor,
+        action="device_token.reminted",
+        target_type="device_token",
+        target_id=str(token.id),
+        request_id=idempotency_key,
+        reason="device held no usable token; licence is currently activatable",
+        source_surface=source_surface,
+        after={
+            "license_key_id": str(license_key.id),
+            "device_public_id": device.device_public_id,
+            # Only the masked triple + fingerprints — never the full token (redaction-blocked).
+            "token_prefix": token.token_prefix,
+            "token_suffix": token.token_suffix,
+            "masked_token": token.masked_token,
+            "token_fingerprint": token.token_fingerprint,
+            "expires_at": token.expires_at.isoformat(),
+            # Links the new credential to the one the client was holding, so an operator can
+            # follow a device across a renewal without either raw token.
+            "superseded_token_fingerprint": superseded[0] if superseded else "",
+            "superseded_token_count": len(superseded),
+        },
+    )
+    return token, full_token
+
+
+def _existing_device_result(
+    device: Device,
+    license_key: AppLicenseKey,
+    *,
+    idempotency_key: str,
+    audit_actor: ActorContext | None,
+    source_surface: str,
+) -> ActivateDeviceResult:
+    """Shared outcome for a device that ALREADY exists — an idempotent retry (same
+    idempotency key) or a known install re-enrolling (same fingerprint).
+
+    Show-once is preserved while the device holds a usable token: replaying it would let a
+    stolen enrollment key harvest the live credential of a running install, which is strictly
+    worse than the status quo. Only when there is NO usable token — expired with the licence,
+    revoked by the cascade, or absent — is a replacement minted, because that device is
+    otherwise permanently dead with no exit but a new fingerprint it cannot afford.
+    """
+    _assert_device_activatable(device)
+    live = _live_token(device)
+    if live is not None:
+        return ActivateDeviceResult(
+            device=device,
+            device_token=live,
+            license_key=license_key,
+            full_token=None,
+            created=False,
+            reminted=False,
+        )
+    token, full_token = _remint_device_token(
+        device,
+        license_key,
+        idempotency_key=idempotency_key,
+        audit_actor=audit_actor,
+        source_surface=source_surface,
+    )
+    return ActivateDeviceResult(
+        device=device,
+        device_token=token,
+        license_key=license_key,
+        full_token=full_token,
+        created=False,
+        reminted=True,
+    )
+
+
 def _activate_device_for_key(
     license_key: AppLicenseKey,
     *,
@@ -187,36 +319,35 @@ def _activate_device_for_key(
         )
         _assert_key_activatable(license_key)
 
-        # Retry-idempotency: same key + client idempotency key → the same device,
-        # and the token is NOT re-shown (show-once).
+        # Retry-idempotency: same key + client idempotency key → the same device, and a token
+        # that is still usable is NOT re-shown (show-once). A dead one is replaced.
         existing = Device.objects.filter(
             license_key=license_key, idempotency_key=idempotency_key
         ).first()
         if existing is not None:
-            _assert_device_activatable(existing)
-            token = existing.tokens.order_by("-created_at").first()
-            return ActivateDeviceResult(
-                device=existing,
-                device_token=token,
-                license_key=license_key,
-                full_token=None,
-                created=False,
+            return _existing_device_result(
+                existing,
+                license_key,
+                idempotency_key=idempotency_key,
+                audit_actor=audit_actor,
+                source_surface=source_surface,
             )
 
         # Natural identity: a known install (same fingerprint) re-enrolling with a different
-        # idempotency key is still one device — return it, do not create a duplicate or a new token.
+        # idempotency key is still one device — return it, never a duplicate. Both existing-device
+        # branches return BEFORE the instance-limit check below, so a re-mint can never consume
+        # a slot: the device is already counted, and a device_limit=1 church must be able to
+        # recover on the one slot it has.
         known = Device.objects.filter(
             license_key=license_key, device_fingerprint=device_fingerprint
         ).first()
         if known is not None:
-            _assert_device_activatable(known)
-            token = known.tokens.order_by("-created_at").first()
-            return ActivateDeviceResult(
-                device=known,
-                device_token=token,
-                license_key=license_key,
-                full_token=None,
-                created=False,
+            return _existing_device_result(
+                known,
+                license_key,
+                idempotency_key=idempotency_key,
+                audit_actor=audit_actor,
+                source_surface=source_surface,
             )
 
         # Instance limit (DEC-004): active devices under this key may not exceed the plan limit.
@@ -283,6 +414,7 @@ def _activate_device_for_key(
             license_key=license_key,
             full_token=full_token,
             created=True,
+            reminted=False,
         )
 
 
