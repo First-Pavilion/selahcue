@@ -92,6 +92,16 @@ def _activate(client, *, full_key, tag):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_throttle_budget():
+    """`/v1` is rate limited per (endpoint, client IP), and the default LocMemCache lives for
+    the whole pytest process — so budget spent by an earlier test would otherwise leak into
+    this one and 429 it. Reset the window instead of loosening the limits."""
+    from django.core.cache import cache
+
+    cache.clear()
+
+
+@pytest.fixture(autouse=True)
 def signing_key(settings):
     settings.ENTITLEMENT_SIGNING_KEY = TEST_SEED_B64
     return TEST_SEED_B64

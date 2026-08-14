@@ -80,6 +80,7 @@ INSTALLED_APPS = [
     "selahcue_api.apps.downloads.apps.SelahCueDownloadsConfig",
     "selahcue_api.apps.devices.apps.SelahCueDevicesConfig",
     "selahcue_api.apps.audit.apps.SelahCueAuditConfig",
+    "selahcue_api.apps.throttling.apps.SelahCueThrottlingConfig",
 ]
 
 MIDDLEWARE = [
@@ -138,6 +139,29 @@ CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/2
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ACKS_LATE = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+# --- Cache / throttling ---------------------------------------------------------------
+# Redis db 1 — deliberately NOT db 2, which is the Celery broker: a FLUSHDB on either
+# must not destroy the other. Falls back to per-process LocMemCache when CACHE_URL is
+# unset so a bare `pytest` needs no Redis. That fallback is only safe because the
+# throttle's logic tests inject their own store.
+_cache_url = os.getenv("CACHE_URL", "")
+CACHES = {
+    "default": (
+        {"BACKEND": "django.core.cache.backends.redis.RedisCache", "LOCATION": _cache_url}
+        if _cache_url
+        else {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "selahcue"}
+    )
+}
+
+# 0 = trust REMOTE_ADDR only. Raise to the number of proxies in front of Django BEFORE
+# relying on X-Forwarded-For — a caller-supplied header is otherwise a limiter bypass.
+SELAHCUE_TRUSTED_PROXY_COUNT = int(os.getenv("SELAHCUE_TRUSTED_PROXY_COUNT", "0"))
+
+# (limit, window_seconds) per client IP. Activation is the expensive one — it runs
+# `make_password` against the enrollment key — so it gets the tighter budget.
+SELAHCUE_THROTTLE_ACTIVATION = (10, 60)
+SELAHCUE_THROTTLE_DEVICE_READ = (60, 60)
 
 # --- Mail --------------------------------------------------------------------------------
 # Dev points at mailhog (compose service, port 1025) so the transactional templates

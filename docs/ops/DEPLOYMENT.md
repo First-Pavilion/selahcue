@@ -221,6 +221,8 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `DB_CONN_MAX_AGE` | `60` | Tune to your pooling |
 | `CELERY_BROKER_URL` | `redis://redis:6379/2` | Point at the real Redis |
 | `CELERY_RESULT_BACKEND` | `redis://redis:6379/2` | Point at the real Redis |
+| `CACHE_URL` | empty → LocMemCache | **Set it.** `redis://…/1` — db **1**, never the broker's db 2. See §6b |
+| `SELAHCUE_TRUSTED_PROXY_COUNT` | `0` | Number of *your own* proxies in front of Django. See §6b |
 | `MAIL_HOST` / `MAIL_PORT` / `MAIL_USERNAME` / `MAIL_PASSWORD` | mailhog on `:1025` in dev | **Required** to send email |
 | `DEFAULT_FROM_EMAIL` / `DEFAULT_EMAIL` | SelahCue defaults | Set to your verified sending domain |
 | `SENTRY_DSN` | empty | Set in staging/prod only; never locally |
@@ -286,6 +288,65 @@ clients select the right key without a registry:
 Never sign with two keys at once; the envelope carries exactly one signature. Rotation is
 **not** a revocation mechanism — an already-issued manifest stays valid until the licence
 expires (DEC-005), regardless of key changes.
+
+---
+
+## 6b. Ops requirements — ingress, throttling and Redis
+
+Three properties the *deployment* must hold. None of them can be fixed in application code:
+each is a promise the edge makes that the app then relies on. Deploying without them does not
+fail loudly — it just quietly removes a control the app assumes is there.
+
+### The ingress must strip inbound `X-SelahCue-*` headers
+
+Do this **before** `SELAHCUE_TRUST_ACTOR_HEADERS` is ever set true anywhere, including staging.
+
+When that flag is on, the API reads the actor's identity — who they are and what they may do —
+from request headers. It has no way to distinguish a header your load balancer set from one the
+client typed: by the time Django sees them they are the same bytes. So if the flag is on and the
+ingress passes client headers through, any caller can assert any actor, including staff
+permissions. That is total authentication bypass, not privilege escalation at the margins.
+
+The safe order is: strip at the edge first, verify a forged header does not survive to the app,
+*then* enable the flag. The default is off and follows `DEBUG` (§6) — keep it that way until the
+strip rule is deployed and tested.
+
+### Per-IP flood protection belongs at the edge
+
+The app carries a fixed-window rate limiter on the `/v1` device-auth endpoints (activation,
+licence refresh, entitlement manifest), keyed on `(endpoint, client IP)` with the budgets in
+`SELAHCUE_THROTTLE_*`. Treat it as the **second** layer, never the only one.
+
+It runs *inside* Django, so a request must be accepted, routed and middleware-processed before it
+can be refused — a flood large enough to matter has already consumed a worker slot by then. It
+also **fails open** by design: if Redis is unavailable the limiter allows the request and logs,
+because refusing all device traffic during a cache outage would cause the outage it exists to
+prevent. Both properties are deliberate, and both mean the app limiter cannot absorb a real
+flood. Put connection- and request-rate limits on the ingress; the app layer is there to catch
+per-endpoint abuse that looks like ordinary traffic at the edge.
+
+`SELAHCUE_TRUSTED_PROXY_COUNT` ties the two together. It is the count of **your own** proxies
+between the client and Django, and it defaults to `0`, meaning the limiter keys on `REMOTE_ADDR`
+and ignores `X-Forwarded-For` entirely. Raise it only to the real number of hops you control:
+the header is caller-supplied, so a count that is too high makes the limiter read an attacker-
+controlled value and hands out a fresh budget per request — one header, limiter gone. Too low is
+merely inaccurate (everyone behind the proxy shares a bucket); too high is a bypass.
+
+### Redis must not be publicly reachable
+
+Bind it to the private network, or require auth and TLS if it must cross one. It has no
+authentication by default and no per-key authorisation at all.
+
+It holds two things that matter. Db **1** is the throttle counters: write access is enough to
+zero anyone's budget, or to set every counter past its limit and 429 the whole device fleet. Db
+**2** is the Celery broker: queued messages are task names plus arguments, and anyone who can
+write to that queue can make the worker execute any registered task with arguments of their
+choosing — including the transactional-email tasks, which carry credential tokens. Read access
+alone exposes those tokens in flight.
+
+Keep the two on separate databases as configured. `CACHE_URL` ends in `/1` and the Celery URLs
+end in `/2` so that a `FLUSHDB` on either — during an incident, say, to clear a poisoned queue —
+cannot take the other with it.
 
 ---
 

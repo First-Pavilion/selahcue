@@ -14,37 +14,16 @@ from selahcue_api.apps.entitlements.services import (
     build_entitlement_manifest as _entitlement_manifest_service,
 )
 from selahcue_api.apps.entitlements.signing import SigningKeyUnavailable
+from selahcue_api.apps.throttling.decorators import throttle
 from selahcue_api.graphql.errors import ErrorCode, SAFE_MESSAGES, SafeAPIError
 from selahcue_api.graphql.redaction import assert_no_restricted_payload_fields
 
+# Lives in `responses.py` so the throttle decorator can build a 429 without importing this
+# module back (that cycle is real: this module imports `throttle` at module scope). Re-exported
+# here because `command_error_response` has always been part of this module's surface.
+from selahcue_api.platform.responses import command_error_response
+
 logger = logging.getLogger(__name__)
-
-
-# SafeAPIError renders itself only inside GraphQL; a plain /v1 Django view must translate its
-# code to an HTTP status. No prior HTTP precedent — this map is the slice's documented choice.
-_STATUS_BY_CODE = {
-    ErrorCode.UNAUTHENTICATED: 401,
-    ErrorCode.PERMISSION_DENIED: 403,
-    ErrorCode.VALIDATION_FAILED: 400,
-    ErrorCode.NOT_FOUND: 404,
-    ErrorCode.CONFLICT: 409,
-    ErrorCode.POLICY_DENIED: 403,
-    ErrorCode.RATE_LIMITED: 429,
-    ErrorCode.NOT_IMPLEMENTED: 501,
-    ErrorCode.INTERNAL: 500,
-}
-
-
-def command_error_response(*, code: ErrorCode, surface: str, operation: str) -> JsonResponse:
-    """A safe, coded JSON error for a /v1 command, in the same shape as the not-implemented
-    stub. Error payloads never carry secrets, so the redaction assertion is run over them."""
-    payload = {
-        "error": {"code": code.value, "message": SAFE_MESSAGES[code]},
-        "surface": surface,
-        "operation": operation,
-    }
-    assert_no_restricted_payload_fields(payload)
-    return JsonResponse(payload, status=_STATUS_BY_CODE.get(code, 400))
 
 
 def not_implemented_payload(*, surface: str, operation: str) -> dict:
@@ -66,6 +45,8 @@ def not_implemented_response(*, surface: str, operation: str) -> JsonResponse:
 
 @csrf_exempt
 @require_POST
+# Below the method decorators on purpose: a 405 must not consume throttle budget.
+@throttle("activation", "SELAHCUE_THROTTLE_ACTIVATION", (10, 60))
 def activate_device(request):
     """POST /v1/activations — register an account-bound device instance for a presented
     enrollment key and return a show-once device token (DEC-004). Authenticated by the
@@ -142,6 +123,7 @@ def _device_bearer_token(request) -> str:
 
 @csrf_exempt
 @require_POST
+@throttle("license_refresh", "SELAHCUE_THROTTLE_DEVICE_READ", (60, 60))
 def refresh_license(request):
     """POST /v1/license:refresh — an authenticated device reads its current license/entitlement
     status to refresh its cached offline entitlement (DEC-004). Pure read; device-token auth."""
@@ -178,6 +160,7 @@ def refresh_license(request):
 
 
 @require_GET
+@throttle("entitlement_manifest", "SELAHCUE_THROTTLE_DEVICE_READ", (60, 60))
 def entitlement_manifest(request):
     """GET /v1/entitlements/manifest — the signed, device-bound, time-boxed offline
     entitlement (DEC-004). Device-token auth; pure read.

@@ -5,6 +5,16 @@ import pytest
 from django.utils import timezone
 
 
+@pytest.fixture(autouse=True)
+def _fresh_throttle_budget():
+    """`/v1` is rate limited per (endpoint, client IP), and the default LocMemCache lives for
+    the whole pytest process — so budget spent by an earlier test would otherwise leak into
+    this one and 429 it. Reset the window instead of loosening the limits."""
+    from django.core.cache import cache
+
+    cache.clear()
+
+
 def _seed_license_key(*, tag, device_limit=3, starts_at=None, expires_at=None):
     from selahcue_api.apps.accounts.models import CustomerOrg
     from selahcue_api.apps.license_keys.services import (

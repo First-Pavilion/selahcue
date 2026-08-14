@@ -5,6 +5,16 @@ import pytest
 from django.utils import timezone
 
 
+@pytest.fixture(autouse=True)
+def _fresh_throttle_budget():
+    """`/v1` is rate limited per (endpoint, client IP), and the default LocMemCache lives for
+    the whole pytest process — so budget spent by an earlier test would otherwise leak into
+    this one and 429 it. Reset the window instead of loosening the limits."""
+    from django.core.cache import cache
+
+    cache.clear()
+
+
 def _seed_license_key(*, tag, device_limit=3, starts_at=None, expires_at=None):
     """Create a customer + issue a license key via the real service, returning
     (customer_id, full_key). The full key is show-once, so we capture it here to present it
