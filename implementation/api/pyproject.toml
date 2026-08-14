@@ -11,6 +11,9 @@ dependencies = [
   # Ed25519 for the signed offline entitlement envelope (DEC-004). Django ships no
   # asymmetric primitives.
   "cryptography>=43,<47",
+  # Async task runtime: transactional email (worker) + revocation cascade and expiry
+  # sweeps (beat). Redis is the broker; see CELERY_BROKER_URL in settings.
+  "celery[redis]>=5.4,<6",
 ]
 
 [project.optional-dependencies]
