@@ -307,9 +307,16 @@ def test_desktop_and_webhook_stubs_return_safe_not_implemented_payloads(client):
         assert "bible_text" not in body
         assert "content" not in body
 
+    # /v1/entitlements/manifest is implemented (signed offline entitlement, DEC-004) —
+    # covered in tests/test_entitlement_manifest_slice.py. It is no longer a stub, but it
+    # must still deny an unauthenticated caller rather than leak anything, so the contract
+    # this test guards is preserved here in its post-implementation form.
     manifest = client.get("/v1/entitlements/manifest")
-    assert manifest.status_code == 501
-    assert manifest.json()["error"]["code"] == "NOT_IMPLEMENTED"
+    assert manifest.status_code == 401
+    body = manifest.json()
+    assert body["error"]["code"] == "UNAUTHENTICATED"
+    assert "license_key" not in body
+    assert "secret" not in body
 
 
 @pytest.mark.django_db

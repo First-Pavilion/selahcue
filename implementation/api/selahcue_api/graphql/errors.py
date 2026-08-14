@@ -12,6 +12,9 @@ class ErrorCode(str, Enum):
     POLICY_DENIED = "POLICY_DENIED"
     RATE_LIMITED = "RATE_LIMITED"
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
+    # Server-side misconfiguration or failure. Distinct from NOT_IMPLEMENTED, which
+    # says "by design"; INTERNAL says "this should work and does not".
+    INTERNAL = "INTERNAL"
 
 
 SAFE_MESSAGES = {
@@ -23,6 +26,9 @@ SAFE_MESSAGES = {
     ErrorCode.POLICY_DENIED: "The current policy does not allow this action.",
     ErrorCode.RATE_LIMITED: "Too many requests.",
     ErrorCode.NOT_IMPLEMENTED: "This API contract exists, but the behaviour is not implemented in this slice.",
+    # Deliberately says nothing about what failed — a misconfiguration must not describe
+    # itself to a caller.
+    ErrorCode.INTERNAL: "The request could not be completed.",
 }
 
 

@@ -228,3 +228,56 @@ def test_no_token_material_in_the_payload(activated):
     assert token not in str(payload)
     for banned in ("device_token", "full_key", "secret", "token_hash"):
         assert banned not in payload
+
+
+# --- HTTP surface -------------------------------------------------------------------
+
+MANIFEST_URL = "/v1/entitlements/manifest"
+
+
+def test_http_returns_a_signed_envelope(client, activated):
+    _device, token, _key = activated
+    resp = client.get(MANIFEST_URL, headers={"authorization": f"Bearer {token}"})
+    assert resp.status_code == 200, resp.content
+    body = resp.json()
+    assert body["alg"] == "Ed25519"
+    assert body["surface"] == "desktop"
+    assert body["operation"] == "entitlement_manifest"
+    verify_envelope(body, public_key=load_signing_key(TEST_SEED_B64).public_key())
+
+
+def test_http_without_a_token_is_401(client, activated):
+    resp = client.get(MANIFEST_URL)
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "UNAUTHENTICATED"
+
+
+def test_http_with_a_bad_token_is_401(client, activated):
+    resp = client.get(MANIFEST_URL, headers={"authorization": "Bearer nonsense"})
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "UNAUTHENTICATED"
+
+
+def test_http_revoked_licence_is_403(client, activated):
+    _device, token, key = activated
+    key.status = LicenseKeyStatus.REVOKED
+    key.save(update_fields=["status", "updated_at"])
+    resp = client.get(MANIFEST_URL, headers={"authorization": f"Bearer {token}"})
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "POLICY_DENIED"
+
+
+def test_http_missing_signing_key_is_500_and_leaks_nothing(client, activated, settings):
+    _device, token, _key = activated
+    settings.ENTITLEMENT_SIGNING_KEY = ""
+    resp = client.get(MANIFEST_URL, headers={"authorization": f"Bearer {token}"})
+    assert resp.status_code == 500
+    assert resp.json()["error"]["code"] == "INTERNAL"
+    # A misconfiguration must never name the key material or describe its absence.
+    assert "SELAHCUE_ENTITLEMENT_SIGNING_KEY" not in resp.content.decode()
+
+
+def test_http_rejects_non_get(client, activated):
+    _device, token, _key = activated
+    resp = client.post(MANIFEST_URL, headers={"authorization": f"Bearer {token}"})
+    assert resp.status_code == 405
