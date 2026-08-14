@@ -2,10 +2,12 @@
 name = "selahcue-api"
 version = "0.1.0"
 description = "Django and Strawberry Platform API for SelahCue licensing and account services"
-requires-python = ">=3.10"
+# Django 6.1 requires >=3.12; CI and local both run 3.14, which 6.1 officially supports.
+requires-python = ">=3.12"
 dependencies = [
-  "Django>=5.2,<5.3",
-  "strawberry-graphql-django>=0.86,<0.87",
+  "Django>=6.1,<6.2",
+  # 0.87 declares `django>=5.2` with no upper bound, so it is compatible with 6.1.
+  "strawberry-graphql-django>=0.87,<0.88",
 ]
 
 [project.optional-dependencies]
