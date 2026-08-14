@@ -216,6 +216,7 @@ development-safe, which means **an unset production variable is usually the inse
 | `DB_CONN_MAX_AGE` | `60` | Tune to your pooling |
 | `SELAHCUE_CORS_ALLOWED_ORIGINS` | empty | Comma-separated origins for the web client |
 | `SELAHCUE_TRUST_ACTOR_HEADERS` | follows `DJANGO_DEBUG` | **Must be false.** See below |
+| `SELAHCUE_ENTITLEMENT_SIGNING_KEY` | **none** | **Required** to issue offline entitlements. See §6a |
 | `SECURE_HSTS_SECONDS` | `31536000` when not debug | Keep the default |
 | `ACCOUNT_SESSION_TTL_SECONDS` | 30 days | Policy choice |
 | `ACCOUNT_EMAIL_VERIFY_TTL_SECONDS` | 24 hours | Policy choice |
@@ -235,6 +236,40 @@ python -c "import secrets; print(secrets.token_urlsafe(64))"
 > debug in production would let a client assert any actor. Debug also enables the GraphQL IDE and
 > introspection, and zeroes HSTS. Set `DJANGO_DEBUG=false` explicitly rather than relying on the
 > default.
+
+---
+
+## 6a. Entitlement signing key (Platform API)
+
+`SELAHCUE_ENTITLEMENT_SIGNING_KEY` — the Ed25519 private seed that signs offline entitlement
+manifests (DEC-004). **It has no default**, unlike `DJANGO_SECRET_KEY`: if it is unset,
+`GET /v1/entitlements/manifest` fails loudly rather than serving an unsigned manifest. A
+well-known dev fallback would let anyone forge an entitlement and void the offline model.
+
+Generate one:
+
+```bash
+python -c "import base64,os; print(base64.b64encode(os.urandom(32)).decode())"
+```
+
+Store it as an environment variable on the API host, alongside `DJANGO_SECRET_KEY`. Never commit
+it — anything signed with it is accepted by every SelahCue install that trusts the corresponding
+public key.
+
+### Rotation
+
+The `key_id` in each envelope is derived from the public key (first 8 hex of its SHA-256), so
+clients select the right key without a registry:
+
+1. Generate the new seed; derive its public key and `key_id`.
+2. Ship a desktop release whose trusted-key set contains **both** the old and new public keys.
+3. Wait for adoption — manifests signed by the old key keep verifying throughout.
+4. Switch `SELAHCUE_ENTITLEMENT_SIGNING_KEY` on the server to the new seed.
+5. Drop the old public key in a later release.
+
+Never sign with two keys at once; the envelope carries exactly one signature. Rotation is
+**not** a revocation mechanism — an already-issued manifest stays valid until the licence
+expires (DEC-005), regardless of key changes.
 
 ---
 

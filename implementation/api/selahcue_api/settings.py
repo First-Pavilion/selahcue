@@ -113,6 +113,13 @@ GRAPHQL_IDE = "graphiql" if DEBUG else None
 GRAPHQL_INTROSPECTION_ENABLED = DEBUG
 SELAHCUE_TRUST_ACTOR_HEADERS = env_bool("SELAHCUE_TRUST_ACTOR_HEADERS", DEBUG)
 
+# Ed25519 seed (32 bytes, standard base64) signing offline entitlement manifests (DEC-004).
+# DELIBERATELY has no default, unlike DJANGO_SECRET_KEY above: an absent key must fail loudly
+# at issuance rather than degrade to unsigned output or to a well-known dev key. Either would
+# let anyone forge an entitlement, voiding the offline licensing model entirely.
+# Generate: python -c "import base64,os; print(base64.b64encode(os.urandom(32)).decode())"
+ENTITLEMENT_SIGNING_KEY = os.getenv("SELAHCUE_ENTITLEMENT_SIGNING_KEY", "")
+
 # Traditional email/password customer auth (DEC-007 / ADR-0023). Env-overridable; the accounts
 # services fall back to these same defaults via getattr, so unset is safe in dev.
 ACCOUNT_SESSION_TTL_SECONDS = int(os.getenv("ACCOUNT_SESSION_TTL_SECONDS", str(30 * 24 * 3600)))

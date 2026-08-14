@@ -8,6 +8,9 @@ dependencies = [
   "Django>=6.1,<6.2",
   # 0.87 declares `django>=5.2` with no upper bound, so it is compatible with 6.1.
   "strawberry-graphql-django>=0.87,<0.88",
+  # Ed25519 for the signed offline entitlement envelope (DEC-004). Django ships no
+  # asymmetric primitives.
+  "cryptography>=43,<47",
 ]
 
 [project.optional-dependencies]
