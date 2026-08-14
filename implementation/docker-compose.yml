@@ -23,10 +23,27 @@ services:
       - "8008:8000"
     env_file:
       - ./api/.env
+    # Long form. The short list form (`- db`) ignores healthcheck state entirely,
+    # so the API used to start before Postgres was accepting connections and only
+    # converged by crash-looping under `restart: unless-stopped`.
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+    # There is no app health endpoint yet, so this probes the WSGI stack itself:
+    # ANY HTTP response — the 404 from the unrouted root included — proves Django
+    # booted, bound :8000 and is serving. `curl -f` is deliberately NOT used,
+    # because that 404 is the success case. Diagnostic only: Compose never
+    # restarts a running-but-unhealthy container, so this cannot cause a loop; it
+    # exists so `docker compose ps` stops reporting a dead Django as "running".
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS -o /dev/null http://127.0.0.1:8000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   db:
     image: postgres:16-alpine
@@ -36,8 +53,14 @@ services:
       POSTGRES_PASSWORD: pavilion
     volumes:
       - selahcue-pgdata:/var/lib/postgresql/data
+    # Loopback-only. A bare "5433:5432" binds 0.0.0.0, publishing every account,
+    # licence and device row behind well-known dev credentials to anyone on the
+    # same network — and Docker's own iptables/NAT rules route around a host
+    # firewall while doing it. Nothing in the stack loses access: compose
+    # services reach this as `db:5432` over the internal network regardless.
+    # The published port exists only for the developer's own psql/GUI client.
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U pavilion -d selahcue_db"]
       interval: 10s
@@ -47,8 +70,19 @@ services:
   redis:
     image: redis:7-alpine
     command: redis-server --appendonly yes
+    # Loopback-only, for the reason docs/ops/DEPLOYMENT.md §6b spells out: Redis
+    # has no authentication by default and no per-key authorisation at all.
+    # Db 2 is the Celery broker — write access is arbitrary task execution
+    # (including the transactional-email tasks, whose arguments carry credential
+    # tokens in cleartext), read access harvests those tokens in flight. Db 1 is
+    # the throttle counters — write access zeroes or maxes every budget.
+    # This dev stack stays passwordless on purpose: a `--requirepass` literal
+    # committed next to the compose file is not a secret, and it would have to be
+    # mirrored into CELERY_BROKER_URL/CACHE_URL in every developer's api/.env
+    # (and into the healthcheck below) to work. Loopback is the control that
+    # actually holds here. Production Redis is not this file — see §6b.
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - selahcue-redisdata:/data
     healthcheck:
@@ -64,9 +98,18 @@ services:
       - ./api:/usr/src/app
     env_file:
       - ./api/.env
+    # db and redis are data-plane dependencies the worker opens on its first
+    # task, so they gate on health (db was previously only an accidental,
+    # start-order-only transitive dependency through `api`). `api` itself is soft
+    # co-scheduling — the worker never calls the web tier — so it stays on
+    # service_started.
     depends_on:
-      - api
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
     restart: unless-stopped
 
   celery-beat:
@@ -76,17 +119,26 @@ services:
       - ./api:/usr/src/app
     env_file:
       - ./api/.env
+    # Same rule as celery-worker: health-gate the data plane, start-gate `api`.
     depends_on:
-      - api
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
     restart: unless-stopped
 
   mailhog:
     image: mailhog/mailhog
     container_name: selahcue_mailhog
+    # Loopback for the same reason as redis/db above, and more sharply: the 8025 web
+    # UI serves every captured message, including the verification and password-reset
+    # emails whose raw tokens are exactly what the broker exposure was about. On
+    # 0.0.0.0 anyone on the LAN could read them straight out of the browser.
     ports:
-      - "1025:1025"
-      - "8025:8025"
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
 
 volumes:
   selahcue-pgdata:

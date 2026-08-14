@@ -1,0 +1,79 @@
+# Docker build-context exclusions for the SelahCue Platform API image.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# .gitignore does NOT filter a Docker build context. A clean `git status` says
+# nothing about what `docker build` uploads, and the Dockerfile does `COPY . .`
+# from this directory (compose: `build: ./api`). Without these rules every image
+# permanently bakes:
+#
+#   * api/.env      -> SECRET_KEY, the HMAC pepper behind every device-token,
+#                      credential-token and email fingerprint in the system,
+#                      plus SQL_PASSWORD. The documented dev workflow REQUIRES
+#                      this file to exist here (env_file: ./api/.env).
+#   * db.sqlite3    -> real dev data: password hashes, token fingerprints.
+#   * caches        -> .pytest_cache/, __pycache__/, *.egg-info/ (host-built).
+#
+# The compose bind-mount (./api:/usr/src/app) only *masks* those paths at run
+# time; it does not remove them from the image. `docker save`, a registry push,
+# or `docker history` still hands the pepper to whoever has the image.
+#
+# PATTERN SEMANTICS TRAP
+# ----------------------
+# Unlike .gitignore, .dockerignore patterns are anchored at the context root:
+# a bare `__pycache__/` matches ONLY the top-level one. Use `**/` for anything
+# that can nest. Exceptions (`!`) must come after the pattern they undo — the
+# last matching pattern wins.
+#
+# Keep this list in step with api/.gitignore.
+
+# --- Secrets -----------------------------------------------------------------
+.env
+.env.*
+# ...except the committed sample, which carries key NAMES and dev placeholders
+# only (same exception api/.gitignore makes). Kept in the image so anyone who
+# shells into a container can see which keys the app expects. Must stay below
+# the two patterns above.
+!.env.sample
+
+# --- Local dev databases -----------------------------------------------------
+*.sqlite3
+*.sqlite3-journal
+**/*.sqlite3
+**/*.sqlite3-journal
+
+# --- Build / test artefacts (all regenerated inside the image) ---------------
+# *.egg-info in particular: a host-built editable-install stub copied into the
+# image would shadow the one the Dockerfile builds for the container.
+__pycache__/
+**/__pycache__/
+*.py[cod]
+**/*.py[cod]
+*$py.class
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+**/*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+
+# --- Virtualenvs (host-built: wrong platform, and large) ---------------------
+.venv/
+venv/
+env/
+
+# --- VCS, editor and OS noise ------------------------------------------------
+.git
+.gitignore
+.dockerignore
+.idea/
+.vscode/
+.DS_Store
+**/.DS_Store
+
+# NOT excluded on purpose: tests/ and pytest.ini (the image installs the [dev]
+# extra so `pytest` can run inside the container) and README.md.
