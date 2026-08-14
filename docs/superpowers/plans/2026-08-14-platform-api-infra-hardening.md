@@ -1,6 +1,6 @@
 # Platform API Infrastructure + Hardening Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Give the Platform API a real runtime — containers, Postgres, Redis, Celery worker and beat — then use it to rate-limit `/v1`, deliver the transactional emails, and cascade licence revocation to device tokens.
 
@@ -57,7 +57,7 @@
 **Interfaces:**
 - Produces: `selahcue_api.celery.app` (Celery instance), re-exported as `selahcue_api.celery_app`. Tasks in later tasks register against it via `@shared_task`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `implementation/api/tests/test_celery_app.py`:
 
@@ -91,12 +91,12 @@ def test_side_effecting_defaults_are_set():
     assert celery_app.conf.worker_prefetch_multiplier == 1
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests/test_celery_app.py -q`
 Expected: FAIL — `ImportError: cannot import name 'celery_app' from 'selahcue_api'`
 
-- [ ] **Step 3: Add the dependency**
+- [x] **Step 3: Add the dependency**
 
 In `implementation/api/pyproject.toml`, add to `dependencies`:
 
@@ -108,7 +108,7 @@ In `implementation/api/pyproject.toml`, add to `dependencies`:
 
 Install: `/private/tmp/selahcue-api-venv/bin/python -m pip install -q -e ".[dev]"`
 
-- [ ] **Step 4: Create the Celery app**
+- [x] **Step 4: Create the Celery app**
 
 Create `implementation/api/selahcue_api/celery.py`:
 
@@ -141,19 +141,19 @@ from selahcue_api.celery import app as celery_app
 __all__ = ("celery_app",)
 ```
 
-- [ ] **Step 5: Run to verify it passes**
+- [x] **Step 5: Run to verify it passes**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests/test_celery_app.py -q`
 Expected: `3 passed`
 
-- [ ] **Step 6: Verify the whole suite still imports cleanly**
+- [x] **Step 6: Verify the whole suite still imports cleanly**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests -q`
 Expected: `107 passed` (104 existing + 3 new)
 
 Importing Celery at package import time is the classic place to break Django startup — this run is what proves it did not.
 
-- [ ] **Step 7: Create the Dockerfile**
+- [x] **Step 7: Create the Dockerfile**
 
 Create `implementation/api/Dockerfile`:
 
@@ -181,7 +181,7 @@ EXPOSE 8000
 CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
 ```
 
-- [ ] **Step 8: Add the services to compose**
+- [x] **Step 8: Add the services to compose**
 
 In `implementation/docker-compose.yml`, add these services alongside the existing `marketing-site` (keep that untouched):
 
@@ -267,7 +267,7 @@ volumes:
 
 `container_name: selahcue_mailhog` must match the `MAIL_HOST` default in settings.
 
-- [ ] **Step 9: Validate the compose file parses and the service set is right**
+- [x] **Step 9: Validate the compose file parses and the service set is right**
 
 ```bash
 cd /Users/m.oluwole/Documents/code/scph
@@ -285,7 +285,7 @@ print('OK')
 
 Expected: `OK`
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add implementation/api/Dockerfile implementation/api/pyproject.toml \
@@ -318,7 +318,7 @@ written to be idempotent so redelivery is safe."
   - `throttle(scope: str, limit: int, window_seconds: int)` — view decorator
 - Consumes: `SafeAPIError`, `ErrorCode.RATE_LIMITED`, `command_error_response` (all shipped).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `implementation/api/tests/test_throttling.py`:
 
@@ -413,12 +413,12 @@ def test_activation_returns_429_over_the_limit(client, settings):
     assert last.json()["error"]["code"] == "RATE_LIMITED"
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests/test_throttling.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'selahcue_api.apps.throttling'`
 
-- [ ] **Step 3: Create the app package**
+- [x] **Step 3: Create the app package**
 
 ```bash
 cd implementation/api
@@ -442,7 +442,7 @@ class SelahCueThrottlingConfig(AppConfig):
 Note the label convention: `selahcue_<app>`, matching every other app here. Add
 `"selahcue_api.apps.throttling.apps.SelahCueThrottlingConfig"` to `INSTALLED_APPS`.
 
-- [ ] **Step 4: Write the pure logic**
+- [x] **Step 4: Write the pure logic**
 
 Create `selahcue_api/apps/throttling/services.py`:
 
@@ -512,7 +512,7 @@ def client_ip(request) -> str:
     return request.META.get("REMOTE_ADDR", "") or "unknown"
 ```
 
-- [ ] **Step 5: Write the decorator**
+- [x] **Step 5: Write the decorator**
 
 Create `selahcue_api/apps/throttling/decorators.py`:
 
@@ -552,7 +552,7 @@ def throttle(scope: str, setting_name: str, default: tuple[int, int]):
     return decorator
 ```
 
-- [ ] **Step 6: Add settings**
+- [x] **Step 6: Add settings**
 
 In `selahcue_api/settings.py`, after the Celery block:
 
@@ -583,7 +583,7 @@ SELAHCUE_THROTTLE_DEVICE_READ = (60, 60)
 
 Add `CACHE_URL=redis://redis:6379/1` to `implementation/api/.env.sample` under a `# --- Cache ---` heading.
 
-- [ ] **Step 7: Apply the decorator to the three `/v1` device endpoints**
+- [x] **Step 7: Apply the decorator to the three `/v1` device endpoints**
 
 In `selahcue_api/platform/views.py`, import at the top:
 
@@ -619,12 +619,12 @@ def entitlement_manifest(request):
     ...
 ```
 
-- [ ] **Step 8: Run the throttling tests**
+- [x] **Step 8: Run the throttling tests**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests/test_throttling.py -q`
 Expected: `8 passed`
 
-- [ ] **Step 9: Run the whole suite — check for circular imports and budget bleed**
+- [x] **Step 9: Run the whole suite — check for circular imports and budget bleed**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests -q`
 Expected: all pass.
@@ -632,7 +632,7 @@ Expected: all pass.
 If existing device tests now fail with 429, they are sharing a LocMemCache across tests.
 Fix by adding `cache.clear()` to those tests, **not** by raising the limits.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add implementation/api/selahcue_api/apps/throttling implementation/api/selahcue_api/settings.py \
@@ -668,7 +668,7 @@ device traffic during a Redis outage would cause the outage it prevents."
 
 **Design source:** `docs/design/TRANSACTIONAL-EMAIL-spec.md` — copy deck is authoritative, do not paraphrase it.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `implementation/api/tests/test_email_delivery.py`:
 
@@ -754,16 +754,16 @@ def test_enqueue_failure_does_not_break_the_caller(monkeypatch):
     sender.send_email_verification(FakeUser(), "tok")  # must not raise
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests/test_email_delivery.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'selahcue_api.apps.accounts.email'`
 
-- [ ] **Step 3: Point Django at a templates directory**
+- [x] **Step 3: Point Django at a templates directory**
 
 In `settings.py`, set `TEMPLATES[0]["DIRS"] = [BASE_DIR / "selahcue_api" / "templates"]`.
 
-- [ ] **Step 4: Create the six templates**
+- [x] **Step 4: Create the six templates**
 
 Create `selahcue_api/templates/email/verify_email.txt` with the plain-text block from the
 spec's §Plain-text fallbacks (verification), using `{{ verify_url }}`. Create
@@ -837,7 +837,7 @@ Build `password_reset.html` identically but with the reset copy, `{{ reset_url }
 Build `account_exists.html` from the spec copy with the security band — and **no `<a>` tag
 and no URL anywhere**. The test enforces this.
 
-- [ ] **Step 5: Write the renderers and the Celery sender**
+- [x] **Step 5: Write the renderers and the Celery sender**
 
 Create `selahcue_api/apps/accounts/email.py`:
 
@@ -972,7 +972,7 @@ Add to `settings.py`:
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:2000")
 ```
 
-- [ ] **Step 6: Install the sender at startup**
+- [x] **Step 6: Install the sender at startup**
 
 In `selahcue_api/apps/accounts/apps.py`, add:
 
@@ -985,7 +985,7 @@ In `selahcue_api/apps/accounts/apps.py`, add:
         set_email_sender(CeleryEmailSender())
 ```
 
-- [ ] **Step 7: Make tests use the locmem mail backend**
+- [x] **Step 7: Make tests use the locmem mail backend**
 
 Add to `pytest.ini`:
 
@@ -1004,18 +1004,18 @@ CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
 and set `settings.CELERY_TASK_ALWAYS_EAGER = True` via the `settings` fixture in the test.
 Prefer the settings route — no new dependency.
 
-- [ ] **Step 8: Run the email tests**
+- [x] **Step 8: Run the email tests**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests/test_email_delivery.py -q`
 Expected: `6 passed`
 
-- [ ] **Step 9: Run the whole suite**
+- [x] **Step 9: Run the whole suite**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests -q`
 Expected: all pass. Existing auth tests override `EmailSender` via `set_email_sender`, so
 `ready()` installing the Celery sender must not break them — this run is what proves it.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add implementation/api/selahcue_api/templates implementation/api/selahcue_api/apps/accounts/email.py \
@@ -1048,7 +1048,7 @@ account exists, and a link would hand it to an attacker probing addresses."
 - Produces: `cascade_license_revocations(batch_size=500) -> int`, `sweep_expired_credentials(batch_size=1000) -> dict`.
 - Consumes: `ACTIVATABLE_KEY_STATUSES`, `DeviceTokenStatus`, `record_audit_event`, `ActorContext`, `ActorKind` (all shipped).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `implementation/api/tests/test_revocation_cascade.py`:
 
@@ -1123,12 +1123,12 @@ def test_sweep_deletes_expired_credential_tokens_only():
     assert CustomerSession.objects.count() <= before
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests/test_revocation_cascade.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'selahcue_api.apps.devices.tasks'`
 
-- [ ] **Step 3: Write the cascade**
+- [x] **Step 3: Write the cascade**
 
 Create `selahcue_api/apps/devices/tasks.py`:
 
@@ -1192,7 +1192,7 @@ def cascade_license_revocations_task() -> int:
     return cascade_license_revocations()
 ```
 
-- [ ] **Step 4: Write the sweeps**
+- [x] **Step 4: Write the sweeps**
 
 Create `selahcue_api/apps/accounts/maintenance.py`:
 
@@ -1226,7 +1226,7 @@ def sweep_expired_credentials_task() -> dict[str, int]:
     return sweep_expired_credentials()
 ```
 
-- [ ] **Step 5: Schedule them**
+- [x] **Step 5: Schedule them**
 
 In `settings.py`, after the Celery block:
 
@@ -1247,17 +1247,17 @@ CELERY_BEAT_SCHEDULE = {
 }
 ```
 
-- [ ] **Step 6: Run the tests**
+- [x] **Step 6: Run the tests**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests/test_revocation_cascade.py -q`
 Expected: all pass.
 
-- [ ] **Step 7: Run the whole suite**
+- [x] **Step 7: Run the whole suite**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests -q`
 Expected: all pass.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add implementation/api/selahcue_api/apps/devices/tasks.py \
@@ -1290,7 +1290,7 @@ Closes finding 1 of [86ajyq86g](https://app.clickup.com/t/86ajyq86g) — untesta
 
 **Interfaces:** consumes `activate_device` and `ActivateDeviceData` (shipped, unchanged).
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 Create `implementation/api/tests/test_concurrency_postgres.py`:
 
@@ -1354,13 +1354,13 @@ def test_concurrent_activations_cannot_exceed_the_device_limit():
 
 Copy `_seed_license_key` from `tests/test_entitlement_manifest_slice.py` into this module.
 
-- [ ] **Step 2: Verify it skips locally on SQLite**
+- [x] **Step 2: Verify it skips locally on SQLite**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests/test_concurrency_postgres.py -v`
 Expected: `1 skipped` with the reason printed. A skip here is the correct local result — the
 test is meaningless without row locking.
 
-- [ ] **Step 3: Add service containers to the `api` CI job**
+- [x] **Step 3: Add service containers to the `api` CI job**
 
 In `.github/workflows/ci.yml`, inside the `api` job add:
 
@@ -1409,7 +1409,7 @@ Also add `psycopg[binary]>=3.2,<4` to the **Install** step:
         run: pip install -e ".[dev]" "psycopg[binary]>=3.2,<4"
 ```
 
-- [ ] **Step 4: Verify the workflow parses and the env is wired**
+- [x] **Step 4: Verify the workflow parses and the env is wired**
 
 ```bash
 cd /Users/m.oluwole/Documents/code/scph
@@ -1426,12 +1426,12 @@ print('OK — api job has postgres+redis and runs tests against Postgres')
 
 Expected: `OK — …`
 
-- [ ] **Step 5: Confirm the suite still passes locally on SQLite**
+- [x] **Step 5: Confirm the suite still passes locally on SQLite**
 
 Run: `/private/tmp/selahcue-api-venv/bin/python -m pytest tests -q`
 Expected: all pass, with the concurrency test skipped.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add implementation/api/tests/test_concurrency_postgres.py .github/workflows/ci.yml
@@ -1447,7 +1447,7 @@ hide the race it exists to catch. The api CI job gains Postgres and Redis
 service containers so it actually executes where it counts."
 ```
 
-- [ ] **Step 7: Push and watch CI**
+- [x] **Step 7: Push and watch CI**
 
 ```bash
 GIT_SSH_COMMAND='ssh -o BatchMode=yes' git push origin main
@@ -1503,3 +1503,66 @@ are defined in Task 4 and called from their `@shared_task` wrappers with matchin
 while `views.py` imports `throttle` from the decorator module. Step 9 exists to catch the
 circular import if it materialises; the stated fix is extracting `command_error_response`
 into `platform/responses.py`. Do not skip Step 9.
+
+---
+
+## Execution record (2026-08-14)
+
+Executed via specialist agents. Suite: 104 → **147 passed, 1 skipped** (the skip is
+`test_concurrency_postgres.py`, by design on SQLite). Commits `8e43262`, `b40a5d2`,
+`3eb92dd`, `d5ed8df`, `5f76b09`, then review fixes `01a4ad7` and `5974f04`.
+
+### Plan defects found during execution
+
+| # | Where | Defect | Resolution |
+|---|---|---|---|
+| 1 | Task 4 | `@shared_task` in `maintenance.py`, which `autodiscover_tasks()` never scans — beat would have scheduled a task no worker registers, failing nightly with `NotRegistered` | Wrapper moved to `accounts/tasks.py`; subprocess test asserts every `CELERY_BEAT_SCHEDULE` name resolves under Celery's real `import_default_modules()` |
+| 2 | Task 2 | `test_forwarded_for_is_honoured_behind_one_trusted_proxy` expected `parts[-(hops+1)]` — the caller-forgeable prefix | Test rewritten; `parts[-hops]` is correct and matches the spec's "Nth-from-last" |
+| 3 | Task 5 | `idempotency_key=f"conc-{n}"` is 6 chars against `validate_idempotency_key`'s 12-char minimum — both activations would have failed validation before reaching the lock, so the test would have gone **red in CI**, never skipped | Lengthened to `conc-activation-{n}` |
+| 4 | Task 4 | `test_sweep_deletes_expired_credential_tokens_only` seeded nothing and asserted `>= 0` — passes against a no-op | Rewritten to seed all four quadrants and assert exact counts; idempotency and batch-bound tests added |
+| 5 | Task 3 | HTML skeleton wrapped in `{% raw %}` (markdown self-protection) — copied verbatim it would have shipped emails containing the literal text `{{ verify_url }}` | Raw tags stripped |
+| 6 | Task 3 | Step 3 says modify `TEMPLATES[0]["DIRS"]`; no `TEMPLATES` setting existed | Created the whole block |
+| 7 | Task 2 | Circular import was framed as a risk to confirm; it fires unconditionally (`views.py` imports at module top, `command_error_response` is defined at line 38) | Pre-authorised `platform/responses.py` extraction applied up front |
+
+### Review findings fixed (`01a4ad7`, `5974f04`)
+
+**Blocker.** `CacheStore.incr_with_expiry` used `add()` + `cache.incr()`. Django's Redis
+`incr` is `EXISTS` then `INCR` — two round trips, not atomic. If the TTL lapses between
+them, Redis `INCR` recreates the key at 1 **with no expiry**; `add()` can never reclaim it
+and `incr()` never sets a TTL, so the counter climbs forever and that key returns 429
+permanently with no self-heal. Invisible on `LocMemCache`, which checks expiry under a
+lock. Fixed with a TTL-guaranteeing increment plus clock-injected rollover-race tests that
+fail against the old shape.
+
+Also: IP-format validation on the XFF-derived cache key (a hop-count misconfig was an
+attacker-controlled unbounded key, not just a bypass); `transaction.on_commit` for the
+three email dispatches (a rolled-back signup was queueing a token for a row that no longer
+existed); bounded fail-open logging; `argsrepr` redaction so SMTP failures don't write raw
+tokens to worker logs; a prod guard on `CELERY_TASK_ALWAYS_EAGER`; a system-check warning
+when `SELAHCUE_TRUSTED_PROXY_COUNT` is 0 behind a configured cache; an index on
+`DeviceToken.status`; per-label delete counts; and four tests that passed for the wrong
+reason.
+
+Container/compose: added `.dockerignore` — `COPY . .` was baking `api/.env` (the
+`SECRET_KEY` HMAC pepper) and the dev SQLite DB into image layers, since `.gitignore` does
+not filter a build context; verified by recovering a canary key from the pre-fix image's
+`docker save` blobs and confirming zero hits after. Redis, Postgres and mailhog now bind
+`127.0.0.1` (the 8025 mailhog UI serves every captured verification and reset email).
+`depends_on` honours the healthchecks, and the editable install re-runs after `COPY` so
+`import selahcue_api` resolves by construction.
+
+### Deferred — owner decisions, not defects
+
+- **`SELAHCUE_TRUSTED_PROXY_COUNT` default of 0.** Behind the documented Coolify/Cloudflare
+  edge, `client_ip` returns the *proxy* address for every request, so the entire customer
+  base shares one 10/min activation bucket. A system-check warning now fires; choosing the
+  real hop count is a deploy decision.
+- **The cascade's trigger set is one-way.** It fires for any status outside
+  `ACTIVATABLE_KEY_STATUSES` — including `SUSPENDED`, `CONVERTED` and `ARCHIVED` — and
+  there is no reinstatement path: `_activate_device_for_key` takes the known-fingerprint
+  branch and returns `full_token=None`, so a restored licence's devices 401 forever. Not
+  live today (no API writes those statuses), but any future transition becomes destructive.
+  Needs either a narrower trigger or an explicit reinstatement path.
+- Making `SELAHCUE_THROTTLE_*` env-configurable; `select_for_update` on the cascade for
+  concurrent-worker double-revocation; driving the cascade query from licence keys rather
+  than adding an index to `DeviceToken`.
