@@ -11,6 +11,26 @@
 **Spec:** `docs/superpowers/specs/2026-08-13-entitlement-manifest-design.md`
 **ClickUp:** [86ak0mt8f](https://app.clickup.com/t/86ak0mt8f)
 
+> ## ✅ EXECUTED 2026-08-14 — all four tasks complete, 104/104 tests pass
+>
+> Commits on `main`: `bd5c469` · `ac68c11` · `cc364ae` · `6cf9939` · `abaeb6b`.
+>
+> **Two deviations from the plan as written, both deliberate:**
+>
+> 1. **Task 1 Step 1 changed.** The plan installed Python 3.12 to match a 3.12 CI pin. The owner
+>    chose instead to keep 3.14 and upgrade Django 5.2 → **6.1** (which supports 3.12–3.14), making
+>    3.14 officially supported rather than tolerated. `strawberry-graphql-django` went to 0.87.
+>    Shipped as its own commit (`bd5c469`) so a major dependency bump stays separable from feature
+>    work. No `brew install` was needed.
+> 2. **An extra fix in Task 4.** `tests/test_foundation_contract.py` pinned
+>    `/v1/entitlements/manifest` as a `501` stub, so implementing it broke that test. Updated to
+>    preserve the contract's intent — an unauthenticated caller now gets `401` and the body leaks
+>    nothing — rather than deleting the assertion. The plan did not anticipate this; a plan-wide
+>    grep for routes under test would have caught it.
+>
+> **Trap worth knowing:** the app's Django label is `selahcue_entitlements`, not `entitlements`.
+> Targeting the migration gate by directory name returns "No installed app with label".
+
 ## Global Constraints
 
 - **Signature covers the base64url payload string as transmitted** — never a re-serialization of decoded JSON. This is the whole reason Python and Rust will agree.

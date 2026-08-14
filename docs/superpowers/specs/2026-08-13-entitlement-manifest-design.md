@@ -231,10 +231,15 @@ gap is recorded rather than assumed closed.
 
 ### Interpreter version
 
-CI pins 3.12, comfortably inside Django 5.2's supported range. The local venv currently runs
-**Python 3.14**, which is outside that range — the suite passes, but local and CI would be testing
-different interpreters against a combination Django does not officially support. Recreate the local
-venv on 3.12 as part of this slice so the two agree.
+**Resolved differently at implementation time (owner decision, 2026-08-14).** The spec proposed
+pinning CI to 3.12 to match Django 5.2's supported range. The owner chose instead to **keep Python
+3.14 and upgrade Django to the latest stable**, which is the better resolution: Django 6.1 supports
+3.12–3.14, so 3.14 becomes officially supported rather than merely tolerated, and local and CI run
+the same interpreter with no downgrade.
+
+Shipped as `bd5c469`: Django `>=6.1,<6.2`, `strawberry-graphql-django >=0.87,<0.88` (0.87 declares
+`django>=5.2` with no upper bound), `requires-python >=3.12`. Verified: 63/63 pre-existing tests
+pass under Django 6.1 with no deprecation breakage.
 
 **Deliberately still on SQLite.** A Postgres service container is the right home for the
 `select_for_update` concurrency test, but that test is slice 2's work; adding the container now
@@ -254,6 +259,30 @@ two ever need to be run together.
 | R4 | A leaked private key mints unlimited entitlements | Key lives only in the deployment environment, never in git. Rotation path is defined above; `DEPLOYMENT.md` gets the runbook |
 | R5 | `feature_scope` is a flat `CharField`, so entitlements cannot express per-feature grants | Accepted for this slice. Structured plans are a `catalogue` concern and would expand scope well past a manifest |
 | R6 | Revoking a licence key does not cascade to `DeviceToken`, so an already-issued manifest survives revocation until licence expiry | Inherent to DEC-005 + no revocation list. The §Issuance gate closes the re-issue path, which is the only lever this slice has. A revocation list remains the honest fix and stays out of scope — recorded so it is a known limit, not a surprise |
+
+## Implementation outcome (2026-08-14) — VERIFIED
+
+Shipped in five commits on `main`: `bd5c469` (Django 6.1), `ac68c11` (CI job + migration gate),
+`cc364ae` (signing), `6cf9939` (service), `abaeb6b` (endpoint).
+
+**Final state: 104/104 tests pass** (63 pre-existing + 41 new), `manage.py check` clean,
+`makemigrations --check` clean, `compileall` clean.
+
+Two things the implementation established that the spec had only asserted:
+
+- **The migration-gate fix was verified empirically, not assumed.** With a probe model present in
+  `entitlements`, the unscoped gate now exits 1 (`Create model GateProbe`) where before it reported
+  "No changes detected". The probe was then removed. Note the app's Django label is
+  `selahcue_entitlements`, not `entitlements` — a first attempt to target it by directory name
+  returned "No installed app with label", which is a trap for anyone scoping the gate per-app.
+- **The licence-status test genuinely expands to all eight members**, confirmed by name in verbose
+  output: REVOKED, CONVERTED and ARCHIVED each carry their own `POLICY_DENIED` assertion. That is
+  the hole the review found, now closed by an executing test rather than by prose.
+
+One defect surfaced during implementation, in the *tests* rather than the design: activation flips
+the licence key `ISSUED → ACTIVATED`, so the in-memory `AppLicenseKey` returned at creation is stale
+by the time a manifest is issued. Fixed with `refresh_from_db()` in the fixture — the assertion was
+right and the fixture was wrong, so the assertion stood.
 
 ## Review
 
