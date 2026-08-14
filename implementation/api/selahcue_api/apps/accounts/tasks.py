@@ -1,9 +1,14 @@
-"""Celery tasks for transactional email.
+"""Celery tasks for the accounts app: transactional email, plus the nightly expiry sweep.
 
-Tasks take an **opaque token string**, never a user object: task arguments are
+Email tasks take an **opaque token string**, never a user object: task arguments are
 serialized onto Redis, and a queued message is not a place to leave a user record.
 Idempotent — CELERY_TASK_ACKS_LATE means a crashed worker redelivers, and sending the
 same verification email twice is harmless.
+
+This module is the app's ONLY autodiscovered one: `autodiscover_tasks()` imports
+`<app>.tasks` and nothing else. Task bodies may live elsewhere (the sweep's logic is in
+`maintenance.py`), but the `@shared_task` wrapper has to be here or the worker never
+registers the name beat is dispatching.
 """
 
 from __future__ import annotations
@@ -45,3 +50,12 @@ def send_account_exists_task(email: str) -> None:
 
     html, text = render_account_exists()
     _send("Someone tried to sign up with your SelahCue address", email, html, text)
+
+
+@shared_task(name="accounts.sweep_expired_credentials")
+def sweep_expired_credentials_task() -> dict[str, int]:
+    """Nightly row hygiene. The logic lives in `maintenance.py`; this wrapper exists here
+    because `tasks.py` is the only module Celery autodiscovers."""
+    from selahcue_api.apps.accounts.maintenance import sweep_expired_credentials
+
+    return sweep_expired_credentials()

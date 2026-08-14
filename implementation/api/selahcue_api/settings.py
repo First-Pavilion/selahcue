@@ -171,6 +171,25 @@ CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
 # in an EagerResult, so an inline failure surfaces as a test failure rather than silence.
 CELERY_TASK_EAGER_PROPAGATES = env_bool("CELERY_TASK_EAGER_PROPAGATES", CELERY_TASK_ALWAYS_EAGER)
 
+from celery.schedules import crontab  # noqa: E402  (kept beside the schedule it configures)
+
+# Beat dispatches by NAME, so every name here must be one the worker registers — i.e. it must
+# be declared with @shared_task inside some installed app's `tasks.py`, the only module
+# `autodiscover_tasks()` imports. tests/test_revocation_cascade.py asserts that in a clean
+# interpreter; without it a misplaced task fails as NotRegistered nightly, in production only.
+CELERY_BEAT_SCHEDULE = {
+    # Hourly: a revoked licence should stop working within the hour, not at expiry.
+    "cascade-license-revocations": {
+        "task": "devices.cascade_license_revocations",
+        "schedule": crontab(minute=0),
+    },
+    # Nightly: pure row hygiene, no behavioural effect.
+    "sweep-expired-credentials": {
+        "task": "accounts.sweep_expired_credentials",
+        "schedule": crontab(hour=3, minute=30),
+    },
+}
+
 # --- Cache / throttling ---------------------------------------------------------------
 # Redis db 1 — deliberately NOT db 2, which is the Celery broker: a FLUSHDB on either
 # must not destroy the other. Falls back to per-process LocMemCache when CACHE_URL is
