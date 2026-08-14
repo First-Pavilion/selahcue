@@ -94,6 +94,29 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = "selahcue_api.urls"
+
+# There was no TEMPLATES block until now: the API is GraphQL + JSON and rendered nothing.
+# The transactional emails (docs/design/TRANSACTIONAL-EMAIL-spec.md) are the first
+# templates, so this is a whole definition rather than an added DIRS entry.
+# `django.contrib.messages` and MessageMiddleware are already installed, and the admin-less
+# `check` framework still expects the auth/messages context processors beside them, so the
+# four standard processors are kept rather than trimmed to the one email rendering needs.
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [BASE_DIR / "selahcue_api" / "templates"],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.debug",
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+            ]
+        },
+    }
+]
+
 WSGI_APPLICATION = "selahcue_api.wsgi.application"
 ASGI_APPLICATION = "selahcue_api.asgi.application"
 
@@ -139,6 +162,14 @@ CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/2
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ACKS_LATE = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+# Run tasks inline instead of enqueuing them. OFF by default — this is a test/debug lever,
+# and turning it on in a real deployment would move email sending back into the request.
+# Tests that need `.delay()` to execute synchronously flip it through the `settings` fixture.
+CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
+# Only meaningful while eager: re-raise task exceptions in the caller instead of burying them
+# in an EagerResult, so an inline failure surfaces as a test failure rather than silence.
+CELERY_TASK_EAGER_PROPAGATES = env_bool("CELERY_TASK_EAGER_PROPAGATES", CELERY_TASK_ALWAYS_EAGER)
 
 # --- Cache / throttling ---------------------------------------------------------------
 # Redis db 1 — deliberately NOT db 2, which is the Celery broker: a FLUSHDB on either
@@ -210,3 +241,7 @@ ACCOUNT_PASSWORD_RESET_TTL_SECONDS = int(os.getenv("ACCOUNT_PASSWORD_RESET_TTL_S
 ACCOUNT_LOGIN_LOCKOUT_THRESHOLD = int(os.getenv("ACCOUNT_LOGIN_LOCKOUT_THRESHOLD", "5"))
 ACCOUNT_LOGIN_LOCKOUT_SECONDS = int(os.getenv("ACCOUNT_LOGIN_LOCKOUT_SECONDS", "900"))
 ACCOUNT_MIN_PASSWORD_LENGTH = int(os.getenv("ACCOUNT_MIN_PASSWORD_LENGTH", "10"))
+
+# Base URL of the web surface that hosts /verify and /reset. NOTE: those routes do not
+# exist yet — they land with slice 4 (86ajy7anx). Emails link to a 404 until then.
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:2000")

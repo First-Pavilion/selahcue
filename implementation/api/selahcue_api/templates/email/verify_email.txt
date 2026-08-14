@@ -1,0 +1,16 @@
+{% comment %}text/plain part. autoescape is off because HTML escaping has no meaning here
+and would corrupt a URL carrying an & into &amp;.{% endcomment %}{% autoescape off %}SelahCue — Verify your email address
+
+Thanks for creating a SelahCue account. Confirm this address so we know we can
+reach you — it is how we send password resets and important service notices.
+
+Verify your email address:
+{{ verify_url }}
+
+This link expires in 24 hours.
+
+Did not create a SelahCue account? Ignore this email — no account is active
+until this address is verified.
+
+SelahCue
+{% endautoescape %}

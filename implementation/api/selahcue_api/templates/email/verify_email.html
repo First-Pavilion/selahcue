@@ -1,0 +1,30 @@
+{% extends "email/_base.html" %}
+
+{% block preheader %}Confirm this address to finish setting up your SelahCue account.{% endblock %}
+
+{% block heading %}Verify your email address{% endblock %}
+
+{% block content %}
+    <p class="muted" style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#5c6470;">
+      Thanks for creating a SelahCue account. Confirm this address so we know we can reach you — it is how we send password resets and important service notices.
+    </p>
+    {% comment %}Bulletproof button: padded table cell with a bgcolor, not a styled <a> —
+    Outlook ignores padding on inline anchors. 14px vertical padding on a 16px label clears
+    the 44px tap target.{% endcomment %}
+    <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">
+     <tr><td bgcolor="#5b6bd6" style="border-radius:8px;">
+      <a href="{{ verify_url }}" style="display:inline-block;padding:14px 28px;font-size:16px;font-weight:600;color:#ffffff;text-decoration:none;">Verify email address</a>
+     </td></tr>
+    </table>
+    <p style="margin:0 0 20px;font-size:13px;line-height:1.55;color:#4453b8;word-break:break-all;">
+      Button not working? Paste this link into your browser:<br>{{ verify_url }}
+    </p>
+    <p class="muted" style="margin:0 0 20px;font-size:13px;line-height:1.55;color:#5c6470;">
+      This link expires in 24 hours. If it has already expired, sign in and request a new one.
+    </p>
+    <p class="muted" style="margin:0;font-size:13px;line-height:1.55;color:#5c6470;">
+      Did not create a SelahCue account? Ignore this email — no account is active until this address is verified.
+    </p>
+{% endblock %}
+
+{% block footer %}SelahCue · Sent because someone signed up with this address.{% endblock %}

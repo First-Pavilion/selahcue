@@ -6,3 +6,11 @@ class SelahCueAccountsConfig(AppConfig):
     label = "selahcue_accounts"
     name = "selahcue_api.apps.accounts"
     verbose_name = "SelahCue Customer Accounts"
+
+    def ready(self):
+        # Swap the no-op seam for the Celery-backed sender once apps are loaded. Imported
+        # here rather than at module scope because email.py reaches models and settings.
+        from selahcue_api.apps.accounts.email import CeleryEmailSender
+        from selahcue_api.apps.accounts.services import set_email_sender
+
+        set_email_sender(CeleryEmailSender())

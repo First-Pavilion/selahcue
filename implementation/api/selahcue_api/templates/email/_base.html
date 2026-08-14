@@ -1,0 +1,52 @@
+{% comment %}
+Shared chrome for the three transactional emails.
+
+Design: docs/design/TRANSACTIONAL-EMAIL-spec.md (Figma page 719:132). Palette, dark-mode
+rules and the 600px card live here once so the three emails cannot drift apart.
+
+Email HTML, not web HTML: table layout, inlined CSS, system fonts, single column, no
+flexbox/grid/JS and no load-bearing background images. The only <style> rule is the
+dark-mode override, which is decoration — every real colour is also inlined, because Gmail
+strips <head> and force-inverts instead of honouring the media query.
+
+Deliberately light-mode though the product is dark: Gmail and Outlook invert parts of a
+dark document independently, which routinely lands black-on-black. An unreadable
+verification link is a worse failure than an off-brand one.
+{% endcomment %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<style>
+  @media (prefers-color-scheme: dark) {
+    .card { background:#1e232c !important; }
+    .text { color:#eef1f6 !important; }
+    .muted { color:#9aa4b2 !important; }
+    .page { background:#0e1116 !important; }
+  }
+</style>
+</head>
+<body class="page" style="margin:0;padding:0;background:#f4f5f7;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all;">{% block preheader %}{% endblock %}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;">
+ <tr><td align="center" style="padding:40px 20px;">
+  <table role="presentation" width="600" cellpadding="0" cellspacing="0" class="card"
+         style="max-width:600px;width:100%;background:#ffffff;border:1px solid #e2e5ea;border-radius:12px;">
+   <tr><td style="padding:40px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+    {% comment %}Text wordmark, not an <img>: there is no hosted logo asset, remote images
+    are blocked by default in most clients, and account_exists.html must contain no URL at
+    all.{% endcomment %}
+    <p class="text" style="margin:0 0 20px;font-size:20px;font-weight:700;color:#1a1d23;">SelahCue</p>
+    <h1 class="text" style="margin:0 0 20px;font-size:26px;line-height:1.3;color:#1a1d23;">{% block heading %}{% endblock %}</h1>
+{% block content %}{% endblock %}
+   </td></tr>
+  </table>
+  <p class="muted" style="margin:20px 0 0;font-size:12px;color:#5c6470;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+    {% block footer %}{% endblock %}
+  </p>
+ </td></tr>
+</table>
+</body>
+</html>

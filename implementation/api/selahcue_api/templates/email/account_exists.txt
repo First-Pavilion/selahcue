@@ -1,0 +1,13 @@
+{% comment %}text/plain part. Renders no context at all: this email carries no link and no
+credential, by design. See account_exists.html for the full reasoning.{% endcomment %}SelahCue — Someone tried to sign up with your address
+
+A SelahCue signup was attempted using this email address, but an account
+already exists for it. No new account was created and nothing has changed.
+
+If that was you, sign in as normal. Forgotten your password? Use
+"Forgot password" on the sign-in screen.
+
+If it was not you, your account is untouched and no link in this email can
+access it. Consider changing your password.
+
+SelahCue

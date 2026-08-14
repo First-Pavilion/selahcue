@@ -1,0 +1,34 @@
+{% extends "email/_base.html" %}
+
+{% comment %}
+NO BUTTON AND NO URL — deliberate, and enforced by
+tests/test_email_delivery.py::test_account_exists_contains_no_url_at_all.
+
+Signup returns an identical response whether or not the address is registered, so this
+email arriving in the real owner's inbox is the ONLY signal that an account exists. A link
+would hand that signal to an attacker probing addresses and undo the whole no-enumeration
+design. This is a warning to the address owner, not a credential. The constraint is
+annotated on the Figma canvas so it survives a redesign.
+{% endcomment %}
+
+{% block preheader %}An account already exists. Nothing has changed.{% endblock %}
+
+{% block heading %}Someone tried to sign up with your address{% endblock %}
+
+{% block content %}
+    <p class="muted" style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#5c6470;">
+      A SelahCue signup was attempted using this email address, but an account already exists for it. No new account was created and nothing has changed.
+    </p>
+    <p class="muted" style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#5c6470;">
+      If that was you, just sign in as normal — there is no need to sign up again. Forgotten your password? Use "Forgot password" on the sign-in screen.
+    </p>
+    {% comment %}Security band. Leads with words, never amber alone — no meaning by colour
+    only.{% endcomment %}
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#fdf3dd;border-radius:8px;">
+     <tr><td style="padding:16px;font-size:13px;line-height:1.55;color:#7a4a00;">
+       If it was not you, someone may be probing for accounts. Your account is untouched and no link in this email can access it. Consider changing your password from the sign-in screen.
+     </td></tr>
+    </table>
+{% endblock %}
+
+{% block footer %}SelahCue · Sent because someone attempted a signup with this address.{% endblock %}
