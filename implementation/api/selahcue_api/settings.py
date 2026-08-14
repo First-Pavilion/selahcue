@@ -13,39 +13,56 @@ def env_bool(name: str, default: bool) -> bool:
 
 
 def _database_config() -> dict:
-    """Postgres from ``DATABASE_URL`` in production — so a row-locking backend makes
-    ``select_for_update`` (the device instance-limit guard, DEC-004) actually hold; bundled
-    SQLite otherwise for dev/test. No third-party dep: a minimal DSN parse."""
-    url = os.getenv("DATABASE_URL", "").strip()
-    if not url:
-        return {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3"}
-    from urllib.parse import unquote, urlparse
+    """Discrete ``SQL_*`` variables, matching the First Pavilion house convention (see
+    yharah-logistics `core/settings.py`) rather than a `DATABASE_URL` DSN.
 
-    parsed = urlparse(url)
-    engines = {
-        "postgres": "django.db.backends.postgresql",
-        "postgresql": "django.db.backends.postgresql",
-    }
-    engine = engines.get(parsed.scheme)
-    if engine is None:
-        raise ValueError(f"Unsupported DATABASE_URL scheme: {parsed.scheme!r}")
+    Defaults to bundled SQLite so a bare `pytest` needs no environment. Point `SQL_ENGINE` at
+    postgresql in any real deployment: the device instance-limit guard (DEC-004) uses
+    ``select_for_update``, which SQLite silently no-ops (`has_select_for_update=False`), so the
+    limit is only actually enforced on a row-locking backend.
+    """
+    engine = os.getenv("SQL_ENGINE", "django.db.backends.sqlite3")
+    if engine.endswith("sqlite3"):
+        return {"ENGINE": engine, "NAME": os.getenv("SQL_DATABASE", str(BASE_DIR / "db.sqlite3"))}
     return {
         "ENGINE": engine,
-        "NAME": unquote((parsed.path or "").lstrip("/")),
-        "USER": unquote(parsed.username or ""),
-        "PASSWORD": unquote(parsed.password or ""),
-        "HOST": parsed.hostname or "",
-        "PORT": str(parsed.port or ""),
+        "NAME": os.getenv("SQL_DATABASE", "selahcue"),
+        "USER": os.getenv("SQL_USER", "postgres"),
+        "PASSWORD": os.getenv("SQL_PASSWORD", "postgres"),
+        "HOST": os.getenv("SQL_HOST", "localhost"),
+        "PORT": os.getenv("SQL_PORT", "5432"),
         "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "60")),
     }
 
 
-DEBUG = env_bool("DJANGO_DEBUG", False)
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "selahcue-dev-only-insecure-key")
+# dev | staging | prod. Gates debug tooling, mail backend and Sentry, as in yharah-logistics.
+ENVIRONMENT = os.getenv("ENVIRONMENT", "dev")
+
+# `DEBUG=1` / `DEBUG=0`, the house convention. env_bool also accepts true/yes/on.
+DEBUG = env_bool("DEBUG", False)
+
+# Required outside dev. yharah raises unconditionally, but SelahCue's tests run bare (no
+# container env), so the hard requirement is scoped to non-dev — still stricter than the
+# previous silent insecure default, which would have shipped to production unnoticed.
+SECRET_KEY = os.getenv("SECRET_KEY", "")
+if not SECRET_KEY:
+    if ENVIRONMENT != "dev":
+        from django.core.exceptions import ImproperlyConfigured
+
+        raise ImproperlyConfigured(
+            f"SECRET_KEY must be set when ENVIRONMENT={ENVIRONMENT!r}."
+        )
+    SECRET_KEY = "selahcue-dev-only-insecure-key"
+
+# Space-separated, matching the house convention (`DJANGO_ALLOWED_HOSTS=localhost 127.0.0.1`).
+# Commas are also tolerated so an older comma-separated value cannot silently collapse into a
+# single bogus host.
 ALLOWED_HOSTS = [
-    host.strip()
-    for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,testserver").split(",")
-    if host.strip()
+    host
+    for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost 127.0.0.1 testserver")
+    .replace(",", " ")
+    .split()
+    if host
 ]
 
 INSTALLED_APPS = [
@@ -113,8 +130,49 @@ GRAPHQL_IDE = "graphiql" if DEBUG else None
 GRAPHQL_INTROSPECTION_ENABLED = DEBUG
 SELAHCUE_TRUST_ACTOR_HEADERS = env_bool("SELAHCUE_TRUST_ACTOR_HEADERS", DEBUG)
 
+# --- Celery / Redis (house convention: yharah-logistics core/settings.py) -------------------
+# `redis` is the compose service name; db 2 is the broker, matching the sibling project so the
+# two stacks can share a Redis instance without colliding.
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/2")
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/2")
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_ACKS_LATE = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+# --- Mail --------------------------------------------------------------------------------
+# Dev points at mailhog (compose service, port 1025) so the transactional templates
+# (docs/design/TRANSACTIONAL-EMAIL-spec.md) can be verified end to end before any provider
+# exists. Non-dev reads real SMTP credentials.
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@selahcue.com")
+DEFAULT_EMAIL = os.getenv("DEFAULT_EMAIL", "info@firstpavitech.com")
+
+# MAILERS, not the EMAIL_* settings. Django 6.1 deprecates EMAIL_BACKEND/EMAIL_HOST/... in
+# favour of this dict and removes them in 7.0 — since we are already on 6.1, using the old
+# names would ship a deprecation warning on day one. yharah-logistics still uses EMAIL_* only
+# because it predates the change; the env var NAMES (MAIL_*) stay identical to the house
+# convention, which is what actually has to match.
+_mail_is_dev = ENVIRONMENT == "dev"
+MAILERS = {
+    "default": {
+        "BACKEND": "django.core.mail.backends.smtp.EmailBackend",
+        "OPTIONS": {
+            # dev → mailhog (compose service, no auth, no TLS)
+            "host": os.getenv("MAIL_HOST", "selahcue_mailhog" if _mail_is_dev else ""),
+            "port": int(os.getenv("MAIL_PORT", "1025" if _mail_is_dev else "587")),
+            "username": os.getenv("MAIL_USERNAME", ""),
+            "password": os.getenv("MAIL_PASSWORD", ""),
+            "use_tls": not _mail_is_dev,
+            "use_ssl": False,
+        },
+    }
+}
+
+# --- Error monitoring ----------------------------------------------------------------------
+# Wired only when a DSN is present AND we are not in dev, so local runs never emit events.
+SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+
 # Ed25519 seed (32 bytes, standard base64) signing offline entitlement manifests (DEC-004).
-# DELIBERATELY has no default, unlike DJANGO_SECRET_KEY above: an absent key must fail loudly
+# DELIBERATELY has no default, unlike SECRET_KEY above: an absent key must fail loudly
 # at issuance rather than degrade to unsigned output or to a well-known dev key. Either would
 # let anyone forge an entitlement, voiding the offline licensing model entirely.
 # Generate: python -c "import base64,os; print(base64.b64encode(os.urandom(32)).decode())"
