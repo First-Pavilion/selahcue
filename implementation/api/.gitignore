@@ -21,6 +21,8 @@ dist/
 venv/
 env/
 
-# Local env / secrets (keys are documented in the root deployments.md)
+# Local env / secrets (keys are documented in docs/ops/DEPLOYMENT.md)
 .env
 .env.*
+# ...except the committed sample, which carries key NAMES only, never values.
+!.env.sample
