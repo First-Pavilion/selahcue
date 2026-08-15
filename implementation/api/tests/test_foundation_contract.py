@@ -241,6 +241,85 @@ def test_graphql_endpoints_keep_browser_csrf_and_reject_get_queries():
 
 
 @pytest.mark.django_db
+def test_a_browser_can_obtain_a_csrf_token_and_post_an_account_mutation(settings):
+    """THE browser-shaped test. The suite above pins that a token-less POST is refused; on its
+    own that is only half a contract, and the missing half is why every account mutation 403'd
+    for every real browser while the whole suite stayed green.
+
+    Django's test client bypasses CSRF unless `enforce_csrf_checks=True`, so the default
+    `client` fixture cannot see this class of break at all. The surface declares
+    `customer_session_with_csrf` (`route_contracts.py`) and `CsrfViewMiddleware` enforces it,
+    but nothing issued a `csrftoken` cookie to the SPA origin — no `get_token`, no
+    `@ensure_csrf_cookie` — and the SPA is served as static files, so Django never rendered a
+    page that could set one. The token could therefore never exist, and `graphql.ts` (which
+    sends the header "whenever the cookie is readable") had nothing to read.
+
+    This walks the real sequence: refused without a token, seed the cookie with the same-origin
+    bootstrap GET, then the identical POST succeeds.
+    """
+    from django.core.cache import cache
+
+    # The resend budget lives in the process-wide LocMemCache; budget spent by an earlier test
+    # would 429 this one and hide what it is actually asserting.
+    cache.clear()
+    # The constant-time floor is not this test's subject — do not pay 0.25s for it.
+    settings.ACCOUNT_RESEND_MIN_SECONDS = 0.0
+
+    client = Client(enforce_csrf_checks=True)
+    mutation = {
+        "query": 'mutation { resendVerificationEmail(email: "nobody@browser.example") { accepted } }'
+    }
+
+    def post_mutation(**extra):
+        return client.post(
+            "/graphql/account",
+            data=json.dumps(mutation),
+            content_type="application/json",
+            **extra,
+        )
+
+    # 1. What every browser got: 403, with an HTML body `graphqlRequest` cannot parse — which
+    #    surfaces to the user as a permanent "we couldn't verify your email just now".
+    blocked = post_mutation()
+    assert blocked.status_code == 403
+
+    # 2. The SPA seeds the cookie on load with a same-origin GET. This is an XHR from the
+    #    already-loaded page, so the top-level browsing context is the app's own site and the
+    #    SameSite=Strict cookie is both settable here and sent on step 3 — the cross-site
+    #    top-level navigation FROM the email link never has to carry it.
+    bootstrap = client.get("/graphql/csrf")
+    assert bootstrap.status_code == 200
+    assert bootstrap.json() == {"ready": True}
+    token = bootstrap.cookies[settings.CSRF_COOKIE_NAME].value
+    assert token
+    # A shared cache must never hand one visitor another visitor's token.
+    assert "no-store" in bootstrap["Cache-Control"]
+
+    # 3. The same POST, with the header `graphql.ts` already sends. The cookie rides along
+    #    because the test client keeps the jar, exactly as a browser does.
+    accepted = post_mutation(HTTP_X_CSRFTOKEN=token)
+    assert accepted.status_code == 200
+    assert accepted.json()["data"]["resendVerificationEmail"]["accepted"] is True
+
+    # 4. The control is still real: a forged cross-origin POST stays refused.
+    forged = post_mutation(HTTP_X_CSRFTOKEN=token, HTTP_ORIGIN="https://evil.example")
+    assert forged.status_code == 403
+
+
+def test_the_csrf_bootstrap_route_is_declared_like_every_other_route():
+    from selahcue_api.graphql.route_contracts import browser_bootstrap_contract
+
+    contract = browser_bootstrap_contract()
+    assert (contract.surface, contract.path, contract.method) == (
+        "browser",
+        "graphql/csrf",
+        "GET",
+    )
+    # Unauthenticated by design: it hands out a CSRF token, which is not a credential.
+    assert contract.auth_context == "none_issues_csrf_cookie"
+
+
+@pytest.mark.django_db
 def test_graphql_errors_are_safely_coded_without_internal_messages(client):
     malformed = client.post(
         "/graphql/admin",

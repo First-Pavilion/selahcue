@@ -57,6 +57,21 @@ def desktop_command_contracts() -> tuple[CommandEndpointContract, ...]:
     )
 
 
+def browser_bootstrap_contract() -> CommandEndpointContract:
+    """The GET that issues the `csrftoken` cookie both browser surfaces require.
+
+    Declared here like every other route so the contract module stays a complete inventory.
+    `auth_context` is "none" because a CSRF token is not a credential — it is only meaningful
+    paired with the cookie of the browser that asked for it.
+    """
+    return CommandEndpointContract(
+        surface="browser",
+        path="graphql/csrf",
+        method="GET",
+        auth_context="none_issues_csrf_cookie",
+    )
+
+
 def billing_webhook_contract() -> CommandEndpointContract:
     return CommandEndpointContract(
         surface="billing_provider",
