@@ -519,10 +519,34 @@
         const m = /-(\d+)$/.exec(s.screen);
         return m ? base + " " + m[1] : base;
       }
-      // Short role-badge label (Design 2.0 §ROLE BADGE).
+      // Short role-badge label (Design 2.0 §ROLE BADGE). This names the screen's ROLE, which is
+      // true in both the open and closed states — the open/closed distinction is carried by the
+      // status pill, the meta line and the toggle's label, not duplicated here.
       function roleBadgeText(role) {
         return role === "main" ? "MAIN" : role === "stage" ? "STAGE"
           : role === "lower-third" ? "L3 · ALPHA" : "STREAM";
+      }
+      // Does this screen own an OS OUTPUT WINDOW? For the two BUILT-IN physical screens
+      // (`main` / `stage`) `enabled` no longer means "composite an all-black frame" (a mute, with
+      // the window still up) — it means THE OUTPUT WINDOW EXISTS. Toggling off destroys the
+      // window; toggling on re-creates it; the window's own close button performs the identical
+      // action, so a close from the OS flips this flag with NO operator interaction.
+      //
+      // A VIRTUAL feed (lower-third / stream) has NO window at all — its `enabled` still gates
+      // NDI output only — so window language must NEVER be applied to one. The built-ins are
+      // exactly the non-deletable `main`/`stage` entries: an added virtual always mints a
+      // suffixed id (`stream-2`, `main-2`, …) because the bare ids are taken by the registry.
+      function hasOutputWindow(s) {
+        return !s.deletable && (s.screen === "main" || s.screen === "stage");
+      }
+      // The enable switch's accessible name. For a windowed screen it names the WINDOW action
+      // (close / open), because that is what the toggle now does; for a virtual feed it stays
+      // enable/disable, which is what its flag still means.
+      function enableToggleLabel(s) {
+        if (hasOutputWindow(s)) {
+          return (s.enabled ? "Close" : "Open") + " the " + screenDisplayName(s) + " output window";
+        }
+        return (s.enabled ? "Disable" : "Enable") + " the " + screenDisplayName(s) + " output";
       }
       // Normalize a ScreenView.config (omitted → identity default) into a full object.
       function cfgOf(s) {
@@ -573,12 +597,27 @@
         const key = JSON.stringify([outs, displays, themes, activeTheme, view.screen_themes || [], view.saved_themes || [], registry, selectedScreen]);
         if (key === outputsKey) return; // pickers are interactive: rebuild only on change
         const list = document.getElementById("screens-list");
+        // Physical output (display assignment + format + telemetry) is keyed by role.
+        // Computed BEFORE the deferred-rebuild guard below, which needs it to reconcile the
+        // status pills in place.
+        const outByRole = {};
+        outs.forEach((o) => { outByRole[o.role] = o; });
         // Never yank an OPEN PICKER out from under the operator: a focused <select>
         // survives, and the fresh data renders when focus leaves it. A toggle/button
         // click is a completed action, so it does NOT defer — the row updates at once.
         const ae = document.activeElement;
-        if (ae && (list.contains(ae) || (document.getElementById("screens-inspector") || {}).contains && document.getElementById("screens-inspector").contains(ae)) && ae.tagName === "SELECT") {
+        const inspEl = document.getElementById("screens-inspector");
+        if (ae && (list.contains(ae) || (inspEl && inspEl.contains(ae))) && ae.tagName === "SELECT") {
           outputsPending = view;
+          // …but a screen's `enabled` can now change with NO operator interaction: for a
+          // built-in main/stage it means the OS output window exists, and the window's own
+          // close button destroys it. A <select> can hold focus indefinitely, so deferring the
+          // WHOLE rebuild would leave the switch showing ON — and the pill showing LIVE — for a
+          // window that is already gone, with nothing scheduled to correct it. Reconcile just
+          // that authoritative state in place; it touches no <select>, so the open picker
+          // survives exactly as before. `outputsKey` is deliberately NOT set here, so the full
+          // rebuild still happens once focus leaves.
+          syncEnableState(registry, outByRole);
           return;
         }
         outputsPending = null;
@@ -610,10 +649,6 @@
           const n = outs.filter((o) => o.assigned).length;
           conn.textContent = "● " + n + " connected";
         }
-
-        // Physical output (display assignment + format + telemetry) is keyed by role.
-        const outByRole = {};
-        outs.forEach((o) => { outByRole[o.role] = o; });
 
         // Preserve KEYBOARD focus across the destructive innerHTML rebuild (a11y): a toggle
         // or button (unlike a <select>, handled above) is destroyed by the rebuild, dropping
@@ -681,13 +716,21 @@
           const cb = document.createElement("input");
           cb.type = "checkbox"; cb.checked = s.enabled;
           cb.className = "screen-enable-toggle"; cb.dataset.screen = s.screen;
-          cb.setAttribute("aria-label", (s.enabled ? "Disable" : "Enable") + " the " + screenDisplayName(s) + " output");
+          // The AUTHORITATIVE enable state, carried on the element rather than only in this
+          // render pass's closure — syncEnableState updates it in place when the grid rebuild
+          // is deferred (see renderOutputs), and the revert below reads it back.
+          cb.dataset.enabled = s.enabled ? "1" : "0";
+          cb.setAttribute("aria-label", enableToggleLabel(s));
           cb.onchange = () => {
             // Revert the optimistic native flip to the authoritative value BEFORE the round
             // trip: a SUCCESS re-renders with the new state; a REJECTED call (RBAC / older
             // host) leaves the switch showing the true, unchanged state — never a lie.
+            // Read that value from `dataset.enabled`, NOT from this closure's `s.enabled`:
+            // `enabled` can now change with no operator interaction (the output window's own
+            // close button destroys the window), and syncEnableState reconciles it onto the
+            // element without a rebuild — so the closure can be stale while the dataset is not.
             const want = cb.checked;
-            cb.checked = s.enabled;
+            cb.checked = cb.dataset.enabled === "1";
             act(() => invoke("set_screen_enabled", { screen: s.screen, enabled: want }));
           };
           const knob = document.createElement("span"); knob.className = "scr-toggle-knob";
@@ -741,14 +784,80 @@
         scheduleScreenPreviews(); // fill each Audience screen's preview canvas (86ajq321k)
       }
 
-      // The status pill for a card (Design 2.0 §STATUS PILL): honest — LIVE only when the
-      // physical output is presenting; CONNECTED when assigned; READY for a composed virtual
-      // feed; NO SIGNAL when a physical role has no display.
+      // Reconcile ONLY the authoritative enable state onto the already-rendered cards, with no
+      // grid rebuild. Used on the deferred path in renderOutputs, where a focused <select> must
+      // not be destroyed but the enable switch must still tell the truth: for a built-in
+      // main/stage, `enabled` now tracks whether the OS output window exists, and the window's
+      // own close button flips it with no operator interaction at all.
+      //
+      // Every value written here comes from the SAME helpers the full rebuild uses
+      // (statusPillFor / metaLine / enableToggleLabel), so the two paths cannot drift. Nothing
+      // here touches a <select>, an <option>, or the card's structure.
+      function syncEnableState(registry, outByRole) {
+        const list = document.getElementById("screens-list");
+        if (!list) return;
+        const byScreen = {};
+        registry.forEach((s) => { byScreen[s.screen] = s; });
+        // Match on dataset rather than a built selector so an unusual screen id can never
+        // produce an invalid querySelector.
+        Array.from(list.querySelectorAll(".screen-row")).forEach((card) => {
+          const s = byScreen[card.dataset.screen];
+          if (!s) return; // a card whose screen has gone: the deferred full rebuild handles it
+          const o = outByRole[s.role];
+          card.classList.toggle("screen-disabled", !s.enabled);
+          const cb = card.querySelector(".screen-enable-toggle");
+          if (cb) {
+            // Both the visible switch AND the authoritative value its revert reads back.
+            cb.checked = s.enabled;
+            cb.dataset.enabled = s.enabled ? "1" : "0";
+            cb.setAttribute("aria-label", enableToggleLabel(s));
+          }
+          const pill = card.querySelector(".scr-pill");
+          if (pill && pill.parentNode) pill.parentNode.replaceChild(statusPillFor(s, o), pill);
+          const meta = card.querySelector(".scr-card-meta");
+          if (meta) meta.textContent = metaLine(s, o, cfgOf(s));
+        });
+        // The inspector header mirrors the selected card's status, so reconcile it too — the
+        // focused <select> that caused the deferral is often IN the inspector, and a header
+        // still reading LIVE beside a CLOSED card would be a visible contradiction.
+        const insp = document.getElementById("screens-inspector");
+        const sel = byScreen[selectedScreen];
+        if (insp && sel) {
+          const hpill = insp.querySelector(".scr-iheader .scr-pill");
+          if (hpill && hpill.parentNode) {
+            hpill.parentNode.replaceChild(statusPillFor(sel, outByRole[sel.role]), hpill);
+          }
+          const sub = insp.querySelector(".scr-iheader-sub");
+          if (sub) sub.textContent = inspectorSubtitle(sel, outByRole[sel.role]);
+        }
+      }
+
+      // The inspector's identity subtitle: "<ROLE> role · <where it is>". Shared by the full
+      // inspector render and the in-place reconcile above so the two cannot drift.
+      function inspectorSubtitle(s, o) {
+        const isPhysical = s.role === "main" || s.role === "stage";
+        let where;
+        if (hasOutputWindow(s) && !s.enabled) where = "No output window";
+        else if (o && o.display) where = o.display;
+        else where = isPhysical ? "No display assigned" : "Composed feed — no physical output";
+        return roleBadgeText(s.role) + " role · " + where;
+      }
+
+      // The status pill for a card (Design 2.0 §STATUS PILL): honest — CLOSED when a windowed
+      // screen has no output window; LIVE only when the physical output is presenting;
+      // CONNECTED when assigned; READY for a composed virtual feed; NO SIGNAL when a physical
+      // role has no display.
       function statusPillFor(s, o) {
         const pill = document.createElement("span"); pill.className = "scr-pill";
         let variant = "ready", label = "READY";
         if (s.role === "main" || s.role === "stage") {
-          if (o && o.assigned && o.signal === "healthy") { variant = "live"; label = "LIVE"; }
+          if (hasOutputWindow(s) && !s.enabled) {
+            // No window exists. The display assignment and the signal telemetry both describe
+            // a window that is not open, so reporting LIVE / CONNECTED / NO SIGNAL here would
+            // claim an output that the operator has already closed. CLOSED is neutral, not a
+            // fault: it is a deliberate operator state, and the toggle re-opens the window.
+            variant = "closed"; label = "CLOSED";
+          } else if (o && o.assigned && o.signal === "healthy") { variant = "live"; label = "LIVE"; }
           else if (o && o.assigned) { variant = "connected"; label = "CONNECTED"; }
           else if (o && o.signal === "degraded") { variant = "warning"; label = "DEGRADED"; }
           else { variant = "warning"; label = "NO SIGNAL"; }
@@ -758,6 +867,8 @@
           if (s.enabled && cfg.ndi_enabled) {
             variant = "connected"; label = "NDI";
           } else {
+            // A virtual feed has no window to close — disabling it only stops the NDI
+            // broadcast, so its wording stays COMPOSED / MUTED (never "closed").
             variant = s.enabled ? "connected" : "ready";
             label = s.enabled ? "COMPOSED" : "MUTED";
           }
@@ -770,6 +881,10 @@
       // The card meta line: resolution · fps · orientation (honest — only what the host
       // reports). A virtual feed shows its composed nature.
       function metaLine(s, o, cfg) {
+        // A closed windowed screen has NO window: its resolution / fps / orientation all
+        // describe a surface that does not currently exist, so the meta line reports the
+        // absence rather than the specification of a window nobody can see.
+        if (hasOutputWindow(s) && !s.enabled) return "No output window";
         const parts = [];
         if (o && o.width) parts.push(o.width + "×" + o.height);
         if (o && typeof o.fps === "number") parts.push(o.fps + "fps");
@@ -928,9 +1043,7 @@
         idRow.appendChild(nm); idRow.appendChild(statusPillFor(s, o));
         header.appendChild(idRow);
         const sub = document.createElement("div"); sub.className = "scr-iheader-sub";
-        const roleTag = roleBadgeText(s.role);
-        const where = o && o.display ? o.display : (isPhysical ? "No display assigned" : "Composed feed — no physical output");
-        sub.textContent = roleTag + " role · " + where;
+        sub.textContent = inspectorSubtitle(s, o);
         header.appendChild(sub);
         insp.appendChild(header); insp.appendChild(divider());
 
@@ -1093,7 +1206,11 @@
         // Honest signal-health footer (telemetry — never fabricated).
         const foot = document.createElement("div"); foot.className = "scr-signal";
         let sig = "neutral", txt = "Signal — · awaiting host telemetry";
-        if (o && o.signal === "healthy") {
+        if (hasOutputWindow(s) && !s.enabled) {
+          // No window, so there is no signal to report — stale telemetry from the last open
+          // window must not be presented as the current state of a closed one.
+          sig = "neutral"; txt = "Output window closed · nothing is being displayed";
+        } else if (o && o.signal === "healthy") {
           sig = "ok";
           txt = "● Signal healthy" + (typeof o.fps === "number" ? " · " + o.fps + "fps" : "")
             + (typeof o.dropped_frames === "number" ? " · " + o.dropped_frames + " dropped frames" : "");

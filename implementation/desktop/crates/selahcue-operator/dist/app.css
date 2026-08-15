@@ -2115,7 +2115,14 @@
         border-color: transparent;
       }
 
-      .scr-card.screen-disabled {
+      /* A screen that is OFF dims its PREVIEW THUMBNAIL ONLY — the thumbnail is the thing that
+         would have shown a picture, so "nothing is being output" belongs there. The CONTROLS
+         must not dim: under window semantics a closed card is the only route back to an open
+         output window, so the toggle, the CLOSED pill, the name and the meta line all stay at
+         full opacity. (The old rule put opacity 0.5 on the whole card, which dropped the meta
+         line to 1.80:1 and the CLOSED pill to 2.78:1 — both far below the 4.5:1 AA floor, on
+         precisely the controls needed to recover.) */
+      .scr-card.screen-disabled .scr-thumb {
         opacity: 0.5;
       }
 
@@ -2217,6 +2224,17 @@
         border-color: var(--sc-warn-border);
       }
 
+      /* CLOSED — a built-in main/stage screen with no OS output window. Deliberately NEUTRAL,
+         not a warning: closing an output window is an operator action, not a fault, and the
+         same toggle re-opens it. Colour only (no layout/sizing), so WKWebView renders it
+         exactly like the four pills above. --sc-text-secondary is the brightest of the muted
+         inks, which matters because the card it sits in is dimmed to opacity 0.5. */
+      .scr-pill-closed {
+        color: var(--sc-text-secondary);
+        background: var(--sc-elevated);
+        border-color: var(--sc-border-strong);
+      }
+
       .scr-card-metarow {
         display: flex;
         align-items: center;
@@ -2227,7 +2245,10 @@
       .scr-card-meta {
         font-size: 12px;
         font-weight: 500;
-        color: var(--sc-text-muted);
+        /* Stepped up from --sc-text-muted, which measures 3.79:1 on --sc-surface and fails AA
+           even at full opacity. --sc-text-secondary is the next existing ink up: 8.12:1. This
+           line now carries "No output window" on a closed card, so it must be readable. */
+        color: var(--sc-text-secondary);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;

@@ -36,7 +36,9 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
 # Bump when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 593
+# (Re-tightened with the window-semantics checks: the floor had drifted 19 below the real
+# count, so up to 19 checks could have been dropped silently. Verified stable across runs.)
+EXPECTED_MIN_CHECKS = 640
 
 
 def find_chrome():
@@ -1426,6 +1428,139 @@ DRIVER = r"""
       ok(active && active.classList.contains("screen-enable-toggle") &&
          active.closest('.screen-row') && active.closest('.screen-row').dataset.screen === "main",
          "registry: keyboard focus is restored to the toggle after the rebuild (a11y)");
+
+      // === WINDOW SEMANTICS: for the two BUILT-IN screens (main/stage) the `enabled` flag means
+      // THE OS OUTPUT WINDOW EXISTS — toggling off destroys the window, toggling on re-creates
+      // it, and the window's own close button performs the identical action. The page must
+      // therefore read "closed", never "muted"/"live". A VIRTUAL feed (lower-third/stream) has
+      // NO window: its flag still gates NDI only, so window language must never leak onto it. ===
+      var pillOf = function(id){ var p = rowFor(id).querySelector(".scr-pill"); return p ? p.textContent : ""; };
+      var metaOf = function(id){ var m = rowFor(id).querySelector(".scr-card-meta"); return m ? m.textContent : ""; };
+      var ariaOf = function(id){ return rowFor(id).querySelector(".screen-enable-toggle").getAttribute("aria-label") || ""; };
+      // `main` is disabled by the focus check above, so it is the closed built-in here.
+      ok(/CLOSED/.test(pillOf("main")),
+         "window: a disabled BUILT-IN screen reads CLOSED (pill=" + pillOf("main") + ")");
+      ok(!/MUTED/.test(pillOf("main")) && !/LIVE/.test(pillOf("main")) && !/CONNECTED/.test(pillOf("main")),
+         "window: a closed built-in never claims LIVE/CONNECTED/MUTED (pill=" + pillOf("main") + ")");
+      ok(/No output window/.test(metaOf("main")),
+         "window: a closed built-in's meta line reports NO output window (meta=" + metaOf("main") + ")");
+      // KNOWN TRAP in this webview: a class `display` rule defeats the `hidden` attribute, so a
+      // node can be in the DOM and still unpainted. Assert COMPUTED DISPLAY + a real box, not
+      // mere presence — otherwise "the pill says CLOSED" could pass while nobody can see it.
+      var closedPill = rowFor("main").querySelector(".scr-pill");
+      ok(getComputedStyle(closedPill).display !== "none" && closedPill.getClientRects().length > 0,
+         "window: the CLOSED pill is actually PAINTED (computed display=" + getComputedStyle(closedPill).display + ")");
+      ok(/^Open the .+ output window$/.test(ariaOf("main")),
+         "window: a closed built-in's switch announces it will OPEN the output window (aria=" + ariaOf("main") + ")");
+      ok(/^Close the .+ output window$/.test(ariaOf("stage")),
+         "window: an open built-in's switch announces it will CLOSE the output window (aria=" + ariaOf("stage") + ")");
+      // The switch stays a real, labelled, keyboard-operable checkbox (accessible switch intact).
+      var mainSwitch = rowFor("main").querySelector(".screen-enable-toggle");
+      ok(mainSwitch.tagName === "INPUT" && mainSwitch.type === "checkbox" && !mainSwitch.disabled
+         && mainSwitch.checked === false,
+         "window: the enable control is still a labelled, operable checkbox reflecting the closed state");
+      // DIMMING IS SCOPED TO THE PREVIEW THUMBNAIL. A closed card is the only route back to an
+      // open output window, so its controls must stay fully legible; at the old whole-card
+      // opacity 0.5 the meta line measured 1.80:1 and the CLOSED pill 2.78:1, both under AA.
+      // Assert EFFECTIVE opacity — the product of every ancestor's own opacity up to the list.
+      // Reading computed opacity on the control ALONE would be a tautology: the old rule put
+      // 0.5 on the CARD, so a control's own computed value was "1" before and after the fix.
+      var listEl = document.getElementById("screens-list");
+      var effOpacity = function(node){
+        var v = 1;
+        for (var n = node; n && n !== listEl; n = n.parentElement) {
+          var o = parseFloat(getComputedStyle(n).opacity);
+          if (!isNaN(o)) v *= o;
+        }
+        return v;
+      };
+      var closedCard = rowFor("main");
+      // NB: measure the VISIBLE switch (.scr-toggle wrapper + .scr-toggle-knob). The <input>
+      // itself is deliberately opacity:0 — it is the invisible hit target, and the knob draws
+      // the switch — so asserting on the input would always read 0 and mean nothing.
+      var knobEff = effOpacity(closedCard.querySelector(".scr-toggle-knob"));
+      var pillEff = effOpacity(closedCard.querySelector(".scr-pill"));
+      var thumbEff = effOpacity(closedCard.querySelector(".scr-thumb"));
+      ok(knobEff === 1 && effOpacity(closedCard.querySelector(".scr-card-enable")) === 1,
+         "dimming: the enable switch on a CLOSED card renders at FULL opacity (eff=" + knobEff + ")");
+      ok(pillEff === 1,
+         "dimming: the CLOSED pill renders at FULL opacity (eff=" + pillEff + ")");
+      ok(effOpacity(closedCard.querySelector(".scr-card-name")) === 1
+         && effOpacity(closedCard.querySelector(".scr-card-meta")) === 1,
+         "dimming: the card name and meta line on a CLOSED card render at FULL opacity");
+      ok(thumbEff === 0.5,
+         "dimming: the PREVIEW THUMBNAIL is the ONLY dimmed part of a closed card (eff=" + thumbEff + ")");
+      // A VIRTUAL feed: NDI-gating wording only, no window language anywhere.
+      ok(/MUTED/.test(pillOf("lower-third")) && !/CLOSED/.test(pillOf("lower-third")),
+         "window: a disabled VIRTUAL feed stays MUTED — it has no window to close (pill=" + pillOf("lower-third") + ")");
+      ok(/COMPOSED/.test(pillOf("stream")),
+         "window: an enabled virtual feed still reads COMPOSED (pill=" + pillOf("stream") + ")");
+      ok(!/window/i.test(ariaOf("lower-third")) && !/window/i.test(ariaOf("stream")),
+         "window: a virtual feed's switch never mentions an output window (aria=" + ariaOf("lower-third") + ")");
+      ok(!/window/i.test(metaOf("lower-third")),
+         "window: a virtual feed's meta line never mentions an output window (meta=" + metaOf("lower-third") + ")");
+
+      // === CLOSE-BUTTON PATH: closing the output window with its own OS close button changes
+      // `enabled` on the HOST with no operator interaction in this webview. Mutate the host view
+      // directly (NO click anywhere) and let the app's own 1 s poll deliver it. ===
+      var stageCb = function(){ return rowFor("stage").querySelector(".screen-enable-toggle"); };
+      ok(stageCb().checked === true, "close-button: the stage switch starts ON (window open)");
+      var enabledCalls = function(){
+        return window.__calls.filter(function(c){ return c.cmd === "set_screen_enabled"; }).length;
+      };
+      var callsBeforeClose = enabledCalls();
+      V.screens.forEach(function(s){ if (s.screen === "stage") s.enabled = false; });
+      await waitFor(function(){ return stageCb() && stageCb().checked === false; }, 120); // 2.4s > the 1s poll
+      ok(stageCb().checked === false,
+         "close-button: an externally-closed window flips the switch OFF with NO operator interaction");
+      ok(/CLOSED/.test(pillOf("stage")),
+         "close-button: the externally-closed screen's pill becomes CLOSED (pill=" + pillOf("stage") + ")");
+      ok(enabledCalls() === callsBeforeClose,
+         "close-button: the page REFLECTED the close without echoing a set_screen_enabled back at the host");
+
+      // === DEFERRED REBUILD: a focused <select> defers the grid rebuild so an open picker is
+      // never yanked away. That deferral must NOT also freeze the enable switch — a <select> can
+      // hold focus indefinitely, and `enabled` now changes with no operator input. Driven on
+      // `main` in the OPEN direction (it is still closed from the checks above), which also
+      // keeps this block to ONE poll of virtual time.
+      var mainCb = function(){ return rowFor("main").querySelector(".screen-enable-toggle"); };
+      ok(mainCb().checked === false, "deferred: main starts CLOSED before the deferral test");
+      var inspSel = document.getElementById("screens-inspector").querySelector("select");
+      inspSel.focus();
+      var selOptionCount = inspSel.options.length;
+      ok(!!inspSel && document.activeElement === inspSel,
+         "deferred: an inspector <select> holds focus (the grid rebuild is now deferred)");
+      V.screens.forEach(function(s){ if (s.screen === "main") s.enabled = true; });
+      await waitFor(function(){ return mainCb() && mainCb().checked === true; }, 120);
+      ok(mainCb().checked === true,
+         "deferred: an externally-reopened window STILL flips the switch ON while a <select> holds focus");
+      ok(!/CLOSED/.test(pillOf("main")),
+         "deferred: the status pill reconciles in place too (pill=" + pillOf("main") + ")");
+      ok(!rowFor("main").classList.contains("screen-disabled"),
+         "deferred: the reopened card is un-dimmed by the in-place reconcile");
+      ok(!/No output window/.test(metaOf("main")),
+         "deferred: the meta line reconciles in place too (meta=" + metaOf("main") + ")");
+      ok(document.activeElement === inspSel && inspSel.isConnected && inspSel.options.length === selOptionCount,
+         "deferred: the open <select> is NOT destroyed by the reconcile (still focused, options intact)");
+      // The revert must read the RECONCILED authoritative value, not this card's stale
+      // render-pass closure: the card was reconciled IN PLACE (never rebuilt) and its closure
+      // still holds enabled=false, so a closure read would snap the switch back OFF and deny a
+      // window that is open. Read `checked` back SYNCHRONOUSLY — the onchange revert runs during
+      // the click, before any deferred rebuild.
+      window.__rejectSetEnabled = true;
+      mainCb().click(); // attempt to close the reopened window — the stub rejects it
+      var revertedTo = mainCb().checked;
+      ok(revertedTo === true,
+         "deferred: a REJECTED toggle reverts to the RECONCILED value, not the stale closure (got " + revertedTo + ")");
+      window.__rejectSetEnabled = false;
+      // Release the picker: the deferral lasts exactly as long as the <select> holds focus, and
+      // a programmatic .click() does NOT move focus — so without this blur every later
+      // renderOutputs would keep deferring and no new card would ever appear.
+      inspSel.blur();
+      await waitFor(function(){ return document.querySelectorAll('#screens-list .screen-row').length === 4
+                                    && document.activeElement !== inspSel; });
+      ok(mainCb().checked === true && !rowFor("main").classList.contains("screen-disabled"),
+         "deferred: the full rebuild resumes once the <select> releases focus");
 
       // === Output cap: '+ Add virtual output' disables at the 8-output maximum (MAX_SCREENS) ===
       var addBtnCap = document.getElementById("screen-add-btn");
@@ -2834,7 +2969,10 @@ try:
     try:
         out = subprocess.run(
             [CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
-             "--virtual-time-budget=9000", "--dump-dom", "file://" + path],
+             # Budget is VIRTUAL time, fast-forwarded — it costs little wall clock, but every
+             # driver step that waits on the app's own 1 s view poll spends a full second of it.
+             # Raised from 9000 with the window-semantics checks, which wait on two real polls.
+             "--virtual-time-budget=12000", "--dump-dom", "file://" + path],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=90).stdout
     except subprocess.TimeoutExpired:
