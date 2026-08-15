@@ -6,9 +6,9 @@ Lightweight pointer only. ClickUp is the delivery source of truth. Do not duplic
 - Build Control task: https://app.clickup.com/t/86ajnx548 (`86ajnx548`)
 - ClickUp delivery list: `SelahCue — Delivery` (`901327960792`) in folder `SelahCue` (`901318653689`), space `First Pavilion (Engineering)` (`90136583508`)
 - Build Goal Contract: `docs/delivery/goals/BUILD-selahcue.md`
-- Current stage: **Stage 7 — Implementation foundation** (batches 7a–7k done, at gate)
-- Stage state: `GATE_REVIEW` (awaiting user gate decision — this gate authorises production implementation)
-- Last approved gate: Gate 6 (Stage 6) — user replied `continue`, authorising Stage 7 (production implementation)
+- Current stage: **Stage 8 — Core presentation + platform build-out** (see the 2026-08-14 consolidated entry at the end of this file)
+- Stage state: `GATE_REVIEW` — product gap audit delivered 2026-08-14 (`docs/product/audits/PRODUCT-GAP-AUDIT-2026-08-14.md`), verdict **Not Ready** for MVP launch; six gap tickets raised; six owner decisions outstanding
+- Last approved gate: Gate 6 (Stage 6) — user replied `continue`, authorising Stage 7 (production implementation); Stage 7 foundation completed and its QA queue accepted by the owner on 2026-08-14
 - Execution engine: `goal`
 - Execution model: **Opus 4.8 (1M context)** — Stage 2+ runs under the current session model.
 
@@ -636,3 +636,53 @@ Latency measured (118ms local / 247ms CI, raster-dominated) + guarded by a profi
 **Independent review** (`wf_881ab350-9c2`, 3 lenses → per-finding refute-by-default, 9 agents): **3 raised → all confirmed (2 MEDIUM + 1 LOW), all fixed; the untagged-serde/bounded lens found NOTHING** (solid backgrounds byte-identical; discrimination unambiguous; image `MediaRef` bounded). (MEDIUM, engine) `draw_gradient` clipped in i32 → **i64** clip + a `w > i32::MAX` regression (`a_gradient_is_bounded_on_extreme_rects_without_panic`). (MEDIUM, frontend) switching bg type to Image wrote a malformed `{source:""}` (host-rejected → stale preview + unsaveable) → **decouple the type selector** from the stored bg. (LOW, frontend) no manual-path fallback → **a manual path input** + picker fallback. **Verification:** workspace `cargo test` **504/0** (+9) + `--features server`; fmt/clippy clean; Chrome headless **99/99** (+9 bg) + WebKit smoke **5/5**. 3-OS CI `30699848062` `completed → success` (verified by conclusion; operator-Linux `=== 99 checks, 0 FAIL ===` + WebKit `5/0`). See `docs/delivery/CODE-REVIEW-batch-backgrounds.md`.
 
 **ClickUp:** STORY `86ajq3225` (Theme engine enhancements — umbrella, under EPIC Presentation & Slides `86ajp07ce`) set to **in progress** with the backgrounds-increment evidence comment; its **backgrounds + fonts** sub-scopes are now done, **pagination** (`Fit::Paginate`) remains (a candidate to split into its own story). **Open follow-ups:** radial / multi-stop gradients; gradient on shapes/text; image background fit modes; animated/video backgrounds (S8-8); GPU-native gradients; full `Fit::Paginate`.
+
+---
+
+## Stage 8 — consolidated: 2026-08-02 → 2026-08-14 (written 2026-08-14)
+
+This entry closes the logging gap: the per-batch narrative above stops at 2026-08-01, while **158 commits** landed between 2026-08-01 and 2026-08-14. Grouped by workstream, with the ClickUp story each ran under.
+
+### Transcription + scripture intelligence (R3/R4 pulled forward)
+Offline on-device STT engine behind the `TranscriptProvider` seam (`86ajtxzre`) — whisper.cpp/cpal behind the `whisper`/`capture` features, download-on-demand of a pinned + hash-verified model, mic-level readout, macOS mic-permission handling, real-time streaming interims. R4 scripture detection (`86ajtxuwr`): fuzzy quote/paraphrase matching, confidence scoring, allusions, cross-segment and first-verse handling, wired to the live transcript. Operator console gained the live transcript, a listen state machine, a tabbed right panel and the Stage-confirms flow. Two perf bugs found and fixed by owner QA (`86ajvymgr` on-device STT too slow → GPU decode + small CPU model + one-time load; `86ajxemwu` not real-time → decode off the capture thread + sliding-window interims).
+
+### Design 2.0 + operator console rewrite
+Design 2.0 palette tokens implemented across all surfaces, then re-skinned onto brand neutrals; full **operator console + Theme Designer rewrite** (`86ajuptvy`). Presentation & Media console UI (`86ajvccqr`), per-element Inspector + right-panel context switch (`86ajvjtax`), interaction/selection states (`86ajvjqw4`), remaining states — destructive confirms, system states, font picker, image Fit (`86ajvjzun`). Global presentation search (⌘/Ctrl+S) + detection provenance; menu reorder + sectioned command palette + delete-key element removal.
+
+### Slides, decks & media
+Authored-deck model + compose + playback + media library (`86ajv8qd9`); deck library persistence + commands (`86ajvqxy1`) and the Presentations Library UI (`86ajvt8q7`). Presentation **browse → present → edit** flow (`86ajxeq0j`) split into Track A backend (`86ajxeq0y` — engine mirroring, host commands, live authored-slide retention with mutual exclusion, recompose on theme/layer switch, mirror to secondary screens/NDI, `go_live_delta`) and Track B frontend (`86ajxeq17`). Owner-QA bug `86ajvw08d` (deck "▶ Present" now reaches the native audience output) fixed. Authored-slide-representative SSIM parity scene added to the GPU suite.
+
+### Screens, outputs & stage
+Screens & Outputs to Design 2.0 (`86ajq321f`/`86ajujr0y`): per-output config, telemetry, layer visibility, NDI outputs; Screens page defaults to Audience + Stage with secondary feeds added on demand; outputs capped at 8. Stage/confidence themes — Worship/Scripture/Timer-only + production message (`86ajxf3bx`); accessible non-strobe TIME UP pulse; deck-aware "next" on the confidence output during authored playback (`86ajy6d73`).
+
+### Mobile v2 (Flutter controller)
+Four stories delivered: role-aware controller on the 4-role backend (`86ajxuf5j` — client RBAC mirror, granted role through session, role-gated transport/emergency/scripture/timer, role badge); Navigation & Config (`86ajxv48u` — role-scoped tabs, SettingsController/Scope, Config/About session sheet, haptics, reduce-motion); gap-fill (`86ajxx4uv` — scripture-detection approval card FR-095, access-removed screen + re-pair on revoke FR-089, read-only transcript, privacy link FR-176); design cleanup + go-live prep (`86ajxxu0r` — responsive/tablet, splash, icons, privacy/terms drafts, iOS PrivacyInfo, store-listing draft).
+
+### LAN / pairing hardening
+Real host cert SHA-256 as the pairing fingerprint, replacing a code-derived placeholder (`86ajxhuu3`); interim "parked" pairing frame so a device can show "waiting for the operator" (`86ajxhv0q`); revoke/re-role enforced on **live** connections + bounded pairing offers (`86ajxer8n`); Remote Control surface wired to the live host; pairing session leak plugged.
+
+### Pre-service check
+Readiness surface to Design 2.0 (`86ajp0az9`), deferred subsystem probes wired to real backend data (`86ajxxvau`), audio input-device probe with honest device name + off-thread query (`86ajxzznx`). Two probes remain blocked on unbuilt subsystems: motion-background cache readiness (`86ajxzzu9`) and NDI encoder telemetry (`86ajxzzyq`).
+
+### Platform API + licensing (new workstream — no PRD coverage, see the audit)
+New Django 5.2→6.1 + Strawberry API at `implementation/api`, per **DEC-004** (licensing = account spine + device instances + offline entitlement), **DEC-005**, **DEC-006** (Logto/OIDC — superseded) and **DEC-007** (SelahCue-owned email/password auth; ADR-0022 superseded). Shipped: device activation `/v1/activations` (`86ajy5v7h`), license refresh `/v1/license:refresh` + device-token auth (`86ajy5yze`), account-based activation via GraphQL `activateDeviceWithSession` (`86ajy7ag8`), traditional email/password customer auth, **Ed25519-signed offline entitlement manifest** at `GET /v1/entitlements/manifest` with an allow-list issuance gate (`86ak0mt8f`), the first Platform API CI job, and transactional email templates (`86ak0qd9u`). Also landed: Providers & Privacy backend + frontend (hosted-only, TTS excluded per DEC-001) and the `selahcue-cloud` crate.
+
+### Packaging & release prep
+Windows installer fix — operator auto-launches the bundled output window (`86ak0ndqg`); macOS DMG (signed + notarized, Universal) + display-name rename **specified, not built** (`86ak0ndzc`); `docs/ops/DEPLOYMENT.md` documenting every credential and how to obtain it. **Linux packaging had no ticket until this audit** (now `86ak0qn4j`).
+
+### Quality
+Whole-codebase performance review — PASS with approved exceptions; idle-RSS/cold-start NFR closed as an unqualified PASS; CI supply-chain policy widened for CDLA-Permissive-2.0/Unlicense/IJG; pre-existing operator-shell + Windows-flake CI failures fixed. PERF-1/PERF-2 and a LOW/minor cluster remain open (`86ajuwrq4`, `86ajuwrr9`, `86ajuwrt6`).
+
+---
+
+## Product gap audit + QA acceptance (2026-08-14)
+
+**Audit.** `/product-manager` current-state audit against PRD v1.1, the 132 open ClickUp items and symbol-level probes over 229 source files → `docs/product/audits/PRODUCT-GAP-AUDIT-2026-08-14.md`. **Verdict: `Not Ready` for MVP launch.** Three structural findings: (1) the PRD covers only the desktop app + mobile controller — the Platform API, customer identity, marketing site, admin console and affiliate portal have **zero requirements**; (2) the commercial surface cannot function — **no desktop code references activation/entitlement/licence at all**, `apps/billing`/`catalogue`/`downloads` are empty scaffolds, and the marketing/admin/affiliate front ends make no API calls; (3) of 85 MVP FRs, **16 have no implementing code** (FR-006, 021, 031, 056, 058, 059, 067, 068, 073, 078, 138, 139, 147, 150, 155, 161) and **15 are partial** (FR-005, 014, 016, 020, 025, 035, 041, 049, 054, 055, 057, 061, 090, 091, 176).
+
+**Tickets raised** (owner-approved): `86ak0qmza` FR-155 signed updates + anti-rollback · `86ak0qmzv` FR-138 safe file import · `86ak0qn15` FR-139 plan export/import · `86ak0qn2u` FR-031 scripture history/favourites · `86ak0qn4j` Linux packaging · `86ak0qn63` **Platform PRD** (accounts/licensing/billing/distribution/admin/affiliate).
+
+**QA acceptance.** The owner reviewed and accepted the standing QA queue: **all 56 tasks in `qa` moved to `complete`**, including EPIC — Foundation & Platform (`86ajp06yv`). The delivery list now holds **82 open items** (132 − 56 accepted + 6 raised by this audit), of which 21 are epic/milestone/control containers → **61 real open work items**. Note for future reconciliation (the batch-7t precedent): four accepted stories have acceptance text that includes undelivered items, each already covered by an open follow-up — `86ajp0b0t` (7-role RBAC → `86ajxuf81`; mDNS), `86ajp0awx` (per-layer clearing → `86ajpy59e`), `86ajpqfyj` (licensed translations → `86ajpzb09`/`86ajpzb0c`), `86ajp0az9` (blocked probes → `86ajxzzu9`/`86ajxzzyq`).
+
+**Owner decisions outstanding (blocking):** KJV vs FR-025/OD-24 (`86ajxvvek`) · video/audio in MVP, DEC-003 vs FR-067/068/073 (`86ajpzhbg`) · commercial model (pricing/plans/payment provider/affiliate terms) · licensed-translation route + budget (`86ajpzb09`) · hosted AI cloud build/buy/defer (`86ajy04hz`) · 7-role RBAC now or ship on 4 (`86ajxuf81`).
+
+**Next:** Platform PRD (`86ak0qn63`) → desktop activation/entitlement client (`86ajy7anx`) → the MVP feature-debt track, then the comprehensive test programme (`86ajq67q2`).
