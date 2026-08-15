@@ -224,6 +224,19 @@ SELAHCUE_TRUSTED_PROXY_COUNT = int(os.getenv("SELAHCUE_TRUSTED_PROXY_COUNT", "0"
 SELAHCUE_THROTTLE_ACTIVATION = (10, 60)
 SELAHCUE_THROTTLE_DEVICE_READ = (60, 60)
 
+# Resend-verification is unauthenticated AND sends email on demand, so it is both a spam
+# vector (flooding an arbitrary victim's mailbox) and a cost vector. Three budgets, because
+# each stops a different attack and none subsumes the others:
+#   ADDRESS — per target address, so one victim cannot be flooded. Spent whether or not the
+#             account exists; a limit that only bit for real accounts would be an oracle.
+#   IP      — per source, so one client cannot spray thousands of DISTINCT addresses (which
+#             the per-address budget alone would never notice).
+#   GLOBAL  — a ceiling on total sends, which is what actually bounds the provider bill when
+#             an attack is distributed across many IPs.
+SELAHCUE_THROTTLE_RESEND_ADDRESS = (3, 900)
+SELAHCUE_THROTTLE_RESEND_IP = (10, 3600)
+SELAHCUE_THROTTLE_RESEND_GLOBAL = (500, 3600)
+
 # --- Mail --------------------------------------------------------------------------------
 # Dev points at mailhog (compose service, port 1025) so the transactional templates
 # (docs/design/TRANSACTIONAL-EMAIL-spec.md) can be verified end to end before any provider
@@ -271,6 +284,13 @@ ACCOUNT_PASSWORD_RESET_TTL_SECONDS = int(os.getenv("ACCOUNT_PASSWORD_RESET_TTL_S
 ACCOUNT_LOGIN_LOCKOUT_THRESHOLD = int(os.getenv("ACCOUNT_LOGIN_LOCKOUT_THRESHOLD", "5"))
 ACCOUNT_LOGIN_LOCKOUT_SECONDS = int(os.getenv("ACCOUNT_LOGIN_LOCKOUT_SECONDS", "900"))
 ACCOUNT_MIN_PASSWORD_LENGTH = int(os.getenv("ACCOUNT_MIN_PASSWORD_LENGTH", "10"))
+
+# Constant-time floor for the resend-verification mutation, in seconds. Every call is padded
+# to this duration so the response time cannot distinguish an unknown address from one that
+# actually dispatched an email (minting a token costs a ~120ms PBKDF2 plus a broker publish).
+# ~2x the measured worst case. Lowering it below the real branch's cost re-opens the oracle;
+# 0 disables padding entirely and should only ever be done in tests.
+ACCOUNT_RESEND_MIN_SECONDS = float(os.getenv("ACCOUNT_RESEND_MIN_SECONDS", "0.25"))
 
 # Base URL of the web surface that hosts /verify and /reset. NOTE: those routes do not
 # exist yet — they land with slice 4 (86ajy7anx). Emails link to a 404 until then.

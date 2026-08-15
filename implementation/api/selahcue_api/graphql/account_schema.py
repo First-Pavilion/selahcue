@@ -7,14 +7,17 @@ from selahcue_api.apps.accounts.services import (
     ConfirmPasswordResetResult,
     LoginData,
     RegisterCustomerUserData,
+    ResendVerificationData,
     confirm_password_reset,
     login as login_service,
     logout_session,
     refresh_session,
     register_customer_user,
     request_password_reset,
+    resend_email_verification,
     verify_email,
 )
+from selahcue_api.apps.throttling.services import client_ip
 from selahcue_api.apps.devices.services import (
     ActivateDeviceWithSessionData,
     activate_device_with_session,
@@ -96,6 +99,13 @@ class RequestPasswordResetPayload:
 
 
 @strawberry.type
+class ResendVerificationPayload:
+    # Always true. Deliberately carries NO detail: an unknown address, an unverified account
+    # and an already-verified one must be indistinguishable, so there is nothing else to say.
+    accepted: bool
+
+
+@strawberry.type
 class ConfirmPasswordResetPayload:
     reset: bool
 
@@ -165,6 +175,25 @@ class AccountMutation:
     @strawberry.mutation
     def verify_email(self, info: strawberry.Info, token: str) -> VerifyEmailPayload:
         return VerifyEmailPayload(verified=verify_email(token).verified)
+
+    @strawberry.mutation
+    def resend_verification_email(
+        self, info: strawberry.Info, email: str
+    ) -> ResendVerificationPayload:
+        """Re-issue the verification link behind /verify's V3-V6 states and desktop A13.
+
+        The caller IP is resolved HERE rather than in the service: only the transport knows
+        how many proxy hops are trustworthy (`SELAHCUE_TRUSTED_PROXY_COUNT`), and a service
+        that read the header itself would be trusting a caller-supplied value.
+        """
+        request = getattr(getattr(info, "context", None), "request", None)
+        result = resend_email_verification(
+            ResendVerificationData(
+                email=email,
+                client_ip=client_ip(request) if request is not None else "",
+            )
+        )
+        return ResendVerificationPayload(accepted=result.accepted)
 
     @strawberry.mutation
     def login(self, info: strawberry.Info, input: LoginInput) -> LoginPayload:

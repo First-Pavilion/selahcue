@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+import time
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -27,6 +28,9 @@ from selahcue_api.apps.accounts.models import (
     CustomerUserStatus,
 )
 from selahcue_api.apps.audit.services import record_audit_event
+# Safe at module scope: `throttling.guards` depends only on the cache, the pure limiter and
+# the error enum — nothing in accounts — so this cannot close an import cycle.
+from selahcue_api.apps.throttling.guards import enforce_budget
 from selahcue_api.graphql.context import (
     ActorContext,
     ActorKind,
@@ -210,6 +214,24 @@ MAX_PASSWORD_LENGTH = 200
 
 SELF_SIGNUP_ACTOR = "self_signup"
 ACCOUNT_AUDIT_SURFACE = "account_graphql"
+
+# Constant-time floor for resend-verification. The endpoint is unauthenticated and does
+# WILDLY different work per branch — minting a token runs PBKDF2 (~120ms) and then publishes
+# to the broker, while an unknown address does one indexed SELECT — so an identical response
+# body still leaks existence through latency alone. Padding every call to a fixed duration
+# makes the response time independent of the branch BY CONSTRUCTION, which also keeps it true
+# for work added later; equalising each operation individually does not survive maintenance.
+# 0.25s is ~2x the measured worst case, leaving headroom for the audit write and the publish.
+# Unlike the TTLs above this is read per CALL, not at import: it is an operational knob (and
+# tests switch it off), and a floor that could only change on a restart would be the kind
+# that quietly stays wrong.
+RESEND_MIN_SECONDS_DEFAULT = 0.25
+
+# Per-address / per-IP / global budgets for resend-verification (limit, window_seconds).
+# Defaults only — `enforce_budget` reads the matching setting at call time.
+RESEND_ADDRESS_BUDGET = (3, 900)
+RESEND_IP_BUDGET = (10, 3600)
+RESEND_GLOBAL_BUDGET = (500, 3600)
 
 # A fixed hash to run check_password against on unknown-email login, so the unknown-email and
 # wrong-password paths take the same PBKDF2 time (no timing oracle on account existence).
@@ -532,6 +554,111 @@ def verify_email(raw_token: str) -> VerifyEmailResult:
             after={"status": user.status},
         )
     return VerifyEmailResult(verified=True)
+
+
+@dataclass(frozen=True)
+class ResendVerificationData:
+    email: str
+    # Caller IP for the per-source budget. Resolved by the transport (`throttling.client_ip`),
+    # never read from a header here — the service has no way to know which hops are trusted.
+    client_ip: str = ""
+
+
+def _pad_to_constant_time(started: float) -> None:
+    """Hold the response until the fixed budget has elapsed.
+
+    This is the PRIMARY defence against the timing oracle: the caller observes one duration
+    regardless of which branch ran, so latency carries no information about whether the
+    address exists. It is deliberately a floor on the WHOLE call rather than a per-operation
+    equaliser — the branches differ by a PBKDF2 hash, an INSERT, an audit row and a broker
+    publish, and matching those individually would have to be re-done every time either
+    branch gains work.
+
+    Cost: one request thread parked for up to ~250ms. That is affordable precisely because
+    the three budgets above cap how often this endpoint can be reached at all.
+    """
+    floor = float(getattr(settings, "ACCOUNT_RESEND_MIN_SECONDS", RESEND_MIN_SECONDS_DEFAULT))
+    if floor <= 0:
+        return
+    remaining = floor - (time.monotonic() - started)
+    if remaining > 0:
+        time.sleep(remaining)
+
+
+def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
+    """Re-issue an email-verification link (DEC-007). Always returns accepted:true.
+
+    The design constraint is that the caller learns NOTHING. Three cases — no account,
+    an unverified account, an already-verified (or disabled) account — return a byte-identical
+    payload AND take the same time. Only the middle case sends anything, and only its owner
+    can see that it did.
+
+    Rate limiting is spent BEFORE any of that, on three keys: the target address (mailbox
+    flooding), the source IP (spraying distinct addresses), and a global ceiling (total send
+    cost). The address budget is spent whether or not the account exists — a limiter that
+    only bit for real accounts would itself be the oracle this function exists to avoid.
+    """
+    started = time.monotonic()
+    normalized = _require_valid_email(data.email)
+    fingerprint = _email_fingerprint(normalized)
+
+    # Widest budget first, so a global flood cannot be diagnosed by watching which specific
+    # limit trips. The address key is an HMAC fingerprint: raw addresses must not land in
+    # Redis keys. Rate-limited calls are NOT padded — a RATE_LIMITED response is already
+    # structurally distinct from accepted:true, so its timing reveals nothing further, and
+    # padding a rejection would hand an attacker a way to tie up threads.
+    enforce_budget("resend_verify", "global", "SELAHCUE_THROTTLE_RESEND_GLOBAL", RESEND_GLOBAL_BUDGET)
+    if data.client_ip:
+        enforce_budget("resend_verify_ip", data.client_ip, "SELAHCUE_THROTTLE_RESEND_IP", RESEND_IP_BUDGET)
+    enforce_budget("resend_verify_addr", fingerprint, "SELAHCUE_THROTTLE_RESEND_ADDRESS", RESEND_ADDRESS_BUDGET)
+
+    try:
+        now = djtz.now()
+        with transaction.atomic():
+            user = CustomerUser.objects.filter(email_fingerprint=fingerprint).first()
+            # Only an account that is still awaiting its FIRST verification gets a new link.
+            # An already-verified account has nothing to verify, and a DISABLED one must not
+            # be handed a fresh way in — a revoked seat should not be revivable by asking.
+            eligible = (
+                user is not None
+                and user.email_verified_at is None
+                and user.status == CustomerUserStatus.INVITED
+            )
+            if not eligible:
+                # Defence in depth for a misconfigured floor (ACCOUNT_RESEND_MIN_SECONDS=0):
+                # run the same PBKDF2 the minting branch runs, mirroring _DUMMY_PASSWORD_HASH
+                # on the login path, so the branches stay comparable even unpadded.
+                make_password("selahcue-resend-timing-equalizer-not-a-real-token")
+                return AcceptedResult(accepted=True)
+
+            # Supersede any live link, so the previous email stops working the moment a new
+            # one is issued (a stale link in an old mailbox must not remain a way in).
+            CredentialToken.objects.filter(
+                customer_user=user,
+                purpose=CredentialTokenPurpose.EMAIL_VERIFY,
+                consumed_at__isnull=True,
+            ).update(consumed_at=now)
+            raw_token = _mint_credential_token(user, CredentialTokenPurpose.EMAIL_VERIFY, EMAIL_VERIFY_TTL)
+            record_audit_event(
+                _customer_actor(user),
+                action="customer_user.verification_resent",
+                target_type="customer_user",
+                target_id=str(user.id),
+                # The token FINGERPRINT, never the token: enough to correlate the audit row
+                # with the credential, useless as the credential.
+                request_id=_fingerprint(raw_token),
+                source_surface=ACCOUNT_AUDIT_SURFACE,
+                after={},
+            )
+            # on_commit: same reason as signup and reset — a rolled-back resend must not
+            # leave a live email pointing at a token row that was never committed.
+            target_user, target_token = user, raw_token
+            transaction.on_commit(
+                lambda: get_email_sender().send_email_verification(target_user, target_token)
+            )
+        return AcceptedResult(accepted=True)
+    finally:
+        _pad_to_constant_time(started)
 
 
 @dataclass(frozen=True)
