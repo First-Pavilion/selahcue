@@ -74,8 +74,22 @@ let unmounted = false
 const email = ref('')
 const emailError = ref('')
 const resendPending = ref(false)
-const resendFailed = ref(false)
+/** Empty when there is nothing to report; otherwise the message to show. */
+const resendError = ref('')
 const sentToEmail = ref('')
+
+const RESEND_FAILED = "We couldn't send a link just now. Please try again in a moment."
+/**
+ * Deliberately says nothing about the address.
+ *
+ * `resend_email_verification` spends the per-address budget BEFORE it looks up the
+ * account, specifically so a rate-limit response cannot be read as "this address is
+ * real". Wording like "you have requested too many links for this account" would undo
+ * that and hand back the enumeration oracle. "Too many requests" is the honest framing:
+ * it describes what the caller did, not what the server knows.
+ */
+const RESEND_RATE_LIMITED =
+  'Too many requests for a new link. Wait a few minutes, then try again.'
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -130,23 +144,30 @@ async function submitResend(): Promise<void> {
   if (emailError.value) return
 
   resendPending.value = true
-  resendFailed.value = false
+  resendError.value = ''
   const address = email.value.trim()
 
   try {
+    // Note this call is deliberately slow — the service pads to a ~0.25s floor to keep
+    // the "sent", "already verified" and "no such account" branches indistinguishable.
+    // The pending state must therefore stay visible; do not optimise it away.
     await resendVerification(address, { signal: controller.signal })
     if (unmounted) return
     sentToEmail.value = address
     state.value = 'sent'
     void focusHeading()
-  } catch {
+  } catch (error) {
     if (unmounted) return
-    // Do NOT fall through to V5 on failure. `resendVerification` is expected to return
-    // `accepted: true` for every address (86ak120ac's no-enumeration contract), so an
-    // error genuinely means the request did not happen — and until that mutation is
-    // merged, EVERY call lands here. Showing "check your inbox" would be a lie told to
-    // someone already stuck. This message reveals nothing about the address.
-    resendFailed.value = true
+    // Do NOT fall through to V5 on failure. The mutation returns `accepted: true` for
+    // every valid address — known, unknown, or already verified — so an error genuinely
+    // means the request did not happen. Showing "check your inbox" would be a lie told
+    // to someone already stuck.
+    //
+    // Only two codes are reachable, and NEITHER says anything about the address.
+    resendError.value =
+      error instanceof ApiError && error.code === 'RATE_LIMITED'
+        ? RESEND_RATE_LIMITED
+        : RESEND_FAILED
   } finally {
     if (!unmounted) resendPending.value = false
   }
@@ -233,9 +254,7 @@ onBeforeUnmount(() => {
           </UiButton>
         </div>
       </form>
-      <p v-if="resendFailed" class="au-note" role="alert">
-        We couldn't send a new link just now. Please try again in a moment.
-      </p>
+      <p v-if="resendError" class="au-note" role="alert">{{ resendError }}</p>
       <AuthBanner kind="info" title="Already verified? Just sign in">
         A verification link stops working once it has been used. If you have already
         confirmed this address, sign in as normal.
@@ -272,9 +291,7 @@ onBeforeUnmount(() => {
           </UiButton>
         </div>
       </form>
-      <p v-if="resendFailed" class="au-note" role="alert">
-        We couldn't send a link just now. Please try again in a moment.
-      </p>
+      <p v-if="resendError" class="au-note" role="alert">{{ resendError }}</p>
     </template>
 
     <!-- ============================================================== V5 link sent -->

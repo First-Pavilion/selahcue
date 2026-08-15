@@ -15,18 +15,18 @@
 import { graphqlRequest, type GraphQLRequestOptions } from './graphql.ts'
 
 /**
- * ASSUMED FIELD NAME — the only unverified thing in this file.
+ * VERIFIED against `graphql/account_schema.py:179-182` (shipped in `5b6c0ae`).
  *
- * The resend-verification mutation does not exist yet; 86ak120ac is building it. That
- * ticket specifies the semantics (identical response for unverified / already-verified /
- * unknown address, supersede the prior token, rate-limited) but not the field name, so
- * this mirrors the shipped `requestPasswordReset`, which has exactly the same shape and
- * the same no-enumeration contract.
+ * Python `resend_verification_email` → Strawberry camel-cases it to
+ * `resendVerificationEmail`. Note the trailing `Email`: it does NOT follow
+ * `requestPasswordReset`'s shorter shape, which is what this was originally wired
+ * against while the mutation was still being built.
  *
- * It is a named constant precisely so that reconciling with what Kenji actually ships is
- * a ONE-LINE change here and nothing else moves.
+ * Returns `ResendVerificationPayload { accepted: Boolean! }` — always `true`, and
+ * deliberately carrying no other field, because an unknown address, an unverified
+ * account and an already-verified one must be indistinguishable.
  */
-export const RESEND_VERIFICATION_FIELD = 'resendVerification'
+export const RESEND_VERIFICATION_FIELD = 'resendVerificationEmail'
 
 const VERIFY_EMAIL = `
   mutation VerifyEmail($token: String!) {
@@ -118,12 +118,29 @@ export async function requestPasswordReset(
 }
 
 /**
- * Ask for a fresh verification link.
+ * Ask for a fresh verification link. Shipped and live as of 86ak120ac (`5b6c0ae`).
  *
- * NOT YET AVAILABLE — see `RESEND_VERIFICATION_FIELD`. Until 86ak120ac merges, the API
- * has no such field and this rejects. `VerifyView` handles that by showing an honest
- * "we couldn't send that just now" line rather than the success state, so the button
- * never claims to have sent an email that was not sent.
+ * Resolves `true` for a valid address whether or not it has an account, whether or not
+ * that account is verified, and whether or not anything was actually sent. That is the
+ * entire point: the caller must learn nothing. Copy built on this result stays
+ * conditional ("if this address has an account…") — see V5.
+ *
+ * Only two error codes are reachable:
+ *   - `VALIDATION_FAILED` — the address is malformed (`_require_valid_email`). Rare,
+ *     because `validateEmail` catches that on the field first.
+ *   - `RATE_LIMITED` — one of three budgets is spent: the address, the caller IP, or a
+ *     global ceiling.
+ *
+ * `RATE_LIMITED` IS NOT EVIDENCE THE ADDRESS IS REAL. The per-address budget is spent
+ * before the account is even looked up, precisely so the limiter cannot become the
+ * enumeration oracle the rest of this surface avoids. Never surface anything that would
+ * let a user infer otherwise.
+ *
+ * TIMING IS A SECURITY PROPERTY HERE. The service pads the accepted path to a ~0.25s
+ * floor and runs a dummy PBKDF2 on the ineligible branch so the three cases take the same
+ * time. Do not add a "that returned too fast, it must have failed" heuristic, and do not
+ * suppress the pending state to make it feel snappier — both would work against the
+ * padding, and the second would just leave the user staring at an unresponsive button.
  */
 export async function resendVerification(
   email: string,

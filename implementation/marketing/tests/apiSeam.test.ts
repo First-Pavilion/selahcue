@@ -16,7 +16,12 @@ import {
   graphqlRequest,
   isTransportFailure,
 } from '../src/lib/api/graphql.ts'
-import { confirmPasswordReset, verifyEmail } from '../src/lib/api/account.ts'
+import {
+  RESEND_VERIFICATION_FIELD,
+  confirmPasswordReset,
+  resendVerification,
+  verifyEmail,
+} from '../src/lib/api/account.ts'
 
 interface Call {
   url: string
@@ -197,6 +202,47 @@ describe('request shape', () => {
     assert.deepEqual(body.variables, {
       input: { token: 'SC-PASSWORDRESET-t', newPassword: 'a-good-passphrase' },
     })
+  })
+})
+
+describe('resend verification (86ak120ac, shipped in 5b6c0ae)', () => {
+  test('the field name matches account_schema.py exactly', () => {
+    // `resend_verification_email` camel-cased. NOT `resendVerification` — it does not
+    // follow requestPasswordReset's shorter shape. A wrong field name comes back as
+    // VALIDATION_FAILED, the same code a dead link produces, so this would present as
+    // "resend is broken for everyone" with nothing pointing at the cause.
+    assert.equal(RESEND_VERIFICATION_FIELD, 'resendVerificationEmail')
+  })
+
+  test('asks for the real field and selects only { accepted }', async () => {
+    const { calls, impl } = recorder(() =>
+      json({ data: { resendVerificationEmail: { accepted: true } } }),
+    )
+    const accepted = await resendVerification('pastor@church.org', { fetchImpl: impl })
+
+    assert.equal(accepted, true)
+    const body = JSON.parse(String(calls[0].init.body))
+    assert.match(body.query, /resendVerificationEmail\(email: \$email\)\s*\{\s*accepted\s*\}/)
+    assert.deepEqual(body.variables, { email: 'pastor@church.org' })
+  })
+
+  test('rate limiting surfaces as RATE_LIMITED, not as a generic failure', async () => {
+    // The view needs this code distinctly so it can say "wait a few minutes" instead of
+    // "try again in a moment", which would invite an immediate retry that also fails.
+    const { impl } = recorder(() => json({ errors: [{ extensions: { code: 'RATE_LIMITED' } }] }))
+
+    await assert.rejects(
+      () => resendVerification('pastor@church.org', { fetchImpl: impl }),
+      (error: unknown) => error instanceof ApiError && error.code === 'RATE_LIMITED',
+    )
+  })
+
+  test('a malformed address surfaces as VALIDATION_FAILED', async () => {
+    const { impl } = recorder(() => json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] }))
+    await assert.rejects(
+      () => resendVerification('nope', { fetchImpl: impl }),
+      (error: unknown) => error instanceof ApiError && error.code === 'VALIDATION_FAILED',
+    )
   })
 })
 

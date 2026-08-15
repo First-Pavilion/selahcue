@@ -48,7 +48,7 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # Floor on the number of checks that must run, so a driver regression that silently runs
 # FEWER checks (and therefore reports 0 FAIL) still fails. Set TIGHT to the real count.
 # Bump it when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 465
+EXPECTED_MIN_CHECKS = 495
 
 
 def find_chrome() -> str | None:
@@ -100,14 +100,22 @@ DRIVER = r"""
     'verify-unreachable':  function () { throw new TypeError('Failed to fetch'); },
     'verify-resend':       function (op) {
       if (op === 'VerifyEmail') return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] });
-      return json({ data: { resendVerification: { accepted: true } } });
+      // Keyed by the REAL field name from account_schema.py:180 — Strawberry camel-cases
+      // `resend_verification_email`. If the client ever asks for a different field, the
+      // payload read below misses and this scenario fails, which is the point.
+      return json({ data: { resendVerificationEmail: { accepted: true } } });
+    },
+    'verify-rate-limited': function (op) {
+      if (op === 'VerifyEmail') return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] });
+      return json({ errors: [{ extensions: { code: 'RATE_LIMITED' } }] });
     },
     // Lands on V3 so the resend form exists, then the driver submits a malformed address.
     'verify-bad-email':    function () { return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] }); },
     'verify-resend-fails': function (op) {
       if (op === 'VerifyEmail') return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] });
-      // What actually happens today: the mutation does not exist, so the field is
-      // unknown and the server collapses it to VALIDATION_FAILED.
+      // The mutation rejects the address as malformed. Also stands in for any future
+      // regression that renames the field: an unknown field is collapsed to the same
+      // VALIDATION_FAILED, and the page must still refuse to claim an email was sent.
       return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] });
     },
     'reset-success':       function () { return json({ data: { confirmPasswordReset: { reset: true } } }); },
@@ -123,7 +131,10 @@ DRIVER = r"""
     var body = {};
     try { body = JSON.parse((init && init.body) || '{}'); } catch (e) {}
     var op = (/mutation\s+(\w+)/.exec(body.query || '') || [])[1] || '';
-    calls.push({ url: String(url), op: op, variables: body.variables || {}, raw: (init && init.body) || '' });
+    calls.push({ url: String(url), op: op, variables: body.variables || {},
+                 // `query` is the DECODED document. `raw` is the JSON-encoded body, where
+                 // newlines are literal \\n escapes — regexing that with \\s never matches.
+                 query: body.query || '', raw: (init && init.body) || '' });
     var reply = REPLIES[SCENARIO];
     if (!reply) return Promise.reject(new TypeError('no scripted reply for ' + SCENARIO));
     try { return Promise.resolve(reply(op)); } catch (e) { return Promise.reject(e); }
@@ -242,7 +253,7 @@ DRIVER = r"""
       check('V1 called verifyEmail', calls.length > 0 && calls[0].op === 'VerifyEmail');
       check('token sent as a variable, not inlined in the query',
             calls.length > 0 && calls[0].variables.token === 'SC-TESTTOKEN-verify' &&
-            calls[0].raw.indexOf('mutation VerifyEmail($token') !== -1);
+            calls[0].query.indexOf('mutation VerifyEmail($token') !== -1);
       universalChecks();
     },
 
@@ -321,10 +332,41 @@ DRIVER = r"""
             has(text, 'If pastor@yourchurch.org has a SelahCue account'));
       check('V5 states the 24 hour TTL', has(text, 'expires in 24 hours'));
       check('V5 explains only the newest link works', has(text, 'Only the newest link works'));
-      check('resend called the assumed mutation name',
-            calls.some(function (c) { return c.op === 'ResendVerification'; }));
+      var resendCall = calls.filter(function (c) { return c.op === 'ResendVerification'; })[0];
+      check('resend dispatched a mutation', !!resendCall);
+      // Pinned against account_schema.py:180. The field is `resendVerificationEmail`, NOT
+      // `resendVerification` — it does not follow requestPasswordReset's shorter shape,
+      // and a wrong name here fails with the same VALIDATION_FAILED as a dead link, which
+      // is exactly the kind of mistake that hides.
+      check('resend asks for the real field name resendVerificationEmail',
+            !!resendCall && resendCall.query.indexOf('resendVerificationEmail(email: $email)') !== -1,
+            'query was: ' + (resendCall ? resendCall.query : 'none'));
+      check('resend selects only { accepted }, matching ResendVerificationPayload',
+            !!resendCall && /resendVerificationEmail\(email: \$email\)\s*\{\s*accepted\s*\}/.test(resendCall.query),
+            'query was: ' + (resendCall ? JSON.stringify(resendCall.query) : 'none'));
       check('resend sent the email as a variable',
-            calls.some(function (c) { return c.variables.email === 'pastor@yourchurch.org'; }));
+            !!resendCall && resendCall.variables.email === 'pastor@yourchurch.org');
+      universalChecks();
+    },
+
+    'verify-rate-limited': async function () {
+      await wait(600);
+      check('typed an email', type('input[type="email"]', 'pastor@yourchurch.org'));
+      await wait(50);
+      check('submitted the resend form', submit());
+      await wait(600);
+      var text = cardText();
+      check('a rate-limited resend does NOT show the sent state', !has(text, 'Check your inbox'));
+      check('a rate-limited resend says so', has(text, 'Too many requests'));
+      check('a rate-limited resend tells the user to wait', has(text, 'Wait a few minutes'));
+      // The per-address budget is spent BEFORE the account is looked up, so a rate limit
+      // says nothing about whether the address exists. The copy must not imply it does.
+      var lower = text.toLowerCase();
+      check('rate-limit copy never implies the account exists',
+            lower.indexOf('this account') === -1 && lower.indexOf('your account') === -1 &&
+            lower.indexOf('for this address') === -1);
+      check('a rate-limited resend stays on the recovery form',
+            document.querySelector('input[type="email"]') !== null);
       universalChecks();
     },
 
@@ -602,6 +644,7 @@ SCENARIOS: list[tuple[str, str]] = [
     ("verify-missing", "/verify"),
     ("verify-unreachable", f"/verify?token={VERIFY_TOKEN}"),
     ("verify-resend", f"/verify?token={VERIFY_TOKEN}"),
+    ("verify-rate-limited", f"/verify?token={VERIFY_TOKEN}"),
     ("verify-resend-fails", f"/verify?token={VERIFY_TOKEN}"),
     ("verify-bad-email", f"/verify?token={VERIFY_TOKEN}"),
     ("reset-form", f"/reset?token={RESET_TOKEN}"),
