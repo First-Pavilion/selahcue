@@ -436,6 +436,87 @@ def test_a_missing_caller_ip_spends_a_shared_budget_rather_than_none(settings, c
     assert len(reports) == 1, "the loss must be reported, once per interval"
 
 
+# --- a limiter outage degrades the SEND, never the response -----------------------------
+class _BrokenStore:
+    """A limiter store that is down. `should_allow` fails open on this, by design for the
+    /v1 device READ surface it was written for."""
+
+    def incr_with_expiry(self, key, window_seconds):
+        raise RuntimeError("redis is down")
+
+
+@pytest.fixture
+def limiter_down(monkeypatch):
+    from selahcue_api.apps.throttling import guards
+
+    monkeypatch.setattr(guards, "CacheStore", lambda _cache: _BrokenStore())
+    services._reset_floor_overrun_reporting()
+    services._reset_degraded_send_window()
+
+
+def test_a_limiter_outage_bounds_the_sending_without_denying_the_response(
+    settings, caplog, limiter_down
+):
+    """Failing all three budgets open at once turns an unauthenticated mail-sending endpoint
+    unbounded — inbox flooding and unbounded provider cost — for as long as Redis is down.
+
+    The response must NOT fail closed: denying here would reintroduce the enumeration oracle
+    the whole mutation exists to avoid, since the caller could tell a refused resend from an
+    accepted one. So the RESPONSE stays uniformly accepted:true and the SEND is what degrades,
+    under a conservative process-local ceiling.
+    """
+    settings.SELAHCUE_RESEND_DEGRADED_SEND_CEILING = (2, 60)
+    captured = CapturingSender()
+    services.set_email_sender(captured)
+    try:
+        for i in range(5):
+            _make_user(f"outage{i}@degrade.example", tag=f"o{i}")
+
+        with caplog.at_level(logging.WARNING, logger="selahcue_api.apps.accounts.services"):
+            results = [
+                services.resend_email_verification(
+                    services.ResendVerificationData(
+                        email=f"outage{i}@degrade.example", client_ip="10.0.0.1"
+                    )
+                )
+                for i in range(5)
+            ]
+
+        # Every caller is told the same thing — no oracle, no outage-shaped error.
+        assert [r.accepted for r in results] == [True] * 5
+        # ...but only the ceiling's worth of mail actually left.
+        assert len(captured.verify_tokens) == 2, (
+            "a limiter outage must bound sending, not hand out an unmetered send path"
+        )
+        skips = [r for r in caplog.records if "limiter unavailable" in r.getMessage()]
+        assert len(skips) == 1, "the degradation must be reported, once per interval"
+    finally:
+        services.set_email_sender(services.EmailSender())
+
+
+def test_a_skipped_send_does_not_destroy_the_users_existing_link(settings, limiter_down):
+    """Skipping the send must skip the MINT too. Superseding a live link and then not
+    delivering its replacement would leave the user strictly worse off than before they
+    asked — a working link traded for nothing."""
+    settings.SELAHCUE_RESEND_DEGRADED_SEND_CEILING = (0, 60)  # ceiling exhausted immediately
+    user = _make_user("keeplink@degrade.example", tag="keep")
+    live = CredentialToken.objects.create(
+        customer_user=user,
+        purpose=CredentialTokenPurpose.EMAIL_VERIFY,
+        token_fingerprint=services._fingerprint("SC-EVF-pre-existing"),
+        masked_token="SC-EVF-pre...xxxx",
+        expires_at=timezone.now() + timezone.timedelta(hours=1),
+    )
+
+    assert services.resend_email_verification(
+        services.ResendVerificationData(email="keeplink@degrade.example", client_ip="10.0.0.2")
+    ).accepted is True
+
+    live.refresh_from_db()
+    assert live.consumed_at is None, "the user's working link must survive a skipped resend"
+    assert CredentialToken.objects.filter(customer_user=user).count() == 1, "nothing was minted"
+
+
 # --- AC4: the previous token dies -------------------------------------------------------
 def test_issuing_a_new_token_invalidates_the_previous_one(client, sender):
     _make_user("rotate@resend.example", tag="rot")

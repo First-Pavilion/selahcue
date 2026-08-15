@@ -25,21 +25,48 @@ from __future__ import annotations
 from django.conf import settings
 from django.core.cache import cache
 
-from selahcue_api.apps.throttling.services import CacheStore, should_allow
+from selahcue_api.apps.throttling.services import BudgetOutcome, CacheStore, evaluate_budget
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
 
-def within_budget(scope: str, identity: str, setting_name: str, default: tuple[int, int]) -> bool:
-    """True while `identity` is inside the `settings.<setting_name>` budget for `scope`.
+def spend_budget(
+    scope: str, identity: str, setting_name: str, default: tuple[int, int]
+) -> BudgetOutcome:
+    """Spend one unit of `identity`'s `scope` budget and report the outcome.
 
     `identity` must never be raw PII: cache keys land in Redis and in slow-log output, so
     callers pass an HMAC fingerprint of an address rather than the address itself.
+
+    Returning the outcome rather than a bool is what lets a caller distinguish a real allow
+    from a fail-open. That matters wherever the guarded action is expensive or externally
+    visible — sending email, say — because "the limiter is down" is not the same permission
+    as "you are within your budget".
     """
     limit, window = getattr(settings, setting_name, default)
-    return should_allow(CacheStore(cache), f"throttle:{scope}:{identity}", limit, window)
+    return evaluate_budget(CacheStore(cache), f"throttle:{scope}:{identity}", limit, window)
+
+
+def within_budget(scope: str, identity: str, setting_name: str, default: tuple[int, int]) -> bool:
+    """`spend_budget` collapsed to a bool, fail-open. Unchanged semantics for /v1."""
+    return spend_budget(scope, identity, setting_name, default) is not BudgetOutcome.DENIED
 
 
 def enforce_budget(scope: str, identity: str, setting_name: str, default: tuple[int, int]) -> None:
     """`within_budget`, raising RATE_LIMITED instead of returning False."""
     if not within_budget(scope, identity, setting_name, default):
         raise SafeAPIError(ErrorCode.RATE_LIMITED)
+
+
+def enforce_budget_reporting_outage(
+    scope: str, identity: str, setting_name: str, default: tuple[int, int]
+) -> bool:
+    """`enforce_budget`, additionally reporting whether the limiter was actually consulted.
+
+    Returns True when the budget could not be checked because the store is unavailable, so a
+    caller with an expensive side effect can degrade that side effect while still returning
+    its normal response.
+    """
+    outcome = spend_budget(scope, identity, setting_name, default)
+    if outcome is BudgetOutcome.DENIED:
+        raise SafeAPIError(ErrorCode.RATE_LIMITED)
+    return outcome is BudgetOutcome.STORE_UNAVAILABLE

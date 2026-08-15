@@ -13,6 +13,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import time
+from enum import Enum
 
 from django.conf import settings
 
@@ -71,12 +72,27 @@ class CacheStore:
         return count
 
 
-def should_allow(store, key: str, limit: int, window_seconds: int) -> bool:
-    """True while the caller is within `limit` requests per `window_seconds`.
+class BudgetOutcome(str, Enum):
+    """Why a budget check came out the way it did.
 
-    **Fails open.** If the store errors (Redis down), allow the request and log. Refusing
-    all device traffic because the limiter is unavailable would cause the outage it is
-    meant to prevent.
+    `should_allow` collapses this to a bool and cannot distinguish "the store said yes" from
+    "the store is down and we failed open" — which is fine for a read surface and NOT fine for
+    a caller that sends email, because those two answers call for different behaviour.
+    """
+
+    ALLOWED = "ALLOWED"
+    DENIED = "DENIED"
+    STORE_UNAVAILABLE = "STORE_UNAVAILABLE"
+
+
+def evaluate_budget(store, key: str, limit: int, window_seconds: int) -> BudgetOutcome:
+    """Spend one unit of `key`'s budget and report what happened.
+
+    **Still fails open** — `STORE_UNAVAILABLE` is a permit, not a refusal. Refusing all
+    device traffic because the limiter is unavailable would cause the outage it is meant to
+    prevent. The difference is that the caller can now SEE that it was a fail-open, and a
+    caller with an expensive side effect (sending mail) can bound that side effect instead of
+    treating the outage as a clean allow.
     """
     global _last_store_error_log
     try:
@@ -94,8 +110,18 @@ def should_allow(store, key: str, limit: int, window_seconds: int) -> bool:
                 key,
                 _STORE_ERROR_LOG_INTERVAL_SECONDS,
             )
-        return True
-    return count <= limit
+        return BudgetOutcome.STORE_UNAVAILABLE
+    return BudgetOutcome.ALLOWED if count <= limit else BudgetOutcome.DENIED
+
+
+def should_allow(store, key: str, limit: int, window_seconds: int) -> bool:
+    """True while the caller is within `limit` requests per `window_seconds`.
+
+    **Fails open.** If the store errors (Redis down), allow the request and log. Unchanged
+    behaviour for the `/v1` device surface this was written for; callers that need to tell a
+    fail-open apart from a real allow use `evaluate_budget` directly.
+    """
+    return evaluate_budget(store, key, limit, window_seconds) is not BudgetOutcome.DENIED
 
 
 def client_ip(request) -> str:
