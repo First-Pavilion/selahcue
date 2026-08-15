@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Local env overrides. `.env.example` IS tracked and documents the variables.
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

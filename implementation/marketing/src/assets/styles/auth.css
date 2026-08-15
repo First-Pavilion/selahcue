@@ -1,0 +1,287 @@
+/*
+ * Auth landing-card design system — /verify and /reset.
+ *
+ * Geometry is transcribed from `docs/design/AUTH-LANDING-PAGES-HANDOFF.md` §2.3, which
+ * says in as many words "cloned from 505:124, do not re-derive". It lives in one global
+ * stylesheet — alongside `tokens.css` and `main.css`, which `main.ts` already imports —
+ * rather than in a component's scoped block, because both views and all three shared
+ * auth components need the same vocabulary and Vue's scoped CSS does not reach slotted
+ * content.
+ *
+ * COLOURS: the Figma frames bind to the LEGACY `SelahCue Color` variable collection, but
+ * handoff §2.2 is explicit that implementation uses the Design 2.0 `--sc-*` custom
+ * properties, and gives the mapping. That mapping is applied here. The two ramps differ
+ * by 1-3% luminance and nothing in this design depends on the gap.
+ *
+ * There is no light variant to build: the product's design system defines a single dark
+ * ramp (§2.2, §14). Not skipped — not applicable.
+ */
+
+/* ---------------------------------------------------------------- page + brand ----- */
+
+.au-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  flex-grow: 1;
+  padding: 64px 20px;
+  background: var(--sc-base);
+}
+
+.au-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.au-brand-logo {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+}
+
+.au-brand-name {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--sc-text);
+  letter-spacing: -0.01em;
+}
+
+/* ------------------------------------------------------------------------ card ----- */
+
+.au-card {
+  width: 100%;
+  max-width: 430px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 36px;
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
+  border-radius: 22px;
+  text-align: left;
+}
+
+/* 56x56 status disc; the glyph carries the status ink, never the body text. */
+.au-disc {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--sc-elevated);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.au-disc-brand { color: var(--sc-primary); }
+.au-disc-success { color: var(--sc-preview); }
+.au-disc-danger { color: var(--sc-live); }
+.au-disc-warning { color: var(--sc-warn); }
+/* V6 is deliberately NOT red — arriving without a link is not an error. */
+.au-disc-neutral { color: var(--sc-text-secondary); }
+
+.au-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--sc-text);
+}
+
+/* Form-led states (R1/R2/R3/R7) step the title up one notch. */
+.au-title-form { font-size: 26px; }
+
+.au-body {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 22px;
+  color: var(--sc-text-secondary);
+}
+
+.au-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--sc-text-muted);
+}
+
+/* ---------------------------------------------------------------------- banner ----- */
+
+/*
+ * Banner body text NEVER uses the status colour (handoff §2.2): the title is
+ * --sc-text, the body --sc-text-secondary, and colour appears only on the glyph. That
+ * keeps every pair well clear of AA and satisfies WCAG 1.4.1 — the words carry the
+ * meaning, not the hue.
+ */
+.au-banner {
+  display: flex;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 12px;
+}
+
+.au-banner-glyph {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 20px;
+}
+
+.au-banner-title {
+  margin: 0 0 2px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--sc-text);
+}
+
+.au-banner-body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--sc-text-secondary);
+}
+
+.au-banner-info { background: var(--sc-info-soft); }
+.au-banner-info .au-banner-glyph { color: var(--sc-primary); }
+
+.au-banner-success { background: var(--sc-preview-soft); }
+.au-banner-success .au-banner-glyph { color: var(--sc-preview); }
+
+.au-banner-warning { background: var(--sc-warn-soft); }
+.au-banner-warning .au-banner-glyph { color: var(--sc-warn); }
+
+.au-banner-danger { background: var(--sc-live-soft); }
+.au-banner-danger .au-banner-glyph { color: var(--sc-live); }
+
+/* --------------------------------------------------------------------- actions ----- */
+
+.au-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/*
+ * Overrides UiButton's pill radius for the auth card's 12px form-button geometry.
+ * The parent's scope id lands on a child component's root element, so these rules
+ * reach UiButton without :deep(); the extra class raises specificity above
+ * UiButton's own scoped `.ui-button` rule so source order cannot decide the winner.
+ */
+.au-btn.ui-button {
+  width: 100%;
+  border-radius: 12px;
+}
+
+.au-btn.au-btn-primary {
+  min-height: 47px;
+  font-size: 15.5px;
+}
+
+.au-btn.au-btn-secondary {
+  min-height: 44px;
+  font-size: 14.5px;
+}
+
+/* ----------------------------------------------------------------- footer link ----- */
+
+.au-footer-link {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--sc-text-secondary);
+}
+
+.au-footer-link a {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--sc-primary);
+  text-decoration: none;
+  border-radius: 4px;
+}
+
+.au-footer-link a:hover {
+  text-decoration: underline;
+}
+
+.au-footer-link a:focus-visible,
+.au-card a:focus-visible {
+  outline: 2px solid var(--sc-primary);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------- progress ----- */
+
+/*
+ * V1's 6px track. The fill is indeterminate, so it must not pretend to know a
+ * percentage; it sits at ~1/3 and travels.
+ */
+.au-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--sc-elevated);
+  overflow: hidden;
+}
+
+.au-progress-fill {
+  width: 34%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--sc-primary);
+  animation: au-progress-travel 1.4s ease-in-out infinite;
+}
+
+@keyframes au-progress-travel {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(294%); }
+}
+
+.au-spinner {
+  display: inline-block;
+  animation: au-spin 0.9s linear infinite;
+}
+
+@keyframes au-spin {
+  to { transform: rotate(360deg); }
+}
+
+/*
+ * Handoff §12: V1's progress bar and R3's spinner must be STATIC under reduced motion.
+ * main.css already crushes animation-duration globally, but that leaves an indeterminate
+ * bar parked wherever the last frame fell. Hold it at the designed ~1/3 instead, and
+ * stop the spinner outright.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .au-progress-fill,
+  .au-spinner {
+    animation: none !important;
+    transform: none !important;
+  }
+}
+
+/* -------------------------------------------------------------------- responsive ---- */
+
+/* Handoff §13: the card never becomes full-bleed — the surrounding --sc-base margin is
+   what marks it as a focused task. */
+@media (max-width: 767px) {
+  .au-page {
+    padding: 40px 0;
+  }
+
+  .au-card {
+    width: 92vw;
+    max-width: 92vw;
+    padding: 24px;
+  }
+
+  .au-title,
+  .au-title-form {
+    font-size: 22px;
+  }
+}

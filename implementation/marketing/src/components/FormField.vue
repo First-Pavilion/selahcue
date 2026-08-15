@@ -11,6 +11,10 @@ const props = defineProps({
   hint: { type: String, default: '' },
   disabled: { type: Boolean, default: false },
   maxLength: { type: Number, default: 0 },
+  // Required by AUTH-LANDING-PAGES-HANDOFF §12: `email` on every email field and
+  // `new-password` on both /reset fields, so password managers offer to generate and
+  // store rather than autofilling the old password into a "choose a new one" box.
+  autocomplete: { type: String, default: undefined },
   id: { type: String, default: () => 'field-' + Math.random().toString(36).substr(2, 9) }
 })
 
@@ -65,6 +69,7 @@ const handleInput = (event: Event) => {
         :value="modelValue"
         :placeholder="placeholder"
         :disabled="disabled"
+        :autocomplete="autocomplete"
         :aria-invalid="!!error"
         :aria-describedby="error ? `${id}-error` : hint ? `${id}-hint` : undefined"
         class="field-input"
@@ -78,6 +83,7 @@ const handleInput = (event: Event) => {
         type="button"
         class="password-toggle"
         :aria-label="showPassword ? 'Hide password' : 'Show password'"
+        :aria-pressed="showPassword"
         @click="showPassword = !showPassword"
       >
         <svg v-if="showPassword" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

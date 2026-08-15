@@ -23,6 +23,15 @@ const router = createRouter({
     { path: '/privacy', name: 'privacy', component: () => import('@/views/PrivacyView.vue') },
     { path: '/terms', name: 'terms', component: () => import('@/views/TermsView.vue') },
     { path: '/signin', name: 'signin', component: () => import('@/views/SignInView.vue') },
+
+    // Token landing pages. These paths are NOT free to change: `apps/accounts/tasks.py`
+    // builds `{FRONTEND_BASE_URL}/verify?token=` and `/reset?token=` into emails that
+    // have already been delivered to customers, so any rename orphans live links.
+    // `meta.bare` drops the site nav and footer (design §2.1 — the chrome is cloned from
+    // Sign in `505:124`): someone who arrived from an email is mid-task, and a nav bar
+    // here invites them to wander off before the account is verified.
+    { path: '/verify', name: 'verify', component: () => import('@/views/VerifyView.vue'), meta: { bare: true } },
+    { path: '/reset', name: 'reset', component: () => import('@/views/ResetView.vue'), meta: { bare: true } },
     { path: '/account', name: 'account', component: () => import('@/views/AccountView.vue') },
     { path: '/affiliates', name: 'affiliates', component: () => import('@/views/AffiliatesView.vue') },
 

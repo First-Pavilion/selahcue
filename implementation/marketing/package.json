@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test \"tests/*.test.ts\"",
+    "test:states": "python3 scripts/auth_pages_headless.py"
   },
   "dependencies": {
     "vue": "^3.5.40",
