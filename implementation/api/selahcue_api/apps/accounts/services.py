@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import secrets
 import time
 from dataclasses import dataclass
@@ -39,6 +40,8 @@ from selahcue_api.graphql.context import (
     validate_idempotency_key,
 )
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -216,16 +219,70 @@ SELF_SIGNUP_ACTOR = "self_signup"
 ACCOUNT_AUDIT_SURFACE = "account_graphql"
 
 # Constant-time floor for resend-verification. The endpoint is unauthenticated and does
-# WILDLY different work per branch — minting a token runs PBKDF2 (~120ms) and then publishes
-# to the broker, while an unknown address does one indexed SELECT — so an identical response
-# body still leaks existence through latency alone. Padding every call to a fixed duration
-# makes the response time independent of the branch BY CONSTRUCTION, which also keeps it true
-# for work added later; equalising each operation individually does not survive maintenance.
-# 0.25s is ~2x the measured worst case, leaving headroom for the audit write and the publish.
+# WILDLY different work per branch — minting a token runs PBKDF2 and then publishes to the
+# broker, while an unknown address does one indexed SELECT — so an identical response body
+# still leaks existence through latency alone. Padding every call to a fixed duration makes
+# the response time independent of the branch, which also keeps it true for work added later;
+# equalising each operation individually does not survive maintenance.
+#
+# IT IS A FLOOR, NOT A CEILING. It equalises only while EVERY branch finishes inside it. Once
+# a branch runs long the pad is skipped for that branch alone and the spread is simply the
+# overrun — the oracle re-opens. So the number has to stay above the SLOWEST branch, and
+# `_pad_to_floor` reports it when it does not (an earlier value claimed "~2x the measured
+# worst case", which was never true).
+#
+# MEASURED, not assumed: the eligible branch's own unpadded work is ~197ms on the reference
+# machine (PBKDF2 + the token INSERT + the audit row), pinned by
+# `test_the_eligible_branch_costs_well_under_the_constant_time_floor`. 0.25s left ~53ms for
+# dispatch, which a broker publish can exceed and an inline SMTP send always does; 0.4s keeps
+# a third of the floor spare. Raising it further is cheap in throughput terms because the
+# three budgets below cap how often this endpoint is reachable at all, but it is not free:
+# every padded call parks a request thread, so the floor is also the lever that decides how
+# much thread time a flood at the global budget can tie up.
+#
 # Unlike the TTLs above this is read per CALL, not at import: it is an operational knob (and
 # tests switch it off), and a floor that could only change on a restart would be the kind
 # that quietly stays wrong.
-RESEND_MIN_SECONDS_DEFAULT = 0.25
+RESEND_MIN_SECONDS_DEFAULT = 0.4
+
+# One overrun report per minute, not one per request — a floor that is outgrown is outgrown
+# for every call, and logging each one is the unbounded logging the repo forbids (the same
+# shape as the throttle store's fail-open report). State is a single module-level float, so
+# it is bounded in memory too; a benign race between threads costs at most one extra line.
+_FLOOR_OVERRUN_LOG_INTERVAL_SECONDS = 60.0
+_last_floor_overrun_log = float("-inf")
+
+# Budget identity used when the transport could not supply a caller address at all. A single
+# shared bucket, deliberately: losing the per-IP budget must cost something visible rather
+# than silently removing a limit from an unauthenticated mail-sending endpoint.
+UNRESOLVED_CLIENT_IP = "unresolved-client-ip"
+_UNRESOLVED_IP_LOG_INTERVAL_SECONDS = 60.0
+_last_unresolved_ip_log = float("-inf")
+
+
+def _reset_floor_overrun_reporting() -> None:
+    """Test seam: forget the last report so a test can observe the first one deterministically
+    without waiting out the suppression interval."""
+    global _last_floor_overrun_log, _last_unresolved_ip_log
+    _last_floor_overrun_log = float("-inf")
+    _last_unresolved_ip_log = float("-inf")
+
+
+def _report_unresolved_client_ip() -> None:
+    """Warn — at most once per interval — that the per-IP budget lost its key."""
+    global _last_unresolved_ip_log
+    now = time.monotonic()
+    if now - _last_unresolved_ip_log < _UNRESOLVED_IP_LOG_INTERVAL_SECONDS:
+        return
+    _last_unresolved_ip_log = now
+    logger.warning(
+        "resend-verification could not resolve a caller IP; spending the shared '%s' budget "
+        "instead. `client_ip()` never returns empty, so this means the transport supplied no "
+        "request object — most likely the GraphQL context shape changed. Every caller now "
+        "shares one per-IP budget until it is fixed. Further reports suppressed for %.0fs.",
+        UNRESOLVED_CLIENT_IP,
+        _UNRESOLVED_IP_LOG_INTERVAL_SECONDS,
+    )
 
 # Per-address / per-IP / global budgets for resend-verification (limit, window_seconds).
 # Defaults only — `enforce_budget` reads the matching setting at call time.
@@ -564,8 +621,8 @@ class ResendVerificationData:
     client_ip: str = ""
 
 
-def _pad_to_constant_time(started: float) -> None:
-    """Hold the response until the fixed budget has elapsed.
+def _pad_to_floor(started: float) -> None:
+    """Hold the response until the floor has elapsed; report it when the floor is outgrown.
 
     This is the PRIMARY defence against the timing oracle: the caller observes one duration
     regardless of which branch ran, so latency carries no information about whether the
@@ -574,15 +631,53 @@ def _pad_to_constant_time(started: float) -> None:
     publish, and matching those individually would have to be re-done every time either
     branch gains work.
 
-    Cost: one request thread parked for up to ~250ms. That is affordable precisely because
+    NAMED A FLOOR ON PURPOSE. The previous name (`_pad_to_constant_time`) asserted a property
+    this code only conditionally provides: the call is constant-time only while every branch
+    fits inside the floor. A branch that overruns is not padded at all, so the observable
+    spread becomes exactly its overrun and the oracle is back — silently, because a floor that
+    is too small looks identical to one that is generous.
+
+    Hence the report. It cannot fix the overrun (sleeping longer after the fact would not
+    equalise anything — the branch that FITS would still return at the floor), so the only
+    useful response is to make the operator aware the knob is now wrong. Rate-limited, because
+    an outgrown floor is outgrown for every call.
+
+    Cost: one request thread parked for up to the floor. That is affordable precisely because
     the three budgets above cap how often this endpoint can be reached at all.
     """
     floor = float(getattr(settings, "ACCOUNT_RESEND_MIN_SECONDS", RESEND_MIN_SECONDS_DEFAULT))
     if floor <= 0:
         return
-    remaining = floor - (time.monotonic() - started)
+    elapsed = time.monotonic() - started
+    remaining = floor - elapsed
     if remaining > 0:
         time.sleep(remaining)
+        return
+    _report_floor_overrun(elapsed=elapsed, floor=floor)
+
+
+def _report_floor_overrun(*, elapsed: float, floor: float) -> None:
+    """Warn — at most once per interval — that a branch ran past the constant-time floor."""
+    global _last_floor_overrun_log
+    now = time.monotonic()
+    if now - _last_floor_overrun_log < _FLOOR_OVERRUN_LOG_INTERVAL_SECONDS:
+        return
+    _last_floor_overrun_log = now
+    # warning, not exception: no traceback, one line, and it names the remedy. The overrun
+    # size is the actionable part — it is how far the oracle is open and how much the floor
+    # would have to rise to close it.
+    logger.warning(
+        "resend-verification exceeded its constant-time floor: %.0fms elapsed against a "
+        "%.0fms floor, overran by %.0fms. While a branch runs past the floor the padding "
+        "equalises nothing and response time is again an account-existence oracle. Raise "
+        "ACCOUNT_RESEND_MIN_SECONDS above the slowest branch, or make dispatch cheaper "
+        "(CELERY_TASK_ALWAYS_EAGER puts the SMTP send inline on this path). Further reports "
+        "suppressed for %.0fs.",
+        elapsed * 1000,
+        floor * 1000,
+        (elapsed - floor) * 1000,
+        _FLOOR_OVERRUN_LOG_INTERVAL_SECONDS,
+    )
 
 
 def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
@@ -608,8 +703,22 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
     # structurally distinct from accepted:true, so its timing reveals nothing further, and
     # padding a rejection would hand an attacker a way to tie up threads.
     enforce_budget("resend_verify", "global", "SELAHCUE_THROTTLE_RESEND_GLOBAL", RESEND_GLOBAL_BUDGET)
-    if data.client_ip:
-        enforce_budget("resend_verify_ip", data.client_ip, "SELAHCUE_THROTTLE_RESEND_IP", RESEND_IP_BUDGET)
+    # The per-IP budget is ALWAYS spent. It used to be conditional (`if data.client_ip`), which
+    # made it fail open: `client_ip()` itself never returns empty (it falls back to "unknown"),
+    # so the only way to get here without an address is the transport failing to supply a
+    # request at all — i.e. a change in Strawberry's context shape would have silently deleted
+    # this budget on an unauthenticated mail-sending endpoint, with no error and no log.
+    # Spending one shared bucket instead makes that loss loud: everyone lands in the same
+    # 10/hour budget, so the misconfiguration shows up as refusals rather than as an
+    # unmetered send path.
+    if not data.client_ip:
+        _report_unresolved_client_ip()
+    enforce_budget(
+        "resend_verify_ip",
+        data.client_ip or UNRESOLVED_CLIENT_IP,
+        "SELAHCUE_THROTTLE_RESEND_IP",
+        RESEND_IP_BUDGET,
+    )
     enforce_budget("resend_verify_addr", fingerprint, "SELAHCUE_THROTTLE_RESEND_ADDRESS", RESEND_ADDRESS_BUDGET)
 
     try:
@@ -658,7 +767,7 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
             )
         return AcceptedResult(accepted=True)
     finally:
-        _pad_to_constant_time(started)
+        _pad_to_floor(started)
 
 
 @dataclass(frozen=True)

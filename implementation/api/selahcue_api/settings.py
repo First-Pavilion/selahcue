@@ -301,11 +301,21 @@ ACCOUNT_MIN_PASSWORD_LENGTH = int(os.getenv("ACCOUNT_MIN_PASSWORD_LENGTH", "10")
 
 # Constant-time floor for the resend-verification mutation, in seconds. Every call is padded
 # to this duration so the response time cannot distinguish an unknown address from one that
-# actually dispatched an email (minting a token costs a ~120ms PBKDF2 plus a broker publish).
-# ~2x the measured worst case. Lowering it below the real branch's cost re-opens the oracle;
-# 0 disables padding entirely and should only ever be done in tests.
-ACCOUNT_RESEND_MIN_SECONDS = float(os.getenv("ACCOUNT_RESEND_MIN_SECONDS", "0.25"))
+# actually dispatched an email (minting a token costs a PBKDF2 hash plus a broker publish).
+#
+# It is a FLOOR: it equalises only while every branch finishes inside it, and a branch that
+# overruns is not padded at all, which re-opens the oracle by exactly the overrun. Keep this
+# ABOVE the slowest branch. The eligible branch's own work measures ~197ms on the reference
+# machine, so 0.25 (the previous value, wrongly described as ~2x the worst case) left only
+# ~53ms for dispatch; 0.4 keeps a third of the floor spare and is pinned by
+# `test_the_eligible_branch_costs_well_under_the_constant_time_floor`. Keep in sync with
+# `RESEND_MIN_SECONDS_DEFAULT` in apps/accounts/services.py.
+#
+# If it is ever outgrown anyway, `_pad_to_floor` emits a rate-limited warning naming the
+# overrun — an outgrown floor must surface, not degrade quietly. 0 disables padding entirely
+# and should only ever be done in tests.
+ACCOUNT_RESEND_MIN_SECONDS = float(os.getenv("ACCOUNT_RESEND_MIN_SECONDS", "0.4"))
 
-# Base URL of the web surface that hosts /verify and /reset. NOTE: those routes do not
-# exist yet — they land with slice 4 (86ajy7anx). Emails link to a 404 until then.
+# Base URL of the web surface that hosts /verify and /reset. Both routes exist as of 6d343b8;
+# the emails minted here link to live token-landing pages.
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:2000")

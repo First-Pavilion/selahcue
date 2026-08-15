@@ -18,10 +18,12 @@ THE TWO PROPERTIES THIS FILE PINS
 """
 
 import json
+import logging
 import statistics
 import time
 
 import pytest
+from django.conf import settings
 from django.core import mail
 from django.test import TestCase
 from django.utils import timezone
@@ -37,8 +39,13 @@ from selahcue_api.apps.accounts.models import (
     CustomerUserStatus,
 )
 from selahcue_api.apps.audit.models import AuditEvent
+from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
 pytestmark = pytest.mark.django_db
+
+# Captured at IMPORT, before the autouse `_no_constant_time_floor` fixture zeroes the setting
+# for every test in this module. This is the floor a deployment actually runs with.
+PRODUCTION_FLOOR = settings.ACCOUNT_RESEND_MIN_SECONDS
 
 
 RESEND = """
@@ -298,6 +305,135 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
         assert len(slow.verify_tokens) == samples
     finally:
         services.set_email_sender(services.EmailSender())
+
+
+# --- the floor is a floor, not a ceiling ------------------------------------------------
+@pytest.mark.django_db(transaction=True)
+def test_the_eligible_branch_costs_well_under_the_constant_time_floor(settings):
+    """The floor only equalises while EVERY branch finishes inside it. Past that it stops
+    being a constant time at all and the spread is just however much the slow branch overran.
+
+    The timing probe above pins a 60ms dispatch, which fits. That says nothing about how much
+    room is left, and the docstring used to claim the floor was "~2x the measured worst case"
+    — it is not; the eligible branch's own work is already over half of it. This measures the
+    branch UNPADDED and pins the real margin, so shrinking it shows up here as a failure
+    rather than as a silently re-opened oracle in production.
+    """
+    settings.ACCOUNT_RESEND_MIN_SECONDS = 0.0  # measure the WORK, not the padding
+    settings.SELAHCUE_THROTTLE_RESEND_IP = (1000, 3600)
+    settings.SELAHCUE_THROTTLE_RESEND_GLOBAL = (1000, 3600)
+    services.set_email_sender(services.EmailSender())  # a no-op sender: work only, no dispatch
+    try:
+        samples = 7
+        for i in range(samples):
+            _make_user(f"cost{i}@floor.example", tag=f"c{i}")
+
+        costs = []
+        for i in range(samples):
+            started = time.perf_counter()
+            services.resend_email_verification(
+                services.ResendVerificationData(email=f"cost{i}@floor.example")
+            )
+            costs.append(time.perf_counter() - started)
+
+        # The DEPLOYED floor, captured at import before the autouse fixture zeroes it — this
+        # test is about the value that actually ships, not the module fallback.
+        floor = PRODUCTION_FLOOR
+        assert floor == services.RESEND_MIN_SECONDS_DEFAULT, (
+            "settings.ACCOUNT_RESEND_MIN_SECONDS and RESEND_MIN_SECONDS_DEFAULT have drifted; "
+            "the fallback must not be quietly different from the shipped floor"
+        )
+        # MINIMUM, not median. The quantity of interest is how much WORK this branch does —
+        # a property of the code, which is what a regression would change. Scheduler noise and
+        # a loaded CI box only ever ADD time, so the fastest sample is the closest estimate of
+        # the intrinsic cost and the only statistic here that does not turn a busy machine into
+        # a spurious failure. A real slowdown still raises it.
+        cheapest = min(costs)
+        # STATED MARGIN: the eligible branch must leave at least a third of the floor spare for
+        # dispatch. At the 0.25s default that is ~83ms of headroom on top of its own work.
+        # Chosen because the branch is ~130ms of PBKDF2 + INSERT + audit, so a third is what
+        # remains once the floor covers it. If dispatch is slower than the headroom the floor
+        # is outgrown and `_pad_to_floor` reports it (test below) rather than degrading quietly.
+        assert cheapest < floor * (2 / 3), (
+            f"the eligible branch's own work is {cheapest * 1000:.1f}ms against a "
+            f"{floor * 1000:.0f}ms floor — too little left for dispatch"
+        )
+    finally:
+        services.set_email_sender(services.EmailSender())
+
+
+def test_outgrowing_the_floor_is_reported_and_the_report_is_rate_limited(settings, caplog):
+    """An outgrown floor must SURFACE. Before this it degraded silently: at a 300ms dispatch
+    the spread was 174ms and nothing anywhere said so.
+
+    This is live in the compose/dev stack today — `CELERY_TASK_ALWAYS_EAGER=1` makes the
+    dispatch an inline SMTP send, well past the headroom. Production is protected only by the
+    prod guard on that flag; a remote or TLS Redis broker publish is the same hazard with no
+    guard at all.
+
+    The report is rate limited for the same reason the throttle's fail-open path is: one line
+    per overrun at request rate is the unbounded logging the repo forbids.
+    """
+    settings.ACCOUNT_RESEND_MIN_SECONDS = 0.02
+
+    services._reset_floor_overrun_reporting()
+    with caplog.at_level(logging.WARNING, logger="selahcue_api.apps.accounts.services"):
+        # Three overruns in a row; the interval suppresses all but the first.
+        for _ in range(3):
+            services._pad_to_floor(time.monotonic() - 0.5)
+
+        def overrun_records():
+            return [r for r in caplog.records if "constant-time floor" in r.getMessage()]
+
+        overruns = overrun_records()
+        assert len(overruns) == 1, "an overrun must be reported exactly once per interval"
+        assert overruns[0].levelno == logging.WARNING
+        # The message has to carry the size of the miss — "it overran" is not actionable.
+        assert "overran by 480ms" in overruns[0].getMessage()
+
+        # A call that FITS reports nothing.
+        caplog.clear()
+        services._reset_floor_overrun_reporting()
+        services._pad_to_floor(time.monotonic())
+        assert overrun_records() == []
+
+
+def test_the_floor_still_pads_a_call_that_fits(settings):
+    """Guard the detection from having broken the padding it reports on."""
+    settings.ACCOUNT_RESEND_MIN_SECONDS = 0.05
+    started = time.monotonic()
+    services._pad_to_floor(started)
+    assert time.monotonic() - started >= 0.05
+
+
+def test_a_missing_caller_ip_spends_a_shared_budget_rather_than_none(settings, caplog):
+    """Losing the caller IP must cost something visible. It used to be `if data.client_ip:`,
+    which silently deleted the per-IP budget on an unauthenticated mail-sending endpoint —
+    and `client_ip()` never returns empty, so the only way to reach it is the transport
+    supplying no request at all (a GraphQL context-shape change). That failure had no error
+    and no log; now it shares one bucket and says so."""
+    from django.core.cache import cache
+
+    settings.SELAHCUE_THROTTLE_RESEND_IP = (2, 3600)
+    settings.SELAHCUE_THROTTLE_RESEND_GLOBAL = (1000, 3600)
+    settings.SELAHCUE_THROTTLE_RESEND_ADDRESS = (1000, 900)
+    cache.clear()
+    services._reset_floor_overrun_reporting()
+
+    with caplog.at_level(logging.WARNING, logger="selahcue_api.apps.accounts.services"):
+        # Distinct addresses, so only the per-IP budget can be what stops this.
+        for i in range(2):
+            services.resend_email_verification(
+                services.ResendVerificationData(email=f"noip{i}@budget.example", client_ip="")
+            )
+        with pytest.raises(SafeAPIError) as exhausted:
+            services.resend_email_verification(
+                services.ResendVerificationData(email="noip9@budget.example", client_ip="")
+            )
+    assert exhausted.value.code is ErrorCode.RATE_LIMITED
+
+    reports = [r for r in caplog.records if "could not resolve a caller IP" in r.getMessage()]
+    assert len(reports) == 1, "the loss must be reported, once per interval"
 
 
 # --- AC4: the previous token dies -------------------------------------------------------
