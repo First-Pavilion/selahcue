@@ -3607,8 +3607,10 @@ fn registry_seeds_the_two_builtins_none_deletable() {
     assert_eq!(stage.theme, None);
 }
 
-/// Disabling a screen composes safe all-black (a per-screen mute); re-enabling restores
-/// the themed frame. `is_screen_enabled` mirrors the state for the desktop window gate.
+/// Disabling a VIRTUAL screen composes safe all-black (a per-screen mute) and re-enabling
+/// restores the themed frame. `is_screen_enabled` mirrors the state the desktop host reads
+/// — for the BUILT-IN `main`/`stage` screens it decides whether the OS window exists at
+/// all (see `reconcile_windows` in selahcue-desktop), not what colour it renders.
 #[test]
 fn disabling_a_screen_blacks_its_frame_and_reenabling_restores() {
     // RGB-black test (BLACK is opaque — the alpha byte is 255, so check the RGB triplets).

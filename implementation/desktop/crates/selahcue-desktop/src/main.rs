@@ -11,7 +11,14 @@
 //! Local keys follow the canonical map (UX-CANONICAL §1, `selahcue_app::keymap`):
 //! `Space`/`→` stage next · `←` previous · `Enter` Go Live · `B` blackout ·
 //! `Esc Esc` clear all · `Backspace` clear staged — plus host-only `P` pairing QR
-//! (devices are approved/denied from the operator console). Quit via the window close button.
+//! (devices are approved/denied from the operator console).
+//!
+//! Window lifecycle: for the BUILT-IN screens (`main`, `stage`), the registry's `enabled`
+//! flag means **the OS window exists**. Toggling a screen off on the Screens page and
+//! clicking that window's close button are the same action (`close_screen`), and toggling
+//! it back on re-opens the window from the per-frame reconcile. Closing a window therefore
+//! does NOT quit — this process owns the other window, the LAN server and the live state
+//! paired controllers depend on. Quit with **Cmd-Q (macOS) / Ctrl-Q (elsewhere)**.
 
 #![forbid(unsafe_code)]
 // In release builds on Windows, run as a GUI app so no console window appears behind the
@@ -171,6 +178,95 @@ fn display_keys(facts: &[MonitorFacts]) -> Vec<(String, String)> {
             }
         })
         .collect()
+}
+
+/// A BUILT-IN screen that owns a real OS window. Only `main` and `stage` are here:
+/// VIRTUAL screens (`lower-third` / `stream`) never have a window — their `enabled`
+/// flag gates NDI delivery instead (see [`reconcile_ndi`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowRole {
+    Main,
+    Stage,
+}
+
+impl WindowRole {
+    /// The registry screen id this window role is the physical output for.
+    fn screen_id(self) -> &'static str {
+        match self {
+            WindowRole::Main => "main",
+            WindowRole::Stage => "stage",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            WindowRole::Main => "SelahCue Output",
+            WindowRole::Stage => "SelahCue Stage / Confidence",
+        }
+    }
+}
+
+/// The registry screen id → window role mapping. `None` for every VIRTUAL screen, so a
+/// virtual feed can never produce a window action however it is toggled.
+fn window_role_for_screen(id: &str) -> Option<WindowRole> {
+    match id {
+        "main" => Some(WindowRole::Main),
+        "stage" => Some(WindowRole::Stage),
+        _ => None,
+    }
+}
+
+/// One window lifecycle action the reconcile decided on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowAction {
+    Open(WindowRole),
+    Close(WindowRole),
+}
+
+/// THE window-lifecycle decision, as a pure function so it is unit-testable without a
+/// windowing system.
+///
+/// For a built-in screen, `enabled` means **the OS window exists** — so the toggle on
+/// the Screens page and the window's own close button are the same action, resolved
+/// here. Given each registry screen's `(id, enabled)` and whether each built-in window
+/// currently exists, it returns the opens/closes that make reality match the registry.
+///
+/// Properties the tests pin: it is idempotent (no action when already in the desired
+/// state), it drives both directions, and a VIRTUAL screen never yields an action.
+fn reconcile_windows<'a>(
+    screens: impl IntoIterator<Item = (&'a str, bool)>,
+    main_open: bool,
+    stage_open: bool,
+) -> Vec<WindowAction> {
+    // Empty in the steady state — `Vec::new` does not allocate until something is pushed,
+    // so the per-frame reconcile costs nothing when nothing changed.
+    let mut actions = Vec::new();
+    for (id, enabled) in screens {
+        // A virtual screen has no window; skipping it here is what makes rule 7 hold.
+        let Some(role) = window_role_for_screen(id) else {
+            continue;
+        };
+        let open = match role {
+            WindowRole::Main => main_open,
+            WindowRole::Stage => stage_open,
+        };
+        match (enabled, open) {
+            (true, false) => actions.push(WindowAction::Open(role)),
+            (false, true) => actions.push(WindowAction::Close(role)),
+            // Already where it should be: no action (idempotence).
+            (true, true) | (false, false) => {}
+        }
+    }
+    actions
+}
+
+/// Whether a key press is the explicit QUIT chord: **Cmd-Q on macOS, Ctrl-Q elsewhere**.
+/// Closing a window no longer quits (it closes just that screen), so this is the only
+/// keyboard way out of the output process. Pure over its inputs — including the platform
+/// — so both platform behaviours are testable on one CI runner.
+fn is_quit_chord(character: Option<&str>, super_key: bool, control_key: bool, macos: bool) -> bool {
+    let modifier = if macos { super_key } else { control_key };
+    modifier && character.is_some_and(|c| c.eq_ignore_ascii_case("q"))
 }
 
 /// Report a non-Ok disk status loudly (the storage guard is never silent).
@@ -805,20 +901,24 @@ struct Renderer {
 }
 
 impl Renderer {
-    fn new(window: Arc<Window>) -> Self {
+    /// Build the GPU renderer for a window. FALLIBLE by design: a screen can now be
+    /// re-opened mid-service (the Screens toggle), and a GPU hiccup on that re-open must
+    /// not panic the process — that would take down the *other* window, the LAN server and
+    /// the live state with it. The caller logs and leaves the screen closed instead.
+    fn new(window: Arc<Window>) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance
             .create_surface(window.clone())
-            .expect("create surface");
+            .map_err(|e| format!("create surface: {e}"))?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             compatible_surface: Some(&surface),
             ..Default::default()
         }))
-        .expect("request adapter");
+        .ok_or_else(|| "no compatible GPU adapter".to_string())?;
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
-                .expect("request device");
+                .map_err(|e| format!("request device: {e}"))?;
 
         let caps = surface.get_capabilities(&adapter);
         let format = caps
@@ -826,7 +926,8 @@ impl Renderer {
             .iter()
             .copied()
             .find(|f| f.is_srgb())
-            .unwrap_or(caps.formats[0]);
+            .or_else(|| caps.formats.first().copied())
+            .ok_or_else(|| "surface offers no texture format".to_string())?;
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -892,7 +993,7 @@ impl Renderer {
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
 
-        Renderer {
+        Ok(Renderer {
             window,
             surface,
             device,
@@ -903,7 +1004,7 @@ impl Renderer {
             sampler,
             frame_texture: None,
             telemetry: OutputTelemetry::new(),
-        }
+        })
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -1054,10 +1155,11 @@ struct RemoteShared {
 }
 
 struct App {
-    /// The main audience/program output window.
+    /// The main audience/program output window. `None` means the `main` screen is
+    /// DISABLED — for a built-in screen, `enabled` means "the OS window exists".
     main: Option<Renderer>,
     /// The stage/confidence monitor window — the same live state composed as a speaker
-    /// view (current + next line + timer + clock), FR-037.
+    /// view (current + next line + timer + clock), FR-037. `None` when disabled.
     stage: Option<Renderer>,
     /// Shared with the control-server thread: the remote controller and the local
     /// keyboard drive the *same* live state, shown on both windows.
@@ -1086,8 +1188,13 @@ struct App {
     /// Breaker-tripped clean run: checkpointing fully disabled so the
     /// preserved on-disk session is never touched (review 7ad-A).
     clean_mode: bool,
-    /// Cached identify frames (main = 1, stage = 2) while the overlay is active.
-    identify_frames: Option<(FrameBuffer, FrameBuffer)>,
+    /// Cached identify frames (main = 1, stage = 2) while the overlay is active. Each side
+    /// is `None` when that screen currently has no window (disabled), so identify still
+    /// works for whichever outputs ARE open. Invalidated whenever a window opens/closes.
+    identify_frames: Option<(Option<FrameBuffer>, Option<FrameBuffer>)>,
+    /// Live modifier state (winit reports modifiers separately from key presses) — the
+    /// explicit Cmd-Q / Ctrl-Q quit chord needs it, since closing a window no longer quits.
+    modifiers: winit::keyboard::ModifiersState,
     /// The session store (SQLite) for autosave + crash recovery.
     store: SessionStore,
     last_autosave: Instant,
@@ -1318,6 +1425,7 @@ impl App {
             disk_critical,
             clean_mode: crash_loop,
             identify_frames: None,
+            modifiers: winit::keyboard::ModifiersState::empty(),
             store,
             last_autosave: Instant::now(),
             smoke: smoke_mode_requested(
@@ -1402,7 +1510,12 @@ impl App {
     /// Apply any remotely requested display assignments. The display must exist
     /// RIGHT NOW to be accepted: a stale key is dropped without persisting and —
     /// critically — without touching the (possibly live, fullscreen) window.
-    fn apply_pending_assignments(&mut self) {
+    ///
+    /// The monitor list comes from the event loop, not from a window, so a screen that is
+    /// currently CLOSED (disabled) can still be assigned a display: the assignment persists
+    /// and [`open_screen`](Self::open_screen) honours it when the screen is switched back
+    /// on. Only the immediate fullscreen move needs a live window.
+    fn apply_pending_assignments(&mut self, event_loop: &ActiveEventLoop) {
         let pending = match self.controller.lock() {
             Ok(mut c) => c.take_pending_assignments(),
             Err(_) => return,
@@ -1410,16 +1523,15 @@ impl App {
         if pending.is_empty() {
             return;
         }
+        let monitors: Vec<winit::monitor::MonitorHandle> =
+            event_loop.available_monitors().collect();
+        let facts: Vec<MonitorFacts> = monitors.iter().map(monitor_facts).collect();
+        let keyed = display_keys(&facts);
         for (role, key) in &pending {
             let renderer = match role.as_str() {
                 "main" => self.main.as_ref(),
                 _ => self.stage.as_ref(),
             };
-            let Some(r) = renderer else { continue };
-            let monitors: Vec<winit::monitor::MonitorHandle> =
-                r.window.available_monitors().collect();
-            let facts: Vec<MonitorFacts> = monitors.iter().map(monitor_facts).collect();
-            let keyed = display_keys(&facts);
             let target = monitors
                 .iter()
                 .zip(keyed.iter())
@@ -1432,8 +1544,12 @@ impl App {
                     self.store.save_output_assignment(role, key);
                     self.assignments.retain(|(r2, _)| r2 != role);
                     self.assignments.push((role.clone(), key.clone()));
-                    r.window
-                        .set_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(monitor))));
+                    if let Some(r) = renderer {
+                        r.window
+                            .set_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(
+                                monitor,
+                            ))));
+                    }
                 }
                 None => {
                     eprintln!(
@@ -1656,6 +1772,155 @@ impl App {
             None
         }
     }
+
+    /// Which built-in screen owns the window `id`, if any.
+    fn window_role_of(&self, id: WindowId) -> Option<WindowRole> {
+        if self.main.as_ref().is_some_and(|r| r.window.id() == id) {
+            Some(WindowRole::Main)
+        } else if self.stage.as_ref().is_some_and(|r| r.window.id() == id) {
+            Some(WindowRole::Stage)
+        } else {
+            None
+        }
+    }
+
+    /// Whether this role's window currently exists.
+    fn is_window_open(&self, role: WindowRole) -> bool {
+        match role {
+            WindowRole::Main => self.main.is_some(),
+            WindowRole::Stage => self.stage.is_some(),
+        }
+    }
+
+    /// The monitor this role is assigned to, if that display is attached RIGHT NOW.
+    /// Re-resolved per open (monitors come and go between opens), same keying as
+    /// [`apply_pending_assignments`](Self::apply_pending_assignments).
+    fn assigned_monitor(
+        &self,
+        event_loop: &ActiveEventLoop,
+        role: WindowRole,
+    ) -> Option<winit::monitor::MonitorHandle> {
+        let key = self
+            .assignments
+            .iter()
+            .find(|(r, _)| r == role.screen_id())
+            .map(|(_, k)| k.clone())?;
+        let monitors: Vec<winit::monitor::MonitorHandle> =
+            event_loop.available_monitors().collect();
+        let facts: Vec<MonitorFacts> = monitors.iter().map(monitor_facts).collect();
+        let keyed = display_keys(&facts);
+        monitors
+            .iter()
+            .zip(keyed.iter())
+            .find(|(_, (_, k))| *k == key)
+            .map(|(m, _)| m.clone())
+    }
+
+    /// Flip a screen's `enabled` flag from THIS process, without a LAN round-trip. It goes
+    /// through the same [`Command::SetScreenEnabled`] dispatch a remote operator uses, so
+    /// there is exactly one place that mutates the registry (and the LAN `authorize()`
+    /// choke point is untouched — it still guards every remote caller). Skipped when the
+    /// flag already has the wanted value, so a reconcile can't dirty the registry for a
+    /// pointless persist write.
+    fn set_screen_enabled_locally(&self, role: WindowRole, enabled: bool) {
+        let already = self
+            .controller
+            .lock()
+            .map(|c| c.is_screen_enabled(role.screen_id()) == enabled)
+            .unwrap_or(false);
+        if already {
+            return;
+        }
+        drive(
+            &self.controller,
+            &Command::SetScreenEnabled {
+                screen: role.screen_id().to_string(),
+                enabled,
+            },
+        );
+    }
+
+    /// Open a built-in screen's OS window: create it (honouring the persisted per-role
+    /// display assignment as borderless fullscreen), mark the screen enabled, and publish
+    /// truthful status. A creation failure is logged and leaves the screen DISABLED — the
+    /// process keeps serving the other window rather than retrying ~60x/s or dying.
+    fn open_screen(&mut self, event_loop: &ActiveEventLoop, role: WindowRole) {
+        if self.is_window_open(role) {
+            return;
+        }
+        let mut attrs = Window::default_attributes().with_title(role.title());
+        if let Some(monitor) = self.assigned_monitor(event_loop, role) {
+            // Borderless fullscreen on the assigned display (spike-S4 path);
+            // unassigned keeps the windowed default.
+            attrs =
+                attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(monitor))));
+        }
+        let renderer = match event_loop.create_window(attrs) {
+            Ok(w) => Renderer::new(Arc::new(w)),
+            Err(e) => Err(format!("create window: {e}")),
+        };
+        match renderer {
+            Ok(r) => {
+                match role {
+                    WindowRole::Main => self.main = Some(r),
+                    WindowRole::Stage => self.stage = Some(r),
+                }
+                self.set_screen_enabled_locally(role, true);
+            }
+            Err(e) => {
+                eprintln!(
+                    "SelahCue: could not open the {} output window ({e}); leaving that screen off.",
+                    role.screen_id()
+                );
+                // Report the truth (off), and stop the reconcile from retrying every frame.
+                self.set_screen_enabled_locally(role, false);
+            }
+        }
+        // A window set change invalidates the cached identify overlay.
+        self.identify_frames = None;
+        self.publish_output_status();
+    }
+
+    /// Close a built-in screen's OS window. Dropping the [`Renderer`] drops the last
+    /// `Arc<Window>` — which IS the OS window closing — then the screen is marked disabled
+    /// and status is republished so the operator's pill stays truthful.
+    ///
+    /// This is the single code path shared by the Screens toggle and the window's own close
+    /// button, so the two can never drift. The process stays alive: it still owns the other
+    /// window, the LAN server, and the presentation state paired controllers depend on.
+    fn close_screen(&mut self, role: WindowRole) {
+        match role {
+            WindowRole::Main => self.main = None,
+            WindowRole::Stage => self.stage = None,
+        }
+        self.set_screen_enabled_locally(role, false);
+        self.identify_frames = None;
+        self.publish_output_status();
+    }
+
+    /// Make the OS windows match the screen registry. `resumed()` runs only once, so THIS
+    /// is what makes "toggle a screen back on" relaunch its window. The decision itself is
+    /// the pure [`reconcile_windows`]; this only performs it.
+    fn reconcile_screen_windows(&mut self, event_loop: &ActiveEventLoop) {
+        let actions = {
+            let Ok(c) = self.controller.lock() else {
+                return;
+            };
+            reconcile_windows(
+                c.screen_registry()
+                    .iter()
+                    .map(|s| (s.id.as_str(), s.enabled)),
+                self.main.is_some(),
+                self.stage.is_some(),
+            )
+        };
+        for action in actions {
+            match action {
+                WindowAction::Open(role) => self.open_screen(event_loop, role),
+                WindowAction::Close(role) => self.close_screen(role),
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -1679,53 +1944,25 @@ impl ApplicationHandler for App {
             })
             .collect();
         self.assignments = self.store.load_output_assignments();
-        let assignments = self.assignments.clone();
-        let monitor_for = |role: &str| {
-            assignments
-                .iter()
-                .find(|(r, _)| r == role)
-                .and_then(|(_, key)| {
-                    monitors
-                        .iter()
-                        .zip(keyed.iter())
-                        .find(|(_, (_, k))| k == key)
-                })
-                .map(|(m, _)| m.clone())
-        };
-        if self.main.is_none() {
-            let mut attrs = Window::default_attributes().with_title("SelahCue Output");
-            if let Some(monitor) = monitor_for("main") {
-                // Borderless fullscreen on the assigned display (spike-S4 path);
-                // unassigned keeps the windowed default.
-                attrs = attrs
-                    .with_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(monitor))));
-            }
-            let window = Arc::new(
-                event_loop
-                    .create_window(attrs)
-                    .expect("create output window"),
-            );
-            self.main = Some(Renderer::new(window));
-        }
-        if self.stage.is_none() {
-            let mut attrs = Window::default_attributes().with_title("SelahCue Stage / Confidence");
-            if let Some(monitor) = monitor_for("stage") {
-                attrs = attrs
-                    .with_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(monitor))));
-            }
-            let window = Arc::new(
-                event_loop
-                    .create_window(attrs)
-                    .expect("create stage window"),
-            );
-            self.stage = Some(Renderer::new(window));
-        }
+        // Create a window only for a screen that is currently ENABLED, via the same
+        // reconcile the Screens toggle and the close button use — one code path, so a
+        // screen the operator left off last service does not come back on relaunch.
+        self.reconcile_screen_windows(event_loop);
         self.publish_output_status();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            // Closing a window closes THAT SCREEN — it is the Screens toggle by another
+            // name, so it runs the same `close_screen`. It must NOT exit: this process owns
+            // the other window, the LAN server and the presentation state that paired
+            // mobile controllers depend on. Quit is the explicit Cmd-Q / Ctrl-Q chord.
+            WindowEvent::CloseRequested => {
+                if let Some(role) = self.window_role_of(id) {
+                    self.close_screen(role);
+                }
+            }
+            WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer_for(id) {
                     renderer.resize(size.width, size.height);
@@ -1762,19 +1999,28 @@ impl ApplicationHandler for App {
                                 size.height.max(1),
                             ))
                         };
-                        let frames = match (self.main.as_ref(), self.stage.as_ref()) {
-                            (Some(m), Some(st)) => Some((compose(1, m), compose(2, st))),
-                            _ => None,
-                        };
-                        self.identify_frames = frames;
+                        // Compose per EXISTING window: a disabled screen has none, and
+                        // identify must still work for the outputs that are open.
+                        self.identify_frames = Some((
+                            self.main.as_ref().map(|m| compose(1, m)),
+                            self.stage.as_ref().map(|st| compose(2, st)),
+                        ));
                     }
+                    let role = self.window_role_of(id);
                     if let Some((main_frame, stage_frame)) = self.identify_frames.as_ref() {
-                        if self.main.as_ref().is_some_and(|r| r.window.id() == id) {
-                            if let Some(r) = self.main.as_mut() {
-                                r.render(main_frame);
+                        match role {
+                            Some(WindowRole::Main) => {
+                                if let (Some(frame), Some(r)) = (main_frame, self.main.as_mut()) {
+                                    r.render(frame);
+                                }
                             }
-                        } else if let Some(r) = self.stage.as_mut() {
-                            r.render(stage_frame);
+                            Some(WindowRole::Stage) => {
+                                if let (Some(frame), Some(r)) = (stage_frame, self.stage.as_mut()) {
+                                    r.render(frame);
+                                }
+                            }
+                            // A redraw for a window we just closed: nothing to draw.
+                            None => {}
                         }
                         return;
                     }
@@ -1785,55 +2031,41 @@ impl ApplicationHandler for App {
                     return;
                 };
                 // Each window presents its own surface from the same shared live state.
-                // A DISABLED screen (Screens page — dynamic registry) shows black: a
-                // per-screen mute distinct from global blackout.
+                // A DISABLED built-in screen has NO window at all (see `close_screen`), so
+                // there is nothing to mute here — a redraw only ever arrives for a window
+                // that exists. Killing the picture while KEEPING the window is Blackout.
                 let now = Instant::now();
-                if self.main.as_ref().is_some_and(|r| r.window.id() == id) {
-                    let live = c.presenter().live_output();
-                    let cfg = c.output_config("main");
-                    let black;
-                    let main_out = if c.is_screen_enabled("main") {
-                        live
-                    } else {
-                        black = FrameBuffer::filled(
-                            live.width(),
-                            live.height(),
-                            selahcue_present::Rgba::BLACK,
-                        );
-                        &black
-                    };
-                    let presented = self
-                        .main
-                        .as_mut()
-                        .map(|r| r.present_output(main_out, &cfg, now))
-                        .unwrap_or(false);
-                    // Smoke mode (86ajpevzp): the main window produced a real frame —
-                    // report time-to-first-frame (from App init) and exit cleanly (0).
-                    if self.smoke && presented && !self.smoke_done {
-                        self.smoke_done = true;
-                        let ms = self.launched_at.elapsed().as_millis();
-                        println!(
-                            "SMOKE OK: main output window presented its first frame in {ms} ms (from App init)"
-                        );
-                        event_loop.exit();
+                // Match on the window that raised this redraw. A stale event for a window
+                // closed a moment ago matches neither and is dropped — it must never present
+                // one screen's composition on the other's surface.
+                match self.window_role_of(id) {
+                    Some(WindowRole::Main) => {
+                        let live = c.presenter().live_output();
+                        let cfg = c.output_config("main");
+                        let presented = self
+                            .main
+                            .as_mut()
+                            .map(|r| r.present_output(live, &cfg, now))
+                            .unwrap_or(false);
+                        // Smoke mode (86ajpevzp): the main window produced a real frame —
+                        // report time-to-first-frame (from App init) and exit cleanly (0).
+                        if self.smoke && presented && !self.smoke_done {
+                            self.smoke_done = true;
+                            let ms = self.launched_at.elapsed().as_millis();
+                            println!(
+                                "SMOKE OK: main output window presented its first frame in {ms} ms (from App init)"
+                            );
+                            event_loop.exit();
+                        }
                     }
-                } else if self.stage.is_some() {
-                    let stage_live = c.stage_output();
-                    let cfg = c.output_config("stage");
-                    let black;
-                    let stage_out = if c.is_screen_enabled("stage") {
-                        stage_live
-                    } else {
-                        black = FrameBuffer::filled(
-                            stage_live.width(),
-                            stage_live.height(),
-                            selahcue_present::Rgba::BLACK,
-                        );
-                        &black
-                    };
-                    if let Some(r) = self.stage.as_mut() {
-                        r.present_output(stage_out, &cfg, now);
+                    Some(WindowRole::Stage) => {
+                        let stage_live = c.stage_output();
+                        let cfg = c.output_config("stage");
+                        if let Some(r) = self.stage.as_mut() {
+                            r.present_output(stage_live, &cfg, now);
+                        }
                     }
+                    None => {}
                 }
             }
             WindowEvent::KeyboardInput {
@@ -1849,6 +2081,22 @@ impl ApplicationHandler for App {
                 // OS auto-repeat is never a deliberate action: a held Esc must
                 // not complete the double-tap, a held B must not strobe.
                 if repeat {
+                    return;
+                }
+                // QUIT (Cmd-Q on macOS, Ctrl-Q elsewhere). Closing a window now closes just
+                // that screen, so this chord is the deliberate way to stop the output
+                // process — checked before everything else and never mapped to an action.
+                let character = match &logical_key {
+                    Key::Character(c) => Some(c.as_str()),
+                    _ => None,
+                };
+                if is_quit_chord(
+                    character,
+                    self.modifiers.super_key(),
+                    self.modifiers.control_key(),
+                    cfg!(target_os = "macos"),
+                ) {
+                    event_loop.exit();
                     return;
                 }
                 // Host-local pairing keys first (not canonical live actions).
@@ -1870,7 +2118,7 @@ impl ApplicationHandler for App {
                     _ => {}
                 }
                 // Canonical map (UX-CANONICAL §1). NOTE: `Esc` no longer quits —
-                // double-`Esc` is Clear-all; quit via the window close button.
+                // double-`Esc` is Clear-all; quit with Cmd-Q / Ctrl-Q (above).
                 let key = match logical_key {
                     Key::Named(NamedKey::Escape) => Some(KeyPress::Escape),
                     Key::Named(NamedKey::Space) => Some(KeyPress::Space),
@@ -1907,7 +2155,7 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         // Fire a frame when the fixed deadline is reached (or at startup): advance the
         // shared state (the countdown + confidence monitor) and repaint BOTH windows — so
         // a change made by the remote controller, which is not a winit event, appears
@@ -1941,7 +2189,7 @@ impl ApplicationHandler for App {
                 );
             }
             self.autosave(now);
-            self.apply_pending_assignments();
+            self.apply_pending_assignments(event_loop);
             if let Some(r) = self.main.as_ref() {
                 r.window.request_redraw();
             }
@@ -1957,11 +2205,20 @@ impl ApplicationHandler for App {
         // exit non-zero with a clear message.
         if self.smoke && !self.smoke_done && self.launched_at.elapsed() > SMOKE_TIMEOUT {
             eprintln!(
-                "SMOKE FAIL: no frame presented within {}s of launch",
-                SMOKE_TIMEOUT.as_secs()
+                "SMOKE FAIL: no frame presented within {}s of launch (the `main` screen is {})",
+                SMOKE_TIMEOUT.as_secs(),
+                match self.controller.lock() {
+                    Ok(c) if c.is_screen_enabled("main") => "enabled",
+                    Ok(_) => "DISABLED — it has no window to present",
+                    Err(_) => "unknown (controller lock poisoned)",
+                }
             );
             std::process::exit(1);
         }
+        // Reconcile the OS windows against the screen registry: this is what makes a
+        // Screens-page toggle open or close a window, since `resumed()` runs only once.
+        // No-op (and no allocation) when reality already matches.
+        self.reconcile_screen_windows(event_loop);
         // Wake at the *fixed* next-frame deadline. The repaint is requested in
         // `new_events` (not here), so the loop idles until the deadline instead of
         // spinning on a self-posted redraw — a window that can't present never pegs a CPU
@@ -2223,6 +2480,20 @@ fn print_connect_banner(
     println!();
     println!("  Local keys: Space/\u{2192}=next  \u{2190}=prev  Enter=Go Live  B=blackout  Esc Esc=clear all  Backspace=clear staged");
     println!("  Pairing:    P=show a QR invite (approve/deny devices from the operator console)");
+    // Closing a window now closes only THAT screen (it is the Screens toggle by another
+    // name), so the way out has to be stated explicitly.
+    println!(
+        "  Windows:    a window's close button switches OFF that screen (toggle it back on \
+         from the operator's Screens page)"
+    );
+    println!(
+        "  Quit:       {} — closing a window no longer stops the output process",
+        if cfg!(target_os = "macos") {
+            "Cmd-Q"
+        } else {
+            "Ctrl-Q"
+        }
+    );
     println!();
 }
 
@@ -2290,6 +2561,184 @@ fn main() {
     // Best-effort: don't leave a stale endpoint (with a now-dead token/port) behind on a
     // clean exit, so a later operator shell doesn't try to attach to a defunct window.
     let _ = std::fs::remove_file(endpoint_path());
+}
+
+/// The window-lifecycle decision (the pure half of the toggle / close-button path).
+/// Real windowing is not testable in CI, so the DECISION is tested here and the winit
+/// half only performs what these tests pin.
+#[cfg(test)]
+mod window_lifecycle_tests {
+    use super::{
+        is_quit_chord, reconcile_windows, window_role_for_screen, WindowAction, WindowRole,
+    };
+
+    /// The default registry: the two built-ins, both enabled.
+    fn builtins(main: bool, stage: bool) -> Vec<(&'static str, bool)> {
+        vec![("main", main), ("stage", stage)]
+    }
+
+    #[test]
+    fn nothing_to_do_when_reality_already_matches() {
+        // Both enabled and both open: idempotent, no churn on the ~60 Hz reconcile.
+        assert_eq!(reconcile_windows(builtins(true, true), true, true), []);
+        // Both disabled and both already closed: equally a fixed point.
+        assert_eq!(reconcile_windows(builtins(false, false), false, false), []);
+    }
+
+    #[test]
+    fn disabling_a_screen_closes_its_window() {
+        assert_eq!(
+            reconcile_windows(builtins(false, true), true, true),
+            [WindowAction::Close(WindowRole::Main)]
+        );
+        assert_eq!(
+            reconcile_windows(builtins(true, false), true, true),
+            [WindowAction::Close(WindowRole::Stage)]
+        );
+        // Both off at once closes both — the process still lives (it owns the LAN server).
+        assert_eq!(
+            reconcile_windows(builtins(false, false), true, true),
+            [
+                WindowAction::Close(WindowRole::Main),
+                WindowAction::Close(WindowRole::Stage)
+            ]
+        );
+    }
+
+    #[test]
+    fn re_enabling_a_screen_relaunches_its_window() {
+        // The reason the reconcile exists: `resumed()` runs once, so this is what makes
+        // "toggle back on" bring the window back.
+        assert_eq!(
+            reconcile_windows(builtins(true, false), false, false),
+            [WindowAction::Open(WindowRole::Main)]
+        );
+        assert_eq!(
+            reconcile_windows(builtins(false, true), false, false),
+            [WindowAction::Open(WindowRole::Stage)]
+        );
+        // A cold start with both enabled and no windows yet: `resumed()`'s case.
+        assert_eq!(
+            reconcile_windows(builtins(true, true), false, false),
+            [
+                WindowAction::Open(WindowRole::Main),
+                WindowAction::Open(WindowRole::Stage)
+            ]
+        );
+    }
+
+    #[test]
+    fn opens_and_closes_can_be_decided_in_the_same_pass() {
+        // main toggled off while stage was toggled on — one pass settles both.
+        assert_eq!(
+            reconcile_windows(builtins(false, true), true, false),
+            [
+                WindowAction::Close(WindowRole::Main),
+                WindowAction::Open(WindowRole::Stage)
+            ]
+        );
+    }
+
+    #[test]
+    fn applying_the_actions_reaches_a_fixed_point() {
+        // Idempotence as a property: performing the decision and re-running the reconcile
+        // must decide nothing further, whatever the starting state.
+        for main_enabled in [false, true] {
+            for stage_enabled in [false, true] {
+                for main_open in [false, true] {
+                    for stage_open in [false, true] {
+                        let actions = reconcile_windows(
+                            builtins(main_enabled, stage_enabled),
+                            main_open,
+                            stage_open,
+                        );
+                        // Perform them (the winit half does exactly this).
+                        let mut m = main_open;
+                        let mut s = stage_open;
+                        for a in &actions {
+                            match a {
+                                WindowAction::Open(WindowRole::Main) => m = true,
+                                WindowAction::Close(WindowRole::Main) => m = false,
+                                WindowAction::Open(WindowRole::Stage) => s = true,
+                                WindowAction::Close(WindowRole::Stage) => s = false,
+                            }
+                        }
+                        assert_eq!(m, main_enabled, "main window matches the registry");
+                        assert_eq!(s, stage_enabled, "stage window matches the registry");
+                        assert_eq!(
+                            reconcile_windows(builtins(main_enabled, stage_enabled), m, s),
+                            [],
+                            "a second pass decides nothing"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_close_button_converges_on_the_same_decision() {
+        // Clicking a window's close button runs `close_screen(role)`, which drops the
+        // renderer AND sets that screen disabled. Feeding that resulting state back through
+        // the reconcile must produce NO action — the button and the toggle are one path, so
+        // a closed window is never re-opened behind the operator's back...
+        assert_eq!(
+            reconcile_windows(builtins(false, true), false, true),
+            [],
+            "after the close button, the reconcile agrees"
+        );
+        // ...and the state the button lands in is exactly the state the TOGGLE lands in:
+        // disabling main from the Screens page decides Close(Main), and performing that
+        // close gives the same (enabled=false, window absent) pair.
+        assert_eq!(
+            reconcile_windows(builtins(false, true), true, true),
+            [WindowAction::Close(WindowRole::Main)]
+        );
+    }
+
+    #[test]
+    fn virtual_screens_never_produce_a_window_action() {
+        // Lower-third / stream feeds have NO window: their `enabled` flag gates NDI only.
+        // Whatever they are set to, the reconcile must stay silent about windows.
+        assert!(window_role_for_screen("lower-third").is_none());
+        assert!(window_role_for_screen("stream").is_none());
+        assert!(window_role_for_screen("stream-2").is_none());
+        let mixed = vec![
+            ("main", true),
+            ("stage", true),
+            ("lower-third", false),
+            ("stream", true),
+            ("stream-2", false),
+        ];
+        assert_eq!(
+            reconcile_windows(mixed, true, true),
+            [],
+            "virtual screens are invisible to the window reconcile"
+        );
+        // Even a registry of ONLY virtual screens (no built-ins) decides nothing — and, in
+        // particular, never closes a physical window that is open.
+        assert_eq!(
+            reconcile_windows(vec![("lower-third", false), ("stream", false)], true, true),
+            []
+        );
+    }
+
+    #[test]
+    fn quit_is_the_platform_chord_and_nothing_else() {
+        // macOS: Cmd-Q quits, Ctrl-Q does not.
+        assert!(is_quit_chord(Some("q"), true, false, true));
+        assert!(is_quit_chord(Some("Q"), true, false, true));
+        assert!(!is_quit_chord(Some("q"), false, true, true));
+        // Elsewhere: Ctrl-Q quits, Cmd/Super-Q does not.
+        assert!(is_quit_chord(Some("q"), false, true, false));
+        assert!(!is_quit_chord(Some("q"), true, false, false));
+        // A bare `q` is never a quit (it must not shadow a canonical key), and neither is
+        // the modifier on some other key.
+        assert!(!is_quit_chord(Some("q"), false, false, true));
+        assert!(!is_quit_chord(Some("q"), false, false, false));
+        assert!(!is_quit_chord(Some("b"), true, true, true));
+        assert!(!is_quit_chord(None, true, true, true));
+    }
 }
 
 #[cfg(test)]

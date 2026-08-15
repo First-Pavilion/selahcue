@@ -1136,9 +1136,11 @@ impl LiveController {
     }
 
     /// Enable or disable a screen by id (Screens page — dynamic registry). A disabled
-    /// screen composes safe all-black (a per-screen mute); the desktop also blacks the
-    /// physical `main`/`stage` windows via [`Self::is_screen_enabled`]. An unknown id is
-    /// rejected. Marks the registry for persistence.
+    /// VIRTUAL screen composes safe all-black and stops its NDI delivery. For the BUILT-IN
+    /// `main`/`stage` screens the flag means the desktop's OS WINDOW EXISTS: the host opens
+    /// or closes that window to match (see `reconcile_windows` in selahcue-desktop), which
+    /// is also what the window's own close button does. An unknown id is rejected. Marks
+    /// the registry for persistence.
     fn set_screen_enabled(&mut self, screen: &str, enabled: bool) -> ControllerReply {
         if self.screen_registry.set_enabled(screen, enabled) {
             self.screen_registry_dirty = true;
@@ -1193,9 +1195,9 @@ impl LiveController {
         &self.screen_registry
     }
 
-    /// Whether a screen is enabled — the desktop consults this to gate the physical
-    /// `main`/`stage` windows (a disabled screen shows black). An unknown id defaults to
-    /// enabled (see [`ScreenRegistry::is_enabled`]).
+    /// Whether a screen is enabled — the desktop consults this to decide whether the
+    /// physical `main`/`stage` WINDOW should exist, and to gate a virtual screen's NDI
+    /// delivery. An unknown id defaults to enabled (see [`ScreenRegistry::is_enabled`]).
     pub fn is_screen_enabled(&self, id: &str) -> bool {
         self.screen_registry.is_enabled(id)
     }
