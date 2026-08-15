@@ -9,6 +9,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from selahcue_api.apps.accounts.checks import (
+    INERT_CORS_WARNING,
+    cors_allowed_origins_has_no_middleware,
+)
 from selahcue_api.apps.throttling.checks import (
     SHARED_BUCKET_WARNING,
     trusted_proxy_count_is_set_behind_a_proxy,
@@ -101,3 +105,46 @@ def test_eager_celery_is_still_allowed_outside_production():
     """It stays available as the test/debug lever it is."""
     result = _run_check(ENVIRONMENT="dev", CELERY_TASK_ALWAYS_EAGER="1")
     assert result.returncode == 0, result.stderr
+
+
+# --- accounts W001: a CORS allow-list that nothing enforces -----------------
+def test_inert_cors_warning_fires_when_the_allow_list_is_set(settings):
+    """`CORS_ALLOWED_ORIGINS` has been read from the environment since the foundation
+    slice while no middleware ever consumed it. Setting it looks like configuring CORS and
+    achieves nothing — the browser blocks the call and the server log says nothing."""
+    settings.CORS_ALLOWED_ORIGINS = ("http://localhost:5173",)
+    settings.MIDDLEWARE = [m for m in settings.MIDDLEWARE if "cors" not in m.lower()]
+
+    issues = cors_allowed_origins_has_no_middleware(None)
+    assert [issue.id for issue in issues] == [INERT_CORS_WARNING]
+    # A Warning, not an Error: with no CORS headers the browser REFUSES the request, so the
+    # misconfiguration fails closed. Nothing is exposed; something merely does not work.
+    assert issues[0].level < 40
+    # The hint has to name the same-origin arrangement, or the obvious "fix" is to install
+    # corsheaders and then relax SameSite to make the cookie flow — the exact regression
+    # this guard exists to prevent.
+    assert "same-origin" in issues[0].hint.lower()
+    assert "SameSite=Strict" in issues[0].hint
+
+
+def test_inert_cors_warning_is_silent_by_default(settings):
+    """The variable is unset in CI, in tests and in the compose stack, so `manage.py check`
+    stays clean for everyone who has not opted in."""
+    settings.CORS_ALLOWED_ORIGINS = ()
+    assert cors_allowed_origins_has_no_middleware(None) == []
+
+
+def test_inert_cors_warning_is_silent_once_middleware_exists(settings):
+    """If CORS middleware is ever installed deliberately, the allow-list is real and the
+    warning must get out of the way rather than nag forever."""
+    settings.CORS_ALLOWED_ORIGINS = ("http://localhost:5173",)
+    settings.MIDDLEWARE = ["corsheaders.middleware.CorsMiddleware", *settings.MIDDLEWARE]
+    assert cors_allowed_origins_has_no_middleware(None) == []
+
+
+def test_the_shipped_configuration_emits_no_cors_headers(client, settings):
+    """Pins the actual behaviour the warning describes, so the guard cannot drift away from
+    reality: even with an allow-list set, no Access-Control-Allow-Origin comes back."""
+    settings.CORS_ALLOWED_ORIGINS = ("http://localhost:5173",)
+    response = client.get("/graphql/account", HTTP_ORIGIN="http://localhost:5173")
+    assert "Access-Control-Allow-Origin" not in response.headers

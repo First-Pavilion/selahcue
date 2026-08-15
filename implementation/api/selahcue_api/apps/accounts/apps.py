@@ -14,3 +14,6 @@ class SelahCueAccountsConfig(AppConfig):
         from selahcue_api.apps.accounts.services import set_email_sender
 
         set_email_sender(CeleryEmailSender())
+
+        # Importing the module is what registers the check with the framework.
+        from selahcue_api.apps.accounts import checks  # noqa: F401

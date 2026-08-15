@@ -142,6 +142,20 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 X_FRAME_OPTIONS = "DENY"
 
+# NOT ENFORCED, ON PURPOSE. No CORS middleware is installed (corsheaders is in neither
+# INSTALLED_APPS nor MIDDLEWARE), so this allow-list is read and then consumed by nothing:
+# the API emits no Access-Control-* headers and an OPTIONS preflight returns 405.
+#
+# SelahCue serves its browser client SAME-ORIGIN rather than cross-origin —
+# implementation/marketing/vite.config.ts proxies /graphql in dev, nginx.conf does the
+# production half. That is what makes the SameSite=Strict session cookie below usable at
+# all, and it also keeps Django's CSRF origin check satisfied. Enabling CORS would add a
+# second, weaker path to the same surface which by construction CANNOT carry that cookie,
+# and the usual next step is to relax SameSite to None — which is precisely what Strict is
+# here to prevent. Treat switching this on as a security decision, not a config tweak.
+#
+# `selahcue_accounts.W001` (apps/accounts/checks.py) warns if the variable is set anyway,
+# so the mismatch surfaces at `manage.py check` instead of as an opaque browser error.
 CORS_ALLOWED_ORIGINS = tuple(
     origin.strip()
     for origin in os.getenv("SELAHCUE_CORS_ALLOWED_ORIGINS", "").split(",")
