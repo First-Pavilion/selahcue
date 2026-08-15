@@ -137,8 +137,13 @@ class _ControllerViewState extends State<ControllerView> {
   }
 
   /// Build a bottom-bar destination; a view-only tab gets a muted dot + a
-  /// "view only" tooltip (the ◐ marker from the design).
-  NavigationDestination _destinationFor(TabSpec spec) {
+  /// "view only" tooltip (the ◐ marker from the design), and the Scripture tab
+  /// additionally carries the count of detections waiting for approval so they
+  /// are noticeable from Live/Plan/Timer — they used to be visible only once
+  /// you were already standing on the Scripture tab.
+  ///
+  /// [pending] is the number of detections awaiting approval (0 = no badge).
+  NavigationDestination _destinationFor(TabSpec spec, int pending) {
     final (IconData icon, IconData selected) = switch (spec.tab) {
       ControllerTab.live => (Icons.play_arrow_outlined, Icons.play_arrow),
       ControllerTab.plan => (Icons.list_alt_outlined, Icons.list_alt),
@@ -146,18 +151,49 @@ class _ControllerViewState extends State<ControllerView> {
       ControllerTab.timer => (Icons.timer_outlined, Icons.timer),
     };
     final label = _tabTitle(spec.tab);
-    Widget wrap(IconData i) => spec.viewOnly
-        ? Badge(
-            backgroundColor: DesignTokens.textMuted,
-            smallSize: 7,
-            child: Icon(i),
-          )
-        : Icon(i);
+    final count = spec.tab == ControllerTab.scripture ? pending : 0;
+    Widget wrap(IconData i) {
+      Widget marked = Icon(i);
+      if (spec.viewOnly) {
+        marked = Badge(
+          backgroundColor: DesignTokens.textMuted,
+          smallSize: 7,
+          // The count is actionable and time-critical, so it keeps the
+          // conventional top-end corner and the ambient view-only dot yields to
+          // top-start — a view-only tab must still show BOTH markers, not one
+          // stacked under the other. AlignmentDirectional so RTL mirrors it.
+          alignment:
+              count > 0 ? AlignmentDirectional.topStart : null,
+          offset: count > 0 ? const Offset(-2, -2) : null,
+          child: marked,
+        );
+      }
+      if (count > 0) {
+        marked = Badge(
+          backgroundColor: DesignTokens.warnFill,
+          textColor: Colors.white,
+          // Capped: an uncapped count blows the badge out past the nav icon and
+          // starts shoving the bar's labels around.
+          label: Text(count > 99 ? '99+' : '$count'),
+          child: marked,
+        );
+      }
+      return marked;
+    }
+
+    // `NavigationDestination` has no badge-semantics slot — assistive tech
+    // reads the label and surfaces the tooltip as the hint, so the count has to
+    // live in the tooltip to be announced at all. The label itself stays short
+    // so the bar does not wrap at a large text scale.
     return NavigationDestination(
       icon: wrap(icon),
       selectedIcon: wrap(selected),
       label: label,
-      tooltip: spec.viewOnly ? '$label — view only' : label,
+      tooltip: [
+        label,
+        if (spec.viewOnly) 'view only',
+        if (count > 0) '$count need approval',
+      ].join(' — '),
     );
   }
 
@@ -187,6 +223,9 @@ class _ControllerViewState extends State<ControllerView> {
         // can never leave it pointing at a now-hidden tab.
         final specs = visibleTabsFor(_live.role);
         final tab = _tab.clamp(0, specs.length - 1);
+        // Detections waiting for approval — badged onto the Scripture tab so
+        // they are visible from every tab, not just once you are already there.
+        final pendingApprovals = view?.detections.length ?? 0;
         final pages = [for (final s in specs) _pageFor(s.tab)];
         final currentTitle = _tabTitle(specs[tab].tab);
         return Scaffold(
@@ -255,61 +294,7 @@ class _ControllerViewState extends State<ControllerView> {
           ),
           body: Column(
             children: [
-              // Two distinct truths, both of which mean "your taps won't be
-              // sent": the link is down, or it is back but this device has not
-              // yet re-read the host. The second is the one that used to leave
-              // controls live against a stale view (FR-097).
-              if (_live.syncing)
-                Container(
-                  width: double.infinity,
-                  color: DesignTokens.warnFill,
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Text(
-                    _live.reconnecting
-                        ? 'Reconnecting to the host… your taps won’t be sent'
-                        : 'Syncing live state…',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                    ),
-                  ),
-                )
-              else if (_live.error != null)
-                Material(
-                  color: DesignTokens.liveFill,
-                  child: InkWell(
-                    onTap: _live.dismissError,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              _live.error!,
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ),
-                          const Text(
-                            'Dismiss',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
+              ConnectionBanner(live: _live),
               // Constrain + centre the control column so it doesn't stretch
               // edge-to-edge on a tablet / in landscape (design handoff §1).
               Expanded(
@@ -329,7 +314,9 @@ class _ControllerViewState extends State<ControllerView> {
             indicatorColor: DesignTokens.accentBrand.withValues(alpha: 0.22),
             selectedIndex: tab,
             onDestinationSelected: (i) => setState(() => _tab = i),
-            destinations: [for (final s in specs) _destinationFor(s)],
+            destinations: [
+              for (final s in specs) _destinationFor(s, pendingApprovals),
+            ],
           ),
         );
       },

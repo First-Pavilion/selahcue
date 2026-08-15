@@ -14,6 +14,75 @@ import '../../models/protocol.dart';
 import '../../models/rbac.dart';
 import '../../models/settings.dart';
 
+/// The connection notice: "your taps won't be sent" (amber, while the link is
+/// down or live state is still being re-read) or a dismissible command error
+/// (red). Renders nothing when the link is healthy and there is no error.
+///
+/// Shared rather than inlined because a pushed full-screen route COVERS
+/// `ControllerView.body` and therefore covers its copy of this banner. Any
+/// screen the operator can sit on must carry its own, and the two must say the
+/// same thing — so there is exactly one implementation (DETECTIONS-VIEW-spec
+/// §7.3 "identical copy and behaviour").
+class ConnectionBanner extends StatelessWidget {
+  final LiveController live;
+  const ConnectionBanner({super.key, required this.live});
+
+  @override
+  Widget build(BuildContext context) {
+    // Two distinct truths, both of which mean "your taps won't be sent": the
+    // link is down, or it is back but this device has not yet re-read the host.
+    // The second is the one that used to leave controls live against a stale
+    // view (FR-097).
+    if (live.syncing) {
+      return Container(
+        width: double.infinity,
+        color: DesignTokens.warnFill,
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Text(
+          live.reconnecting
+              ? 'Reconnecting to the host… your taps won’t be sent'
+              : 'Syncing live state…',
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: Colors.white,
+          ),
+        ),
+      );
+    }
+    final error = live.error;
+    if (error == null) return const SizedBox.shrink();
+    return Material(
+      color: DesignTokens.liveFill,
+      child: InkWell(
+        onTap: live.dismissError,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  error,
+                  style: const TextStyle(fontSize: 12, color: Colors.white),
+                ),
+              ),
+              const Text(
+                'Dismiss',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// A LIVE / PREVIEW badge — colour + text label (never colour alone, WCAG 1.4.1).
 class StatusBadge extends StatelessWidget {
   final String text;

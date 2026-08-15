@@ -1,5 +1,9 @@
-/// The Scripture tab shows the detection-approval card (FR-095) and Approve /
-/// Reject send the right commands.
+/// The Scripture tab surfaces pending detections (FR-095) and the approval
+/// route's Approve / Reject send the right commands.
+///
+/// The cards themselves live on a pushed route (`DetectionsView`) rather than
+/// inline in the tab — see `detections_overflow_test.dart` for why. The tab
+/// keeps only a fixed-height banner into that route.
 library;
 
 import 'package:flutter/material.dart';
@@ -55,11 +59,21 @@ Future<LiveController> _pump(WidgetTester tester, _Fake fake) async {
   return live;
 }
 
+/// Open the approval queue from the tab's banner.
+Future<void> _openQueue(WidgetTester tester) async {
+  await tester.tap(find.text('1 verse needs approval'));
+  await tester.pumpAndSettle();
+}
+
 void main() {
-  testWidgets('Assistant (Scripture Op) sees the approval card', (tester) async {
+  testWidgets('Assistant (Scripture Op) is told verses need approval',
+      (tester) async {
     final live =
         await _pump(tester, _Fake(MobileRole.assistant, _viewWithDetections()));
-    expect(find.text('NEEDS YOUR APPROVAL'), findsOneWidget);
+    expect(find.text('1 verse needs approval'), findsOneWidget);
+
+    await _openQueue(tester);
+    expect(find.text('Needs your approval'), findsOneWidget);
     expect(find.text('Romans 8:28'), findsOneWidget);
     expect(find.text('94% MATCH'), findsOneWidget);
     expect(find.text('Approve'), findsOneWidget);
@@ -71,6 +85,7 @@ void main() {
       (tester) async {
     final fake = _Fake(MobileRole.producer, _viewWithDetections());
     final live = await _pump(tester, fake);
+    await _openQueue(tester);
 
     await tester.tap(find.text('Approve'));
     await tester.pump();
@@ -88,11 +103,11 @@ void main() {
     live.dispose();
   });
 
-  testWidgets('Viewer (no scripture) does not see the approval card',
+  testWidgets('Viewer (no scripture) is not offered the approval queue',
       (tester) async {
     final live =
         await _pump(tester, _Fake(MobileRole.viewer, _viewWithDetections()));
-    expect(find.text('NEEDS YOUR APPROVAL'), findsNothing);
+    expect(find.text('1 verse needs approval'), findsNothing);
     expect(find.textContaining('not part of your role'), findsOneWidget);
     live.dispose();
   });

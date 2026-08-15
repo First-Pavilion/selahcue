@@ -13,6 +13,8 @@ import '../../models/bible_books.dart';
 import '../../models/design_tokens.dart';
 import '../../models/protocol.dart';
 import '../../models/rbac.dart';
+import '../../models/settings.dart';
+import '../detections_view.dart';
 
 class ScriptureTab extends StatefulWidget {
   final LiveController live;
@@ -171,9 +173,16 @@ class _ScriptureTabState extends State<ScriptureTab> {
       children: [
         // The human-in-the-loop gate (FR-095): auto-detected scripture the
         // operator must approve before it can go live (never auto-displays,
-        // FR-115). Shown above search when the host has pending detections.
+        // FR-115). Only a FIXED-HEIGHT banner lives here — the cards themselves
+        // are on a scrolling route. Every child of this Column must stay
+        // bounded; the old inline card stack grew with the detection count
+        // until it starved the Expanded verse list and overflowed the tab
+        // (86ak188mz).
         if (view != null && view.detections.isNotEmpty)
-          _detectionSection(view.detections),
+          _DetectionBanner(
+            count: view.detections.length,
+            onTap: () => DetectionsView.open(context, widget.live),
+          ),
         // Controls: translation picker + reference/search field.
         Padding(
           padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
@@ -239,91 +248,6 @@ class _ScriptureTabState extends State<ScriptureTab> {
       ],
     );
   }
-
-  /// The "NEEDS YOUR APPROVAL" card — one row per pending detection. Approve
-  /// stages the verse in Preview (`ApproveDetection`); Reject drops it
-  /// (`DismissDetection`). Both require SearchScripture (this tab is gated).
-  Widget _detectionSection(List<DetectionView> detections) => Container(
-        margin: const EdgeInsets.fromLTRB(14, 12, 14, 0),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: DesignTokens.warnFill.withValues(alpha: 0.14),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: DesignTokens.warnInk),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text('NEEDS YOUR APPROVAL',
-                style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.7,
-                    color: DesignTokens.warnInk)),
-            for (final d in detections) _detectionRow(d),
-          ],
-        ),
-      );
-
-  Widget _detectionRow(DetectionView d) => Padding(
-        padding: const EdgeInsets.only(top: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(d.reference,
-                      style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          color: DesignTokens.textPrimary)),
-                ),
-                if (d.confidence != null)
-                  Text('${d.confidence}% MATCH',
-                      style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: DesignTokens.previewInk)),
-              ],
-            ),
-            if (d.text.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: Text(d.text,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 13, color: DesignTokens.textMuted)),
-              ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton(
-                    style: FilledButton.styleFrom(
-                        backgroundColor: DesignTokens.previewFill,
-                        padding: const EdgeInsets.symmetric(vertical: 10)),
-                    onPressed: () =>
-                        widget.live.act(cmdApproveDetection(d.id)),
-                    child: const Text('Approve'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton(
-                    style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 10)),
-                    onPressed: () =>
-                        widget.live.act(cmdDismissDetection(d.id)),
-                    child: const Text('Reject'),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      );
 
   Widget _chapterNav(ChapterResult ch) => Padding(
         padding: const EdgeInsets.fromLTRB(14, 4, 14, 6),
@@ -424,6 +348,84 @@ class _ScriptureTabState extends State<ScriptureTab> {
           ),
         ),
       );
+}
+
+/// The entry point to the detection-approval queue (FR-095).
+///
+/// "Fixed height" here means fixed **with respect to the detection count** —
+/// this is the bounded replacement for the inline card stack that grew with N
+/// until it starved the verse list and overflowed the tab (86ak188mz). It is
+/// deliberately NOT a fixed `SizedBox`: a hard pixel height would clip the
+/// label the moment the operator raises their system font size, trading an
+/// overflow bug for a legibility bug on the same screen. So: a 48dp MINIMUM
+/// around intrinsic content, which grows with the text scale and stays constant
+/// in N at every scale.
+///
+/// Never disabled, including while syncing — reading the queue is always safe;
+/// it is Approve/Reject that are gated. Blocking navigation during a reconnect
+/// would strand the operator with a count they cannot inspect.
+class _DetectionBanner extends StatelessWidget {
+  final int count;
+  final VoidCallback onTap;
+  const _DetectionBanner({required this.count, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final label =
+        count == 1 ? '1 verse needs approval' : '$count verses need approval';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+      child: Semantics(
+        button: true,
+        label: label,
+        hint: 'Opens the approval list',
+        excludeSemantics: true,
+        child: Material(
+          color: DesignTokens.warnFill.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(10),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () {
+              SettingsScope.maybeOf(context)?.haptic();
+              onTap();
+            },
+            child: Container(
+              constraints: const BoxConstraints(minHeight: 48),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: DesignTokens.warnInk),
+              ),
+              child: Row(
+                children: [
+                  // Real icons, not the ⚠ / › glyphs: U+26A0 has an emoji
+                  // presentation on iOS that ignores warnInk, and glyph metrics
+                  // differ across Android OEM fonts.
+                  const Icon(Icons.warning_amber_rounded,
+                      size: 18, color: DesignTokens.warnInk),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(label,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.2,
+                            color: DesignTokens.warnInk)),
+                  ),
+                  const Icon(Icons.chevron_right,
+                      size: 20, color: DesignTokens.warnInk),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _TranslationPicker extends StatelessWidget {
