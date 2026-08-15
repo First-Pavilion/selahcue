@@ -23,9 +23,17 @@ import 'package:selahcue_controller/views/widgets/mobile_widgets.dart';
 class _Fake implements ControllerSession {
   _Fake({this.blackout = false});
 
-  final bool blackout;
+  /// Mutable: the DESKTOP operator is authoritative and can black out at any
+  /// moment, including in the gap between this device's arm tap and its
+  /// confirm tap.
+  bool blackout;
   bool dead = false;
   final List<String> sent = [];
+
+  /// Full command maps, for the assertions that care about an absolute
+  /// command's ARGUMENT rather than just its name — `blackout` on vs off is the
+  /// difference between darkening the audience screen and restoring it.
+  final List<Map<String, dynamic>> sentCmds = [];
 
   /// When set, the state fetch parks — socket back, truth not yet re-read.
   Completer<void>? gate;
@@ -37,6 +45,7 @@ class _Fake implements ControllerSession {
   Future<ServerMessage> command(Map<String, dynamic> cmd) async {
     if (dead) throw const SessionException('down');
     sent.add(cmd['cmd'] as String);
+    sentCmds.add(cmd);
     return const Ack(1);
   }
 
@@ -66,6 +75,25 @@ Future<LiveController> _pumpStrip(WidgetTester tester, _Fake fake) async {
   final live = LiveController(session: fake, stored: _stored);
   await tester.pumpWidget(
       MaterialApp(home: Scaffold(body: EmergencyStrip(live: live))));
+  await tester.pump(const Duration(milliseconds: 60));
+  return live;
+}
+
+/// Same, but rebuilt on every controller notification — i.e. on every 1s poll,
+/// the way `ControllerView` really hosts the strip. That rebuild is load-bearing
+/// for anything about state changing mid-gesture: a strip that never rebuilds
+/// keeps the closures it was built with and cannot show the bug.
+Future<LiveController> _pumpPolledStrip(
+    WidgetTester tester, _Fake fake) async {
+  final live = LiveController(session: fake, stored: _stored);
+  await tester.pumpWidget(MaterialApp(
+    home: Scaffold(
+      body: ListenableBuilder(
+        listenable: live,
+        builder: (_, _) => EmergencyStrip(live: live),
+      ),
+    ),
+  ));
   await tester.pump(const Duration(milliseconds: 60));
   return live;
 }
@@ -140,6 +168,74 @@ void main() {
 
     expect(fake.sent, contains('blackout'),
         reason: 'restoring the audience screen must not need a confirmation');
+    handle.dispose();
+    live.dispose();
+  });
+
+  testWidgets(
+      'a blackout armed before the desktop blacked out still means BLACKOUT',
+      (tester) async {
+    final handle = tester.ensureSemantics();
+    final fake = _Fake();
+    final live = await _pumpPolledStrip(tester, fake);
+
+    // The operator arms: their intent is "make the audience screen go dark".
+    await tester.tap(find.bySemanticsLabel('Blackout'));
+    await tester.pump();
+    expect(find.bySemanticsLabel('Confirm blackout'), findsOneWidget);
+
+    // The DESKTOP operator blacks out in the gap between the two taps, and the
+    // 1s poll rebuilds the strip with that new truth.
+    fake.blackout = true;
+    await live.refresh();
+    await tester.pump(const Duration(milliseconds: 60));
+
+    // The armed control keeps announcing what the confirming tap will DO. If it
+    // relabels itself from the polled state, the operator's confirm gesture ends
+    // up sitting under a button reading "UN-BLACKOUT".
+    expect(find.bySemanticsLabel('Confirm blackout'), findsOneWidget,
+        reason: 'an arm is the operator’s intent; a poll must not relabel it');
+    expect(find.text('■ CONFIRM BLACKOUT'), findsOneWidget);
+
+    await tester.tap(find.bySemanticsLabel('Confirm blackout'));
+    await tester.pump(const Duration(milliseconds: 60));
+
+    expect(
+        fake.sentCmds.where((c) => c['cmd'] == 'blackout').toList(),
+        [
+          {'cmd': 'blackout', 'on': true}
+        ],
+        reason: 'the confirming tap must send the command that was ARMED. '
+            'Binding an absolute command at BUILD time let a rebuild between '
+            'the two taps turn a confirmed blackout into an un-blackout — the '
+            'exact opposite of the armed intent.');
+
+    handle.dispose();
+    live.dispose();
+  });
+
+  testWidgets('un-blackout stays one tap after the desktop blacks out',
+      (tester) async {
+    final handle = tester.ensureSemantics();
+    final fake = _Fake();
+    final live = await _pumpPolledStrip(tester, fake);
+
+    // Nothing armed here — the desktop blacks out and this device simply
+    // catches up. Recovery must still be the one-tap direction.
+    fake.blackout = true;
+    await live.refresh();
+    await tester.pump(const Duration(milliseconds: 60));
+
+    await tester.tap(find.bySemanticsLabel('Un-blackout'));
+    await tester.pump(const Duration(milliseconds: 60));
+
+    expect(
+        fake.sentCmds.where((c) => c['cmd'] == 'blackout').toList(),
+        [
+          {'cmd': 'blackout', 'on': false}
+        ],
+        reason: 'restoring the audience screen is never gated');
+
     handle.dispose();
     live.dispose();
   });

@@ -142,6 +142,26 @@ class OutputCard extends StatelessWidget {
 /// Which destructive emergency action is currently armed, if any.
 enum _Armed { blackout, clear }
 
+/// A destructive action the operator has armed: which control it was, and the
+/// exact command their confirming tap will send.
+///
+/// Carrying the *command*, not just the control, is what makes arm-then-confirm
+/// honest for an ABSOLUTE command. `blackout` takes a direction (`on: true` /
+/// `on: false`) that used to be computed from `live.blackout` at BUILD time
+/// while the arm-or-confirm decision was read at TAP time. The 1s poll rebuilds
+/// this strip between the two taps, so a desktop operator blacking out in that
+/// gap flipped the pending command: the confirming tap sent `on: false` and
+/// UN-blacked-out the audience — the precise opposite of the armed intent, from
+/// a gesture whose whole purpose is to confirm that intent.
+///
+/// Binding the command to the intent at the moment it is formed removes the
+/// class of bug instead of narrowing its window.
+class _Arm {
+  final _Armed which;
+  final Map<String, dynamic> cmd;
+  const _Arm(this.which, this.cmd);
+}
+
 /// The always-on emergency strip (UX-CANONICAL §3): Blackout + Clear All,
 /// present above the tab bar on every screen. Never scrolls away.
 ///
@@ -177,7 +197,7 @@ class EmergencyStrip extends StatefulWidget {
 }
 
 class _EmergencyStripState extends State<EmergencyStrip> {
-  _Armed? _armed;
+  _Arm? _armed;
   Timer? _disarm;
 
   @override
@@ -186,9 +206,9 @@ class _EmergencyStripState extends State<EmergencyStrip> {
     super.dispose();
   }
 
-  void _arm(_Armed which) {
+  void _arm(_Armed which, Map<String, dynamic> cmd) {
     _disarm?.cancel();
-    setState(() => _armed = which);
+    setState(() => _armed = _Arm(which, cmd));
     _disarm = Timer(widget.confirmWindow, () {
       if (mounted) setState(() => _armed = null);
     });
@@ -200,17 +220,25 @@ class _EmergencyStripState extends State<EmergencyStrip> {
     widget.live.act(cmd);
   }
 
-  /// One tap arms, the next fires. [immediate] skips the arming step for
+  /// One tap arms, the next fires **the command that was armed**. [intent] is
+  /// evaluated at tap time — it is what this gesture means to the operator
+  /// looking at the button right now. [immediate] skips the arming step for
   /// non-destructive directions (un-blackout).
-  VoidCallback? _guarded(_Armed which, Map<String, dynamic> cmd,
+  VoidCallback? _guarded(_Armed which, Map<String, dynamic> Function() intent,
       {bool immediate = false}) {
     if (widget.live.syncing) return null; // disabled: state is unknown
     return () {
       SettingsScope.maybeOf(context)?.haptic();
-      if (immediate || _armed == which) {
-        _fire(cmd);
+      final armed = _armed;
+      // An existing arm wins over [immediate]. If the host moved while this
+      // control sat armed, the intent the operator actually expressed is still
+      // the one to honour — never the one the new state happens to offer.
+      if (armed != null && armed.which == which) {
+        _fire(armed.cmd);
+      } else if (immediate) {
+        _fire(intent());
       } else {
-        _arm(which);
+        _arm(which, intent());
       }
     };
   }
@@ -224,8 +252,8 @@ class _EmergencyStripState extends State<EmergencyStrip> {
     // strip when a role holds neither, so this never renders empty.
     final canBlackout = live.can(Capability.blackout);
     final canClear = live.can(Capability.clearLive);
-    final armedBlackout = _armed == _Armed.blackout;
-    final armedClear = _armed == _Armed.clear;
+    final armedBlackout = _armed?.which == _Armed.blackout;
+    final armedClear = _armed?.which == _Armed.clear;
     final disabled = live.syncing;
 
     return Container(
@@ -242,15 +270,19 @@ class _EmergencyStripState extends State<EmergencyStrip> {
           if (canBlackout)
             Expanded(
               child: _EmgButton(
-                label: blackout
-                    ? '■ UN-BLACKOUT'
-                    : armedBlackout
-                        ? '■ CONFIRM BLACKOUT'
+                // An armed control announces what the NEXT tap will do, which
+                // outranks what the poll last said the host is. Letting
+                // `blackout` win here put the word "UN-BLACKOUT" under a thumb
+                // that was about to confirm a blackout.
+                label: armedBlackout
+                    ? '■ CONFIRM BLACKOUT'
+                    : blackout
+                        ? '■ UN-BLACKOUT'
                         : '■ BLACKOUT',
-                semanticLabel: blackout
-                    ? 'Un-blackout'
-                    : armedBlackout
-                        ? 'Confirm blackout'
+                semanticLabel: armedBlackout
+                    ? 'Confirm blackout'
+                    : blackout
+                        ? 'Un-blackout'
                         : 'Blackout',
                 fill: armedBlackout
                     ? DesignTokens.liveInk
@@ -265,7 +297,9 @@ class _EmergencyStripState extends State<EmergencyStrip> {
                     : DesignTokens.textPrimary,
                 disabled: disabled,
                 // Un-blackout restores the audience screen — never gate recovery.
-                onTap: _guarded(_Armed.blackout, cmdBlackout(!blackout),
+                // The direction is absolute and decided from what the operator
+                // is looking at as they tap, not rebuilt under their gesture.
+                onTap: _guarded(_Armed.blackout, () => cmdBlackout(!blackout),
                     immediate: blackout),
               ),
             ),
@@ -281,7 +315,7 @@ class _EmergencyStripState extends State<EmergencyStrip> {
                 textColor:
                     armedClear ? Colors.white : DesignTokens.liveInk,
                 disabled: disabled,
-                onTap: _guarded(_Armed.clear, cmdClear()),
+                onTap: _guarded(_Armed.clear, cmdClear),
               ),
             ),
         ],
