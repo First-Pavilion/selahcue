@@ -42,6 +42,14 @@ class _TimerTabState extends State<TimerTab> {
     // "A timer exists" (drives the adjust/stop enablement) — distinct from
     // `t.running` = actively counting (drives the Pause↔Resume label).
     final hasTimer = t != null;
+    // Every control goes inert until this device is back in step with the host
+    // (FR-097). Nudging ±1:00 against a countdown we cannot see is the same
+    // stale-premise tap as staging a slide against a stale plan. The READOUT
+    // deliberately stays: it is the same snapshot the rest of the app is already
+    // showing, and the global "Syncing live state…" banner says it is stale —
+    // blanking it would tell the operator less, not more.
+    final syncing = widget.live.syncing;
+    final canAdjust = hasTimer && !syncing;
     final String readout;
     final Color readoutColor;
     String state;
@@ -95,11 +103,11 @@ class _TimerTabState extends State<TimerTab> {
             children: [
               Expanded(
                   child: _TBtn('⏱ 5:00',
-                      () => widget.live.act(cmdStartTimer(300)))),
+                      syncing ? null : () => widget.live.act(cmdStartTimer(300)))),
               const SizedBox(width: 8),
               Expanded(
                   child: _TBtn('⏱ 10:00',
-                      () => widget.live.act(cmdStartTimer(600)))),
+                      syncing ? null : () => widget.live.act(cmdStartTimer(600)))),
             ],
           ),
           const SizedBox(height: 8),
@@ -123,7 +131,8 @@ class _TimerTabState extends State<TimerTab> {
               ),
               const SizedBox(width: 8),
               OutlinedButton(
-                  onPressed: _startCustom, child: const Text('Start')),
+                  onPressed: syncing ? null : _startCustom,
+                  child: const Text('Start')),
             ],
           ),
           const SizedBox(height: 8),
@@ -131,11 +140,11 @@ class _TimerTabState extends State<TimerTab> {
             children: [
               Expanded(
                   child: _TBtn('−1:00',
-                      hasTimer ? () => widget.live.act(cmdAdjustTimer(-60)) : null)),
+                      canAdjust ? () => widget.live.act(cmdAdjustTimer(-60)) : null)),
               const SizedBox(width: 8),
               Expanded(
                   child: _TBtn('+1:00',
-                      hasTimer ? () => widget.live.act(cmdAdjustTimer(60)) : null)),
+                      canAdjust ? () => widget.live.act(cmdAdjustTimer(60)) : null)),
             ],
           ),
           const SizedBox(height: 8),
@@ -144,7 +153,7 @@ class _TimerTabState extends State<TimerTab> {
               Expanded(
                 child: _TBtn(
                   (t?.running ?? false) ? 'Pause' : 'Resume',
-                  t == null
+                  (t == null || syncing)
                       ? null
                       : () => widget.live.act(
                           t.running ? cmdPauseTimer() : cmdResumeTimer()),
@@ -153,7 +162,7 @@ class _TimerTabState extends State<TimerTab> {
               const SizedBox(width: 8),
               Expanded(
                   child: _TBtn('Stop',
-                      hasTimer ? () => widget.live.act(cmdStopTimer()) : null)),
+                      canAdjust ? () => widget.live.act(cmdStopTimer()) : null)),
             ],
           ),
         ],

@@ -5,6 +5,13 @@
 ///
 /// Role gating stays hide-not-disable; this gate is disable-not-hide, because
 /// the control still exists — it is momentarily untrustworthy, not forbidden.
+///
+/// The gate was first written per-screen, and per-screen it was only ever three
+/// of five surfaces: Scripture and Timer never got it, so a verse tap staged on
+/// the host and a ±1:00 tap moved a timer the device could not see. It now lives
+/// in [LiveController.act], which is the only place every screen must pass
+/// through. The per-tab tests below exist so the NEXT screen to forget it fails
+/// here instead of shipping.
 library;
 
 import 'dart:async';
@@ -18,13 +25,25 @@ import 'package:selahcue_controller/models/session.dart';
 import 'package:selahcue_controller/models/stored_session.dart';
 import 'package:selahcue_controller/views/tabs/live_tab.dart';
 import 'package:selahcue_controller/views/tabs/plan_tab.dart';
+import 'package:selahcue_controller/views/tabs/scripture_tab.dart';
+import 'package:selahcue_controller/views/tabs/timer_tab.dart';
 
 class _Fake implements ControllerSession {
-  _Fake({List<String>? sent}) : sent = sent ?? <String>[];
+  _Fake({List<String>? sent, this.timer, this.stagedScripture})
+      : sent = sent ?? <String>[];
 
   /// Shared across the dropped session and its replacement, so a test can assert
   /// that a tap reached NEITHER.
   final List<String> sent;
+
+  /// Seeded into the operator view so the Timer tab's adjust/stop controls are
+  /// enabled on their own terms — otherwise they are already inert for want of a
+  /// timer and the gate under test proves nothing.
+  final TimerSnapshot? timer;
+
+  /// Seeded so the Scripture tab preloads a chapter at mount and has real verse
+  /// rows to tap after the drop.
+  final String? stagedScripture;
 
   bool dead = false;
 
@@ -38,7 +57,20 @@ class _Fake implements ControllerSession {
   @override
   Future<ServerMessage> command(Map<String, dynamic> cmd) async {
     if (dead) throw const SessionException('down');
-    sent.add(cmd['cmd'] as String);
+    final name = cmd['cmd'] as String;
+    sent.add(name);
+    // `get_chapter` is a READ. It does not go through act() and is deliberately
+    // still allowed while syncing — browsing scripture changes nothing on the
+    // audience screen, and taking the browser away during a blip would be a
+    // regression, not a safety win.
+    if (name == 'get_chapter') {
+      return const ChapterResult(
+        bookName: 'John',
+        chapter: 3,
+        translation: 'KJV',
+        verses: [VerseView(16, 'For God so loved the world')],
+      );
+    }
     return const Ack(1);
   }
 
@@ -47,9 +79,9 @@ class _Fake implements ControllerSession {
     if (dead) throw const SessionException('down');
     final g = gate;
     if (g != null) await g.future;
-    return const OperatorStateView(
+    return OperatorStateView(
       planName: 'Sunday',
-      items: [
+      items: const [
         PlanItemView(
             id: 1,
             kind: 'song',
@@ -60,7 +92,12 @@ class _Fake implements ControllerSession {
       liveIndex: null,
       stagedIndex: null,
       blackout: false,
-      timer: null,
+      timer: timer,
+      stagedScripture: stagedScripture,
+      detections: const [
+        DetectionView(
+            id: 7, reference: 'John 3:16', text: 'heard', translation: 'KJV'),
+      ],
     );
   }
 
@@ -71,16 +108,25 @@ class _Fake implements ControllerSession {
 const _stored =
     StoredSession(host: 'h', port: 1, pinHex: 'ab', deviceId: 'd', token: 't');
 
+const _runningTimer = TimerSnapshot(
+    remainingSecs: 300,
+    elapsedSecs: 0,
+    timeUp: false,
+    warn: false,
+    running: true);
+
 /// Brings the controller up healthy (so a view exists), then drops the link and
 /// reconnects onto a session whose first state fetch is still in flight. That is
 /// the exact state the story is about: socket back, truth not yet re-read.
 Future<(LiveController, List<String>)> _droppedMidService(
   WidgetTester tester,
-  Widget Function(LiveController) child,
-) async {
+  Widget Function(LiveController) child, {
+  _Fake Function(List<String> sent)? session,
+}) async {
   final sent = <String>[];
-  final original = _Fake(sent: sent);
-  final replacement = _Fake(sent: sent)..gate = Completer<void>();
+  _Fake make() => session?.call(sent) ?? _Fake(sent: sent);
+  final original = make();
+  final replacement = make()..gate = Completer<void>();
 
   final live = LiveController(
     session: original,
@@ -158,6 +204,116 @@ void main() {
             'later goes live on a stale premise');
     expect(find.textContaining('Syncing live state'), findsOneWidget,
         reason: 'the operator is told why the list went inert');
+    live.dispose();
+  });
+
+  // --- the gate as a property of the controller, not of the screens ----------
+
+  testWidgets('every command is refused while syncing, whoever sends it',
+      (tester) async {
+    final (live, sent) =
+        await _droppedMidService(tester, (l) => const SizedBox.shrink());
+
+    // The three commands a screen used to be able to slip through, plus one
+    // whose ARGUMENT is read from the stale view: `approve_detection` carries a
+    // detection id taken from a snapshot that predates the drop.
+    final outcomes = <String, CommandOutcome>{
+      'stage_scripture': await live.act(cmdStageScripture('John 3:16')),
+      'adjust_timer': await live.act(cmdAdjustTimer(60)),
+      'start_timer': await live.act(cmdStartTimer(300)),
+      'approve_detection': await live.act(cmdApproveDetection(7)),
+    };
+
+    for (final entry in outcomes.entries) {
+      expect(entry.value, isNot(CommandOutcome.applied),
+          reason: '${entry.key} must not report applied against a view the '
+              'device cannot prove is current');
+    }
+    expect(sent, isEmpty,
+        reason: 'and none of them may reach the host at all');
+    live.dispose();
+  });
+
+  // --- Timer tab -------------------------------------------------------------
+
+  testWidgets('timer controls do nothing while syncing', (tester) async {
+    final (live, sent) = await _droppedMidService(
+      tester,
+      (l) => TimerTab(live: l),
+      session: (sent) => _Fake(sent: sent, timer: _runningTimer),
+    );
+
+    await tester.tap(find.text('+1:00'));
+    await tester.tap(find.text('−1:00'));
+    await tester.tap(find.text('⏱ 5:00'));
+    await tester.tap(find.text('Stop'));
+    await tester.pump(const Duration(milliseconds: 60));
+
+    expect(sent, isEmpty,
+        reason: 'a timer nudge against a countdown this device cannot see is '
+            'the same stale-premise tap as staging one');
+    live.dispose();
+  });
+
+  testWidgets('timer controls are visibly disabled while syncing',
+      (tester) async {
+    final (live, _) = await _droppedMidService(
+      tester,
+      (l) => TimerTab(live: l),
+      session: (sent) => _Fake(sent: sent, timer: _runningTimer),
+    );
+
+    // Disabled, not hidden — the control is untrustworthy, not forbidden.
+    for (final label in ['+1:00', '−1:00', '⏱ 5:00', 'Stop', 'Pause']) {
+      expect(find.text(label), findsOneWidget, reason: '$label stays on screen');
+      final button =
+          tester.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, label));
+      expect(button.onPressed, isNull, reason: '$label must not be tappable');
+    }
+    live.dispose();
+  });
+
+  // --- Scripture tab ---------------------------------------------------------
+
+  testWidgets('scripture verses are not stageable while syncing',
+      (tester) async {
+    final (live, sent) = await _droppedMidService(
+      tester,
+      (l) => ScriptureTab(live: l),
+      session: (sent) => _Fake(sent: sent, stagedScripture: 'John 3:16'),
+    );
+
+    expect(find.textContaining('For God so loved'), findsOneWidget,
+        reason: 'the chapter loaded before the drop and stays browsable');
+
+    await tester.tap(find.textContaining('For God so loved'));
+    // Past kDoubleTapTimeout: a verse row carries onDoubleTap, so its onTap only
+    // resolves once the arena gives up waiting for a second tap. Pumping less
+    // than that passes against an ungated tab for the wrong reason.
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(sent, isEmpty,
+        reason: 'staging a verse into an unknown host state is exactly the tap '
+            'that later goes live on a stale premise (plan_tab.dart:26-27)');
+    live.dispose();
+  });
+
+  testWidgets('a verse double-tap does not go live while syncing',
+      (tester) async {
+    final (live, sent) = await _droppedMidService(
+      tester,
+      (l) => ScriptureTab(live: l),
+      session: (sent) => _Fake(sent: sent, stagedScripture: 'John 3:16'),
+    );
+
+    final verse = find.textContaining('For God so loved');
+    await tester.tap(verse);
+    await tester.tap(verse);
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(sent, isEmpty,
+        reason: 'the compound gesture must stop at its first half, which is '
+            'exactly what act() refusing gives it');
     live.dispose();
   });
 }

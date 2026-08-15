@@ -47,6 +47,20 @@ const _stored = StoredSession(
   token: 'tok-1',
 );
 
+/// Wait for the constructor's first state fetch to land.
+///
+/// A freshly built controller is out of sync *by construction* — it has never
+/// read the host — and `act()` refuses every command until it has (FR-097; the
+/// gate does not distinguish a first sync from a re-sync, because neither can
+/// prove what is on the audience screen). The app is in the same state: the
+/// controller view paints "Syncing live state…" over this window. A test that
+/// wants to exercise command behaviour has to get past it first.
+Future<void> _synced(LiveController live) async {
+  await pumpEventQueue();
+  expect(live.syncing, isFalse,
+      reason: 'precondition: the first operator-state fetch has landed');
+}
+
 void main() {
   test('a command denial stays on screen across a poll refresh', () async {
     // The host denies every command.
@@ -54,6 +68,7 @@ void main() {
         _emptyView(), (_) => const Denied(1, 'producers cannot clear'));
     final live = LiveController(session: session, stored: _stored);
     addTearDown(live.dispose);
+    await _synced(live);
 
     await live.act({'type': 'clear'});
     expect(live.error, contains('producers cannot clear'),
@@ -71,6 +86,7 @@ void main() {
         (_) => deny ? const Denied(1, 'nope') : const Ack(2));
     final live = LiveController(session: session, stored: _stored);
     addTearDown(live.dispose);
+    await _synced(live);
 
     await live.act({'type': 'clear'});
     expect(live.error, isNotNull);
@@ -86,11 +102,32 @@ void main() {
         FakeSession(_emptyView(), (_) => const Denied(1, 'nope'));
     final live = LiveController(session: session, stored: _stored);
     addTearDown(live.dispose);
+    await _synced(live);
 
     await live.act({'type': 'clear'});
     expect(live.error, isNotNull);
     live.dismissError();
     expect(live.error, isNull);
+  });
+
+  test('a command before the first state fetch is refused, not sent', () async {
+    final session = FakeSession(_emptyView(), (_) => const Ack(1));
+    final live = LiveController(session: session, stored: _stored);
+    addTearDown(live.dispose);
+
+    // Deliberately NOT synced first. A cold-started controller has never read
+    // the host, so it is in exactly the position a reconnected one is in before
+    // its re-sync lands — and gets the same answer. This is a consequence of
+    // moving the gate into act(): it keys off `syncing`, which does not care
+    // whether this is the first sync or the fifth.
+    expect(live.syncing, isTrue);
+    expect(await live.act({'type': 'clear'}), CommandOutcome.failed);
+    expect(session.commandCount, 0, reason: 'nothing reached the host');
+
+    await _synced(live);
+    expect(await live.act({'type': 'clear'}), CommandOutcome.applied,
+        reason: 'and the same command works once the first fetch lands');
+    expect(session.commandCount, 1);
   });
 
   test('fetchChapter returns the host chapter', () async {

@@ -244,11 +244,27 @@ class LiveController extends ChangeNotifier {
   /// what let a compound gesture go live on a stale premise (86ajxwcft).
   Future<CommandOutcome> act(Map<String, dynamic> cmd) async {
     if (_disposed || _revoked) return CommandOutcome.failed;
-    // Refuse outright while the link is down. The transport would throw anyway,
-    // but saying so here is what makes "no ghost actions" (FR-097) a property of
-    // the controller rather than of whichever screen remembered to disable a
-    // button.
-    if (_reconnecting) return CommandOutcome.failed;
+    // Refuse outright until we can prove what is on the audience screen — see
+    // [syncing]: either the link is down, or it is back but the snapshot we hold
+    // still describes the pre-disconnect world. Both mean the same thing for an
+    // outgoing command, because both mean the operator formed the intent against
+    // a host state this device cannot vouch for. Some commands even read their
+    // *argument* out of that stale view (a detection id, a blackout direction).
+    //
+    // This is the whole gate, and it lives here rather than on each screen
+    // because per-screen it was only ever three of the five command surfaces:
+    // Live, Plan and the emergency strip checked `syncing`, Scripture and Timer
+    // never did, and the suite stayed green because no test covered them. "No
+    // ghost actions" (FR-097, COMPONENT-SPECS §12) has to be a property of the
+    // controller, not of whichever screen remembered to disable a button.
+    //
+    // Nothing that must keep working DURING a re-sync passes through here:
+    // refresh() and _confirmedView() read host state directly (they are the
+    // re-sync), fetchChapter() is a read-only query so the scripture browser
+    // stays usable, and unpair() — the recovery affordance — closes the session
+    // without sending a command. Screens still disable their controls so a dead
+    // button never looks live; this is the backstop that makes that cosmetic.
+    if (syncing) return CommandOutcome.failed;
     // The connection this intent is being formed against.
     final epoch = _epoch;
     try {
