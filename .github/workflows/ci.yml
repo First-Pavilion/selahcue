@@ -57,6 +57,7 @@ jobs:
       mobile: ${{ steps.filter.outputs.mobile }}
       android: ${{ steps.filter.outputs.android }}
       api: ${{ steps.filter.outputs.api }}
+      marketing: ${{ steps.filter.outputs.marketing }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -71,7 +72,8 @@ jobs:
               - 'scripts/**'
               # Catch-all for any OTHER top-level code area (e.g. implementation/web)
               # so a change there is never silently unverified. Add a dedicated
-              # filter + job if such an area grows its own build.
+              # filter + job if such an area grows its own build — which is what
+              # `marketing:` below is, and why it is no longer caught here.
               - 'implementation/web/**'
               - '.github/workflows/ci.yml'
             mobile:
@@ -90,6 +92,15 @@ jobs:
             # push triggered the workflow and then ran nothing.
             api:
               - 'implementation/api/**'
+              - '.github/workflows/ci.yml'
+            # The marketing site + customer web portal (Vue SPA). This filter is the
+            # SAME omission the api one above documents, recurring: implementation/marketing
+            # matched no filter at all, so a marketing-only push triggered the workflow
+            # and ran nothing. The /verify and /reset auth pages landed under exactly
+            # that gap. If a fourth code area appears, it needs a filter here too — the
+            # desktop catch-all is not a substitute.
+            marketing:
+              - 'implementation/marketing/**'
               - '.github/workflows/ci.yml'
 
   rust:
@@ -391,6 +402,38 @@ jobs:
           CACHE_URL: redis://localhost:6379/1
           CELERY_BROKER_URL: redis://localhost:6379/2
         run: python -m pytest tests -q
+
+  marketing:
+    name: marketing (vue spa)
+    needs: changes
+    if: needs.changes.outputs.marketing == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: implementation/marketing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: implementation/marketing/package-lock.json
+      - name: Install
+        run: npm ci
+      # `build` is vue-tsc -b && vite build, so this is the typecheck gate too.
+      - name: Build
+        run: npm run build
+      - name: Tests
+        run: npm test
+      # Drives the real built bundle in headless Chrome (same pattern as
+      # scripts/operator_headless.py). SELAHCUE_HEADLESS_REQUIRE=1 turns a missing
+      # Chrome into a hard failure — without it the script skips, which on a runner
+      # would silently report success while checking nothing.
+      - name: Auth page states (headless)
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: npm run test:states
 
   audit:
     name: dependency audit (RustSec)
