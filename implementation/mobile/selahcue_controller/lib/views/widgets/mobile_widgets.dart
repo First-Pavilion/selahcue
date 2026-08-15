@@ -4,6 +4,8 @@
 /// desktop console and the Figma design use). Widgets only.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../controllers/live_controller.dart';
@@ -137,20 +139,95 @@ class OutputCard extends StatelessWidget {
   }
 }
 
+/// Which destructive emergency action is currently armed, if any.
+enum _Armed { blackout, clear }
+
 /// The always-on emergency strip (UX-CANONICAL §3): Blackout + Clear All,
 /// present above the tab bar on every screen. Never scrolls away.
-class EmergencyStrip extends StatelessWidget {
+///
+/// Both audience-facing actions are **arm-then-confirm**: the first tap morphs
+/// the button in place, the second commits (COMPONENT-SPECS §12, "destructive/
+/// audience actions get a brief press-and-hold or confirm on mobile — touch is
+/// slip-prone"). The confirm is inline rather than a dialog because an emergency
+/// control must never sit behind a modal (§1.2 invariant 2), and it disarms on
+/// its own so an armed control can never lie in wait for a later stray tap.
+///
+/// Two deliberate asymmetries:
+///  - **Un-blackout is one tap.** It is the recovery direction; putting a
+///    confirmation between the operator and restoring the audience screen would
+///    invert the safety this whole mechanism exists for.
+///  - **Everything is disabled while [LiveController.syncing]** — during a drop,
+///    and after it until live state is re-read (FR-097).
+class EmergencyStrip extends StatefulWidget {
   final LiveController live;
-  const EmergencyStrip({super.key, required this.live});
+
+  /// How long an armed action stays armed before reverting on its own.
+  /// Injectable so the timing is deterministic under test (COMPONENT-SPECS §1.2
+  /// specifies a ~3s inline confirm window).
+  final Duration confirmWindow;
+
+  const EmergencyStrip({
+    super.key,
+    required this.live,
+    this.confirmWindow = const Duration(seconds: 3),
+  });
+
+  @override
+  State<EmergencyStrip> createState() => _EmergencyStripState();
+}
+
+class _EmergencyStripState extends State<EmergencyStrip> {
+  _Armed? _armed;
+  Timer? _disarm;
+
+  @override
+  void dispose() {
+    _disarm?.cancel();
+    super.dispose();
+  }
+
+  void _arm(_Armed which) {
+    _disarm?.cancel();
+    setState(() => _armed = which);
+    _disarm = Timer(widget.confirmWindow, () {
+      if (mounted) setState(() => _armed = null);
+    });
+  }
+
+  void _fire(Map<String, dynamic> cmd) {
+    _disarm?.cancel();
+    setState(() => _armed = null);
+    widget.live.act(cmd);
+  }
+
+  /// One tap arms, the next fires. [immediate] skips the arming step for
+  /// non-destructive directions (un-blackout).
+  VoidCallback? _guarded(_Armed which, Map<String, dynamic> cmd,
+      {bool immediate = false}) {
+    if (widget.live.syncing) return null; // disabled: state is unknown
+    return () {
+      SettingsScope.maybeOf(context)?.haptic();
+      if (immediate || _armed == which) {
+        _fire(cmd);
+      } else {
+        _arm(which);
+      }
+    };
+  }
 
   @override
   Widget build(BuildContext context) {
+    final live = widget.live;
     final blackout = live.blackout;
     // Each emergency action is role-gated: blackout → Blackout cap,
     // Clear All → ClearLive cap. The call site (controller_view) omits the whole
     // strip when a role holds neither, so this never renders empty.
     final canBlackout = live.can(Capability.blackout);
     final canClear = live.can(Capability.clearLive);
+    final armedBlackout = _armed == _Armed.blackout;
+    final armedClear = _armed == _Armed.clear;
+    final disabled = live.syncing;
+
     return Container(
       decoration: const BoxDecoration(
         color: DesignTokens.bgPanel,
@@ -165,30 +242,46 @@ class EmergencyStrip extends StatelessWidget {
           if (canBlackout)
             Expanded(
               child: _EmgButton(
-                label: blackout ? '■ UN-BLACKOUT' : '■ BLACKOUT',
-                semanticLabel: blackout ? 'Un-blackout' : 'Blackout',
-                fill: blackout ? DesignTokens.liveFill : DesignTokens.bgBase,
-                border: blackout ? DesignTokens.liveInk : DesignTokens.border,
-                textColor: blackout ? Colors.white : DesignTokens.textPrimary,
-                onTap: () {
-                  SettingsScope.maybeOf(context)?.haptic();
-                  live.act(cmdBlackout(!blackout));
-                },
+                label: blackout
+                    ? '■ UN-BLACKOUT'
+                    : armedBlackout
+                        ? '■ CONFIRM BLACKOUT'
+                        : '■ BLACKOUT',
+                semanticLabel: blackout
+                    ? 'Un-blackout'
+                    : armedBlackout
+                        ? 'Confirm blackout'
+                        : 'Blackout',
+                fill: armedBlackout
+                    ? DesignTokens.liveInk
+                    : blackout
+                        ? DesignTokens.liveFill
+                        : DesignTokens.bgBase,
+                border: (blackout || armedBlackout)
+                    ? DesignTokens.liveInk
+                    : DesignTokens.border,
+                textColor: (blackout || armedBlackout)
+                    ? Colors.white
+                    : DesignTokens.textPrimary,
+                disabled: disabled,
+                // Un-blackout restores the audience screen — never gate recovery.
+                onTap: _guarded(_Armed.blackout, cmdBlackout(!blackout),
+                    immediate: blackout),
               ),
             ),
           if (canBlackout && canClear) const SizedBox(width: 8),
           if (canClear)
             Expanded(
               child: _EmgButton(
-                label: '✕ CLEAR ALL',
-                semanticLabel: 'Clear all',
-                fill: DesignTokens.bgBase,
+                label: armedClear ? '✕ CONFIRM CLEAR' : '✕ CLEAR ALL',
+                semanticLabel:
+                    armedClear ? 'Confirm clear all' : 'Clear all',
+                fill: armedClear ? DesignTokens.liveInk : DesignTokens.bgBase,
                 border: DesignTokens.liveInk,
-                textColor: DesignTokens.liveInk,
-                onTap: () {
-                  SettingsScope.maybeOf(context)?.haptic();
-                  live.act(cmdClear());
-                },
+                textColor:
+                    armedClear ? Colors.white : DesignTokens.liveInk,
+                disabled: disabled,
+                onTap: _guarded(_Armed.clear, cmdClear()),
               ),
             ),
         ],
@@ -203,7 +296,16 @@ class _EmgButton extends StatelessWidget {
   final Color fill;
   final Color border;
   final Color textColor;
-  final VoidCallback onTap;
+
+  /// Null = not tappable. Kept separate from [disabled] so a null callback can
+  /// never render as an enabled-looking control.
+  final VoidCallback? onTap;
+
+  /// Greyed with the reason announced, rather than hidden: the control is not
+  /// forbidden (that is role gating, which hides), just momentarily
+  /// untrustworthy (COMPONENT-SPECS §12 `disabled-while-offline`).
+  final bool disabled;
+
   const _EmgButton({
     required this.label,
     required this.semanticLabel,
@@ -211,33 +313,39 @@ class _EmgButton extends StatelessWidget {
     required this.border,
     required this.textColor,
     required this.onTap,
+    this.disabled = false,
   });
 
   @override
   Widget build(BuildContext context) => Semantics(
         button: true,
+        enabled: !disabled,
         // Announce the plain word, not the "■"/"✕" glyph baked into the label.
-        label: semanticLabel,
+        label: disabled ? '$semanticLabel, unavailable while reconnecting'
+            : semanticLabel,
         excludeSemantics: true,
-        child: Material(
-          color: fill,
-          borderRadius: BorderRadius.circular(8),
-          child: InkWell(
+        child: Opacity(
+          opacity: disabled ? 0.4 : 1,
+          child: Material(
+            color: fill,
             borderRadius: BorderRadius.circular(8),
-            onTap: onTap,
-            child: Container(
-              height: 46,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                border: Border.all(color: border),
-                borderRadius: BorderRadius.circular(8),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: onTap,
+              child: Container(
+                height: 46,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  border: Border.all(color: border),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(label,
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.3,
+                        color: textColor)),
               ),
-              child: Text(label,
-                  style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.3,
-                      color: textColor)),
             ),
           ),
         ),

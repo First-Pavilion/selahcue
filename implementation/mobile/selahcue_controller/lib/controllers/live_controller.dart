@@ -67,6 +67,10 @@ class LiveController extends ChangeNotifier {
   /// no wire change, no host cooperation, no revision field required.
   int _epoch = 0;
 
+  /// The epoch the currently held [_view] was fetched under. Starts behind
+  /// [_epoch] because we have not read the host yet.
+  int _viewEpoch = -1;
+
   LiveController({
     required this._session,
     required this.stored,
@@ -89,6 +93,17 @@ class LiveController extends ChangeNotifier {
   String? get error =>
       _reconnecting ? (_statusError ?? _denial) : (_denial ?? _statusError);
   bool get reconnecting => _reconnecting;
+
+  /// True while we cannot prove what is on the audience screen *right now* —
+  /// either the link is down, or it is back but the snapshot we hold still
+  /// describes the pre-disconnect world.
+  ///
+  /// Controls stay disabled until this clears: "on reconnect, live state
+  /// re-syncs BEFORE controls re-enable" (FR-097, COMPONENT-SPECS §12). Note
+  /// that a live socket is not the same as a current view, which is why this is
+  /// deliberately broader than [reconnecting].
+  bool get syncing => _reconnecting || _viewEpoch != _epoch;
+
   bool get blackout => _view?.blackout ?? false;
 
   /// The device's credentials were revoked/unpaired by an admin — the app shows
@@ -119,8 +134,12 @@ class LiveController extends ChangeNotifier {
     if (_reconnecting || _disposed || _refreshing || _revoked) return;
     _refreshing = true;
     try {
+      final epoch = _epoch;
       final view = await _session.operatorState();
+      // Only stamp if the connection did not change under us mid-fetch.
+      if (_epoch != epoch) return;
       _view = view;
+      _viewEpoch = epoch;
       // Connection is healthy — clear only the transient status. A pending
       // denial is left untouched so it survives the poll (see field docs).
       _statusError = null;
@@ -150,6 +169,7 @@ class LiveController extends ChangeNotifier {
       // while this was in flight invalidates the answer.
       if (_disposed || _epoch != epoch) return null;
       _view = view;
+      _viewEpoch = epoch;
       _statusError = null;
       _notify();
       return view;
@@ -288,6 +308,12 @@ class LiveController extends ChangeNotifier {
         _reconnecting = false;
         _statusError = null;
         _notify();
+        // Re-read host state promptly. Controls stay disabled until this lands
+        // (see [syncing]), so without it the operator would face up to a full
+        // poll interval of dead controls after every blip. Scheduled rather than
+        // awaited because we are usually already inside refresh()'s own frame,
+        // where the in-flight guard would swallow a direct call.
+        Timer.run(refresh);
         return;
       } on SessionRevoked {
         // An admin unpaired/revoked this device — retrying can never succeed.

@@ -23,13 +23,19 @@ class PlanTab extends StatelessWidget {
     }
     // Plan is role-gated: staging needs Navigate; one-gesture go-live needs
     // GoLive. A role with neither (Viewer) gets a read-only list.
-    final canStage = live.can(Capability.navigate);
-    final canGoLive = live.can(Capability.goLive);
-    final hint = !canStage
-        ? 'Read-only — your role can view the plan but not stage it.'
-        : canGoLive
-            ? 'Tap to stage in Preview · double-tap to send it live'
-            : 'Tap to stage in Preview';
+    // Staging into an unknown host state is exactly the tap that later goes live
+    // on a stale premise, so the list goes inert while we re-sync (FR-097).
+    final syncing = live.syncing;
+    final canStage = live.can(Capability.navigate) && !syncing;
+    final canGoLive = live.can(Capability.goLive) && !syncing;
+    final hint = syncing
+        ? 'Syncing live state… controls are disabled until this device is back '
+            'in step with the desktop.'
+        : !live.can(Capability.navigate)
+            ? 'Read-only — your role can view the plan but not stage it.'
+            : live.can(Capability.goLive)
+                ? 'Tap to stage in Preview · double-tap to send it live'
+                : 'Tap to stage in Preview';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [

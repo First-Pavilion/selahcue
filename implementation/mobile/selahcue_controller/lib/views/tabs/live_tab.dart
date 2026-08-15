@@ -63,6 +63,11 @@ class LiveTab extends StatelessWidget {
     );
     // Transport is role-gated: navigate → Prev/Next; goLive → GO LIVE.
     // A role with neither (Viewer) gets read-only cards, no transport row.
+    // While the controller cannot prove what is on the audience screen, the
+    // transport is disabled rather than hidden — the control is not forbidden,
+    // it is momentarily untrustworthy (FR-097, COMPONENT-SPECS §12). Role gating
+    // below still HIDES, which is a different thing.
+    final syncing = live.syncing;
     final Widget? transport =
         (live.can(Capability.navigate) || live.can(Capability.goLive))
         ? Row(
@@ -71,7 +76,7 @@ class LiveTab extends StatelessWidget {
                 _TransportBtn(
                   glyph: '◀',
                   label: 'Previous item',
-                  onTap: () => live.act(cmdPrevious()),
+                  onTap: syncing ? null : () => live.act(cmdPrevious()),
                 ),
                 const SizedBox(width: 8),
               ],
@@ -79,16 +84,26 @@ class LiveTab extends StatelessWidget {
                 Expanded(
                   child: Semantics(
                     button: true,
-                    label: 'Go live',
-                    child: Material(
+                    enabled: !syncing,
+                    label: syncing
+                        ? 'Go live, unavailable while reconnecting'
+                        : 'Go live',
+                    // The button already says "GO LIVE"; without this the node
+                    // merges both and announces it twice.
+                    excludeSemantics: true,
+                    child: Opacity(
+                      opacity: syncing ? 0.4 : 1,
+                      child: Material(
                       color: DesignTokens.previewFill,
                       borderRadius: BorderRadius.circular(10),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(10),
-                        onTap: () {
-                          SettingsScope.maybeOf(context)?.haptic();
-                          live.act(cmdGoLive());
-                        },
+                        onTap: syncing
+                            ? null
+                            : () {
+                                SettingsScope.maybeOf(context)?.haptic();
+                                live.act(cmdGoLive());
+                              },
                         child: Container(
                           height: 54,
                           alignment: Alignment.center,
@@ -104,6 +119,7 @@ class LiveTab extends StatelessWidget {
                         ),
                       ),
                     ),
+                    ),
                   ),
                 )
               else
@@ -113,7 +129,7 @@ class LiveTab extends StatelessWidget {
                 _TransportBtn(
                   glyph: '▶',
                   label: 'Next item',
-                  onTap: () => live.act(cmdNext()),
+                  onTap: syncing ? null : () => live.act(cmdNext()),
                 ),
               ],
             ],
@@ -236,7 +252,10 @@ class LiveTab extends StatelessWidget {
 class _TransportBtn extends StatelessWidget {
   final String glyph;
   final String label;
-  final VoidCallback onTap;
+
+  /// Null while live state is unknown — the button greys out rather than
+  /// disappearing (role gating hides; this only disables).
+  final VoidCallback? onTap;
   const _TransportBtn({
     required this.glyph,
     required this.label,
@@ -246,11 +265,14 @@ class _TransportBtn extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Semantics(
     button: true,
-    label: label,
+    enabled: onTap != null,
+    label: onTap == null ? '$label, unavailable while reconnecting' : label,
     // The bare '◀'/'▶' glyph is decorative once the button is named — hide
     // it from assistive tech so it isn't announced as "left-pointing triangle".
     excludeSemantics: true,
-    child: Material(
+    child: Opacity(
+      opacity: onTap == null ? 0.4 : 1,
+      child: Material(
       color: DesignTokens.bgPanel,
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
@@ -273,6 +295,7 @@ class _TransportBtn extends StatelessWidget {
           ),
         ),
       ),
+    ),
     ),
   );
 }

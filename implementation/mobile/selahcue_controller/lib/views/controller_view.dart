@@ -255,15 +255,21 @@ class _ControllerViewState extends State<ControllerView> {
           ),
           body: Column(
             children: [
-              if (_live.reconnecting)
+              // Two distinct truths, both of which mean "your taps won't be
+              // sent": the link is down, or it is back but this device has not
+              // yet re-read the host. The second is the one that used to leave
+              // controls live against a stale view (FR-097).
+              if (_live.syncing)
                 Container(
                   width: double.infinity,
                   color: DesignTokens.warnFill,
                   padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: const Text(
-                    'Reconnecting to the host…',
+                  child: Text(
+                    _live.reconnecting
+                        ? 'Reconnecting to the host… your taps won’t be sent'
+                        : 'Syncing live state…',
                     textAlign: TextAlign.center,
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
                       color: Colors.white,
