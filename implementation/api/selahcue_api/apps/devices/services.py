@@ -9,6 +9,7 @@ from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from selahcue_api.apps.audit.services import record_audit_event
@@ -245,6 +246,50 @@ def _remint_device_token(
     return token, full_token
 
 
+def _remint_is_within_plan_allowance(device: Device, license_key: AppLicenseKey) -> bool:
+    """THE re-mint / `device_limit` policy (DEC-004). CHANGE IT HERE AND NOWHERE ELSE.
+
+    ============================ ASSUMPTION AWAITING AN OWNER RULING ============================
+    This encodes a licensing decision the owner has NOT ruled on. The stated default is:
+
+        re-mint is permitted only for the `device_limit` OLDEST-ACTIVATED devices under the
+        licence; devices beyond that are refused until a slot is explicitly freed.
+
+    Rationale: a downgrading customer keeps working on exactly the plan they pay for, rather
+    than either losing everything (the pre-re-mint behaviour, which bricked every device) or
+    keeping everything (which is what the unguarded re-mint did). If the owner rules
+    differently — newest-first, an explicit customer choice of which seat survives, or a grace
+    window — this function is the only thing that changes.
+    ============================================================================================
+
+    WHY THIS CHECK CANNOT LIVE WITH THE OTHER ONE. `_activate_device_for_key` refuses a NEW
+    device when the active count has reached the limit, but both existing-device branches
+    return before reaching it. That early return is correct for a device WITHIN the limit — a
+    device_limit=1 church must be able to recover on the one slot it already occupies, and
+    counting it against itself would refuse the very case re-mint exists for. It is wrong for a
+    device set that EXCEEDS the limit: a church that downgrades 3 -> 1 and renews could
+    otherwise revive all three and run them indefinitely on a one-device plan.
+
+    So the question is not "is there a free slot" (there never is — the device already holds
+    one) but "is this device inside the plan's allowance". Rank by activation order and compare
+    against the limit. Counting the devices AHEAD of this one is a single indexed COUNT
+    ((license_key, status) index) rather than materialising the device set, so this stays
+    bounded however many devices a licence accumulates.
+
+    `pk` breaks a `created_at` tie so the ordering is total and the same device wins every
+    time — a flapping rank would let two devices alternate into the last slot.
+    """
+    devices_activated_earlier = (
+        Device.objects.filter(license_key=license_key, status=DeviceStatus.ACTIVE)
+        .filter(
+            Q(created_at__lt=device.created_at)
+            | Q(created_at=device.created_at, pk__lt=device.pk)
+        )
+        .count()
+    )
+    return devices_activated_earlier < license_key.device_limit
+
+
 def _existing_device_result(
     device: Device,
     license_key: AppLicenseKey,
@@ -261,10 +306,16 @@ def _existing_device_result(
     worse than the status quo. Only when there is NO usable token — expired with the licence,
     revoked by the cascade, or absent — is a replacement minted, because that device is
     otherwise permanently dead with no exit but a new fingerprint it cannot afford.
+
+    A re-mint is additionally gated on the plan's allowance (`_remint_is_within_plan_allowance`)
+    — reviving a device is where a downgraded licence would otherwise leak extra seats.
     """
     _assert_device_activatable(device)
     live = _live_token(device)
     if live is not None:
+        # Untouched by the allowance check on purpose: this device is already running, so
+        # refusing its replay would revoke nothing and would break retry-idempotency for a
+        # device that never lost its token. The plan is enforced where a credential is ISSUED.
         return ActivateDeviceResult(
             device=device,
             device_token=live,
@@ -273,6 +324,11 @@ def _existing_device_result(
             created=False,
             reminted=False,
         )
+    if not _remint_is_within_plan_allowance(device, license_key):
+        # Same coded error a NEW over-limit device gets, because it is the same fact about the
+        # plan: there is no seat for this device. Freeing one (deactivating another device)
+        # lets it recover.
+        raise SafeAPIError(ErrorCode.POLICY_DENIED)
     token, full_token = _remint_device_token(
         device,
         license_key,
@@ -337,7 +393,10 @@ def _activate_device_for_key(
         # idempotency key is still one device — return it, never a duplicate. Both existing-device
         # branches return BEFORE the instance-limit check below, so a re-mint can never consume
         # a slot: the device is already counted, and a device_limit=1 church must be able to
-        # recover on the one slot it has.
+        # recover on the one slot it has. The limit is NOT skipped for them — an existing device
+        # is instead measured against the plan by `_remint_is_within_plan_allowance`, which asks
+        # the question that actually applies to a device that already holds a slot ("is this
+        # device inside the allowance?") rather than the one that does not ("is a slot free?").
         known = Device.objects.filter(
             license_key=license_key, device_fingerprint=device_fingerprint
         ).first()

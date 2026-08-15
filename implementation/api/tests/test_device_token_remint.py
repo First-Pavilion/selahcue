@@ -144,6 +144,16 @@ def _expire_tokens(key, *, at):
     )
 
 
+def _usable_tokens():
+    """Tokens a device could actually authenticate with — the same predicate `_live_token` and
+    `authenticate_device_token` use. NOT `status=ACTIVE` alone: `_expire_tokens` ages a token
+    past `expires_at` while leaving its status ACTIVE, which is exactly the bricked state these
+    tests create, so counting bare ACTIVE rows would count dead credentials as live ones."""
+    return DeviceToken.objects.filter(
+        status=DeviceTokenStatus.ACTIVE, expires_at__gt=timezone.now()
+    )
+
+
 def _renew(key, *, expires_at, status=LicenseKeyStatus.ACTIVATED):
     """What staff renewal does today: extend the window and put the key back in an
     activatable status. (The lifecycle mutations themselves are gap G2, a separate ticket —
@@ -330,6 +340,136 @@ def test_remint_does_not_consume_an_instance_slot(client):
     assert (
         Device.objects.filter(license_key=key, status=DeviceStatus.ACTIVE).count() == 1
     ), "re-mint must not consume an instance slot"
+
+
+def test_remint_is_capped_at_the_device_limit_oldest_devices(client):
+    """A downgrade must not be survivable by re-minting every device that ever activated.
+
+    Re-mint returning BEFORE the instance-limit check is correct for a device that is within
+    the limit (the test above), but it also skipped the check for a device set that EXCEEDS
+    it. A church on 3 devices that downgrades to 1 and renews could re-mint all three and keep
+    them running indefinitely on a device_limit=1 plan — a hole the pre-re-mint code did not
+    have, because those devices were simply bricked.
+
+    POLICY (see `_remint_is_within_plan_allowance`): the `device_limit` OLDEST-activated
+    devices may re-mint; the rest are refused until a slot is explicitly freed.
+    """
+    now = timezone.now().replace(microsecond=0)
+    key, full_key = _seed_license_key(
+        tag="downgrade",
+        device_limit=3,
+        starts_at=now - timedelta(days=40),
+        expires_at=now + timedelta(minutes=5),
+    )
+    for index in range(3):
+        seeded = _activate(
+            client, license_key=full_key, fingerprint=f"fp-{index}", idem=f"remint-down-0{index}"
+        )
+        assert seeded.status_code == 200
+    assert Device.objects.filter(license_key=key, status=DeviceStatus.ACTIVE).count() == 3
+
+    # The licence lapses, the church downgrades 3 -> 1, then renews.
+    expired_at = now - timedelta(days=1)
+    AppLicenseKey.objects.filter(pk=key.pk).update(
+        expires_at=expired_at, status=LicenseKeyStatus.EXPIRED
+    )
+    _expire_tokens(key, at=expired_at)
+    AppLicenseKey.objects.filter(pk=key.pk).update(device_limit=1)
+    _renew(key, expires_at=now + timedelta(days=365))
+    assert key.device_limit == 1
+
+    # A brand-new device is refused, as it already was.
+    refused_new = _activate(
+        client, license_key=full_key, fingerprint="fp-new", idem="remint-down-new"
+    )
+    assert refused_new.status_code == 403
+    assert refused_new.json()["error"]["code"] == "POLICY_DENIED"
+
+    # The OLDEST device recovers — a paying church keeps the one seat it pays for.
+    oldest = _activate(client, license_key=full_key, fingerprint="fp-0", idem="remint-down-r0")
+    assert oldest.status_code == 200, "the plan's own seat must still recover"
+    assert oldest.json()["activation_token"] is not None
+    assert oldest.json()["reminted"] is True
+
+    # Everything beyond the limit is refused with the same coded error as an over-limit new
+    # device. Before the fix all three revived on a one-device plan.
+    for index in (1, 2):
+        denied = _activate(
+            client, license_key=full_key, fingerprint=f"fp-{index}", idem=f"remint-down-r{index}"
+        )
+        assert denied.status_code == 403, f"fp-{index} is beyond device_limit=1 and must be refused"
+        assert denied.json()["error"]["code"] == "POLICY_DENIED"
+        # The refusal is an error envelope, so it carries no token field at all — and nothing
+        # was minted behind it. "Usable" (ACTIVE *and* unexpired) is the predicate that
+        # matters: these devices still own an ACTIVE-but-long-expired row, which authenticates
+        # nothing.
+        assert "activation_token" not in denied.json()
+        assert not _usable_tokens().filter(device__device_fingerprint=f"fp-{index}").exists()
+
+    # Exactly one live credential exists on a one-device plan.
+    assert _usable_tokens().count() == 1
+    assert _usable_tokens().get().device.device_fingerprint == "fp-0"
+
+
+def test_freeing_a_slot_lets_a_previously_refused_device_remint(client):
+    """The refusal is a door, not a wall: deactivating a device releases its slot, and the next
+    device in activation order can then recover. This is what makes the policy a CHOICE for the
+    customer (which seat to keep) rather than a dead end."""
+    now = timezone.now().replace(microsecond=0)
+    key, full_key = _seed_license_key(
+        tag="freeslot",
+        device_limit=2,
+        starts_at=now - timedelta(days=40),
+        expires_at=now + timedelta(minutes=5),
+    )
+    for index in range(2):
+        _activate(client, license_key=full_key, fingerprint=f"sl-{index}", idem=f"remint-fs-0{index}")
+
+    expired_at = now - timedelta(days=1)
+    AppLicenseKey.objects.filter(pk=key.pk).update(
+        expires_at=expired_at, status=LicenseKeyStatus.EXPIRED
+    )
+    _expire_tokens(key, at=expired_at)
+    AppLicenseKey.objects.filter(pk=key.pk).update(device_limit=1)
+    _renew(key, expires_at=now + timedelta(days=365))
+
+    # sl-1 is second-oldest, so on a one-seat plan it is refused.
+    assert _activate(
+        client, license_key=full_key, fingerprint="sl-1", idem="remint-fs-r1"
+    ).status_code == 403
+
+    # The customer retires the older install, freeing the seat.
+    Device.objects.filter(license_key=key, device_fingerprint="sl-0").update(
+        status=DeviceStatus.REVOKED
+    )
+
+    recovered = _activate(client, license_key=full_key, fingerprint="sl-1", idem="remint-fs-r2")
+    assert recovered.status_code == 200, "freeing a slot must let the next device recover"
+    assert recovered.json()["activation_token"] is not None
+    assert recovered.json()["reminted"] is True
+
+
+def test_an_over_limit_device_that_still_holds_a_live_token_is_left_alone(client):
+    """The cap governs RE-MINT, not the show-once replay. A device whose token is still live is
+    already running; refusing its idempotent replay would not revoke anything, and turning a
+    replay into an error would break retry-idempotency for a device that never lost its token."""
+    now = timezone.now().replace(microsecond=0)
+    key, full_key = _seed_license_key(
+        tag="liveover",
+        device_limit=2,
+        starts_at=now - timedelta(days=40),
+        expires_at=now + timedelta(days=365),
+    )
+    for index in range(2):
+        _activate(client, license_key=full_key, fingerprint=f"lv-{index}", idem=f"remint-lv-0{index}")
+
+    AppLicenseKey.objects.filter(pk=key.pk).update(device_limit=1)
+
+    replay = _activate(client, license_key=full_key, fingerprint="lv-1", idem="remint-lv-replay")
+    assert replay.status_code == 200
+    assert replay.json()["activation_token"] is None, "show-once still applies"
+    assert replay.json()["reminted"] is False
+    assert DeviceToken.objects.filter(status=DeviceTokenStatus.ACTIVE).count() == 2
 
 
 # --- AC6: the superseded token dies -----------------------------------------------------
