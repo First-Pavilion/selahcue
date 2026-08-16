@@ -8,6 +8,13 @@
 # The following line activates a set of recommended lints for Flutter apps,
 # packages, and plugins designed to encourage good coding practices.
 analyzer:
+  # `flutter analyze` is a CI gate, so what it does NOT look at is worth stating.
+  # These roots hold no first-party Dart: `build/` is generated output, and the six
+  # platform roots are Flutter's generated host projects (Gradle/Xcode/CMake scaffolding
+  # plus their own generated plugin registrants). Analysing them adds only churn from
+  # generated files nobody in this repo edits. The exclusion is therefore about noise,
+  # not about silencing findings — if hand-written Dart is ever added under one of these
+  # roots, it will go unanalysed, and the list must be narrowed to match.
   exclude:
     - build/**
     - android/**
