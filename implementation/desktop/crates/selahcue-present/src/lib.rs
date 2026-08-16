@@ -37,6 +37,13 @@ pub use theme::{
 };
 pub use tokens::{contrast_ratio, SemanticToken, LIVE, NEUTRAL, PREVIEW, WARN};
 
+/// The sniffed still-image format, re-exported for the same reason as the engine types below: a
+/// consumer that has to name the format an image turned out to be — the media store, deciding a
+/// file extension — should name **this** type rather than declare a parallel one of its own. Two
+/// enums with the same variants and no conversion between them agree only by the order they happen
+/// to be written in, and the failure mode when they stop agreeing is a file saved under the wrong
+/// extension, which nothing detects.
+pub use selahcue_engine::media::ImageFormat;
 /// Re-exported so consumers can name the output pixel buffer (and its pixel colour)
 /// without depending on `selahcue-engine` directly.
 pub use selahcue_engine::raster::{system_font_families, FrameBuffer};

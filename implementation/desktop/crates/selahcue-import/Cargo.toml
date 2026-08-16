@@ -1,0 +1,46 @@
+[package]
+name = "selahcue-import"
+publish.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SelahCue presentation import (ADR-0024): bytes in, a bounded SlideDeck and a partial-import report out. PURE — no filesystem, no network, no clipboard, no database, no unsafe. The operator shell injects every effect through ByteSource/MediaSink, which is what makes the whole hostile-input surface testable by `cargo test --workspace` and fuzzable."
+
+[dependencies]
+selahcue-present = { path = "../selahcue-present" }
+# `MediaRef`, and the bounded still-image decode seam the picture stage probes through. The
+# decoder takes a byte slice and performs no I/O, so the pure crate can fully validate an image
+# and the shell only ever stages bytes that are already known good — no rejected image is ever
+# written, so there is no cleanup path to get wrong.
+selahcue-engine = { path = "../selahcue-engine" }
+serde = { version = "1", features = ["derive"] }
+# DEFLATE for the hand-rolled ZIP reader. Already a direct first-party dependency (of
+# selahcue-scripture), so the whole ZIP capability adds NO new crate to the SBOM. `flate2`
+# defaults to the pure-Rust `miniz_oxide` back-end, and its `Decompress` API gives incremental
+# output with `total_out()` — which is exactly what counting ACTUAL inflated bytes needs, since
+# declared ZIP sizes lie in both directions and may never inform an allocation.
+flate2 = "1"
+# XML, where the asymmetry with ZIP is the point: XML is wide and adversarial (namespaces,
+# prefix rebinding, entities, CDATA, character references, encoding declarations) and
+# hand-rolling a parser for it is how you get billion-laughs and XXE. `quick-xml` is MIT, pure
+# Rust, and PULL-based, so memory is bounded by construction and no DOM sized by untrusted input
+# is ever built. Default features only — `serialize`, `encoding` and `async-tokio` stay OFF, so
+# no network stack and no serde reflection enter the graph (threat model B2).
+# EXACTLY pinned, per ADR-0024, and `scripts/import_guards.sh` enforces the `=` so it stays that
+# way. `"0.41"` is a caret range, so a `cargo update` would silently move the parser that reads
+# hostile XML from every imported deck — the one dependency in this crate that touches untrusted
+# input directly. The jpeg-decoder pin is enforced for the same reason and by the same script; this
+# one was written as a range and had no guard, which is exactly how a pin quietly stops being one.
+quick-xml = { version = "=0.41.0", default-features = false }
+
+[dev-dependencies]
+serde_json = "1"
+# The in-test .pptx builder deflates its own bomb payloads; hostile archives are never committed.
+flate2 = "1"
+# Tiny valid PNGs for the image stage are ENCODED at test time rather than committed, for the
+# same reason every hostile input is constructed in-test. Transitive via selahcue-engine.
+png = "0.17"
+
+[lints]
+workspace = true

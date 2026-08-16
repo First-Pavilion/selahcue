@@ -141,6 +141,13 @@ jobs:
           cargo clippy -p selahcue-scripture --features download --all-targets -- -D warnings
       - name: Test (workspace, incl. GPU parity where an adapter exists)
         run: cargo test --workspace
+      # Structural merge gates for the presentation importer (threat model B2 + the design's
+      # no-I/O rule + the ADR-0025 decoder pin). These are one-line checks only because the
+      # importer is its own crate; inside the operator, whose graph legitimately contains a TLS
+      # stack, the no-network property would not even be stateable.
+      - name: Import structural guards (no network, no filesystem, pinned decoder)
+        working-directory: ${{ github.workspace }}
+        run: sh scripts/import_guards.sh
       - name: Test (LAN server + app server features — E2E over real TLS)
         run: |
           cargo test -p selahcue-lan --features server

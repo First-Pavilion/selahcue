@@ -9,7 +9,7 @@ use selahcue_engine::media::{
     image_cache_stats, reset_image_cache, MAX_IMAGE_CACHE_BYTES, MAX_IMAGE_CACHE_ENTRIES,
 };
 use selahcue_engine::{
-    decode_png, render, DecodeError, DecodeLimits, EngineCommand, EngineEvent, Fault, Frame,
+    decode_image, render, DecodeError, DecodeLimits, EngineCommand, EngineEvent, Fault, Frame,
     ImageFit, Layer, MediaRef, Rect, Rgba,
 };
 use std::path::PathBuf;
@@ -84,7 +84,7 @@ fn a_valid_rgba_png_decodes_to_the_expected_pixels() {
         Rgba::rgb(0, 0, 255),
         Rgba::WHITE,
     );
-    let img = decode_png(&bytes, &DecodeLimits::default()).unwrap();
+    let img = decode_image(&bytes, &DecodeLimits::default()).unwrap();
     assert_eq!((img.width(), img.height()), (2, 2));
     assert_eq!(
         img.rgba(),
@@ -98,19 +98,19 @@ fn grayscale_rgb_and_rgba_all_normalize_to_straight_rgba8() {
     // Grayscale 1×1 (value 100) → (100,100,100,255).
     let gray = encode_png(1, 1, png::ColorType::Grayscale, &[100]);
     assert_eq!(
-        &decode_png(&gray, &def).unwrap().rgba()[..4],
+        &decode_image(&gray, &def).unwrap().rgba()[..4],
         &[100, 100, 100, 255]
     );
     // RGB → opaque.
     let rgb = encode_png(1, 1, png::ColorType::Rgb, &[10, 20, 30]);
     assert_eq!(
-        &decode_png(&rgb, &def).unwrap().rgba()[..4],
+        &decode_image(&rgb, &def).unwrap().rgba()[..4],
         &[10, 20, 30, 255]
     );
     // RGBA → alpha preserved (straight, not premultiplied).
     let rgba = encode_png(1, 1, png::ColorType::Rgba, &[10, 20, 30, 128]);
     assert_eq!(
-        &decode_png(&rgba, &def).unwrap().rgba()[..4],
+        &decode_image(&rgba, &def).unwrap().rgba()[..4],
         &[10, 20, 30, 128]
     );
 }
@@ -125,22 +125,32 @@ fn decode_is_deterministic() {
     );
     let def = DecodeLimits::default();
     assert_eq!(
-        decode_png(&bytes, &def).unwrap(),
-        decode_png(&bytes, &def).unwrap()
+        decode_image(&bytes, &def).unwrap(),
+        decode_image(&bytes, &def).unwrap()
     );
 }
 
 #[test]
 fn empty_and_non_png_inputs_are_rejected_without_panicking() {
     let def = DecodeLimits::default();
-    assert_eq!(decode_png(&[], &def), Err(DecodeError::Empty));
+    assert_eq!(decode_image(&[], &def), Err(DecodeError::Empty));
     assert_eq!(
-        decode_png(b"not a png at all", &def),
+        decode_image(b"not a png at all", &def),
         Err(DecodeError::Unsupported)
     );
-    // A JPEG magic number is not PNG → Unsupported (the later-format seam), not a decode.
+    // DELIBERATE BEHAVIOUR CHANGE (ADR-0025). This case previously asserted that JPEG magic
+    // bytes were `Unsupported` — the later-format seam. JPEG is now ON the allowlist, so these
+    // bytes are admitted as a JPEG and then fail because they are a stub with no frame header:
+    // `Malformed`, not `Unsupported`. The assertion is updated rather than deleted, because what
+    // it protects — a non-decodable input contains to a typed error, never a panic or a partial
+    // image — still holds. The full JPEG battery lives in `tests/test_jpeg.rs`.
     assert_eq!(
-        decode_png(&[0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0], &def),
+        decode_image(&[0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0], &def),
+        Err(DecodeError::Malformed)
+    );
+    // A format that is genuinely off the allowlist is still `Unsupported`.
+    assert_eq!(
+        decode_image(b"GIF89a\0\0\0\0", &def),
         Err(DecodeError::Unsupported)
     );
 }
@@ -152,7 +162,7 @@ fn truncated_and_corrupt_pngs_error_without_panicking() {
     // Truncated mid-stream → Malformed, never a panic.
     let mut truncated = full.clone();
     truncated.truncate(full.len() / 2);
-    assert_eq!(decode_png(&truncated, &def), Err(DecodeError::Malformed));
+    assert_eq!(decode_image(&truncated, &def), Err(DecodeError::Malformed));
     // Corrupt the IHDR-CRC + IDAT body (bytes after the 8-byte signature, before IEND),
     // keeping the signature so it still passes the allowlist → a decode error, never a
     // panic. This is the compressed-pixel region, whose CRC/inflate checks must catch it.
@@ -162,7 +172,7 @@ fn truncated_and_corrupt_pngs_error_without_panicking() {
         *b ^= 0xFF;
     }
     assert!(
-        decode_png(&corrupt, &def).is_err(),
+        decode_image(&corrupt, &def).is_err(),
         "corrupt PNG must error, not panic"
     );
 }
@@ -178,7 +188,7 @@ fn oversize_dimensions_are_rejected_before_allocation() {
         max_pixels: 4,
         max_encoded_bytes: 1 << 20,
     };
-    assert_eq!(decode_png(&bytes, &tight), Err(DecodeError::Oversize));
+    assert_eq!(decode_image(&bytes, &tight), Err(DecodeError::Oversize));
 }
 
 #[test]
@@ -188,9 +198,9 @@ fn an_over_budget_encoded_file_is_rejected() {
         max_encoded_bytes: 4,
         ..DecodeLimits::default()
     };
-    assert_eq!(decode_png(&bytes, &small), Err(DecodeError::TooLarge));
+    assert_eq!(decode_image(&bytes, &small), Err(DecodeError::TooLarge));
     // And within a generous cap the same image decodes fine (no false rejection).
-    assert!(decode_png(&bytes, &DecodeLimits::default()).is_ok());
+    assert!(decode_image(&bytes, &DecodeLimits::default()).is_ok());
 }
 
 // --- C-003: Layer::Image blit — scale, opacity, z-order, determinism ------------------

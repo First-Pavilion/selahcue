@@ -23,9 +23,27 @@ cosmic-text = { version = "0.12", default-features = false, features = ["std", "
 # S8-6 image foundation. A memory-safe pure-Rust parser (FR-173); PNG is lossless so the
 # decoded RGBA8 is byte-identical on every OS (NFR-014), unlike a platform/HW decoder.
 # Decode runs IN-PROCESS with hard size/dimension limits (decompression-bomb-safe); the
-# out-of-process sandbox (ADR-0016) is the deferred end-state (ADR-0018). PNG only this
-# batch — other formats degrade to the missing-media placeholder (FR-070).
+# out-of-process sandbox (ADR-0016) is the deferred end-state (ADR-0018). Formats outside the
+# signature allowlist degrade to the missing-media placeholder (FR-070).
 png = "0.17"
+# JPEG still-image decode (ADR-0025) — real .pptx decks overwhelmingly embed JPEG, so
+# presentation import needs it for "text + images" to be true on a real deck.
+#
+# EXACTLY pinned, and it must stay that way. The JPEG spec defines the bitstream, not an exact
+# inverse DCT, so byte-identical output is a property of THIS version, not of the format
+# (ADR-0025 decision 3). A bump is a golden-test-affecting change gated on re-running
+# tests/test_jpeg.rs, exactly like the wgpu pin — never a routine dependency update.
+#
+# `default-features = false` drops `rayon` (no worker threads on a path we deliberately bound);
+# `platform_independent` compiles out the SSSE3/NEON kernels AND their runtime
+# `is_x86_feature_detected!` dispatch, so ONE scalar code path runs on every CPU. Without it the
+# same binary yields different pixels on an AVX2-capable machine than without — a cross-CPU
+# divergence that reproduces on only some CI runners. It also promotes the crate's
+# `deny(unsafe_code)` to `forbid`, satisfying the threat model's JPEG-crate constraint (pure
+# Rust, no libjpeg FFI under any feature or transitive path, unsafe/SIMD disabled).
+jpeg-decoder = { version = "=0.3.2", default-features = false, features = [
+  "platform_independent",
+] }
 
 [dev-dependencies]
 serde_json = "1"

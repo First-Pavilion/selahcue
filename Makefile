@@ -188,6 +188,7 @@ ci: ## Run the CI gate locally (same gates as .github/workflows/ci.yml, minus th
 	$(CARGO) clippy $(WS) -p selahcue-scripture --features download --all-targets -- -D warnings
 	$(CARGO) clippy $(OP) --all-targets -- -D warnings
 	$(CARGO) test $(WS) --workspace
+	sh scripts/import_guards.sh
 	$(CARGO) test $(WS) -p selahcue-lan --features server
 	$(CARGO) test $(WS) -p selahcue-app --features server
 	$(CARGO) test $(WS) -p selahcue-data --features encryption
