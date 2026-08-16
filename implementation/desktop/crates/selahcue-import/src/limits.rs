@@ -89,6 +89,96 @@ pub const MAX_XML_DEPTH: usize = 256;
 /// pathological — element floods that are individually tiny and collectively unbounded.
 pub const MAX_XML_EVENTS_PER_PART: usize = 1_000_000;
 
+// --- stack -----------------------------------------------------------------------------
+//
+// Stack is the third resource this crate spends on an attacker's say-so, and until a Windows CI
+// job aborted with `STATUS_STACK_OVERFLOW` it was the only one with no number attached. Bytes and
+// memory were bounded and asserted; stack was asserted by one test picking 128 KiB and hoping.
+// These are the measured figures, so the next person changes a number rather than a guess.
+
+/// What a host runtime takes off the top of a thread's stack RESERVATION before any user code
+/// runs — the gap between "I asked for N bytes" and "I may use N bytes".
+///
+/// Windows is the tight one and it is not close: `std` calls
+/// `SetThreadStackGuarantee(0x5000)` on entry to **every** thread it spawns
+/// (`std::sys::thread::windows`), keeping 20 KiB back so its own stack-overflow handler has room
+/// to run, and the guard page costs another 4 KiB. A thread created with `stack_size(128 * 1024)`
+/// therefore has about 104 KiB to actually use on Windows and about 128 KiB on macOS and Linux.
+///
+/// It is a constant here rather than a comment because the small-stack tests **subtract it**: they
+/// run on `budget - HOST_STACK_RESERVATION`, so a green run on a developer's Mac is evidence about
+/// the platform this project ships an installer for. A test that spawns `budget` and passes on
+/// macOS says nothing about Windows, which is exactly the hole this crate fell into.
+pub const HOST_STACK_RESERVATION: usize = 0x5000 + 4096;
+
+/// Stack the WHOLE `.pptx` path may use, and the budget the shell must give the thread it runs
+/// the import on.
+///
+/// **Measured, not chosen**, by bisecting the minimum viable thread stack over the hostile battery
+/// in `tests/test_stack.rs`:
+///
+/// ```text
+///   aarch64-apple-darwin  debug     97 KiB
+///   x86_64-apple-darwin   debug    117 KiB     <- the figure the budget is sized from
+///   aarch64-apple-darwin  release   33 KiB
+/// ```
+///
+/// Practically all of it is one call — `flate2::Decompress::new` — because `miniz_oxide` builds
+/// `InflateState` (a 32 KiB LZ dictionary plus ~11 KiB of Huffman tables) in stack temporaries
+/// before boxing it: unoptimised, `<InflateState as Default>::default` alone reserves 63,520 bytes
+/// and the `Box` wrapper around it another 43,392. The same import over an archive whose members
+/// are all STORED, never reaching the inflater, needs 3 KiB. That cost is inside a dependency and
+/// cannot be reduced from here; what this crate can do is pay it **once per archive** — see
+/// `zip::Scratch` — and state the number.
+///
+/// Those two numbers and [`HOST_STACK_RESERVATION`] together are the whole of why the old,
+/// unmeasured 128 KiB thread failed on exactly one CI job:
+///
+/// ```text
+///   ubuntu   x86_64   128 KiB usable   needs 117 KiB    passed, 11 KiB to spare
+///   macos    aarch64  128 KiB usable   needs  97 KiB    passed, 31 KiB to spare
+///   windows  x86_64   104 KiB usable   needs 117 KiB+   ABORTED
+/// ```
+///
+/// Windows is the only platform that is both the expensive architecture *and* the one that hands
+/// back less than it was asked for. Neither factor alone was enough; nobody had measured either.
+/// (The Windows row carries the x86_64 figure, which Win64 can only exceed.)
+///
+/// **The sizing rule is therefore four times the worst figure measured across the architectures
+/// built here, after the host's reservation.** 512 KiB leaves 488 KiB usable, which is 4.2x the
+/// 117 KiB worst case and 14x the release one. Win64 is expected to want more again (four register
+/// arguments instead of six, and 32 bytes of shadow space per call site) and still fits several
+/// times over. The number costs nothing to be generous with: it is a *reservation* of address
+/// space, committed a page at a time.
+///
+/// This is a *contract* bound, not the sharp regression control — it is dominated by a fixed
+/// dependency cost, so nothing an input does moves it much. [`MAX_WALK_STACK_BYTES`] is the sharp
+/// one.
+pub const MAX_IMPORT_STACK_BYTES: usize = 512 * 1024;
+
+/// Stack the import's INPUT-DRIVEN walk may use: the central-directory walk, the XML pull loop,
+/// the slide loop, the picture loop and the deck build, over an archive that never enters the
+/// inflater.
+///
+/// This is the bound that can actually regress, and the one [`MAX_XML_DEPTH`] exists to protect.
+/// [`MAX_IMPORT_STACK_BYTES`] cannot do this job: it is dominated by a fixed dependency cost that
+/// no input changes, so a parser that started recursing one frame per element would have several
+/// hundred kilobytes to hide in before it showed up there.
+///
+/// Measured at **3 KiB on aarch64 and 21 KiB on x86_64**, in both cases *for a two-element
+/// document and a ten-thousand-deep one alike* — the whole figure is fixed cost, and the walk's
+/// stack use does not depend on the input at all. That is the property; the number is only how it
+/// is asserted. The seven-fold gap between the two architectures is also the argument for the
+/// sizing rule: it is far larger than the 1.29x margin that was assumed to be safe here before.
+///
+/// 112 KiB leaves 88 KiB usable after the host's reservation — 4.2x the worst measured figure,
+/// the same rule [`MAX_IMPORT_STACK_BYTES`] uses. Still sharp: a walker recursing one frame per
+/// element breaches it at nine bytes a frame over the depth the tests feed, and real frames are
+/// nowhere near that small. It also holds the inflater honest, because building it eagerly in
+/// `ZipArchive::open` rather than on first deflated member puts ~90 KiB on this path and fails
+/// here on both architectures — which is how that mistake was caught rather than shipped.
+pub const MAX_WALK_STACK_BYTES: usize = 112 * 1024;
+
 // --- content ---------------------------------------------------------------------------
 
 /// Slides imported. Equal to the deck's own bound, so the importer can never build a deck the
@@ -191,6 +281,25 @@ mod tests {
         // And a deck the shell admitted must be able to have all of its stored content read, or
         // the degrade path would fire on files that are inside every stated limit.
         const { assert!(MAX_TOTAL_EXTRACTED_BYTES >= MAX_PPTX_FILE_BYTES as usize) };
+    }
+
+    /// The walk budget must sit inside the whole-path budget, and both must survive the host's
+    /// reservation with something left to run in — a budget below what Windows keeps back is not
+    /// a budget, it is a guaranteed abort.
+    #[test]
+    fn the_stack_budgets_compose() {
+        const { assert!(MAX_WALK_STACK_BYTES < MAX_IMPORT_STACK_BYTES) };
+        const { assert!(HOST_STACK_RESERVATION < MAX_WALK_STACK_BYTES) };
+
+        // The sizing rule, spelled out: four times the WORST figure measured across the
+        // architectures built here, after the host's reservation. Written as an assertion rather
+        // than a comment so that trimming a budget without re-measuring fails at compile time —
+        // the previous number was a comment-free literal in a test, and it was wrong for two
+        // years' worth of platforms.
+        const WORST_MEASURED_IMPORT: usize = 117 * 1024; // x86_64-apple-darwin, debug
+        const WORST_MEASURED_WALK: usize = 21 * 1024; // x86_64-apple-darwin, debug
+        const { assert!(MAX_IMPORT_STACK_BYTES - HOST_STACK_RESERVATION >= 4 * WORST_MEASURED_IMPORT) };
+        const { assert!(MAX_WALK_STACK_BYTES - HOST_STACK_RESERVATION >= 4 * WORST_MEASURED_WALK) };
     }
 
     #[test]

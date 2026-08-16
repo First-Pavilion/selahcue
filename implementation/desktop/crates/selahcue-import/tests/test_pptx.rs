@@ -1092,6 +1092,22 @@ fn duplicate_part_names_resolve_first_wins_and_report_the_rest() {
 fn deeply_nested_xml_is_dropped_rather_than_overflowing_the_stack() {
     // Ten thousand deep, run on a SMALL stack on purpose: a recursion regression must fail here
     // rather than pass because the main thread's stack happens to be large.
+    //
+    // Two things about the way it is run are corrections, both of which cost a red Windows CI run.
+    //
+    // The stack size is `MAX_WALK_STACK_BYTES` minus what the host keeps back, not a number picked
+    // here. It used to be a bare `128 * 1024`, never measured, against a path that needs 97 KiB in
+    // the `debug` profile — a 1.29x margin, narrower than the difference between platforms. macOS
+    // and Linux fitted; Windows, where `std` reserves 20 KiB of every thread for its own overflow
+    // handler, did not, and took the whole test binary down with `STATUS_STACK_OVERFLOW`. See
+    // `limits.rs` for the measurements and `tests/test_stack.rs` for the gate that now covers the
+    // whole battery rather than this one input.
+    //
+    // And the package is STORED. Almost all of that 97 KiB is one `flate2::Decompress::new`, which
+    // no input changes — so a budget that included it could not have caught a recursion regression
+    // anyway, because a parser recursing a frame per element would have had 90 KiB of slack to
+    // hide in. Storing the parts keeps the inflater out of the measurement and leaves the walk,
+    // which is what this test is named for and the only part depth can move.
     let mut xml =
         String::from(r#"<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a"><p:cSld><p:spTree>"#);
     for _ in 0..10_000 {
@@ -1101,17 +1117,21 @@ fn deeply_nested_xml_is_dropped_rather_than_overflowing_the_stack() {
         xml.push_str("</p:grpSp>");
     }
     xml.push_str("</p:spTree></p:cSld></p:sld>");
-    // The archive is assembled on the NORMAL stack; only the parse runs on the small one, so
-    // what this measures is the parser's stack use and nothing else.
+    // The archive is assembled on the NORMAL stack; only the import runs on the small one, so
+    // what this measures is the reader's stack use and nothing else.
     let bytes = PptxBuilder::new()
+        .stored()
         .slide(SlideSpec::text("Good", &["body"]))
         .slide(SlideSpec {
             raw_xml: Some(xml),
             ..Default::default()
         })
         .build();
+    let stack = selahcue_import::limits::MAX_WALK_STACK_BYTES
+        - selahcue_import::limits::HOST_STACK_RESERVATION;
     let deep = std::thread::Builder::new()
-        .stack_size(128 * 1024)
+        .name("deep-xml".into())
+        .stack_size(stack)
         .spawn(move || report_of(bytes))
         .unwrap()
         .join()

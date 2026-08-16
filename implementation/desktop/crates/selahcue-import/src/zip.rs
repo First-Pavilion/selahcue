@@ -164,6 +164,46 @@ pub(crate) struct ZipArchive<'a> {
     /// Bytes produced across the whole archive by any method. Bounds the total work an archive
     /// can ask for, including overlapping stored entries read over and over.
     total_extracted: usize,
+    /// The buffers and the inflater every entry read reuses. See [`Scratch`].
+    scratch: Scratch,
+}
+
+/// The working set one archive read needs, owned by the archive and reused for every member.
+///
+/// All three of these were allocated **per entry**, inside the read: two 64 KiB chunk buffers and
+/// a `flate2::Decompress`. An archive may hold [`MAX_ZIP_ENTRIES`] members and an ordinary deck
+/// holds several hundred, so that is roughly 172 KiB of allocate-fill-free per part, on the path
+/// that reads attacker-supplied bytes — precisely the repeated unbounded work this crate refuses
+/// everywhere else, and invisible to a high-water-mark measurement because each one is freed
+/// before the next is taken.
+#[derive(Default)]
+struct Scratch {
+    /// Raw bytes from the source, one [`CHUNK`] at a time.
+    input: Vec<u8>,
+    /// What the inflater produced, one [`CHUNK`] at a time.
+    output: Vec<u8>,
+    /// The archive's ONE inflater: built on first use, `reset` for every member after that, and
+    /// never built at all for an archive with no deflated member to read.
+    ///
+    /// **Lazy, not eager, and that is load-bearing.** Building it in `open` was tidier and cost
+    /// the crate its one cheap path: because `miniz_oxide` assembles `InflateState` (a 32 KiB LZ
+    /// dictionary plus the Huffman tables) in stack temporaries before boxing it, constructing one
+    /// spends most of [`MAX_IMPORT_STACK_BYTES`](crate::limits::MAX_IMPORT_STACK_BYTES) — so doing
+    /// it eagerly charged a stored-only archive ninety-odd kilobytes of stack to read nothing.
+    /// Deferring it keeps a package that never reaches the inflater inside
+    /// [`MAX_WALK_STACK_BYTES`](crate::limits::MAX_WALK_STACK_BYTES), which is what makes that
+    /// budget tight enough to catch a recursion regression at all.
+    inflate: Option<flate2::Decompress>,
+}
+
+impl Scratch {
+    /// `buf` as exactly one [`CHUNK`], grown once and reused thereafter.
+    fn chunk(buf: &mut Vec<u8>) -> &mut [u8] {
+        if buf.len() != CHUNK {
+            buf.resize(CHUNK, 0);
+        }
+        buf
+    }
 }
 
 impl<'a> ZipArchive<'a> {
@@ -220,6 +260,7 @@ impl<'a> ZipArchive<'a> {
             entries,
             total_inflated: 0,
             total_extracted: 0,
+            scratch: Scratch::default(),
         })
     }
 
@@ -276,12 +317,30 @@ impl Archive for ZipArchive<'_> {
         let available = self.src.len().saturating_sub(data_at);
 
         let mut out: Vec<u8> = Vec::new();
-        match meta.method {
-            METHOD_STORE => {
-                self.read_stored(data_at, available, &meta, entry_cap, cancel, &mut out)?
-            }
-            _ => self.read_deflate(data_at, available, entry_cap, cancel, &mut out)?,
-        }
+        // Lend the archive its own scratch for the read and take it back whatever happens, so a
+        // member that is dropped mid-read does not cost the next one a fresh set of buffers.
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let read = match meta.method {
+            METHOD_STORE => self.read_stored(
+                &mut scratch,
+                data_at,
+                available,
+                &meta,
+                entry_cap,
+                cancel,
+                &mut out,
+            ),
+            _ => self.read_deflate(
+                &mut scratch,
+                data_at,
+                available,
+                entry_cap,
+                cancel,
+                &mut out,
+            ),
+        };
+        self.scratch = scratch;
+        read?;
         Ok(out)
     }
 }
@@ -295,8 +354,10 @@ impl ZipArchive<'_> {
     /// entry serves the archive bytes that follow it — the next local header and the next member's
     /// payload — as this part's content, and an under-declaring one silently truncates the part to
     /// whatever prefix it named.
+    #[allow(clippy::too_many_arguments)]
     fn read_stored(
         &mut self,
+        scratch: &mut Scratch,
         data_at: u64,
         available: u64,
         meta: &EntryMeta,
@@ -306,7 +367,7 @@ impl ZipArchive<'_> {
     ) -> Result<(), ZipError> {
         let want = meta.compressed_size.min(available);
         let mut done: u64 = 0;
-        let mut buf = vec![0u8; CHUNK];
+        let buf = Scratch::chunk(&mut scratch.input);
         while done < want {
             if cancel() {
                 return Err(ZipError::Cancelled);
@@ -330,18 +391,31 @@ impl ZipArchive<'_> {
     }
 
     /// Stream a deflate entry, enforcing the caps on **produced** bytes, chunk by chunk.
+    ///
+    /// The buffers and the inflater come from the archive's [`Scratch`] rather than being built
+    /// here — see that type for why one set per archive rather than one per member.
+    #[allow(clippy::too_many_arguments)]
     fn read_deflate(
         &mut self,
+        scratch: &mut Scratch,
         data_at: u64,
         available: u64,
         entry_cap: usize,
         cancel: &dyn Fn() -> bool,
         out: &mut Vec<u8>,
     ) -> Result<(), ZipError> {
-        // `false` = raw deflate, no zlib header: a ZIP member is a bare deflate stream.
-        let mut inflate = flate2::Decompress::new(false);
-        let mut input = vec![0u8; CHUNK];
-        let mut output = vec![0u8; CHUNK];
+        let Scratch {
+            input,
+            output,
+            inflate,
+        } = scratch;
+        // Built on the first deflated member of the archive and reused for the rest. `reset`
+        // clears the stream state and zeroes the counters, so each member starts clean; `false`
+        // keeps it on raw deflate, no zlib header, which is what a ZIP member is.
+        let inflate = inflate.get_or_insert_with(|| flate2::Decompress::new(false));
+        inflate.reset(false);
+        let input = Scratch::chunk(input);
+        let output = Scratch::chunk(output);
         let mut read_at = data_at;
         let mut consumed_total: usize = 0;
         let mut remaining = available;
@@ -364,7 +438,7 @@ impl ZipArchive<'_> {
                 let before_out = inflate.total_out();
                 let src = in_slice.get(offset..).ok_or(ZipError::Malformed)?;
                 let status = inflate
-                    .decompress(src, &mut output, flate2::FlushDecompress::None)
+                    .decompress(src, output, flate2::FlushDecompress::None)
                     .map_err(|_| ZipError::Malformed)?;
                 let produced = usize::try_from(inflate.total_out().saturating_sub(before_out))
                     .map_err(|_| ZipError::Malformed)?;

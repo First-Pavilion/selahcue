@@ -443,7 +443,13 @@ pub struct PptxBuilder {
     pub extra: Vec<Entry>,
     /// Entries that SUBSTITUTE for the generated part of the same name.
     pub replace: Vec<Entry>,
-    /// Store every part rather than deflating it (keeps hand-checked offsets simple).
+    /// Store every generated part rather than deflating it.
+    ///
+    /// Hand-checked offsets stay simple, and — the reason it is now wired up rather than merely
+    /// declared, which it was until the stack tests needed it — a stored archive never enters
+    /// `flate2`, which is where all but three kilobytes of the import's stack goes. Measuring the
+    /// *walk's* stack use is impossible while a fixed ninety-kilobyte dependency cost sits in the
+    /// same number.
     pub stored: bool,
     /// Make the end-of-central-directory record CLAIM this many entries instead of the truth.
     pub declared_entries: Option<u16>,
@@ -480,6 +486,13 @@ impl PptxBuilder {
         self
     }
 
+    /// STORE every generated part instead of deflating it — the same package, never handed to the
+    /// inflater.
+    pub fn stored(mut self) -> Self {
+        self.stored = true;
+        self
+    }
+
     /// The assembled archive bytes.
     pub fn build(&self) -> Vec<u8> {
         let mut entries: Vec<Entry> = self.before.clone();
@@ -495,6 +508,7 @@ impl PptxBuilder {
                 used[i] = true;
                 entries.push(self.replace[i].clone());
             }
+            None if self.stored => entries.push(Entry::stored(name, data)),
             None => entries.push(Entry::deflated(name, data)),
         };
 

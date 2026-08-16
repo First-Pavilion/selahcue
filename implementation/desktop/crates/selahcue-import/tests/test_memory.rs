@@ -37,12 +37,20 @@ use selahcue_present::Theme;
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
+/// Bytes handed out since the last [`reset`], counting every allocation whether or not it is
+/// freed again a moment later.
+///
+/// [`PEAK`] is blind to churn by construction: a buffer allocated and dropped once per entry never
+/// raises the high-water mark, however many entries there are. That is the shape of repeated work
+/// this crate refuses — a per-member inflater, a per-slide arena — so it needs its own counter.
+static CHURN: AtomicUsize = AtomicUsize::new(0);
 
 struct Tracking;
 
 fn bump(delta: usize) {
     let live = LIVE.fetch_add(delta, Ordering::Relaxed) + delta;
     PEAK.fetch_max(live, Ordering::Relaxed);
+    CHURN.fetch_add(delta, Ordering::Relaxed);
 }
 
 unsafe impl GlobalAlloc for Tracking {
@@ -88,6 +96,12 @@ fn reset() {
     let live = LIVE.load(Ordering::Relaxed);
     BASE.store(live, Ordering::Relaxed);
     PEAK.store(live, Ordering::Relaxed);
+    CHURN.store(0, Ordering::Relaxed);
+}
+
+/// Bytes allocated since the last [`reset`], freed or not.
+fn churn_since_reset() -> usize {
+    CHURN.load(Ordering::Relaxed)
 }
 
 /// Peak live bytes since the last [`reset`], **above the baseline that was already live then**.
@@ -244,6 +258,52 @@ fn a_worst_case_import_stays_inside_the_documented_budget() {
     assert!(report.skipped_overflow > 0);
     assert_eq!(report.severity(), selahcue_import::Severity::Material);
     assert!(peak_since_reset() < PEAK_BUDGET);
+
+    // 3b. The reader's WORKING SET is per ARCHIVE, not per entry.
+    //
+    //     A high-water mark cannot see this and never could: the reader allocated two 64 KiB chunk
+    //     buffers and a whole `flate2::Decompress` on entry to every member read, filled them, and
+    //     dropped them again before the next member, so `PEAK` was identical whether that happened
+    //     once or four thousand times. What it costs is churn — and a `Decompress` is not a cheap
+    //     churn, because `miniz_oxide`'s `InflateState` is a 32 KiB LZ dictionary plus the Huffman
+    //     tables, allocated and zeroed every time.
+    //
+    //     A deck reads at least two parts per slide, so this is roughly 172 KiB of
+    //     allocate-fill-free per slide on the path that handles attacker-supplied bytes. The
+    //     assertion is stated per part read, so it stays meaningful if the fixture changes.
+    reset();
+    let mut many = PptxBuilder::new();
+    for i in 0..150 {
+        many = many.slide(SlideSpec::text(&format!("Slide {i}"), &["one short line"]));
+    }
+    let archive = many.build();
+    reset();
+    let mut src = MemorySource::new(archive);
+    let mut sink = RecordingSink::new();
+    let doc = selahcue_import::read_pptx(
+        &mut src,
+        ImportSource::Pptx {
+            name: "Churn".into(),
+        },
+        &mut sink,
+        &|| false,
+    )
+    .unwrap();
+    let churn = churn_since_reset();
+    assert_eq!(doc.slides.len(), 150);
+    // Two parts per slide (the slide and its `.rels`) plus the presentation and its own.
+    let parts_read = 150 * 2 + 2;
+    // Half a chunk buffer per part, which sits between the two behaviours rather than beside
+    // either: measured at 7.6 KiB per part with the buffers and the inflater owned by the archive,
+    // and at 177 KiB per part with them allocated per entry. Four times over the first and five
+    // times under the second — a regression here cannot be a rounding difference.
+    let budget = parts_read * 32 * 1024;
+    assert!(
+        churn < budget,
+        "reading {parts_read} parts churned {churn} bytes ({} KiB per part) — the chunk buffers \
+         and the inflater must belong to the archive, not to each entry",
+        churn / parts_read / 1024
+    );
 
     // 4. ONE large image, and the assertion that the importer **never decodes it**.
     //
