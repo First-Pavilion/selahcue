@@ -45,6 +45,15 @@ mod deck_library;
 use deck_library::DeckLibrary;
 use selahcue_present::{DeckId, SlideId};
 
+/// The app-owned media store (ADR-0024 decision 4): `<app_data>/media/`, per-import staging with
+/// atomic commit, and the `media_repo` wiring that lets imported media survive a restart.
+///
+/// Declared here so it compiles and its tests run under the operator's `cargo test`. The import
+/// COMMANDS that drive it are not written yet — see the handoff note in the build report — but
+/// leaving the module undeclared would have meant shipping it uncompiled and unverified, which
+/// is strictly worse than shipping it unused.
+mod media_store;
+
 /// Where the operator commands are dispatched: a remote host output window, or an
 /// in-process demo controller.
 enum Backend {

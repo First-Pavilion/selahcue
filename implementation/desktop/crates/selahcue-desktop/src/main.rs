@@ -223,20 +223,61 @@ enum WindowAction {
     Close(WindowRole),
 }
 
-/// THE window-lifecycle decision, as a pure function so it is unit-testable without a
-/// windowing system.
+/// Which built-in windows FAILED to be created this run — the retry suppressor, held
+/// **only in memory**.
+///
+/// A window-server or GPU failure is environmental and usually transient, so it must never
+/// be recorded in the screen registry: `Command::SetScreenEnabled` marks the registry dirty
+/// and the autosave persists it, which would turn a one-off hiccup at launch into a durable
+/// "this screen is off" that survives every later launch. Keeping the suppression here also
+/// means it cannot silently fail to take effect the way a registry write can (a rejected
+/// command, or a poisoned controller mutex, leaves `enabled` true and the reconcile
+/// re-deciding `Open` every frame — a ~60 Hz window-creation storm).
+///
+/// Bounded by construction: one flag per built-in role, so it cannot grow.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct OpenFailures {
+    main: bool,
+    stage: bool,
+}
+
+impl OpenFailures {
+    fn get(self, role: WindowRole) -> bool {
+        match role {
+            WindowRole::Main => self.main,
+            WindowRole::Stage => self.stage,
+        }
+    }
+
+    fn set(&mut self, role: WindowRole, failed: bool) {
+        match role {
+            WindowRole::Main => self.main = failed,
+            WindowRole::Stage => self.stage = failed,
+        }
+    }
+}
+
+/// THE window-lifecycle decision, decided without a windowing system so it is unit-testable.
 ///
 /// For a built-in screen, `enabled` means **the OS window exists** — so the toggle on
 /// the Screens page and the window's own close button are the same action, resolved
 /// here. Given each registry screen's `(id, enabled)` and whether each built-in window
 /// currently exists, it returns the opens/closes that make reality match the registry.
 ///
+/// `failed` is the in-memory record of roles whose window creation already failed this run.
+/// A role in it is not re-opened, so a failing open costs ONE attempt rather than one per
+/// frame; the flag is forgotten as soon as that screen is switched OFF, so switching it back
+/// ON is a single deliberate retry — the operator's gesture, never a loop. This is why the
+/// suppression is threaded through here instead of being expressed as a registry write.
+///
 /// Properties the tests pin: it is idempotent (no action when already in the desired
-/// state), it drives both directions, and a VIRTUAL screen never yields an action.
+/// state), it drives both directions, a VIRTUAL screen never yields an action, and a failed
+/// open is retried once per enable even when the registry still reports the screen enabled.
 fn reconcile_windows<'a>(
     screens: impl IntoIterator<Item = (&'a str, bool)>,
     main_open: bool,
     stage_open: bool,
+    failed: &mut OpenFailures,
 ) -> Vec<WindowAction> {
     // Empty in the steady state — `Vec::new` does not allocate until something is pushed,
     // so the per-frame reconcile costs nothing when nothing changed.
@@ -251,13 +292,59 @@ fn reconcile_windows<'a>(
             WindowRole::Stage => stage_open,
         };
         match (enabled, open) {
-            (true, false) => actions.push(WindowAction::Open(role)),
+            // Enabled but absent: open it — unless opening it already failed this run, in
+            // which case retrying now would just repeat the failure at frame rate.
+            (true, false) => {
+                if !failed.get(role) {
+                    actions.push(WindowAction::Open(role));
+                }
+            }
             (false, true) => actions.push(WindowAction::Close(role)),
             // Already where it should be: no action (idempotence).
-            (true, true) | (false, false) => {}
+            (true, true) => {}
+            // Switched OFF and already closed. This is the operator clearing the failure:
+            // the screen is off, so the next switch-ON gets a fresh attempt.
+            (false, false) => failed.set(role, false),
         }
     }
     actions
+}
+
+/// Whether the QUIT CHORD can still reach this process.
+///
+/// winit delivers `KeyboardInput` through `window_event` only — that is, only to a FOCUSED
+/// WINDOW — and [`App`] implements no `device_event` and no `user_event`. So a running
+/// process with no window has **no keyboard route out at all**: not the chord, not anything.
+/// This fact is what makes closing the last window a quit rather than a screen edit.
+fn quit_chord_reachable(main_open: bool, stage_open: bool) -> bool {
+    main_open || stage_open
+}
+
+/// What a window's own close button must do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseOutcome {
+    /// Close just that screen and keep running. The process still owns the other window,
+    /// the LAN server, and the presentation state paired mobile controllers depend on — and
+    /// the remaining window can still receive the quit chord.
+    CloseScreen,
+    /// That was the LAST window: quit. Leaving the process running here would leave it
+    /// unquittable (see [`quit_chord_reachable`]), with the banner promising a chord that
+    /// nothing could deliver.
+    Quit,
+}
+
+/// Resolve a close-button press. Derived from [`quit_chord_reachable`] rather than stated
+/// separately, so the exit rule cannot drift from the reason for it.
+fn close_button_outcome(main_open: bool, stage_open: bool, closing: WindowRole) -> CloseOutcome {
+    let (main_after, stage_after) = match closing {
+        WindowRole::Main => (false, stage_open),
+        WindowRole::Stage => (main_open, false),
+    };
+    if quit_chord_reachable(main_after, stage_after) {
+        CloseOutcome::CloseScreen
+    } else {
+        CloseOutcome::Quit
+    }
 }
 
 /// Whether a key press is the explicit QUIT chord: **Cmd-Q on macOS, Ctrl-Q elsewhere**.
@@ -1221,6 +1308,9 @@ struct App {
     /// per screen so an operator who enables NDI on a non-NDI build learns why nothing shows up
     /// (e.g. in OBS) instead of silently believing it's on air. Bounded/pruned with the registry.
     ndi_warned: std::collections::HashSet<String>,
+    /// Built-in windows whose creation FAILED this run — in-memory only, never persisted.
+    /// See [`OpenFailures`] and [`record_open_outcome`].
+    open_failures: OpenFailures,
 }
 
 /// Apply one command to the shared controller (a poisoned lock just drops the input
@@ -1229,6 +1319,69 @@ fn drive(controller: &Mutex<LiveController>, command: &Command) {
     if let Ok(mut c) = controller.lock() {
         let _ = c.apply(command);
     }
+}
+
+/// Record the outcome of a window-creation attempt for a built-in screen.
+///
+/// The whole point of this function is what it does NOT do on failure: it does not touch
+/// `controller`. Marking the screen disabled would go through `Command::SetScreenEnabled`,
+/// which sets the registry dirty and lets the autosave WRITE it — so a transient GPU or
+/// window-server failure at launch would be persisted as a durable "the operator turned this
+/// screen off", and the next launch would open no window at all, present nothing, and fail
+/// the smoke gate. The failure is instead held in `failures`, which lives and dies with the
+/// process, and which also suppresses the retry storm without depending on a registry write
+/// that can be rejected or silently dropped.
+///
+/// A success clears the flag, so a screen that recovers is never suppressed by an old failure.
+fn record_open_outcome(
+    controller: &Mutex<LiveController>,
+    failures: &mut OpenFailures,
+    role: WindowRole,
+    outcome: Result<(), String>,
+) {
+    match outcome {
+        Ok(()) => {
+            failures.set(role, false);
+            set_screen_enabled(controller, role, true);
+        }
+        Err(e) => {
+            eprintln!(
+                "SelahCue: could not open the {} output window ({e}); that screen has no window \
+                 for now. It stays ENABLED — this is a transient failure, not a setting, so it is \
+                 NOT saved. Switch the screen off and on again from the operator's Screens page \
+                 to retry.",
+                role.screen_id()
+            );
+            failures.set(role, true);
+        }
+    }
+}
+
+/// Flip a screen's `enabled` flag from THIS process, without a LAN round-trip. It goes
+/// through the same [`Command::SetScreenEnabled`] dispatch a remote operator uses, so
+/// there is exactly one place that mutates the registry (and the LAN `authorize()`
+/// choke point is untouched — it still guards every remote caller). Skipped when the
+/// flag already has the wanted value, so a reconcile can't dirty the registry for a
+/// pointless persist write.
+fn set_screen_enabled(controller: &Mutex<LiveController>, role: WindowRole, enabled: bool) {
+    // A poisoned lock is read as "nothing to do": neither the read nor the write below can
+    // succeed through it, so dispatching anyway would only be a command that silently
+    // no-ops. Nothing depends on this write landing — window lifecycle is decided from the
+    // registry plus [`OpenFailures`], never from whether this call took effect.
+    let already = controller
+        .lock()
+        .map(|c| c.is_screen_enabled(role.screen_id()) == enabled)
+        .unwrap_or(true);
+    if already {
+        return;
+    }
+    drive(
+        controller,
+        &Command::SetScreenEnabled {
+            screen: role.screen_id().to_string(),
+            enabled,
+        },
+    );
 }
 
 /// Reconcile the NDI OUTPUT senders against the registry + per-screen config, then feed each
@@ -1436,6 +1589,7 @@ impl App {
             ndi_outputs: std::collections::HashMap::new(),
             ndi_backoff: std::collections::HashMap::new(),
             ndi_warned: std::collections::HashSet::new(),
+            open_failures: OpenFailures::default(),
         }
     }
 
@@ -1816,34 +1970,15 @@ impl App {
             .map(|(m, _)| m.clone())
     }
 
-    /// Flip a screen's `enabled` flag from THIS process, without a LAN round-trip. It goes
-    /// through the same [`Command::SetScreenEnabled`] dispatch a remote operator uses, so
-    /// there is exactly one place that mutates the registry (and the LAN `authorize()`
-    /// choke point is untouched — it still guards every remote caller). Skipped when the
-    /// flag already has the wanted value, so a reconcile can't dirty the registry for a
-    /// pointless persist write.
-    fn set_screen_enabled_locally(&self, role: WindowRole, enabled: bool) {
-        let already = self
-            .controller
-            .lock()
-            .map(|c| c.is_screen_enabled(role.screen_id()) == enabled)
-            .unwrap_or(false);
-        if already {
-            return;
-        }
-        drive(
-            &self.controller,
-            &Command::SetScreenEnabled {
-                screen: role.screen_id().to_string(),
-                enabled,
-            },
-        );
-    }
-
     /// Open a built-in screen's OS window: create it (honouring the persisted per-role
     /// display assignment as borderless fullscreen), mark the screen enabled, and publish
-    /// truthful status. A creation failure is logged and leaves the screen DISABLED — the
-    /// process keeps serving the other window rather than retrying ~60x/s or dying.
+    /// truthful status.
+    ///
+    /// A creation failure is logged and recorded IN MEMORY by [`record_open_outcome`] — the
+    /// screen stays enabled in the registry (a transient GPU hiccup is not an operator
+    /// setting and must never be saved as one), and the in-memory flag is what stops the
+    /// reconcile retrying ~60x/s. The process keeps serving the other window rather than
+    /// dying.
     fn open_screen(&mut self, event_loop: &ActiveEventLoop, role: WindowRole) {
         if self.is_window_open(role) {
             return;
@@ -1859,23 +1994,17 @@ impl App {
             Ok(w) => Renderer::new(Arc::new(w)),
             Err(e) => Err(format!("create window: {e}")),
         };
-        match renderer {
+        let outcome = match renderer {
             Ok(r) => {
                 match role {
                     WindowRole::Main => self.main = Some(r),
                     WindowRole::Stage => self.stage = Some(r),
                 }
-                self.set_screen_enabled_locally(role, true);
+                Ok(())
             }
-            Err(e) => {
-                eprintln!(
-                    "SelahCue: could not open the {} output window ({e}); leaving that screen off.",
-                    role.screen_id()
-                );
-                // Report the truth (off), and stop the reconcile from retrying every frame.
-                self.set_screen_enabled_locally(role, false);
-            }
-        }
+            Err(e) => Err(e),
+        };
+        record_open_outcome(&self.controller, &mut self.open_failures, role, outcome);
         // A window set change invalidates the cached identify overlay.
         self.identify_frames = None;
         self.publish_output_status();
@@ -1893,7 +2022,10 @@ impl App {
             WindowRole::Main => self.main = None,
             WindowRole::Stage => self.stage = None,
         }
-        self.set_screen_enabled_locally(role, false);
+        set_screen_enabled(&self.controller, role, false);
+        // Switching a screen off clears any recorded open failure for it, so switching it
+        // back on always gets a fresh attempt.
+        self.open_failures.set(role, false);
         self.identify_frames = None;
         self.publish_output_status();
     }
@@ -1902,8 +2034,11 @@ impl App {
     /// is what makes "toggle a screen back on" relaunch its window. The decision itself is
     /// the pure [`reconcile_windows`]; this only performs it.
     fn reconcile_screen_windows(&mut self, event_loop: &ActiveEventLoop) {
+        // The Arc is cloned so the registry read and the `open_failures` update are not two
+        // borrows of `self` at once; the lock is still held for exactly the decision.
+        let controller = self.controller.clone();
         let actions = {
-            let Ok(c) = self.controller.lock() else {
+            let Ok(c) = controller.lock() else {
                 return;
             };
             reconcile_windows(
@@ -1912,6 +2047,7 @@ impl App {
                     .map(|s| (s.id.as_str(), s.enabled)),
                 self.main.is_some(),
                 self.stage.is_some(),
+                &mut self.open_failures,
             )
         };
         for action in actions {
@@ -1953,13 +2089,25 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         match event {
-            // Closing a window closes THAT SCREEN — it is the Screens toggle by another
-            // name, so it runs the same `close_screen`. It must NOT exit: this process owns
-            // the other window, the LAN server and the presentation state that paired
-            // mobile controllers depend on. Quit is the explicit Cmd-Q / Ctrl-Q chord.
+            // Closing a window while ANOTHER remains open closes just THAT SCREEN — it is the
+            // Screens toggle by another name, so it runs the same `close_screen`, and the
+            // process stays up because it owns the other window, the LAN server and the
+            // presentation state that paired mobile controllers depend on.
+            //
+            // Closing the LAST window quits. The Cmd-Q / Ctrl-Q chord arrives through this
+            // very handler, so it only ever reaches a focused window (see
+            // `quit_chord_reachable`): a windowless process could not be quit at all, and an
+            // operator who clicks both close buttons — the gesture that quit before this
+            // lifecycle existed — would have to kill it. That last close is a QUIT gesture,
+            // not a screen edit, so it deliberately does NOT run `close_screen`: writing
+            // `enabled = false` on the way out would leave the next launch with no window to
+            // open, presenting nothing.
             WindowEvent::CloseRequested => {
                 if let Some(role) = self.window_role_of(id) {
-                    self.close_screen(role);
+                    match close_button_outcome(self.main.is_some(), self.stage.is_some(), role) {
+                        CloseOutcome::CloseScreen => self.close_screen(role),
+                        CloseOutcome::Quit => event_loop.exit(),
+                    }
                 }
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
@@ -2207,10 +2355,17 @@ impl ApplicationHandler for App {
             eprintln!(
                 "SMOKE FAIL: no frame presented within {}s of launch (the `main` screen is {})",
                 SMOKE_TIMEOUT.as_secs(),
-                match self.controller.lock() {
-                    Ok(c) if c.is_screen_enabled("main") => "enabled",
-                    Ok(_) => "DISABLED — it has no window to present",
-                    Err(_) => "unknown (controller lock poisoned)",
+                // An open failure is reported as itself: it is in-memory state, so the
+                // registry still says "enabled" and would otherwise send the reader hunting
+                // for a setting that was never changed.
+                if self.open_failures.get(WindowRole::Main) {
+                    "enabled, but its window FAILED TO OPEN this run — see the error above"
+                } else {
+                    match self.controller.lock() {
+                        Ok(c) if c.is_screen_enabled("main") => "enabled",
+                        Ok(_) => "DISABLED — it has no window to present",
+                        Err(_) => "unknown (controller lock poisoned)",
+                    }
                 }
             );
             std::process::exit(1);
@@ -2480,14 +2635,15 @@ fn print_connect_banner(
     println!();
     println!("  Local keys: Space/\u{2192}=next  \u{2190}=prev  Enter=Go Live  B=blackout  Esc Esc=clear all  Backspace=clear staged");
     println!("  Pairing:    P=show a QR invite (approve/deny devices from the operator console)");
-    // Closing a window now closes only THAT screen (it is the Screens toggle by another
-    // name), so the way out has to be stated explicitly.
+    // Closing a window closes only THAT screen while another output window is still open,
+    // so both ways out have to be stated explicitly — and the chord only works while an
+    // output window has focus, which is exactly why the last close quits.
     println!(
-        "  Windows:    a window's close button switches OFF that screen (toggle it back on \
-         from the operator's Screens page)"
+        "  Windows:    while more than one output window is open, a window's close button \
+         switches OFF that screen (toggle it back on from the operator's Screens page)"
     );
     println!(
-        "  Quit:       {} — closing a window no longer stops the output process",
+        "  Quit:       {} with an output window focused, or close the LAST open output window",
         if cfg!(target_os = "macos") {
             "Cmd-Q"
         } else {
@@ -2569,35 +2725,59 @@ fn main() {
 #[cfg(test)]
 mod window_lifecycle_tests {
     use super::{
-        is_quit_chord, reconcile_windows, window_role_for_screen, WindowAction, WindowRole,
+        close_button_outcome, demo_plan, is_quit_chord, quit_chord_reachable, reconcile_windows,
+        record_open_outcome, window_role_for_screen, CloseOutcome, LiveController, OpenFailures,
+        Theme, WindowAction, WindowRole, OUTPUT_H, OUTPUT_W,
     };
+    use std::sync::Mutex;
 
     /// The default registry: the two built-ins, both enabled.
     fn builtins(main: bool, stage: bool) -> Vec<(&'static str, bool)> {
         vec![("main", main), ("stage", stage)]
     }
 
+    /// The reconcile with a clean failure record — the ordinary case, where no window has
+    /// failed to open. Tests that care about failures thread their own `OpenFailures`.
+    fn decide(
+        screens: Vec<(&'static str, bool)>,
+        main_open: bool,
+        stage_open: bool,
+    ) -> Vec<WindowAction> {
+        reconcile_windows(screens, main_open, stage_open, &mut OpenFailures::default())
+    }
+
+    /// A real controller with the default registry (both built-ins enabled), so the registry
+    /// assertions below run against the same type and dirty flag the autosave persists from.
+    fn controller() -> Mutex<LiveController> {
+        Mutex::new(LiveController::new(
+            demo_plan(),
+            OUTPUT_W,
+            OUTPUT_H,
+            Theme::dark(),
+        ))
+    }
+
     #[test]
     fn nothing_to_do_when_reality_already_matches() {
         // Both enabled and both open: idempotent, no churn on the ~60 Hz reconcile.
-        assert_eq!(reconcile_windows(builtins(true, true), true, true), []);
+        assert_eq!(decide(builtins(true, true), true, true), []);
         // Both disabled and both already closed: equally a fixed point.
-        assert_eq!(reconcile_windows(builtins(false, false), false, false), []);
+        assert_eq!(decide(builtins(false, false), false, false), []);
     }
 
     #[test]
     fn disabling_a_screen_closes_its_window() {
         assert_eq!(
-            reconcile_windows(builtins(false, true), true, true),
+            decide(builtins(false, true), true, true),
             [WindowAction::Close(WindowRole::Main)]
         );
         assert_eq!(
-            reconcile_windows(builtins(true, false), true, true),
+            decide(builtins(true, false), true, true),
             [WindowAction::Close(WindowRole::Stage)]
         );
         // Both off at once closes both — the process still lives (it owns the LAN server).
         assert_eq!(
-            reconcile_windows(builtins(false, false), true, true),
+            decide(builtins(false, false), true, true),
             [
                 WindowAction::Close(WindowRole::Main),
                 WindowAction::Close(WindowRole::Stage)
@@ -2610,16 +2790,16 @@ mod window_lifecycle_tests {
         // The reason the reconcile exists: `resumed()` runs once, so this is what makes
         // "toggle back on" bring the window back.
         assert_eq!(
-            reconcile_windows(builtins(true, false), false, false),
+            decide(builtins(true, false), false, false),
             [WindowAction::Open(WindowRole::Main)]
         );
         assert_eq!(
-            reconcile_windows(builtins(false, true), false, false),
+            decide(builtins(false, true), false, false),
             [WindowAction::Open(WindowRole::Stage)]
         );
         // A cold start with both enabled and no windows yet: `resumed()`'s case.
         assert_eq!(
-            reconcile_windows(builtins(true, true), false, false),
+            decide(builtins(true, true), false, false),
             [
                 WindowAction::Open(WindowRole::Main),
                 WindowAction::Open(WindowRole::Stage)
@@ -2631,7 +2811,7 @@ mod window_lifecycle_tests {
     fn opens_and_closes_can_be_decided_in_the_same_pass() {
         // main toggled off while stage was toggled on — one pass settles both.
         assert_eq!(
-            reconcile_windows(builtins(false, true), true, false),
+            decide(builtins(false, true), true, false),
             [
                 WindowAction::Close(WindowRole::Main),
                 WindowAction::Open(WindowRole::Stage)
@@ -2647,11 +2827,8 @@ mod window_lifecycle_tests {
             for stage_enabled in [false, true] {
                 for main_open in [false, true] {
                     for stage_open in [false, true] {
-                        let actions = reconcile_windows(
-                            builtins(main_enabled, stage_enabled),
-                            main_open,
-                            stage_open,
-                        );
+                        let actions =
+                            decide(builtins(main_enabled, stage_enabled), main_open, stage_open);
                         // Perform them (the winit half does exactly this).
                         let mut m = main_open;
                         let mut s = stage_open;
@@ -2666,7 +2843,7 @@ mod window_lifecycle_tests {
                         assert_eq!(m, main_enabled, "main window matches the registry");
                         assert_eq!(s, stage_enabled, "stage window matches the registry");
                         assert_eq!(
-                            reconcile_windows(builtins(main_enabled, stage_enabled), m, s),
+                            decide(builtins(main_enabled, stage_enabled), m, s),
                             [],
                             "a second pass decides nothing"
                         );
@@ -2683,7 +2860,7 @@ mod window_lifecycle_tests {
         // the reconcile must produce NO action — the button and the toggle are one path, so
         // a closed window is never re-opened behind the operator's back...
         assert_eq!(
-            reconcile_windows(builtins(false, true), false, true),
+            decide(builtins(false, true), false, true),
             [],
             "after the close button, the reconcile agrees"
         );
@@ -2691,7 +2868,7 @@ mod window_lifecycle_tests {
         // disabling main from the Screens page decides Close(Main), and performing that
         // close gives the same (enabled=false, window absent) pair.
         assert_eq!(
-            reconcile_windows(builtins(false, true), true, true),
+            decide(builtins(false, true), true, true),
             [WindowAction::Close(WindowRole::Main)]
         );
     }
@@ -2711,14 +2888,14 @@ mod window_lifecycle_tests {
             ("stream-2", false),
         ];
         assert_eq!(
-            reconcile_windows(mixed, true, true),
+            decide(mixed, true, true),
             [],
             "virtual screens are invisible to the window reconcile"
         );
         // Even a registry of ONLY virtual screens (no built-ins) decides nothing — and, in
         // particular, never closes a physical window that is open.
         assert_eq!(
-            reconcile_windows(vec![("lower-third", false), ("stream", false)], true, true),
+            decide(vec![("lower-third", false), ("stream", false)], true, true),
             []
         );
     }
@@ -2738,6 +2915,183 @@ mod window_lifecycle_tests {
         assert!(!is_quit_chord(Some("q"), false, false, false));
         assert!(!is_quit_chord(Some("b"), true, true, true));
         assert!(!is_quit_chord(None, true, true, true));
+    }
+
+    // --- What the process can still DO after the reconcile has been performed. The tests
+    // above model the window DECISIONS; these model the state those decisions leave behind,
+    // which is where the two shipped defects lived. ---
+
+    #[test]
+    fn the_process_is_never_left_running_with_no_way_to_quit_it() {
+        // THE invariant. The quit chord is delivered by `window_event`, so it only reaches a
+        // FOCUSED WINDOW — a running process with no window cannot be quit from the keyboard
+        // at all, and the connect banner promises a chord nothing can deliver. Exhaustively:
+        // from every window state, every close button that actually exists must either quit
+        // the process or leave a window behind that can still receive the chord.
+        for main_open in [false, true] {
+            for stage_open in [false, true] {
+                for closing in [WindowRole::Main, WindowRole::Stage] {
+                    let exists = match closing {
+                        WindowRole::Main => main_open,
+                        WindowRole::Stage => stage_open,
+                    };
+                    // No window, no close button to press.
+                    if !exists {
+                        continue;
+                    }
+                    let (main_after, stage_after) = match closing {
+                        WindowRole::Main => (false, stage_open),
+                        WindowRole::Stage => (main_open, false),
+                    };
+                    let outcome = close_button_outcome(main_open, stage_open, closing);
+                    let still_reachable = quit_chord_reachable(main_after, stage_after);
+                    assert_eq!(
+                        outcome == CloseOutcome::Quit,
+                        !still_reachable,
+                        "closing {closing:?} from (main_open={main_open}, \
+                         stage_open={stage_open}): the process must quit exactly when no \
+                         window would be left to receive the quit chord"
+                    );
+                }
+            }
+        }
+        // And the fact the rule rests on, stated on its own so it cannot be quietly widened:
+        // a windowless process has no keyboard route out.
+        assert!(!quit_chord_reachable(false, false));
+        assert!(quit_chord_reachable(true, false));
+        assert!(quit_chord_reachable(false, true));
+    }
+
+    #[test]
+    fn closing_the_last_window_is_a_quit_gesture() {
+        // Both windows up: closing either is a screen edit, not a quit. This is the part of
+        // the shipped behaviour that must be PRESERVED — the process hosts the LAN server and
+        // the presentation state paired mobile controllers depend on.
+        assert_eq!(
+            close_button_outcome(true, true, WindowRole::Main),
+            CloseOutcome::CloseScreen
+        );
+        assert_eq!(
+            close_button_outcome(true, true, WindowRole::Stage),
+            CloseOutcome::CloseScreen
+        );
+        // The last window, either way round: quit. Before this, an operator who closed both
+        // (the gesture that quit the app before this lifecycle existed) had to kill the
+        // process — the banner told them to press Cmd-Q, and nothing was left to hear it.
+        assert_eq!(
+            close_button_outcome(true, false, WindowRole::Main),
+            CloseOutcome::Quit
+        );
+        assert_eq!(
+            close_button_outcome(false, true, WindowRole::Stage),
+            CloseOutcome::Quit
+        );
+    }
+
+    #[test]
+    fn a_failed_open_never_reaches_the_persisted_registry() {
+        // A window that fails to open is a transient environment failure (GPU, window
+        // server), not an operator setting. Recording it as `enabled = false` would mark the
+        // registry dirty, the autosave would WRITE it, and the operator's main audience
+        // output would be off in the saved registry for every future launch — recoverable
+        // only from a paired operator console.
+        let c = controller();
+        let mut failures = OpenFailures::default();
+        // Whatever the autosave would have carried over from startup is already taken.
+        let _ = c.lock().expect("controller").take_screen_registry_dirty();
+
+        record_open_outcome(
+            &c,
+            &mut failures,
+            WindowRole::Main,
+            Err("create surface: no adapter".into()),
+        );
+
+        let mut guard = c.lock().expect("controller");
+        assert!(
+            guard.is_screen_enabled("main"),
+            "the screen must still be ENABLED — the failure is not a setting"
+        );
+        assert!(
+            !guard.take_screen_registry_dirty(),
+            "the registry must not be marked dirty: that flag is what the autosave persists, \
+             so a one-off GPU hiccup would become a durable 'screen disabled'"
+        );
+        drop(guard);
+        // The suppression lives here instead, where it dies with the process.
+        assert!(failures.get(WindowRole::Main));
+        assert!(!failures.get(WindowRole::Stage), "only the failing role");
+
+        // A later success clears it, and still leaves the registry alone (it already says
+        // enabled, so there is nothing to write).
+        record_open_outcome(&c, &mut failures, WindowRole::Main, Ok(()));
+        assert!(!failures.get(WindowRole::Main));
+        assert!(
+            !c.lock().expect("controller").take_screen_registry_dirty(),
+            "an open that succeeds on an already-enabled screen writes nothing either"
+        );
+    }
+
+    #[test]
+    fn a_failed_open_is_attempted_once_not_once_per_frame() {
+        // The reconcile runs in `about_to_wait`, i.e. ~60x a second. The premise here is that
+        // the registry still reports the screen ENABLED after the failure — which is exactly
+        // what the fix guarantees, and also what a `SetScreenEnabled` that was rejected or
+        // dropped on a poisoned lock would leave behind. Suppression must therefore hold
+        // WITHOUT any registry write.
+        let mut failures = OpenFailures::default();
+        let mut attempts = 0usize;
+        // `stage` is open and stays open; `main` is enabled but its window keeps failing.
+        for _ in 0..10_000 {
+            for action in reconcile_windows(builtins(true, true), false, true, &mut failures) {
+                if let WindowAction::Open(role) = action {
+                    attempts += 1;
+                    // Window creation fails, every single time.
+                    failures.set(role, true);
+                }
+            }
+        }
+        assert_eq!(
+            attempts, 1,
+            "a failing open costs ONE window-creation attempt, not one per frame"
+        );
+
+        // Recovery is the operator's gesture, not a loop: switching the screen off clears the
+        // record, and switching it back on buys exactly one more attempt.
+        let cleared = reconcile_windows(builtins(false, true), false, true, &mut failures);
+        assert_eq!(cleared, [], "already closed: nothing to do");
+        assert!(
+            !failures.get(WindowRole::Main),
+            "switching the screen off forgets the failure"
+        );
+        for _ in 0..10_000 {
+            for action in reconcile_windows(builtins(true, true), false, true, &mut failures) {
+                if let WindowAction::Open(role) = action {
+                    attempts += 1;
+                    failures.set(role, true);
+                }
+            }
+        }
+        assert_eq!(attempts, 2, "one further attempt per deliberate re-enable");
+    }
+
+    #[test]
+    fn a_suppressed_role_does_not_freeze_the_other_window() {
+        // A failure on one screen must not stop the other from being opened or closed: a
+        // stage window that will not create cannot be allowed to take the audience output
+        // with it.
+        let mut failures = OpenFailures::default();
+        failures.set(WindowRole::Stage, true);
+        assert_eq!(
+            reconcile_windows(builtins(true, true), false, false, &mut failures),
+            [WindowAction::Open(WindowRole::Main)],
+            "main still opens while stage is suppressed"
+        );
+        assert_eq!(
+            reconcile_windows(builtins(false, true), true, false, &mut failures),
+            [WindowAction::Close(WindowRole::Main)],
+            "main still closes while stage is suppressed"
+        );
     }
 }
 

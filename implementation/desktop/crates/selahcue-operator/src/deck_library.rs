@@ -62,6 +62,70 @@ pub struct SlideMeta {
     pub has_notes: bool,
 }
 
+/// What [`DeckLibrary::adopt_with_policy`] does when the deck being adopted carries a name a saved
+/// deck already holds (ADR-0024 decision 5; design §11.2 B).
+///
+/// The library deliberately has **no default**. Silent suffixing is tolerable when a human typed
+/// the name and can see what happened; it is an operational hazard when the name was *derived* — a
+/// presentation import names the deck after the file stem, nobody typed anything and nobody is
+/// watching that field, so `Sunday Service (2)`, `(3)`, `(4)` accumulate with no way to tell which
+/// one is this week's, and the wrong deck opens on a Sunday morning (design §11.1). Making the
+/// choice a caller argument is what forces every derived-name path to state its intent.
+// DELETE THIS ALLOW once `main.rs` wires the import commands. The operator is a *binary* crate, so
+// `pub` exempts nothing from `dead_code`, and its clippy gate is `-D warnings`; `#[expect]` cannot be
+// used because `--all-targets` compiles the bin both with and without `cfg(test)` and the tests below
+// already exercise this API, so the lint fires in one build and not the other.
+#[allow(dead_code)] // consumed by the import commands in main.rs (ADR-0024)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NameCollisionPolicy {
+    /// Keep the existing deck and adopt this one under a `(n)` suffix — today's [`uniquify`]
+    /// behaviour, and what [`DeckLibrary::adopt`] has always done.
+    KeepBoth,
+    /// Update the existing deck **in place**, preserving its [`DeckId`] (see
+    /// [`DeckLibrary::replace_deck`] for why the id must survive).
+    Replace,
+    /// Refuse: report the collision to the caller and change nothing.
+    Fail,
+}
+
+/// Why [`DeckLibrary::adopt_with_policy`] / [`DeckLibrary::replace_deck`] refused. Refusals are
+/// **total and side-effect-free** — on any `Err` the library, its ids and its persisted rows are
+/// exactly as they were, so a caller can safely report the error and offer a different policy.
+///
+/// Hand-rolled with a manual `Display` + [`std::error::Error`], the house pattern (`ParseError` in
+/// `selahcue-core::scripture`); the tree carries no `thiserror`/`anyhow`.
+#[allow(dead_code)] // consumed by the import commands in main.rs (ADR-0024)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AdoptError {
+    /// A saved deck already holds this name and the policy was [`NameCollisionPolicy::Fail`].
+    NameTaken,
+    /// The deck that would be overwritten is the one currently live or staged. Replacing the
+    /// content of the deck on the audience output mid-service is exactly what the presenter's
+    /// "staging never changes Live" invariant exists to prevent, so this is **refused outright** —
+    /// never queued, never applied at the next transition (design §11.2 D).
+    TargetIsLive,
+    /// [`DeckLibrary::replace_deck`] was given a [`DeckId`] the library does not hold — the deck the
+    /// caller meant to replace was deleted (or its id was never valid) between the moment the choice
+    /// was offered and the moment it was committed. Refused rather than silently adopted as a new
+    /// deck, because "replace *that* one" and "add a new one" are different user intents.
+    UnknownTarget,
+}
+
+impl std::fmt::Display for AdoptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            AdoptError::NameTaken => "a presentation with that name already exists",
+            AdoptError::TargetIsLive => {
+                "that presentation is on the audience output — it can't be replaced right now"
+            }
+            AdoptError::UnknownTarget => "that presentation is no longer in the library",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::error::Error for AdoptError {}
+
 /// The persisted deck library.
 pub struct DeckLibrary {
     /// The persistence handle, or `None` when running in the in-memory fallback.
@@ -197,6 +261,14 @@ impl DeckLibrary {
         self.decks.iter().position(|d| d.id() == id)
     }
 
+    /// The index of the deck holding EXACTLY `name`. Exact, not case- or whitespace-folded, because
+    /// [`uniquify`] is exact: any looser comparison here would let a policy decide a name collides
+    /// while the uniquify path decides it does not, and the two must never disagree.
+    #[allow(dead_code)] // reached via adopt_with_policy, wired in main.rs (ADR-0024)
+    fn index_of_name(&self, name: &str) -> Option<usize> {
+        self.decks.iter().position(|d| d.name == name)
+    }
+
     /// Create a new **blank** deck (one empty slide, per the design's "Blank deck") with a unique id
     /// and a unique name, persist it, and return it (the caller opens it in the editor).
     pub fn create(&mut self, name: &str) -> SlideDeck {
@@ -217,21 +289,112 @@ impl DeckLibrary {
 
     /// Adopt an EXISTING deck (e.g. the startup demo deck) into the library: give it a fresh id if
     /// it is unassigned or collides, a unique name, persist it, and return it (the caller opens it).
-    pub fn adopt(&mut self, mut deck: SlideDeck) -> SlideDeck {
+    ///
+    /// This is [`adopt_with_policy`](Self::adopt_with_policy) under
+    /// [`NameCollisionPolicy::KeepBoth`] with no live deck, minus the `Result` that policy can never
+    /// produce — `KeepBoth` has no refusal path, so `adopt` stays total and every existing caller is
+    /// untouched. Both entry points run the *same* private [`adopt_keep_both`](Self::adopt_keep_both)
+    /// body rather than one calling the other through a `Result` it would have to unwrap, so the two
+    /// cannot drift apart and no `unwrap`/`expect` enters a non-test path.
+    pub fn adopt(&mut self, deck: SlideDeck) -> SlideDeck {
+        self.adopt_keep_both(deck)
+    }
+
+    /// The one implementation of "add this deck beside whatever is already here": a fresh id if the
+    /// deck's own is unassigned or already taken, a `(n)`-suffixed name if its own is taken, persist,
+    /// return. Shared verbatim by [`adopt`](Self::adopt) and the `KeepBoth` arm of
+    /// [`adopt_with_policy`](Self::adopt_with_policy).
+    fn adopt_keep_both(&mut self, mut deck: SlideDeck) -> SlideDeck {
         if deck.id().0 == 0 || self.index_of(deck.id()).is_some() {
             let id = self.mint_id();
             deck.set_id(id);
         }
-        let base = if deck.name.trim().is_empty() {
-            "Untitled presentation"
-        } else {
-            deck.name.trim()
-        };
-        let unique = uniquify(base, &self.name_set());
+        let base = adopt_base_name(&deck);
+        let unique = uniquify(&base, &self.name_set());
         deck.name = unique;
         self.persist_one(&deck);
         self.decks.push(deck.clone());
         deck
+    }
+
+    /// Adopt `deck`, stating explicitly what to do if its name is already taken (ADR-0024 decision 5).
+    ///
+    /// `live_deck` is the [`DeckId`] currently live or staged on the audience output, or `None`. It
+    /// is passed **in** rather than read out of a presenter the library holds: `DeckLibrary` owns
+    /// saved decks and nothing else, and giving it a handle on presenter state would make every
+    /// library operation depend on the live pipeline it must never disturb. An `Option<DeckId>`
+    /// argument keeps the refusal rule (`Replace` is refused against the live deck, design §11.2 D)
+    /// enforceable *inside* the library — where it cannot be forgotten by a caller — while leaving
+    /// the library itself presenter-free and unit-testable with no live output at all. The caller
+    /// re-supplies it at commit time, because live state can change while a long import parses
+    /// (`IMPORT-product-decisions.md` §1).
+    ///
+    /// **When the name is free, every policy behaves identically** — the deck is adopted under the
+    /// name it carries. A policy is a collision *rule*, not a mode.
+    ///
+    /// On any `Err` nothing was mutated: no deck added, no id minted, no row written.
+    #[allow(dead_code)] // consumed by the import commands in main.rs (ADR-0024)
+    pub fn adopt_with_policy(
+        &mut self,
+        deck: SlideDeck,
+        policy: NameCollisionPolicy,
+        live_deck: Option<DeckId>,
+    ) -> Result<SlideDeck, AdoptError> {
+        // Resolve the collision on the SAME normalised name `adopt` would have used, so a policy
+        // can never disagree with the uniquify path about whether a collision exists.
+        let base = adopt_base_name(&deck);
+        let Some(i) = self.index_of_name(&base) else {
+            // No collision: policy-independent by construction — `uniquify` returns `base` verbatim
+            // when it is free, so this is the same adopt for all three.
+            return Ok(self.adopt_keep_both(deck));
+        };
+        match policy {
+            NameCollisionPolicy::KeepBoth => Ok(self.adopt_keep_both(deck)),
+            NameCollisionPolicy::Fail => Err(AdoptError::NameTaken),
+            // Resolve the collision to the id the NAME holder actually has, then replace by id. The
+            // name is how the collision was found; the id is what the replacement is keyed on.
+            NameCollisionPolicy::Replace => {
+                let target = self.decks[i].id();
+                self.replace_deck(target, deck, live_deck)
+            }
+        }
+    }
+
+    /// Overwrite the deck with id `target` with `deck`'s slides, **keeping the target's own
+    /// [`DeckId`] and name**, and persist through the ordinary content-upsert path.
+    ///
+    /// Preserving the id is the whole point, not an implementation detail. The `deck` table's
+    /// primary key is the *name*, so the obvious implementations — delete-then-insert, or an upsert
+    /// keyed on the name — write the row belonging to a **different** `DeckId` while the in-memory
+    /// library still holds the old one. Every `PlanItem` that links the old id
+    /// (`ItemContent::Deck { deck_id }`) then resolves to nothing or, worse, to an unrelated deck:
+    /// the service plan does not fail loudly, it silently shows the wrong presentation to the
+    /// congregation (`FINDING-LIB-07`, ClickUp `86ak196cr`). Because plan links never depended on the
+    /// name, keeping the id makes them survive a replace for free — and because the stored name is
+    /// kept too, the persisted row is *updated*, never orphaned and re-created.
+    ///
+    /// Refused, with nothing mutated, when `target` is unknown ([`AdoptError::UnknownTarget`]) or is
+    /// the live/staged deck ([`AdoptError::TargetIsLive`]).
+    #[allow(dead_code)] // consumed by the import commands in main.rs (ADR-0024)
+    pub fn replace_deck(
+        &mut self,
+        target: DeckId,
+        deck: SlideDeck,
+        live_deck: Option<DeckId>,
+    ) -> Result<SlideDeck, AdoptError> {
+        // Both refusals are checked BEFORE any mutation, so an `Err` is always a no-op.
+        let Some(i) = self.index_of(target) else {
+            return Err(AdoptError::UnknownTarget);
+        };
+        if live_deck == Some(target) {
+            return Err(AdoptError::TargetIsLive);
+        }
+        let mut updated = deck;
+        updated.set_id(target); // the id plan items link — never re-minted
+        updated.name = self.decks[i].name.clone(); // the row key — so this upserts, not orphans
+        self.decks[i] = updated.clone();
+        self.persist_one(&updated);
+        Ok(updated)
     }
 
     /// Sync the open deck's edited content back into the library and persist it (per-edit autosave).
@@ -453,6 +616,22 @@ impl DeckLibrary {
 
     fn name_set(&self) -> std::collections::HashSet<String> {
         self.decks.iter().map(|d| d.name.clone()).collect()
+    }
+}
+
+/// The name an adopted deck is filed under before uniqueness is applied: its own name, trimmed,
+/// falling back to `"Untitled presentation"` when it carries none. Factored out so collision
+/// detection and the `(n)` suffixing operate on the *same* string — if one trimmed and the other did
+/// not, `"Sermon "` would be judged collision-free and then filed as `"Sermon (2)"`, which is
+/// exactly the silent fork the policy argument exists to prevent. (A caller with a better fallback —
+/// import uses `"Imported presentation"` — supplies it in the deck's own name; the library's
+/// fallback is unchanged so no existing behaviour moves.)
+fn adopt_base_name(deck: &SlideDeck) -> String {
+    let trimmed = deck.name.trim();
+    if trimmed.is_empty() {
+        "Untitled presentation".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -816,6 +995,241 @@ mod tests {
                 "Grace's 3 slides persisted"
             );
             assert!(lib.get(sermon_id).is_some(), "the stable id round-tripped");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- adopt_with_policy (ADR-0024 decision 5) ------------------------------------------------
+
+    /// A deck named `name` carrying `slides` slides — stands in for a parsed import.
+    fn incoming(name: &str, slides: usize) -> SlideDeck {
+        let mut d = SlideDeck::new(name);
+        for _ in 0..slides {
+            d.add_slide();
+        }
+        d
+    }
+
+    #[test]
+    fn replace_updates_in_place_preserving_the_deck_id_that_plan_items_link() {
+        // FINDING-LIB-07 / 86ak196cr: the id is what `ItemContent::Deck { deck_id }` holds. If a
+        // replace re-mints it, every plan link silently resolves to nothing or to another deck.
+        let mut lib = DeckLibrary::load(None);
+        let original = lib.create("Sunday Service"); // 1 slide
+        let id_before = original.id();
+        assert_eq!(original.len(), 1);
+
+        let replaced = lib
+            .adopt_with_policy(
+                incoming("Sunday Service", 7),
+                NameCollisionPolicy::Replace,
+                None,
+            )
+            .expect("replacing a non-live deck is allowed");
+
+        assert_eq!(
+            replaced.id(),
+            id_before,
+            "the DeckId is byte-identical — plan links survive"
+        );
+        assert_eq!(replaced.name, "Sunday Service", "no (n) suffix was minted");
+        assert_eq!(lib.list().len(), 1, "replaced in place, not added beside");
+        let stored = lib
+            .get(id_before)
+            .expect("the deck is still reachable by its ORIGINAL id");
+        assert_eq!(stored.len(), 7, "the slides were swapped for the new ones");
+        assert_eq!(stored.id(), id_before);
+    }
+
+    #[test]
+    fn replace_against_the_live_deck_is_refused_and_mutates_nothing() {
+        // "staging never changes Live" — refused outright, never queued (design §11.2 D).
+        let mut lib = DeckLibrary::load(None);
+        let live = lib.create("Sunday Service");
+        let other = lib.create("Midweek");
+        let before: Vec<DeckMeta> = lib.list();
+        let live_content = lib.get(live.id()).expect("live deck present");
+        let other_content = lib.get(other.id()).expect("other deck present");
+
+        let err = lib
+            .adopt_with_policy(
+                incoming("Sunday Service", 42),
+                NameCollisionPolicy::Replace,
+                Some(live.id()),
+            )
+            .expect_err("replacing the deck on the audience output is refused");
+        assert_eq!(err, AdoptError::TargetIsLive);
+
+        assert_eq!(lib.list(), before, "deck list, ids and names are unchanged");
+        assert_eq!(
+            lib.get(live.id()).as_ref(),
+            Some(&live_content),
+            "the live deck's content is untouched"
+        );
+        assert_eq!(
+            lib.get(other.id()).as_ref(),
+            Some(&other_content),
+            "no collateral change"
+        );
+    }
+
+    #[test]
+    fn replace_targets_the_name_holder_and_cannot_corrupt_a_different_deck() {
+        // The imported deck carries ANOTHER library deck's id. Replace resolves the target by NAME
+        // and keys the write on that target's id, so the id it happened to carry is irrelevant.
+        let mut lib = DeckLibrary::load(None);
+        let sermon = lib.create("Sermon");
+        let mut notes = lib.create("Notes");
+        notes.add_slide();
+        notes.add_slide(); // 3 slides
+        lib.store(&notes);
+
+        let mut hostile = incoming("Sermon", 5);
+        hostile.set_id(notes.id()); // claims to BE the other deck
+
+        let replaced = lib
+            .adopt_with_policy(hostile, NameCollisionPolicy::Replace, None)
+            .expect("replace proceeds");
+
+        assert_eq!(
+            replaced.id(),
+            sermon.id(),
+            "resolved by name — not by the id the incoming deck claimed"
+        );
+        assert_eq!(lib.get(sermon.id()).map(|d| d.len()), Some(5));
+        let survivor = lib.get(notes.id()).expect("the other deck still exists");
+        assert_eq!(survivor.name, "Notes", "its name is intact");
+        assert_eq!(survivor.len(), 3, "its slides are intact");
+        assert_eq!(lib.list().len(), 2, "nothing added, nothing lost");
+    }
+
+    #[test]
+    fn replace_deck_with_an_unknown_target_is_refused_and_mutates_nothing() {
+        // The deck the caller meant to replace was deleted while the import parsed.
+        let mut lib = DeckLibrary::load(None);
+        let keep = lib.create("Sermon");
+        let before = lib.list();
+        let err = lib
+            .replace_deck(DeckId(999_999), incoming("Sermon", 3), None)
+            .expect_err("an unknown target is refused, not adopted as a new deck");
+        assert_eq!(err, AdoptError::UnknownTarget);
+        assert_eq!(lib.list(), before);
+        assert_eq!(lib.get(keep.id()).map(|d| d.len()), Some(1));
+    }
+
+    #[test]
+    fn keep_both_suffixes_and_fail_errors_on_a_taken_name() {
+        let mut lib = DeckLibrary::load(None);
+        lib.create("Sunday Service");
+
+        let kept = lib
+            .adopt_with_policy(
+                incoming("Sunday Service", 4),
+                NameCollisionPolicy::KeepBoth,
+                None,
+            )
+            .expect("KeepBoth never refuses");
+        assert_eq!(kept.name, "Sunday Service (2)", "today's uniquify path");
+        assert_eq!(lib.list().len(), 2);
+
+        let err = lib
+            .adopt_with_policy(
+                incoming("Sunday Service", 4),
+                NameCollisionPolicy::Fail,
+                None,
+            )
+            .expect_err("Fail refuses a taken name");
+        assert_eq!(err, AdoptError::NameTaken);
+        assert_eq!(lib.list().len(), 2, "the refusal added nothing");
+    }
+
+    #[test]
+    fn a_free_name_is_adopted_identically_under_every_policy() {
+        // A policy is a collision RULE, not a mode: with no collision all three agree exactly.
+        let outcome = |policy: NameCollisionPolicy| {
+            let mut lib = DeckLibrary::load(None);
+            lib.create("Occupied");
+            let adopted = lib
+                .adopt_with_policy(incoming("Fresh", 3), policy, None)
+                .expect("a free name never refuses");
+            (
+                adopted.id(),
+                adopted.name.clone(),
+                adopted.len(),
+                lib.list(),
+            )
+        };
+        let keep_both = outcome(NameCollisionPolicy::KeepBoth);
+        assert_eq!(keep_both.1, "Fresh", "adopted under the name it carried");
+        assert_eq!(keep_both, outcome(NameCollisionPolicy::Replace));
+        assert_eq!(keep_both, outcome(NameCollisionPolicy::Fail));
+    }
+
+    #[test]
+    fn adopt_is_exactly_adopt_with_policy_keep_both() {
+        // The no-regression gate for every pre-existing `adopt` caller: same ids, same names, same
+        // list, on both a free and a taken name.
+        let via_adopt = {
+            let mut lib = DeckLibrary::load(None);
+            lib.create("Sermon");
+            let a = lib.adopt(incoming("Sermon", 2)); // taken
+            let b = lib.adopt(incoming("Fresh", 1)); // free
+            let c = lib.adopt(incoming("   ", 1)); // blank → fallback name
+            (a.id(), a.name, b.id(), b.name, c.id(), c.name, lib.list())
+        };
+        let via_policy = {
+            let mut lib = DeckLibrary::load(None);
+            lib.create("Sermon");
+            let p = NameCollisionPolicy::KeepBoth;
+            let a = lib
+                .adopt_with_policy(incoming("Sermon", 2), p, None)
+                .expect("KeepBoth never refuses");
+            let b = lib
+                .adopt_with_policy(incoming("Fresh", 1), p, None)
+                .expect("KeepBoth never refuses");
+            let c = lib
+                .adopt_with_policy(incoming("   ", 1), p, None)
+                .expect("KeepBoth never refuses");
+            (a.id(), a.name, b.id(), b.name, c.id(), c.name, lib.list())
+        };
+        assert_eq!(via_adopt, via_policy);
+    }
+
+    #[test]
+    fn replace_upserts_the_same_persisted_row_and_survives_a_reopen() {
+        // The persistence half of FINDING-LIB-07: the deck table is keyed by NAME, so a replace must
+        // update that row rather than orphan it and write a second one.
+        let dir = std::env::temp_dir().join(format!(
+            "selahcue-lib-replace-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lib.sqlite");
+        let id_before;
+        {
+            let mut lib = DeckLibrary::load(Some(selahcue_data::Database::open(&path).unwrap()));
+            let original = lib.create("Sunday Service");
+            id_before = original.id();
+            lib.adopt_with_policy(
+                incoming("Sunday Service", 9),
+                NameCollisionPolicy::Replace,
+                None,
+            )
+            .expect("replace proceeds");
+        }
+        {
+            let lib = DeckLibrary::load(Some(selahcue_data::Database::open(&path).unwrap()));
+            assert_eq!(
+                lib.list().len(),
+                1,
+                "one row, not two — the row was updated"
+            );
+            let stored = lib
+                .get(id_before)
+                .expect("the ORIGINAL DeckId round-tripped through persistence");
+            assert_eq!(stored.len(), 9, "the replacement content persisted");
+            assert_eq!(stored.name, "Sunday Service");
         }
         std::fs::remove_dir_all(&dir).ok();
     }

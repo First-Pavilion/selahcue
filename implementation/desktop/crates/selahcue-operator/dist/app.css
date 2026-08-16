@@ -2228,7 +2228,9 @@
          not a warning: closing an output window is an operator action, not a fault, and the
          same toggle re-opens it. Colour only (no layout/sizing), so WKWebView renders it
          exactly like the four pills above. --sc-text-secondary is the brightest of the muted
-         inks, which matters because the card it sits in is dimmed to opacity 0.5. */
+         inks: the pill is measured at FULL opacity, because the 0.5 dimming on a disabled
+         card is scoped to .scr-thumb (the card itself must stay legible — it is the only way
+         back to an open window). Keep any future contrast decision on that basis. */
       .scr-pill-closed {
         color: var(--sc-text-secondary);
         background: var(--sc-elevated);
