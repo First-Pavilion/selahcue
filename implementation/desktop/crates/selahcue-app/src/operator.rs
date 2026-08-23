@@ -663,11 +663,6 @@ impl From<OperatorStateView> for OperatorView {
     }
 }
 
-/// A remote operator: drives the **host's authoritative controller** over the pinned-TLS
-/// control link and renders from the host's [`OperatorView`]. This is how the Tauri
-/// operator shell (and, later, the mobile client) drive the on-screen output window —
-/// the host owns the one live state; this is a thin, authenticated remote.
-#[cfg(feature = "server")]
 /// The host's Remote Control snapshot: (paired devices, outstanding pairing requests) — the
 /// operator's device-management view (86ajxer8n).
 #[cfg(feature = "server")]
@@ -676,6 +671,11 @@ pub type RemoteSnapshot = (
     Vec<selahcue_lan::protocol::RemotePendingView>,
 );
 
+/// A remote operator: drives the **host's authoritative controller** over the pinned-TLS
+/// control link and renders from the host's [`OperatorView`]. This is how the Tauri
+/// operator shell (and, later, the mobile client) drive the on-screen output window —
+/// the host owns the one live state; this is a thin, authenticated remote.
+#[cfg(feature = "server")]
 pub struct RemoteOperator {
     client: selahcue_lan::ControlClient,
 }
