@@ -61,7 +61,9 @@ pub(crate) fn autofit_layers(
 
     // Word-wrap every input paragraph (a song stanza line, or a whole verse) to the
     // region WIDTH at `cell`, returning the display lines + whether they ALL fit `rect.w`.
-    // Each word is measured ONCE (memoized per cell) and lines are filled by summed
+    // Each word is measured ONCE (memoized by `crate::measure`, which outlives this call —
+    // so the once-a-second stage recompose a running countdown drives re-shapes only the
+    // digits that actually changed, not the whole layout) and lines are filled by summed
     // advances — O(words), so a large paste can't trigger the O(words²) re-shaping a
     // per-line measure would (mid-service Go-Live stall). A single unbreakable token
     // wider than the region (e.g. a space-less CJK verse, since `split_whitespace` makes
@@ -82,12 +84,10 @@ pub(crate) fn autofit_layers(
             ((cell as i32).saturating_mul(letter_spacing_permille as i32) / 1000).max(0) as f32;
         // Space advance at this cell (shaping trims a bare " ", so difference it out);
         // floored so an under-measured space can't over-pack a line into a clip.
-        let space_w =
-            (selahcue_engine::raster::measure_line_width("x x", cell, font.as_ref(), weight)
-                - selahcue_engine::raster::measure_line_width("xx", cell, font.as_ref(), weight))
-            .max((cell as f32) * 0.15)
-                + ls_add;
-        let mut memo: std::collections::HashMap<&str, f32> = std::collections::HashMap::new();
+        let space_w = (crate::measure::measure_word("x x", cell, font.as_ref(), weight)
+            - crate::measure::measure_word("xx", cell, font.as_ref(), weight))
+        .max((cell as f32) * 0.15)
+            + ls_add;
         let mut out: Vec<String> = Vec::new();
         let mut fits_w = true;
         let mut budget = MAX_WRAP_WORDS;
@@ -99,10 +99,11 @@ pub(crate) fn autofit_layers(
                     break 'paras;
                 }
                 budget -= 1;
-                let ww = *memo.entry(word).or_insert_with(|| {
-                    selahcue_engine::raster::measure_line_width(word, cell, font.as_ref(), weight)
-                        + (word.chars().count() as f32) * ls_add
-                });
+                // The shaped width is memoized; the letter-spacing budget is not — it is a
+                // multiply on top, and folding it into the key would split the memo per
+                // tracking value for no saving.
+                let ww = crate::measure::measure_word(word, cell, font.as_ref(), weight)
+                    + (word.chars().count() as f32) * ls_add;
                 if ww > max_w {
                     fits_w = false; // an unbreakable token wider than the region
                 }

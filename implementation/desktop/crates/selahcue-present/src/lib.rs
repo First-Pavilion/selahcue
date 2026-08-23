@@ -13,6 +13,7 @@
 
 pub mod compose;
 pub mod deck;
+pub mod measure;
 pub mod present;
 pub mod qr;
 pub mod slide;
