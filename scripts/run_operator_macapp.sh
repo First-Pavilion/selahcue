@@ -7,16 +7,25 @@
 # responsible — macOS never prompts and the app never appears in System Settings → Microphone,
 # so capture silently returns silence. So: build → wrap in a signed .app → launch it via `open`.
 #
-# Any arguments are passed through to `cargo build` (e.g. `--features stt`).
+# Any arguments are passed through to `cargo build` (e.g. `--features stt`, `--release`), and the
+# bundled binary is taken from the matching target dir so a release run bundles the release build
+# rather than a stale debug one.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OP="$ROOT/implementation/desktop/crates/selahcue-operator"
-BIN="$OP/target/debug/selahcue-operator"
+# Mirror cargo's own profile→directory mapping from the pass-through args.
+PROFILE_DIR=debug
+for arg in "$@"; do
+  case "$arg" in
+    --release) PROFILE_DIR=release ;;
+  esac
+done
+BIN="$OP/target/$PROFILE_DIR/selahcue-operator"
 APP="$OP/target/SelahCueOperator.app"   # no space → avoids LaunchServices path quirks
 CONTENTS="$APP/Contents"
 
-echo ">> building the operator…" >&2
+echo ">> building the operator ($PROFILE_DIR)…" >&2
 cargo build --manifest-path "$OP/Cargo.toml" "$@"
 
 echo ">> assembling the .app bundle (microphone-capable)…" >&2
