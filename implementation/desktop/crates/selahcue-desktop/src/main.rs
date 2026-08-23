@@ -44,7 +44,7 @@ use selahcue_data::{
 use selahcue_engine::raster::{Fit, FrameBuffer};
 use selahcue_lan::protocol::{
     Command, DisplayView, LayerVisibility, OutputConfigView, OutputStatusView, PairingInvite,
-    ScaleFit,
+    ScaleFit, MAX_FRAME_RATE, MIN_FRAME_RATE,
 };
 use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
 use selahcue_lan::{generate_pairing_code, generate_token, ControlServer, Role, SelfSigned};
@@ -1308,6 +1308,11 @@ struct App {
     /// per screen so an operator who enables NDI on a non-NDI build learns why nothing shows up
     /// (e.g. in OBS) instead of silently believing it's on air. Bounded/pruned with the registry.
     ndi_warned: std::collections::HashSet<String>,
+    /// Per-screen cached NDI frame + send pacing ([`NdiFrameCache`]): the dirty-gate that
+    /// keeps the per-tick reconcile from re-rasterizing an unchanged output. Entries live
+    /// only while their screen has live NDI delivery — pruned by [`reconcile_ndi`] with the
+    /// sender set, so the map stays bounded by the registry (`MAX_SCREENS`).
+    ndi_frames: std::collections::HashMap<String, NdiFrameCache>,
     /// Built-in windows whose creation FAILED this run — in-memory only, never persisted.
     /// See [`OpenFailures`] and [`record_open_outcome`].
     open_failures: OpenFailures,
@@ -1384,16 +1389,102 @@ fn set_screen_enabled(controller: &Mutex<LiveController>, role: WindowRole, enab
     );
 }
 
+/// One screen's cached NDI frame + send-pacing state (the NDI dirty-gate). The frame is the
+/// last composed output for the screen, re-sent while the controller's live generation holds
+/// still — a memcpy send is ~1000x cheaper than the full-raster recompose that previously ran
+/// every 16ms tick and pegged a core. One entry per LIVE sender (pruned with the sender set),
+/// so the map is bounded by the registry (`MAX_SCREENS`).
+/// Hard cap on the NDI frame cache's entry count (no-leak, published for the bounded-memory
+/// test per the bounded-cache convention): at most ONE cached frame per registry screen, so
+/// the cache tops out at `MAX_SCREENS` × one output-sized frame (~8.3MB each at 1080p). The
+/// bound is enforced by [`reconcile_ndi`], which prunes entries to the live screen set every
+/// tick and keys inserts by registry screen id.
+pub const NDI_FRAME_CACHE_MAX_ENTRIES: usize = selahcue_app::MAX_SCREENS;
+
+struct NdiFrameCache {
+    /// The controller live generation this frame was composed at.
+    generation: u64,
+    /// The composed frame last put on the wire (~8.3MB at 1080p — hence the strict bound).
+    frame: FrameBuffer,
+    /// When the next frame is due on the wire (paces sends to the screen's `frame_rate`).
+    next_send: Instant,
+}
+
+/// Decide-and-deliver ONE screen's NDI frame at `now`: recompose only when `generation`
+/// differs from the cached frame's (fix 1), and put a frame on the wire only when the
+/// screen's `frame_rate` says one is due (fix 2) — `now` is injected, never read here.
+/// `compose`/`send` are seams so the default (no-NDI) build tests this exact logic.
+fn ndi_deliver(
+    frames: &mut std::collections::HashMap<String, NdiFrameCache>,
+    screen: &str,
+    generation: u64,
+    frame_rate: u16,
+    now: Instant,
+    compose: impl FnOnce() -> Option<FrameBuffer>,
+    send: impl FnOnce(&FrameBuffer),
+) {
+    // Pacing gate (fix 2): a frame goes on the wire at the screen's configured rate, not
+    // at the ~60 Hz reconcile tick. `now` is injected by the caller — never read here.
+    if frames.get(screen).is_some_and(|e| now < e.next_send) {
+        return;
+    }
+    // Recompose ONLY when the controller's live generation moved past the cached frame's
+    // (or nothing is cached yet) — an unchanged generation guarantees an unchanged compose.
+    if frames
+        .get(screen)
+        .is_none_or(|e| e.generation != generation)
+    {
+        match compose() {
+            Some(frame) => {
+                frames.insert(
+                    // Keyed by the SCREEN alone — every lookup here uses `screen`, and a
+                    // key carrying the generation would both miss those lookups (nothing
+                    // ever sent, recompose every tick) and grow one entry per generation,
+                    // which is precisely the unbounded growth the bound below forbids.
+                    screen.to_string(),
+                    NdiFrameCache {
+                        generation,
+                        frame,
+                        next_send: now,
+                    },
+                );
+            }
+            // The screen stopped composing (removed / role changed mid-flight): drop the
+            // stale cache and send nothing — never re-send a frame for a gone screen.
+            None => {
+                frames.remove(screen);
+                return;
+            }
+        }
+    }
+    if let Some(e) = frames.get_mut(screen) {
+        send(&e.frame);
+        // Clamp into the documented config range (the command path's own bound), so a
+        // corrupt persisted rate (0 / nonsense) can neither divide by zero nor stall.
+        let fps = frame_rate.clamp(MIN_FRAME_RATE, MAX_FRAME_RATE);
+        let period = Duration::from_millis(1000 / u64::from(fps));
+        // Anchor the cadence to the schedule (so the average rate holds despite the 16ms
+        // tick grid), but never leave the deadline in the past after a stall — that would
+        // burst-drain at tick rate instead of resuming the configured pace.
+        e.next_send = std::cmp::max(e.next_send + period, now);
+    }
+}
+
 /// Reconcile the NDI OUTPUT senders against the registry + per-screen config, then feed each
-/// live sender its composed frame. Bounded by the registry (`MAX_SCREENS`) and leak-free — a
-/// sender is dropped (RAII closes the NDI source) when its screen is removed, disabled, has NDI
-/// turned off, or is renamed. Cheap no-op in the DEFAULT build: without the `ndi` feature
-/// `NdiOutput::new` returns `None`, so no sender exists and no per-screen frame is composed.
+/// live sender its composed frame THROUGH [`ndi_deliver`] — recomposing only when the
+/// controller's [`LiveController::live_generation`] moved (dirty-gate) and sending only at the
+/// screen's configured `frame_rate` (pacer), so an idle live output costs a paced memcpy, not
+/// a full 1080p re-raster every 16ms tick. Bounded by the registry (`MAX_SCREENS`) and
+/// leak-free — a sender AND its ~8.3MB cached frame are dropped (RAII closes the NDI source)
+/// when its screen is removed, disabled, has NDI turned off, or is renamed. Cheap no-op in the
+/// DEFAULT build: without the `ndi` feature `NdiOutput::new` returns `None`, so no sender
+/// exists and no per-screen frame is composed or cached.
 fn reconcile_ndi(
     c: &LiveController,
     senders: &mut std::collections::HashMap<String, video_sink::NdiOutput>,
     backoff: &mut std::collections::HashMap<String, Instant>,
     warned: &mut std::collections::HashSet<String>,
+    frames: &mut std::collections::HashMap<String, NdiFrameCache>,
     now: Instant,
 ) {
     // Drop any sender / backoff whose screen no longer exists in the registry (deleted feed).
@@ -1402,6 +1493,8 @@ fn reconcile_ndi(
     senders.retain(|id, _| live.contains(id.as_str()));
     backoff.retain(|id, _| live.contains(id.as_str()));
     warned.retain(|id| live.contains(id.as_str()));
+    // The frame cache holds ~8.3MB per entry at 1080p — bounded the same way (no-leak).
+    frames.retain(|id, _| live.contains(id.as_str()));
 
     // The output resolution (used to construct a sender without a per-screen compose).
     let (out_w, out_h) = {
@@ -1430,10 +1523,13 @@ fn reconcile_ndi(
         {
             senders.remove(&s.id);
             backoff.remove(&s.id);
+            frames.remove(&s.id);
         }
         if !want {
             backoff.remove(&s.id);
             warned.remove(&s.id);
+            // No NDI delivery for this screen: hold no ~8.3MB frame for it either.
+            frames.remove(&s.id);
             continue;
         }
         // Create the sender lazily (using the output dims — no per-screen compose to construct),
@@ -1451,11 +1547,20 @@ fn reconcile_ndi(
             }
         }
         // Compose + send ONLY when a real sink exists (feature on) — the default build (no
-        // sink created) composes nothing here, so there is zero per-frame NDI cost.
+        // sink created) composes nothing here, so there is zero per-frame NDI cost. Delivery
+        // goes through the dirty-gate + pacer: recompose only when the controller's live
+        // generation moved past the cached frame, and only when `frame_rate` says a frame
+        // is due — otherwise the cached frame is re-sent (NDI keeps receiving frames).
         if let Some(out) = senders.get_mut(&s.id) {
-            if let Some(fb) = c.compose_screen(&s.id) {
-                out.send(&fb);
-            }
+            ndi_deliver(
+                frames,
+                &s.id,
+                c.live_generation(),
+                cfg.frame_rate,
+                now,
+                || c.compose_screen(&s.id),
+                |fb| out.send(fb),
+            );
         }
     }
 }
@@ -1589,6 +1694,7 @@ impl App {
             ndi_outputs: std::collections::HashMap::new(),
             ndi_backoff: std::collections::HashMap::new(),
             ndi_warned: std::collections::HashSet::new(),
+            ndi_frames: std::collections::HashMap::new(),
             open_failures: OpenFailures::default(),
         }
     }
@@ -2333,6 +2439,7 @@ impl ApplicationHandler for App {
                     &mut self.ndi_outputs,
                     &mut self.ndi_backoff,
                     &mut self.ndi_warned,
+                    &mut self.ndi_frames,
                     now,
                 );
             }
@@ -3281,5 +3388,290 @@ mod fingerprint_tests {
         // Short pins group what they have without panicking.
         assert_eq!(pin_fingerprint("abcd"), "ABCD");
         assert_eq!(pin_fingerprint(""), "");
+    }
+}
+
+#[cfg(test)]
+mod ndi_tests {
+    use super::{demo_plan, ndi_deliver, LiveController, NdiFrameCache, Theme};
+    use std::cell::Cell;
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+
+    /// A small controller (fast composes) with the default registry — `main` is an
+    /// enabled Audience-class screen, so `compose_screen("main")` yields a frame.
+    fn controller() -> LiveController {
+        LiveController::new(demo_plan(), 320, 180, Theme::dark())
+    }
+
+    /// The dirty-gate itself (fix 1): while the controller's live generation holds still,
+    /// repeated due ticks must RE-SEND the cached frame (NDI keeps receiving frames) but
+    /// must NOT recompose — the ~69%-of-a-core full-raster recompose is the regression.
+    #[test]
+    fn unchanged_generation_re_sends_the_cached_frame_without_recomposing() {
+        let c = controller();
+        let mut frames: HashMap<String, NdiFrameCache> = HashMap::new();
+        let composes = Cell::new(0u32);
+        let sends = Cell::new(0u32);
+        let t0 = Instant::now();
+        let generation = c.live_generation();
+        for i in 0..3u64 {
+            ndi_deliver(
+                &mut frames,
+                "main",
+                generation,
+                60,
+                t0 + Duration::from_millis(100 * i), // 100ms apart: every tick is send-due
+                || {
+                    composes.set(composes.get() + 1);
+                    c.compose_screen("main")
+                },
+                |_| sends.set(sends.get() + 1),
+            );
+        }
+        assert_eq!(
+            composes.get(),
+            1,
+            "an unchanged generation must compose once and then serve the cache"
+        );
+        assert_eq!(
+            sends.get(),
+            3,
+            "every due tick must still put a frame on the wire (NDI stays alive)"
+        );
+    }
+
+    /// The correctness half of the dirty-gate (fix 1c): a mutation that changes composed
+    /// output must put the NEW frame on the wire — re-sending the stale cache here would be
+    /// a worse bug than the recompose-per-tick it replaces.
+    #[test]
+    fn a_mutation_puts_the_new_frame_on_the_wire_not_the_cache() {
+        use selahcue_lan::protocol::Command;
+        let mut c = controller();
+        c.apply(&Command::Next);
+        c.apply(&Command::GoLive); // lit content on Live
+        let mut frames: HashMap<String, NdiFrameCache> = HashMap::new();
+        let sent_luma = Cell::new(-1.0f64);
+        let t0 = Instant::now();
+
+        let g = c.live_generation();
+        ndi_deliver(
+            &mut frames,
+            "main",
+            g,
+            60,
+            t0,
+            || c.compose_screen("main"),
+            |fb| sent_luma.set(fb.average_luminance()),
+        );
+        assert!(
+            sent_luma.get() > 1e-6,
+            "sanity: the live item composes a lit frame (luma={})",
+            sent_luma.get()
+        );
+
+        // An output-changing mutation via the public API — blackout blacks every screen.
+        c.apply(&Command::Blackout { on: true });
+        ndi_deliver(
+            &mut frames,
+            "main",
+            c.live_generation(),
+            60,
+            t0 + Duration::from_millis(100),
+            || c.compose_screen("main"),
+            |fb| sent_luma.set(fb.average_luminance()),
+        );
+        assert!(
+            sent_luma.get() < 1e-6,
+            "after blackout the frame ON THE WIRE must be the new (black) compose, not the \
+             cached lit frame (luma={})",
+            sent_luma.get()
+        );
+    }
+
+    /// Fix 2: `cfg.frame_rate` must PACE the wire, not just ride along as NDI metadata.
+    /// At 30fps the ~16ms reconcile tick is not send-due; the next send comes at the
+    /// configured period (1000/30 = 33ms). Time is injected — no wall-clock reads.
+    #[test]
+    fn frame_rate_paces_sends_to_the_configured_rate() {
+        let c = controller();
+        let mut frames: HashMap<String, NdiFrameCache> = HashMap::new();
+        let sends = Cell::new(0u32);
+        let t0 = Instant::now();
+        let g = c.live_generation();
+        let deliver = |frames: &mut HashMap<String, NdiFrameCache>, at_ms: u64| {
+            ndi_deliver(
+                frames,
+                "main",
+                g,
+                30,
+                t0 + Duration::from_millis(at_ms),
+                || c.compose_screen("main"),
+                |_| sends.set(sends.get() + 1),
+            );
+        };
+        deliver(&mut frames, 0);
+        assert_eq!(sends.get(), 1, "the first frame goes out immediately");
+        deliver(&mut frames, 16);
+        assert_eq!(
+            sends.get(),
+            1,
+            "16ms after a send, a 30fps screen is NOT due — the 60Hz loop tick must not \
+             drive the wire"
+        );
+        deliver(&mut frames, 33);
+        assert_eq!(
+            sends.get(),
+            2,
+            "33ms (one 30fps period) after t0, exactly one more send"
+        );
+        deliver(&mut frames, 48);
+        assert_eq!(
+            sends.get(),
+            2,
+            "15ms later still inside the period — no send"
+        );
+    }
+
+    /// A nonsense `frame_rate` (0 from a corrupt store, or an absurd 65535) must neither
+    /// divide by zero nor stall the wire: the rate clamps into the documented config range
+    /// `[MIN_FRAME_RATE, MAX_FRAME_RATE]` — exactly the bound the command path enforces.
+    #[test]
+    fn nonsense_frame_rate_clamps_instead_of_panicking_or_stalling() {
+        let c = controller();
+        let g = c.live_generation();
+        let sends = Cell::new(0u32);
+        let t0 = Instant::now();
+        let deliver = |frames: &mut HashMap<String, NdiFrameCache>, fps: u16, at_ms: u64| {
+            ndi_deliver(
+                frames,
+                "main",
+                g,
+                fps,
+                t0 + Duration::from_millis(at_ms),
+                || c.compose_screen("main"),
+                |_| sends.set(sends.get() + 1),
+            );
+        };
+
+        // fps = 0: clamps to MIN_FRAME_RATE (24fps, ~41ms period) — never a stall.
+        let mut frames: HashMap<String, NdiFrameCache> = HashMap::new();
+        deliver(&mut frames, 0, 0);
+        assert_eq!(
+            sends.get(),
+            1,
+            "fps=0 must still put the first frame on the wire"
+        );
+        deliver(&mut frames, 0, 16);
+        assert_eq!(sends.get(), 1, "inside the clamped 24fps period — not due");
+        deliver(&mut frames, 0, 42);
+        assert_eq!(
+            sends.get(),
+            2,
+            "one 24fps period on, the wire must move again"
+        );
+
+        // fps = 65535: clamps to MAX_FRAME_RATE (60fps, ~16ms period), not a send storm.
+        let mut frames: HashMap<String, NdiFrameCache> = HashMap::new();
+        sends.set(0);
+        deliver(&mut frames, u16::MAX, 0);
+        deliver(&mut frames, u16::MAX, 8);
+        assert_eq!(sends.get(), 1, "8ms after a send even 60fps is not due");
+        deliver(&mut frames, u16::MAX, 16);
+        assert_eq!(sends.get(), 2, "a 60fps period on, due again");
+    }
+
+    /// Bounded-memory rule (CLAUDE.md): each cached frame is ~8.3MB at 1080p, so the cache
+    /// must be bounded by the LIVE screen set — an entry for a deleted screen, or for a
+    /// screen whose NDI delivery is off, must be dropped by the same reconcile that prunes
+    /// the sender/backoff/warned maps.
+    #[test]
+    fn reconcile_prunes_the_frame_cache_with_the_screen_set() {
+        use std::collections::HashSet;
+        let c = controller();
+        let now = Instant::now();
+        let Some(frame_a) = c.compose_screen("main") else {
+            panic!("main composes in the default registry");
+        };
+        let Some(frame_b) = c.compose_screen("main") else {
+            panic!("main composes in the default registry");
+        };
+        let mut senders: HashMap<String, super::video_sink::NdiOutput> = HashMap::new();
+        let mut backoff: HashMap<String, Instant> = HashMap::new();
+        let mut warned: HashSet<String> = HashSet::new();
+        let mut frames: HashMap<String, NdiFrameCache> = HashMap::new();
+        // A cache entry for a screen that no longer exists in the registry…
+        frames.insert(
+            "deleted-screen".to_string(),
+            NdiFrameCache {
+                generation: 0,
+                frame: frame_a,
+                next_send: now,
+            },
+        );
+        // …and one for a live screen with NO NDI delivery configured (want = false).
+        frames.insert(
+            "main".to_string(),
+            NdiFrameCache {
+                generation: 0,
+                frame: frame_b,
+                next_send: now,
+            },
+        );
+        super::reconcile_ndi(
+            &c,
+            &mut senders,
+            &mut backoff,
+            &mut warned,
+            &mut frames,
+            now,
+        );
+        assert!(
+            frames.is_empty(),
+            "the frame cache must be pruned with the screen set (still holds: {:?})",
+            frames.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// The other half of the bound: many ticks and generation churn never GROW the cache —
+    /// one live screen means exactly one entry, no matter how long the loop runs.
+    #[test]
+    fn frame_cache_never_grows_past_one_entry_per_screen() {
+        let c = controller();
+        let mut frames: HashMap<String, NdiFrameCache> = HashMap::new();
+        let t0 = Instant::now();
+        for i in 0..500u64 {
+            ndi_deliver(
+                &mut frames,
+                "main",
+                i, // a NEW generation every tick — worst-case churn
+                60,
+                t0 + Duration::from_millis(i * 100),
+                || c.compose_screen("main"),
+                |_| (),
+            );
+        }
+        assert_eq!(
+            frames.len(),
+            1,
+            "500 ticks with 500 generations must still hold exactly one cache entry"
+        );
+        assert!(
+            frames.len() <= super::NDI_FRAME_CACHE_MAX_ENTRIES,
+            "the cache must respect its published cap"
+        );
+        assert_eq!(
+            super::NDI_FRAME_CACHE_MAX_ENTRIES,
+            selahcue_app::MAX_SCREENS,
+            "the cache is bounded by the screen registry: one entry per screen at most"
+        );
+        // Assert the ACTUAL resident bytes, not a proxy: exactly one 320x180 RGBA frame
+        // (230_400 bytes) may remain resident — churn must not retain hidden buffers.
+        let resident: usize = frames.values().map(|e| e.frame.bytes().len()).sum();
+        assert_eq!(
+            resident,
+            320 * 180 * 4,
+            "resident cache bytes must be exactly one composed frame after 500 generations"
+        );
     }
 }

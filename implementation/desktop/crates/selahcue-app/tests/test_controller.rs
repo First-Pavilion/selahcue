@@ -4,7 +4,9 @@
 
 use selahcue_app::{ControllerReply, LiveController};
 use selahcue_core::plan::{ItemContent, ItemKind, ServicePlan};
-use selahcue_lan::protocol::{Command, ContentLinkView, DenyReason, ServerMessage};
+use selahcue_lan::protocol::{
+    Command, ContentLinkView, DenyReason, OutputConfigView, ServerMessage,
+};
 use selahcue_present::{
     AuthoredSlide, Element, Fit, ImageFit, MediaRef, Rgba, ShapeKind, SlideId, TextAlign, Theme,
     VAlign, MAX_ELEMENTS, MAX_TEXT_ELEMENT_LEN,
@@ -4657,4 +4659,183 @@ fn set_item_owner_and_duration_commands_apply_clear_and_reject_unknown() {
         }),
         ControllerReply::Deny(DenyReason::BadRequest)
     );
+}
+
+// --- Live-output generation (NDI dirty-gate seam) -------------------------------------------
+// The desktop's NDI reconcile composes a screen's frame ONLY when this generation moved
+// (a full 1920x1080 CPU recompose per frame otherwise pegs a core). A missed bump would put
+// a STALE frame on the wire, so the contract under test is: every mutation that can change
+// composed audience output advances `live_generation()`.
+
+#[test]
+fn live_generation_bumps_when_go_live_changes_the_output() {
+    let (mut c, _) = controller();
+    c.apply(&Command::Next); // stage something so Go Live has content
+    let before = c.live_generation();
+    assert_eq!(c.apply(&Command::GoLive), ControllerReply::Ack);
+    assert!(
+        c.live_generation() > before,
+        "GoLive changes the composed output and must advance the generation \
+         (before={before}, after={})",
+        c.live_generation()
+    );
+}
+
+#[test]
+fn live_generation_bumps_on_restore_and_startup_loaders() {
+    // These reach composed output WITHOUT going through `apply`: a crash-recovery restore
+    // re-establishes Live/blackout, and each loader can change themes / registry enable
+    // flags / layer masks. Every one must advance the generation or the NDI cache would
+    // keep re-sending the pre-load frame.
+    let (mut c, _) = controller();
+    let mut last = c.live_generation();
+    let mut expect_bump = |c: &LiveController, what: &str| {
+        let now = c.live_generation();
+        assert!(
+            now > last,
+            "{what} must advance the live generation (still {now})"
+        );
+        last = now;
+    };
+
+    let snap = {
+        let (mut donor, _) = controller();
+        donor.apply(&Command::Next);
+        donor.apply(&Command::GoLive);
+        donor.snapshot(std::time::Instant::now())
+    };
+    c.restore(&snap);
+    expect_bump(&c, "restore()");
+
+    c.load_saved_themes(std::iter::empty::<(String, String)>());
+    expect_bump(&c, "load_saved_themes()");
+
+    c.load_screen_themes(std::iter::empty::<(String, String)>());
+    expect_bump(&c, "load_screen_themes()");
+
+    c.load_screen_registry(vec![("main".to_string(), "main".to_string(), false, false)]);
+    expect_bump(&c, "load_screen_registry()");
+
+    c.load_output_configs(std::iter::empty::<(String, OutputConfigView)>());
+    expect_bump(&c, "load_output_configs()");
+}
+
+#[test]
+fn live_generation_covers_every_output_changing_command_class() {
+    // Requirement (b) of the NDI dirty-gate: drive each class of output-changing mutation
+    // through the public API and prove it advances the generation. A class missing here
+    // that fails to bump would freeze a stale NDI frame — worse than the perf bug.
+    let (mut c, ids) = controller();
+    let mut last = c.live_generation();
+    let mut bumped = |c: &LiveController, what: &str| {
+        let now = c.live_generation();
+        assert!(
+            now > last,
+            "{what} must advance the live generation (still {now})"
+        );
+        last = now;
+    };
+
+    c.apply(&Command::Next);
+    bumped(&c, "Next (stages preview; conservative bump)");
+    c.apply(&Command::GoLive);
+    bumped(&c, "GoLive");
+    c.apply(&Command::Blackout { on: true });
+    bumped(&c, "Blackout on");
+    c.apply(&Command::Blackout { on: false });
+    bumped(&c, "Blackout off");
+    c.apply(&Command::Clear);
+    bumped(&c, "Clear");
+    c.apply(&Command::SetTheme {
+        name: "warm".into(),
+    });
+    bumped(&c, "SetTheme (global theme)");
+    c.apply(&Command::SaveTheme {
+        name: "mine".into(),
+        theme_json: serde_json::to_string(&Theme::high_contrast()).unwrap(),
+    });
+    bumped(&c, "SaveTheme (library edit resyncs live overrides)");
+    c.apply(&Command::SetScreenTheme {
+        screen: "main".into(),
+        name: "mine".into(),
+    });
+    bumped(&c, "SetScreenTheme");
+    c.apply(&Command::DeleteTheme {
+        name: "mine".into(),
+    });
+    bumped(&c, "DeleteTheme (drops overrides that used it)");
+    c.apply(&Command::SetScreenEnabled {
+        screen: "main".into(),
+        enabled: false,
+    });
+    bumped(&c, "SetScreenEnabled (disabled screen composes safe-black)");
+    c.apply(&Command::AddScreen {
+        role: "stream".into(),
+    });
+    bumped(&c, "AddScreen");
+    let virtual_id = c
+        .screen_registry()
+        .iter()
+        .find(|s| s.deletable)
+        .map(|s| s.id.clone())
+        .expect("AddScreen minted a virtual screen");
+    c.apply(&Command::SetScreenLayerVisible {
+        screen: "main".into(),
+        layer: "text".into(),
+        visible: false,
+    });
+    bumped(&c, "SetScreenLayerVisible (layer mask gates compose)");
+    c.apply(&Command::SetNdiOutput {
+        screen: virtual_id.clone(),
+        name: "Feed".into(),
+        enabled: true,
+    });
+    bumped(&c, "SetNdiOutput");
+    c.apply(&Command::RemoveScreen { screen: virtual_id });
+    bumped(&c, "RemoveScreen");
+    c.apply(&Command::StageScripture {
+        reference: "John 3:16".into(),
+        translation: None,
+    });
+    bumped(&c, "StageScripture (stages preview; conservative bump)");
+
+    // The EXCLUSION set is the other half of the contract: the per-frame/polled paths must
+    // NOT bump, or the cache never holds and the recompose-per-tick regression returns.
+    let stable = c.live_generation();
+    let _ = c.apply(&Command::GetState);
+    let _ = c.apply(&Command::GetOperatorState);
+    let _ = c.apply(&Command::GetConsoleThumbnails {
+        max_w: 96,
+        max_h: 54,
+    });
+    let _ = c.apply(&Command::GetScreenFrame {
+        screen: "main".into(),
+        max_w: 96,
+        max_h: 54,
+    });
+    let _ = c.apply(&Command::ScriptureSearch {
+        query: "love".into(),
+        translation: None,
+    });
+    let _ = c.apply(&Command::GetChapter {
+        reference: "John 3".into(),
+        translation: None,
+    });
+    let _ = c.apply(&Command::IngestTranscript {
+        text: "for God so loved the world".into(),
+        start_ms: Some(0),
+        end_ms: Some(1000),
+        is_final: true,
+    });
+    let _ = c.apply(&Command::DismissDetection { detection_id: 999 });
+    c.tick(std::time::Instant::now());
+    let _ = c.snapshot(std::time::Instant::now());
+    let _ = c.operator_view();
+    assert_eq!(
+        c.live_generation(),
+        stable,
+        "reads, transcript ingest, and tick must NOT advance the generation \
+         (they run per-poll/per-frame — a bump here defeats the NDI cache)"
+    );
+    let _ = ids;
 }

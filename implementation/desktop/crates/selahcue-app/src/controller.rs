@@ -132,6 +132,13 @@ pub struct LiveController {
     /// Set by any state-changing command; the host's autosave loop consumes it via
     /// [`take_state_dirty`](Self::take_state_dirty).
     state_dirty: bool,
+    /// Monotonic LIVE-OUTPUT GENERATION: advanced by every mutation that can change a
+    /// composed audience frame ([`compose_screen`](Self::compose_screen)) — the dirty-gate
+    /// the desktop's NDI reconcile keys its per-screen frame cache on. Deliberately an
+    /// over-approximation (any potentially state-changing command bumps it, plus the
+    /// loaders and [`restore`](Self::restore)): a MISSED bump would freeze a stale frame
+    /// on the wire, while an extra bump merely costs one recompose.
+    live_generation: u64,
     /// Set by plan-edit commands; the host persists the plan when it sees this.
     plan_dirty: bool,
     /// Service-Plan undo history (plan-editing · undo/redo): whole-plan snapshots taken BEFORE
@@ -692,6 +699,7 @@ impl LiveController {
             output_status: Vec::new(),
             display_status: Vec::new(),
             state_dirty: false,
+            live_generation: 0,
             plan_dirty: false,
             plan_undo: Vec::new(),
             plan_redo: Vec::new(),
@@ -913,6 +921,9 @@ impl LiveController {
     /// map without marking it dirty (nothing new to persist). Over-cap / invalid entries
     /// are dropped defensively so a corrupt store can never exceed the bound or crash.
     pub fn load_saved_themes(&mut self, themes: impl IntoIterator<Item = (String, String)>) {
+        // Can change composed audience output without passing through `apply` — advance
+        // the live generation so the NDI frame cache recomposes (dirty-gate, no stale frame).
+        self.live_generation = self.live_generation.wrapping_add(1);
         self.saved_themes = themes
             .into_iter()
             .filter(|(name, json)| {
@@ -1109,6 +1120,9 @@ impl LiveController {
     /// screens with a known built-in theme name (so a stale/removed name is dropped,
     /// never crashes), applies `main` to the Presenter, and does not dirty.
     pub fn load_screen_themes(&mut self, themes: impl IntoIterator<Item = (String, String)>) {
+        // Can change composed audience output without passing through `apply` — advance
+        // the live generation so the NDI frame cache recomposes (dirty-gate, no stale frame).
+        self.live_generation = self.live_generation.wrapping_add(1);
         // Keep only a theme whose screen is an Audience-class registry screen (built-in or
         // a restored virtual feed) with a resolvable name. Load the registry BEFORE the
         // per-screen themes so a virtual screen's theme survives; a theme for an
@@ -1219,6 +1233,9 @@ impl LiveController {
     where
         I: IntoIterator<Item = (String, String, bool, bool)>,
     {
+        // Can change composed audience output without passing through `apply` — advance
+        // the live generation so the NDI frame cache recomposes (dirty-gate, no stale frame).
+        self.live_generation = self.live_generation.wrapping_add(1);
         self.screen_registry = ScreenRegistry::from_persisted(rows);
         self.screen_registry_dirty = false;
     }
@@ -1392,6 +1409,9 @@ impl LiveController {
         &mut self,
         configs: impl IntoIterator<Item = (String, OutputConfigView)>,
     ) {
+        // Can change composed audience output without passing through `apply` — advance
+        // the live generation so the NDI frame cache recomposes (dirty-gate, no stale frame).
+        self.live_generation = self.live_generation.wrapping_add(1);
         let registry = &self.screen_registry;
         self.output_configs = configs
             .into_iter()
@@ -1476,6 +1496,9 @@ impl LiveController {
     /// never panic or point past the end). A running countdown resumes from its
     /// persisted elapsed on the next [`tick`](Self::tick).
     pub fn restore(&mut self, snap: &ControllerSnapshot) {
+        // Can change composed audience output without passing through `apply` — advance
+        // the live generation so the NDI frame cache recomposes (dirty-gate, no stale frame).
+        self.live_generation = self.live_generation.wrapping_add(1);
         let len = self.plan.len();
         let ok = |v: Option<u32>| v.map(|i| i as usize).filter(|i| *i < len);
 
@@ -1570,6 +1593,15 @@ impl LiveController {
     }
 
     /// Whether state changed since the last [`take_state_dirty`] (autosave signal).
+    /// The live-output GENERATION (NDI dirty-gate seam): while this value is unchanged,
+    /// every [`compose_screen`](Self::compose_screen) frame is guaranteed unchanged, so a
+    /// per-frame consumer (the desktop's NDI reconcile) may re-send its cached frame
+    /// instead of recomposing. It advances on any mutation that can change composed
+    /// output; it may over-count (see the field doc) but never under-counts.
+    pub fn live_generation(&self) -> u64 {
+        self.live_generation
+    }
+
     pub fn take_state_dirty(&mut self) -> bool {
         std::mem::take(&mut self.state_dirty)
     }
@@ -2052,7 +2084,14 @@ impl LiveController {
             // scripture (a real Preview change), so it falls through to `state_dirty`.
             | Command::IngestTranscript { .. }
             | Command::DismissDetection { .. } => {}
-            _ => self.state_dirty = true,
+            _ => {
+                self.state_dirty = true;
+                // NDI dirty-gate: any potentially state-changing command may change a composed
+                // audience frame — advance the generation. Sharing this arm with `state_dirty`
+                // keeps the read-command exclusion set in ONE audited place; over-counting is
+                // safe (one extra recompose), under-counting would freeze a stale frame.
+                self.live_generation = self.live_generation.wrapping_add(1);
+            }
         }
         // Snapshot the plan before a plan-EDITING command so the edit can be undone (plan-editing
         // · undo/redo). Cloned up front but RECORDED only post-dispatch, once the edit is known to
