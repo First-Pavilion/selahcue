@@ -7,18 +7,29 @@
 #   make            # show this help
 #   make run        # ONE command: output window + operator shell together (NDI + STT auto-on)
 #   make launch     # same as `make run`
+#   make run-release# same, but an OPTIMIZED build — use this to judge performance
 #   make output     # just the audience output window (native + LAN control server; NDI auto)
 #   make operator   # just the Tauri operator shell
 #   make remote CMD=go-live   # send one command to a running output window via the CLI
 #
 # `make run` auto-enables NDI when the SDK is vendored (scripts/fetch_ndi_sdk.sh) and STT when
 # cmake is present, and runs fine without either — force with `make run NDI=1|0 STT=1|0`.
+# It also waits for the output window to actually come up before starting the operator (a
+# condition, not a fixed sleep); `make run LAUNCH_TIMEOUT=600` raises the give-up backstop.
 
 DESKTOP  := implementation/desktop
 OPERATOR := $(DESKTOP)/crates/selahcue-operator
 CARGO    ?= cargo
 WS       := --manifest-path $(DESKTOP)/Cargo.toml
 OP       := --manifest-path $(OPERATOR)/Cargo.toml
+# Build profile for the RUN/BUILD targets. Debug is the default because it compiles fast and
+# is what you want while iterating. Use RELEASE=1 (or the *-release targets) for anything you
+# are judging PERFORMANCE by: the rasterizer is ~30x slower unoptimized, which is the difference
+# between a verse appearing in ~2ms and in ~280ms. Never benchmark, demo, or run a live service
+# off a debug build.
+RELEASE      ?= 0
+PROFILE_FLAG := $(if $(filter 1,$(RELEASE)),--release,)
+PROFILE_NAME := $(if $(filter 1,$(RELEASE)),release,debug)
 # The local endpoint file the output window writes (matches Rust's std::env::temp_dir()).
 ENDPOINT := $(shell python3 -c "import tempfile,os;print(os.path.join(tempfile.gettempdir(),'selahcue-operator-endpoint.json'))" 2>/dev/null)
 CMD      ?= next
@@ -50,9 +61,9 @@ endif
 # and mic capture silently returns silence. Everywhere else, run it directly with cargo.
 UNAME := $(shell uname)
 ifeq ($(UNAME),Darwin)
-OPERATOR_RUN := sh scripts/run_operator_macapp.sh $(OPRUN)
+OPERATOR_RUN := sh scripts/run_operator_macapp.sh $(OPRUN) $(PROFILE_FLAG)
 else
-OPERATOR_RUN := $(CARGO) run $(OP) $(OPRUN)
+OPERATOR_RUN := $(CARGO) run $(OP) $(OPRUN) $(PROFILE_FLAG)
 endif
 
 # NDI OUTPUT (Screens page): broadcast a composed audience feed as an NDI source, built against
@@ -99,7 +110,7 @@ NDI_STATUS := on (vendored SDK)
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run output output-ndi ndi-preflight operator operator-headless stt-preflight remote timer stop-timer demo mobile mobile-test ci nfr build build-operator test check clippy fmt clean
+.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test check clippy fmt clean
 
 stt-preflight: ## (internal) verify the toolchain needed for --features stt is present
 ifneq ($(strip $(OP_FEATURES)),)
@@ -116,25 +127,80 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | \
 	  awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-launch: stt-preflight build build-operator ## Launch EVERYTHING — output window (NDI auto) + operator shell (STT on; OP_FEATURES= to skip)
+# LAUNCH ORCHESTRATION. `make run` used to be a race, and lost it on any cold/changed cache:
+#
+#   * its prerequisite built the workspace with the DEFAULT feature set while the recipe then ran
+#     `-p selahcue-desktop $(DESKTOP_FEATURES)` — a different cargo cache entry, so the real
+#     compile (grafton-ndi, relinking the output window) happened INSIDE the backgrounded job,
+#     silenced by `-q` and with nobody checking its exit status; and
+#   * the recipe then waited a flat 10 seconds for the endpoint file and started the operator
+#     regardless of whether it ever appeared.
+#
+# That mattered more than a slow start: the operator resolves its backend exactly ONCE, at
+# startup. If the endpoint file is missing at that instant it falls back to the built-in demo
+# plan permanently — no retry, no reconnect — so the operator would come up looking fine while
+# being wired to nothing, and the real plan never appeared even after the output window did.
+#
+# So: build EXACTLY what we are about to run (same crate, same features, same profile) so the
+# backgrounded `cargo run` is a cache hit; then wait on the real CONDITION (the endpoint file
+# exists and is complete) while the output process is still alive, instead of on a stopwatch.
+#
+# The backstop below is only a last resort for a wedged process — a slow-but-healthy start must
+# never lose the race, so raise it rather than reduce it: `make run LAUNCH_TIMEOUT=600`.
+LAUNCH_TIMEOUT ?= 180
+
+launch: stt-preflight build-output build-operator ## Launch EVERYTHING — output window (NDI auto) + operator shell (STT on; OP_FEATURES= to skip)
+	@echo ">> build profile: $(PROFILE_NAME)$(if $(filter 1,$(RELEASE)),, — use \`make run-release\` to judge performance)"
 	@echo ">> NDI output: $(NDI_STATUS)"
 	@echo ">> on-device STT: $(STT_STATUS)"
 	@echo ">> clearing any stale endpoint and starting the output window…"
 	@rm -f "$(ENDPOINT)"; \
-	$(DESKTOP_ENV) $(CARGO) run -q $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) & \
+	$(DESKTOP_ENV) $(CARGO) run $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) $(PROFILE_FLAG) & \
 	OUT_PID=$$!; \
 	trap 'kill $$OUT_PID 2>/dev/null' EXIT INT TERM; \
 	echo ">> waiting for the output window to advertise its endpoint…"; \
-	for i in $$(seq 1 40); do [ -f "$(ENDPOINT)" ] && break; sleep 0.25; done; \
-	echo ">> starting the operator shell (its buttons drive the output window)…"; \
+	TICKS=0; LIMIT=$$(( $(LAUNCH_TIMEOUT) * 4 )); \
+	while :; do \
+	  [ -s "$(ENDPOINT)" ] && grep -q '}' "$(ENDPOINT)" 2>/dev/null && break; \
+	  OUT_STATE=$$(ps -o state= -p $$OUT_PID 2>/dev/null || true); \
+	  case "$$OUT_STATE" in \
+	    ''|Z*) \
+	      wait $$OUT_PID 2>/dev/null; STATUS=$$?; \
+	      echo ""; \
+	      echo "ERROR: the output window exited (status $$STATUS) before advertising its endpoint."; \
+	      echo "  Its cargo output is above — that is the real failure; fix it and re-run."; \
+	      echo "  Not starting the operator: it resolves its backend ONCE at startup, so it would"; \
+	      echo "  silently fall back to the built-in demo plan for the whole session."; \
+	      exit 1;; \
+	  esac; \
+	  if [ $$TICKS -ge $$LIMIT ]; then \
+	    echo ""; \
+	    echo "ERROR: the output window is alive but has not advertised its endpoint in $(LAUNCH_TIMEOUT)s."; \
+	    echo "  Stopping it rather than starting an operator that would be stuck on the demo plan."; \
+	    echo "  If this machine is simply slow:  make run LAUNCH_TIMEOUT=600"; \
+	    echo "  To see what it is doing, run the two halves separately:  make output  /  make operator"; \
+	    exit 1; \
+	  fi; \
+	  sleep 0.25; TICKS=$$((TICKS + 1)); \
+	done; \
+	echo ">> endpoint is up; starting the operator shell (its buttons drive the output window)…"; \
 	$(OPERATOR_RUN); \
 	echo ">> operator closed; stopping the output window."; \
-	kill $$OUT_PID 2>/dev/null || true
+	kill $$OUT_PID 2>/dev/null || true; \
+	wait $$OUT_PID 2>/dev/null || true
 
 run: launch ## Run EVERYTHING with one command (alias for `launch` — output window + operator, NDI auto)
 
+run-release: ## Run EVERYTHING as an OPTIMIZED release build — use this to judge real performance
+	@$(MAKE) --no-print-directory launch RELEASE=1
+
+launch-release: run-release ## Alias for `run-release` (optimized output window + operator)
+
+output-release: ## Run only the output window as an optimized release build
+	@$(MAKE) --no-print-directory output RELEASE=1
+
 output: ## Run only the output window (native audience output + LAN control server; NDI auto)
-	$(DESKTOP_ENV) $(CARGO) run $(WS) -p selahcue-desktop $(DESKTOP_FEATURES)
+	$(DESKTOP_ENV) $(CARGO) run $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) $(PROFILE_FLAG)
 
 ndi-preflight: ## (internal) verify the repo-vendored NDI SDK is populated for this OS
 	@test -f "$(NDI_DIR)/include/Processing.NDI.Lib.h" || { \
@@ -145,7 +211,7 @@ ndi-preflight: ## (internal) verify the repo-vendored NDI SDK is populated for t
 	  exit 1; }
 
 output-ndi: ndi-preflight ## Force the output window WITH NDI (errors if the SDK isn't vendored; `make run` enables NDI automatically)
-	NDI_SDK_DIR="$(NDI_DIR)" $(NDI_LOADER) $(CARGO) run $(WS) -p selahcue-desktop --features ndi
+	NDI_SDK_DIR="$(NDI_DIR)" $(NDI_LOADER) $(CARGO) run $(WS) -p selahcue-desktop --features ndi $(PROFILE_FLAG)
 
 operator: stt-preflight ## Run only the operator shell (connects to a running output window, else a standalone demo)
 	$(OPERATOR_RUN)
@@ -205,16 +271,33 @@ nfr: ## Measure the walking-skeleton NFRs (idle memory / cold start) on a releas
 	sh scripts/measure_nfr.sh
 
 build: ## Build the desktop workspace
-	$(CARGO) build $(WS)
+	$(CARGO) build $(WS) $(PROFILE_FLAG)
+
+# Build the output window the way `make launch` RUNS it. This exists so the two cannot drift:
+# the launch recipe backgrounds `cargo run` with $(DESKTOP_FEATURES) and $(PROFILE_FLAG), and a
+# prerequisite that builds anything else (the plain workspace build, say, which has no `ndi`)
+# is a different cargo cache entry — it leaves the real compile to happen inside the background
+# job, where a failure is easy to miss and a long link looks like a hung start. Same crate, same
+# features, same profile, same env (grafton-ndi's build script needs NDI_SDK_DIR) — so by the
+# time we background it, `cargo run` has nothing left to do but launch.
+# `make ci`/`check`/`clippy` deliberately do NOT use this: they stay on the default, native-free
+# build so CI never needs the NDI SDK.
+build-output: ## Build just the output window with the same features/profile `make run` uses
+	$(DESKTOP_ENV) $(CARGO) build $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) $(PROFILE_FLAG)
 
 build-operator: stt-preflight ## Build the Tauri operator shell crate
-	$(CARGO) build $(OP) $(OPRUN)
+	$(CARGO) build $(OP) $(OPRUN) $(PROFILE_FLAG)
 
 test: ## Run the workspace test suite
 	$(CARGO) test $(WS)
 
 check: ## Type-check the workspace + the operator shell
 	$(CARGO) check $(WS)
+# A workspace build unifies features across members, so a crate that is missing a `cfg` on
+# something feature-gated still compiles here and only fails when someone builds it alone.
+# That is how an ungated `RemoteOperator` holding a `server`-only `ControlClient` survived.
+# `-p` narrows unification to the one package, which is the resolution a bare build gets.
+	$(CARGO) check $(WS) -p selahcue-app --all-targets
 	$(CARGO) check $(OP)
 
 clippy: ## Lint the workspace + the operator shell
