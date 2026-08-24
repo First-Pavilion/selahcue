@@ -1,0 +1,136 @@
+{
+  "_comment": "Figma reference exports for the visual-parity harness. Regenerate with scripts/vp_reference.py (see docs/delivery/VISUAL-PARITY-HARNESS.md). Figma asset URLs expire in ~7 days, which is why the BYTES are committed.",
+  "entries": {
+    "console": {
+      "bytes": 268893,
+      "exported_utc": "2026-08-23T18:57:15Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1000,
+      "node_id": "312:124",
+      "note": "Operator Console (Design 2.0, flagship)",
+      "sha256": "4bd4d67b52ae1188250346994edc426d8648bf77e7a0b5b09f035e4424d240f9",
+      "width": 1760
+    },
+    "presentation": {
+      "bytes": 377951,
+      "exported_utc": "2026-08-23T18:57:15Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1000,
+      "node_id": "329:124",
+      "note": "Presentation & Media (mini-deck editor)",
+      "sha256": "0afa4fc965de21e63ea9bc22ea525784e676166d560e19c848868a627dfc4922",
+      "width": 1760
+    },
+    "preservice": {
+      "bytes": 134232,
+      "exported_utc": "2026-08-23T18:57:15Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1000,
+      "node_id": "344:124",
+      "note": "Pre-service Check",
+      "sha256": "d31f2a9b08738ab7bfaf44a0cf7399c906b62196ac2ab23f815446d347e0f4c2",
+      "width": 1760
+    },
+    "remote": {
+      "bytes": 98301,
+      "exported_utc": "2026-08-23T18:57:16Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1000,
+      "node_id": "359:124",
+      "note": "Remote Control \u00b7 Devices",
+      "sha256": "6493af3e2736fae3fd51d569312b0388d7d1424378d9093ce6daab0af771231e",
+      "width": 1760
+    },
+    "screens": {
+      "bytes": 407278,
+      "exported_utc": "2026-08-23T18:57:15Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1154,
+      "node_id": "327:124",
+      "note": "Screens & Outputs manager",
+      "sha256": "c5cb73c508b7e3ea56d3c45df51d17aff459fa5fa9c9e84c182f4647452438f6",
+      "width": 1760
+    },
+    "settings": {
+      "bytes": 171646,
+      "exported_utc": "2026-08-23T18:57:15Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1000,
+      "node_id": "338:124",
+      "note": "Settings \u2014 Providers & Privacy shown",
+      "sha256": "84514f83908517472319206dc0160bc275a22be2e0e825270f0094f1ab9da697",
+      "width": 1760
+    },
+    "stage-message": {
+      "bytes": 30361,
+      "exported_utc": "2026-08-23T18:57:16Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 563,
+      "node_id": "375:128",
+      "note": "Stage \u2014 production message banner",
+      "sha256": "7553240059d2e940d9b8ea4c53cebb670e15329e887bd57fe77da064484a1351",
+      "width": 1000
+    },
+    "stage-scripture-running": {
+      "bytes": 56587,
+      "exported_utc": "2026-08-23T18:57:16Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 563,
+      "node_id": "374:128",
+      "note": "Stage \u2014 Scripture theme, running",
+      "sha256": "ee7f2fd75374bc28dcc08c5174050e1f1aa87ee0c999983c6c406e57b6b2d0c6",
+      "width": 1000
+    },
+    "stage-timer-only-running": {
+      "bytes": 25992,
+      "exported_utc": "2026-08-23T18:57:16Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 563,
+      "node_id": "374:151",
+      "note": "Stage \u2014 Timer-only theme, running",
+      "sha256": "c0a4bbb0f767965437f8cc702a6ec6d07631419dddac34ae053ae25251b0c550",
+      "width": 1000
+    },
+    "stage-timer-only-timeup": {
+      "bytes": 185652,
+      "exported_utc": "2026-08-23T18:57:16Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 563,
+      "node_id": "374:166",
+      "note": "Stage \u2014 Timer-only theme, TIME UP (full screen)",
+      "sha256": "5c005a14770fa1147d3f6636c6b796126d6831bbba87260ff5ec0225244d3530",
+      "width": 1000
+    },
+    "stage-worship-running": {
+      "bytes": 47327,
+      "exported_utc": "2026-08-23T18:57:16Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 563,
+      "node_id": "373:133",
+      "note": "Stage \u2014 Worship theme, running",
+      "sha256": "7990336adbb5c95c527cc5a7eaf74614b87555914e31402f23bb91557b1232af",
+      "width": 1000
+    },
+    "stage-worship-timeup": {
+      "bytes": 49475,
+      "exported_utc": "2026-08-23T18:57:16Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 563,
+      "node_id": "373:159",
+      "note": "Stage \u2014 Worship theme, TIME UP (timer region only)",
+      "sha256": "9b5e07ca0bd1c57733f72229bcafebaaff945ee0b79ebec06c67cf7a7e7f5d18",
+      "width": 1000
+    },
+    "theme-designer": {
+      "bytes": 281681,
+      "exported_utc": "2026-08-23T18:57:15Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1000,
+      "node_id": "317:124",
+      "note": "Theme Designer",
+      "sha256": "c67f72e12c7b550523a4630a16f89667474270c97f2384f21b9fa982fe130686",
+      "width": 1760
+    }
+  },
+  "file_key": "SYQn5hFY8YVQKm3c6rw0eJ"
+}

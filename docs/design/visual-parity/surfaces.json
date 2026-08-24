@@ -1,0 +1,154 @@
+{
+  "_comment": [
+    "The visual-parity capture catalogue: what the harness screenshots/renders, at what size,",
+    "and which Figma frame (if any) it is compared against.",
+    "",
+    "reference_kind is load-bearing and honest:",
+    "  screen - the Figma node is a 1:1 rendering of this surface; a whole-frame diff is meaningful.",
+    "  board  - the Figma node is a multi-state SPEC board (e.g. 332:124 is 3456x523 holding nine",
+    "           detection states side by side). A whole-frame diff against it is nonsense, so the",
+    "           harness never scores it; the frame is exported for human review only.",
+    "  none   - no Figma frame depicts this surface/state. Captured for human review only.",
+    "",
+    "Web routes are lists of CSS selectors clicked in order. State handlers are NAMED in",
+    "scripts/vp_capture_web.py (default | blackout | closed-screen) - no JavaScript lives in",
+    "this data file."
+  ],
+  "figma_file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+  "web": [
+    {
+      "slug": "console",
+      "state": "default",
+      "node": "312:124",
+      "reference": "console",
+      "reference_kind": "screen",
+      "width": 1760,
+      "height": 1000,
+      "route": [".nav-item[data-surface=\"console\"]"],
+      "regions": [
+        { "id": "golive-button", "selector": "#golive", "kind": "text" },
+        { "id": "blackout-button", "selector": "#blackout", "kind": "text" },
+        { "id": "topbar-golive", "selector": "#top-golive", "kind": "text" },
+        { "id": "timer-start", "selector": "#timer-start-custom", "kind": "text" },
+        { "id": "golive-key-hint", "selector": "#golive .key", "kind": "text" },
+        { "id": "blackout-key-hint", "selector": "#blackout .key", "kind": "text" }
+      ]
+    },
+    {
+      "slug": "console-blackout",
+      "state": "blackout",
+      "node": "346:124",
+      "reference": "",
+      "reference_kind": "none",
+      "width": 1760,
+      "height": 1000,
+      "route": [".nav-item[data-surface=\"console\"]"],
+      "regions": [{ "id": "blackout-engaged", "selector": "#blackout", "kind": "text" }]
+    },
+    {
+      "slug": "theme-designer",
+      "state": "default",
+      "node": "317:124",
+      "reference": "theme-designer",
+      "reference_kind": "screen",
+      "width": 1760,
+      "height": 1000,
+      "route": [".nav-item[data-surface=\"theme-designer\"]"],
+      "regions": []
+    },
+    {
+      "slug": "screens",
+      "state": "default",
+      "node": "327:124",
+      "reference": "screens",
+      "reference_kind": "screen",
+      "width": 1760,
+      "height": 1154,
+      "route": [".nav-item[data-surface=\"screens\"]"],
+      "regions": []
+    },
+    {
+      "slug": "screens-closed",
+      "state": "closed-screen",
+      "node": "327:124",
+      "reference": "",
+      "reference_kind": "none",
+      "width": 1760,
+      "height": 1154,
+      "route": [".nav-item[data-surface=\"screens\"]"],
+      "regions": [
+        { "id": "closed-card-meta", "selector": ".scr-card.screen-disabled .scr-card-meta", "kind": "text" },
+        { "id": "closed-card-pill", "selector": ".scr-card.screen-disabled .scr-pill", "kind": "text" },
+        { "id": "closed-card-name", "selector": ".scr-card.screen-disabled .scr-card-name", "kind": "text" },
+        { "id": "closed-card-thumb", "selector": ".scr-card.screen-disabled .scr-thumb", "kind": "ui" }
+      ]
+    },
+    {
+      "slug": "presentation",
+      "state": "default",
+      "node": "329:124",
+      "reference": "presentation",
+      "reference_kind": "screen",
+      "width": 1760,
+      "height": 1000,
+      "route": [".nav-item[data-surface=\"presentation\"]"],
+      "regions": [
+        { "id": "pm-primary-button", "selector": ".pm-btn-primary", "kind": "text" }
+      ]
+    },
+    {
+      "slug": "settings",
+      "state": "default",
+      "node": "338:124",
+      "reference": "settings",
+      "reference_kind": "screen",
+      "width": 1760,
+      "height": 1000,
+      "route": [".nav-item[data-surface=\"settings\"]"],
+      "regions": []
+    },
+    {
+      "slug": "plan",
+      "state": "default",
+      "node": "",
+      "reference": "",
+      "reference_kind": "none",
+      "width": 1760,
+      "height": 1000,
+      "route": [".nav-item[data-surface=\"plan\"]"],
+      "regions": []
+    },
+    {
+      "slug": "preservice",
+      "state": "default",
+      "node": "344:124",
+      "reference": "preservice",
+      "reference_kind": "screen",
+      "width": 1760,
+      "height": 1000,
+      "route": [".nav-item[data-surface=\"settings\"]", "button.set-nav[data-setpage=\"preservice\"]"],
+      "regions": []
+    },
+    {
+      "slug": "remote",
+      "state": "default",
+      "node": "359:124",
+      "reference": "remote",
+      "reference_kind": "screen",
+      "width": 1760,
+      "height": 1000,
+      "route": [".nav-item[data-surface=\"settings\"]", "#set-open-remote"],
+      "regions": []
+    }
+  ],
+  "native": [
+    { "slug": "stage-worship-running", "node": "373:133", "reference": "stage-worship-running", "reference_kind": "screen", "width": 1000, "height": 563 },
+    { "slug": "stage-worship-timeup", "node": "373:159", "reference": "stage-worship-timeup", "reference_kind": "screen", "width": 1000, "height": 563 },
+    { "slug": "stage-scripture-running", "node": "374:128", "reference": "stage-scripture-running", "reference_kind": "screen", "width": 1000, "height": 563 },
+    { "slug": "stage-timer-only-running", "node": "374:151", "reference": "stage-timer-only-running", "reference_kind": "screen", "width": 1000, "height": 563 },
+    { "slug": "stage-timer-only-timeup", "node": "374:166", "reference": "stage-timer-only-timeup", "reference_kind": "screen", "width": 1000, "height": 563 },
+    { "slug": "stage-message", "node": "375:128", "reference": "stage-message", "reference_kind": "screen", "width": 1000, "height": 563 },
+    { "slug": "audience-scripture-live", "node": "", "reference": "", "reference_kind": "none", "width": 1920, "height": 1080 },
+    { "slug": "audience-blackout", "node": "", "reference": "", "reference_kind": "none", "width": 1920, "height": 1080 }
+  ]
+}

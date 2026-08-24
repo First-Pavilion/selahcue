@@ -1,0 +1,225 @@
+{
+  "_comment": [
+    "ALLOWED DEVIATIONS — places where the implementation deliberately does NOT match the",
+    "Figma Design 2.0 frames. Without this file a 'drive the diff to zero' harness would push",
+    "us to ship accessibility failures, because several Design 2.0 pairings fail WCAG AA as",
+    "drawn (white on the GO LIVE green is 1.91:1).",
+    "",
+    "EVERY ENTRY IS A GATE, NOT A COMMENT. Each carries a `requires` bound and a `measured`",
+    "value, and scripts/vp_compare.py RE-MEASURES from the capture on every run. An entry whose",
+    "region no longer meets its bound goes RED. That is the whole point: an entry that cannot",
+    "fail would authorise the drift it exists to prevent — the next reviewer reads",
+    "'intentional' and moves on.",
+    "",
+    "FIELDS",
+    "  capture/regions   which captured surface + which declared region (see surfaces.json)",
+    "  metric            contrast | effective_opacity | text_matches",
+    "  requires          the bound + WHICH WCAG threshold applies and why. PRD NFR-020 sets",
+    "                    4.5:1 for normal text and 3:1 for large text AND non-text UI, so an",
+    "                    entry that does not name its threshold cannot be checked correctly.",
+    "                    (large text = >=24px, or >=18.66px at weight >=700)",
+    "  figma             what the source frame draws, and what it measures — the known-bad",
+    "                    value, which doubles as the mutation target when proving the entry",
+    "                    can fail.",
+    "  measured          the value recorded when the entry was written, with its method.",
+    "                    vp_compare re-measures and reports drift against it.",
+    "  category          source-defect (the Figma frame is wrong) |",
+    "                    semantic-divergence (our behaviour differs, so our visual must too)",
+    "  permanence        permanent | retires-on-source-fix   — plus `retire_when` in prose.",
+    "                    Without this someone will reasonably try to clear the whole list",
+    "                    after a Figma correction, including the entries that must survive it.",
+    "",
+    "Contrast is computed COMPOSITED — ink over every candidate backdrop (all gradient stops)",
+    "at the product of every ancestor's opacity. Token-pair maths alone certified the disabled",
+    "screens card as passing while a human saw 1.86:1, because the 0.5 lived on the card, not",
+    "the control."
+  ],
+  "version": 1,
+  "deviations": [
+    {
+      "id": "golive-primary-ink",
+      "capture": "console",
+      "regions": ["golive-button"],
+      "metric": "contrast",
+      "category": "source-defect",
+      "permanence": "permanent",
+      "retire_when": "Never. The shipped ink IS the audited AA value; a corrected Figma frame should adopt it rather than the reverse.",
+      "figma": {
+        "node": "312:124",
+        "draws": "white label on the broadcast-green gradient #3ed39a -> #28a579",
+        "measures": { "light_stop": 1.91, "dark_stop": 3.11 },
+        "verdict": "fails AA-normal (4.5) AND AA-large (3.0) at the light stop"
+      },
+      "implementation": {
+        "ships": "dark ink #06231a on the same green gradient",
+        "where": "dist/app.css `button.golive` + `button.golive .gl-label`"
+      },
+      "requires": {
+        "min": 4.5,
+        "threshold": "AA-normal",
+        "why": "the GO LIVE label renders at 14px weight 600 — below the 18.66px-bold large-text floor, so 3:1 does not apply"
+      },
+      "measured": { "value": 5.34, "method": "dom-composited worst gradient stop", "recorded_utc": "2026-08-23T19:00:00Z" },
+      "reason": "GO LIVE is the primary broadcast control; its label must be readable across the whole gradient, not only at the dark end."
+    },
+    {
+      "id": "blackout-red-fill",
+      "capture": "console",
+      "regions": ["blackout-button"],
+      "metric": "contrast",
+      "category": "source-defect",
+      "permanence": "permanent",
+      "retire_when": "Never. #a3283a is the canonical white-on-fill red; --sc-live is an INK token, correct for glyphs on dark, wrong as a fill under white text.",
+      "figma": {
+        "node": "312:124",
+        "draws": "white BLACKOUT label on --sc-live #ff4d4d",
+        "measures": { "fill": 3.27 },
+        "verdict": "fails AA-normal; clears AA-large, but this label is 14px/600, so AA-large does not apply"
+      },
+      "implementation": {
+        "ships": "white on the canonical white-on-fill red #a3283a -> #8f2030",
+        "where": "dist/app.css `#blackout`, `#blackout[aria-pressed=true]`, `.tb-blackout[aria-pressed=true]`"
+      },
+      "requires": {
+        "min": 4.5,
+        "threshold": "AA-normal",
+        "why": "14px weight 600 label; and BLACKOUT is safety-critical — it must stay readable in both idle and engaged states"
+      },
+      "measured": { "value": 7.19, "method": "dom-composited worst gradient stop", "recorded_utc": "2026-08-23T19:00:00Z" },
+      "reason": "Emergency control. A 3.27:1 label on the one button an operator reaches for under pressure is not an acceptable fidelity trade."
+    },
+    {
+      "id": "primary-gradient-darkened",
+      "capture": "console",
+      "regions": ["topbar-golive", "timer-start"],
+      "metric": "contrast",
+      "category": "source-defect",
+      "permanence": "permanent",
+      "retire_when": "Never, unless --sc-primary-hover itself is darkened in the source. The constraint is already pinned as AA-large in selahcue-present/tests/test_tokens.rs (`design2_palette_meets_wcag_aa`).",
+      "figma": {
+        "node": "312:124",
+        "draws": "white on the primary gradient topping out at --sc-primary-hover #7e6eff",
+        "measures": { "gradient_top": 3.78 },
+        "verdict": "AA-large only — legitimate for large type, NOT for these 13-14px labels"
+      },
+      "implementation": {
+        "ships": "gradient darkened to var(--sc-primary) #6e5cf0 -> #5a48d0",
+        "where": "dist/app.css `.tb-golive`, `.timer-start`"
+      },
+      "requires": {
+        "min": 4.5,
+        "threshold": "AA-normal",
+        "why": "topbar GO LIVE is 13px/600 and Start is 14px/700 — both below the 18.66px-bold large-text floor"
+      },
+      "measured": { "value": 4.72, "method": "dom-composited worst gradient stop", "recorded_utc": "2026-08-23T19:00:00Z" },
+      "reason": "The violet gradient is fine behind large type; these two buttons carry small labels, so the fill has to be the darker one."
+    },
+    {
+      "id": "closed-card-meta-ink",
+      "capture": "screens-closed",
+      "regions": ["closed-card-meta"],
+      "metric": "contrast",
+      "category": "semantic-divergence",
+      "permanence": "permanent",
+      "retire_when": "Never. This follows from OUR semantics, not from a Figma error: a closed card is the only route back to an open output window, so its meta line carries 'No output window' and must be readable. It stays stepped up even if the muted token is corrected.",
+      "figma": {
+        "node": "327:124",
+        "draws": "card meta line in --sc-text-muted #6b7383",
+        "measures": { "on_surface": 3.79, "on_base": 4.08 },
+        "verdict": "AA-large only — correct for supplementary micro-text, wrong for a line that now carries recovery-critical status"
+      },
+      "implementation": {
+        "ships": "--sc-text-secondary #a7aebe",
+        "where": "dist/app.css `.scr-card-meta`"
+      },
+      "requires": {
+        "min": 4.5,
+        "threshold": "AA-normal",
+        "why": "12px weight 500 status text, not a decorative caption"
+      },
+      "measured": { "value": 8.12, "method": "dom-composited over --sc-surface", "recorded_utc": "2026-08-23T19:00:00Z" },
+      "reason": "Window semantics made this line load-bearing: it reports whether an OS output window exists."
+    },
+    {
+      "id": "closed-card-dimming-scoped-to-thumbnail",
+      "capture": "screens-closed",
+      "regions": ["closed-card-meta", "closed-card-name", "closed-card-pill"],
+      "metric": "effective_opacity",
+      "category": "semantic-divergence",
+      "permanence": "permanent",
+      "retire_when": "Never. Dimming the whole card is what dropped these controls to 1.8-2.8:1; the narrowing to .scr-thumb is the fix.",
+      "figma": {
+        "node": "327:124",
+        "draws": "a disabled screen card dimmed as a whole",
+        "measures": { "meta_line_at_card_opacity_0_5": 1.86, "pill_at_card_opacity_0_5": 2.78 },
+        "verdict": "the composited result fails AA badly on precisely the controls needed to re-open the window"
+      },
+      "implementation": {
+        "ships": "opacity 0.5 scoped to `.scr-card.screen-disabled .scr-thumb` only; controls stay at 1.0",
+        "where": "dist/app.css `.scr-card.screen-disabled .scr-thumb`"
+      },
+      "requires": {
+        "equals": 1.0,
+        "tolerance": 0.001,
+        "threshold": "n/a (opacity, not contrast)",
+        "why": "the CONTROLS on a closed card must not be dimmed at all; the thumbnail carries the 'no picture' signal instead"
+      },
+      "measured": { "value": 1.0, "method": "product of every ancestor's computed opacity, element to root", "recorded_utc": "2026-08-23T19:00:00Z" },
+      "reason": "A closed card is the only route back to an open output window. Reading opacity on the control alone is a tautology here — the old rule put 0.5 on the CARD."
+    },
+    {
+      "id": "closed-card-thumbnail-is-dimmed",
+      "capture": "screens-closed",
+      "regions": ["closed-card-thumb"],
+      "metric": "effective_opacity",
+      "category": "semantic-divergence",
+      "permanence": "permanent",
+      "retire_when": "Never — this is the positive control for the entry above.",
+      "figma": {
+        "node": "327:124",
+        "draws": "whole-card dim",
+        "measures": {},
+        "verdict": "n/a"
+      },
+      "implementation": {
+        "ships": "the preview thumbnail — and only it — at opacity 0.5",
+        "where": "dist/app.css `.scr-card.screen-disabled .scr-thumb`"
+      },
+      "requires": {
+        "equals": 0.5,
+        "tolerance": 0.001,
+        "threshold": "n/a (opacity, not contrast)",
+        "why": "POSITIVE CONTROL. Without it, 'the controls are not dimmed' would also pass if the dimming mechanism were deleted entirely — a dead mechanism and a correctly-scoped one would be indistinguishable."
+      },
+      "measured": { "value": 0.5, "method": "product of every ancestor's computed opacity, element to root", "recorded_utc": "2026-08-23T19:00:00Z" },
+      "reason": "The thumbnail is the thing that would have shown a picture, so 'nothing is being output' belongs there."
+    },
+    {
+      "id": "closed-built-in-reads-CLOSED",
+      "capture": "screens-closed",
+      "regions": ["closed-card-pill"],
+      "metric": "text_matches",
+      "category": "semantic-divergence",
+      "permanence": "permanent",
+      "retire_when": "Never. Window language is correct for a built-in screen (its OS window really is closed) and must never leak onto a virtual feed, which has no window.",
+      "figma": {
+        "node": "327:124",
+        "draws": "a disabled screen pill reading MUTED",
+        "measures": {},
+        "verdict": "wrong for built-in main/stage screens under window semantics"
+      },
+      "implementation": {
+        "ships": "CLOSED on a disabled BUILT-IN screen; MUTED stays for virtual feeds",
+        "where": "dist/app.js screens renderer + dist/app.css `.scr-pill-closed`"
+      },
+      "requires": {
+        "pattern": "CLOSED",
+        "must_not_match": "MUTED|LIVE|CONNECTED",
+        "threshold": "n/a (rendered text)",
+        "why": "toggling a built-in screen off destroys its OS output window; calling that MUTED misdescribes what happened and what the toggle will do"
+      },
+      "measured": { "value": "CLOSED", "method": "rendered textContent of the pill in the captured state", "recorded_utc": "2026-08-23T19:00:00Z" },
+      "reason": "Behavioural divergence with a visual consequence; the behaviour itself is gated by scripts/operator_headless.py."
+    }
+  ]
+}
