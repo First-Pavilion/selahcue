@@ -12,7 +12,9 @@
 //! suffix on collision) — otherwise an upsert on a name owned by a *different* deck would clobber it.
 
 use selahcue_data::{deck_repo, Database};
-use selahcue_present::{render_authored_slide, DeckId, FrameBuffer, SlideDeck, SlideId, Theme};
+use selahcue_present::{
+    render_authored_slide, DeckId, DeckTrash, FrameBuffer, SlideDeck, SlideId, Theme,
+};
 
 /// Lightweight row for the Library list (`deck_list`) — never carries the slide bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +136,15 @@ pub struct DeckLibrary {
     decks: Vec<SlideDeck>,
     /// Monotonic library-level deck-id counter (never reused; self-heals past loaded ids).
     next_id: u64,
+    /// Recently deleted decks, retained so a delete can be undone with its REAL content.
+    ///
+    /// In-memory and bounded — this is an undo affordance for an accidental delete during a
+    /// service, not an archive, and it deliberately does not survive a restart: retaining
+    /// deleted decks on disk would quietly resurrect data an operator believed they had
+    /// removed. The bounded container itself lives in `selahcue-present`
+    /// ([`DeckTrash`]) because this crate is excluded from the workspace and nothing here
+    /// gets real tests.
+    trash: DeckTrash,
 }
 
 impl DeckLibrary {
@@ -156,6 +167,7 @@ impl DeckLibrary {
             db,
             decks,
             next_id: 1,
+            trash: DeckTrash::new(),
         };
         lib.heal();
         lib
@@ -456,14 +468,52 @@ impl DeckLibrary {
     }
 
     /// Delete the deck with `id`; persist. Returns `true` if a deck was removed.
+    ///
+    /// The deck is retained in a bounded in-memory trash first, so [`restore`](Self::restore)
+    /// can put back its real slides, elements, theme and notes. Before this existed the deck was
+    /// dropped and its row deleted in the same step, so the only undo a client could offer was
+    /// recreating an EMPTY deck of the same name — a lie about what had been restored.
+    ///
+    /// Use [`can_restore`](Self::can_restore) to decide whether to offer an undo at all: an
+    /// unusually large deck may be refused by the bounded trash, and offering an undo that
+    /// cannot work would be its own fabrication.
     pub fn delete(&mut self, id: DeckId) -> bool {
         let Some(i) = self.index_of(id) else {
             return false;
         };
-        let name = self.decks[i].name.clone();
-        self.decks.remove(i);
-        self.delete_persisted(&name);
+        let deck = self.decks.remove(i);
+        self.delete_persisted(&deck.name);
+        self.trash.push(deck);
         true
+    }
+
+    /// Whether [`restore`](Self::restore) could actually put this deck back.
+    pub fn can_restore(&self, id: DeckId) -> bool {
+        self.trash.peek(id).is_some()
+    }
+
+    /// The deck ids an undo could restore, oldest first.
+    pub fn restorable(&self) -> Vec<DeckId> {
+        self.trash.ids()
+    }
+
+    /// Undo a delete: put the retained deck back into the library and re-persist it.
+    ///
+    /// Returns the restored deck's name, which may differ from the original: if the name was
+    /// taken while the deck sat in the trash, it is uniquified exactly as [`create`](Self::create)
+    /// does. Restoring under a duplicate name would either collide with the live deck or
+    /// silently overwrite its persisted row, so the rename is reported rather than hidden — the
+    /// caller should tell the operator what the deck is now called.
+    ///
+    /// The deck keeps its original id: `next_id` is monotonic and never reused, so the id cannot
+    /// have been handed to anything else in the meantime.
+    pub fn restore(&mut self, id: DeckId) -> Option<String> {
+        let mut deck = self.trash.take(id)?;
+        deck.name = uniquify(&deck.name, &self.name_set());
+        self.persist_one(&deck);
+        let name = deck.name.clone();
+        self.decks.push(deck);
+        Some(name)
     }
 
     // --- Live Console slide picker: read-only bridge (LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec §6) --
@@ -910,6 +960,115 @@ mod tests {
             lib.rename(a.id(), "Grace").unwrap(),
             "Grace",
             "self-rename no-op"
+        );
+    }
+
+    /// Undo must restore the deck's REAL content. This is the whole reason the seam exists:
+    /// a client-side undo could only recreate an empty deck of the same name.
+    #[test]
+    fn restore_puts_back_the_real_slides_not_an_empty_deck() {
+        let mut lib = DeckLibrary::load(None);
+        let deck = lib.create("Sermon");
+        let id = deck.id();
+        // `create` gives one slide; add more so "restored the content" is falsifiable.
+        let mut edited = lib.get(id).unwrap();
+        for _ in 0..4 {
+            edited.add_slide();
+        }
+        lib.replace_deck(id, edited, None).unwrap();
+        let slides_before = lib.get(id).unwrap().len();
+        assert!(slides_before >= 5, "premise: the deck has real content");
+
+        assert!(lib.delete(id));
+        assert!(lib.get(id).is_none(), "premise: it was deleted");
+        assert!(
+            lib.can_restore(id),
+            "a just-deleted deck must be restorable"
+        );
+
+        assert_eq!(lib.restore(id).as_deref(), Some("Sermon"));
+        let back = lib.get(id).expect("the deck must be back in the library");
+        assert_eq!(
+            back.len(),
+            slides_before,
+            "undo must restore the SLIDES — an empty deck of the same name is a lie about \
+             what was restored"
+        );
+        assert_eq!(
+            back.id(),
+            id,
+            "the id must survive, since it is never reused"
+        );
+    }
+
+    /// If the name was taken while the deck sat in the trash, restoring must uniquify rather
+    /// than collide with the live deck or overwrite its persisted row — and must REPORT the new
+    /// name, because the operator's presentation is now called something else.
+    #[test]
+    fn restoring_into_a_taken_name_uniquifies_and_reports_it() {
+        let mut lib = DeckLibrary::load(None);
+        let id = lib.create("Sermon").id();
+        assert!(lib.delete(id));
+        // Something else claims the name while the original is in the trash.
+        lib.create("Sermon");
+
+        let restored = lib.restore(id).expect("still restorable");
+        assert_ne!(
+            restored, "Sermon",
+            "restoring must not collide with the deck that took the name"
+        );
+        assert!(restored.starts_with("Sermon"), "got {restored}");
+        assert_eq!(lib.get(id).unwrap().name, restored);
+        // Both decks coexist, each with its own id.
+        assert_eq!(lib.list().len(), 2);
+    }
+
+    #[test]
+    fn a_deck_that_was_never_deleted_is_not_restorable() {
+        let mut lib = DeckLibrary::load(None);
+        let id = lib.create("Sermon").id();
+        assert!(!lib.can_restore(id));
+        assert_eq!(lib.restore(id), None, "there is nothing to put back");
+        assert!(lib.get(id).is_some(), "and the live deck is untouched");
+    }
+
+    #[test]
+    fn restoring_twice_does_not_duplicate_the_deck() {
+        let mut lib = DeckLibrary::load(None);
+        let id = lib.create("Sermon").id();
+        lib.delete(id);
+        assert!(lib.restore(id).is_some());
+        assert_eq!(
+            lib.restore(id),
+            None,
+            "a restored deck has left the trash; a second undo must not clone it"
+        );
+        assert_eq!(lib.list().len(), 1);
+    }
+
+    /// The trash is bounded, so an old delete becomes unrestorable. `can_restore` must track
+    /// that, or the UI offers an undo that fails.
+    #[test]
+    fn an_evicted_delete_is_honestly_reported_as_unrestorable() {
+        let mut lib = DeckLibrary::load(None);
+        let first = lib.create("First").id();
+        lib.delete(first);
+        assert!(lib.can_restore(first), "premise: retained at first");
+
+        for i in 0..selahcue_present::MAX_TRASH_ENTRIES {
+            let id = lib.create(&format!("Filler {i}")).id();
+            lib.delete(id);
+        }
+
+        assert!(
+            !lib.can_restore(first),
+            "the oldest delete must age out of a bounded trash"
+        );
+        assert_eq!(lib.restore(first), None);
+        assert!(
+            !lib.restorable().contains(&first),
+            "and it must not be listed as restorable — an affordance built on this list would \
+             otherwise offer an undo that cannot work"
         );
     }
 

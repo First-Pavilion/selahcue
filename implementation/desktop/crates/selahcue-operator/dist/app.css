@@ -837,19 +837,23 @@
         width: 100%;
       }
 
-      .seg {
+      /* Theme Designer option segments (align / valign / bg-type / fit). Was `.seg` — one of
+         THREE unrelated `.seg` declarations that silently overwrote each other (CON-142). Note
+         `.td-seg button` is (0,0,1,1) and so still outranks any single-class button rule inside
+         it — that is why this family must not share a class with the sub-tab control below. */
+      .td-seg {
         display: flex;
         gap: 4px;
         flex-wrap: wrap;
       }
 
-      .seg button {
+      .td-seg button {
         flex: 1;
         font-size: 12px;
         padding: 6px 8px;
       }
 
-      .seg button.on {
+      .td-seg button.on {
         background: var(--accent);
         border-color: var(--accent);
         color: #fff;
@@ -964,11 +968,11 @@
         gap: 8px;
       }
 
-      .td-align-grid .seg {
+      .td-align-grid .td-seg {
         flex: 1;
       }
 
-      .seg.td-icons button {
+      .td-seg.td-icons button {
         font-size: 15px;
         line-height: 1;
         padding: 5px 0;
@@ -1917,7 +1921,7 @@
       .td-bg-choose:hover { filter: brightness(1.08); border: none; }
 
       /* D2 segmented controls inside the inspector (bg type, region, align, fit, arrange). */
-      .td-inspector .seg {
+      .td-inspector .td-seg {
         background: var(--sc-inset);
         border: 1px solid var(--sc-border);
         border-radius: 9px;
@@ -1926,7 +1930,7 @@
         flex-wrap: nowrap;
       }
 
-      .td-inspector .seg button {
+      .td-inspector .td-seg button {
         flex: 1 1 0;
         min-width: 0;
         border: none;
@@ -1938,13 +1942,13 @@
         font-weight: 600;
       }
 
-      .td-inspector .seg button.on {
+      .td-inspector .td-seg button.on {
         background: var(--sc-primary);
         border: none;
         color: #fff;
       }
 
-      .td-inspector .seg.td-icons button {
+      .td-inspector .td-seg.td-icons button {
         font-size: 15px;
         padding: 6px 0;
       }
@@ -2620,12 +2624,18 @@
         border-bottom: 1px solid var(--sc-border);
       }
       /* --- Timer | Stage sub-tabs (segmented) + the stage theme/message controls --- */
-      .seg { display: flex; gap: 3px; padding: 3px; margin-bottom: 12px;
+      /* CON-142: this control was `.seg`, a class ALSO declared for the Theme Designer option
+         group (gap 4, flex-wrap) and for a transcript line (gap 8, align-items baseline,
+         font-size 12). Equal specificity, so the last declaration in the file won per property:
+         the control rendered with gap 8px + align-items baseline, and `.seg button` from the
+         Theme Designer family (0,0,1,1) outranked `.seg-btn` (0,0,1,0) and overrode its padding
+         and font-size too. Distinct names per family; none of the three shares a token. */
+      .subtab-seg { display: flex; gap: 3px; padding: 3px; margin-bottom: 12px;
         background: var(--sc-inset); border: 1px solid var(--line); border-radius: 9px; }
-      .seg-btn { flex: 1; padding: 6px 0; border: 0; border-radius: 7px; background: transparent;
+      .subtab-seg-btn { flex: 1; padding: 6px 0; border: 0; border-radius: 7px; background: transparent;
         color: var(--muted); font: inherit; font-weight: 600; font-size: 13px; cursor: pointer; }
-      .seg-btn.active { background: var(--accent); color: #fff; }
-      .seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .subtab-seg-btn.active { background: var(--accent); color: #fff; }
+      .subtab-seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       /* Each sub-tab lays its rows out as a flex column so they get even vertical rhythm
          (the timer content had no gap mechanism and rendered cramped). The Timer panel uses a
          uniform gap; the Stage panel carries its own section spacing. `[hidden]` still wins
@@ -2828,7 +2838,11 @@
         display: none;
       }
 
-      .seg {
+      /* One finalised transcript line. Was `.seg` (CON-142) — being last in the file, this
+         declaration was the one leaking `gap: 8px` / `align-items: baseline` / `font-size: 12px`
+         onto the Timer|Stage control, while itself inheriting that control's inset background,
+         border, 9px radius and 12px bottom margin. Renamed so neither can reach the other. */
+      .tr-seg {
         display: flex;
         gap: 8px;
         align-items: baseline;
@@ -2836,32 +2850,32 @@
         line-height: 1.35;
       }
 
-      .seg-time {
+      .tr-seg-time {
         flex: none;
         color: var(--muted);
         font-variant-numeric: tabular-nums;
         font-size: 10px;
       }
 
-      .seg-text {
+      .tr-seg-text {
         color: var(--text);
         word-break: break-word;
       }
 
       /* The streaming interim (in-progress) line: dimmed + italic to read as not-yet-final,
          with a soft pulse. Sits directly under the finalised lines. */
-      .seg-partial {
+      .tr-seg-partial {
         color: var(--sc-text-secondary);
         font-style: italic;
         opacity: 0.75;
         word-break: break-word;
         margin-top: 2px;
       }
-      .seg-partial[hidden] {
+      .tr-seg-partial[hidden] {
         display: none;
       }
       @media (prefers-reduced-motion: no-preference) {
-        .seg-partial {
+        .tr-seg-partial {
           animation: partial-pulse 1.6s ease-in-out infinite;
         }
         @keyframes partial-pulse {
@@ -2873,6 +2887,78 @@
             opacity: 0.9;
           }
         }
+      }
+
+      /* CON-139 — the detector-health card. Every pairing measured on the real ground:
+         heading --sc-text 14.26:1, body --sc-text-secondary 6.93:1, glyph --sc-warn 7.56:1.
+         The RETRY button departs from frame 335:219 deliberately. The frame draws it
+         `bg #1c1f28` / `border #262a34` on this `#2a2415` card, which measures 1.07:1 for BOTH
+         the fill and the border — i.e. the one actionable control in a fault state is invisible
+         as a component (WCAG 1.4.11 wants 3:1 to identify a control). The neutral fill and label
+         are kept; only the border steps up to --sc-warn, which is 7.56:1 against the card. */
+      .det-health {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 4px 10px;
+        align-items: start;
+        margin-bottom: 10px;
+        padding: 12px 13px;
+        border-radius: 12px;
+        background: var(--sc-warn-soft);
+        border: 1px solid var(--sc-warn-border);
+      }
+
+      .det-health[hidden] {
+        display: none;
+      }
+
+      .det-health-ico {
+        grid-row: span 2;
+        font-size: 18px;
+        font-weight: 700;
+        line-height: 1.1;
+        color: var(--sc-warn);
+      }
+
+      .det-health-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--sc-text);
+      }
+
+      .det-health-body {
+        font-size: 12px;
+        line-height: 1.4;
+        color: var(--sc-text-secondary);
+      }
+
+      .det-health-retry {
+        grid-column: 2;
+        margin-top: 8px;
+        justify-self: start;
+        padding: 8px 12px;
+        border-radius: 9px;
+        background: var(--sc-elevated);
+        border: 1px solid var(--sc-warn);
+        color: var(--sc-text);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .det-health-retry[hidden] {
+        display: none;
+      }
+
+      /* The quiet variant: "unsupported" is a build-configuration fact and "unknown" is the
+         absence of telemetry. Neither is a fault, so neither wears the amber fault card. */
+      .det-health.det-health-quiet {
+        background: var(--sc-inset);
+        border-color: var(--sc-border);
+      }
+
+      .det-health.det-health-quiet .det-health-ico,
+      .det-health.det-health-quiet .det-health-title {
+        color: var(--sc-text-secondary);
       }
 
       /* Live-transcript header row: title + the REC recording indicator. */
@@ -3897,12 +3983,54 @@
         color: #06231a;
       }
 
-      /* Key hints on token-filled buttons: white for AA on the fill. */
-      button.golive .key,
-      #blackout.on .key,
-      #clear-all.armed .key {
+      /* Key hints on token-filled buttons (CON-046). Measured COMPOSITED — the translucent
+         chip is a real layer between the ink and the fill, so a token-on-token check reports
+         "white on green" and misses the chip entirely — and at BOTH stops of every gradient.
+         The three fills are different colours, so they do NOT share one treatment; the old
+         single rule (white on rgba(255,255,255,.18)) was measured on each:
+           button.golive      1.72:1 on #3ed39a / 2.51:1 on #28a579  → failed AA-normal AND AA-large
+           #blackout.on       5.80:1 on #8f2030                      → already AA-normal
+           #clear-all.armed   2.74:1 on #ff4d4d                      → failed AA-normal AND AA-large
+         Each rule below carries its own measured ratio. Re-measure both stops before editing. */
+
+      /* GO LIVE (#3ed39a → #28a579) carries dark ink on its label (.gl-label, 8.70:1 / 5.34:1),
+         and the chip must match it. A DARK-tinted chip cannot get there: it pulls the chip
+         toward the ink, so #06231a on rgba(6,35,26,.14) measures 6.78:1 on the light stop but
+         only 4.31:1 on the dark one — still under AA-normal where the button is darkest.
+         Tint the chip LIGHT instead: #06231a on rgba(255,255,255,.30) = 10.43:1 / 7.64:1. */
+      button.golive .key {
+        color: #06231a;
+        background: rgba(255, 255, 255, 0.3);
+      }
+
+      /* BLACKOUT — ALL states, not just `.on`. The engaged rule used to be the only one here,
+         which left the RESTING button falling through to the generic `button .key` (muted
+         #a7aebe ink) onto the resting #a3283a → #8f2030 gradient: 3.20:1 / 3.75:1, failing
+         AA-normal at 11px on a safety-critical control in the state an operator sees most.
+         The engaged state is the same button, so it gets the same answer: keep the generic
+         neutral chip and take the button's own white ink, which measures
+           resting  7.11:1 (#a3283a) / 8.35:1 (#8f2030)   — hover 6.54 / 7.74
+           engaged  8.35:1 (#8f2030)                       — hover 7.74
+         That is better than the 5.80:1 the engaged-only rule bought, and it removes the chip
+         "jump" the two different backgrounds used to produce on engage.
+         (`:hover` adds filter: brightness(1.06); the hover figures above include it.) */
+      #blackout .key {
         color: #fff;
-        background: rgba(255, 255, 255, 0.18);
+      }
+
+      /* Clear Output ARMED is solid --sc-live #ff4d4d. White ink measured only 2.74:1 through
+         the light chip, and the button's own LABEL was white on the same fill at 3.27:1.
+         The review block's #blackout answer — swap the fill to canonical #a3283a — does NOT
+         transfer here, and measuring says so: the armed state is a one-second transient whose
+         only signal is the colour flip, and #a3283a would drop it from 5.31:1 to 2.41:1 against
+         the resting #2a1416 fill and from 5.52:1 to 2.51:1 against the page, i.e. under the 3:1
+         non-text bar (WCAG 1.4.11 covers component STATES). Darken the ink instead — the
+         resolution the mobile app already ships for armed-danger controls
+         (MOBILE-2.0-SPEC.md:245): --sc-live-soft on --sc-live is 5.31:1 for the label, and
+         #2a1416 on a light chip is 7.26:1 for the key hint, with the state contrast intact. */
+      #clear-all.armed .key {
+        color: var(--sc-live-soft);
+        background: rgba(255, 255, 255, 0.3);
       }
 
       /* --- Right: SERVICE TIMER panel (Figma 323/365) --- */
@@ -4162,6 +4290,8 @@
         font-size: 12px;
       }
 
+      /* Canonical frame 312:151 (§10 case 5) draws this as a PILL. The only drift the owner's
+         frame decision left in the emergency footer; everything else in that row already matches. */
       .emergency-ready {
         flex: none;
         display: inline-flex;
@@ -4170,7 +4300,7 @@
         background: var(--sc-elevated);
         border: 1px solid var(--sc-border);
         color: var(--sc-text-secondary);
-        border-radius: 10px;
+        border-radius: 999px;
         padding: 9px 14px;
         font-size: 13px;
       }
@@ -4201,10 +4331,51 @@
         background: var(--sc-live);
       }
 
-      #blackout-state {
-        margin-left: 6px;
-        font-size: 10px;
-        font-weight: 800;
+      /* CON-101 — the blackout explanation. The ink is the canonical frame's #e8b4b4 (337:209),
+         kept as a DOCUMENTED LOCAL CONSTANT rather than a new token (Q6 resolved this way): the
+         emergency footer already carries two local constants, the #12090b ground and the #3a1a1d
+         border, so this adds no new KIND of thing. Measured 10.86:1 on that ground at 12px — the
+         --sc-text-secondary alternative is 8.83:1, so matching the frame costs nothing here.
+         The frame ALSO re-tints the whole footer to #1a0c0c (CON-098, filed as a blocker). That was
+         measured at 1.03:1 against the shipped #12090b — an invisible change — so the ground is
+         deliberately left alone and CON-098 is closed as a non-issue, not built. */
+      .blackout-explain {
+        flex: 1 1 auto;
+        min-width: 0;
+        color: #e8b4b4;
+        font-size: 12px;
+        font-weight: 500;
+      }
+
+      .blackout-explain[hidden],
+      #emergency .note[hidden] {
+        display: none;
+      }
+
+      /* CON-102 — "Restore output". Deliberately NOT red: this is the way back, not a third
+         destructive control, so it takes the preview green with the same dark ink GO LIVE carries.
+         #06231a on --sc-preview = 7.17:1. Non-text: the fill is 8.47:1 against the footer ground
+         and 3.75:1 against the BLACKOUT button beside it, so it reads as its own control.
+         Hover DARKENS (#2aa877, 5.52:1) — filter: brightness() would LIGHTEN it, which is the
+         PME-005 defect. The inherited focus ring is fine: outline-offset puts it on the footer
+         ground, where --sc-primary measures 4.16:1 (2.03:1 against the fill is not where it sits). */
+      .restore-output {
+        border: none;
+        border-radius: 10px;
+        padding: 11px 15px;
+        background: var(--sc-preview);
+        color: #06231a;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .restore-output:hover {
+        background: #2aa877;
+        border: none;
+      }
+
+      .restore-output[hidden] {
+        display: none;
       }
 
       #clear-all {
@@ -4215,10 +4386,13 @@
         border-radius: 10px;
       }
 
+      /* Armed (double-Escape). The label was white on --sc-live = 3.27:1; the ink darkens to
+         --sc-live-soft (5.31:1) rather than the fill changing, so the armed↔resting colour
+         flip keeps its 5.31:1 non-text contrast — see the #clear-all.armed .key note above. */
       #clear-all.armed {
         background: var(--sc-live);
         border-color: var(--sc-live);
-        color: #fff;
+        color: var(--sc-live-soft);
       }
 
       /* --- Command palette (⌘K) + Shortcuts modal (app menu → Shortcuts) --- */
@@ -4599,7 +4773,12 @@
         font-weight: 600;
         cursor: pointer;
       }
-      .pm-btn-primary:hover { background: var(--sc-primary-hover); border-color: var(--sc-primary-hover); }
+      /* PME-005: hovering must not LIGHTEN a white-labelled fill. --sc-primary-hover
+         (#7e6eff) puts the white 14px/600 label at 3.78:1, under AA-normal, while the rest
+         state (--sc-primary #6e5cf0) is 4.72:1 — so hover was the only failing state. Darken
+         instead, exactly as the review block already does for .tb-golive / .timer-start
+         (#5a48d0, white = 6.42:1). Hover is a real UI state; WCAG applies to it. */
+      .pm-btn-primary:hover { background: #5a48d0; border-color: #5a48d0; }
       /* An honest "later" affordance: visible but inert. */
       .pm-later { opacity: 0.5; cursor: not-allowed; }
       .pm-later:hover { background: transparent; }
@@ -4661,13 +4840,19 @@
       .pm-slide-card .l0 { font-size: 12px; font-weight: 600; margin-bottom: 3px; }
       .pm-slide-card .ln { font-size: 11px; color: var(--sc-text-secondary); line-height: 1.35; }
       .pm-slide-kind { font-size: 10px; color: var(--sc-text-secondary); }
-      /* A non-colour LIVE badge on the presented slide (not colour-only state). */
+      /* A non-colour LIVE badge on the presented slide (not colour-only state).
+         PME-001: white on --sc-live (#ff4d4d) was 3.27:1 at 9px/700 — 9px bold is not large
+         text, so the 4.5:1 bar applies and an accessibility affordance was failing
+         accessibility. --sc-live is an INK (glyphs on dark surfaces), not a fill; the
+         canonical white-text red fill is --live (#a3283a), which is exactly the resolution
+         the review block already applied to #blackout. White on --live = 7.19:1.
+         The card keeps its 3px --sc-live left rule (a non-text graphic, 3:1 bar). */
       .pm-slide-live-badge {
         display: inline-block;
         margin-top: 4px;
         padding: 0 6px;
         border-radius: 4px;
-        background: var(--sc-live);
+        background: var(--live);
         color: #fff;
         font-size: 9px;
         font-weight: 700;

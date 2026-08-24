@@ -310,7 +310,20 @@
           el.dataset.on = view.blackout ? "1" : "0";
           el.setAttribute("aria-pressed", view.blackout ? "true" : "false");
         });
-        document.getElementById("blackout-state").textContent = view.blackout ? "ON" : "";
+        // CON-099/101/102 — the engaged blackout state, in words. The label states WHAT the state
+        // is, the explanation states what the AUDIENCE sees and how to get back, and Restore is a
+        // dedicated recovery control. The fill deliberately stays the canonical #8f2030 and does
+        // NOT follow the frame's #ff4d4d, on which the 13px white label measures 3.27:1.
+        const bLabel = document.getElementById("blackout-label");
+        if (bLabel) bLabel.textContent = view.blackout ? "BLACKED OUT" : "BLACKOUT";
+        const bExplain = document.getElementById("blackout-explain");
+        const bRestore = document.getElementById("restore-output");
+        const bNote = document.querySelector("#emergency .note");
+        if (bExplain) bExplain.hidden = !view.blackout;
+        if (bRestore) bRestore.hidden = !view.blackout;
+        // The explanation takes the note's slot: two competing sentences in one 56px bar reads as
+        // neither. The note is general guidance; during a blackout the specific state wins.
+        if (bNote) bNote.hidden = !!view.blackout;
         document.getElementById("live-panel").classList.toggle("blackout", view.blackout);
 
         // Draw the TRUE composited Preview/Live output (86ajtwq28) — a debounced, read-only
@@ -3199,6 +3212,18 @@
       document.getElementById("golive").onclick = goLive;
       document.getElementById("blackout").onclick = toggleBlackout;
       document.getElementById("clear-all").onclick = clearAll;
+      // CON-102 — Restore explicitly turns blackout OFF (never a toggle: this button only ever
+      // means "bring the audience back", so double-activation cannot re-black the output).
+      // The button disappears with the state it undoes, so focus is returned to #blackout
+      // deliberately rather than being dropped on <body> (WCAG 2.4.3).
+      const restoreBtn = document.getElementById("restore-output");
+      if (restoreBtn) {
+        restoreBtn.onclick = () => {
+          act(() => invoke("blackout", { on: false }));
+          const bo = document.getElementById("blackout");
+          if (bo) bo.focus();
+        };
+      }
       // Global topbar transport (always reachable, on every surface) — the same actions
       // as the console/footer controls, wired to the same handlers.
       const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
@@ -4051,13 +4076,13 @@
         for (const s of segs) {
           if (present.has(String(s.id))) continue;
           const row = document.createElement("div");
-          row.className = "seg";
+          row.className = "tr-seg";
           row.dataset.segId = String(s.id);
           const t = document.createElement("span");
-          t.className = "seg-time";
+          t.className = "tr-seg-time";
           t.textContent = fmtClock(Math.floor((s.start_ms || 0) / 1000));
           const txt = document.createElement("span");
-          txt.className = "seg-text";
+          txt.className = "tr-seg-text";
           txt.textContent = s.text; // untrusted → textContent, never innerHTML
           row.appendChild(t);
           row.appendChild(txt);
@@ -4368,6 +4393,10 @@
             sttState = "error";
           }
           apply();
+          // Re-read detector liveness immediately rather than waiting up to a second for the
+          // poll: toggling listening is exactly when the detections panel's state changes, and
+          // "Listening — no scriptures yet" arriving a beat late reads as "detection is off".
+          if (typeof readDetectionHealth === "function") readDetectionHealth();
         });
         apply();
       })();
@@ -5357,7 +5386,135 @@
         } catch (e) {
           setConn(false);
         }
+        readDetectionHealth();
       }, 1000);
+      readDetectionHealth();
+
+      // ===================================================================================
+      // Detector liveness (CON-128 / CON-139) — docs/delivery/HOST-SIGNAL-WEBVIEW-CONTRACT.md
+      //
+      // The owner's acceptance bar for this whole batch: "a dead scripture detector and a silent
+      // room must not render identically". Only `state` answers that. SILENCE IS EVIDENCE OF
+      // NEITHER, so nothing below infers detector health from the absence of transcript text —
+      // inferring it that way is exactly what made the two indistinguishable.
+      //
+      // Tri-state, and the third case is the one that gets fixed wrong: a host that does not
+      // report health at all is UNKNOWN, never a fault and never "healthy". Both wrong readings
+      // collapse three states into two.
+      // ===================================================================================
+      let detHealth = null;       // the last successfully-read reply
+      let detHealthKnown = false; // false = the host has not told us; NOT "it is fine"
+      // The host's refusal of the operator's LAST retry attempt. Held separately because the 1 Hz
+      // poll re-renders this card every second: writing the refusal straight into the DOM would
+      // erase it before it could be read. Cleared as soon as the detector actually recovers.
+      let detRetryError = null;
+      async function readDetectionHealth() {
+        try {
+          const h = await invoke("detection_health");
+          // Guard the shape rather than trusting it: a reply without a state string is not a
+          // healthy detector, it is an unreadable one.
+          detHealth = h && typeof h.state === "string" ? h : null;
+          detHealthKnown = !!detHealth;
+        } catch (e) {
+          // An older host has no such command. That is unknown, not broken.
+          detHealth = null;
+          detHealthKnown = false;
+        }
+        renderDetectionHealth();
+      }
+      function renderDetectionHealth() {
+        const box = document.getElementById("det-health");
+        if (!box) return;
+        const ico = document.getElementById("det-health-ico");
+        const title = document.getElementById("det-health-title");
+        const body = document.getElementById("det-health-body");
+        const retry = document.getElementById("det-health-retry");
+        const emptyMsg = document.getElementById("det-empty-msg");
+        const emptySub = document.getElementById("det-empty-sub");
+        const st = detHealthKnown && detHealth ? detHealth.state : null; // null = unknown
+        // A recovered detector clears a stale refusal — the message described a world that no
+        // longer exists (contract: do not show a stale fault after recovery).
+        if (st === "listening" || st === "idle") detRetryError = null;
+        box.className = "det-health";
+        if (st === "unavailable") {
+          box.hidden = false;
+          ico.textContent = "⚠";
+          title.textContent = "Detection unavailable";
+          // The host's OWN retained failure. Only fall back to generic copy when it gave none —
+          // never overwrite a specific reason with a reassuring one.
+          // Precedence: what the operator just tried and was refused, then the host's retained
+          // failure, and only then generic copy. Never overwrite a specific reason with a
+          // reassuring one.
+          body.textContent =
+            detRetryError ||
+            (detHealth.error
+              ? String(detHealth.error)
+              : "The on-device detector isn’t responding. Slides, search and staging are unaffected — you can still find and stage scriptures manually.");
+          // Offer retry ONLY where it can work. In "unsupported" the host cannot even construct
+          // the permission token, so a button there would be one that cannot possibly fire.
+          retry.hidden = !detHealth.can_retry;
+        } else if (st === "unsupported") {
+          box.hidden = false;
+          box.className = "det-health det-health-quiet";
+          ico.textContent = "○";
+          title.textContent = "Detection not built in";
+          body.textContent = "This build has no on-device speech-to-text. Scripture search and staging work normally.";
+          retry.hidden = true;
+        } else if (st === null) {
+          box.hidden = false;
+          box.className = "det-health det-health-quiet";
+          ico.textContent = "—";
+          title.textContent = "Detector status unknown";
+          body.textContent = "This host doesn’t report detector health. Detections still appear here if it finds any.";
+          retry.hidden = true;
+        } else {
+          box.hidden = true;
+          retry.hidden = true;
+        }
+        // The empty state must say WHICH kind of nothing this is. "Listening, nothing yet" and
+        // "not listening" used to render as the same sentence, which is the bar this misses.
+        if (emptyMsg && emptySub) {
+          if (st === "listening") {
+            emptyMsg.textContent = "Listening — no scriptures detected yet.";
+            emptySub.textContent =
+              "Detections appear the moment a reference or quote is recognised" +
+              (detHealth.provider ? " (" + detHealth.provider + ")" : "") +
+              ". Nothing stages or goes live on its own — it stays operator-confirmed (FR-115).";
+          } else if (st === "idle") {
+            emptyMsg.textContent = "Detection is not running.";
+            emptySub.textContent =
+              "Press Start listening to capture the sermon audio; spoken scriptures then surface here to stage in one tap.";
+          } else {
+            emptyMsg.textContent = "No scriptures detected yet.";
+            emptySub.textContent =
+              "Scriptures spoken aloud surface here to stage in one tap. Automatic detection (R4) never stages or goes live on its own — it stays operator-confirmed (FR-115).";
+          }
+        }
+      }
+      // The same kind of cross-module hook the transcript and right-tab counters already use
+      // (window.__sttNoteTranscript, window.__rightTabsOnDetections): lets anything that changes
+      // detector state ask this panel to re-read it now instead of waiting for the next poll.
+      window.__detHealthRefresh = readDetectionHealth;
+      (function wireDetectionRetry() {
+        const b = document.getElementById("det-health-retry");
+        if (!b) return;
+        b.onclick = async () => {
+          b.disabled = true;
+          try {
+            const h = await invoke("retry_detection");
+            detHealth = h && typeof h.state === "string" ? h : null;
+            detHealthKnown = !!detHealth;
+            detRetryError = null; // the attempt was accepted; any earlier refusal is history
+          } catch (e) {
+            // The host refuses with its own operator-facing reason. Stored, not written straight
+            // to the DOM, so the next poll's re-render cannot erase it a second later.
+            detRetryError = String(e && e.message ? e.message : e);
+          } finally {
+            b.disabled = false;
+            renderDetectionHealth();
+          }
+        };
+      })();
 
       // =====================================================================================
       // Presentation & Media (Design 2.0, Figma node 329:124) — the authored slide editor +
@@ -5427,6 +5584,15 @@
         if (!banner || !msg) return;
         banner.hidden = false;
         msg.textContent = "Couldn't " + (opName || "complete that action") + " — please retry.";
+      }
+      // Show the host's OWN refusal text. pmShowError composes a generic "Couldn't X — please
+      // retry", which is wrong for a refusal that is final and has a specific reason.
+      function pmShowErrorRaw(message) {
+        const banner = pmEl("pm-error");
+        const msg = pmEl("pm-error-msg");
+        if (!banner || !msg) return;
+        banner.hidden = false;
+        msg.textContent = message || "That didn’t work.";
       }
       function pmClearError() {
         const banner = pmEl("pm-error");
@@ -6666,6 +6832,11 @@
       }
 
       let pmLibDecks = [], pmLibOpenId = null, pmLibPersistent = true, pmLibQuery = "", pmLibSort = "name", pmLibMenuCleanup = null;
+      // Deck ids the host says an undo could ACTUALLY put back. The trash is bounded (8 entries /
+      // 1.5MB), so this shrinks as deletes age out and a very large deck may never enter it at all.
+      // Undo is offered from THIS list — never from "the last delete", which is how you ship an
+      // Undo button that fails.
+      let pmLibRestorable = [];
       const pmLibBody = () => document.querySelector("#surface-presentation .pm-body");
       // Presentation surface has three modes (Design 2.0 browse/present/edit): the Library list, the
       // slide GRID, and the authoring EDITOR (.pm-body). pmSetMode toggles which one is visible.
@@ -6675,6 +6846,12 @@
         const lib = pmEl("pm-library"); if (lib) lib.hidden = mode !== "library";
         const grid = pmEl("pm-grid"); if (grid) grid.hidden = mode !== "grid";
         const b = pmLibBody(); if (b) b.style.display = mode === "editor" ? "" : "none";
+        // Both topbar actions act on the OPEN deck, so neither means anything while the operator is
+        // browsing the library: nothing is staged to present, and per-card actions belong to the ⋯
+        // menu there. HIDDEN rather than disabled, so they leave the tab order too (WCAG 2.4.3) —
+        // a disabled control still reads as "this should work" to a keyboard operator.
+        const pres = pmEl("pm-present"); if (pres) pres.hidden = mode === "library";
+        const atp = pmEl("pm-addtoplan"); if (atp) atp.hidden = mode === "library";
       }
       function pmShowLibrary() {
         pmSetMode("library");
@@ -6706,6 +6883,7 @@
         pmLibDecks = (view && view.decks) || [];
         pmLibOpenId = view ? view.open : null;
         pmLibPersistent = view ? view.persistent : true;
+        pmLibRestorable = (view && view.restorable) || [];
         pmEl("pm-lib-nopersist").hidden = pmLibPersistent !== false;
         pmRenderLibGrid();
       }
@@ -6976,22 +7154,67 @@
           },
         });
       }
+      // Undo a delete. The host returns the name the deck came back UNDER, which can differ from
+      // the one that was deleted (a name taken while it sat in the trash is uniquified) — so the
+      // confirmation quotes the RESTORED name, never the remembered one. Saying "restored Sunday
+      // Morning" when it came back as "Sunday Morning (2)" would be a fresh lie in the act of
+      // fixing one. A refusal carries the host's own operator-facing reason, not a generic retry.
+      async function pmLibRestore(id) {
+        try {
+          const view = await invoke("deck_restore", { id: id });
+          pmApplyLibrary(view);
+          const name = view && view.restored_name;
+          pmToast(name ? "Restored “" + name + "”" : "Presentation restored");
+          pmLibFocusDeck(id);
+        } catch (e) {
+          console.error(e);
+          pmShowErrorRaw(String(e && e.message ? e.message : e));
+        }
+      }
       async function pmLibDuplicate(id) {
         try { pmApplyLibrary(await invoke("deck_duplicate", { id: id })); pmLibFocusDeck(id); }
         catch (e) { console.error(e); pmShowError("duplicate the presentation"); }
+      }
+      // "its 12 slides" when the library knows the count, "its slides" when it does not. Never a
+      // fabricated number: an unknown count is stated vaguely, not invented precisely.
+      function pmSlideCountPhrase(id) {
+        const d = (pmLibDecks || []).find((x) => x.id === id);
+        const n = d && typeof d.slides === "number" ? d.slides : null;
+        if (n === null) return "its slides";
+        return "its " + n + (n === 1 ? " slide" : " slides");
       }
       function pmLibDelete(id, name) {
         const inUse = id === pmLibOpenId;
         pmConfirm({
           title: "Delete “" + (name || "Untitled presentation") + "”?",
-          body: "This removes the presentation and its slides from your library. This can’t be undone.",
+          // PME-058: name the SLIDE COUNT — "its slides" understates what is about to go. The count
+          // comes from the library view (deck_list), and when it is genuinely unknown the sentence
+          // falls back to "its slides" rather than printing a fabricated 0.
+          //
+          // The copy still says this CANNOT be undone, and that stays until it is actually
+          // reversible. Q-08 resolved that deck delete SHOULD become undoable, but the host has no
+          // way back today: DeckLibrary::delete drops the deck from memory and calls
+          // delete_persisted (deck_library.rs:459-467) with no trash, no restore; there is no
+          // deck_export/deck_import; and deck_list carries only {id, name, slides}, so the webview
+          // cannot rebuild the slides, elements, theme or notes it would have to restore.
+          // Promising undo before the seam exists would make the product lie — which is the exact
+          // defect PME-058 recorded, only inverted. Flip this sentence WITH the restore command.
+          // Q-08: deck delete IS reversible now (deck_restore + a bounded trash), so the old
+          // "This can't be undone." is simply false and is gone. It is NOT replaced with "You can
+          // undo it" either: whether THIS deck is retained depends on its size against the trash
+          // budget, and that is not knowable at confirm time. Promising it here and discovering
+          // otherwise afterwards would be the same lie pointed the other way. The promise is made
+          // where it can be verified — the toast, gated on the host's own `restorable` list.
+          body: "This removes the presentation and " + pmSlideCountPhrase(id) + " from your library.",
           warning: inUse ? "It’s the presentation you have open — deleting it switches the editor to another." : null,
           confirmLabel: "Delete",
           onConfirm: async () => {
             try {
               pmApplyLibrary(await invoke("deck_delete", { id: id }));
               if (inUse) { const dv = await invoke("deck_view"); pmDv = dv; renderPresentation(dv); } // editor switched by the host
-              pmToast("Presentation deleted");
+              // Offer Undo only where it will actually work.
+              if ((pmLibRestorable || []).indexOf(id) >= 0) pmToast("Presentation deleted", "Undo", () => pmLibRestore(id));
+              else pmToast("Presentation deleted");
               pmLibFocusDeck(null); // the deleted card is gone → focus the first remaining card / search
             } catch (e) { console.error(e); pmShowError("delete the presentation"); }
           },
@@ -7004,6 +7227,54 @@
       async function pmPresent() {
         if (await pAct(() => invoke("deck_go_live"), "present the slide")) {
           pmToast("Now presenting on the audience output");
+        }
+      }
+      // The topbar "▶ Present" acts on whichever mode is showing, which is the same split the ⌘K
+      // palette already makes: GRID presents the cursor slide, EDITOR presents the selected one.
+      function pmPresentFromTopbar() {
+        if (pmMode === "grid") { if (typeof pmGridGoLive === "function") pmGridGoLive(pmGridCursor); }
+        else pmPresent();
+      }
+      // "Add to plan" (Figma 329:138/139): append a Presentation item to the service plan and link
+      // the OPEN deck to it. Uses add_item + set_item_content — the same pair the plan builder's own
+      // deck-link dialog commits with — so the row resolves to a real name + slide count. deck_list
+      // is re-read on click because it, not any cached value, is the authority on which deck is open.
+      let pmAddToPlanBusy = false;
+      async function pmAddToPlan() {
+        if (pmAddToPlanBusy) return; // guard double-activation → never two plan items for one click
+        pmAddToPlanBusy = true;
+        const btn = pmEl("pm-addtoplan"); if (btn) btn.disabled = true;
+        try {
+          const lib = await invoke("deck_list");
+          const openId = lib ? lib.open : null;
+          const deck = ((lib && lib.decks) || []).find((d) => d.id === openId);
+          if (!deck) { pmShowError("add this presentation to the plan"); return; }
+          const v = await invoke("add_item", { kind: "slide_group", title: deck.name || "Presentation" });
+          const item = v && v.items && v.items.length ? v.items[v.items.length - 1] : null;
+          if (!item) { pmShowError("add this presentation to the plan"); return; }
+          try {
+            // Carry the slide count to the host (it owns no deck store) so the row reports the real
+            // count and can stage a specific slide — same contract as planDeckBody's commit().
+            await invoke("set_item_content", { itemId: item.id, link: { kind: "deck", id: deck.id, slide_count: deck.slides } });
+          } catch (e) {
+            // The item landed but carries no deck reference. A plan row that lies about what it
+            // holds is worse than no row on a Sunday morning, so roll it back instead of leaving
+            // a stub behind, then report the failure honestly.
+            console.error(e);
+            try { await invoke("remove_item", { itemId: item.id }); } catch (e2) { console.error(e2); }
+            pmShowError("add this presentation to the plan");
+            return;
+          }
+          pmClearError();
+          pmToast("Added to the service plan", "Undo", () => {
+            invoke("remove_item", { itemId: item.id }).catch((e) => { console.error(e); pmShowError("undo that"); });
+          });
+        } catch (e) {
+          console.error(e);
+          pmShowError("add this presentation to the plan");
+        } finally {
+          pmAddToPlanBusy = false;
+          if (btn) btn.disabled = false;
         }
       }
       function pmUndo() { pAct(() => invoke("deck_undo")); }
@@ -7667,6 +7938,11 @@
         // Presentations Library: the deck-switcher opens it; ＋ New creates; the library controls.
         pmEl("pm-deckswitch").onclick = pmShowLibrary;
         pmEl("pm-newpres").onclick = pmLibNew;
+        // The two Design 2.0 topbar primaries (PME-014 / PME-015). Guarded: this init block wires
+        // the whole surface, so an unguarded lookup on a element someone later removes would throw
+        // here and silently take out every wiring BELOW it (the add-content tools, the inspector).
+        if (pmEl("pm-present")) pmEl("pm-present").onclick = pmPresentFromTopbar;
+        if (pmEl("pm-addtoplan")) pmEl("pm-addtoplan").onclick = pmAddToPlan;
         pmEl("pm-lib-new").onclick = pmLibNew;
         pmEl("pm-lib-empty-new").onclick = pmLibNew;
         pmEl("pm-lib-retry").onclick = pmLibLoad;

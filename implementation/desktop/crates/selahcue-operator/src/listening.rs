@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use selahcue_core::transcript::ProviderSegment;
+use selahcue_core::transcript::{ProviderSegment, TranscriptProvider};
 use selahcue_stt::audio::{AudioChunk, AudioSource, CpalSource};
 use selahcue_stt::recognizer::{WhisperContext, WhisperRecognizer};
 use selahcue_stt::{pump, EnergyVad, EngineConfig, FeedbackGuard, HardwareProbe, SttEngine};
@@ -128,6 +128,8 @@ fn emit_phase(app: &AppHandle, phase: selahcue_stt::DownloadPhase) {
         }
         P::Ready => {
             eprintln!("SelahCue STT: model ready.");
+            // The detector is healthy again — drop any earlier verdict.
+            clear_failure();
             PhaseEvent::Ready
         }
         P::Failed {
@@ -137,6 +139,9 @@ fn emit_phase(app: &AppHandle, phase: selahcue_stt::DownloadPhase) {
             bytes_kept,
         } => {
             eprintln!("SelahCue STT: download failed ({reason:?}): {message}");
+            // Retain it: the event alone is fire-and-forget and would otherwise be lost,
+            // leaving a dead detector indistinguishable from an idle one.
+            record_failure(message.clone());
             PhaseEvent::Failed {
                 reason: match reason {
                     R::Connect => FailReasonPayload::Connect,
@@ -194,6 +199,45 @@ fn worker_lock() -> std::sync::MutexGuard<'static, Option<Worker>> {
 /// Whether a capture worker is currently running.
 pub fn is_listening() -> bool {
     worker_lock().is_some()
+}
+
+/// The last TERMINAL failure the detector reported, retained until the next attempt.
+///
+/// `stt://phase` is fire-and-forget: a `Failed` phase that nothing happened to be listening
+/// for is simply lost, which leaves a DEAD detector looking exactly like an idle one — the
+/// confusion the acceptance bar names. Retaining it here is what lets
+/// `selahcue_core::detector::detector_state` tell those two apart. Bounded: exactly one
+/// `Option<String>`, replaced rather than accumulated, so it can never grow.
+static LAST_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+
+/// The transcript provider's honest label (FR-120 — the UI states which engine produced the
+/// transcript, and never claims a perfect one). Set when a worker starts, cleared when it
+/// stops. Bounded: one `Option<String>`.
+static PROVIDER_LABEL: Mutex<Option<String>> = Mutex::new(None);
+
+fn status_lock<T>(m: &'static Mutex<Option<T>>) -> std::sync::MutexGuard<'static, Option<T>> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Record a terminal failure — the detector is down until something clears this.
+fn record_failure(message: impl Into<String>) {
+    *status_lock(&LAST_FAILURE) = Some(message.into());
+}
+
+/// Clear the retained failure: a fresh attempt supersedes an old verdict, so a recovered
+/// detector is never still reported dead.
+fn clear_failure() {
+    *status_lock(&LAST_FAILURE) = None;
+}
+
+/// The retained terminal failure, if the detector is currently down.
+pub fn last_failure() -> Option<String> {
+    status_lock(&LAST_FAILURE).clone()
+}
+
+/// The running transcript provider's label (FR-120), or `None` when nothing is listening.
+pub fn provider_label() -> Option<String> {
+    status_lock(&PROVIDER_LABEL).clone()
 }
 
 /// A loaded model context, cached across capture sessions so a stop→start reuses the resident
@@ -381,6 +425,7 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
         let mut source = match CpalSource::new() {
             Ok(s) => s,
             Err(e) => {
+                record_failure(format!("microphone unavailable: {e}"));
                 let _ = ready_tx.send(Err(format!("microphone unavailable: {e}")));
                 return;
             }
@@ -388,6 +433,7 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
         let recognizer = match load_recognizer(&app_worker) {
             Ok(r) => r,
             Err(e) => {
+                record_failure(e.clone());
                 let _ = ready_tx.send(Err(e));
                 return;
             }
@@ -396,6 +442,8 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
             "SelahCue STT: capturing from {} — listening.",
             source.label()
         );
+        // Capture is live: supersede any earlier failure verdict.
+        clear_failure();
         let _ = ready_tx.send(Ok(()));
 
         let (mut engine, mut provider) = SttEngine::build(
@@ -411,6 +459,9 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
             Box::new(recognizer),
             FeedbackGuard::new(),
         );
+        // FR-120 honest disclosure: retain WHICH engine is producing this transcript, so the
+        // console can name it instead of implying a perfect, anonymous recogniser.
+        *status_lock(&PROVIDER_LABEL) = Some(provider.label().to_string());
 
         // Decouple recognition from capture so a (potentially slow) decode never freezes the mic
         // or the level meter. The cpal stream is `!Send`, so the SOURCE stays on THIS thread and a
@@ -484,6 +535,9 @@ pub fn stop() {
     // `load_recognizer`, not yet in the capture loop, so `w.stop` alone would leave `join()` waiting
     // for the whole (~1.6 GB) transfer. Cancelling makes the fetch return promptly so stop is snappy.
     DOWNLOAD_CANCEL.store(true, Ordering::SeqCst);
+    // Nothing is producing a transcript once the worker is gone — do not keep naming an
+    // engine that is no longer running.
+    *status_lock(&PROVIDER_LABEL) = None;
     let worker = worker_lock().take();
     if let Some(mut w) = worker {
         w.stop.store(true, Ordering::Relaxed);

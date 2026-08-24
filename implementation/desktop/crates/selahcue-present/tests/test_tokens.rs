@@ -64,10 +64,150 @@ fn every_audited_pairing_meets_wcag_aa() {
 fn stage_display_uses_the_semantic_inks() {
     // The stage timer's ok/warn/alert states ARE the semantic tokens — the same
     // colour never means two things across surfaces.
+    //
+    // Those tokens are the **Design 2.0** swatches. The operator console
+    // (`--sc-preview`/`--sc-live`/`--sc-warn` in `app.css`) and the Flutter
+    // controller (`d2Preview`/`d2Live`/`d2Warn`) both render Design 2.0 values,
+    // pinned by `design2_palette_is_pinned_across_surfaces` below; the stage
+    // display used to be the one surface still on the pre-Design-2.0 inks, so
+    // "on air" was `#ef4444` on the confidence monitor and `#ff4d4d` everywhere
+    // else. Pinning the stage to `design2` is what makes the cross-surface claim
+    // in this test's first sentence true rather than aspirational.
+    //
+    // This pins the STRUCT, not the palette: no token VALUE is asserted here, so
+    // it cannot drift out of step with the four-surface pin test.
+    use tokens::design2 as d2;
     let t = StageTheme::dark();
-    assert_eq!(t.timer_ok, PREVIEW.ink);
-    assert_eq!(t.timer_warn, WARN.ink);
-    assert_eq!(t.timer_alert, LIVE.ink);
+    assert_eq!(t.timer_ok, d2::PREVIEW.rgba, "stage ok ink");
+    assert_eq!(t.timer_warn, d2::WARN.rgba, "stage warn ink");
+    assert_eq!(t.timer_alert, d2::LIVE.rgba, "stage alert ink");
+    assert_eq!(t.accent, d2::GOLD.rgba, "stage scripture gold");
+
+    // The chip pattern each status draws itself with: its own bright ink on its
+    // OWN soft tint, ringed by its OWN border. Bound state-by-state so a
+    // copy-paste that gave two states the same tint — the live red pill wearing
+    // the preview green's ring — fails here rather than on a stage.
+    for (name, stage_ink, soft, border, ink, d_soft, d_border) in [
+        (
+            "ok",
+            t.timer_ok,
+            t.ok_soft,
+            t.ok_border,
+            d2::PREVIEW,
+            d2::PREVIEW_SOFT,
+            d2::PREVIEW_BORDER,
+        ),
+        (
+            "warn",
+            t.timer_warn,
+            t.warn_soft,
+            t.warn_border,
+            d2::WARN,
+            d2::WARN_SOFT,
+            d2::WARN_BORDER,
+        ),
+        (
+            "alert",
+            t.timer_alert,
+            t.alert_wash,
+            t.alert_border,
+            d2::LIVE,
+            d2::LIVE_SOFT,
+            d2::LIVE_BORDER,
+        ),
+    ] {
+        assert_eq!(stage_ink, ink.rgba, "stage {name} ink");
+        assert_eq!(soft, d_soft.rgba, "stage {name} soft tint");
+        assert_eq!(border, d_border.rgba, "stage {name} pill border");
+        let c = contrast_ratio(stage_ink, soft);
+        assert!(
+            c >= AA_TEXT,
+            "stage {name} ink on its own soft tint = {c:.2} < {AA_TEXT}"
+        );
+        assert_ne!(
+            soft, border,
+            "stage {name}: the soft tint and its border are the same colour, so the \
+             pill has no visible edge"
+        );
+    }
+
+    // The legacy inks are what this surface used to carry; naming them keeps the
+    // failure message useful if someone reverts the struct rather than the palette.
+    assert_ne!(
+        t.timer_alert, LIVE.ink,
+        "stage alert ink fell back to the pre-Design-2.0 token"
+    );
+    assert_ne!(
+        t.timer_ok, PREVIEW.ink,
+        "stage ok ink fell back to the pre-Design-2.0 token"
+    );
+    assert_ne!(
+        t.timer_warn, WARN.ink,
+        "stage warn ink fell back to the pre-Design-2.0 token"
+    );
+}
+
+/// The high-contrast stage palette (NFR-020) is genuinely higher-contrast than the
+/// default — every ink clears AA-normal on its field, and none is *worse* than the
+/// same ink on the dark palette. A "high contrast" theme that merely renamed the
+/// dark one would pass a bare AA check; this compares the two.
+#[test]
+fn the_high_contrast_stage_theme_beats_the_dark_one_on_every_ink() {
+    let dark = StageTheme::dark();
+    let hc = StageTheme::high_contrast();
+    for (name, d_ink, d_bg, h_ink, h_bg) in [
+        ("text", dark.text, dark.background, hc.text, hc.background),
+        (
+            "muted",
+            dark.muted,
+            dark.background,
+            hc.muted,
+            hc.background,
+        ),
+        (
+            "accent",
+            dark.accent,
+            dark.background,
+            hc.accent,
+            hc.background,
+        ),
+        ("timer_ok", dark.timer_ok, dark.panel, hc.timer_ok, hc.panel),
+        (
+            "timer_warn",
+            dark.timer_warn,
+            dark.panel,
+            hc.timer_warn,
+            hc.panel,
+        ),
+        (
+            "timer_alert",
+            dark.timer_alert,
+            dark.alert_wash,
+            hc.timer_alert,
+            hc.alert_wash,
+        ),
+    ] {
+        let d = contrast_ratio(d_ink, d_bg);
+        let h = contrast_ratio(h_ink, h_bg);
+        assert!(
+            h >= AA_TEXT,
+            "high-contrast {name} = {h:.2} < {AA_TEXT} — it does not even clear AA"
+        );
+        assert!(
+            h >= d,
+            "high-contrast {name} = {h:.2} is WORSE than the dark theme's {d:.2}"
+        );
+    }
+    // Its separation does not depend on telling two near-blacks apart: raised fills
+    // collapse onto the background and the shapes are drawn with a bright hairline.
+    assert_eq!(hc.panel, hc.background, "high-contrast panel is not flat");
+    assert_eq!(hc.track, hc.background, "high-contrast chips are not flat");
+    let edge = contrast_ratio(hc.border, hc.background);
+    assert!(
+        edge >= 7.0,
+        "high-contrast hairline against the field = {edge:.2} — too faint to be the \
+         thing that separates the shapes"
+    );
 }
 
 /// Read one file from the operator's `dist/`. The console is split into
@@ -120,7 +260,11 @@ fn operator_webview_is_pinned_to_the_canonical_tokens() {
         "badge(\"preview\", \"PREVIEW\")",
         // Blackout engaged state is announced, not colour-only.
         "aria-pressed",
-        // Key hints stay AA on token-filled buttons.
+        // The armed Clear-Output key hint has its OWN chip rule (it cannot inherit the
+        // generic one: white on the armed --sc-live fill measured 2.74:1). This asserts the
+        // rule EXISTS, not that it passes — a string pin cannot measure contrast. The ratio
+        // itself is gated by scripts/operator_headless.py, which composites every .key chip
+        // over its own button fill at both gradient stops. Do not restate an AA claim here.
         "#clear-all.armed .key",
         // Console structure (batch 7x, Figma node 4:2): labelled output panels
         // (non-colour redundancy on the panel headers) + blackout overlay.
@@ -802,11 +946,40 @@ fn operator_presentations_library_is_wired() {
     ] {
         assert!(js.contains(needle), "app.js missing {needle:?}");
     }
-    // The dead "Add to plan" stub is replaced by the deck-switcher (regression guard).
+    // "Add to plan" (Figma 329:138/139) — TWO halves, both required. The banned dead stub
+    // (`pm-addplan`) and the required live control (`pm-addtoplan`) are one character apart, so a
+    // guard that knows only about the first cannot tell "correctly reinstated" from "deleted
+    // again": with the feature removed, the negative assertion below still passes on its own.
+    //
+    // History: the control shipped as a DISABLED placeholder, was dropped, and was reinstated by
+    // owner decision Q-14 once the PlanItem -> deck reference landed
+    // (PRESENTATIONS-LIBRARY-spec.md §2.1). It is now functional, not a placeholder — which is
+    // exactly what half (2) pins, because a present-but-dead button IS the stub half (1) bans.
+    // (1) the dead placeholder must stay gone.
     assert!(
         !html.contains("id=\"pm-addplan\""),
-        "the disabled 'Add to plan' stub was replaced by the deck-switcher"
+        "the disabled 'Add to plan' STUB must stay gone — it was a dead placeholder. The live \
+         control is id=\"pm-addtoplan\" and is guarded separately below"
     );
+    // (2) the live control must stay present AND wired AND actually link a deck.
+    assert!(
+        html.contains("id=\"pm-addtoplan\""),
+        "index.html missing id=\"pm-addtoplan\" — the reinstated 'Add to plan' control (Q-14, \
+         PRESENTATIONS-LIBRARY-spec.md §2.1) must stay present, not merely un-stubbed"
+    );
+    for needle in [
+        "function pmAddToPlan",                         // the behaviour exists
+        "pmEl(\"pm-addtoplan\").onclick = pmAddToPlan", // ...and the button actually reaches it
+        "kind: \"slide_group\", title: deck.name",      // it appends a real plan item
+        "slide_count: deck.slides",                     // ...carrying a real deck link, not a title
+        "invoke(\"remove_item\", { itemId: item.id })", // rollback-on-failure + the Undo toast
+    ] {
+        assert!(
+            js.contains(needle),
+            "app.js missing {needle:?} — 'Add to plan' must stay WIRED and functional; a \
+             present-but-dead button is precisely the stub the assertion above bans"
+        );
+    }
     // Styles for the library affordances.
     for needle in [
         ".pm-library",

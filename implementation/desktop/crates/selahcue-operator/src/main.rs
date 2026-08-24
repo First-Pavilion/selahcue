@@ -18,6 +18,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use selahcue_app::{LiveController, OperatorShell, OperatorView, RemoteOperator};
+use selahcue_core::detector::{detector_state, DetectorSignals, DetectorState};
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_lan::protocol::{ContentLinkView, ScaleFit};
 use selahcue_lan::CertPin;
@@ -1428,7 +1429,16 @@ fn library_view(lib: &DeckLibrary, open_id: DeckId) -> serde_json::Value {
         .into_iter()
         .map(|m| serde_json::json!({ "id": m.id.0, "name": m.name, "slides": m.slides }))
         .collect();
-    serde_json::json!({ "decks": decks, "open": open_id.0, "persistent": lib.is_persistent() })
+    // What an undo could actually put back. The trash is bounded, so this shrinks as deletes
+    // age out — the UI must offer "Undo delete" from THIS list rather than assuming the last
+    // delete is always restorable, or it will offer an undo that cannot work.
+    let restorable: Vec<u64> = lib.restorable().into_iter().map(|id| id.0).collect();
+    serde_json::json!({
+        "decks": decks,
+        "open": open_id.0,
+        "persistent": lib.is_persistent(),
+        "restorable": restorable,
+    })
 }
 
 /// The Presentations Library list (id · name · slide count · which is open · persistence state).
@@ -1521,6 +1531,47 @@ async fn deck_delete(id: u64, state: State<'_, AppState>) -> Result<serde_json::
         }
         library_view(lib, ws.open_deck().id())
     })
+}
+
+/// Undo a presentation delete → returns the `LibraryView`.
+///
+/// Restores the deck's **real** content — slides, elements, theme, notes and transitions — from
+/// the library's bounded in-memory trash. A client cannot do this itself: at delete time the
+/// deck leaves the library and its persisted row is removed, so the most a client-side undo
+/// could recreate is an empty deck of the same name, which misrepresents what was restored.
+///
+/// Rejected when the deck is no longer restorable — the trash is bounded, so an old delete may
+/// have been evicted, and an unusually large deck may never have been retained at all. The
+/// error is returned rather than silently no-op'ing so the UI can say why nothing happened.
+///
+/// The restored name is included because it can differ from the original: if the name was taken
+/// while the deck sat in the trash it is uniquified, and the operator needs to know what their
+/// presentation is now called.
+#[tauri::command]
+async fn deck_restore(id: u64, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    // `None` = the deck was not restorable, so nothing was touched. Decided by asking the
+    // library BEFORE mutating, rather than inferring a refusal from the shape of the result.
+    let outcome = with_deck_and_library(&state, |ws, lib| {
+        if !lib.can_restore(DeckId(id)) {
+            return serde_json::Value::Null;
+        }
+        match lib.restore(DeckId(id)) {
+            Some(name) => {
+                let mut view = library_view(lib, ws.open_deck().id());
+                if let Some(obj) = view.as_object_mut() {
+                    // The name can differ from the original if it was taken while the deck sat
+                    // in the trash; the operator needs to be told what it is now called.
+                    obj.insert("restored_name".into(), serde_json::Value::String(name));
+                }
+                view
+            }
+            None => serde_json::Value::Null,
+        }
+    })?;
+    if outcome.is_null() {
+        return Err("That presentation can no longer be restored.".to_string());
+    }
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -2131,6 +2182,131 @@ async fn cancel_download() -> Result<(), String> {
 #[tauri::command]
 async fn cancel_download() -> Result<(), String> {
     Ok(())
+}
+
+/// What this build can observe about the detector.
+///
+/// The two arms are the entire build-configuration dependency; everything downstream of here
+/// is the pure rule in `selahcue_core::detector`, which is compiled and tested unconditionally.
+/// Splitting it this way is deliberate: this crate is excluded from the workspace AND its
+/// `stt` feature is off in CI, so any judgement made here would be verified by nothing.
+#[cfg(feature = "stt")]
+fn detector_observations() -> (bool, Option<String>, Option<String>) {
+    (
+        listening::is_listening(),
+        listening::last_failure(),
+        listening::provider_label(),
+    )
+}
+
+/// Without the `stt` feature there is no detector in this binary at all — so it is not idle,
+/// not failed, and cannot be retried. Reporting anything else would be a fabrication.
+#[cfg(not(feature = "stt"))]
+fn detector_observations() -> (bool, Option<String>, Option<String>) {
+    (false, None, None)
+}
+
+/// Whether a detector is compiled into this binary. A build constant, not a runtime condition.
+const DETECTOR_COMPILED: bool = cfg!(feature = "stt");
+
+/// The detector's current state, derived by the pure core rule.
+fn current_detector_state() -> DetectorState {
+    let (worker_running, last_failure, _) = detector_observations();
+    detector_state(DetectorSignals {
+        compiled: DETECTOR_COMPILED,
+        worker_running,
+        last_failure: last_failure.as_deref(),
+    })
+}
+
+/// Reply to `detection_health`: enough for the console to tell a dead detector from a silent
+/// room, and to know whether offering a retry would be honest.
+#[derive(serde::Serialize)]
+struct DetectionHealthReply {
+    /// `"unsupported"` | `"idle"` | `"listening"` | `"unavailable"`.
+    state: &'static str,
+    /// The engine producing the transcript (FR-120 honest disclosure). `None` when nothing
+    /// is listening — never a guessed or flattering name.
+    provider: Option<String>,
+    /// The retained terminal failure, when the detector is down. `None` otherwise.
+    error: Option<String>,
+    /// Whether a retry could actually change anything. Derived from the state's own
+    /// permission rule, never set by hand, so it cannot disagree with `retry_detection`.
+    can_retry: bool,
+}
+
+fn detection_health_reply() -> DetectionHealthReply {
+    let state = current_detector_state();
+    let (_, last_failure, provider) = detector_observations();
+    DetectionHealthReply {
+        state: state.tag(),
+        provider,
+        error: last_failure,
+        can_retry: state.retry_request().is_some(),
+    }
+}
+
+/// Detector liveness for the console's health UI.
+///
+/// This is what makes "a dead scripture detector and a silent room" render differently:
+/// `listening` with no transcript is a quiet room, `unavailable` is a detector that died.
+/// Silence alone is evidence of neither.
+#[tauri::command]
+fn detection_health() -> DetectionHealthReply {
+    detection_health_reply()
+}
+
+/// Restart the detector after a failure.
+///
+/// Refused unless the current state can mint a `RetryRequest` — so in a build with no
+/// detector the retry path is *unreachable*, not merely disabled. A control that cannot
+/// possibly work is a fabrication of exactly the kind this work removes.
+#[tauri::command]
+async fn retry_detection(app: tauri::AppHandle) -> Result<DetectionHealthReply, String> {
+    let state = current_detector_state();
+    let Some(permit) = state.retry_request() else {
+        return Err(match state {
+            DetectorState::Unsupported => "This build does not include on-device \
+                 speech-to-text, so there is nothing to retry."
+                .to_string(),
+            other => format!("Retry does not apply while detection is '{}'.", other.tag()),
+        });
+    };
+    perform_retry(app, permit).await?;
+    Ok(detection_health_reply())
+}
+
+/// The retry itself. Takes the permit so it cannot be called from a state that forbids it.
+#[cfg(feature = "stt")]
+async fn perform_retry(
+    app: tauri::AppHandle,
+    _permit: selahcue_core::detector::RetryRequest,
+) -> Result<(), String> {
+    // Tear down any half-dead worker first, so a retry is a clean restart rather than a
+    // no-op against a wedged one.
+    listening::stop();
+    match listening::start(app).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+            listening::stop();
+            Err(e)
+        }
+        Err(_) => {
+            listening::stop();
+            Err("on-device STT worker aborted before it started".to_string())
+        }
+    }
+}
+
+/// Unreachable in this build: `RetryRequest` cannot be minted from `Unsupported`, which is
+/// the only state a detector-less build can be in. Kept total rather than a panic so that a
+/// future configuration change degrades to an honest refusal instead of crashing.
+#[cfg(not(feature = "stt"))]
+async fn perform_retry(
+    _app: tauri::AppHandle,
+    _permit: selahcue_core::detector::RetryRequest,
+) -> Result<(), String> {
+    Err("This build does not include on-device speech-to-text.".to_string())
 }
 
 /// Every translation the app knows, with availability — bundled ones are always available; a
@@ -2766,6 +2942,8 @@ fn main() {
             scripture_search,
             get_chapter,
             ingest_transcript,
+            detection_health,
+            retry_detection,
             approve_detection,
             dismiss_detection,
             start_listening,
@@ -2811,6 +2989,7 @@ fn main() {
             deck_rename,
             deck_duplicate,
             deck_delete,
+            deck_restore,
             deck_add_slide,
             deck_remove_slide,
             deck_duplicate_slide,

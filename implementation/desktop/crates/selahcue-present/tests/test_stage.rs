@@ -24,6 +24,7 @@ fn running(progress: f64) -> TimerView {
         time_up: false,
         warn: false,
         progress,
+        overrun_secs: 0,
     }
 }
 
@@ -153,9 +154,20 @@ fn stage_current_region_auto_fits_a_long_verse_without_truncation_or_clip() {
     for word in verse.split_whitespace() {
         assert!(joined.contains(word), "stage dropped the word {word:?}");
     }
-    // ...and nothing overflows the current lyric band (bottom ≈ 0.64·height — the band sits
-    // below the song header pill and above the NEXT/footer rows, Figma 373-133).
-    let current_bottom = (h as f64 * 0.65) as i32 + 2;
+    // ...and nothing overflows the current lyric band. The band is ELASTIC: it runs from the
+    // header chrome down to the NEXT row, less a safe gap at each end, rather than sitting in
+    // the fixed 212-unit rect Figma 373-133 draws (that rect is the two-line case). So the
+    // bound is derived from the chrome the band must clear — the timer band top, minus the
+    // reserved NEXT row, minus both safe gaps — not from a fixed fraction.
+    let ref_h = 563.0;
+    let timer_band_top = 456.0 / ref_h * h as f64;
+    let next_row = 30.0 / 0.72 / ref_h * h as f64; // the NEXT line's design line box
+    let safe_gap = 12.0 / ref_h * h as f64;
+    let current_bottom = (timer_band_top - safe_gap - next_row - safe_gap) as i32 + 2;
+    assert!(
+        current_bottom < (h as f64 * 0.75) as i32,
+        "the elastic band reaches {current_bottom} px of {h} — it is not clearing the chrome"
+    );
     for (_, px, y, _) in &texts {
         assert!(
             *y + *px as i32 <= current_bottom,
@@ -296,6 +308,7 @@ fn timer_only_shows_service_chrome_wall_clock_and_a_200px_readout() {
         time_up: false,
         warn: false,
         progress: 0.5,
+        overrun_secs: 0,
     };
     let (w, h) = (1000u32, 563u32);
     let frame = compose_stage(
@@ -335,15 +348,16 @@ fn timer_only_shows_service_chrome_wall_clock_and_a_200px_readout() {
             .any(|(t, _)| t.contains("Sunday · August 3, 2026") && t.contains("10:42 AM")),
         "the date + 12-hour time footer renders"
     );
-    // The countdown is the giant readout — ~200px em (0.49·h line box × FONT_TO_LINE≈0.72).
+    // The countdown is the giant readout — Figma 374-157 sets it at a 190px em, which is a
+    // line box of 190/0.72 at the 563px-tall reference frame (audit §6.4).
     let readout = texts
         .iter()
         .find(|(t, _)| *t == "12:45")
         .expect("the running readout renders as M:SS");
-    let want = (h as f64 * 0.49) as u32;
+    let want = (190.0 / 0.72 / 563.0 * h as f64) as u32;
     assert!(
         readout.1.abs_diff(want) <= 2,
-        "readout line-box {} px should be ≈0.49·h ({want} px) for a ~200px em",
+        "readout line-box {} px should be the design's 190px em ({want} px line box)",
         readout.1
     );
 }
@@ -360,6 +374,7 @@ fn timer_only_omits_clock_chrome_when_no_wall_clock_is_set() {
         time_up: false,
         warn: false,
         progress: 0.5,
+        overrun_secs: 0,
     };
     let with_clock = compose_stage(
         None,
@@ -440,6 +455,7 @@ fn worship_renders_song_header_verse_position_lyrics_and_footer_timer() {
     let ctx = StageContext {
         clock: Some(WallClock::new("Sunday · August 3, 2026", "10:42 AM")),
         song_position: Some((2, 4)),
+        ..StageContext::default()
     };
     let t = TimerView {
         elapsed_secs: 0,
@@ -447,6 +463,7 @@ fn worship_renders_song_header_verse_position_lyrics_and_footer_timer() {
         time_up: false,
         warn: false,
         progress: 0.5,
+        overrun_secs: 0,
     };
     let (w, h) = (1000u32, 563u32);
     let frame = compose_stage(
@@ -493,10 +510,11 @@ fn worship_renders_song_header_verse_position_lyrics_and_footer_timer() {
         texts.contains(&"I once was lost, but now am found"),
         "the NEXT line renders"
     );
-    // The violet 'live song' accent dot (Figma 373-136) is present.
+    // The violet 'live song' accent dot (Figma 373-137, asset-verified `#7E6EFF` =
+    // `design2::PRIMARY_HOVER`) is present.
     let fb = render(&frame);
     assert!(
-        has_color(&fb, Rgba::rgb(0x8b, 0x5c, 0xf6)),
+        has_color(&fb, Rgba::rgb(0x7e, 0x6e, 0xff)),
         "the song pill shows the violet live-song dot"
     );
     // No stanza position when the context has none (honest — never a fabricated count).
@@ -540,6 +558,7 @@ fn scripture_renders_gold_reference_left_verse_and_countdown_panel() {
     let ctx = StageContext {
         clock: Some(WallClock::new("Sunday · August 3, 2026", "10:42 AM")),
         song_position: None,
+        ..StageContext::default()
     };
     let t = TimerView {
         elapsed_secs: 0,
@@ -547,6 +566,7 @@ fn scripture_renders_gold_reference_left_verse_and_countdown_panel() {
         time_up: false,
         warn: false,
         progress: 0.5,
+        overrun_secs: 0,
     };
     let (w, h) = (1000u32, 563u32);
     let frame = compose_stage(
@@ -682,6 +702,7 @@ fn scripture_next_line_is_truncated_with_an_ellipsis_when_it_overflows() {
         time_up: false,
         warn: false,
         progress: 0.5,
+        overrun_secs: 0,
     };
     let frame = compose_stage(
         Some(&cur),
@@ -767,6 +788,7 @@ fn the_composer_never_panics_on_pathological_input() {
     let ctx = StageContext {
         clock: Some(WallClock::new("Sunday · August 3, 2026", "10:42 AM")),
         song_position: Some((u16::MAX, 1)),
+        ..StageContext::default()
     };
     let t = TimerView {
         elapsed_secs: u32::MAX,
@@ -774,6 +796,7 @@ fn the_composer_never_panics_on_pathological_input() {
         time_up: false,
         warn: true,
         progress: 2.0,
+        overrun_secs: 0,
     };
     for tmpl in [
         StageTemplate::Worship,
@@ -809,6 +832,7 @@ fn time_up_words_pulse_between_two_inks_while_the_wash_stays_steady() {
         time_up: true,
         warn: false,
         progress: 0.0,
+        overrun_secs: 32,
     };
     let odd = TimerView {
         elapsed_secs: 5,
@@ -876,10 +900,20 @@ fn time_up_is_full_screen_for_timer_only_but_region_only_for_worship() {
         200,
         120,
     ));
+    // Design 2.0 (Figma 374-166) replaces the flat wash with an elliptical vignette: the
+    // frame edge sits at the outer stop and the centre is the dark-red core. Both halves
+    // are asserted — an all-edge-colour frame would be a missing TIME-UP state, and an
+    // all-core frame would be the flat wash the vignette replaced.
     assert_eq!(
         to.pixel(3, 3).unwrap(),
-        theme.alert_wash,
-        "timer-only TIME UP washes the whole screen"
+        theme.alert_vignette_edge,
+        "timer-only TIME UP paints the vignette's outer stop at the frame corner"
+    );
+    let centre = to.pixel(100, 60).unwrap();
+    assert!(
+        centre.r > to.pixel(3, 3).unwrap().r,
+        "timer-only TIME UP is a radial ramp — the centre ({centre:?}) must be redder than \
+         the corner, or the vignette collapsed to a flat fill"
     );
     let wsu = render(&compose_stage(
         None,

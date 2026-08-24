@@ -690,6 +690,130 @@ pub struct OperatorStateView {
     /// absent so the pinned v2 fixtures stay byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage_message: Option<String>,
+    /// The LIVE output's fault/recovery health (NFR-024 observability).
+    ///
+    /// **`None` means "this host does not report output health"** — an older host, or a
+    /// peer with no compositor — and a client must render that as *unknown*, never as a
+    /// fault. That distinction is the entire point: absent telemetry displayed as a hard
+    /// failure is one of the fabrications this field was added to remove. Omitted on the
+    /// wire when `None`, so the pinned v2 fixtures stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_health: Option<OutputHealthView>,
+    /// The host's storage headroom for autosave. `None` = this host does not report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<StorageHealthView>,
+    /// The host's session-recovery state. `None` = this host does not report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionHealthView>,
+}
+
+/// The live output's fault/recovery health, as the operator UI renders it (NFR-024).
+///
+/// The engine has always held the last good frame on a fault; until this view existed
+/// nothing outside the engine could observe that it had. Present on this struct at all
+/// means the host DOES report health — `held == false` here is a positive statement that
+/// the output is healthy, which is different from the field's absence on
+/// [`OperatorStateView`] meaning the host cannot say.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputHealthView {
+    /// The live output is holding its last good frame right now. The audience still sees
+    /// content — this is the never-blank guarantee working, not a blank screen.
+    pub held: bool,
+    /// Stable snake_case reason for the current hold (`"gpu_device_lost"`,
+    /// `"decoder_fault"`, `"ipc_stall"`, `"disk_full"`). Absent when the output is not
+    /// held, so a stale reason can never appear beside a healthy output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<String>,
+    /// Times the live output has been held this session (monotonic).
+    ///
+    /// Counters, not a fault log: a log would be an unbounded queue. They also carry
+    /// information the `held` flag cannot — a client polling at 1 Hz sees this increment
+    /// even when the hold began and ended between two polls, which is how a recovery
+    /// becomes observable without any event channel. Skip-if-zero keeps a healthy host's
+    /// frame compact.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub holds: u64,
+    /// Times the live output has recovered this session (monotonic). See [`Self::holds`].
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub recoveries: u64,
+}
+
+/// serde skip for a counter that has not moved yet.
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
+/// Longest operator-facing error text carried on the wire.
+///
+/// Host errors (a SQLite message, a transport failure with a nested cause) can be arbitrarily
+/// long. Health fields retain exactly one at a time and each replaces the last, but an uncapped
+/// single string is still unbounded growth, so every one is truncated through
+/// [`truncate_for_wire`].
+pub const MAX_ERROR_TEXT_LEN: usize = 200;
+
+/// Truncate to at most `max` bytes without splitting a UTF-8 character.
+///
+/// Slicing a `String` at an arbitrary byte index panics mid-character, and error text is exactly
+/// where non-ASCII arrives — a hostname, a path, an OS message in the user's locale. A panic
+/// while reporting a failure would take out the reporting path along with the thing it reports.
+///
+/// This lives in ONE place and every health field routes through it. A second copy of a rule
+/// this fiddly is a copy that will be got wrong: the first version of its test was itself
+/// vacuous, because a 2-byte character against a 200-byte cap always lands on a boundary.
+pub fn truncate_for_wire(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+/// The host's storage headroom for autosave/checkpoint writes (`guard::DiskStatus`).
+///
+/// The operator previously received only a raw `disk_free` byte count and had to invent the
+/// thresholds, so the host's own verdict — the one that actually decides whether checkpoint
+/// writes continue — never reached the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageHealthView {
+    /// `"ok"` | `"low"` | `"critical"` | `"unknown"`.
+    ///
+    /// `"unknown"` is a real, distinct outcome: the platform can fail to report free space, and
+    /// that is neither healthy nor critical. Collapsing it into either would be a fabrication.
+    pub status: String,
+    /// Free bytes on the volume backing the host's data directory. Absent when the platform
+    /// could not report it — never a zero standing in for "do not know".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_bytes: Option<u64>,
+    /// Checkpoint writes are halted because free space is below the floor (or unknowable while
+    /// already halted). The audience output is unaffected; only persistence stops.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub checkpoints_paused: bool,
+}
+
+/// The host's session-recovery state (`guard.rs` + `session_repo.rs`), previously reported by
+/// `eprintln!` only and therefore invisible to the operator running the service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHealthView {
+    /// A persisted session was restored at launch (crash/restart recovery).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub restored: bool,
+    /// The crash-loop breaker tripped, so this launch started CLEAN.
+    ///
+    /// The persisted session is *skipped, never deleted* — a later healthy launch can still
+    /// resume it deliberately. The UI must say so, because "started clean" reads as data loss
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub crash_loop: bool,
+    /// Unstable launches counted inside the breaker window, when it tripped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rapid_launches: Option<u32>,
+    /// The most recent autosave failure. Absent when the last attempt succeeded, so a recovered
+    /// autosave never keeps displaying an old failure. Bounded via [`truncate_for_wire`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autosave_error: Option<String>,
 }
 
 /// serde default/skip for a bool that defaults to `true`: an absent field deserialises as

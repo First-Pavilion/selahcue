@@ -64,15 +64,14 @@ pub fn assess(previous: &[u64], now: u64) -> LaunchVerdict {
 /// Free-space status of the checkpoint volume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiskStatus {
-    Ok,
+    /// Healthy headroom. Carries the figure too, so the operator view can show how much is
+    /// left rather than only that it is "fine" — a bare verdict makes a slow slide toward the
+    /// warning threshold invisible until it crosses.
+    Ok { available: u64 },
     /// Low headroom — warn, keep writing (session rows are tiny).
-    Low {
-        available: u64,
-    },
+    Low { available: u64 },
     /// Below the floor — stop checkpoint writes, report loudly.
-    Critical {
-        available: u64,
-    },
+    Critical { available: u64 },
 }
 
 /// Pure threshold mapping (testable without a filesystem).
@@ -82,7 +81,7 @@ pub fn disk_status_from(available: u64) -> DiskStatus {
     } else if available < DISK_LOW {
         DiskStatus::Low { available }
     } else {
-        DiskStatus::Ok
+        DiskStatus::Ok { available }
     }
 }
 
@@ -168,8 +167,18 @@ mod tests {
 
     #[test]
     fn disk_thresholds_map_to_statuses() {
-        assert_eq!(disk_status_from(u64::MAX), DiskStatus::Ok);
-        assert_eq!(disk_status_from(DISK_LOW), DiskStatus::Ok);
+        assert_eq!(
+            disk_status_from(u64::MAX),
+            DiskStatus::Ok {
+                available: u64::MAX
+            }
+        );
+        assert_eq!(
+            disk_status_from(DISK_LOW),
+            DiskStatus::Ok {
+                available: DISK_LOW
+            }
+        );
         assert_eq!(
             disk_status_from(DISK_LOW - 1),
             DiskStatus::Low {

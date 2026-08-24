@@ -10,10 +10,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod link;
 pub mod protocol;
 pub mod rbac;
 pub mod session;
 
+pub use link::{LinkState, LinkStatus};
 pub use rbac::{authorize, Permission, Role};
 pub use session::{DeviceId, PairingError, Session, SessionRegistry, SessionToken};
 

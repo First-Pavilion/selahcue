@@ -357,9 +357,23 @@ fn is_quit_chord(character: Option<&str>, super_key: bool, control_key: bool, ma
 }
 
 /// Report a non-Ok disk status loudly (the storage guard is never silent).
+/// Map the storage guard's verdict onto the operator-facing tag + figure.
+///
+/// `None` becomes `"unknown"`, NOT `"ok"`: the platform genuinely failing to report free space
+/// is a third outcome, and calling it healthy would be a fabrication of exactly the kind this
+/// work removes.
+fn storage_tag(status: Option<guard::DiskStatus>) -> (&'static str, Option<u64>) {
+    match status {
+        None => ("unknown", None),
+        Some(guard::DiskStatus::Ok { available }) => ("ok", Some(available)),
+        Some(guard::DiskStatus::Low { available }) => ("low", Some(available)),
+        Some(guard::DiskStatus::Critical { available }) => ("critical", Some(available)),
+    }
+}
+
 fn report_disk(status: guard::DiskStatus) {
     match status {
-        guard::DiskStatus::Ok => {}
+        guard::DiskStatus::Ok { .. } => {}
         guard::DiskStatus::Low { available } => eprintln!(
             "SelahCue: LOW DISK at the data dir ({} MB free) — checkpoints continue, \
              but free space soon.",
@@ -423,6 +437,13 @@ fn data_dir() -> Option<std::path::PathBuf> {
 struct SessionStore {
     db: Option<Database>,
     plan_id: Option<i64>,
+    /// The most recent autosave failure, retained so the OPERATOR can see it.
+    ///
+    /// It previously reached stderr only, which means nobody running a service ever saw it —
+    /// autosave could be failing for the whole meeting with the console showing nothing wrong.
+    /// Bounded: exactly one, replaced each attempt and cleared on success, so a recovered
+    /// autosave never keeps displaying an old failure.
+    last_save_error: Option<String>,
 }
 
 impl SessionStore {
@@ -436,7 +457,11 @@ impl SessionStore {
                     None
                 }
             });
-        SessionStore { db, plan_id: None }
+        SessionStore {
+            db,
+            plan_id: None,
+            last_save_error: None,
+        }
     }
 
     /// Open the store (FR-154/86ajp5vp6). The decision is keyed on what is
@@ -748,6 +773,15 @@ impl SessionStore {
         }
     }
 
+    /// The most recent autosave failure, if the last attempt failed.
+    ///
+    /// `None` once a save succeeds, so a recovered autosave never keeps displaying the failure
+    /// it recovered from — the same discipline the output-health record uses for its fault
+    /// reason.
+    fn last_save_error(&self) -> Option<&str> {
+        self.last_save_error.as_deref()
+    }
+
     /// Persist the live-state snapshot. Returns whether the write succeeded (an
     /// error is reported, never fatal mid-service; the caller re-arms the retry).
     fn save_session(&mut self, snap: &ControllerSnapshot) -> bool {
@@ -774,9 +808,13 @@ impl SessionStore {
             custom_theme: snap.custom_theme.clone(),
         };
         match session_repo::save(db, &state) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.last_save_error = None;
+                true
+            }
             Err(e) => {
                 eprintln!("SelahCue: autosave failed ({e}).");
+                self.last_save_error = Some(e.to_string());
                 false
             }
         }
@@ -1272,6 +1310,14 @@ struct App {
     last_disk_check: Instant,
     /// Whether checkpoint writes are currently halted (disk below the floor).
     disk_critical: bool,
+    /// The most recent storage verdict, cached so every health publish reports the real one
+    /// rather than re-reading the filesystem each frame. `None` = the platform could not tell
+    /// us, which is reported as `"unknown"` — never silently as healthy.
+    last_disk_status: Option<guard::DiskStatus>,
+    /// Whether a persisted session was restored at launch.
+    session_restored: bool,
+    /// Unstable launches counted when the crash-loop breaker tripped.
+    crash_rapid_launches: Option<u32>,
     /// Breaker-tripped clean run: checkpointing fully disabled so the
     /// preserved on-disk session is never touched (review 7ad-A).
     clean_mode: bool,
@@ -1574,7 +1620,15 @@ impl App {
         // Crash-loop breaker (FR-169): three rapid unstable launches mean
         // RECOVERY ITSELF is the failure — start clean, keep the session rows.
         let launch_guard = data_dir().map(|d| guard::LaunchGuard::new(&d));
-        let crash_loop = match launch_guard.as_ref().map(guard::LaunchGuard::record_launch) {
+        let launch_verdict = launch_guard.as_ref().map(guard::LaunchGuard::record_launch);
+        // Keep the COUNT, not just the boolean: "started clean after 3 rapid restarts" is a
+        // different message from "started clean", and the operator needs the number to judge
+        // whether to investigate before the service starts.
+        let crash_rapid_launches = match launch_verdict {
+            Some(guard::LaunchVerdict::CrashLoop { rapid_launches }) => Some(rapid_launches as u32),
+            _ => None,
+        };
+        let crash_loop = match launch_verdict {
             Some(guard::LaunchVerdict::CrashLoop { rapid_launches }) => {
                 eprintln!(
                     "SelahCue: CRASH LOOP DETECTED ({rapid_launches} rapid restarts) — \
@@ -1621,6 +1675,18 @@ impl App {
         )));
 
         if let Ok(mut c) = controller.lock() {
+            // Publish health from the FIRST frame, so the very first operator view already
+            // carries it. Waiting for the first autosave tick would leave a window in which the
+            // console has no health at all — and "no health yet" is indistinguishable to a
+            // client from "this host does not report health".
+            let (disk_tag, disk_available) = storage_tag(startup_disk);
+            c.set_storage_health(disk_tag, disk_available, disk_critical || crash_loop);
+            c.set_session_health(
+                restored.is_some(),
+                crash_loop,
+                crash_rapid_launches,
+                store.last_save_error(),
+            );
             // Load the user config (the saved-theme library + the per-screen theme map)
             // BEFORE restoring the session, so a per-item / per-screen override that
             // references a SAVED theme resolves as content is re-staged (86ajq69ft). The
@@ -1681,6 +1747,9 @@ impl App {
             stable_marked: false,
             last_disk_check: Instant::now(),
             disk_critical,
+            last_disk_status: startup_disk,
+            session_restored: restored.is_some(),
+            crash_rapid_launches,
             clean_mode: crash_loop,
             identify_frames: None,
             modifiers: winit::keyboard::ModifiersState::empty(),
@@ -1822,9 +1891,44 @@ impl App {
         self.publish_output_status();
     }
 
+    /// Push the host's storage + session health into the operator view.
+    ///
+    /// These were previously reported by `eprintln!` only, so nobody actually running a service
+    /// ever saw them: autosave could be failing for an entire meeting, or checkpointing halted
+    /// on a full disk, with the console showing nothing wrong.
+    ///
+    /// Takes the controller lock briefly and drops it, so it is safe to call from paths that do
+    /// not already hold it. Callers that DO hold the lock must use the setters directly.
+    fn publish_health(&mut self) {
+        let (status, available) = storage_tag(self.last_disk_status);
+        let restored = self.session_restored;
+        let crash_loop = self.clean_mode;
+        let rapid = self.crash_rapid_launches;
+        let autosave_error = self.store.last_save_error().map(str::to_string);
+        if let Ok(mut c) = self.controller.lock() {
+            c.set_storage_health(
+                status,
+                available,
+                // Checkpoints are halted below the floor AND in breaker-tripped clean mode,
+                // where the preserved session must stay untouched. Both are "not persisting",
+                // which is what the operator needs to know.
+                self.disk_critical || self.clean_mode,
+            );
+            c.set_session_health(restored, crash_loop, rapid, autosave_error.as_deref());
+        }
+    }
+
     /// Autosave: persist the session when state changed (throttled to ~1/s) and
     /// periodically while a countdown runs (so its elapsed stays fresh on disk).
     fn autosave(&mut self, now: Instant) {
+        // Publish health FIRST, before any early return below.
+        //
+        // A halted-checkpoint state is precisely when the operator most needs to be told, and
+        // this function returns early in exactly that case. Ordering the publish first makes
+        // that impossible to get wrong, rather than correct-until-someone-adds-another-return:
+        // there is no branch between here and the top. The cost is that a disk verdict is at
+        // most one frame stale, which is nothing against a once-a-minute check.
+        self.publish_health();
         // Crash-loop breaker: surviving to STABLE_AFTER forgives this launch.
         if !self.stable_marked && now.duration_since(self.launched_at) >= guard::STABLE_AFTER {
             self.stable_marked = true;
@@ -1839,22 +1943,28 @@ impl App {
             match data_dir().as_deref().and_then(guard::disk_status) {
                 Some(status) => {
                     let critical = matches!(status, guard::DiskStatus::Critical { .. });
-                    if critical != self.disk_critical || !matches!(status, guard::DiskStatus::Ok) {
+                    if critical != self.disk_critical
+                        || !matches!(status, guard::DiskStatus::Ok { .. })
+                    {
                         report_disk(status);
                     }
                     if self.disk_critical && !critical {
                         eprintln!("SelahCue: disk headroom recovered — checkpoints resumed.");
                     }
                     self.disk_critical = critical;
+                    self.last_disk_status = Some(status);
                 }
                 None if self.disk_critical => {
+                    self.last_disk_status = None;
                     // Free space unknowable while halted: stay safe, keep saying so.
                     eprintln!(
                         "SelahCue: cannot determine free disk space — checkpoint \
                          writes remain paused."
                     );
                 }
-                None => {}
+                None => {
+                    self.last_disk_status = None;
+                }
             }
         }
         if self.disk_critical || self.clean_mode {
@@ -3204,6 +3314,53 @@ mod window_lifecycle_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// The storage guard's verdict must reach the operator as FOUR outcomes, not three.
+    ///
+    /// A platform that cannot report free space is neither healthy nor critical. Mapping that
+    /// `None` onto `"ok"` would tell the operator their disk is fine when nothing checked it —
+    /// the same class of fabrication as rendering absent telemetry as a hard fault, just in the
+    /// flattering direction.
+    #[test]
+    fn an_unreadable_disk_is_reported_as_unknown_never_as_ok() {
+        assert_eq!(super::storage_tag(None), ("unknown", None));
+
+        let (tag, bytes) =
+            super::storage_tag(Some(super::guard::DiskStatus::Ok { available: 900 }));
+        assert_eq!((tag, bytes), ("ok", Some(900)));
+
+        let (tag, bytes) =
+            super::storage_tag(Some(super::guard::DiskStatus::Low { available: 50 }));
+        assert_eq!((tag, bytes), ("low", Some(50)));
+
+        let (tag, bytes) =
+            super::storage_tag(Some(super::guard::DiskStatus::Critical { available: 1 }));
+        assert_eq!((tag, bytes), ("critical", Some(1)));
+    }
+
+    /// Every verdict needs its own tag, and every KNOWN verdict must carry its figure — a bare
+    /// "ok" hides a slow slide toward the warning threshold until it crosses.
+    #[test]
+    fn every_storage_verdict_is_distinct_and_known_ones_carry_the_figure() {
+        let cases = [
+            None,
+            Some(super::guard::DiskStatus::Ok { available: 900 }),
+            Some(super::guard::DiskStatus::Low { available: 50 }),
+            Some(super::guard::DiskStatus::Critical { available: 1 }),
+        ];
+        let mut tags: Vec<&str> = cases.iter().map(|c| super::storage_tag(*c).0).collect();
+        let n = tags.len();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(tags.len(), n, "each verdict needs its own tag");
+
+        for case in cases.into_iter().flatten() {
+            assert!(
+                super::storage_tag(Some(case)).1.is_some(),
+                "a KNOWN verdict must report its free-space figure: {case:?}"
+            );
+        }
+    }
     use super::{display_keys, smoke_mode_requested, MonitorFacts};
 
     #[test]

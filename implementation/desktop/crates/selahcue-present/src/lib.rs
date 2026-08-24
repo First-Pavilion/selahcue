@@ -13,6 +13,7 @@
 
 pub mod compose;
 pub mod deck;
+pub mod health;
 pub mod measure;
 pub mod present;
 pub mod qr;
@@ -20,12 +21,14 @@ pub mod slide;
 pub mod stage;
 pub mod theme;
 pub mod tokens;
+pub mod trash;
 
 pub use compose::{compose_authored_slide, compose_slide, compose_slide_masked, LayerMask};
 pub use deck::{
     crossfade, media_usage, AuthoredSlide, DeckId, DeckSession, SlideDeck, SlideId, Transition,
     UsageReport, MAX_DECK_SLIDES, MAX_NOTES_LEN,
 };
+pub use health::{fault_tag, OutputHealth};
 pub use present::Presenter;
 pub use qr::{compose_qr, qr_modules};
 pub use slide::Slide;
@@ -37,6 +40,7 @@ pub use theme::{
     VAlign, MAX_ELEMENTS, MAX_TEXT_ELEMENT_LEN,
 };
 pub use tokens::{contrast_ratio, SemanticToken, LIVE, NEUTRAL, PREVIEW, WARN};
+pub use trash::{DeckTrash, MAX_TRASH_BYTES, MAX_TRASH_ENTRIES};
 
 /// The sniffed still-image format, re-exported for the same reason as the engine types below: a
 /// consumer that has to name the format an image turned out to be — the media store, deciding a
@@ -44,6 +48,10 @@ pub use tokens::{contrast_ratio, SemanticToken, LIVE, NEUTRAL, PREVIEW, WARN};
 /// enums with the same variants and no conversion between them agree only by the order they happen
 /// to be written in, and the failure mode when they stop agreeing is a file saved under the wrong
 /// extension, which nothing detects.
+/// Re-exported so a consumer can name a fault kind — reporting one via
+/// [`Presenter::inject_fault`](present::Presenter::inject_fault), or rendering the reason an
+/// output is held — without depending on `selahcue-engine` directly.
+pub use selahcue_engine::fault::Fault;
 pub use selahcue_engine::media::ImageFormat;
 /// Re-exported so consumers can name the output pixel buffer (and its pixel colour)
 /// without depending on `selahcue-engine` directly.

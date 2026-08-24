@@ -12,9 +12,10 @@ use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{
     Command, ContentLinkView, DenyReason, DetectionView, DisplayView, OutputConfigView,
-    OutputStatusView, SavedThemeView, ScaleFit, ScreenThemeView, ScreenView, ServerMessage,
-    ThumbView, TimerSnapshot, TranscriptSegmentView, VerseView, MAX_FRAME_RATE, MAX_NDI_NAME_LEN,
-    MAX_OUTPUT_DELAY_MS, MIN_FRAME_RATE,
+    OutputHealthView, OutputStatusView, SavedThemeView, ScaleFit, ScreenThemeView, ScreenView,
+    ServerMessage, SessionHealthView, StorageHealthView, ThumbView, TimerSnapshot,
+    TranscriptSegmentView, VerseView, MAX_FRAME_RATE, MAX_NDI_NAME_LEN, MAX_OUTPUT_DELAY_MS,
+    MIN_FRAME_RATE,
 };
 use selahcue_present::{
     AuthoredSlide, FrameBuffer, LayerMask, Presenter, Slide, StageDisplay, StageTheme, Theme,
@@ -210,6 +211,13 @@ pub struct LiveController {
     /// but never blocks or blanks Live (FR-083). In-memory only this slice (encrypted
     /// persistence + retention is a documented follow-up seam).
     transcript: TranscriptEngine,
+    /// The host's storage headroom for autosave, as last reported by the host
+    /// ([`set_storage_health`](Self::set_storage_health)). `None` until the host reports —
+    /// which a client must render as *unknown*, never as healthy.
+    storage_health: Option<StorageHealthView>,
+    /// The host's session-recovery state ([`set_session_health`](Self::set_session_health)).
+    /// `None` until the host reports.
+    session_health: Option<SessionHealthView>,
     /// A tiny rolling window of the most recent transcript segments, joined and fed to the
     /// fuzzy quote matcher — so a paraphrase spoken across an utterance boundary ("…and
     /// strangers shall" / "feed your flock") is still matched, not just single-segment quotes.
@@ -547,6 +555,29 @@ fn stage_reference_for_detection(reference: &str) -> String {
 
 /// The wire view of a plan item's linked content (ADR-0020 follow-up), so the
 /// operator UI shows link status. Pure mapping of `ItemContent`.
+/// Project the compositor's health record onto the wire view.
+///
+/// `fault` is carried as a stable snake_case string rather than a shared enum because
+/// `selahcue-lan` is the control plane and must not depend on the presentation crate —
+/// the same boundary that keeps `theme_json` opaque to the wire. The tag mapping itself
+/// lives in `selahcue-present::fault_tag`, so the operator-facing strings are pinned by
+/// that crate's tests.
+///
+/// A recovered output never names a stale reason, because `OutputHealth` itself clears the
+/// fault on recovery — that invariant is enforced and mutation-tested at its single source
+/// (`selahcue-present`, `output_health_never_names_a_reason_when_not_held`). This mapper
+/// deliberately does NOT re-check it: a second copy of an invariant, in a place no test can
+/// reach, is a control that guards nothing, which is the exact defect class this seam was
+/// built to remove.
+fn output_health_view(h: selahcue_present::OutputHealth) -> OutputHealthView {
+    OutputHealthView {
+        held: h.held,
+        fault: h.fault.map(selahcue_present::fault_tag).map(str::to_string),
+        holds: h.holds,
+        recoveries: h.recoveries,
+    }
+}
+
 fn content_link_view(c: &selahcue_core::plan::ItemContent) -> ContentLinkView {
     use selahcue_core::plan::ItemContent;
     match c {
@@ -721,6 +752,8 @@ impl LiveController {
             output_configs: std::collections::BTreeMap::new(),
             output_configs_dirty: false,
             transcript: TranscriptEngine::new(),
+            storage_health: None,
+            session_health: None,
             recent_texts: std::collections::VecDeque::new(),
             partial: None,
         }
@@ -1831,6 +1864,66 @@ impl LiveController {
     }
 
     /// The presenter (for the output window / stage display to render).
+    /// Report the host's storage headroom for autosave (`guard::DiskStatus`).
+    ///
+    /// The host is the only layer that knows which volume backs its data directory, so it owns
+    /// this verdict; the operator previously received a raw byte count and had to guess the
+    /// thresholds. `status` is `"ok"` / `"low"` / `"critical"` / `"unknown"`, and `"unknown"`
+    /// is a real outcome — the platform can fail to report free space, which is neither
+    /// healthy nor critical.
+    pub fn set_storage_health(
+        &mut self,
+        status: &str,
+        available_bytes: Option<u64>,
+        checkpoints_paused: bool,
+    ) {
+        self.storage_health = Some(StorageHealthView {
+            status: status.to_string(),
+            available_bytes,
+            checkpoints_paused,
+        });
+    }
+
+    /// Report the host's session-recovery state (`guard.rs` + `session_repo.rs`), which until
+    /// now reached only stderr.
+    ///
+    /// `autosave_error` is truncated to a bounded length: exactly one is retained and each
+    /// replaces the last, so nothing accumulates, but an uncapped host error string would still
+    /// be unbounded growth.
+    pub fn set_session_health(
+        &mut self,
+        restored: bool,
+        crash_loop: bool,
+        rapid_launches: Option<u32>,
+        autosave_error: Option<&str>,
+    ) {
+        self.session_health = Some(SessionHealthView {
+            restored,
+            crash_loop,
+            rapid_launches,
+            autosave_error: autosave_error.map(|e| {
+                selahcue_lan::protocol::truncate_for_wire(
+                    e,
+                    selahcue_lan::protocol::MAX_ERROR_TEXT_LEN,
+                )
+            }),
+        });
+    }
+
+    /// Report a fault against the LIVE audience output (NFR-024).
+    ///
+    /// The host owns the real backend, so it is the only layer that learns a surface was
+    /// lost or a decode failed; this is how it tells the controller, and therefore the
+    /// operator. The audience keeps seeing the last good frame — reporting a fault never
+    /// blanks or clears the output — and the hold shows up in the next
+    /// [`operator_view`](Self::operator_view) as `output_health.held`.
+    ///
+    /// Recovery needs no call: the next successful compose presents a good frame and the
+    /// engine clears the hold by itself.
+    pub fn report_fault(&mut self, fault: selahcue_present::Fault) {
+        self.presenter.inject_fault(fault);
+    }
+
     pub fn presenter(&self) -> &Presenter {
         &self.presenter
     }
@@ -1973,6 +2066,17 @@ impl LiveController {
             // Console's Stage sub-tab and the confidence monitor's layout / message overlay.
             stage_template: self.stage.template().as_tag().to_string(),
             stage_message: self.stage.message().map(|m| m.to_string()),
+            // The live output's fault/recovery health, read from the REAL compositor
+            // (NFR-024). Always `Some` here: this controller owns a presenter, so it can
+            // always answer — `held == false` is a positive "the output is healthy", not a
+            // shrug. `None` is reserved for a view that arrives WITHOUT health, i.e. an
+            // older host, which the UI must show as unknown rather than as a fault.
+            output_health: Some(output_health_view(self.presenter.output_health())),
+            // Storage + session health pass through exactly as the host reported them. They stay
+            // `None` on a controller no host is driving (the stand-alone operator shell), which
+            // is the honest answer there: nothing is autosaving, so there is nothing to report.
+            storage: self.storage_health.clone(),
+            session: self.session_health.clone(),
             // The bounded recent transcript tail (oldest first) — the log is already
             // capped; this trims the wire payload further.
             transcript: self

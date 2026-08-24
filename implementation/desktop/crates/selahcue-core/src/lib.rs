@@ -23,6 +23,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod detection;
+pub mod detector;
 pub mod media;
 pub mod plan;
 pub mod providers;

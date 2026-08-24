@@ -21,6 +21,7 @@ render/dedup/cap/wiring), not for engine-specific CSS/canvas quirks. A WebKit/WK
 driven smoke would be a stronger fidelity check; tracked as an audit follow-up. The real
 Tauri webview stays owner-run / dev-time.
 """
+import json
 import shutil
 import subprocess, tempfile, os, re, sys
 
@@ -38,7 +39,10 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # Bump when adding checks; never lower it to mask a lost one.
 # (Re-tightened with the window-semantics checks: the floor had drifted 19 below the real
 # count, so up to 19 checks could have been dropped silently. Verified stable across runs.)
-EXPECTED_MIN_CHECKS = 640
+# (Raised with the Design 2.0 parity batch 1 block — CON-046 / CON-142 / PME-001 / PME-005 /
+# PME-014 / PME-015 — which adds 67 checks: 640 -> 707. Set to the REAL observed count, not a
+# round number, so that dropping even one of the new checks trips exit 4.)
+EXPECTED_MIN_CHECKS = 771
 
 
 def find_chrome():
@@ -82,6 +86,18 @@ if CHROME is None:
     sys.exit(0)
 
 html = open(os.path.join(DIST, "index.html")).read()
+
+# The real app.css text, handed to the driver as a string. Chrome refuses
+# `document.styleSheets[i].cssRules` for a file:// stylesheet (SecurityError), so a rule that
+# only exists in a pseudo-class state (`.pm-btn-primary:hover`) is unreachable from the DOM.
+# The driver regexes the rule out of this text and then resolves its VALUE through the live CSS
+# engine (an inline `background-color: var(--token)` on a probe element), so `var()` is followed
+# rather than string-matched and a token rename cannot fake a pass.
+CSS_SRC = (
+    "<script>window.__CSSTEXT = "
+    + json.dumps(open(os.path.join(DIST, "app.css")).read())
+    + ";</script>"
+)
 
 STUB = r"""
 <script>
@@ -183,6 +199,10 @@ STUB = r"""
     }
     if (cmd === "add_item" || cmd === "move_item" || cmd === "rename_item" || cmd === "remove_item" || cmd === "plan_undo" || cmd === "plan_redo")
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    // Blackout mirrors the host: it MUTATES the state and returns the new view. It used to fall
+    // through to `Promise.resolve(null)`, so the engaged blackout state could never be exercised
+    // end to end — the driver could only fake it by poking V directly.
+    if (cmd === "blackout") { V.blackout = !!(args && args.on); return Promise.resolve(JSON.parse(JSON.stringify(V))); }
     if (cmd === "scripture_search")
       return Promise.resolve([{reference:"Romans 8:28", text:"And we know that all things work together for good"}]);
     if (cmd === "preview_theme") return Promise.resolve({rgba: btoa("\x00\x00\x00\xff"), w:1, h:1});
@@ -306,9 +326,15 @@ STUB = r"""
         {id:2, name:"Sermon: Grace That Feeds", slides:2},  // the open deck (matches D)
         {id:3, name:"Youth Night — Identity", slides:12}
       ],
-      open: 2, persistent: true, nextId: 4
+      open: 2, persistent: true, nextId: 4,
+      // Mirrors the host's bounded in-memory trash (8 entries). Without it the driver could never
+      // reach the restorable/non-restorable branches at all — a fixture that never reaches the
+      // condition the test names is the way these checks rot into decoration.
+      trash: []
     });
-    var libView = function(){ return { decks: LIB.decks.map(function(d){return {id:d.id,name:d.name,slides:d.slides};}), open: LIB.open, persistent: LIB.persistent }; };
+    var libView = function(){ return { decks: LIB.decks.map(function(d){return {id:d.id,name:d.name,slides:d.slides};}), open: LIB.open, persistent: LIB.persistent,
+      // What an undo could ACTUALLY put back (LibraryView.restorable). Bounded, so it shrinks.
+      restorable: LIB.trash.map(function(t){ return t.id; }) }; };
     var libUnique = function(base){ var n=base, k=2; var names=LIB.decks.map(function(d){return d.name;}); while(names.indexOf(n)>=0){ n=base+" ("+k+")"; k++; } return n; };
     if (cmd === "deck_list") return Promise.resolve(libView());
     if (cmd === "deck_search") {
@@ -344,9 +370,40 @@ STUB = r"""
     }
     if (cmd === "deck_delete") {
       var wasOpen=(LIB.open===args.id);
+      var doomed=LIB.decks.filter(function(x){return x.id===args.id;})[0];
+      // The host retains the deck in a bounded trash — EXCEPT when it is too large to keep, which
+      // is why `restorable` exists rather than "the last delete is always undoable".
+      // window.__deckNoRetain names an id the fixture wants to be unretainable.
+      if (doomed && window.__deckNoRetain !== args.id) {
+        LIB.trash.push({id:doomed.id, deck:{id:doomed.id, name:doomed.name, slides:doomed.slides}});
+        while (LIB.trash.length > 8) LIB.trash.shift();
+      }
       LIB.decks=LIB.decks.filter(function(x){return x.id!==args.id;});
       if (wasOpen){ if(LIB.decks.length){ LIB.open=LIB.decks[0].id; D.name=LIB.decks[0].name; D.count=LIB.decks[0].slides; } else { LIB.decks.push({id:LIB.nextId++, name:"Untitled presentation", slides:1}); LIB.open=LIB.decks[0].id; D.name="Untitled presentation"; D.count=1; } }
       return Promise.resolve(libView());
+    }
+    // Detector liveness (HOST-SIGNAL-WEBVIEW-CONTRACT Tier 1a). All four keys always present.
+    // __detHealthFail simulates a host with no such command — the UNKNOWN case, which is the one
+    // the old `else -> NO SIGNAL` shape got wrong.
+    if (cmd === "detection_health") {
+      if (window.__detHealthFail) return Promise.reject("no such command");
+      return Promise.resolve(window.__detHealth || {state:"idle", provider:null, error:null, can_retry:false});
+    }
+    if (cmd === "retry_detection") {
+      if (window.__detRetryRefuse) return Promise.reject(window.__detRetryRefuse);
+      window.__detHealth = {state:"listening", provider:"whisper-small", error:null, can_retry:false};
+      return Promise.resolve(window.__detHealth);
+    }
+    if (cmd === "deck_restore") {
+      var ti=-1; for (var k=0;k<LIB.trash.length;k++) if (LIB.trash[k].id===args.id) ti=k;
+      // Refusal is a REJECTED PROMISE with an operator-facing reason — never a silent no-op.
+      if (ti<0) return Promise.reject("That presentation can no longer be restored.");
+      var back=LIB.trash.splice(ti,1)[0].deck;
+      // The name can differ: if it was taken while the deck sat in the trash it is uniquified.
+      back.name=libUnique(back.name);
+      LIB.decks.push(back);
+      var rv=libView(); rv.restored_name=back.name;
+      return Promise.resolve(rv);
     }
     if (cmd === "render_deck_slide")
       return Promise.resolve({available:true, frame:{w:2, h:1, rgba: btoa("\x33\x2b\x5a\xff\x1a\x1d\x27\xff")}});
@@ -2934,6 +2991,571 @@ DRIVER = r"""
       // (C-008) layout robustness: the panel does not overflow horizontally past its surface.
       var ss = el("surface-settings");
       ok(ss.scrollWidth <= ss.clientWidth + 2, "PP C-008: the Settings body does not overflow horizontally (no sideways scroll)");
+
+      // ==================================================================================
+      // W — Design 2.0 parity, batch 1. CON-046 / CON-142 / PME-001 / PME-005 / PME-014-015.
+      //
+      // Every contrast number below is measured COMPOSITED from the REAL computed styles and
+      // at EVERY stop of every gradient. Both properties matter and both were real defects:
+      // CON-046's chip is `rgba(255,255,255,.18)` sitting invisibly between the ink and the
+      // fill, so a token-on-token check reports "white on green" and misses it entirely; and
+      // GO LIVE's fill is a two-stop gradient, so a single-stop check passes on the bright end
+      // while the text is still failing on the dark end. Each group carries a control that must
+      // measure as FAILING, so a green result proves the measurement works.
+      // ==================================================================================
+      function _sl(v){ v/=255; return v<=0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055,2.4); }
+      function _lum(c){ return 0.2126*_sl(c[0])+0.7152*_sl(c[1])+0.0722*_sl(c[2]); }
+      function _cr(a,b){ var la=_lum(a), lb=_lum(b), hi=Math.max(la,lb), lo=Math.min(la,lb); return (hi+0.05)/(lo+0.05); }
+      function _rgba(s){ var m=String(s).match(/[-\d.]+/g)||["0","0","0"]; return [+m[0],+m[1],+m[2], m.length>3?+m[3]:1]; }
+      function _over(f,b){ var a=(f[3]==null?1:f[3]); return [a*f[0]+(1-a)*b[0], a*f[1]+(1-a)*b[1], a*f[2]+(1-a)*b[2]]; }
+      // ink over chip over backdrop — the layer order the browser actually paints.
+      function _stack(ink, chip, bg){ var base=_over(chip,bg); return _cr(_over(ink,base), base); }
+      function _f(r){ return r.toFixed(2); }
+      // Resolve ANY colour declaration (hex, rgb(), or var(--token)) through the live CSS engine.
+      function _resolve(decl){
+        var pr=document.createElement("span");
+        pr.style.cssText="position:absolute;left:-9999px;top:-9999px;background-color:"+decl;
+        document.body.appendChild(pr);
+        var c=getComputedStyle(pr).backgroundColor; pr.remove(); return _rgba(c);
+      }
+      // Every colour stop of an element's gradient, or its flat fill when it has no gradient.
+      function _stops(node){
+        var cs=getComputedStyle(node), m=(cs.backgroundImage||"none").match(/rgba?\([^)]*\)/g);
+        return (m && m.length) ? m.map(_rgba) : [_rgba(cs.backgroundColor)];
+      }
+      function _same(a,b){ return a[0]===b[0] && a[1]===b[1] && a[2]===b[2]; }
+      // Shorter wait budget than the default 150×20ms. This block sits at the very END of the
+      // driver, so every FAILING predicate here spends virtual time that the RESULTS write still
+      // needs: at the default budget a handful of real regressions could push the run past
+      // --virtual-time-budget and the gate would report "NO RESULTS BLOCK" (an infra error) instead
+      // of the named FAIL that tells you what broke. 60×20ms is ample for these local predicates.
+      var wWait = function(pred){ return waitFor(pred, 60); };
+
+      // --- CON-046: the keyboard-hint chips on the three token-filled buttons ---------------
+      var wGl = el("golive"), wGlKey = wGl.querySelector(".key"), wGlLbl = wGl.querySelector(".gl-label");
+      var wGlStops = _stops(wGl);
+      ok(wGlStops.length === 2 && !_same(wGlStops[0], wGlStops[1]),
+         "CON-046 (premise): GO LIVE really is a TWO-stop gradient (" + wGlStops.length + " stops, distinct), so 'measured at both stops' is not vacuous");
+      // Control: the pairing that actually shipped must still measure as FAILING through this
+      // exact helper. Without it, a green result below could just mean the helper returns 21.
+      var wOld = wGlStops.map(function(s){ return _stack([255,255,255,1],[255,255,255,0.18],s); });
+      ok(Math.max.apply(null, wOld) < 3.0,
+         "CON-046 (control): the ORIGINAL white-on-rgba(255,255,255,.18) chip still measures below AA-LARGE through this helper (" + wOld.map(_f).join(" / ") + ":1) — the measurement is not rubber-stamping");
+      var wGlChip = _rgba(getComputedStyle(wGlKey).backgroundColor), wGlInk = _rgba(getComputedStyle(wGlKey).color);
+      wGlStops.forEach(function(s, i){
+        var r = _stack(wGlInk, wGlChip, s);
+        ok(r >= 4.5, "CON-046: the GO LIVE '⏎ Enter' chip clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
+      });
+      ok(getComputedStyle(wGlKey).color === getComputedStyle(wGlLbl).color,
+         "CON-046: the key hint carries the SAME dark ink as the GO LIVE label — one ink on one fill, not two answers to the same question");
+      ok(parseFloat(getComputedStyle(wGlKey).fontSize) < 18.66,
+         "CON-046 (premise): the chip is SMALL text (" + getComputedStyle(wGlKey).fontSize + "), so 4.5:1 is the right bar — a font-size bump must not silently relax this");
+
+      // Every OTHER key chip on the page, measured on its own button's real fill. The generic
+      // `button .key` fallthrough is where this defect class hides: the specific rule you are
+      // reading does not mention the state at all, so a rule-by-rule review never sees it.
+      // #blackout RESTING was exactly that — muted ink on the resting red gradient, 3.20 / 3.75:1.
+      var wEveryKey = Array.prototype.slice.call(document.querySelectorAll("button .key"));
+      ok(wEveryKey.length >= 5,
+         "CON-046 (premise): every `.key` chip on the page is enumerated (" + wEveryKey.length + " found) — a chip added later is measured, not missed");
+      wEveryKey.forEach(function(k){
+        var host = k.closest("button"), kc = getComputedStyle(k);
+        var worst = Math.min.apply(null, _stops(host).map(function(st){
+          return _stack(_rgba(kc.color), _rgba(kc.backgroundColor), st);
+        }));
+        ok(worst >= 4.5, "CON-046: key chip '" + k.textContent.trim().slice(0,6) + "' on #" + (host.id||host.className) +
+           " (RESTING) clears AA-NORMAL on every stop of its own fill (" + _f(worst) + ":1)");
+      });
+      // The resting BLACKOUT specifically, including its :hover brightness(1.06) — the state the
+      // operator looks at most on a safety-critical control.
+      var wBoRest = el("blackout"), wBoRestKey = wBoRest.querySelector(".key");
+      var wBoRestCs = getComputedStyle(wBoRestKey);
+      var wBoRestStops = _stops(wBoRest);
+      ok(wBoRestStops.length === 2 && !_same(wBoRestStops[0], wBoRestStops[1]),
+         "CON-046 (premise): resting BLACKOUT is a TWO-stop gradient, so both stops must be measured");
+      var wBoRestWorst = Math.min.apply(null, wBoRestStops.map(function(st){
+        return _stack(_rgba(wBoRestCs.color), _rgba(wBoRestCs.backgroundColor), st); }));
+      ok(wBoRestWorst >= 4.5,
+         "CON-046: the RESTING BLACKOUT key hint clears AA-NORMAL on both stops of the resting red gradient (" + _f(wBoRestWorst) + ":1)");
+      // Control: the muted ink it used to fall through to must still measure as FAILING here.
+      var wBoRestOld = Math.max.apply(null, wBoRestStops.map(function(st){
+        return _stack(_resolve("var(--sc-text-secondary)"), [107,115,131,0.16], st); }));
+      ok(wBoRestOld < 4.5,
+         "CON-046 (control): the generic `button .key` muted ink still measures BELOW AA-normal on this fill (" + _f(wBoRestOld) + ":1) — the fix is the ink override, not a measurement artefact");
+      ok(getComputedStyle(wBoRestKey).color === getComputedStyle(wBoRest).color,
+         "CON-046: the resting BLACKOUT chip takes the button's OWN ink, so resting and engaged read the same (no chip jump on engage)");
+
+      // BLACKOUT engaged: `.on` and [aria-pressed=true] are set together by the render loop, and
+      // the review block resolves that state to the darkened canonical red. Measured rather than
+      // assumed; a shared fix would have been wrong here.
+      var wBo = el("blackout"), wBoKey = wBo.querySelector(".key");
+      var wBoWasOn = wBo.classList.contains("on"), wBoPressed = wBo.getAttribute("aria-pressed");
+      wBo.classList.add("on"); wBo.setAttribute("aria-pressed", "true");
+      var wBoStops = _stops(wBo);
+      var wBoChip = _rgba(getComputedStyle(wBoKey).backgroundColor), wBoInk = _rgba(getComputedStyle(wBoKey).color);
+      var wBoWorst = Math.min.apply(null, wBoStops.map(function(s){ return _stack(wBoInk, wBoChip, s); }));
+      ok(wBoWorst >= 4.5, "CON-046: the BLACKOUT-engaged key hint clears AA-NORMAL on its real engaged fill (" + _f(wBoWorst) + ":1)");
+      var wBoLabel = Math.min.apply(null, wBoStops.map(function(s){ return _cr(_rgba(getComputedStyle(wBo).color), s); }));
+      ok(wBoLabel >= 4.5,
+         "CON-046 (premise): BLACKOUT engaged still uses the darkened canonical red (label " + _f(wBoLabel) + ":1) — that is WHY its white chip passes where GO LIVE's did not");
+      if (!wBoWasOn) wBo.classList.remove("on");
+      if (wBoPressed == null) wBo.removeAttribute("aria-pressed"); else wBo.setAttribute("aria-pressed", wBoPressed);
+
+      // Clear Output armed sits on --sc-live, an INK used as a fill — the light chip measured 2.74:1.
+      var wCa = el("clear-all"), wCaKey = wCa.querySelector(".key"), wCaWasArmed = wCa.classList.contains("armed");
+      wCa.classList.add("armed");
+      var wCaStops = _stops(wCa);
+      var wCaChip = _rgba(getComputedStyle(wCaKey).backgroundColor), wCaInk = _rgba(getComputedStyle(wCaKey).color);
+      var wCaWorst = Math.min.apply(null, wCaStops.map(function(s){ return _stack(wCaInk, wCaChip, s); }));
+      ok(wCaWorst >= 4.5, "CON-046: the ARMED Clear-Output key hint clears AA-NORMAL on its fill (" + _f(wCaWorst) + ":1)");
+      ok(getComputedStyle(wGlKey).backgroundColor !== getComputedStyle(wBoKey).backgroundColor,
+         "CON-046: the chips are treated PER FILL, not re-merged into one shared declaration (the merge is what hid this defect)");
+      // The armed LABEL, and the non-text contrast of the armed STATE itself. Fixing the label by
+      // swapping the FILL would have cost the state its visibility — WCAG 1.4.11 covers states, and
+      // the armed hint is a one-second transient whose only signal is that colour flip.
+      var wCaArmedFill = _rgba(getComputedStyle(wCa).backgroundColor);
+      var wCaLabel = _cr(_rgba(getComputedStyle(wCa).color), wCaArmedFill);
+      ok(wCaLabel >= 4.5, "CON-046: the ARMED Clear-Output LABEL clears AA-NORMAL on its fill (" + _f(wCaLabel) + ":1, was white-on---sc-live at 3.27:1)");
+      wCa.classList.remove("armed");
+      var wCaRestFill = _rgba(getComputedStyle(wCa).backgroundColor);
+      if (wCaWasArmed) wCa.classList.add("armed");
+      var wCaState = _cr(wCaArmedFill, wCaRestFill);
+      ok(wCaState >= 3.0,
+         "CON-046: ARMED still stands out from RESTING at the 3:1 non-text bar (" + _f(wCaState) + ":1) — the label fix did not cost the state its visibility");
+      ok(_cr(wCaArmedFill, _resolve("var(--panel)")) >= 3.0,
+         "CON-046: the ARMED fill still clears 3:1 against the page behind it (" + _f(_cr(wCaArmedFill, _resolve("var(--panel)"))) + ":1)");
+
+      // --- CON-142: three unrelated `.seg` declarations, equal specificity, last-wins ---------
+      ok(document.querySelectorAll(".seg").length === 0,
+         "CON-142: no element carries the bare `seg` class any more — the three families cannot collide again through markup");
+      var wSub = document.querySelector(".subtab-seg"), wSubCs = getComputedStyle(wSub);
+      ok(wSubCs.columnGap === "3px",
+         "CON-142: the Timer|Stage control keeps its OWN 3px gap (the transcript rule was leaking 8px into it) — got " + wSubCs.columnGap);
+      ok(wSubCs.alignItems !== "baseline",
+         "CON-142: the Timer|Stage control no longer inherits the transcript line's align-items:baseline — got " + wSubCs.alignItems);
+      ok(wSubCs.paddingTop === "3px" && wSubCs.borderTopLeftRadius === "9px",
+         "CON-142: the Timer|Stage control keeps its own inset chrome (padding " + wSubCs.paddingTop + ", radius " + wSubCs.borderTopLeftRadius + ")");
+      var wSubBtn = wSub.querySelector(".subtab-seg-btn"), wSubBtnCs = getComputedStyle(wSubBtn);
+      ok(wSubBtnCs.fontSize === "13px",
+         "CON-142: a sub-tab button keeps its own 13px label — `.seg button` (0,0,1,1) used to OUTRANK `.seg-btn` (0,0,1,0) and force 12px; got " + wSubBtnCs.fontSize);
+      ok(wSubBtnCs.paddingLeft === "0px",
+         "CON-142: a sub-tab button keeps its own `padding: 6px 0` — the same specificity bug forced 6px 8px; got " + wSubBtnCs.paddingLeft);
+      var wTp = el("transcript-partial"), wTpWasHidden = wTp.hidden; wTp.hidden = false;
+      var wTpCs = getComputedStyle(wTp);
+      ok(wTpCs.paddingTop === "0px" && wTpCs.borderTopWidth === "0px" && wTpCs.marginBottom === "0px" && wTpCs.borderTopLeftRadius === "0px",
+         "CON-142: a transcript line no longer inherits the segmented control's inset chrome (padding " + wTpCs.paddingTop + ", border " + wTpCs.borderTopWidth + ", margin-bottom " + wTpCs.marginBottom + ", radius " + wTpCs.borderTopLeftRadius + ")");
+      ok(wTpCs.columnGap === "8px" && wTpCs.alignItems === "baseline",
+         "CON-142: the transcript line keeps its own 8px baseline-aligned geometry (gap " + wTpCs.columnGap + ", align " + wTpCs.alignItems + ")");
+      wTp.hidden = wTpWasHidden;
+      // Positive control: the rename must have MOVED the Theme-Designer rules, not deleted them.
+      // Without this, "the collision is gone" is indistinguishable from "the CSS is gone".
+      var wTd = el("td-bg-type"), wTdCs = getComputedStyle(wTd), wTdBtn = wTd.querySelector("button");
+      ok(wTdCs.display === "flex",
+         "CON-142 (positive control): the Theme-Designer option group still gets its .td-seg layout — got display " + wTdCs.display);
+      ok(!!wTdBtn && getComputedStyle(wTdBtn).flexGrow === "1",
+         "CON-142 (positive control): `.td-seg button` still styles the designer's segment buttons (the rename moved the rules, it did not drop them)");
+
+      // --- PME-005: .pm-btn-primary:hover ---------------------------------------------------
+      var wHoverRule = /\.pm-btn-primary:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      ok(!!wHoverRule, "PME-005 (premise): the .pm-btn-primary:hover rule is present in the shipped app.css");
+      var wHb = wHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wHoverRule[1]) : null;
+      ok(!!wHb, "PME-005 (premise): the hover rule declares a background, so there is a value to measure");
+      if (wHb) {
+        var wHoverBg = _resolve(wHb[1].trim());
+        var wRestBg = _rgba(getComputedStyle(document.querySelector(".pm-btn-primary")).backgroundColor);
+        var wHoverR = _cr([255,255,255,1], wHoverBg), wRestR = _cr([255,255,255,1], wRestBg);
+        ok(wHoverR >= 4.5, "PME-005: the HOVERED primary keeps its white label at AA-NORMAL (" + _f(wHoverR) + ":1) — hover is a real UI state and WCAG applies to it");
+        ok(_lum(wHoverBg) < _lum(wRestBg),
+           "PME-005: hover DARKENS the fill instead of lightening it (rest " + _f(wRestR) + ":1 → hover " + _f(wHoverR) + ":1), matching the fix already shipped for .tb-golive");
+        var wOldHover = _resolve("var(--sc-primary-hover)");
+        ok(_cr([255,255,255,1], wOldHover) < 4.5,
+           "PME-005 (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], wOldHover)) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
+      }
+
+      // --- PME-014 / PME-015: the two missing topbar primary actions ------------------------
+      document.querySelector('.nav-item[data-surface="presentation"]').click();
+      ok(await wWait(function(){ return el("surface-presentation").classList.contains("active") && !el("pm-library").hidden; }),
+         "PME-014/015 (setup): the Presentation surface opens on the Library");
+      var wPres = el("pm-present"), wAtp = el("pm-addtoplan");
+      ok(!!wPres && wPres.tagName === "BUTTON", "PME-014: a real '▶ Present' control exists in the Presentation topbar (it was reachable ONLY from the ⌘K palette)");
+      ok(!!wAtp && wAtp.tagName === "BUTTON", "PME-015: an 'Add to plan' control exists in the Presentation topbar");
+      ok(getComputedStyle(wPres).display === "none" && getComputedStyle(wAtp).display === "none",
+         "PME-014/015: both topbar actions are hidden by COMPUTED display while browsing the Library (not merely the [hidden] attribute, which a class `display` rule would defeat)");
+      ok(wPres.getClientRects().length === 0 && wAtp.getClientRects().length === 0,
+         "PME-014/015: the hidden actions are genuinely unpainted, so they leave the tab order too (WCAG 2.4.3)");
+      ok(await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-open"); }), "PME-014 (setup): the library lists at least one presentation to open");
+      el("pm-lib-grid").querySelector(".pm-lib-open").click();
+      ok(await wWait(function(){ return !el("pm-grid").hidden; }), "PME-014 (setup): opening a presentation shows the slide grid");
+      ok(getComputedStyle(wPres).display !== "none" && wPres.getClientRects().length > 0,
+         "PME-014: '▶ Present' is really PAINTED once a presentation is open (computed display " + getComputedStyle(wPres).display + ")");
+      ok(getComputedStyle(wAtp).display !== "none" && wAtp.getClientRects().length > 0,
+         "PME-015: 'Add to plan' is really painted once a presentation is open");
+      ok(getComputedStyle(wPres).backgroundImage === "none",
+         "PME-003: '▶ Present' uses the FLAT primary fill, never the frame's gradient (white on the frame's light stop is 3.78:1)");
+      var wGlN = window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length;
+      wPres.click();
+      ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length > wGlN; }),
+         "PME-014: '▶ Present' presents from GRID mode (deck_go_live) — the same split the ⌘K palette already made");
+      el("pm-grid-edit").click();
+      ok(await wWait(function(){ return getComputedStyle(document.querySelector("#surface-presentation .pm-body")).display !== "none"; }),
+         "PME-014 (setup): Edit ▸ opens the authoring editor");
+      ok(getComputedStyle(wPres).display !== "none", "PME-014: '▶ Present' stays available in the EDITOR, not just the grid");
+      var wGlN2 = window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length;
+      wPres.click();
+      ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length > wGlN2; }),
+         "PME-014: '▶ Present' presents the selected slide from EDITOR mode (deck_go_live)");
+
+      // --- PME-001: the LIVE badge on the presented slide's rail card ------------------------
+      // Measured on the REAL badge the editor just rendered, not on a synthetic probe.
+      ok(await wWait(function(){ return !!document.querySelector(".pm-slide-live-badge"); }),
+         "PME-001 (positive control): a presented slide really renders the non-colour LIVE badge — the ratio below is measured on a live element");
+      var wBadge = document.querySelector(".pm-slide-live-badge");
+      if (wBadge) {
+        var wBc = getComputedStyle(wBadge), wBFill = _rgba(wBc.backgroundColor), wBInk = _rgba(wBc.color);
+        var wBR = _cr(wBInk, wBFill);
+        ok(wBR >= 4.5, "PME-001: the LIVE badge clears AA-NORMAL at " + wBc.fontSize + "/" + wBc.fontWeight + " (" + _f(wBR) + ":1) — an accessibility affordance that was itself failing accessibility");
+        ok(parseFloat(wBc.fontSize) < 18.66,
+           "PME-001 (premise): the badge really is SMALL text (" + wBc.fontSize + "), so AA-normal applies — a size change must not silently relax this check");
+        ok(!_same(wBFill, _resolve("var(--sc-live)")),
+           "PME-001: the badge no longer uses --sc-live (an INK) as a fill; it uses the canonical white-text red fill, the same resolution #blackout already took");
+        ok(_cr([255,255,255,1], _resolve("var(--sc-live)")) < 4.5,
+           "PME-001 (control): white on --sc-live still measures BELOW AA-normal (" + _f(_cr([255,255,255,1], _resolve("var(--sc-live)"))) + ":1) — the token value is untouched; the badge stopped using it as a fill");
+      }
+
+      // --- PME-015 behaviour: a REAL plan item with a REAL deck link -------------------------
+      var wOpenId = window.__LIB.open;
+      var wOpenDeck = window.__LIB.decks.filter(function(d){ return d.id === wOpenId; })[0];
+      var wAiN = window.__calls.filter(function(c){ return c.cmd === "add_item"; }).length;
+      var wSicN = window.__calls.filter(function(c){ return c.cmd === "set_item_content"; }).length;
+      wAtp.click();
+      ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "set_item_content"; }).length > wSicN; }),
+         "PME-015: 'Add to plan' commits through the host (set_item_content), not a local stub");
+      var wAdd = window.__calls.filter(function(c){ return c.cmd === "add_item"; }).pop();
+      ok(window.__calls.filter(function(c){ return c.cmd === "add_item"; }).length === wAiN + 1 && wAdd.args.kind === "slide_group",
+         "PME-015: it appends exactly ONE Presentation item to the plan (add_item{kind:slide_group})");
+      ok(wAdd.args.title === wOpenDeck.name,
+         "PME-015: the new plan item is titled with the OPEN deck's name (\"" + wAdd.args.title + "\")");
+      var wLink = window.__calls.filter(function(c){ return c.cmd === "set_item_content"; }).pop();
+      ok(wLink.args.link && wLink.args.link.kind === "deck" && wLink.args.link.id === wOpenId,
+         "PME-015: the item carries a REAL deck reference (link{kind:deck,id:" + (wLink.args.link && wLink.args.link.id) + "}), not an unlinked title");
+      ok(wLink.args.link.slide_count === wOpenDeck.slides,
+         "PME-015: the link carries the deck's slide count (" + wLink.args.link.slide_count + ") to the host, which owns no deck store — so the plan row reports a real count");
+      ok(!el("pm-toast").hidden && /plan/i.test(el("pm-toast").textContent),
+         "PME-015: a role=status toast confirms the plan edit");
+      var wUndo = el("pm-toast").querySelector(".pm-toast-action");
+      ok(!!wUndo && /Undo/i.test(wUndo.textContent), "PME-015: the toast offers Undo — the plan edit is reversible");
+      var wRiN = window.__calls.filter(function(c){ return c.cmd === "remove_item"; }).length;
+      wUndo.click();
+      ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "remove_item"; }).length > wRiN; }),
+         "PME-015: Undo really removes the item it just added (remove_item)");
+      // Rollback: a rejected LINK must not leave behind a plan row that claims a deck it has not got.
+      if (!el("pm-error").hidden && el("pm-error-dismiss")) el("pm-error-dismiss").click();
+      window.__sicRejectOnce = true;
+      var wRiN2 = window.__calls.filter(function(c){ return c.cmd === "remove_item"; }).length;
+      wAtp.click();
+      ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "remove_item"; }).length > wRiN2; }),
+         "PME-015: a REJECTED deck link rolls the plan item back (no orphan row promising a deck it does not hold)");
+      ok(await wWait(function(){ return !el("pm-error").hidden; }) && el("pm-error").getAttribute("role") === "alert",
+         "PME-015: a rejected deck link surfaces the role=alert error banner — the failure is reported, not swallowed");
+      if (el("pm-error-dismiss")) el("pm-error-dismiss").click();
+
+      // --- CON-128 / CON-139: detector liveness -------------------------------------------
+      // THE ACCEPTANCE BAR, as a test: a dead detector and a silent room must not render
+      // identically. Every fixture below asserts it actually REACHED the state it names before
+      // asserting what that state renders — silence looks the same from outside, so a fixture
+      // that never arrives would let all of this pass while proving nothing.
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      ok(await wWait(function(){ return el("surface-console").classList.contains("active"); }),
+         "CON-128/139 (setup): the console surface is active");
+      el("rtab-detections").click();
+      ok(await wWait(function(){ return !el("rpanel-detections").hidden; }),
+         "CON-128/139 (setup): the Detected Scriptures panel is open");
+      var wHealth = function(h){ window.__detHealth = h; window.__detHealthFail = false; return window.__detHealthRefresh(); };
+      var wHBox = el("det-health"), wHTitle = el("det-health-title"), wHBody = el("det-health-body"),
+          wHRetry = el("det-health-retry"), wEmptyMsg = el("det-empty-msg"), wEmptySub = el("det-empty-sub");
+      ok(!!wHBox && !!wEmptyMsg, "CON-128/139: the detector-health element and a state-driven empty state exist");
+
+      // (1) LISTENING, nothing heard yet — a silent room.
+      await wHealth({state:"listening", provider:"whisper-small", error:null, can_retry:false});
+      ok(wHBox.hidden, "CON-128 (premise): a healthy listening detector shows NO fault card — the fixture reached 'listening'");
+      var wSilent = (wEmptyMsg.textContent + " " + wEmptySub.textContent).replace(/\s+/g, " ").trim();
+      ok(/listening/i.test(wSilent), "CON-128: a silent room says it is LISTENING (\"" + wSilent.slice(0, 58) + "\")");
+      ok(/whisper-small/.test(wSilent), "CON-128: it names the engine producing the transcript (FR-120 honest disclosure), rather than an unattributed claim");
+
+      // (2) IDLE — not listening at all. Must NOT read like (1).
+      await wHealth({state:"idle", provider:null, error:null, can_retry:false});
+      var wIdle = (wEmptyMsg.textContent + " " + wEmptySub.textContent).replace(/\s+/g, " ").trim();
+      ok(wHBox.hidden, "CON-128 (premise): idle is not a fault either — the fixture reached 'idle'");
+      ok(/not running/i.test(wIdle) && wIdle !== wSilent,
+         "CON-128: 'not listening' and 'listening, nothing yet' render DIFFERENTLY — they used to be the same sentence");
+
+      // (3) UNAVAILABLE — a dead detector. THE other half of the bar.
+      await wHealth({state:"unavailable", provider:null, error:"The speech model failed to load.", can_retry:true});
+      ok(!wHBox.hidden && getComputedStyle(wHBox).display !== "none" && wHBox.getClientRects().length > 0,
+         "CON-139 (premise): a dead detector renders a PAINTED fault card — the fixture reached 'unavailable'");
+      ok(/Detection unavailable/i.test(wHTitle.textContent), "CON-139: it says the detection is unavailable, in words");
+      ok(/speech model failed to load/i.test(wHBody.textContent),
+         "CON-139: it shows the HOST'S retained reason, not a generic apology (\"" + wHBody.textContent.slice(0, 50) + "\")");
+      var wDead = (wHTitle.textContent + " " + wHBody.textContent + " " + wEmptyMsg.textContent).replace(/\s+/g, " ").trim();
+      ok(wDead !== wSilent,
+         "ACCEPTANCE BAR: a DEAD detector and a SILENT room do not render identically — this is the property the whole batch is measured against");
+      var wCardBg = _rgba(getComputedStyle(wHBox).backgroundColor);
+      ok(_cr(_rgba(getComputedStyle(wHTitle).color), wCardBg) >= 4.5,
+         "CON-139: the fault heading clears AA-NORMAL on the card (" + _f(_cr(_rgba(getComputedStyle(wHTitle).color), wCardBg)) + ":1)");
+      ok(_cr(_rgba(getComputedStyle(wHBody).color), wCardBg) >= 4.5,
+         "CON-139: the fault body clears AA-NORMAL on the card (" + _f(_cr(_rgba(getComputedStyle(wHBody).color), wCardBg)) + ":1)");
+      ok(!wHRetry.hidden, "CON-139: retry is offered when the host says can_retry");
+      var wRetryEdge = Math.max(_cr(_rgba(getComputedStyle(wHRetry).backgroundColor), wCardBg),
+                                _cr(_rgba(getComputedStyle(wHRetry).borderTopColor), wCardBg));
+      ok(wRetryEdge >= 3.0,
+         "CON-139: the retry control is distinguishable from the card it sits on (" + _f(wRetryEdge) + ":1, 3:1 non-text bar) — the frame's own treatment measures 1.07:1");
+
+      // (4) can_retry FALSE — the affordance must not exist.
+      await wHealth({state:"unavailable", provider:null, error:"Microphone is in use by another application.", can_retry:false});
+      ok(!wHBox.hidden && wHRetry.hidden,
+         "CON-139: when the host says can_retry is FALSE the retry control is not rendered at all");
+
+      // (5) UNSUPPORTED — a build fact, not a scare.
+      await wHealth({state:"unsupported", provider:null, error:null, can_retry:false});
+      ok(!wHBox.hidden && wHBox.classList.contains("det-health-quiet"),
+         "CON-139 (premise): 'unsupported' renders in the QUIET treatment, not the amber fault card — the fixture reached 'unsupported'");
+      ok(wHRetry.hidden, "CON-139: no retry is offered in 'unsupported' — the host cannot even construct the permission to honour it");
+
+      // (6) UNKNOWN — the case the NO SIGNAL fallthrough gets wrong.
+      window.__detHealthFail = true;
+      await window.__detHealthRefresh();
+      ok(!wHBox.hidden && wHBox.classList.contains("det-health-quiet"),
+         "CON-139 (premise): an unreported detector renders quietly — the fixture reached UNKNOWN");
+      ok(/unknown/i.test(wHTitle.textContent) && !/unavailable/i.test(wHTitle.textContent),
+         "TRI-STATE: absent telemetry renders as UNKNOWN, never as a fault (\"" + wHTitle.textContent + "\")");
+      ok(wHTitle.textContent !== "" && !wHBox.classList.contains("det-health-fault"),
+         "TRI-STATE: ...and it is not silently treated as healthy either — both wrong readings collapse three states into two");
+      window.__detHealthFail = false;
+
+      // (7) retry calls the host, and a refusal survives the 1 Hz re-render.
+      await wHealth({state:"unavailable", provider:null, error:"Audio device disappeared.", can_retry:true});
+      window.__detRetryRefuse = "Retry does not apply while detection is 'idle'.";
+      var wRtN = window.__calls.filter(function(c){ return c.cmd === "retry_detection"; }).length;
+      wHRetry.click();
+      ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "retry_detection"; }).length > wRtN; }),
+         "CON-139: the retry control calls retry_detection on the host");
+      ok(await wWait(function(){ return /does not apply/i.test(wHBody.textContent); }),
+         "CON-139: a refused retry shows the HOST'S reason");
+      await window.__detHealthRefresh();
+      ok(/does not apply/i.test(wHBody.textContent),
+         "CON-139: the refusal SURVIVES the next poll's re-render — written straight to the DOM it would vanish within a second of appearing");
+      window.__detRetryRefuse = null;
+      wHRetry.click();
+      ok(await wWait(function(){ return wHBox.hidden; }),
+         "CON-139: a successful retry recovers, and the stale refusal is not left showing beside the recovered state");
+      window.__detHealth = null;
+
+      // --- PME-058 / Q-08: the delete confirm must state the SLIDE COUNT, and must not promise
+      // reversibility the host cannot deliver. The interesting case is NOT the one where the count
+      // is known — it is the ABSENT one. A naive "it says 2 slides" check passes happily while an
+      // unknown count renders as a confidently wrong "its 0 slides".
+      var wOpenDel = async function(){
+        el("pm-deckswitch").click();
+        if (!(await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card .pm-lib-dots"); }))) return null;
+        el("pm-lib-grid").querySelector(".pm-lib-card .pm-lib-dots").click();
+        if (!(await wWait(function(){ return !!el("pm-lib-menu"); }))) return null;
+        var items = Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button"));
+        var del = items.filter(function(b){ return /^Delete/.test(b.textContent); })[0];
+        if (!del) return null;
+        del.click();
+        if (!(await wWait(function(){ return !!document.querySelector(".pm-confirm-body"); }))) return null;
+        return document.querySelector(".pm-confirm-body").textContent.replace(/\s+/g, " ").trim();
+      };
+      var wCloseDel = function(){
+        var back = document.querySelector(".pm-confirm-back");
+        if (!back) return;
+        var cancel = Array.prototype.slice.call(back.querySelectorAll("button")).filter(function(b){ return /Cancel/i.test(b.textContent); })[0];
+        if (cancel) cancel.click(); else back.remove();
+      };
+      // The deck the driver will ACTUALLY act on: the first RENDERED card, read by its data-id.
+      // Deriving it from LIB order instead was a real fixture bug — the grid sorts by NAME, so the
+      // fixture named one deck while the UI deleted another, and a check about "the deck that was
+      // not retained" was quietly reporting on a different deck. A fixture that does not reach the
+      // condition its check names is worth less than no check.
+      var wFirstDeck = function(){
+        var card = el("pm-lib-grid") && el("pm-lib-grid").querySelector(".pm-lib-card");
+        if (!card) return null;
+        var id = Number(card.dataset.id);
+        return window.__LIB.decks.filter(function(d){ return d.id === id; })[0] || null;
+      };
+      el("pm-deckswitch").click();
+      await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+      if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      var wD = wFirstDeck();
+      if (wD) {
+        wD.slides = 7;
+        var wBody7 = await wOpenDel();
+        ok(!!wBody7 && /its 7 slides/.test(wBody7),
+           "PME-058: the delete confirm names the SLIDE COUNT (\"" + String(wBody7).slice(0, 70) + "\")");
+        wCloseDel();
+        wD.slides = 1;
+        var wBody1 = await wOpenDel();
+        ok(!!wBody1 && /its 1 slide\b/.test(wBody1) && !/1 slides/.test(wBody1),
+           "PME-058: a one-slide presentation reads \"its 1 slide\", not \"1 slides\"");
+        wCloseDel();
+        // THE CASE THAT MATTERS: the host did not report a count.
+        delete wD.slides;
+        var wBodyU = await wOpenDel();
+        ok(!!wBodyU && /its slides/.test(wBodyU),
+           "PME-058: an UNKNOWN slide count falls back to \"its slides\" (\"" + String(wBodyU).slice(0, 70) + "\")");
+        ok(!!wBodyU && !/\b0 slides?\b/.test(wBodyU) && !/undefined/.test(wBodyU) && !/NaN/.test(wBodyU),
+           "PME-058: an unknown count is never rendered as a confident \"0 slides\"/undefined/NaN — vague beats fabricated");
+        // Q-08 honesty invariant: the PROMISE and the BEHAVIOUR must agree. The host has no restore
+        // path today (no deck_export/deck_import/deck_restore; DeckLibrary::delete is a hard drop),
+        // so the copy must say so. When the seam lands and an Undo appears, this check goes RED and
+        // forces the sentence to be corrected with it — in either direction the product cannot lie.
+        // Q-08, flipped. deck_restore + a bounded trash shipped, so "can't be undone" is now FALSE.
+        ok(!/can.t be undone/i.test(wBodyU || ""),
+           "Q-08: the confirm no longer claims the delete is irreversible — deck_restore exists");
+        ok(!/you can undo/i.test(wBodyU || ""),
+           "Q-08: ...and it does not promise undo either: whether THIS deck is retained depends on its size against the trash budget, which is not knowable at confirm time. The promise is made where it can be verified");
+        wCloseDel();
+        wD.slides = 3;
+        var wDoDelete = async function(){
+          el("pm-deckswitch").click();
+          if (!(await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card .pm-lib-dots"); }))) return false;
+          if (!(await wOpenDel())) return false;
+          var back = document.querySelector(".pm-confirm-back");
+          var go = back ? Array.prototype.slice.call(back.querySelectorAll("button")).filter(function(b){ return /^Delete$/.test(b.textContent.trim()); })[0] : null;
+          if (!go) return false;
+          go.click();
+          return await wWait(function(){ return !el("pm-toast").hidden; });
+        };
+        // THE PROPERTY, capability-aware: Undo is offered IF AND ONLY IF the host reports this deck
+        // as restorable. The previous version compared the copy against the webview's OWN behaviour,
+        // which stayed self-consistent — and therefore GREEN — when the host gained a capability the
+        // UI was not using. This version fails in that case.
+        var wTarget = wFirstDeck(), wTargetId = wTarget && wTarget.id, wTargetName = wTarget && wTarget.name;
+        window.__deckNoRetain = null;
+        ok(await wDoDelete(), "Q-08 (setup): a restorable delete completes");
+        var wRestorableNow = (window.__LIB.trash || []).some(function(t){ return t.id === wTargetId; });
+        var wUndoShown = !!el("pm-toast").querySelector(".pm-toast-action");
+        ok(wRestorableNow && wUndoShown,
+           "Q-08: a RESTORABLE delete offers Undo (host restorable=" + wRestorableNow + ", Undo offered=" + wUndoShown + ")");
+        // The restored name must be the host's, not the remembered one. Make the old name be taken
+        // first, so restore genuinely uniquifies — a fixture that never reaches the rename would
+        // let a "shows the right name" check pass while showing the wrong one.
+        await invoke("deck_new", { name: wTargetName });
+        var wRestN = window.__calls.filter(function(c){ return c.cmd === "deck_restore"; }).length;
+        el("pm-toast").querySelector(".pm-toast-action").click();
+        ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_restore"; }).length > wRestN; }),
+           "Q-08: Undo calls deck_restore on the host — the client cannot rebuild the slides itself");
+        await wWait(function(){ return /Restored/.test(el("pm-toast").textContent); });
+        var wToastTxt = el("pm-toast").textContent;
+        var wBackName = (window.__LIB.decks.filter(function(d){ return d.id === wTargetId; })[0] || {}).name;
+        ok(/\(2\)/.test(wBackName || ""),
+           "Q-08 (premise): the fixture really reached the RENAME path — the deck came back as \"" + wBackName + "\", not its original name");
+        ok(wToastTxt.indexOf(wBackName) >= 0,
+           "Q-08: the confirmation quotes the name the deck came back UNDER (\"" + wBackName + "\"), not the one that was deleted");
+        // THE CASE THAT MATTERS: a delete the host did NOT retain must offer no Undo at all.
+        var wBig = wFirstDeck();
+        if (wBig) {
+          window.__deckNoRetain = wBig.id;
+          ok(await wDoDelete(), "Q-08 (setup): a non-retained delete completes");
+          var wRetained = (window.__LIB.trash || []).some(function(t){ return t.id === wBig.id; });
+          var wUndoShown2 = !!el("pm-toast").querySelector(".pm-toast-action");
+          ok(!wRetained && !wUndoShown2,
+             "Q-08: a delete the host could NOT retain offers no Undo (restorable=" + wRetained + ", Undo offered=" + wUndoShown2 + ") — an affordance that would fail is a new fabrication, not a courtesy");
+          window.__deckNoRetain = null;
+        }
+        // A refusal is a rejected promise with the host's OWN reason: the affordance was valid when
+        // shown, but the trash aged out before the operator reached for it.
+        var wT2 = wFirstDeck();
+        if (wT2) {
+          ok(await wDoDelete(), "Q-08 (setup): a third delete completes so Undo is on screen");
+          var wAct = el("pm-toast").querySelector(".pm-toast-action");
+          if (wAct) {
+            window.__LIB.trash.length = 0; // it ages out between offer and click
+            if (el("pm-error-dismiss") && !el("pm-error").hidden) el("pm-error-dismiss").click();
+            wAct.click();
+            ok(await wWait(function(){ return !el("pm-error").hidden; }),
+               "Q-08: a refused restore surfaces an error rather than failing silently");
+            ok(/no longer be restored/i.test(el("pm-error-msg").textContent),
+               "Q-08: it shows the HOST'S own reason (\"" + el("pm-error-msg").textContent.slice(0, 60) + "\"), not a generic \"couldn't do that, retry\" for something retrying cannot fix");
+            if (el("pm-error-dismiss")) el("pm-error-dismiss").click();
+          }
+        }
+      }
+
+      // --- \u00a710 case 6 / CON-099, CON-101, CON-102: the engaged BLACKOUT state ------------
+      // The bug is that the most destructive state in the product explains nothing: the operator
+      // sees "BLACKOUT ON" and no statement of what the audience sees or how to get back. So the
+      // checks that matter are the ones about the ABSENT case (nothing shown when not blacked out)
+      // and about the explanation being genuinely PAINTED, not merely un-hidden — a class display
+      // rule defeats [hidden] in this webview, which is how an "it appears" check goes vacuous.
+      var wBoBtn = el("blackout"), wExp = el("blackout-explain"), wRes = el("restore-output");
+      ok(!!wExp && !!wRes, "CON-101/102: the blackout explanation and a Restore control exist at all");
+      // (a) NOT blacked out — both must be genuinely gone, and the label must not claim the state.
+      ok(getComputedStyle(wExp).display === "none" && wExp.getClientRects().length === 0,
+         "CON-101 (control): with output live the explanation is NOT painted — otherwise 'it appears on blackout' proves nothing");
+      ok(getComputedStyle(wRes).display === "none" && wRes.getClientRects().length === 0,
+         "CON-102 (control): with output live the Restore control is unpainted and out of the tab order");
+      ok(el("blackout-label").textContent.trim() === "BLACKOUT",
+         "CON-099: with output live the button reads BLACKOUT (the action), not the state");
+      // (b) engage it through the REAL command path, not by poking the view.
+      wBoBtn.click();
+      ok(await wWait(function(){ return !wExp.hidden; }), "CON-101 (setup): engaging blackout via the real command renders the engaged state");
+      ok(getComputedStyle(wExp).display !== "none" && wExp.getClientRects().length > 0,
+         "CON-101: the explanation is actually PAINTED during a blackout (computed display " + getComputedStyle(wExp).display + ")");
+      // Normalise whitespace first: the sentence wraps in the markup, so textContent carries a
+      // newline + indent and a literal-phrase regex silently misses. Assert the words, not the layout.
+      var wExpTxt = wExp.textContent.replace(/\s+/g, " ").trim();
+      ok(/audience sees nothing/i.test(wExpTxt) && /restore/i.test(wExpTxt),
+         "CON-101: it says what the AUDIENCE sees and how to get back — the two things the state never stated (\"" + wExpTxt.slice(0, 72) + "\")");
+      ok(wExp.getAttribute("role") === "status",
+         "CON-101: the explanation is announced to assistive tech (role=status), not a silent visual-only cue");
+      ok(el("blackout-label").textContent.trim() === "BLACKED OUT",
+         "CON-099: engaged, the button states the STATE in words (non-colour, WCAG 1.4.1)");
+      ok(document.querySelector("#emergency .note").hidden,
+         "CON-101: the general footer note yields its slot, so the bar carries one sentence not two");
+      // Contrast of the explanation, measured composited against the footer's REAL ground.
+      var wFoot = _rgba(getComputedStyle(el("emergency")).backgroundColor);
+      var wExpR = _stack(_rgba(getComputedStyle(wExp).color), _rgba(getComputedStyle(wExp).backgroundColor), wFoot);
+      ok(wExpR >= 4.5, "CON-101: the explanation clears AA-NORMAL on the real footer ground (" + _f(wExpR) + ":1)");
+      var wResCs = getComputedStyle(wRes);
+      var wResR = _cr(_rgba(wResCs.color), _rgba(wResCs.backgroundColor));
+      ok(wResR >= 4.5, "CON-102: the Restore label clears AA-NORMAL on its fill (" + _f(wResR) + ":1)");
+      ok(_cr(_rgba(wResCs.backgroundColor), wFoot) >= 3.0,
+         "CON-102: the Restore control is distinguishable from the footer behind it (" + _f(_cr(_rgba(wResCs.backgroundColor), wFoot)) + ":1, 3:1 non-text bar)");
+      ok(_cr(_rgba(wResCs.backgroundColor), _rgba(getComputedStyle(wBoBtn).backgroundColor)) >= 3.0,
+         "CON-102: Restore is distinguishable from the BLACKOUT button beside it — the way back must not read as another way in");
+      // (c) Restore is ONE-WAY. A toggle here would re-black the output on a double-press, so
+      // assert the ARGUMENT, twice — a single click passing proves nothing about a toggle.
+      var wBn = window.__calls.filter(function(c){ return c.cmd === "blackout"; }).length;
+      wRes.click();
+      ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "blackout"; }).length > wBn; }),
+         "CON-102 (setup): Restore issues the blackout command");
+      var wLast = window.__calls.filter(function(c){ return c.cmd === "blackout"; }).pop();
+      ok(wLast.args && wLast.args.on === false, "CON-102: Restore sends blackout{on:false} — it restores, never toggles");
+      ok(await wWait(function(){ return wExp.hidden; }), "CON-102: restoring clears the engaged state");
+      ok(document.activeElement === wBoBtn,
+         "CON-102: focus lands on the BLACKOUT button after Restore disappears, not on <body> (WCAG 2.4.3)");
+      // Press it again while output is already live: it must STILL mean restore, never re-black.
+      wRes.hidden = false; // reachable only in the engaged state, but prove the handler is one-way
+      wRes.click();
+      ok(await wWait(function(){ var l = window.__calls.filter(function(c){ return c.cmd === "blackout"; }).pop(); return l && l.args.on === false; }),
+         "CON-102: a second activation still sends on:false — the control is not a disguised toggle");
+      ok(!el("blackout-explain") || el("blackout-explain").hidden,
+         "CON-102: the audience is NOT re-blacked by pressing Restore twice");
+
+      // --- §10 case 5: the emergency-ready chip is the canonical frame's PILL --------------
+      // Asserting the declared radius alone would pass on an element nobody paints, and "999px"
+      // is a string, not a shape. Measure it against the element's REAL rendered height instead:
+      // a pill is radius >= half the height, whatever the number says.
+      var wRdy = document.querySelector(".emergency-ready");
+      ok(!!wRdy && wRdy.getClientRects().length > 0,
+         "\u00a710 case 5 (positive control): the Offline-ready chip is actually painted, so its shape can be measured");
+      if (wRdy) {
+        var wRdyH = wRdy.getBoundingClientRect().height;
+        var wRdyR = parseFloat(getComputedStyle(wRdy).borderTopLeftRadius);
+        ok(wRdyH > 0 && wRdyR >= wRdyH / 2,
+           "\u00a710 case 5: the Offline-ready chip is a PILL — radius " + wRdyR.toFixed(1) + "px >= half its " + wRdyH.toFixed(1) + "px height (canonical frame 312:151; was 10px)");
+      }
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
     el("__r").textContent = "RESULTS\n"+R.join("\n")+"\nDONE("+R.length+")";
   }
@@ -2956,7 +3578,7 @@ DRIVER = r"""
 # resolving against the /tmp temp file (never loading). Inject it right after <head> so the
 # real app.css (and app.js) load and CSS-dependent checks are meaningful.
 html = html.replace("<head>", '<head><base href="file://' + DIST + '/">', 1)
-html = html.replace("</head>", STUB + "</head>", 1)
+html = html.replace("</head>", STUB + CSS_SRC + "</head>", 1)
 html = html.replace("</body>", DRIVER + "</body>", 1)
 
 with tempfile.NamedTemporaryFile(
@@ -2971,8 +3593,13 @@ try:
             [CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
              # Budget is VIRTUAL time, fast-forwarded — it costs little wall clock, but every
              # driver step that waits on the app's own 1 s view poll spends a full second of it.
-             # Raised from 9000 with the window-semantics checks, which wait on two real polls.
-             "--virtual-time-budget=12000", "--dump-dom", "file://" + path],
+             # Raised from 9000 with the window-semantics checks, which wait on two real polls, and
+             # again to 20000 with the Design 2.0 parity block: that block navigates surfaces and
+             # waits on host round-trips at the very end of the run, so a run in which several of
+             # its checks legitimately FAIL (each spending its wait budget) must still have time
+             # left to WRITE the results. Without the headroom a real regression surfaces as
+             # "NO RESULTS BLOCK" (exit 2, infra) instead of a named FAIL.
+             "--virtual-time-budget=20000", "--dump-dom", "file://" + path],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=90).stdout
     except subprocess.TimeoutExpired:

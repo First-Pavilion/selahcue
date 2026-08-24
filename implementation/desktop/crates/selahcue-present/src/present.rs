@@ -10,10 +10,12 @@
 
 use crate::compose::{compose_authored_slide, compose_slide_masked, LayerMask};
 use crate::deck::AuthoredSlide;
+use crate::health::OutputHealth;
 use crate::slide::Slide;
 use crate::stage::compose_identify;
 use crate::theme::Theme;
 use selahcue_engine::engine::{Engine, EngineCommand, EngineEvent};
+use selahcue_engine::fault::Fault;
 use selahcue_engine::raster::{self, FrameBuffer, MAX_DIMENSION};
 use selahcue_engine::scene::{Frame, Rgba};
 
@@ -61,6 +63,13 @@ pub struct Presenter {
     /// category (hiding a layer never blanks the frame — NFR-024). Secondary audience screens
     /// carry their own mask, passed per call to [`Presenter::compose_screen_live`].
     main_layer_mask: LayerMask,
+    /// Fault/recovery record for the LIVE surface (NFR-024 observability).
+    ///
+    /// Every live `apply` is routed through [`Presenter::apply_live`], which folds the
+    /// returned event in here. Before this existed the engine's `OutputHeld`/`Recovered`
+    /// events were returned and dropped on the floor at all thirteen call sites, so a
+    /// held output was indistinguishable from a healthy one to everything above.
+    health: OutputHealth,
 }
 
 impl Presenter {
@@ -88,6 +97,7 @@ impl Presenter {
             live_authored_next: None,
             main_screen_theme: None,
             main_layer_mask: LayerMask::ALL,
+            health: OutputHealth::default(),
         }
     }
 
@@ -95,6 +105,48 @@ impl Presenter {
     /// whose per-item override is `item_theme`: **per-screen (`main`) ?? per-item ?? global**
     /// (86ajq321k). With no per-screen theme this is exactly `item_theme ?? global` — the
     /// pre-per-screen behaviour, so the main output is unchanged by default.
+    /// Apply one command to the LIVE engine, recording the health transition it reports.
+    ///
+    /// **Every** live apply must go through here — that is the whole point: the engine
+    /// reports `OutputHeld`/`Recovered` as ordinary return values, so a call site that
+    /// uses `self.live.apply` directly silently drops a fault transition, which is
+    /// exactly the defect this seam was built to remove. Preview deliberately does NOT
+    /// record: it is an offscreen operator surface, and NFR-024 is a guarantee about the
+    /// AUDIENCE output. A held preview is not a broadcast fault.
+    fn apply_live(&mut self, command: EngineCommand) -> EngineEvent {
+        let event = self.live.apply(command);
+        self.health.record(&event);
+        event
+    }
+
+    /// Report a fault against the LIVE output (NFR-024): the audience keeps seeing the
+    /// last good frame and the hold becomes observable to the operator.
+    ///
+    /// This is the **production** seam, not a test hook: the host calls it when its real
+    /// backend reports trouble — wgpu surface loss maps to [`Fault::GpuDeviceLost`], a
+    /// media decode failure to [`Fault::DecoderFault`], and the storage guard's full-disk
+    /// verdict to [`Fault::DiskFull`]. It is also what the fault-matrix tests drive, so
+    /// the tested path and the shipped path are the same one.
+    ///
+    /// The output is *not* blanked or cleared — that is the guarantee. Recovery is
+    /// implicit: the next successful compose (`go_live`, `stage`, a theme change …)
+    /// presents a good frame and clears the hold.
+    pub fn inject_fault(&mut self, fault: Fault) {
+        self.apply_live(EngineCommand::InjectFault { fault });
+    }
+
+    /// The live output's current fault/recovery record.
+    ///
+    /// `held` is re-derived from the engine on every call rather than mirrored into the
+    /// record, so it is the engine's own truth and cannot drift; the counters and the
+    /// current fault kind come from the record, which the engine does not retain.
+    pub fn output_health(&self) -> OutputHealth {
+        OutputHealth {
+            held: self.live.is_faulted(),
+            ..self.health
+        }
+    }
+
     fn effective<'a>(&'a self, item_theme: Option<&'a Theme>) -> &'a Theme {
         self.main_screen_theme
             .as_ref()
@@ -145,7 +197,7 @@ impl Presenter {
         // Report success (and record the live slide) only if the frame actually
         // reached the output — never claim "live" for a rejected frame.
         if matches!(
-            self.live.apply(EngineCommand::SetScene { frame }),
+            self.apply_live(EngineCommand::SetScene { frame }),
             EngineEvent::Rejected { .. }
         ) {
             return false;
@@ -177,7 +229,7 @@ impl Presenter {
     pub fn present_authored(&mut self, slide: &AuthoredSlide, theme: &Theme) -> bool {
         let frame = compose_authored_slide(slide, theme, self.width, self.height);
         if matches!(
-            self.live.apply(EngineCommand::SetScene { frame }),
+            self.apply_live(EngineCommand::SetScene { frame }),
             EngineEvent::Rejected { .. }
         ) {
             return false;
@@ -223,14 +275,14 @@ impl Presenter {
                 self.height,
                 self.main_layer_mask,
             );
-            self.live.apply(EngineCommand::SetScene { frame });
+            self.apply_live(EngineCommand::SetScene { frame });
         }
         if let Some(slide) = self.live_authored.clone() {
             // Authored slide: its own background wins; the effective theme is only the fallback.
             // Layer masks don't apply to authored content, so recompose without a mask.
             let theme = self.effective(self.live_theme.as_ref()).clone();
             let frame = compose_authored_slide(&slide, &theme, self.width, self.height);
-            self.live.apply(EngineCommand::SetScene { frame });
+            self.apply_live(EngineCommand::SetScene { frame });
         }
     }
 
@@ -258,14 +310,14 @@ impl Presenter {
                 self.height,
                 self.main_layer_mask,
             );
-            self.live.apply(EngineCommand::SetScene { frame });
+            self.apply_live(EngineCommand::SetScene { frame });
         }
         if let Some(slide) = self.live_authored.clone() {
             // Authored slide: its own background wins; the effective theme is only the fallback.
             // Layer masks don't apply to authored content, so recompose without a mask.
             let theme = self.effective(self.live_theme.as_ref()).clone();
             let frame = compose_authored_slide(&slide, &theme, self.width, self.height);
-            self.live.apply(EngineCommand::SetScene { frame });
+            self.apply_live(EngineCommand::SetScene { frame });
         }
     }
 
@@ -299,14 +351,14 @@ impl Presenter {
                 self.height,
                 self.main_layer_mask,
             );
-            self.live.apply(EngineCommand::SetScene { frame });
+            self.apply_live(EngineCommand::SetScene { frame });
         }
         if let Some(slide) = self.live_authored.clone() {
             // Authored slide: its own background wins; the effective theme is only the fallback.
             // Layer masks don't apply to authored content, so recompose without a mask.
             let theme = self.effective(self.live_theme.as_ref()).clone();
             let frame = compose_authored_slide(&slide, &theme, self.width, self.height);
-            self.live.apply(EngineCommand::SetScene { frame });
+            self.apply_live(EngineCommand::SetScene { frame });
         }
     }
 
@@ -376,20 +428,20 @@ impl Presenter {
                 self.height,
                 self.main_layer_mask,
             );
-            self.live.apply(EngineCommand::SetScene { frame });
+            self.apply_live(EngineCommand::SetScene { frame });
         }
         if let Some(slide) = self.live_authored.clone() {
             // Authored slide: its own background wins; the effective theme is only the fallback.
             // Layer masks don't apply to authored content, so recompose without a mask.
             let theme = self.effective(self.live_theme.as_ref()).clone();
             let frame = compose_authored_slide(&slide, &theme, self.width, self.height);
-            self.live.apply(EngineCommand::SetScene { frame });
+            self.apply_live(EngineCommand::SetScene { frame });
         }
     }
 
     /// **Clear** (`Esc Esc`): clear all Live layers to empty. Preview is untouched.
     pub fn clear_live(&mut self) {
-        self.live.apply(EngineCommand::Clear);
+        self.apply_live(EngineCommand::Clear);
         self.live_slide = None;
         self.live_theme = None;
         self.live_authored = None;
@@ -406,7 +458,7 @@ impl Presenter {
     /// **Blackout** (`B`): toggle the audience output to black. Un-blackout restores
     /// the prior live content (the slide is retained, only hidden).
     pub fn blackout(&mut self, on: bool) {
-        self.live.apply(EngineCommand::Blackout { on });
+        self.apply_live(EngineCommand::Blackout { on });
     }
 
     /// Overlay the display-identify number on the Live output (FR-040). This
@@ -419,7 +471,7 @@ impl Presenter {
             self.width,
             self.height,
         );
-        self.live.apply(EngineCommand::SetScene { frame });
+        self.apply_live(EngineCommand::SetScene { frame });
         self.live_slide = None;
         self.live_authored = None;
     }

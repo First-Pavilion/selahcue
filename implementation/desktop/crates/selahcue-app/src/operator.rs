@@ -8,8 +8,9 @@
 
 use crate::controller::LiveController;
 use selahcue_lan::protocol::{
-    Command, ContentLinkView, DetectionView, OperatorStateView, PlanItemView, SavedThemeView,
-    ScaleFit, ScreenThemeView, ScreenView, TimerSnapshot, TranscriptSegmentView,
+    Command, ContentLinkView, DetectionView, OperatorStateView, OutputHealthView, PlanItemView,
+    SavedThemeView, ScaleFit, ScreenThemeView, ScreenView, SessionHealthView, StorageHealthView,
+    TimerSnapshot, TranscriptSegmentView,
 };
 use selahcue_present::FrameBuffer;
 use serde::Serialize;
@@ -115,6 +116,14 @@ pub struct OperatorView {
     pub stage_template: String,
     /// The production message shown on the confidence monitor, if any (stage-only).
     pub stage_message: Option<String>,
+    /// The LIVE output's fault/recovery health (NFR-024). `None` = this view was built
+    /// without health (an older host over the wire); the UI must render that as *unknown*,
+    /// never as a fault.
+    pub output_health: Option<OutputHealthView>,
+    /// The host's storage headroom for autosave. `None` = not reported by this host.
+    pub storage: Option<StorageHealthView>,
+    /// The host's session-recovery state. `None` = not reported by this host.
+    pub session: Option<SessionHealthView>,
 }
 
 /// An ergonomic, UI-facing wrapper over the shared [`LiveController`]. Each action
@@ -629,6 +638,9 @@ impl From<OperatorView> for OperatorStateView {
             detections: v.detections,
             stage_template: v.stage_template,
             stage_message: v.stage_message,
+            output_health: v.output_health,
+            storage: v.storage,
+            session: v.session,
         }
     }
 }
@@ -659,6 +671,9 @@ impl From<OperatorStateView> for OperatorView {
             detections: v.detections,
             stage_template: v.stage_template,
             stage_message: v.stage_message,
+            output_health: v.output_health,
+            storage: v.storage,
+            session: v.session,
         }
     }
 }

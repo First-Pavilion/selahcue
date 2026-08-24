@@ -120,7 +120,7 @@
           <!-- The live in-progress line (streaming interim): recognised words for the utterance
                still being spoken. Dimmed to read as not-yet-final; the finalised line replaces
                it above. Untrusted → textContent. -->
-          <div id="transcript-partial" class="seg seg-partial" aria-live="polite" hidden></div>
+          <div id="transcript-partial" class="tr-seg tr-seg-partial" aria-live="polite" hidden></div>
           <div id="transcript-empty" class="fwd-empty">
             <span class="fwd-icon" aria-hidden="true">🎙</span>
             <span class="fwd-msg" id="transcript-empty-msg">Not listening yet.</span>
@@ -255,10 +255,10 @@
             <aside class="side-panel" aria-label="Service timer and stage output">
               <!-- Timer | Stage sub-tabs: the timer AND the stage theme/message are both
                    stage-output-only, so they share this tab (owner steer). -->
-              <div class="seg" role="tablist" aria-label="Timer or stage output">
-                <button class="seg-btn active" id="seg-timer" type="button" role="tab"
+              <div class="subtab-seg" role="tablist" aria-label="Timer or stage output">
+                <button class="subtab-seg-btn active" id="seg-timer" type="button" role="tab"
                   aria-selected="true" aria-controls="stab-timer">Timer</button>
-                <button class="seg-btn" id="seg-stage" type="button" role="tab"
+                <button class="subtab-seg-btn" id="seg-stage" type="button" role="tab"
                   aria-selected="false" aria-controls="stab-stage" tabindex="-1">Stage</button>
               </div>
               <div id="stab-timer" class="stab" role="tabpanel" aria-labelledby="seg-timer">
@@ -365,11 +365,20 @@
               <option value="auto-approve" disabled>Auto-approve (later)</option>
             </select>
           </div>
+          <!-- CON-139 / CON-128 — detector liveness (docs/delivery/HOST-SIGNAL-WEBVIEW-CONTRACT.md).
+               This is the element that makes a DEAD DETECTOR and a SILENT ROOM render differently.
+               Tri-state: a host that does not report health renders as UNKNOWN, never as a fault. -->
+          <div id="det-health" class="det-health" role="status" hidden>
+            <span id="det-health-ico" class="det-health-ico" aria-hidden="true">⚠</span>
+            <span id="det-health-title" class="det-health-title"></span>
+            <span id="det-health-body" class="det-health-body"></span>
+            <button id="det-health-retry" class="det-health-retry" type="button" hidden>↻ Retry detection</button>
+          </div>
           <div id="detections-list" class="stream" role="list" aria-label="Scripture detection approval queue"></div>
           <div id="detections-empty" class="fwd-empty">
             <span class="fwd-icon" aria-hidden="true">✨</span>
-            <span class="fwd-msg">No scriptures detected yet.</span>
-            <span class="fwd-sub">Scriptures spoken aloud surface here to stage in one tap. Automatic
+            <span id="det-empty-msg" class="fwd-msg">No scriptures detected yet.</span>
+            <span id="det-empty-sub" class="fwd-sub">Scriptures spoken aloud surface here to stage in one tap. Automatic
               detection (R4) never stages or goes live on its own — it stays operator-confirmed (FR-115).</span>
           </div>
             </section>
@@ -625,12 +634,12 @@
             <div class="td-sect-title">Layout</div>
             <span id="td-lbl-align" class="sr-only">Horizontal alignment</span>
             <div class="td-align-grid" id="td-region-align">
-              <div class="seg td-icons" id="td-align" role="group" aria-labelledby="td-lbl-align">
+              <div class="td-seg td-icons" id="td-align" role="group" aria-labelledby="td-lbl-align">
                 <button data-a="left" aria-label="Align left" aria-pressed="false">⇤</button><button data-a="center"
                   aria-label="Align centre" aria-pressed="false">⇔</button><button data-a="right"
                   aria-label="Align right" aria-pressed="false">⇥</button>
               </div>
-              <div class="seg td-icons" id="td-valign" role="group" aria-label="Vertical alignment">
+              <div class="td-seg td-icons" id="td-valign" role="group" aria-label="Vertical alignment">
                 <button data-v="top" aria-label="Align top" aria-pressed="false">⤒</button><button data-v="middle"
                   aria-label="Align middle" aria-pressed="false">↕</button><button data-v="bottom"
                   aria-label="Align bottom" aria-pressed="false">⤓</button>
@@ -644,7 +653,7 @@
           <!-- BACKGROUND (86ajq3225): a solid colour, a two-stop gradient, or an image. -->
           <div class="td-sect">
             <div class="td-sect-title">Background</div>
-            <div class="seg" id="td-bg-type" role="group" aria-label="Background type">
+            <div class="td-seg" id="td-bg-type" role="group" aria-label="Background type">
               <button data-bg="solid" class="on" aria-pressed="true">Solid</button><button data-bg="gradient"
                 aria-pressed="false">Gradient</button><button data-bg="image" aria-pressed="false">Image</button>
             </div>
@@ -722,7 +731,7 @@
                   colour</span></label>
             </div>
             <div class="td-fieldlabel" id="td-lbl-fit">Fit</div>
-            <div class="seg" id="td-fit" role="group" aria-labelledby="td-lbl-fit">
+            <div class="td-seg" id="td-fit" role="group" aria-labelledby="td-lbl-fit">
               <button data-f="shrink_to_fit" aria-pressed="false">Shrink to fit</button><button data-f="paginate"
                 aria-pressed="false">Paginate</button><button data-f="clip" aria-pressed="false">Clip</button>
             </div>
@@ -758,6 +767,20 @@
             class="pm-deckswitch-caret" aria-hidden="true">▾</span></button>
         <div class="pm-top-actions">
           <button id="pm-newpres" class="pm-btn-ghost" type="button" title="New presentation (⌘N)">＋ New</button>
+          <!-- PME-015 (Figma 329:138/139). Links the OPEN deck to a new "Presentation" item on the
+               service plan via the same two host commands the plan builder's own link dialog uses
+               (add_item + set_item_content), so the plan row carries a real deck reference — not a
+               titled stub. NOTE: the parity audit records this control as deliberately dropped
+               (PRESENTATIONS-LIBRARY-spec.md §2) and open question Q-14 proposes dropping it for
+               good; it is built here on the owner's explicit instruction. See the batch review doc. -->
+          <button id="pm-addtoplan" class="pm-btn-ghost" type="button"
+            title="Add this presentation to the service plan">Add to plan</button>
+          <!-- PME-014 (Figma 329:140/141) — the surface's primary action. It existed only inside the
+               ⌘K palette, so an operator who does not know the palette could not present a deck at
+               all. Flat --sc-primary, never the frame's gradient: PME-003 measured the frame's light
+               stop at 3.78:1 for the white label. -->
+          <button id="pm-present" class="pm-btn-primary" type="button"
+            title="Present the selected slide on the audience output">▶ Present</button>
         </div>
       </div>
       <!-- Error banner: shown (role=alert) when a deck command is rejected; Retry re-runs it. -->
@@ -1162,12 +1185,19 @@
   </main>
   <footer id="emergency" role="toolbar" aria-label="Emergency controls">
     <div class="emergency-actions">
-      <button id="blackout" aria-pressed="false" aria-label="Blackout the audience output">■ BLACKOUT<span
-          id="blackout-state"></span><span class="key">B</span></button>
+      <button id="blackout" aria-pressed="false" aria-label="Blackout the audience output">■ <span
+          id="blackout-label">BLACKOUT</span><span class="key">B</span></button>
       <button id="clear-all" aria-label="Clear all live layers (double-Escape)">✕ Clear Output<span class="key">Esc
           Esc</span></button>
+      <!-- CON-102 (blocker): a dedicated way BACK. Restoring live output currently requires knowing
+           that BLACKOUT is a toggle — nothing on screen says so. Present only while output is black. -->
+      <button id="restore-output" class="restore-output" type="button" hidden>↺ Restore output</button>
     </div>
     <span class="note">Emergency controls — always one action away · works with no network</span>
+    <!-- CON-101 (blocker): the only plain-language statement of what the most destructive state in
+         the product actually does. role=status announces it without stealing focus. -->
+    <span id="blackout-explain" class="blackout-explain" role="status" hidden>Output is black — the audience sees
+      nothing. Press B or click to restore.</span>
     <span class="emergency-ready"><span class="ready-dot" aria-hidden="true"></span>Offline-ready</span>
   </footer>
   <!-- Command palette (⌘K): search + run any navigation/emergency action. -->

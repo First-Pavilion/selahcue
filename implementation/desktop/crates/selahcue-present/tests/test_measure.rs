@@ -153,6 +153,7 @@ fn stage_frame_at(remaining: u32, width: u32, height: u32) -> Frame {
         time_up: false,
         warn: false,
         progress: f64::from(remaining) / 300.0,
+        overrun_secs: 0,
     };
     let current = Slide::new(
         "Amazing Grace",

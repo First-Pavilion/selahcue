@@ -459,6 +459,9 @@ fn transcript_and_detection_view_fields_are_additive() {
         partial_transcript: None,
         stage_template: String::new(),
         stage_message: None,
+        output_health: None,
+        storage: None,
+        session: None,
         detections: vec![DetectionView {
             id: 4,
             reference: "John 3:16".into(),
@@ -698,11 +701,105 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         partial_transcript: None,
         stage_template: String::new(),
         stage_message: None,
+        output_health: None,
+        storage: None,
+        session: None,
         detections: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
         r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"staged_scripture":"Romans 8:28","live_scripture":"John 3:16","live_free_text":"Removed Song"}}"#
+    );
+
+    // Output health (NFR-024). The assertion ABOVE is the proof that the field is additive:
+    // it is the pre-existing pinned fixture, still byte-identical with `output_health: None`
+    // in the struct, so no cross-language client has to change. This second assertion pins
+    // the POPULATED shape, so the field names the operator UI reads are contract-locked from
+    // the day the field ships rather than after something starts depending on them.
+    let held = selahcue_lan::protocol::OperatorStateView {
+        plan_name: "Sunday".into(),
+        items: vec![],
+        live_index: None,
+        staged_index: None,
+        blackout: false,
+        timer: None,
+        staged_scripture: None,
+        live_scripture: None,
+        live_free_text: None,
+        live_authored_id: None,
+        outputs: vec![],
+        displays: vec![],
+        translations: vec![],
+        theme: String::new(),
+        themes: vec![],
+        saved_themes: vec![],
+        screen_themes: vec![],
+        screens: vec![],
+        transcript: vec![],
+        partial_transcript: None,
+        stage_template: String::new(),
+        stage_message: None,
+        detections: vec![],
+        output_health: Some(selahcue_lan::protocol::OutputHealthView {
+            held: true,
+            fault: Some("gpu_device_lost".into()),
+            holds: 2,
+            recoveries: 1,
+        }),
+        storage: None,
+        session: None,
+    };
+    assert_eq!(
+        to_json(&ServerMessage::OperatorState { view: held }).unwrap(),
+        r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"output_health":{"held":true,"fault":"gpu_device_lost","holds":2,"recoveries":1}}}"#
+    );
+
+    // A HEALTHY host still reports health — `held:false` is a positive statement that the
+    // output is fine, and is deliberately NOT the same frame as a host that omits the field
+    // entirely (which means "cannot say"). The zero counters skip, keeping the frame small.
+    let healthy = selahcue_lan::protocol::OperatorStateView {
+        plan_name: "Sunday".into(),
+        items: vec![],
+        live_index: None,
+        staged_index: None,
+        blackout: false,
+        timer: None,
+        staged_scripture: None,
+        live_scripture: None,
+        live_free_text: None,
+        live_authored_id: None,
+        outputs: vec![],
+        displays: vec![],
+        translations: vec![],
+        theme: String::new(),
+        themes: vec![],
+        saved_themes: vec![],
+        screen_themes: vec![],
+        screens: vec![],
+        transcript: vec![],
+        partial_transcript: None,
+        stage_template: String::new(),
+        stage_message: None,
+        detections: vec![],
+        output_health: Some(selahcue_lan::protocol::OutputHealthView {
+            held: false,
+            fault: None,
+            holds: 0,
+            recoveries: 0,
+        }),
+        storage: None,
+        session: None,
+    };
+    let healthy_json = to_json(&ServerMessage::OperatorState { view: healthy }).unwrap();
+    assert_eq!(
+        healthy_json,
+        r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"output_health":{"held":false}}}"#
+    );
+    // The distinction the whole seam rests on: "healthy" and "cannot say" must not produce
+    // the same bytes, or a client cannot tell a working output from an unreported one.
+    assert!(
+        healthy_json.contains("output_health"),
+        "a host that CAN report health must always say so, even when the news is good"
     );
 
     // The outputs/displays wire surface (batch 7aa): pinned serialize-side; the
@@ -745,6 +842,9 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         partial_transcript: None,
         stage_template: String::new(),
         stage_message: None,
+        output_health: None,
+        storage: None,
+        session: None,
         detections: vec![],
     };
     assert_eq!(
@@ -789,6 +889,9 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         partial_transcript: None,
         stage_template: String::new(),
         stage_message: None,
+        output_health: None,
+        storage: None,
+        session: None,
         detections: vec![],
     };
     assert_eq!(
@@ -824,6 +927,9 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         partial_transcript: None,
         stage_template: String::new(),
         stage_message: None,
+        output_health: None,
+        storage: None,
+        session: None,
         detections: vec![],
     };
     assert_eq!(
@@ -865,6 +971,9 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         partial_transcript: None,
         stage_template: String::new(),
         stage_message: None,
+        output_health: None,
+        storage: None,
+        session: None,
         detections: vec![],
     };
     assert_eq!(

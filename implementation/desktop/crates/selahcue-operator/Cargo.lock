@@ -3532,6 +3532,7 @@ dependencies = [
  "selahcue-core",
  "selahcue-engine",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
