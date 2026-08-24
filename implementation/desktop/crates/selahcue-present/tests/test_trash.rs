@@ -30,20 +30,6 @@ fn deck(id: u64, name: &str, slides: usize) -> SlideDeck {
     d
 }
 
-/// A deck of roughly `slides * 4 KB`, so a test can reach the BYTE budget without reaching the
-/// entry cap. Slides alone are only a few bytes each; a real deck's bulk is its notes.
-fn big_deck(id: u64, name: &str, slides: usize) -> SlideDeck {
-    let mut d = SlideDeck::new(name);
-    d.set_id(DeckId(id));
-    for _ in 0..slides {
-        let Some(sid) = d.add_slide() else { break };
-        if let Some(s) = d.get_mut(sid) {
-            s.notes = "n".repeat(selahcue_present::MAX_NOTES_LEN);
-        }
-    }
-    d
-}
-
 /// The byte budget must bind **independently of the entry cap**.
 ///
 /// This test exists because removing the byte cap entirely SURVIVED the rest of this file: every
@@ -55,13 +41,22 @@ fn the_byte_budget_evicts_large_decks_before_the_entry_cap_is_reached() {
     const LARGE_DECKS: usize = 3;
     const _: () = assert!(LARGE_DECKS < MAX_TRASH_ENTRIES);
 
+    // Each is 40% of the whole budget, so three cannot coexist but three ENTRIES are well under
+    // the entry cap — an eviction here can only have come from the byte budget.
+    let each = MAX_TRASH_BYTES * 2 / 5;
+    const _: () = assert!(LARGE_DECKS >= 3);
     let mut trash = DeckTrash::new();
     for i in 1..=LARGE_DECKS as u64 {
         assert!(
-            trash.push(big_deck(i, &format!("Big {i}"), 150)),
+            trash.push(deck(i, &format!("Big {i}"), 1), each),
             "premise: each large deck must be individually retainable"
         );
     }
+    assert!(
+        each * LARGE_DECKS > MAX_TRASH_BYTES,
+        "premise: the three together must actually exceed the budget, or nothing forces an \
+         eviction and this test proves nothing"
+    );
     assert!(
         trash.len() < LARGE_DECKS,
         "the byte budget must have forced an eviction — the entry cap cannot have, since \
@@ -82,7 +77,7 @@ fn the_byte_budget_evicts_large_decks_before_the_entry_cap_is_reached() {
 #[test]
 fn a_deleted_deck_is_retained_with_its_real_content() {
     let mut trash = DeckTrash::new();
-    assert!(trash.push(deck(1, "Sermon", 5)));
+    assert!(trash.push(deck(1, "Sermon", 5), 1_000));
 
     let kept = trash
         .peek(DeckId(1))
@@ -99,7 +94,7 @@ fn a_deleted_deck_is_retained_with_its_real_content() {
 #[test]
 fn taking_a_deck_out_removes_it_from_retention() {
     let mut trash = DeckTrash::new();
-    trash.push(deck(1, "Sermon", 2));
+    trash.push(deck(1, "Sermon", 2), 1_000);
     let restored = trash.take(DeckId(1)).expect("premise: it was retained");
     assert_eq!(restored.name, "Sermon");
     assert_eq!(
@@ -118,7 +113,7 @@ fn taking_a_deck_out_removes_it_from_retention() {
 fn the_entry_count_is_bounded_and_the_oldest_is_the_one_evicted() {
     let mut trash = DeckTrash::new();
     for i in 0..(MAX_TRASH_ENTRIES as u64 + 3) {
-        assert!(trash.push(deck(i + 1, &format!("Deck {i}"), 1)));
+        assert!(trash.push(deck(i + 1, &format!("Deck {i}"), 1), 1_000));
     }
 
     assert_eq!(
@@ -145,7 +140,7 @@ fn the_entry_count_is_bounded_and_the_oldest_is_the_one_evicted() {
 #[test]
 fn an_oversized_deck_is_refused_and_leaves_retention_intact() {
     let mut trash = DeckTrash::new();
-    trash.push(deck(1, "Keeper", 3));
+    trash.push(deck(1, "Keeper", 3), 1_000);
     let bytes_before = trash.retained_bytes();
     assert!(
         trash.peek(DeckId(1)).is_some(),
@@ -154,25 +149,13 @@ fn an_oversized_deck_is_refused_and_leaves_retention_intact() {
     );
 
     // A deck whose serialized form exceeds the whole budget.
-    // Slides alone are tiny; a real deck's bulk is notes and elements, so fill those.
-    let mut huge = SlideDeck::new("Huge");
-    huge.set_id(DeckId(2));
-    while serde_json::to_string(&huge).unwrap().len() <= MAX_TRASH_BYTES {
-        let Some(sid) = huge.add_slide() else { break };
-        if let Some(slide) = huge.get_mut(sid) {
-            slide.notes = "n".repeat(selahcue_present::MAX_NOTES_LEN);
-        }
-    }
-    let oversized = serde_json::to_string(&huge).unwrap().len() > MAX_TRASH_BYTES;
+    // Refusal must be inert: one byte past the budget changes nothing at all.
     assert!(
-        oversized,
-        "premise unmet: could not build a deck larger than the byte budget, so the refusal \
-         path below was never exercised"
+        !trash.push(deck(3, "One byte over", 1), MAX_TRASH_BYTES + 1),
+        "one byte past the budget must be refused"
     );
-
-    assert!(!trash.push(huge), "an unretainable deck must be refused");
     assert_eq!(
-        trash.peek(DeckId(2)),
+        trash.peek(DeckId(3)),
         None,
         "and must not be partially retained"
     );
@@ -182,6 +165,20 @@ fn an_oversized_deck_is_refused_and_leaves_retention_intact() {
          buffer to make room for something that still would not fit loses real work"
     );
     assert_eq!(trash.retained_bytes(), bytes_before);
+
+    // The other half of the boundary, on a fresh buffer: a deck of EXACTLY the budget is legal.
+    // It needs its own buffer because retaining it legitimately evicts everything else — which
+    // is correct behaviour, not the refusal this test is about.
+    let mut exact = DeckTrash::new();
+    assert!(
+        exact.push(deck(4, "Exactly at cap", 1), MAX_TRASH_BYTES),
+        "a deck of exactly the budget must be retainable — an off-by-one here would refuse \
+         the largest legal case"
+    );
+    assert!(
+        exact.peek(DeckId(4)).is_some(),
+        "and it must really be there, not merely reported as accepted"
+    );
 }
 
 /// Both caps hold together under sustained churn — the shape a real session produces.
@@ -189,7 +186,7 @@ fn an_oversized_deck_is_refused_and_leaves_retention_intact() {
 fn retention_stays_within_both_caps_under_sustained_deletes() {
     let mut trash = DeckTrash::new();
     for i in 0..500u64 {
-        trash.push(deck(i + 1, &format!("Deck {i}"), 3));
+        trash.push(deck(i + 1, &format!("Deck {i}"), 3), 1_000);
         assert!(
             trash.len() <= MAX_TRASH_ENTRIES,
             "entry cap breached at iteration {i}"
@@ -212,9 +209,9 @@ fn retention_stays_within_both_caps_under_sustained_deletes() {
 #[test]
 fn re_deleting_the_same_id_keeps_one_copy_and_it_is_the_newer_one() {
     let mut trash = DeckTrash::new();
-    trash.push(deck(7, "First", 1));
+    trash.push(deck(7, "First", 1), 1_000);
     let after_first = trash.retained_bytes();
-    trash.push(deck(7, "Second", 1));
+    trash.push(deck(7, "Second", 1), 1_000);
 
     assert_eq!(trash.len(), 1, "one id, one retained copy");
     assert_eq!(
@@ -235,8 +232,8 @@ fn re_deleting_the_same_id_keeps_one_copy_and_it_is_the_newer_one() {
 #[test]
 fn ids_lists_exactly_what_undo_can_restore() {
     let mut trash = DeckTrash::new();
-    trash.push(deck(1, "A", 1));
-    trash.push(deck(2, "B", 1));
+    trash.push(deck(1, "A", 1), 1_000);
+    trash.push(deck(2, "B", 1), 1_000);
     assert_eq!(trash.ids(), vec![DeckId(1), DeckId(2)], "oldest first");
     trash.take(DeckId(1));
     assert_eq!(

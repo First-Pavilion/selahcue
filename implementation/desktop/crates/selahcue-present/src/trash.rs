@@ -83,12 +83,21 @@ impl DeckTrash {
 
     /// Retain a deleted deck, evicting the oldest entries until both caps hold.
     ///
+    /// `bytes` is the deck's **serialized** size, measured by the caller. This crate deliberately
+    /// does not serialize it here: `selahcue-present` is a normal dependency of
+    /// `selahcue-import`, whose dependency graph is guarded as a security property because it
+    /// parses hostile documents (`scripts/import_guards.sh`). Pulling a JSON serializer in here
+    /// to measure a deck would have propagated one into that crate. The deck-owning library
+    /// already serializes decks to persist them, so it measures the representation it is about
+    /// to write anyway. A caller that cannot serialize a deck must pass `usize::MAX`, which
+    /// refuses retention — safe, where counting it as zero would let unbounded content in under
+    /// a byte budget of zero.
+    ///
     /// Returns `false` when the deck is too large to retain **at all**, in which case nothing is
     /// stored and nothing already retained is evicted — a single oversized deck must not empty
     /// the buffer to make room for something that still would not fit. A caller that gets
     /// `false` must not offer an undo, because there is nothing to restore.
-    pub fn push(&mut self, deck: SlideDeck) -> bool {
-        let bytes = measure(&deck);
+    pub fn push(&mut self, deck: SlideDeck, bytes: usize) -> bool {
         if bytes > MAX_TRASH_BYTES {
             return false;
         }
@@ -152,14 +161,4 @@ impl DeckTrash {
     pub fn ids(&self) -> Vec<DeckId> {
         self.entries.iter().map(|e| e.deck.id()).collect()
     }
-}
-
-/// Measured serialized size of a deck. Serialization is the same representation persistence
-/// uses, so this is the real cost rather than a field-count guess. A deck that cannot be
-/// serialized is treated as unretainable (`usize::MAX`) — refusing to retain is safe; silently
-/// counting it as zero would let unbounded content in under a byte budget of zero.
-fn measure(deck: &SlideDeck) -> usize {
-    serde_json::to_string(deck)
-        .map(|s| s.len())
-        .unwrap_or(usize::MAX)
 }

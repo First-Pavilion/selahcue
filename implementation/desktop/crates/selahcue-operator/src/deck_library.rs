@@ -483,7 +483,15 @@ impl DeckLibrary {
         };
         let deck = self.decks.remove(i);
         self.delete_persisted(&deck.name);
-        self.trash.push(deck);
+        // Measure HERE, not inside the trash. `selahcue-present` is a normal dependency of
+        // `selahcue-import`, whose dependency graph is guarded because it parses hostile
+        // documents (`scripts/import_guards.sh`), so a JSON serializer must not be pulled into
+        // it just to size a deck. This crate already serializes decks to persist them, so it is
+        // measuring the representation it just wrote. `usize::MAX` on a serialization failure
+        // refuses retention, which is the safe direction: counting it as zero would admit
+        // unbounded content under a byte budget of zero.
+        let bytes = deck_bytes(&deck);
+        self.trash.push(deck, bytes);
         true
     }
 
@@ -683,6 +691,22 @@ fn adopt_base_name(deck: &SlideDeck) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+/// A deck's serialized size — the same representation [`DeckLibrary::persist_one`] writes, so the
+/// retention byte budget reflects real stored cost rather than a field-count guess.
+///
+/// `usize::MAX` when the deck cannot be serialized: that refuses retention, which is the safe
+/// direction. Reporting zero would let arbitrarily large content in under any byte budget.
+///
+/// **That arm is currently unreachable, and no test covers it.** `serde_json` fails on
+/// non-finite floats and non-string map keys, and the deck/theme types contain neither — they
+/// have no float fields at all, which `serialization_of_a_populated_deck_cannot_fail` pins. It
+/// is kept as the safe default for the day someone adds one, not as a branch believed tested.
+fn deck_bytes(deck: &SlideDeck) -> usize {
+    serde_json::to_string(deck)
+        .map(|s| s.len())
+        .unwrap_or(usize::MAX)
 }
 
 /// Return `base` if unused, else `base (2)`, `base (3)`, … — the first form not in `taken`. Total
@@ -960,6 +984,69 @@ mod tests {
             lib.rename(a.id(), "Grace").unwrap(),
             "Grace",
             "self-rename no-op"
+        );
+    }
+
+    /// The premise that makes `deck_bytes`' error arm unreachable.
+    ///
+    /// A mutation replacing `unwrap_or(usize::MAX)` with `unwrap_or(0)` SURVIVES the battery,
+    /// because nothing can make a deck fail to serialize: `serde_json` errors on non-finite
+    /// floats and non-string map keys, and these types have no float fields at all. Rather than
+    /// leave that as an unexamined belief, this pins it — a fully populated deck serializes
+    /// cleanly. If a float field is ever added and a NaN reaches here, the fallback is the safe
+    /// direction, but this test is the record that the arm is unreached rather than verified.
+    #[test]
+    fn serialization_of_a_populated_deck_cannot_fail() {
+        let mut lib = DeckLibrary::load(None);
+        let id = lib.create("Sermon").id();
+        let mut deck = lib.get(id).unwrap();
+        for _ in 0..20 {
+            let Some(sid) = deck.add_slide() else { break };
+            if let Some(slide) = deck.get_mut(sid) {
+                slide.notes = "notes with unicode: \u{2603} \u{1f600}".repeat(20);
+            }
+        }
+        assert!(
+            serde_json::to_string(&deck).is_ok(),
+            "deck serialization must be infallible — this is what makes deck_bytes' error \
+             arm unreachable, and the reason no test exercises it"
+        );
+        assert!(
+            deck_bytes(&deck) < usize::MAX,
+            "so the fallback is never taken"
+        );
+    }
+
+    /// Positive control for the measurement that moved out of `selahcue-present`.
+    ///
+    /// The trash now takes a size from its caller, so nothing in that crate proves the number is
+    /// real. If this measurement silently returned zero, every deck would look free and the byte
+    /// budget would stop binding; if it returned `usize::MAX`, every delete would refuse
+    /// retention and undo would quietly vanish. Both failures are invisible to the trash's own
+    /// tests, which supply sizes directly — so they are checked here, at the only site that
+    /// measures.
+    #[test]
+    fn a_real_decks_measured_size_flows_through_the_delete_path() {
+        let mut lib = DeckLibrary::load(None);
+        let id = lib.create("Sermon").id();
+        let deck = lib.get(id).unwrap();
+
+        let measured = deck_bytes(&deck);
+        assert_eq!(
+            measured,
+            serde_json::to_string(&deck).unwrap().len(),
+            "the size must be the SERIALIZED length the library persists, not a guess"
+        );
+        assert!(
+            measured > 0 && measured < selahcue_present::MAX_TRASH_BYTES,
+            "premise: a normal deck is measurable and comfortably retainable ({measured} bytes)"
+        );
+
+        assert!(lib.delete(id));
+        assert!(
+            lib.can_restore(id),
+            "a normally-sized deck must actually be retained — otherwise the measurement is \
+             refusing everything and undo is dead while every other test still passes"
         );
     }
 
