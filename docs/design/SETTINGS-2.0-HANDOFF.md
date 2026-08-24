@@ -133,7 +133,7 @@ Each page lists its default node, sections (→ requirement), and its state fram
 - **Colour is never the only cue:** every status carries a text label (PRIVATE/OPT-IN/ON/VERIFIED/EMERGENCY, "disconnected", "Blocked"); the mismatch state pairs an amber dot with the word "disconnected" (WCAG 1.4.1).
 - **Keyboard/focus:** every control is a standard focusable primitive; reading/focus order follows top-to-bottom, left-column-then-right within two-column rows; the keyboard-shortcuts table is itself the remap surface (FR-014). Emergency chords are shown remap-only (cannot be unbound).
 - **Targets:** rows, toggles (42×24 + 46-tall row hit area), buttons, and selects are sized for comfortable pointer + touch (≥44px effective row height).
-- **Reduced motion:** honoured as two explicit scopes (operator-UI + audience/stream); OS-forced state shows the toggle locked with an explanatory note (`589:534`). Seizure caps (flash ≤3/sec, solid-inverted TIME UP default) are always-on and stated on Outputs.
+- **Reduced motion:** honoured as two explicit scopes (operator-UI + audience/stream); OS-forced state shows the toggle locked with an explanatory note (`589:534`). Seizure caps (flash ≤3/sec; TIME UP default is solid-inverted with a measured ≤0.5 Hz word pulse, FR-059) are always-on and stated on Outputs.
 - **Screen reader:** destructive dialogs are modal type-to-confirm; permission-denied removes controls from tab order rather than greying (no phantom focus stops); loading states are described in text ("Detecting displays…", "Backing up… 62%") for an aria-live/aria-busy channel.
 
 ---

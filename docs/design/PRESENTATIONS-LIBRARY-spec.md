@@ -22,8 +22,35 @@ So this design **surfaces an existing capability**, it does not invent a new sub
 
 - **App nav → "Presentations"** becomes the landing surface for the Presentation area (today the nav route "Plan / Library" is a deferred "(later surface)", NAV-IA §2). Opening the Presentation area shows the **Library** (§3), not an editor pre-loaded with a mystery deck.
 - **Library → open a card → Editor** (the existing `329:124` single-deck editor, unchanged).
-- **Editor → back to Library:** the editor top-bar chip changes from a static label to a **breadcrumb + deck switcher**: `‹ Presentations   ▦ <Deck name> ▾`. The `▾` opens a quick-switch popover (recent decks + "New…" + "Browse all…"); clicking the deck name inline-renames it. This replaces the disabled "Add to plan" stub with a real entry point.
+- **Editor → back to Library:** the editor top-bar chip changes from a static label to a **breadcrumb + deck switcher**: `‹ Presentations   ▦ <Deck name> ▾`. The `▾` opens a quick-switch popover (recent decks + "New…" + "Browse all…"); clicking the deck name inline-renames it. This replaces the disabled "Add to plan" stub as the *navigation* entry point. (For the fate of "Add to plan" itself, see §2.1.)
 - **Relationship to Service Plans:** a presentation (deck) is one *document*. Once the `PlanItem → deck` reference lands (ADR-0020 follow-up), a plan item can point at a deck from this library. This spec covers the **standalone deck library**; the plan-item link is a separate story.
+
+
+### 2.1 "Add to plan" — reinstated (owner decision, 2026-08-23)
+
+**Superseding §2 above and audit question Q-14.** This spec originally dropped "Add to plan"
+because the deck-switcher replaced it as the way back to the Library, *and* because the
+`PlanItem → deck` reference it needed did not exist — §2 records it as a "separate story"
+pending the ADR-0020 follow-up.
+
+**That blocker has since cleared.** `set_item_content` is a live host command
+(`selahcue-operator/src/main.rs:267`) and the `{ kind: "deck", id, slide_count }` link shape is
+already exercised by `planDeckBody`. So the reason for dropping the control no longer holds, and
+the owner has reinstated it.
+
+Shipped behaviour (`pm-addtoplan`, `pmAddToPlan` in `dist/app.js`):
+- resolves the open deck via `deck_list`, creates a `slide_group` plan item via `add_item`,
+  then attaches the deck link via `set_item_content`;
+- **rolls the plan item back** if the link fails, rather than leaving a row that misreports what
+  it holds;
+- guards double-activation, so one click can never produce two plan items;
+- hidden in Library mode, shown in Editor mode.
+
+It is a **functional control, not the disabled stub** the regression guard in
+`selahcue-present/tests/test_tokens.rs` was written to keep out. That guard bans the old
+`id="pm-addplan"` and still passes, because the new control uses `pm-addtoplan` — a distinction
+too subtle to rely on. **The guard is to be widened** to ban the dead stub *and* positively
+assert the functional control is present and wired.
 
 ---
 

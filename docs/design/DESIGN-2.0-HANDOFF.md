@@ -340,7 +340,7 @@ high-contrast, glanceable). Each design is a standalone frame:
 - **Focus visible**: use `primary` 2px ring on focus (selection uses the same violet — keep focus ring distinct
   from selection fill, e.g. ring + offset).
 - **Reduced motion**: honour `prefers-reduced-motion` (transcript shimmer, waveform, spinners → static). TIME UP is
-  solid-inverted, no flashing (ADR-0015).
+  solid-inverted, with a calm ≤0.5 Hz pulse on the TIME UP words only — measured inside FR-175 (ADR-0015).
 - **Touch targets (mobile)**: primary controls ≥ 44pt (GO LIVE, transport, timer, Send TIME UP are sized for it).
 - **Screen reader**: blackout button `aria-pressed` + "ON" label (existing); detection actions need labelled
   buttons; monitor regions need alt text describing current/next content.
