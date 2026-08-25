@@ -5,8 +5,8 @@
 use selahcue_engine::analysis::analyze_flashes;
 use selahcue_engine::raster::FrameBuffer;
 use selahcue_present::{
-    AuthoredSlide, Background, Element, Fit, LayerMask, Presenter, Rgba, Slide, SlideId,
-    StageDisplay, StageTheme, TextAlign, Theme, TimerView, VAlign,
+    AuthoredSlide, Background, Element, Fit, ImageBackground, LayerMask, MediaRef, Presenter, Rgba,
+    Slide, SlideId, StageDisplay, StageTheme, TextAlign, Theme, TimerView, VAlign,
 };
 use std::time::{Duration, Instant};
 
@@ -371,6 +371,8 @@ fn timer_view(remaining: u32, total: u32, time_up: bool, warn: bool) -> TimerVie
         remaining_secs: Some(remaining),
         time_up,
         warn,
+        // The helper never drives a timer past zero — `time_up` is passed in, not reached.
+        overrun_secs: 0,
         progress: if total == 0 {
             1.0
         } else {
@@ -761,5 +763,69 @@ fn authored_next_projects_the_coming_deck_slide_and_is_reset_correctly() {
     assert!(
         p.authored_next_confidence_slide().is_none(),
         "a plan go-live clears the authored next"
+    );
+}
+
+#[test]
+fn scripture_follow_burst_with_an_image_theme_is_within_budget() {
+    // The live-service navigation path behind the owner's "select a scripture and the
+    // congregation waits" defect: with an IMAGE-background theme, every verse selection
+    // (follow = stage + go-live) used to re-scale and re-blit the background at full
+    // output resolution — ~300 ms per compose on a debug host, ~4.8 s for a held-arrow
+    // burst of eight verses. The engine's static-prefix cache makes repeat composes a
+    // memcpy + text raster, byte-identically. This pins that flow: eight follow cycles
+    // at full HD under an image theme. Budgets mirror the slide-trigger NFR convention
+    // above: the real budget is enforced on release (`make nfr` / a release test run);
+    // debug keeps a generous tripwire so a catastrophic regression still fails anywhere
+    // without measuring an unoptimized build on an oversubscribed CI runner.
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_millis(3000)
+    } else {
+        Duration::from_millis(300)
+    };
+    // A small PNG on disk — the engine resolves the theme background by path.
+    let dir = std::env::temp_dir().join(format!("selahcue-follow-nfr-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("bg.png");
+    let mut bytes = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut bytes, 64, 64);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let data: Vec<u8> = (0..64u32 * 64)
+            .flat_map(|i| [(i % 251) as u8, (i % 241) as u8, (i % 239) as u8, 255])
+            .collect();
+        enc.write_header().unwrap().write_image_data(&data).unwrap();
+    }
+    std::fs::write(&path, bytes).unwrap();
+
+    let mut theme = Theme::dark();
+    theme.background = Background::Image(ImageBackground {
+        source: MediaRef::new(path.to_str().unwrap()).unwrap(),
+    });
+    let mut p = Presenter::new(1920, 1080, theme);
+
+    // Put the first verse on air OUTSIDE the timed burst: the one-off cold compose is the
+    // slide-trigger budget above; the burst is the *navigation* path the operator holds.
+    p.stage(Slide::new("John 3:1", ["There was a man of the Pharisees"]));
+    assert!(p.go_live());
+
+    let start = Instant::now();
+    for i in 2..10 {
+        p.stage(Slide::new(
+            format!("John 3:{i}"),
+            [format!("verse {i} of the reading, long enough to shape")],
+        ));
+        assert!(p.go_live(), "every followed verse must reach Live");
+    }
+    let elapsed = start.elapsed();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        elapsed <= budget,
+        "8-verse follow burst exceeded {budget:?}: {elapsed:?}"
+    );
+    assert!(
+        p.live_output().average_luminance() > 1e-6,
+        "the last followed verse is actually on air"
     );
 }

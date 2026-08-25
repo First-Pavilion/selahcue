@@ -15,6 +15,7 @@ use cosmic_text::{
     Attrs, Buffer, Color as CtColor, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
 };
 use std::cell::RefCell;
+use std::sync::Mutex;
 
 /// The single BUNDLED output font (Noto Sans, Regular, Latin subset — OFL, see
 /// `assets/fonts/OFL.txt`). Compiled into the binary so text shapes and
@@ -754,61 +755,303 @@ fn draw_shape(
     }
 }
 
-/// Render a scene to an RGBA8 framebuffer — deterministic and GPU-free.
+/// Process-wide cache of the rendered **static prefix** of a scene — every layer BEFORE
+/// the first [`Layer::Text`] (theme background image/gradient/fill, band, behind-text
+/// elements), composited onto the base fill. Slide navigation re-renders the SAME static
+/// prefix with only the text layers changing (a verse click, a follow, a lyric advance),
+/// and profiling showed that prefix — dominated by re-scaling a background image at full
+/// output resolution — was ~78% of every compose on the live command path. A hit replaces
+/// all of that with one `FrameBuffer` clone (a memcpy), byte-identically: the cached
+/// buffer is the deterministic raster of the same ops it replaces.
+///
+/// Storage is **global** (one `Mutex`, not per-thread) because `render` runs on whatever
+/// thread reaches it — the LAN server's tokio workers, the desktop main thread, operator
+/// command handlers — and a per-thread slot would multiply the bound by the thread count.
+/// Bounds (no-leak), all hard by construction: total accounted residency never exceeds
+/// [`PREFIX_CACHE_MAX_RESIDENT_BYTES`] (an entry is inserted only after evicting
+/// least-recently-used entries until it fits, measured by the same accounting that
+/// [`prefix_cache_resident_bytes`] reports); the store never holds more than
+/// [`PREFIX_CACHE_MAX_ENTRIES`] entries (bounding the per-render lookup scan and the
+/// per-entry bookkeeping the byte accounting does not count); and one entry's
+/// framebuffer is capped at [`PREFIX_CACHE_MAX_BYTES`] (a 4K RGBA frame; larger frames
+/// render uncached). The store is sized by BYTES rather than a fixed slot count because
+/// the shipped product renders several distinct prefixes concurrently — the audience
+/// theme, every NDI-enabled screen (composed each frame, each with its own theme/mask),
+/// the stage/confidence output — and a fixed 2-slot store thrashed to a 0% hit rate the
+/// moment a third prefix entered the rotation (measured: ~230 ms per compose vs ~0.5 ms
+/// warm, debug, three 1080p surfaces). Under the byte budget many sub-4K prefixes
+/// coexist (eight full-HD prefixes fit) while 4K frames self-limit to two; anything
+/// past the budget degrades to the uncached path — it never grows.
+/// An entry is re-rendered after [`PREFIX_CACHE_MAX_REUSES`] hits so a changed media file
+/// behind an unchanged `MediaRef` is picked up at least as promptly as the decode cache
+/// would today.
+struct PrefixEntry {
+    width: u32,
+    height: u32,
+    background: Rgba,
+    prefix: Vec<Layer>,
+    fb: FrameBuffer,
+    hits: u32,
+    /// Recency stamp for LRU replacement (monotonic per-cache clock).
+    stamp: u64,
+}
+
+impl PrefixEntry {
+    /// Approximate bytes this entry keeps resident (framebuffer + prefix key).
+    fn resident_bytes(&self) -> usize {
+        self.fb.bytes().len() + self.prefix.capacity() * std::mem::size_of::<Layer>()
+    }
+
+    /// Whether this entry is the cached raster of `frame`'s static prefix.
+    fn matches(&self, frame: &Frame, prefix: &[Layer]) -> bool {
+        self.width == frame.width
+            && self.height == frame.height
+            && self.background == frame.background
+            && self.prefix.as_slice() == prefix
+    }
+}
+
+/// The bounded slot store behind [`PREFIX_CACHE`].
+struct PrefixSlots {
+    entries: Vec<PrefixEntry>,
+    clock: u64,
+}
+
+/// Byte cap for one cacheable prefix framebuffer (RGBA at 4K). Larger frames render uncached.
+const PREFIX_CACHE_MAX_BYTES: usize = 3840 * 2160 * 4;
+/// A cached prefix is re-rendered after this many hits (bounded staleness, see above).
+const PREFIX_CACHE_MAX_REUSES: u32 = 64;
+
+/// Per-entry allowance for the KEY an entry keeps resident alongside its framebuffer
+/// (the cloned prefix `Vec<Layer>`, and the `MediaRef` paths those layers own).
+/// [`PrefixEntry::resident_bytes`] charges the key against the same budget as the
+/// pixels, so a budget of exactly N framebuffers holds only N-1 entries — measured:
+/// a 4K one-layer entry is 33,177,736 bytes, and two of them overran a
+/// `2 * PREFIX_CACHE_MAX_BYTES` budget by 272 bytes, evicting on every alternation and
+/// restoring the very thrash this cache exists to prevent. The headroom makes the
+/// budget mean what its name says: N FULL-SIZE ENTRIES, not N bare framebuffers.
+const PREFIX_CACHE_ENTRY_KEY_HEADROOM: usize = 64 * 1024;
+
+/// Hard global byte budget for the whole store (public for the bounded-memory test).
+/// Entries are inserted only after LRU eviction makes the new accounted total fit, so
+/// [`prefix_cache_resident_bytes`] can never exceed this. Sized at two FULL 4K entries
+/// — the same proven ceiling as the previous 2-slot × 4K-cap design, plus the key
+/// allowance above — so smaller prefixes coexist within the SAME memory bound: eight
+/// full-HD surfaces (8 × 8,294,672 = 66,357,376) or two 4K ones both fit.
+pub const PREFIX_CACHE_MAX_RESIDENT_BYTES: usize =
+    2 * (PREFIX_CACHE_MAX_BYTES + PREFIX_CACHE_ENTRY_KEY_HEADROOM);
+
+// The budget must admit two FULL 4K entries, not two bare framebuffers — the defect
+// this headroom fixes. A compile-time premise so a future cap change cannot silently
+// reintroduce the off-by-one (the run-time symptom is a 0% hit rate, not a failure).
+const _: () = assert!(
+    2 * (PREFIX_CACHE_MAX_BYTES + std::mem::size_of::<Layer>()) <= PREFIX_CACHE_MAX_RESIDENT_BYTES
+);
+/// Hard cap on resident entries (public for the bounded-memory test): bounds the
+/// per-render linear lookup and the per-entry bookkeeping bytes the residency
+/// accounting does not count.
+pub const PREFIX_CACHE_MAX_ENTRIES: usize = 32;
+/// The per-entry byte cap (public for the bounded-memory test): one 4K RGBA frame.
+/// Frames larger than this render uncached.
+pub const PREFIX_CACHE_BYTE_CAP: usize = PREFIX_CACHE_MAX_BYTES;
+
+static PREFIX_CACHE: Mutex<PrefixSlots> = Mutex::new(PrefixSlots {
+    entries: Vec::new(),
+    clock: 0,
+});
+
+/// Lock the cache, recovering from a poisoned mutex: the cache holds only whole,
+/// already-built entries (inserted by single assignment), so a panic elsewhere cannot
+/// leave it half-written — and the render path must never panic over a cache (NFR-024).
+fn lock_prefix_cache() -> std::sync::MutexGuard<'static, PrefixSlots> {
+    PREFIX_CACHE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Total bytes currently resident in the prefix cache across ALL threads (diagnostics:
+/// the bounded-memory test and NFR tooling assert against this). Never exceeds
+/// [`PREFIX_CACHE_MAX_RESIDENT_BYTES`]: insertion evicts least-recently-used entries
+/// until this same accounting fits the budget, and over-cap frames bypass the store.
+pub fn prefix_cache_resident_bytes() -> usize {
+    lock_prefix_cache()
+        .entries
+        .iter()
+        .map(PrefixEntry::resident_bytes)
+        .sum()
+}
+
+/// Drop every cached prefix (diagnostics / tests / an explicit media-invalidation hook).
+/// Purely an optimization reset: the next renders re-rasterize and re-populate.
+pub fn prefix_cache_clear() {
+    lock_prefix_cache().entries.clear();
+}
+
+/// The static prefix of `frame`: every layer before the first [`Layer::Text`] (slide
+/// navigation only changes text, so this prefix repeats verbatim across composes).
+fn static_prefix(frame: &Frame) -> &[Layer] {
+    let split = frame
+        .layers
+        .iter()
+        .position(|l| matches!(l, Layer::Text { .. }))
+        .unwrap_or(frame.layers.len());
+    &frame.layers[..split]
+}
+
+/// Test-visible HIT signal: how many cache hits the resident entry matching `frame`'s
+/// static prefix has served since it was (re)inserted, or `None` when that prefix is
+/// not resident at all. The byte-identity and over-cap-bypass tests assert on this so
+/// a test that means to exercise a hit FAILS loudly when the cache actually missed,
+/// was evicted, or was bypassed — instead of silently degenerating to comparing two
+/// cold renders (which any deterministic renderer passes).
+pub fn prefix_cache_hits_for(frame: &Frame) -> Option<u32> {
+    let prefix = static_prefix(frame);
+    lock_prefix_cache()
+        .entries
+        .iter()
+        .find(|e| e.matches(frame, prefix))
+        .map(|e| e.hits)
+}
+
+/// Rasterize one layer onto `fb` (the shared per-layer dispatch for `render`).
+fn raster_layer(fb: &mut FrameBuffer, layer: &Layer) {
+    match layer {
+        Layer::Fill { rect, color } => fill_rect(fb, *rect, *color),
+        Layer::Text {
+            rect,
+            text,
+            px,
+            color,
+            align,
+            font,
+            style,
+        } => {
+            let s = style.unwrap_or_default();
+            draw_text(
+                fb,
+                *rect,
+                text,
+                *px,
+                *color,
+                *align,
+                font.as_ref(),
+                s.weight,
+                s.letter_spacing_px,
+            );
+        }
+        Layer::Image {
+            rect,
+            source,
+            opacity,
+            fit,
+        } => draw_image(fb, *rect, source, *opacity, *fit),
+        Layer::Shape {
+            rect,
+            kind,
+            fill,
+            border,
+            border_px,
+            corner_px,
+        } => draw_shape(fb, *rect, *kind, *fill, *border, *border_px, *corner_px),
+        Layer::Gradient {
+            rect,
+            from,
+            to,
+            direction,
+        } => draw_gradient(fb, *rect, *from, *to, *direction),
+    }
+}
+
+/// Render a scene to an RGBA8 framebuffer — deterministic and GPU-free. Byte-identical
+/// with or without a prefix-cache hit (the cache stores the raster of the same ops).
 pub fn render(frame: &Frame) -> FrameBuffer {
     if frame.blackout {
         // Blackout is a deliberate, safe output state (not a fault).
         return FrameBuffer::filled(frame.width, frame.height, Rgba::BLACK);
     }
-    let mut fb = FrameBuffer::filled(frame.width, frame.height, frame.background);
-    for layer in &frame.layers {
-        match layer {
-            Layer::Fill { rect, color } => fill_rect(&mut fb, *rect, *color),
-            Layer::Text {
-                rect,
-                text,
-                px,
-                color,
-                align,
-                font,
-                style,
-            } => {
-                let s = style.unwrap_or_default();
-                draw_text(
-                    &mut fb,
-                    *rect,
-                    text,
-                    *px,
-                    *color,
-                    *align,
-                    font.as_ref(),
-                    s.weight,
-                    s.letter_spacing_px,
-                );
-            }
-            Layer::Image {
-                rect,
-                source,
-                opacity,
-                fit,
-            } => draw_image(&mut fb, *rect, source, *opacity, *fit),
-            Layer::Shape {
-                rect,
-                kind,
-                fill,
-                border,
-                border_px,
-                corner_px,
-            } => draw_shape(
-                &mut fb, *rect, *kind, *fill, *border, *border_px, *corner_px,
-            ),
-            Layer::Gradient {
-                rect,
-                from,
-                to,
-                direction,
-            } => draw_gradient(&mut fb, *rect, *from, *to, *direction),
+    // The static prefix: every layer before the first Text layer (slide navigation only
+    // changes text, so this prefix repeats verbatim across consecutive composes).
+    let (prefix, suffix) = frame.layers.split_at(static_prefix(frame).len());
+    let bytes = (frame.width as usize)
+        .saturating_mul(frame.height as usize)
+        .saturating_mul(4);
+    let render_prefix = || {
+        let mut fb = FrameBuffer::filled(frame.width, frame.height, frame.background);
+        for layer in prefix {
+            raster_layer(&mut fb, layer);
         }
+        fb
+    };
+    let mut fb = if bytes <= PREFIX_CACHE_MAX_BYTES {
+        // Hit: clone the cached prefix framebuffer (a memcpy) under the lock.
+        let hit = {
+            let mut slots = lock_prefix_cache();
+            slots.clock += 1;
+            let now = slots.clock;
+            slots
+                .entries
+                .iter_mut()
+                .find(|e| e.hits < PREFIX_CACHE_MAX_REUSES && e.matches(frame, prefix))
+                .map(|e| {
+                    e.hits += 1;
+                    e.stamp = now;
+                    e.fb.clone()
+                })
+        };
+        match hit {
+            Some(fb) => fb,
+            None => {
+                // Miss: rasterize the prefix OUTSIDE the lock, then claim residency —
+                // refresh the same key in place (same dimensions and key, so residency
+                // is unchanged), or insert after evicting least-recently-used entries
+                // until BOTH global bounds hold. Hard bound by construction: an entry
+                // is pushed only once the store fits it, and one that could never fit
+                // is simply not cached.
+                let fb = render_prefix();
+                let mut slots = lock_prefix_cache();
+                slots.clock += 1;
+                let entry = PrefixEntry {
+                    width: frame.width,
+                    height: frame.height,
+                    background: frame.background,
+                    prefix: prefix.to_vec(),
+                    fb: fb.clone(),
+                    hits: 0,
+                    stamp: slots.clock,
+                };
+                let entry_bytes = entry.resident_bytes();
+                if let Some(existing) = slots.entries.iter_mut().find(|e| e.matches(frame, prefix))
+                {
+                    *existing = entry;
+                } else if entry_bytes <= PREFIX_CACHE_MAX_RESIDENT_BYTES {
+                    let mut resident: usize =
+                        slots.entries.iter().map(PrefixEntry::resident_bytes).sum();
+                    while slots.entries.len() >= PREFIX_CACHE_MAX_ENTRIES
+                        || resident + entry_bytes > PREFIX_CACHE_MAX_RESIDENT_BYTES
+                    {
+                        let Some(lru) = slots
+                            .entries
+                            .iter()
+                            .enumerate()
+                            .min_by_key(|(_, e)| e.stamp)
+                            .map(|(i, _)| i)
+                        else {
+                            break; // the store is empty; the outer guard fits the entry
+                        };
+                        resident -= slots.entries[lru].resident_bytes();
+                        slots.entries.swap_remove(lru);
+                    }
+                    slots.entries.push(entry);
+                }
+                // else: a prefix whose key alone outweighs the whole budget is not
+                // cacheable — render it uncached every time (bounded, never grows).
+                fb
+            }
+        }
+    } else {
+        // Over the byte cap: render uncached (and leave the cache alone).
+        render_prefix()
+    };
+    for layer in suffix {
+        raster_layer(&mut fb, layer);
     }
     fb
 }

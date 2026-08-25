@@ -30,6 +30,19 @@ cargo test --release -q --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-presen
   --test test_present go_live_slide_trigger_latency_is_within_budget >/dev/null
 echo "   slide-trigger latency: within 150 ms (release) PASS"
 
+# The 300 ms release arms below exist ONLY here: `make ci` runs debug builds, whose
+# generous tripwires do not enforce the real budgets. Skipping these would leave the
+# release budgets dead (that exact gap shipped the follow-burst budget unenforced).
+echo ">> enforcing the release-build scripture follow-burst budget (300 ms)…"
+cargo test --release -q --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-present \
+  --test test_present scripture_follow_burst_with_an_image_theme_is_within_budget >/dev/null
+echo "   scripture follow burst (image theme): within 300 ms (release) PASS"
+
+echo ">> enforcing the release-build multi-surface burst budget (300 ms)…"
+cargo test --release -q --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-engine \
+  --test test_raster a_multi_surface_verse_burst_keeps_every_surface_prefix_cached >/dev/null
+echo "   multi-surface (3-prefix) burst: within 300 ms (release) PASS"
+
 if pgrep -f selahcue-output >/dev/null 2>&1; then
   echo "WARNING: a selahcue-output instance is already running; results would be"
   echo "         polluted and its endpoint file will be replaced. Close it first."

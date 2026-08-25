@@ -1180,3 +1180,323 @@ fn transforms_preserve_buffer_byte_length_invariant() {
     let fit = src.fitted(10, 10, selahcue_engine::raster::Fit::Stretch);
     assert_eq!(fit.byte_len(), 10 * 10 * 4);
 }
+
+// --- Static-prefix cache (scripture-select latency fix) --------------------------------
+// Slide navigation re-renders the same theme background (image/gradient/band) with only
+// the text layers changing; `render` caches that static prefix in a GLOBAL, mutex-guarded
+// store bounded by a byte budget (PREFIX_CACHE_MAX_RESIDENT_BYTES, LRU-evicted to fit),
+// an entry cap (PREFIX_CACHE_MAX_ENTRIES) and a per-entry cap (PREFIX_CACHE_BYTE_CAP),
+// so the bound holds no matter how many threads render. These tests pin three contracts:
+// byte-identical output (a PROVEN cache hit must be indistinguishable from a cold
+// render), bounded memory, and multi-surface hit retention (three+ distinct surface
+// prefixes must coexist — the fixed 2-slot store thrashed to a 0% hit rate there).
+// The store is process-global: the tests in this module serialize on a lock, and the
+// bounded-memory assertions are written to hold under interference from the rest of
+// the binary (invariants, not exact snapshots of the shared store).
+
+mod prefix_cache {
+    use super::*;
+    use selahcue_engine::raster::{
+        prefix_cache_clear, prefix_cache_hits_for, prefix_cache_resident_bytes,
+        PREFIX_CACHE_BYTE_CAP, PREFIX_CACHE_MAX_RESIDENT_BYTES,
+    };
+    use selahcue_engine::scene::{ImageFit, MediaRef};
+    use std::time::{Duration, Instant};
+
+    /// Serializes the tests in THIS module. The cache is process-global and these tests
+    /// assert on per-key hit counts and clear the store — interleaved, one test's
+    /// `prefix_cache_clear`/evictions would invalidate another's hit signal (measured:
+    /// the byte-identity test silently degenerated to `render(x) == render(x)` when its
+    /// warm entry was evicted by a sibling running concurrently). Poisoning is recovered
+    /// so one failing test cannot mask the others.
+    static CACHE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn serialize_cache_tests() -> std::sync::MutexGuard<'static, ()> {
+        CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The residency invariant the no-leak rule demands: the global byte budget itself.
+    /// Exact, no allowance — eviction uses the SAME accounting the reporter sums (pixels
+    /// plus prefix keys), so an insert can never push the reported total past the budget.
+    fn residency_bound() -> usize {
+        PREFIX_CACHE_MAX_RESIDENT_BYTES
+    }
+
+    /// A tiny valid RGBA PNG on disk (the decode cache resolves by path).
+    fn png_file(dir: &std::path::Path, name: &str, c: Rgba) -> std::path::PathBuf {
+        let mut data = Vec::new();
+        for _ in 0..(4 * 4) {
+            data.extend_from_slice(&[c.r, c.g, c.b, c.a]);
+        }
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, 4, 4);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.write_header().unwrap().write_image_data(&data).unwrap();
+        }
+        let p = dir.join(name);
+        std::fs::write(&p, out).unwrap();
+        p
+    }
+
+    /// A themed frame: image background + band fill (the static prefix) + a verse text.
+    fn themed_frame(img: &std::path::Path, verse: &str) -> Frame {
+        let mut f = Frame::new(320, 180).with_background(Rgba::rgb(10, 10, 20));
+        f.push(Layer::Image {
+            rect: Rect::new(0, 0, 320, 180),
+            source: MediaRef::new(img.to_str().unwrap()).unwrap(),
+            opacity: 255,
+            fit: ImageFit::Fill,
+        });
+        f.push(Layer::Fill {
+            rect: Rect::new(0, 140, 320, 40),
+            color: Rgba::new(0, 0, 0, 160),
+        });
+        f.push(Layer::Text {
+            rect: Rect::new(10, 40, 300, 100),
+            text: verse.into(),
+            px: 24,
+            color: Rgba::rgb(240, 240, 240),
+            align: TextAlign::Center,
+            font: None,
+            style: None,
+        });
+        f
+    }
+
+    #[test]
+    fn a_cache_hit_is_byte_identical_to_a_cold_render() {
+        let _serial = serialize_cache_tests();
+        let dir =
+            std::env::temp_dir().join(format!("selahcue-prefix-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = png_file(&dir, "bg.png", Rgba::rgb(60, 90, 120));
+
+        // Warm the cache with verse one, then render verse two THROUGH the cache…
+        prefix_cache_clear();
+        let _ = render(&themed_frame(&img, "For God so loved the world"));
+        let warm = render(&themed_frame(&img, "that he gave his only Son"));
+        // …and PROVE that render hit (insert on verse one = 0 hits, verse two = 1).
+        // Without this the assertion below degenerates to `render(x) == render(x)` —
+        // true for any deterministic renderer, cache present or not — whenever the
+        // warm entry was silently evicted. This test guards the SSIM ≥ 0.99 GPU parity
+        // oracle: a hit must be indistinguishable from a cold render, so first show a
+        // hit actually happened.
+        assert_eq!(
+            prefix_cache_hits_for(&themed_frame(&img, "that he gave his only Son")),
+            Some(1),
+            "the warm render bypassed the prefix cache; the byte-identity contract was not exercised"
+        );
+
+        // …then drop every cached prefix and render verse two COLD.
+        prefix_cache_clear();
+        let cold = render(&themed_frame(&img, "that he gave his only Son"));
+
+        assert_eq!(
+            warm.bytes(),
+            cold.bytes(),
+            "a prefix-cache hit must produce byte-identical pixels to a cold render"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_cache_stays_bounded_under_many_threads_and_prefixes() {
+        let _serial = serialize_cache_tests();
+        // The no-leak contract, asserted against the GLOBAL accounting: distinct prefixes
+        // hammered from many threads at once (the LAN server renders on tokio workers;
+        // the desktop main thread composes too) must never grow total residency past
+        // the byte budget — eviction, not accumulation.
+        let workers: Vec<_> = (0..8u32)
+            .map(|w| {
+                std::thread::spawn(move || {
+                    for i in 0..25u32 {
+                        let mut f = Frame::new(320, 180).with_background(Rgba::rgb(
+                            (w * 40 % 255) as u8,
+                            (i % 255) as u8,
+                            0,
+                        ));
+                        f.push(Layer::Fill {
+                            rect: Rect::new(0, 0, 320, 20),
+                            color: Rgba::rgb(0, (i % 255) as u8, (w % 255) as u8),
+                        });
+                        f.push(Layer::Text {
+                            rect: Rect::new(10, 40, 300, 100),
+                            text: format!("verse {w}/{i}"),
+                            px: 24,
+                            color: Rgba::rgb(240, 240, 240),
+                            align: TextAlign::Left,
+                            font: None,
+                            style: None,
+                        });
+                        let _ = render(&f);
+                        let resident = prefix_cache_resident_bytes();
+                        assert!(
+                            resident <= super::prefix_cache::residency_bound(),
+                            "global prefix-cache residency {resident} exceeded its bound"
+                        );
+                    }
+                })
+            })
+            .collect();
+        for w in workers {
+            w.join().unwrap();
+        }
+        let resident = prefix_cache_resident_bytes();
+        // POSITIVE CONTROL. `resident <= bound` is trivially true of an EMPTY cache, so
+        // on its own this test passes against an implementation that never caches
+        // anything — the bound would be "held" by a mechanism that does not run.
+        assert!(
+            resident > 0,
+            "positive control: the hammer must leave prefixes resident, else the bound \
+             below is satisfied by an empty cache rather than by eviction"
+        );
+        assert!(
+            resident <= residency_bound(),
+            "global prefix-cache residency {resident} exceeded its bound after the hammer"
+        );
+    }
+
+    #[test]
+    fn an_over_cap_frame_renders_correctly_and_bypasses_the_cache() {
+        // A frame past the per-entry byte cap must render correctly and must NOT be
+        // cached — asserted on the entry itself (a residency-total comparison cannot
+        // see it: 4100×2200 RGBA ≈ 36 MB fits under the global bound on its own).
+        let _serial = serialize_cache_tests();
+        // Compile-time premise: the frame must exceed the per-entry cap, so the test
+        // cannot silently rot into an under-cap (vacuous) frame if the cap ever grows.
+        const _: () = assert!(4100 * 2200 * 4 > PREFIX_CACHE_BYTE_CAP);
+        let mut big = Frame::new(4100, 2200).with_background(Rgba::rgb(9, 9, 9));
+        big.push(Layer::Fill {
+            rect: Rect::new(0, 0, 4100, 60),
+            color: Rgba::rgb(20, 20, 20),
+        });
+        // POSITIVE CONTROL. Asserting only that `big` is absent passes just as well
+        // when NOTHING caches at all — the test would then be measuring a dead
+        // mechanism and reporting it as a refusal. So first prove caching is live in
+        // this very test, on an under-cap frame, and only then read `None` as "refused".
+        let mut small = Frame::new(320, 180).with_background(Rgba::rgb(9, 9, 9));
+        small.push(Layer::Fill {
+            rect: Rect::new(0, 0, 320, 20),
+            color: Rgba::rgb(20, 20, 20),
+        });
+        let _ = render(&small);
+        let _ = render(&small);
+        assert!(
+            prefix_cache_hits_for(&small).is_some(),
+            "positive control: an under-cap prefix must be cached, else this test's \
+             `None` below proves nothing about the over-cap path"
+        );
+
+        // Render TWICE: were the frame ever inserted, the second render would find it.
+        let fb = render(&big);
+        assert_eq!(fb.bytes().len(), 4100 * 2200 * 4);
+        let again = render(&big);
+        assert_eq!(
+            again.bytes(),
+            fb.bytes(),
+            "the uncached path must stay deterministic"
+        );
+        assert_eq!(
+            prefix_cache_hits_for(&big),
+            None,
+            "an over-cap frame's prefix must never become resident in the cache"
+        );
+    }
+
+    /// A themed FULL-RESOLUTION surface frame: image background + a per-surface mask
+    /// band (the static prefix) + a verse text. Three surfaces → three DISTINCT
+    /// prefixes (different image, size, background and mask), like the shipped
+    /// configuration: audience output + an NDI-enabled screen (composed every frame)
+    /// + the stage/confidence output.
+    fn surface_frame(imgs: &[std::path::PathBuf], s: usize, verse: &str) -> Frame {
+        let (w, h) = [(1920u32, 1080u32), (1280, 720), (1920, 1080)][s];
+        let mut f = Frame::new(w, h).with_background(Rgba::rgb(8 + 30 * s as u8, 10, 20));
+        f.push(Layer::Image {
+            rect: Rect::new(0, 0, w, h),
+            source: MediaRef::new(imgs[s].to_str().unwrap()).unwrap(),
+            opacity: 255,
+            fit: ImageFit::Fill,
+        });
+        f.push(Layer::Fill {
+            rect: Rect::new(0, (h - 120 - 20 * s as u32) as i32, w, 120),
+            color: Rgba::new(0, 0, 0, 140 + s as u8),
+        });
+        f.push(Layer::Text {
+            rect: Rect::new(40, 200, w - 80, 400),
+            text: verse.into(),
+            px: 48,
+            color: Rgba::rgb(240, 240, 240),
+            align: TextAlign::Center,
+            font: None,
+            style: None,
+        });
+        f
+    }
+
+    #[test]
+    fn a_multi_surface_verse_burst_keeps_every_surface_prefix_cached() {
+        // Regression guard for the multi-surface eviction cliff. A fixed 2-slot store
+        // round-robins three distinct prefixes through two slots, so EVERY compose
+        // misses and re-scales its background at full output resolution — the shipped
+        // product reaches exactly that shape (per-screen NDI composes every frame +
+        // the audience theme + stage/confidence). Two teeth, so a fast machine cannot
+        // hide thrashing: a wall-clock budget on the warmed burst, and a per-surface
+        // hit-count check that fails DETERMINISTICALLY when any surface's prefix was
+        // evicted mid-burst. Budgets mirror the slide-trigger NFR convention: release
+        // enforces the real budget (`make nfr` runs this test); debug keeps a generous
+        // tripwire that still fails the thrashing store by a wide margin.
+        let budget = if cfg!(debug_assertions) {
+            Duration::from_millis(2500)
+        } else {
+            Duration::from_millis(300)
+        };
+        let _serial = serialize_cache_tests();
+        let dir =
+            std::env::temp_dir().join(format!("selahcue-prefix-burst-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let imgs = vec![
+            png_file(&dir, "a.png", Rgba::rgb(60, 90, 120)),
+            png_file(&dir, "b.png", Rgba::rgb(120, 60, 90)),
+            png_file(&dir, "c.png", Rgba::rgb(90, 120, 60)),
+        ];
+
+        // Warm every surface once OUTSIDE the timed burst (the one-off cold compose is
+        // the slide-trigger budget; the burst is the steady navigation path).
+        prefix_cache_clear();
+        for s in 0..3 {
+            let _ = render(&surface_frame(&imgs, s, "warm"));
+        }
+
+        let start = Instant::now();
+        for i in 2..10 {
+            for s in 0..3 {
+                let f = surface_frame(&imgs, s, &format!("verse {i} of the reading"));
+                let fb = render(&f);
+                assert_eq!(
+                    fb.bytes().len(),
+                    (f.width as usize) * (f.height as usize) * 4,
+                    "every surface compose must produce a full frame"
+                );
+            }
+        }
+        let elapsed = start.elapsed();
+        let _ = std::fs::remove_dir_all(&dir);
+        eprintln!("3-surface 24-compose warmed burst: {elapsed:?} (budget {budget:?})");
+        assert!(
+            elapsed <= budget,
+            "24-compose 3-surface burst exceeded {budget:?}: {elapsed:?} — the prefix \
+             cache is thrashing across surfaces"
+        );
+        // Deterministic tooth: after the burst each surface's prefix must still be
+        // resident and must have served all eight of its composes as hits.
+        for s in 0..3 {
+            let hits = prefix_cache_hits_for(&surface_frame(&imgs, s, "probe"));
+            assert!(
+                hits.unwrap_or(0) >= 8,
+                "surface {s} prefix served {hits:?} hits (expected >= 8) — it was \
+                 evicted mid-burst by the other surfaces"
+            );
+        }
+    }
+}
