@@ -1328,11 +1328,27 @@ def test_the_module_states_the_authorisation_contract():
     exhaustive about transaction and writer discipline, so a reader would reasonably conclude
     every caller obligation was listed. Prose is the deliverable here, so prose is what this
     checks — loosely, on the obligations rather than the wording.
+
+    Under `python -OO` docstrings are stripped and this test FAILS. That is deliberate and is
+    the right failure mode: the usual weakness of a prose assertion is passing vacuously when
+    there is nothing left to read. A red here means "the contract could not be verified", not
+    "the contract is absent".
     """
     from selahcue_api.apps.license_keys import state_machine as module
 
     contract = (module.__doc__ or "").lower()
-    for obligation in ("no authorisation", "require_staff_permission", "staffpermission"):
+    # "permission_denied" is load-bearing in this list. The other tokens each appear TWICE in
+    # the docstring — "require_staff_permission" in both the obligation bullet and the
+    # rationale sentence explaining why it is not hardcoded here — so the obligation itself
+    # could be deleted while the rationale kept the substring alive and this test stayed
+    # green. "permission_denied" occurs only inside the obligation bullet, which closes that
+    # window: the caller's duty to refuse an unauthorised actor cannot vanish silently.
+    for obligation in (
+        "no authorisation",
+        "require_staff_permission",
+        "permission_denied",
+        "staffpermission",
+    ):
         assert obligation in contract, (
             f"the module contract must state {obligation!r} — five tickets call this writer "
             "and the gating half of PRD §19 is enforced by nobody if it is unwritten"
