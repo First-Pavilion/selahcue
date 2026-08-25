@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import re
 import sys
 
 import yaml
@@ -50,6 +51,11 @@ import yaml
 CHECKOUT = "actions/checkout"
 CONTENTS_OK = {"read", "write"}
 NO_CANCEL = "!cancelled()"
+# GitHub implies `success() &&` in front of any `if:` that does not itself call a status
+# function. So `if: runner.os == 'Linux'` is `success() && runner.os == 'Linux'` and is
+# stranded by an earlier gate failure exactly like a step with no `if:` at all. Matching
+# on "has no `if:`" would close the spelling and leave the class open.
+STATUS_FN = re.compile(r"\b(success|always|failure|cancelled)\s*\(")
 
 
 def job_uses_checkout(job: dict) -> bool:
@@ -99,11 +105,16 @@ def permission_violations(workflow: dict, filename: str = "<workflow>") -> list[
 
 
 def gate_ordering_violations(workflow: dict, filename: str = "<workflow>") -> list[str]:
-    """Steps that default to `success()` after a `!cancelled()` step has appeared.
+    """Steps carrying implicit `success()` after a `!cancelled()` step has appeared.
 
     Ordinal and name-blind on purpose: a setup step stranded after the gate boundary
     gets skipped by an earlier gate failure, and the gates after it then fail for a
     reason that has nothing to do with the code under test.
+
+    A step counts as stranded when its `if:` invokes no status function -- which covers
+    a step with no `if:` at all AND one with an ordinary condition like
+    `runner.os == 'Linux'`, since GitHub implies `success() &&` in front of the latter.
+    Both are skipped identically by an earlier failure.
     """
     out = []
     for name, job in (workflow.get("jobs") or {}).items():
@@ -117,12 +128,15 @@ def gate_ordering_violations(workflow: dict, filename: str = "<workflow>") -> li
             label = step.get("name") or step.get("uses", "<step>")
             if NO_CANCEL in cond:
                 seen_gate = True
-            elif seen_gate and not cond:
+                continue
+            if seen_gate and not STATUS_FN.search(cond):
+                shown = f"`if: {cond}`" if cond else "no `if:`"
                 out.append(
-                    f"{filename}: job `{name}` step `{label}` defaults to `success()` "
-                    f"but runs AFTER a `{NO_CANCEL}` step. An earlier gate failure will "
-                    f"skip it and the gates after it will then fail for the wrong "
-                    f"reason. Move it above the first gate, or give it `{NO_CANCEL}`."
+                    f"{filename}: job `{name}` step `{label}` has {shown}, so it carries "
+                    f"an implicit `success()`, but runs AFTER a `{NO_CANCEL}` step. An "
+                    f"earlier gate failure will skip it and the gates after it will then "
+                    f"fail for the wrong reason. Move it above the first gate, or add a "
+                    f"status function to its condition."
                 )
     return out
 
@@ -194,12 +208,28 @@ jobs:
       - {name: Format, if: "${{ !cancelled() }}", run: fmt}
       - {name: Check, if: "${{ !cancelled() }}", run: check}
 """), 0),
-        ("a conditional (non-empty if) after a gate is accepted", wf("""
+        # A plain condition is implicitly `success() && ...`, so it is stranded too.
+        # Matching only on "has no if:" would have closed the spelling, not the class.
+        ("a NON-STATUS conditional after a gate is rejected", wf("""
 jobs:
   operator:
     steps:
       - {name: Format, if: "${{ !cancelled() }}", run: fmt}
       - {name: Linux only, if: "runner.os == 'Linux'", run: x}
+"""), 1),
+        ("a status-function conditional after a gate is accepted", wf("""
+jobs:
+  operator:
+    steps:
+      - {name: Format, if: "${{ !cancelled() }}", run: fmt}
+      - {name: Linux only, if: "${{ !cancelled() && runner.os == 'Linux' }}", run: x}
+"""), 0),
+        ("an explicit always() after a gate is accepted", wf("""
+jobs:
+  operator:
+    steps:
+      - {name: Format, if: "${{ !cancelled() }}", run: fmt}
+      - {name: Report, if: "${{ always() }}", run: x}
 """), 0),
     ]
     failures = []

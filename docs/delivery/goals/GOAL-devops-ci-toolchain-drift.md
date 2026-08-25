@@ -6,7 +6,7 @@
 - Parent goal ID: BUILD-selahcue
 - Title: `main`'s pipeline is green again, and the local gate and CI provably compile with the same pinned Rust toolchain
 - Role: devops-engineer
-- Status: GATE_REVIEW
+- Status: GATE_REVIEW (all four reviewers pass; awaiting merge)
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ak5rc9c
 - Created: 2026-08-25
@@ -105,7 +105,9 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-032 | yes | No `success()` step follows a `!cancelled()` step in any job | `check_workflows.py` ordinal check | exit 0 | `.github/scripts/check_workflows.py` | PASS |
 | C-033 | yes | That ordering check detects the stranded staging step, and actionlint does not | strand staging back between Format and Check; run both | checker exits 1 naming the step; actionlint exits 0 | recorded terminal output | PASS |
 | C-034 | yes | Every mutating `gh` call is withheld under DRY_RUN | run the alarm with `DRY_RUN=true` against a stub `gh` that logs real invocations | 0 real writes executed | recorded terminal output | PASS |
-| C-035 | yes | The four reviewers have reviewed and blocking findings are cleared | Cody, Vera, Sana, Quinn (+ Codex counterparts) | no unresolved blocking findings | ClickUp 86ak5rc9c comments | PENDING |
+| C-036 | yes | A step with a NON-STATUS `if:` after a gate is also flagged as stranded | add `if: runner.os == 'Linux'` between two gates; run the checker | checker exits 1 naming the step; actionlint exits 0 | recorded terminal output | PASS |
+| C-037 | yes | That rule is guarded (reverting it to "no `if:` only" is caught) | mutate `STATUS_FN.search(cond)` back to `not cond`, and disable the rule | self-test exits 1 in both cases | recorded terminal output | PASS |
+| C-035 | yes | The four reviewers have reviewed and blocking findings are cleared | Cody, Vera, Sana, Quinn (+ Codex counterparts) | no unresolved blocking findings | ClickUp 86ak5rc9c comments | PASS |
 
 ## Verification plan
 
@@ -201,6 +203,16 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - New evidence — the sharpest finding of the whole review, and it was about my verification rather than my code: `gate steps WITHOUT !cancelled(): none` could not see the stranded staging step, because my audit exempted it **by name**. The partition was hand-maintained, so the parse validated a labelling I had chosen rather than an independent property. Replaced with a purely ordinal rule that needs no list. Separately, my first attempt at pinning C-030 was itself vacuous: the self-test re-implemented the call-site rule, so reverting the real fix left it green. Caught by mutating it.
 - Decision: gate-review
 
+### Iteration 9 — Quinn's residual, folded in rather than deferred
+
+- Target criterion: C-036, C-037
+- Hypothesis: the ordinal rule matched "has no `if:`", which is the SPELLING of the defect. GitHub implies `success() &&` in front of any `if:` that calls no status function, so `if: runner.os == 'Linux'` after a gate is stranded identically and was not flagged.
+- Change or investigation: the rule now flags any post-gate step whose condition invokes no status function. Chose to fold it in rather than defer it: the whole branch has been about closing classes rather than instances, and deferring the class while shipping the spelling would have been the same mistake in miniature. No live instance existed (verified), so this is prevention.
+- Verifier executed: stranded a real `if: runner.os == 'Linux'` step between two gates in `ci.yml`; two mutations of the rule (revert to `not cond`, and disable outright).
+- Result: checker exits 1 naming the step while actionlint exits 0 on the same file; both mutations turn the self-test red. Self-test grew to 12 cases, including a status-function conditional and an explicit `always()` after a gate, both correctly accepted.
+- New evidence: none contradicting; the three legitimate shapes Quinn built are all accepted, so the rule did not gain false positives.
+- Decision: complete — all four reviewers pass.
+
 ## Risks and rollback
 
 - Risks: the pin is a deliberate lag — new compiler and clippy releases stop arriving automatically, so the canary must actually be watched. Landing the pin will move every developer and every in-flight worktree to 1.98.0 on their next `cargo` invocation, which may surface new lints in their unmerged work.
@@ -216,7 +228,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/GOAL-devops-ci-toolchain-drift.md`
 - Validator result: see the run recorded on ClickUp 86ak5rc9c
-- Independent verification result: PENDING — four-reviewer gate not yet run
+- Independent verification result: PASS — Cody, Vera, Sana and Quinn have all cleared the branch; every blocking finding remediated and re-checked
 - Terminal state: GATE_REVIEW
-- Remaining failed or blocked criteria: C-022 (post-merge proof of the alarm's write path, non-mandatory) and C-035 (independent review) PENDING — Cody and Sana pass; Quinn re-checking D1/D2; Vera outstanding. Owner acceptance of the collaborator-editable marker/label residual is recorded on 86ak5rc9c and is the owner's to give.
+- Remaining failed or blocked criteria: C-022 only (post-merge proof of the alarm's GitHub write path) — non-mandatory, and unprovable pre-merge by design, since DRY_RUN withholds writes precisely so a branch cannot touch the real issue. To be closed on the first `workflow_dispatch` after merge, which also resolves the org-level workflow-permissions unknown. Owner acceptance of the collaborator-editable marker/label residual is flagged on 86ak5rc9c and is the owner's to give.
 - ClickUp final evidence comment: posted on 86ak5rc9c
