@@ -479,6 +479,185 @@ def test_reset_token_is_single_use(client, sender):
     assert error_code(resp) == "VALIDATION_FAILED"
 
 
+# --- FR-551 / DEC-012(a): the token is validated BEFORE the password --------
+#
+# WHAT WAS WRONG. `confirm_password_reset` used to call `_validate_password` before it
+# looked the token up, and both raised the same collapsed VALIDATION_FAILED. A user
+# holding a perfectly good link who typed a short password was told their LINK was
+# broken. They fetched a fresh link, retyped the same short password, and looped — no
+# exit, no clue, a burnt token per lap.
+#
+# WHAT EACH TEST BELOW ACTUALLY GUARDS. These two mutations are different, and a
+# different test catches each; neither test catches both. Do not delete one as redundant.
+#
+#   Mutation A — move the `_validate_password` call back above the token lookup, keeping
+#                `error=_password_error`. The ORDER is wrong again.
+#                Caught ONLY by `test_a_dead_token_with_a_weak_password_never_mentions_the_password`,
+#                because under A an unknown token + weak password answers PASSWORD_INVALID
+#                and hands an unauthenticated caller a brand-new oracle.
+#                NOT caught by the valid-token test, which still sees PASSWORD_INVALID.
+#
+#   Mutation B — the full revert: move it back AND drop `error=_password_error`.
+#                Caught ONLY by `test_a_live_token_with_a_short_password_blames_the_password`,
+#                which then sees the collapsed VALIDATION_FAILED — the original defect.
+#                NOT caught by the dead-token test, which sees VALIDATION_FAILED either way.
+#
+# `test_signup_weak_password_rejected` above is NOT coverage for any of this: signup is a
+# different function and would keep passing however broken this path became.
+
+# 5 characters — below MIN_PASSWORD_LENGTH, so it can only fail the LENGTH branch.
+SHORT_PASSWORD = "short"
+# Whitespace only, but LONG ENOUGH to clear the length rule, so it can only fail the
+# all-whitespace branch. That isolation is the point.
+BLANK_PASSWORD = " " * (services.MIN_PASSWORD_LENGTH + 2)
+
+# Pin both premises. If MIN_PASSWORD_LENGTH is ever lowered past 5, `SHORT_PASSWORD`
+# becomes a VALID password and every test below quietly stops testing anything — passing
+# for the wrong reason. Fail loudly at import instead.
+assert len(SHORT_PASSWORD) < services.MIN_PASSWORD_LENGTH, (
+    "SHORT_PASSWORD is no longer short enough to be rejected — the FR-551 tests would pass vacuously"
+)
+assert services.MIN_PASSWORD_LENGTH <= len(BLANK_PASSWORD) <= services.MAX_PASSWORD_LENGTH, (
+    "BLANK_PASSWORD no longer isolates the all-whitespace branch — it would fail on LENGTH instead"
+)
+
+
+def live_reset_token(client, sender, *, email="pastor@grace.example"):
+    """Sign up, verify, and return a freshly minted, live PASSWORD_RESET token."""
+    signup_and_verify(client, sender, email=email)
+    post_account(client, REQUEST_RESET, {"e": email})
+    return sender.reset_tokens[-1]
+
+
+def token_row(raw_token):
+    return CredentialToken.objects.get(token_fingerprint=services._fingerprint(raw_token))
+
+
+def error_message(response):
+    errors = body(response).get("errors") or []
+    return errors[0].get("message") if errors else None
+
+
+@pytest.mark.django_db
+def test_a_live_token_with_a_short_password_blames_the_password(client, sender):
+    """The regression test for the defect itself. Catches mutation B."""
+    reset_token = live_reset_token(client, sender)
+
+    resp = post_account(client, CONFIRM_RESET, {"input": {"token": reset_token, "newPassword": SHORT_PASSWORD}})
+
+    # POSITIVE CONTROL, asserted FIRST and before the contract: prove the token was
+    # genuinely live, so a PASSWORD_INVALID cannot be mistaken for a token that was never
+    # any good. Without this the assertion below could pass on a dead token.
+    assert token_row(reset_token).consumed_at is None, (
+        "the token was already spent, so the valid-token-plus-weak-password case was NOT exercised"
+    )
+    assert error_code(resp) == "PASSWORD_INVALID", (
+        "a user holding a WORKING link was told VALIDATION_FAILED — indistinguishable from a "
+        "dead link, which is the FR-551 loop returning"
+    )
+
+
+@pytest.mark.django_db
+def test_a_live_token_with_an_all_whitespace_password_blames_the_password(client, sender):
+    """The other `_validate_password` branch: long enough, but nothing but spaces."""
+    reset_token = live_reset_token(client, sender)
+
+    resp = post_account(client, CONFIRM_RESET, {"input": {"token": reset_token, "newPassword": BLANK_PASSWORD}})
+
+    assert token_row(reset_token).consumed_at is None, (
+        "the token was already spent, so the whitespace branch was NOT exercised behind a live token"
+    )
+    assert error_code(resp) == "PASSWORD_INVALID"
+
+
+@pytest.mark.django_db
+def test_a_rejected_password_does_not_burn_the_users_link(client, sender):
+    """A failed password must cost the user nothing. Their link still works."""
+    email = "pastor@grace.example"
+    reset_token = live_reset_token(client, sender, email=email)
+
+    rejected = post_account(client, CONFIRM_RESET, {"input": {"token": reset_token, "newPassword": SHORT_PASSWORD}})
+    assert error_code(rejected) == "PASSWORD_INVALID"
+    assert token_row(reset_token).consumed_at is None
+
+    # THE POINT: the SAME link, second attempt, now with an acceptable password.
+    good_password = "a-long-enough-passphrase"
+    accepted = post_account(client, CONFIRM_RESET, {"input": {"token": reset_token, "newPassword": good_password}})
+    assert body(accepted)["data"]["confirmPasswordReset"]["reset"] is True
+    assert body(post_account(client, LOGIN, {"input": {"email": email, "password": good_password}}))["data"]["login"]["sessionToken"]
+
+
+@pytest.mark.django_db
+def test_a_dead_token_with_a_weak_password_never_mentions_the_password(client, sender):
+    """The ORDERING pin, and the anti-enumeration guard. Catches mutation A.
+
+    An unauthenticated caller must never be able to tell a live token from a dead one, and
+    PASSWORD_INVALID would tell them exactly that: it can only be answered from behind a
+    validated token, so receiving it is proof the token was good.
+    """
+    signup_and_verify(client, sender)
+
+    resp = post_account(
+        client, CONFIRM_RESET, {"input": {"token": "SC-PRS-not-a-real-token", "newPassword": SHORT_PASSWORD}}
+    )
+
+    assert error_code(resp) == "VALIDATION_FAILED", (
+        "a caller with NO valid token learned that their password was the problem — which "
+        "means the password is being checked before the token again, and PASSWORD_INVALID "
+        "has become a live-token oracle (FR-529)"
+    )
+
+
+@pytest.mark.django_db
+def test_every_token_failure_stays_mutually_indistinguishable(client, sender):
+    """FR-529 / CON-P6, unchanged by this fix: unknown / consumed / expired / wrong-purpose
+    must answer identically — same code AND same message — and none may leak PASSWORD_INVALID.
+
+    Every request below deliberately carries a VALID password, so the only thing that can
+    vary between them is the token.
+    """
+    email = "pastor@grace.example"
+    signup_and_verify(client, sender, email=email)
+    good_password = "another-fine-passphrase"
+
+    # unknown
+    unknown = post_account(client, CONFIRM_RESET, {"input": {"token": "SC-PRS-nobody-minted-this", "newPassword": good_password}})
+
+    # consumed
+    post_account(client, REQUEST_RESET, {"e": email})
+    spent = sender.reset_tokens[-1]
+    post_account(client, CONFIRM_RESET, {"input": {"token": spent, "newPassword": "a-first-new-passphrase"}})
+    assert token_row(spent).consumed_at is not None, "the consumed case was NOT set up — token never spent"
+    consumed = post_account(client, CONFIRM_RESET, {"input": {"token": spent, "newPassword": good_password}})
+
+    # expired
+    post_account(client, REQUEST_RESET, {"e": email})
+    stale = sender.reset_tokens[-1]
+    row = token_row(stale)
+    row.expires_at = timezone.now() - timezone.timedelta(seconds=1)
+    row.save(update_fields=["expires_at"])
+    expired = post_account(client, CONFIRM_RESET, {"input": {"token": stale, "newPassword": good_password}})
+
+    # wrong purpose — an EMAIL_VERIFY token offered to the reset mutation
+    verify_token = sender.verify_tokens[-1]
+    assert token_row(verify_token).purpose == CredentialTokenPurpose.EMAIL_VERIFY, (
+        "the wrong-purpose case was NOT set up — this is not a verification token"
+    )
+    wrong_purpose = post_account(client, CONFIRM_RESET, {"input": {"token": verify_token, "newPassword": good_password}})
+
+    responses = {
+        "unknown": unknown,
+        "consumed": consumed,
+        "expired": expired,
+        "wrong_purpose": wrong_purpose,
+    }
+    for name, resp in responses.items():
+        assert error_code(resp) == "VALIDATION_FAILED", f"{name} did not return the collapsed code"
+    assert len({error_message(resp) for resp in responses.values()}) == 1, (
+        "the four token failures are no longer byte-identical — one of them has become an oracle"
+    )
+
+
 # --- AUTH-6: account-based device activation --------------------------------
 ACTIVATE = """
     mutation Activate($input: ActivateDeviceInput!) {

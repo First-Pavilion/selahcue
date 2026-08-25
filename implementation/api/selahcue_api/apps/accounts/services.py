@@ -6,6 +6,7 @@ import logging
 import secrets
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -71,6 +72,16 @@ class CreateCustomerResult:
 
 def _validation_error() -> SafeAPIError:
     return SafeAPIError(ErrorCode.VALIDATION_FAILED)
+
+
+def _password_error() -> SafeAPIError:
+    """The password is the problem — and the caller has EARNED the right to be told.
+
+    Only ever raised after a credential token has been looked up and found live, so it
+    cannot become an enumeration oracle (FR-529 / CON-P6 stand untouched). See the note on
+    `ErrorCode.PASSWORD_INVALID`.
+    """
+    return SafeAPIError(ErrorCode.PASSWORD_INVALID)
 
 
 def _clean_customer(customer: CustomerOrg) -> None:
@@ -498,13 +509,21 @@ def _email_fingerprint(email: str) -> str:
     return _fingerprint(email)
 
 
-def _validate_password(password: str) -> None:
-    # Length policy only (v1); complexity/breach checks are a later slice. Do NOT strip — spaces
-    # can be intentional — but reject an all-whitespace password.
+def _validate_password(
+    password: str, *, error: Callable[[], SafeAPIError] = _validation_error
+) -> None:
+    """Length policy only (v1); complexity/breach checks are a later slice.
+
+    `error` selects which coded failure this rejection raises, and the choice is a security
+    boundary, not a style preference. It defaults to the collapsed `_validation_error` so an
+    UNAUTHENTICATED caller (signup) learns nothing. `confirm_password_reset` passes
+    `_password_error` — but only from BEHIND a validated token, never before one.
+    """
+    # Do NOT strip — spaces can be intentional — but reject an all-whitespace password.
     if not isinstance(password, str) or not password.strip():
-        raise _validation_error()
+        raise error()
     if not (MIN_PASSWORD_LENGTH <= len(password) <= MAX_PASSWORD_LENGTH):
-        raise _validation_error()
+        raise error()
 
 
 def _generate_token(label: str) -> str:
@@ -1166,11 +1185,18 @@ def request_password_reset(email: str) -> AcceptedResult:
 
 def confirm_password_reset(raw_token: str, new_password: str) -> ConfirmPasswordResetResult:
     """Consume a PASSWORD_RESET token, set the new password, and revoke ALL of the user's ACTIVE
-    sessions (invalidation on password change). Token/password failures → VALIDATION_FAILED."""
+    sessions (invalidation on password change).
+
+    Errors, and why they differ (FR-551, DEC-012 (a)):
+
+    - EVERY token failure — malformed, unknown, wrong-purpose, consumed, expired — is one
+      collapsed VALIDATION_FAILED, mutually indistinguishable. Unchanged (FR-529 / CON-P6).
+    - A bad password behind a LIVE token is PASSWORD_INVALID, so the caller is told the one
+      thing they can act on. Reachable only after the token has been validated.
+    """
     token_value = (raw_token or "").strip()
     if not token_value:
         raise _validation_error()
-    _validate_password(new_password)
     fingerprint = _fingerprint(token_value)
     now = djtz.now()
     with transaction.atomic():
@@ -1190,6 +1216,25 @@ def confirm_password_reset(raw_token: str, new_password: str) -> ConfirmPassword
             or token.expires_at <= now
         ):
             raise _validation_error()
+        # FR-551 — THE ORDER OF THESE TWO CHECKS IS THE FIX. DO NOT MOVE THIS ABOVE THE
+        # TOKEN LOOKUP.
+        #
+        # The token is now known live, so the caller has proved possession of a working link
+        # and may safely be told that it is their PASSWORD that is wrong. Run before this
+        # block, the password check reached everyone — and, raising the same collapsed
+        # VALIDATION_FAILED as every token failure, told a user with a perfectly good link
+        # that the link was broken. They fetched a fresh one, retyped the same short
+        # password, and looped with no exit and no clue (DEC-012 (a)).
+        #
+        # Nothing leaks by moving it here. A caller WITHOUT a live token raised above and
+        # never arrives, so unknown / consumed / expired / wrong-purpose remain mutually
+        # indistinguishable (FR-529).
+        #
+        # It also sits ABOVE the consume below, so a rejected password does not burn the
+        # user's link — their next attempt uses the same one. The surrounding
+        # `transaction.atomic()` would roll the consume back anyway; this does not depend
+        # on that.
+        _validate_password(new_password, error=_password_error)
         token.consumed_at = now
         token.save(update_fields=["consumed_at"])
         user = token.customer_user
