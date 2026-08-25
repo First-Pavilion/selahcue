@@ -94,7 +94,11 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-019 | yes | That check detects the shipped defect, and actionlint does not | restore `issues: write`-only on `ci-alarm`; run both | check exits 1 naming the job; actionlint exits 0 | recorded terminal output | PASS |
 | C-020 | yes | Every job that can fail on `main` is inside the alarm's `needs` | compare `jobs:` keys with `ci-alarm.needs` | only `ci-alarm` itself absent | `.github/workflows/ci.yml` | PASS |
 | C-021 | yes | Placeholder staging cannot truncate an existing file | run the `stage()` helper over a non-empty file | contents preserved; missing file created at 0 bytes | recorded terminal output | PASS |
-| C-022 | no | The alarm's GitHub write path works end to end | one `workflow_dispatch` of `ci` on `main` after merge | an issue is created and then closed | ClickUp 86ak5rc9c | PENDING |
+| C-022 | no | The alarm's GitHub WRITE path works end to end | one `workflow_dispatch` of `ci` on `main` after merge | an issue is created and then closed | ClickUp 86ak5rc9c | PENDING |
+| C-039 | yes | The alarm job executes at all — condition, permissions, checkout, self-test | `workflow_dispatch` of `ci` on the branch (run 32900486643) | job conclusion `success`; checkout and self-test steps pass | GitHub run 32900486643 job 97978166110 | PASS |
+| C-040 | yes | `always()` keeps the alarm running when its dependencies fail | same run, with `api` and `rust` already failed | alarm still executes rather than being skipped | same job log | PASS |
+| C-041 | yes | The reconcile produces the right verdict from real `needs` data | read the job's output | `newly failed: ['api', 'rust']`, marker `api,rust` | same job log | PASS |
+| C-042 | yes | DRY_RUN withholds EVERY write, including `gh label create` | after the run, list issues and labels on the repo | zero issues, zero `ci-red` label | `gh issue list` / `gh api .../labels` — both empty | PASS |
 | C-024 | yes | A job absent from a run's results does not count as recovered | `ci_alarm.py --self-test`, plus mutating to `results.get(job, "success")` | self-test exits 0 clean, exits 1 mutated | `.github/scripts/ci_alarm.py` | PASS |
 | C-025 | yes | An issue whose marker was edited away cannot be closed by a run that skips the broken jobs | self-test's stripped-marker case, plus mutating `parse_marker` to return `set()` | stays outstanding; mutation caught | recorded terminal output | PASS |
 | C-026 | yes | A fully green run still closes a marker-less issue (the fallback self-heals) | self-test `conservative_outstanding` + `reconcile` over an all-success run | outstanding empties | `.github/scripts/ci_alarm.py` | PASS |
@@ -224,6 +228,17 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - New evidence: **this was not introduced here.** The only other PR run in the repository's history, `30718327254` on 2026-08-01, died the same way in 17s with the identical error. It went unnoticed because work is pushed straight to `main`, where paths-filter takes the git path and never calls the API — nothing had ever exercised the PR path. It is the same shape as the failure this whole goal addresses: a gate failing for months somewhere nobody was looking, found only because someone finally looked.
 - Decision: complete
 
+### Iteration 11 — the alarm rehearsed on the branch, and what it does not prove
+
+- Target criterion: C-039 … C-042, and partial evidence toward C-022
+- Hypothesis: dispatching `ci` on the branch would exercise the alarm end to end without letting it touch the real `main` issue, since `DRY_RUN` is derived from `github.ref != 'refs/heads/main'`.
+- Change or investigation: dispatched run `32900486643` on `fix/ci-toolchain-drift`. The `api` and `rust` jobs failed on that run, which made it a stronger test than a clean one.
+- Verifier executed: inspected job `97978166110`; then listed issues and labels on the repository to confirm nothing was actually written.
+- Result: job conclusion `success`. Checkout, self-test and reconcile all passed. Output: `newly failed: ['api', 'rust']`, marker `<!-- ci-red-outstanding: api,rust -->`, and `DRY-RUN, would run: gh issue create …`. Repository afterwards: **zero issues, zero labels**.
+- New evidence: this closes Sana's HIGH in production, not just in review — `actions/checkout` succeeded under the job's own `permissions` block on a private repo, which is exactly what `contents: none` had made impossible. It also confirms her item 2: `gh label create` was the one write that used to bypass `gh_write`, and it created nothing.
+- **What it does NOT prove, stated so C-022 is not quietly closed:** no write was executed. `checkout` exercises `contents: read`; `issues: write` is granted but untested. The failure mode "the job cannot run" is closed; the failure mode "the write is refused" is not. C-022 stays PENDING for the post-merge dispatch on `main`.
+- Decision: complete
+
 ## Risks and rollback
 
 - Risks: the pin is a deliberate lag — new compiler and clippy releases stop arriving automatically, so the canary must actually be watched. Landing the pin will move every developer and every in-flight worktree to 1.98.0 on their next `cargo` invocation, which may surface new lints in their unmerged work.
@@ -241,5 +256,5 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Validator result: see the run recorded on ClickUp 86ak5rc9c
 - Independent verification result: PASS — Cody, Vera, Sana and Quinn have all cleared the branch; every blocking finding remediated and re-checked
 - Terminal state: GATE_REVIEW
-- Remaining failed or blocked criteria: C-022 only (post-merge proof of the alarm's GitHub write path) — non-mandatory, and unprovable pre-merge by design, since DRY_RUN withholds writes precisely so a branch cannot touch the real issue. To be closed on the first `workflow_dispatch` after merge, which also resolves the org-level workflow-permissions unknown. Owner acceptance of the collaborator-editable marker/label residual is flagged on 86ak5rc9c and is the owner's to give.
+- Remaining failed or blocked criteria: C-022 only (post-merge proof of the alarm's GitHub WRITE path; its execution path is now proven by run 32900486643) — non-mandatory, and unprovable pre-merge by design, since DRY_RUN withholds writes precisely so a branch cannot touch the real issue. To be closed on the first `workflow_dispatch` after merge, which also resolves the org-level workflow-permissions unknown. Owner acceptance of the collaborator-editable marker/label residual is flagged on 86ak5rc9c and is the owner's to give.
 - ClickUp final evidence comment: posted on 86ak5rc9c
