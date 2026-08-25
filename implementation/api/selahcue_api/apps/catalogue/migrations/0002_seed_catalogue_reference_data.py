@@ -8,39 +8,48 @@ them *here*, so the sweep cannot quietly stop looking.
 After this migration, changing "Platinum" to something else, or Pro's STT allowance from 5
 hours to 8, is an UPDATE against a row. No code, no migration, no release (FR-544).
 
+**Never edit this file to change a value.** Once it has been applied anywhere, editing it
+changes what a FRESH database gets while every already-migrated environment keeps the old
+row — the two silently diverge, and the difference shows up as a support ticket about a
+customer whose limits are wrong on one deployment only. Change the value the way an
+operator would: `manage.py set_plan_grant`, or an admin edit. This file describes the day
+the catalogue was created, not what it currently holds.
+
 **Dimension defaults are a deliberate, asymmetric safety policy.** A dimension's default
 applies when a plan declares no value for it — i.e. when a catalogue row is incomplete:
 
-*   Core presentation (`device_instances`, `screen_outputs`) defaults **permissive**
-    (`unlimited`). An unconfigured plan must never be the reason a church loses its second
-    screen mid-service (NFR-024 posture: never take away live output).
+*   Core presentation (`screen_outputs`) defaults **permissive** (`unlimited`). An
+    unconfigured plan must never be the reason a church loses its second screen mid-service
+    (NFR-024 posture: never take away live output).
 *   Paid add-ons (`ndi_outputs`, `stt_minutes_per_period`) default **restrictive** (`0`).
     These cost money to serve; an unconfigured plan must not give them away.
 *   `watermark` defaults **on**, restrictive for the same reason — and a watermark degrades
     output, it never blanks it.
+*   `device_instances` defaults to **nothing at all** (empty). Absent and `unlimited` are
+    different states, and a plan that says nothing about seats must leave the key out of
+    the payload rather than publish a ceiling nobody chose. `AppLicenseKey.device_limit`
+    remains the number activation enforces and the one the manifest publishes.
 """
 
 from django.db import migrations
 
-# (key, display_name, value_type, default_raw_value, governs_instance_limit, sort_order,
-#  description)
+# (key, display_name, value_type, default_raw_value, sort_order, description)
 DIMENSIONS = [
     (
         "device_instances",
         "Device instances (seats)",
         "INTEGER",
-        "unlimited",
-        True,
+        "",
         10,
-        "Activated device instances allowed under the org's licence key (DEC-004 AS-P8: a "
-        "seat is a device instance, not a separate licence key).",
+        "Activated device instances a tier allows (DEC-004 AS-P8: a seat is a device "
+        "instance, not a separate licence key). Advisory: `AppLicenseKey.device_limit` is "
+        "what activation enforces, and FR-516's write-back is what keeps the two equal.",
     ),
     (
         "screen_outputs",
         "Screen / outputs",
         "INTEGER",
         "unlimited",
-        False,
         20,
         "Simultaneous screen outputs. What exactly counts as one output is AS-P9, still "
         "open in D1; the value is data, so closing AS-P9 changes rows, not code.",
@@ -50,7 +59,6 @@ DIMENSIONS = [
         "NDI outputs",
         "INTEGER",
         "0",
-        False,
         30,
         "Simultaneous NDI outputs. 0 means the feature is not granted.",
     ),
@@ -59,7 +67,6 @@ DIMENSIONS = [
         "Hosted STT minutes per period",
         "INTEGER",
         "0",
-        False,
         40,
         "Hosted speech-to-text minutes, pooled across the org's seats and reset each "
         "calendar month on the billing anniversary (AS-P6/AS-P7). Metering and the period "
@@ -71,36 +78,35 @@ DIMENSIONS = [
         "Watermark on output",
         "BOOLEAN",
         "true",
-        False,
         50,
         "True means output carries the SelahCue watermark.",
     ),
 ]
 
-# (code, display_name, is_public, is_fallback, sort_order, description)
+# (code, display_name, is_fallback, sort_order, description)
 PLANS = [
     (
         "LEGACY",
         "Legacy (pre-catalogue)",
-        False,
         True,
         0,
         "Bridge plan for licences issued before the catalogue existed, and the fallback for "
         "anything that resolves to nothing else. Its grants freeze the behaviour those "
         "licences already had, so the catalogue changes nothing for them.",
     ),
-    ("FREE", "Free", True, False, 10, "Entry tier (DEC-008)."),
-    ("PRO", "Pro", True, False, 20, "Mid tier (DEC-008)."),
-    ("PLATINUM", "Platinum", True, False, 30, "Top tier (DEC-008)."),
+    ("FREE", "Free", False, 10, "Entry tier (DEC-008)."),
+    ("PRO", "Pro", False, 20, "Mid tier (DEC-008)."),
+    ("PLATINUM", "Platinum", False, 30, "Top tier (DEC-008)."),
 ]
 
 # {plan code: {dimension key: raw value}} — the DEC-008 table, verbatim.
 #
-# LEGACY declares no `device_instances`, so it falls through to that dimension's
-# `unlimited` default, which the manifest reads as "the catalogue expresses no seat cap"
-# and answers with the licence's own `device_limit`. Migration 0003 additionally pins every
-# existing licence's seat cap as an explicit override, so equivalence is exact per row
-# rather than merely by convention.
+# LEGACY declares no `device_instances`, and that dimension has no default, so the key is
+# simply ABSENT for every legacy licence. Nothing is published about seats, and
+# `instances_limit` (= `device_limit`) remains the single number for that quantity. The
+# other four freeze pre-catalogue behaviour: nothing capped outputs or NDI, nothing drew a
+# watermark, and hosted STT did not exist — and with FR-546's metering unbuilt, any
+# non-zero STT allowance would be an UNMETERED one, which is unlimited by another name.
 GRANTS = {
     "LEGACY": {
         "screen_outputs": "unlimited",
@@ -139,12 +145,7 @@ def seed(apps, _schema_editor):
     CatalogueRevision = apps.get_model("selahcue_catalogue", "CatalogueRevision")
 
     dimensions = {}
-    for key, display_name, value_type, default_raw, governs, sort_order, description in DIMENSIONS:
-        # A fallback/instance-limit flag is under a partial unique constraint, so never set
-        # it when another row already holds it — an operator may have moved it deliberately.
-        claim_governs = governs and not GrantDimension.objects.filter(
-            governs_instance_limit=True
-        ).exclude(key=key).exists()
+    for key, display_name, value_type, default_raw, sort_order, description in DIMENSIONS:
         dimension, _created = GrantDimension.objects.get_or_create(
             key=key,
             defaults={
@@ -153,14 +154,15 @@ def seed(apps, _schema_editor):
                 "value_type": value_type,
                 "default_raw_value": default_raw,
                 "is_active": True,
-                "governs_instance_limit": claim_governs,
                 "sort_order": sort_order,
             },
         )
         dimensions[key] = dimension
 
     plans = {}
-    for code, display_name, is_public, is_fallback, sort_order, description in PLANS:
+    for code, display_name, is_fallback, sort_order, description in PLANS:
+        # `is_fallback` is under a partial unique constraint, so never claim it when another
+        # row already holds it — an operator may have moved it deliberately.
         claim_fallback = is_fallback and not Plan.objects.filter(is_fallback=True).exclude(
             code=code
         ).exists()
@@ -169,8 +171,6 @@ def seed(apps, _schema_editor):
             defaults={
                 "display_name": display_name,
                 "description": description,
-                "status": "ACTIVE",
-                "is_public": is_public,
                 "is_fallback": claim_fallback,
                 "sort_order": sort_order,
             },

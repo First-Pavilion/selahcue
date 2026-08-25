@@ -86,19 +86,36 @@ class BoundedGrantCache:
         with self._lock:
             return len(self._entries)
 
-    def contains(self, plan_id: int) -> bool:
-        """Whether this exact key is resident. The entity assertion, not a byte proxy."""
-        with self._lock:
-            return plan_id in self._entries
+    def _live_entry(self, plan_id: int, revision: int) -> _Entry | None:
+        """The entry for this key IF it would actually be served, else None.
 
-    def hits_for(self, plan_id: int) -> int | None:
-        """Hits recorded for ONE key, or None when the key is not resident.
+        One predicate shared by `get`, `contains` and `hits_for`, so an inspector can never
+        report an entry as resident that `get` would refuse. Reporting residency on a
+        superseded or expired entry would let a residency assertion pass on a dead one —
+        which is exactly the sort of test that guards nothing.
+        """
+        if self._revision != revision:
+            return None
+        entry = self._entries.get(plan_id)
+        if entry is None:
+            return None
+        if self._clock() - entry.stored_at >= self._ttl_seconds:
+            return None
+        return entry
+
+    def contains(self, plan_id: int, revision: int) -> bool:
+        """Whether this exact key would be served. The entity assertion, not a byte proxy."""
+        with self._lock:
+            return self._live_entry(plan_id, revision) is not None
+
+    def hits_for(self, plan_id: int, revision: int) -> int | None:
+        """Hits recorded for ONE key, or None when the key would not be served.
 
         Per-key on purpose: a global counter lets a sibling test's hits mask a miss on the
         key under test, which is precisely how a cache test stops testing anything.
         """
         with self._lock:
-            entry = self._entries.get(plan_id)
+            entry = self._live_entry(plan_id, revision)
             return None if entry is None else entry.hits
 
     def get(self, plan_id: int, revision: int) -> Mapping[str, Any] | None:
@@ -108,13 +125,11 @@ class BoundedGrantCache:
                 self._entries.clear()
                 self._revision = revision
                 return None
-            entry = self._entries.get(plan_id)
+            entry = self._live_entry(plan_id, revision)
             if entry is None:
-                return None
-            if self._clock() - entry.stored_at >= self._ttl_seconds:
-                # Expired. Dropped rather than refreshed, so a signal-bypassing edit can
-                # never be served indefinitely.
-                del self._entries[plan_id]
+                # Expired entries are dropped rather than refreshed, so a signal-bypassing
+                # edit can never be served indefinitely.
+                self._entries.pop(plan_id, None)
                 return None
             entry.hits += 1
             self._entries.move_to_end(plan_id)
@@ -142,6 +157,6 @@ class BoundedGrantCache:
 GRANT_CACHE = BoundedGrantCache()
 
 
-def grant_cache_hits_for(plan_id: int) -> int | None:
-    """Per-key hit accessor for tests. None means "this key is not in the cache"."""
-    return GRANT_CACHE.hits_for(plan_id)
+def grant_cache_hits_for(plan_id: int, revision: int) -> int | None:
+    """Per-key hit accessor for tests. None means "this key would not be served"."""
+    return GRANT_CACHE.hits_for(plan_id, revision)

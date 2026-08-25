@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Mapping
 
-from django.db import IntegrityError, transaction
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, models, transaction
+from django.utils import timezone
 
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.catalogue.cache import GRANT_CACHE
@@ -32,6 +35,8 @@ from selahcue_api.apps.catalogue.models import (
     Plan,
     PlanGrant,
     PlanScopeAlias,
+    is_reserved_grant_key,
+    validate_grant_key,
 )
 from selahcue_api.graphql.context import (
     ActorContext,
@@ -63,25 +68,27 @@ _UNSET = _Unset()
 class ResolvedEntitlement:
     """What a licence actually grants, as typed values.
 
-    `values` maps a dimension key to `bool`, `int`, or `None` (= no limit). `plan` is None
-    only when the catalogue resolves nothing at all — an unseeded database — in which case
-    `values` is empty and the caller keeps whatever it had.
+    `values` maps a dimension key to `bool`, `int`, or `None`. The three states are
+    distinct and must stay that way:
+
+        key present, int/bool   the catalogue grants exactly this
+        key present, None       granted without a ceiling (``unlimited``)
+        key ABSENT              the catalogue expresses nothing; the client's own default
+                                applies
+
+    `plan` is None only when the catalogue resolves nothing at all — an unseeded database —
+    in which case `values` is empty and the caller keeps whatever it had.
+
+    Deliberately carries no seat-limit accessor. `AppLicenseKey.device_limit` is the number
+    activation enforces and the only one the manifest publishes as `instances_limit`; a
+    second, catalogue-derived seat number reachable from here is how the two came to
+    disagree inside one signed artefact.
     """
 
     plan: Plan | None
     values: Mapping[str, Any]
     # Display only. FR-545: a client must never branch on this, and nothing here does.
     plan_display_label: str
-    # The dimension key flagged `governs_instance_limit`, if one is present and granted.
-    instance_limit_key: str | None
-
-    @property
-    def instance_limit(self) -> int | None:
-        """The resolved seat cap, or None when the catalogue does not express one."""
-        if self.instance_limit_key is None:
-            return None
-        value = self.values.get(self.instance_limit_key)
-        return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def current_revision() -> int:
@@ -147,13 +154,12 @@ def _active_dimensions() -> list[GrantDimension]:
     return dimensions
 
 
-def _plan_grant_map(plan: Plan) -> Mapping[str, Any]:
-    """`{"values": {key: typed}, "instance_limit_key": key|None}`, cached per revision.
+def _plan_grant_map(plan: Plan, revision: int) -> Mapping[str, Any]:
+    """`{dimension key: typed value}` for a plan, cached per catalogue revision.
 
-    The instance-limit key is cached alongside the values so a cache hit costs no further
-    query at all — resolving a licence is then one revision read plus one override read.
+    The revision is passed in rather than read here, so one resolution costs exactly one
+    revision read however many times this is consulted.
     """
-    revision = current_revision()
     cached = GRANT_CACHE.get(plan.pk, revision)
     if cached is not None:
         return cached
@@ -175,27 +181,20 @@ def _plan_grant_map(plan: Plan) -> Mapping[str, Any]:
             # giving up, so one bad edit costs that plan's override, not the dimension.
             value = coerce_grant_value(dimension.value_type, dimension.default_raw_value)
         if value is _UNSET:
-            logger.warning(
-                "catalogue dimension %r has no readable value for plan %s; omitting it",
-                dimension.key,
-                plan.pk,
-            )
+            if raw.strip():
+                # A value was written and could not be read — that is an operator error
+                # worth surfacing. An empty default is a deliberate "no catalogue-wide
+                # default", so it must not be logged as though something were wrong.
+                logger.warning(
+                    "catalogue dimension %r has no readable value for plan %s; omitting it",
+                    dimension.key,
+                    plan.pk,
+                )
             continue
         values[dimension.key] = value
 
-    instance_dimension = next(
-        (dimension for dimension in dimensions if dimension.governs_instance_limit), None
-    )
-    resolved = {
-        "values": values,
-        "instance_limit_key": (
-            instance_dimension.key
-            if instance_dimension is not None and instance_dimension.key in values
-            else None
-        ),
-    }
-    GRANT_CACHE.put(plan.pk, revision, resolved)
-    return resolved
+    GRANT_CACHE.put(plan.pk, revision, values)
+    return values
 
 
 def resolve_plan_for_license(license_key) -> Plan | None:
@@ -222,25 +221,25 @@ def resolve_entitlement(license_key) -> ResolvedEntitlement:
     caller keeps whatever it already had (which is how "no loss of current entitlement"
     holds even before migration 0002 has run).
     """
+    empty = ResolvedEntitlement(plan=None, values={}, plan_display_label="")
     try:
         plan = resolve_plan_for_license(license_key)
     except Exception:  # pragma: no cover - defensive; never deny a manifest over catalogue state
         logger.exception("catalogue plan resolution failed; issuing without grants")
-        return ResolvedEntitlement(plan=None, values={}, plan_display_label="", instance_limit_key=None)
+        return empty
 
     if plan is None:
-        return ResolvedEntitlement(plan=None, values={}, plan_display_label="", instance_limit_key=None)
+        return empty
 
     try:
-        resolved = _plan_grant_map(plan)
-        values = dict(resolved["values"])
-        instance_limit_key = resolved["instance_limit_key"]
+        values = dict(_plan_grant_map(plan, current_revision()))
 
         # Per-licence deviations, applied last. Bounded by the dimension cap: a licence
         # cannot carry more overrides than there are dimensions it can override.
         overrides = (
-            LicenseGrantOverride.objects.filter(
-                license_key=license_key, dimension__is_active=True
+            LicenseGrantOverride.objects.filter(license_key=license_key, dimension__is_active=True)
+            .filter(
+                models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=timezone.now())
             )
             .select_related("dimension")
             # Ordered before slicing: an unordered slice would make WHICH override the cap
@@ -262,21 +261,46 @@ def resolve_entitlement(license_key) -> ResolvedEntitlement:
                 )
                 continue
             values[dimension.key] = value
-            if dimension.governs_instance_limit:
-                instance_limit_key = dimension.key
     except Exception:  # pragma: no cover - defensive
         logger.exception("catalogue grant resolution failed; issuing without grants")
-        return ResolvedEntitlement(plan=None, values={}, plan_display_label="", instance_limit_key=None)
+        return empty
 
     return ResolvedEntitlement(
         plan=plan,
         values=values,
         plan_display_label=plan.display_name,
-        instance_limit_key=instance_limit_key if instance_limit_key in values else None,
     )
 
 
 # --- Writes -----------------------------------------------------------------------------
+
+# Overrides are priced exceptions, and an exception nobody revisits is an unpriced
+# entitlement. Time-boxed unless a caller deliberately says otherwise.
+DEFAULT_OVERRIDE_DAYS = 90
+
+assert DEFAULT_OVERRIDE_DAYS > 0, "a non-positive default would expire every override on creation"
+
+
+def validate_dimension_key(key: str) -> str:
+    """Allow-list a dimension key before it can ever reach a signed payload.
+
+    The database check constraints are the real guarantee; this exists so a caller gets
+    `VALIDATION_FAILED` with a useful message instead of an IntegrityError, and so the rule
+    is enforced identically on backends whose regex support differs.
+    """
+    cleaned = (key or "").strip()
+    try:
+        validate_grant_key(cleaned)
+    except ValidationError as error:
+        raise SafeAPIError(ErrorCode.VALIDATION_FAILED, str(error.messages[0])) from error
+    if is_reserved_grant_key(cleaned):
+        raise SafeAPIError(
+            ErrorCode.VALIDATION_FAILED,
+            "That grant dimension key prefix is reserved for first-party use.",
+        )
+    return cleaned
+
+
 
 
 @dataclass(frozen=True)
@@ -365,3 +389,139 @@ def set_plan_grant(actor: ActorContext | None, data: SetPlanGrantData) -> SetPla
             },
         )
         return SetPlanGrantResult(grant=grant, created=created, previous_raw_value=previous)
+
+
+@dataclass(frozen=True)
+class SetLicenseGrantOverrideData:
+    idempotency_key: str
+    license_key_id: str
+    dimension_key: str
+    raw_value: str
+    reason: str
+    # None means "use the default window". Pass `expires_at` explicitly for a different
+    # one, or `permanent=True` to opt out of expiry altogether.
+    expires_at: "datetime | None" = None
+    permanent: bool = False
+
+
+@dataclass(frozen=True)
+class SetLicenseGrantOverrideResult:
+    override: LicenseGrantOverride
+    created: bool
+    previous_raw_value: str | None
+
+
+def set_license_grant_override(
+    actor: ActorContext | None, data: SetLicenseGrantOverrideData
+) -> SetLicenseGrantOverrideResult:
+    """Grant one licence a deviation from its plan on one dimension.
+
+    This is a commercial exception for a single customer, so it carries the same ceremony
+    as any other entitlement write — permission, a required reason, an audit record — plus
+    an expiry, because a forgotten override is an entitlement nobody is charging for.
+    """
+    staff = require_staff_permission(actor, StaffPermission.GRANT_ENTITLEMENT)
+    idempotency_key = validate_idempotency_key(data.idempotency_key)
+    reason = require_reason(data.reason)
+    dimension_key = validate_dimension_key(data.dimension_key)
+    raw_value = (data.raw_value or "").strip()
+    if not raw_value:
+        raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+
+    if data.permanent:
+        expires_at = None
+    elif data.expires_at is not None:
+        expires_at = data.expires_at
+        if expires_at <= timezone.now():
+            raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+    else:
+        expires_at = timezone.now() + timedelta(days=DEFAULT_OVERRIDE_DAYS)
+
+    with transaction.atomic():
+        dimension = GrantDimension.objects.filter(key=dimension_key).first()
+        license_key = _license_key_model().objects.filter(id=data.license_key_id).first()
+        if dimension is None or license_key is None:
+            raise SafeAPIError(ErrorCode.NOT_FOUND)
+        if coerce_grant_value(dimension.value_type, raw_value) is _UNSET:
+            raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+
+        existing = LicenseGrantOverride.objects.filter(
+            license_key=license_key, dimension=dimension
+        ).first()
+        previous = existing.raw_value if existing is not None else None
+
+        if existing is not None:
+            existing.raw_value = raw_value
+            existing.granted_by_actor_id = staff.actor_id
+            existing.reason = reason
+            existing.expires_at = expires_at
+            existing.save(
+                update_fields=[
+                    "raw_value",
+                    "granted_by_actor_id",
+                    "reason",
+                    "expires_at",
+                    "updated_at",
+                ]
+            )
+            override, created = existing, False
+        else:
+            try:
+                with transaction.atomic():
+                    override = LicenseGrantOverride.objects.create(
+                        license_key=license_key,
+                        dimension=dimension,
+                        raw_value=raw_value,
+                        granted_by_actor_id=staff.actor_id,
+                        reason=reason,
+                        expires_at=expires_at,
+                    )
+                created = True
+            except IntegrityError:
+                # A racing writer won the unique (licence, dimension) constraint.
+                override = LicenseGrantOverride.objects.filter(
+                    license_key=license_key, dimension=dimension
+                ).first()
+                if override is None:
+                    raise SafeAPIError(ErrorCode.CONFLICT) from None
+                previous = override.raw_value
+                override.raw_value = raw_value
+                override.granted_by_actor_id = staff.actor_id
+                override.reason = reason
+                override.expires_at = expires_at
+                override.save(
+                    update_fields=[
+                        "raw_value",
+                        "granted_by_actor_id",
+                        "reason",
+                        "expires_at",
+                        "updated_at",
+                    ]
+                )
+                created = False
+
+        record_audit_event(
+            staff,
+            action="catalogue.license_grant_override_set",
+            target_type="catalogue_license_grant_override",
+            target_id=str(override.pk),
+            request_id=idempotency_key,
+            reason=reason,
+            before={"raw_value": previous} if previous is not None else None,
+            after={
+                "license_key_id": str(license_key.id),
+                "dimension_key": dimension.key,
+                "raw_value": override.raw_value,
+                "expires_at": expires_at.isoformat() if expires_at else None,
+            },
+        )
+        return SetLicenseGrantOverrideResult(
+            override=override, created=created, previous_raw_value=previous
+        )
+
+
+def _license_key_model():
+    """Imported lazily: `license_keys` is a peer app and this avoids an import cycle."""
+    from selahcue_api.apps.license_keys.models import AppLicenseKey
+
+    return AppLicenseKey

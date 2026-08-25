@@ -10,8 +10,7 @@ AI subscription we start using").
 
 Three layers resolve an entitlement, most specific first (`services.resolve_entitlement`):
 
-    LicenseGrantOverride   one licence deviates on one dimension (how the pre-catalogue
-                           `device_limit` values are preserved, see migration 0003)
+    LicenseGrantOverride   one licence deviates on one dimension, time-boxed and audited
     PlanGrant              the plan's value for that dimension
     GrantDimension.default the catalogue-wide default when a plan declares nothing
 
@@ -26,19 +25,39 @@ And a licence reaches a plan, most specific first:
 (EPIC-PL-C) is written against `screen_outputs`, `ndi_outputs`, `watermark`, … and never
 against a tier name — that is precisely FR-545. So a dimension key is a stable identifier
 in the same sense a JSON field name is; a plan code is not, and must never be branched on.
+
+**The catalogue does not publish seat caps to the manifest.** `AppLicenseKey.device_limit`
+is the number activation actually enforces, and it is the only number the manifest reports
+as `instances_limit`. A plan's `device_instances` grant is the catalogue's view of what a
+tier *should* allow; FR-516's write-back is what makes a plan change move `device_limit`,
+so the two agree by construction rather than by coincidence. A signed, offline-cached
+artefact must never carry two fields that disagree about the same quantity.
 """
 
 from __future__ import annotations
 
+from django.core.validators import RegexValidator
 from django.db import models
 
+# Dimension keys travel into a SIGNED payload, and a signed manifest is cached offline for
+# the licence's lifetime — so once a key ships it is effectively permanent. The field is
+# operator-settable free text, which makes an allow-list (not just the restricted-field
+# denylist in graphql/redaction.py) the right shape: lowercase, ASCII, snake_case, starting
+# with a letter. Anything else is refused at write time AND by a database check constraint.
+GRANT_KEY_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
 
-class PlanStatus(models.TextChoices):
-    """Lifecycle of a catalogue row — NOT a tier. Adding a tier never touches this."""
+# Held back for first-party payload use, so a future internal key can never collide with
+# one an operator already shipped in a signed manifest. Forbidden outright rather than
+# merely discouraged: the seeded dimensions use plain names and need none of these.
+RESERVED_GRANT_KEY_PREFIXES = ("selahcue_", "sc_")
 
-    ACTIVE = "ACTIVE", "Active"
-    # Still resolvable for licences already on it, but not offered to new ones.
-    RETIRED = "RETIRED", "Retired"
+validate_grant_key = RegexValidator(
+    regex=GRANT_KEY_PATTERN,
+    message=(
+        "A grant dimension key must be lowercase ASCII snake_case, start with a letter, "
+        "and be at most 64 characters."
+    ),
+)
 
 
 class GrantValueType(models.TextChoices):
@@ -49,6 +68,11 @@ class GrantValueType(models.TextChoices):
 # The one non-numeric INTEGER value. Resolves to Python ``None`` and serialises as JSON
 # ``null``, meaning "no limit" — which is what every licence issued before this catalogue
 # existed effectively had on outputs and NDI, since nothing enforced them.
+#
+# ``unlimited`` and "not granted" are DELIBERATELY different states with different
+# encodings: ``null`` means the catalogue grants this dimension without a ceiling, while an
+# ABSENT key means the catalogue expresses nothing about it and the client applies its own
+# default. Collapsing the two onto one value is how a payload ends up contradicting itself.
 UNLIMITED = "unlimited"
 
 # A single plan's grant map is cached (see cache.py); this caps how large one cache entry
@@ -63,21 +87,27 @@ MAX_GRANT_DIMENSIONS = 64
 assert MAX_GRANT_DIMENSIONS >= 8, "MAX_GRANT_DIMENSIONS must leave room for the decided dimensions"
 
 
+def is_reserved_grant_key(key: str) -> bool:
+    return str(key).lower().startswith(RESERVED_GRANT_KEY_PREFIXES)
+
+
 class Plan(models.Model):
-    """One purchasable/assignable tier, as a row.
+    """One assignable tier, as a row.
 
     `code` is an internal stable handle for operators and migrations. It is deliberately
     NOT choices-constrained and deliberately never compared against a literal in code —
     `tests/test_product_catalogue_slice.py` sweeps the source to prove it.
     `display_name` is free to change at any time and changes nothing behavioural.
+
+    Deliberately no `status`/`is_public` columns: nothing offers plans yet (there is no
+    pricing surface and no self-serve assignment), so a lifecycle flag would be a field
+    declared and never read — indistinguishable from one that is read and enforced. They
+    come back with the surface that needs them.
     """
 
     code = models.CharField(max_length=64, unique=True)
     display_name = models.CharField(max_length=128)
     description = models.TextField(blank=True)
-    status = models.CharField(max_length=16, choices=PlanStatus.choices, default=PlanStatus.ACTIVE)
-    # Offered on public surfaces (pricing page, portal). The legacy bridge plan is not.
-    is_public = models.BooleanField(default=True)
     # The plan used when a licence resolves to nothing else. Exactly one row may carry it.
     is_fallback = models.BooleanField(default=False)
     sort_order = models.PositiveIntegerField(default=0)
@@ -95,7 +125,7 @@ class Plan(models.Model):
             ),
         ]
         indexes = [
-            models.Index(fields=["status", "sort_order"]),
+            models.Index(fields=["sort_order"]),
             models.Index(fields=["code"]),
         ]
 
@@ -104,31 +134,37 @@ class Plan(models.Model):
 
 
 class GrantDimension(models.Model):
-    """One thing a plan can grant — a seat cap, an output cap, a watermark flag.
+    """One thing a plan can grant — an output cap, a seat count, a watermark flag.
 
     All five DEC-008 dimensions are rows seeded by migration 0002; a sixth is an INSERT.
+
+    An EMPTY `default_raw_value` is meaningful and supported: it means "no catalogue-wide
+    default", so a plan that declares nothing for this dimension leaves the key ABSENT from
+    the resolved grants rather than publishing a value nobody chose.
     """
 
-    key = models.CharField(max_length=64, unique=True)
+    key = models.CharField(max_length=64, unique=True, validators=[validate_grant_key])
     display_name = models.CharField(max_length=128)
     description = models.TextField(blank=True)
     value_type = models.CharField(max_length=16, choices=GrantValueType.choices)
-    # Used when a plan declares no value for this dimension. Also the safe-degrade value.
-    default_raw_value = models.CharField(max_length=64)
+    default_raw_value = models.CharField(max_length=64, blank=True)
     is_active = models.BooleanField(default=True)
-    # The dimension that supplies the manifest's `instances_limit`. Keeping this as DATA is
-    # what stops the manifest builder from naming a dimension key in a code branch.
-    governs_instance_limit = models.BooleanField(default=False)
     sort_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["governs_instance_limit"],
-                condition=models.Q(governs_instance_limit=True),
-                name="uniq_catalogue_instance_limit_dimension",
+            # The allow-list, at the database. A validator alone only binds callers that
+            # remember to run `full_clean()`; this binds every writer including a shell.
+            models.CheckConstraint(
+                condition=models.Q(key__regex=GRANT_KEY_PATTERN),
+                name="catalogue_grant_key_charset",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(key__startswith="selahcue_")
+                & ~models.Q(key__startswith="sc_"),
+                name="catalogue_grant_key_not_reserved",
             ),
         ]
         indexes = [
@@ -203,8 +239,11 @@ class LicensePlanAssignment(models.Model):
 class LicenseGrantOverride(models.Model):
     """One licence deviating from its plan on one dimension.
 
-    This is how the migration preserves entitlement exactly: a licence hand-issued with
-    `device_limit=5` keeps 5 whatever its plan says (migration 0003).
+    A per-customer exception to the commercial model, so it carries the same ceremony as
+    any other entitlement write: who granted it, why, and — by default — when it lapses.
+    `expires_at` is nullable so a deliberate permanent exception is expressible, but the
+    service time-boxes by default, because every legitimate case observed so far is
+    temporary and a forgotten override is an unpriced entitlement that nobody revisits.
     """
 
     license_key = models.ForeignKey(
@@ -214,7 +253,10 @@ class LicenseGrantOverride(models.Model):
     )
     dimension = models.ForeignKey(GrantDimension, on_delete=models.CASCADE, related_name="overrides")
     raw_value = models.CharField(max_length=64)
-    reason = models.TextField(blank=True)
+    granted_by_actor_id = models.CharField(max_length=128)
+    reason = models.TextField()
+    # NULL = never expires (deliberate, and the exception rather than the rule).
+    expires_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -227,6 +269,7 @@ class LicenseGrantOverride(models.Model):
         ]
         indexes = [
             models.Index(fields=["license_key"]),
+            models.Index(fields=["expires_at"]),
         ]
 
     def __str__(self) -> str:
@@ -234,7 +277,7 @@ class LicenseGrantOverride(models.Model):
 
 
 class CatalogueRevision(models.Model):
-    """Single row (pk=1) bumped whenever any catalogue row changes (see signals.py).
+    """Single row (pk=1) bumped whenever cached catalogue data changes (see signals.py).
 
     The in-process grant cache keys on this, so an operator's data edit takes effect in
     every worker process without a restart — which is what "no release" in FR-544 actually

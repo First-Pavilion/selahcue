@@ -8,7 +8,9 @@ humans only.
 
 The change is ADDITIVE, and `test_every_field_the_previous_version_carried_is_still_present`
 is what actually protects an older desktop client — not the version number, which nothing
-currently reads.
+currently reads. `entitlement_version` therefore stays at 1: bumping it for an addition
+would teach the first consumer that the number is noise, so a genuinely breaking change
+later could not be gated on it.
 
 Module-local seeding helpers, mirroring tests/test_entitlement_manifest_slice.py; a shared
 conftest.py is deliberately not used here.
@@ -238,7 +240,8 @@ def test_a_tier_that_did_not_exist_when_the_client_shipped_is_carried_verbatim(a
         STT_KEY: 1234,
         WATERMARK_KEY: False,
     }
-    assert payload["instances_limit"] == 12
+    # Still the enforced number, not the new tier's aspiration.
+    assert payload["instances_limit"] == key.device_limit
 
 
 def test_changing_a_grant_value_reaches_the_next_manifest_with_no_release(activated):
@@ -270,36 +273,77 @@ def test_no_tier_name_appears_anywhere_in_the_signed_payload_except_as_a_label(a
     assert set(payload["grants"]).isdisjoint({plan.code, plan.display_name})
 
 
-# --- The seat cap now comes from the plan ---------------------------------------------------
+# --- One quantity, one field ---------------------------------------------------------------
+#
+# The manifest is SIGNED and cached offline for the licence's lifetime. Two fields in it
+# disagreeing about the same quantity is worse than either being wrong: the client cannot
+# tell which to trust, and the artefact outlives the disagreement. `instances_limit` is
+# `AppLicenseKey.device_limit` — the number `activate_device` enforces — and nothing else.
 
 
-def test_the_instance_limit_comes_from_the_plan_not_the_model_default(activated):
+@pytest.mark.parametrize(
+    "plan_code",
+    [None, "LEGACY", "FREE", "PRO", "PLATINUM"],
+)
+def test_the_manifest_publishes_exactly_the_seat_number_activation_enforces(activated, plan_code):
+    """The invariant, stated as a test: whatever the catalogue says about a tier's seats,
+    the number the manifest publishes equals the number activation refuses the next device
+    over. Not eventually — at all times."""
     _device, token, key = activated
-    assert key.device_limit == 3
+    if plan_code is None:
+        LicensePlanAssignment.objects.filter(license_key=key).delete()
+        PlanScopeAlias.objects.all().delete()
+    else:
+        _assign(key, plan_code)
+
+    key.refresh_from_db()
+    assert _payload(token)["instances_limit"] == key.device_limit
+
+
+def test_a_legacy_licence_publishes_no_catalogue_seat_number_at_all(activated):
+    """The defect this replaced: `grants.device_instances` was `null` (INTEGER null =
+    UNLIMITED) while `instances_limit` said 3. A client written per FR-545 — read the typed
+    grants, never the labels — read unlimited seats from a signed artefact. Absent and
+    unlimited must stay different states."""
+    _device, token, key = activated
+    LicensePlanAssignment.objects.filter(license_key=key).delete()
+    PlanScopeAlias.objects.all().delete()
+    payload = _payload(token)
+
+    assert SEAT_KEY not in payload["grants"], (
+        "the catalogue published a seat ceiling for a licence it knows nothing about; "
+        "absent and unlimited are different states and must be encoded differently"
+    )
+    assert payload["instances_limit"] == key.device_limit
+    # Positive control: the other grants ARE published, so "absent" is not an empty map.
+    assert payload["grants"][WATERMARK_KEY] is False
+
+
+def test_a_plans_seat_grant_travels_as_advice_and_never_moves_instances_limit(activated):
+    """A plan may express a seat count; FR-516's write-back is what makes `device_limit`
+    follow it. Until then the manifest must not publish the aspiration as the enforced
+    number, or a church is told it has seven seats while the server refuses the fourth."""
+    _device, token, key = activated
     _assign(key, "PLATINUM")
-    assert _payload(token)["instances_limit"] == 7, "the seat cap did not follow the plan"
-    _assign(key, "FREE")
-    assert _payload(token)["instances_limit"] == 1
+    payload = _payload(token)
+
+    assert payload["grants"][SEAT_KEY] == 7
+    assert payload["instances_limit"] == key.device_limit == 3
 
 
-def test_a_licence_override_wins_over_its_plans_seat_cap(activated):
+def test_an_override_does_not_move_instances_limit_either(activated):
     _device, token, key = activated
     _assign(key, "FREE")
     LicenseGrantOverride.objects.create(
         license_key=key,
         dimension=GrantDimension.objects.get(key=SEAT_KEY),
         raw_value="4",
+        granted_by_actor_id="staff_ops_1",
+        reason="Test override.",
     )
-    assert _payload(token)["instances_limit"] == 4
-
-
-def test_a_licence_the_catalogue_says_nothing_about_keeps_its_own_seat_cap(activated):
-    """The fallback plan expresses no seat cap, so the licence's `device_limit` — which is
-    what activation still enforces — is what the manifest reports. Nothing is lost."""
-    _device, token, key = activated
-    LicensePlanAssignment.objects.filter(license_key=key).delete()
-    PlanScopeAlias.objects.all().delete()
-    assert _payload(token)["instances_limit"] == key.device_limit == 3
+    payload = _payload(token)
+    assert payload["grants"][SEAT_KEY] == 4
+    assert payload["instances_limit"] == key.device_limit == 3
 
 
 # --- Additive, and safe when the catalogue is not (NFR-024) ---------------------------------
@@ -365,3 +409,32 @@ def test_the_http_surface_returns_the_grants(client, activated):
         resp.json(), public_key=load_signing_key(TEST_SEED_B64).public_key()
     )
     assert payload["grants"][NDI_KEY] == 5
+
+
+def test_the_entitlement_version_did_not_move_for_an_additive_change():
+    """Bump only when a client that ignores unknown keys and defaults missing ones would
+    behave incorrectly. `grants` and `plan_display_label` are neither."""
+    from selahcue_api.apps.entitlements.services import ENTITLEMENT_VERSION
+
+    assert ENTITLEMENT_VERSION == 1
+
+
+def test_an_expired_override_does_not_reach_the_manifest(activated):
+    from datetime import timedelta as _timedelta
+
+    _device, token, key = activated
+    _assign(key, "FREE")
+    LicenseGrantOverride.objects.create(
+        license_key=key,
+        dimension=GrantDimension.objects.get(key=NDI_KEY),
+        raw_value="9",
+        granted_by_actor_id="staff_ops_1",
+        reason="Lapsed conference loan.",
+        expires_at=timezone.now() - _timedelta(seconds=1),
+    )
+    assert _payload(token)["grants"][NDI_KEY] == 0
+    # Positive control: unexpired, the same row does reach the manifest.
+    LicenseGrantOverride.objects.filter(license_key=key).update(
+        expires_at=timezone.now() + _timedelta(days=1)
+    )
+    assert _payload(token)["grants"][NDI_KEY] == 9

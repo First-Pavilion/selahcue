@@ -19,6 +19,14 @@ future tier and turn every rename into a client release, to machines that are de
 offline; so `feature_scope` and `plan_display_label` are labels for humans to read and
 nothing else. Adding a tier, or a whole new grant dimension, is a data change that an
 unmodified client already honours.
+
+**One quantity, one field.** `instances_limit` is `AppLicenseKey.device_limit` and nothing
+else, because that is the number `activate_device` enforces. Two fields in one signed,
+offline-cached artefact disagreeing about the same quantity is worse than either being
+wrong: the client cannot tell which to trust, and the artefact outlives the disagreement.
+A dimension key absent from `grants` means the catalogue expresses nothing about it — the
+client applies its own default; `null` means granted without a ceiling. Those are three
+different states and the encoding keeps them apart.
 """
 
 from __future__ import annotations
@@ -40,10 +48,16 @@ from selahcue_api.graphql.context import ActorContext, ActorKind
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 from selahcue_api.graphql.redaction import assert_no_restricted_payload_fields
 
-# 2 adds `grants` and `plan_display_label`. Purely additive — every field version 1 carried
-# is still present and still means the same thing, which
-# `test_entitlement_manifest_grants.py` asserts field by field rather than by argument.
-ENTITLEMENT_VERSION = 2
+# **Bump rule.** Increment this ONLY when a client that ignores unknown keys and applies
+# its own default to missing ones would behave INCORRECTLY against the new payload — a
+# field removed, renamed, retyped, or given a different meaning. Adding a key is not such
+# a change, and bumping for one teaches the first consumer that the number is noise, so a
+# genuinely breaking change later cannot be gated on it.
+#
+# `grants` and `plan_display_label` were added under this rule and did NOT earn a bump.
+# `test_entitlement_manifest_grants.py` asserts the compatibility field by field, which is
+# what actually protects a deployed client — the number never did.
+ENTITLEMENT_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -78,15 +92,6 @@ def build_entitlement_manifest(presented_token: str) -> EntitlementManifestResul
     # exactly the failure NFR-024 forbids.
     entitlement = resolve_entitlement(license_key)
 
-    # The catalogue's seat cap when it expresses one, otherwise the licence's own
-    # `device_limit` — which is also what activation still enforces today
-    # (`devices/services.py`). So a licence the catalogue says nothing about keeps precisely
-    # the limit it had, rather than inheriting the model field's global default of 1.
-    catalogue_instance_limit = entitlement.instance_limit
-    instances_limit = (
-        catalogue_instance_limit if catalogue_instance_limit is not None else license_key.device_limit
-    )
-
     payload = {
         "entitlement_version": ENTITLEMENT_VERSION,
         "device_public_id": device.device_public_id,
@@ -102,7 +107,12 @@ def build_entitlement_manifest(presented_token: str) -> EntitlementManifestResul
         "plan_display_label": entitlement.plan_display_label,
         "territory": license_key.territory,
         "instances_used": instances_used,
-        "instances_limit": instances_limit,
+        # ALWAYS `device_limit` — the number `activate_device` actually enforces. The
+        # catalogue's view of a tier's seats travels in `grants` instead, and FR-516's
+        # write-back is what moves `device_limit` when a plan changes. Publishing a
+        # catalogue-derived number here would let one signed artefact promise seven seats
+        # while activation refuses the fourth, for the months that artefact stays cached.
+        "instances_limit": license_key.device_limit,
         # The typed grant dimensions (FR-545). Keys come from catalogue rows, so a new
         # dimension appears here without a code change; a client reads the keys it knows
         # and applies its own default to anything absent, which is what makes a removed

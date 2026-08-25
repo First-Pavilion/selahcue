@@ -42,8 +42,12 @@ from selahcue_api.apps.catalogue.models import (
     PlanScopeAlias,
 )
 from selahcue_api.apps.catalogue.services import (
+    DEFAULT_OVERRIDE_DAYS,
+    SetLicenseGrantOverrideData,
     SetPlanGrantData,
+    current_revision,
     resolve_entitlement,
+    set_license_grant_override,
     set_plan_grant,
 )
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus, LicenseKeyType
@@ -132,6 +136,19 @@ def _staff(*permissions):
 
 def _assign(license_key, plan):
     return LicensePlanAssignment.objects.create(license_key=license_key, plan=plan)
+
+
+def _override(license_key, dimension_key, raw_value, *, expires_at=None):
+    """A row written directly. The governed path is `set_license_grant_override`, tested
+    separately; resolution must behave the same however the row got there."""
+    return LicenseGrantOverride.objects.create(
+        license_key=license_key,
+        dimension=_dimension(dimension_key),
+        raw_value=raw_value,
+        granted_by_actor_id="staff_ops_1",
+        reason="Test override.",
+        expires_at=expires_at,
+    )
 
 
 def _seeded_plan_names() -> set[str]:
@@ -324,12 +341,9 @@ def test_an_unmapped_licence_falls_back_to_the_designated_plan():
 def test_a_licence_override_beats_its_plans_value():
     key = _license_key(tag="prec5", device_limit=1)
     _assign(key, Plan.objects.get(code="PRO"))
-    LicenseGrantOverride.objects.create(
-        license_key=key, dimension=_dimension(SEAT_KEY), raw_value="5"
-    )
+    _override(key, NDI_KEY, "9")
     resolved = resolve_entitlement(key)
-    assert resolved.values[SEAT_KEY] == 5
-    assert resolved.instance_limit == 5
+    assert resolved.values[NDI_KEY] == 9
     # Only the overridden dimension moves.
     assert resolved.values[SCREEN_KEY] == 5
 
@@ -358,7 +372,6 @@ def test_an_unseeded_catalogue_resolves_to_nothing_and_raises_nothing():
     resolved = resolve_entitlement(key)
     assert resolved.plan is None
     assert resolved.values == {}
-    assert resolved.instance_limit is None
 
 
 def test_an_unreadable_grant_value_degrades_to_the_dimension_default():
@@ -409,13 +422,32 @@ def test_a_dimension_named_like_a_restricted_field_is_refused_a_place_in_the_pay
     assert resolved.values[SCREEN_KEY] == 5
 
 
-def test_an_unlimited_value_resolves_to_no_limit_rather_than_a_number():
+def test_unlimited_and_absent_are_different_states_with_different_encodings():
+    """Collapsing them onto one value is how a payload ends up contradicting itself: a
+    client cannot tell "granted without a ceiling" from "the catalogue says nothing"."""
     key = _license_key(tag="unlimited", feature_scope="NOT-MAPPED", device_limit=4)
     resolved = resolve_entitlement(key)
-    # The fallback (bridge) plan leaves outputs uncapped, exactly as they were before the
-    # catalogue existed.
-    assert resolved.values[SCREEN_KEY] is None
-    assert resolved.values[NDI_KEY] is None
+
+    # `unlimited` -> present, None. The bridge plan leaves outputs uncapped, exactly as
+    # they were before the catalogue existed.
+    assert SCREEN_KEY in resolved.values and resolved.values[SCREEN_KEY] is None
+    assert NDI_KEY in resolved.values and resolved.values[NDI_KEY] is None
+    # No grant and no dimension default -> the key is ABSENT, not null.
+    assert SEAT_KEY not in resolved.values
+
+
+def test_a_plan_may_still_declare_unlimited_seats_and_it_is_representable():
+    """The seat dimension is an ordinary grant now, so `unlimited` means what it says
+    rather than silently meaning "defer to device_limit"."""
+    plan = Plan.objects.get(code="PRO")
+    PlanGrant.objects.filter(plan=plan, dimension=_dimension(SEAT_KEY)).update(
+        raw_value="unlimited"
+    )
+    GRANT_CACHE.clear()
+    key = _license_key(tag="unlimitedseats")
+    _assign(key, plan)
+    values = resolve_entitlement(key).values
+    assert SEAT_KEY in values and values[SEAT_KEY] is None
 
 
 # --- Bounds (repo bounded-memory rule) -----------------------------------------------------
@@ -427,10 +459,11 @@ def test_a_cache_hit_returns_exactly_what_the_cold_read_returned():
     _assign(key, plan)
 
     cold = dict(resolve_entitlement(key).values)
-    assert GRANT_CACHE.hits_for(plan.pk) == 0, "the cold read should have stored, not hit"
+    revision = current_revision()
+    assert GRANT_CACHE.hits_for(plan.pk, revision) == 0, "the cold read should have stored, not hit"
     warm = dict(resolve_entitlement(key).values)
 
-    hits = GRANT_CACHE.hits_for(plan.pk)
+    hits = GRANT_CACHE.hits_for(plan.pk, revision)
     assert hits == 1, (
         f"expected exactly one cache hit on plan {plan.pk}, got {hits!r} — the cache was "
         "not exercised, so the identity contract below was not exercised either"
@@ -459,14 +492,15 @@ def test_the_grant_cache_is_bounded_by_entry_count():
     for key in licenses:
         resolve_entitlement(key)
 
+    revision = current_revision()
     assert GRANT_CACHE.entry_count() == MAX_CACHE_ENTRIES, (
         "the cache grew past its cap; a per-plan cache with no bound grows with the "
         "catalogue and unbounds lookup cost"
     )
     # The entity, named: the least recently used key is gone, not merely "fewer bytes".
-    assert GRANT_CACHE.contains(plans[0].pk) is False
-    assert GRANT_CACHE.contains(plans[-1].pk) is True
-    assert GRANT_CACHE.hits_for(plans[0].pk) is None
+    assert GRANT_CACHE.contains(plans[0].pk, revision) is False
+    assert GRANT_CACHE.contains(plans[-1].pk, revision) is True
+    assert GRANT_CACHE.hits_for(plans[0].pk, revision) is None
 
     # Positive control: eviction costs a query, never a wrong answer.
     assert resolve_entitlement(licenses[0]).values[SCREEN_KEY] == 1
@@ -598,3 +632,252 @@ def test_set_plan_grant_reports_an_unknown_plan_as_not_found():
             ),
         )
     assert caught.value.code == ErrorCode.NOT_FOUND
+
+
+# --- Cache invalidation is scoped to what the cache actually holds --------------------------
+
+
+def test_assigning_an_unrelated_licence_does_not_cold_the_grant_cache():
+    """The cache holds one resolved map per PLAN. Assignments, aliases and per-licence
+    overrides are read fresh every time and never cached, so bumping the revision for them
+    would discard every plan's map for a write that cannot have changed one. Under a
+    billing run that assigns many licences, the cache would then never be warm."""
+    plan = Plan.objects.get(code="PRO")
+    warmer = _license_key(tag="warm")
+    _assign(warmer, plan)
+    resolve_entitlement(warmer)
+    resolve_entitlement(warmer)
+
+    revision = current_revision()
+    assert GRANT_CACHE.hits_for(plan.pk, revision) == 1, (
+        "the cache was not warm to begin with, so this test could not detect it being "
+        "discarded"
+    )
+
+    # A write to a model the cache does not hold.
+    other = _license_key(tag="other")
+    _assign(other, plan)
+    LicenseGrantOverride.objects.create(
+        license_key=other,
+        dimension=_dimension(NDI_KEY),
+        raw_value="1",
+        granted_by_actor_id="staff_ops_1",
+        reason="Unrelated write.",
+    )
+    PlanScopeAlias.objects.create(feature_scope="UNRELATED", plan=plan)
+
+    assert current_revision() == revision, "an uncached model bumped the cache revision"
+    assert GRANT_CACHE.hits_for(plan.pk, revision) == 1, (
+        "assigning an unrelated licence discarded the plan's cached grant map"
+    )
+    # Positive control: a write the cache DOES depend on must still invalidate it.
+    grant = PlanGrant.objects.get(plan=plan, dimension=_dimension(NDI_KEY))
+    grant.raw_value = "6"
+    grant.save(update_fields=["raw_value", "updated_at"])
+    assert current_revision() != revision
+    assert GRANT_CACHE.hits_for(plan.pk, current_revision()) is None
+
+
+def test_a_superseded_entry_is_not_reported_as_resident():
+    """`contains` shares one validity predicate with `get`. Without that, a residency
+    assertion made after a catalogue edit would pass on an entry nothing would serve."""
+    plan = Plan.objects.get(code="PRO")
+    key = _license_key(tag="superseded")
+    _assign(key, plan)
+    resolve_entitlement(key)
+    stale_revision = current_revision()
+    assert GRANT_CACHE.contains(plan.pk, stale_revision) is True
+
+    grant = PlanGrant.objects.get(plan=plan, dimension=_dimension(SCREEN_KEY))
+    grant.raw_value = "8"
+    grant.save(update_fields=["raw_value", "updated_at"])
+
+    assert current_revision() != stale_revision
+    assert GRANT_CACHE.contains(plan.pk, current_revision()) is False
+    assert GRANT_CACHE.hits_for(plan.pk, current_revision()) is None
+
+
+def test_an_expired_entry_is_not_reported_as_resident(monkeypatch):
+    ticks = [1000.0]
+    cache = BoundedGrantCache(clock=lambda: ticks[0])
+    monkeypatch.setattr(catalogue_services, "GRANT_CACHE", cache)
+
+    plan = Plan.objects.get(code="PRO")
+    key = _license_key(tag="expiredentry")
+    _assign(key, plan)
+    resolve_entitlement(key)
+    revision = current_revision()
+    assert cache.contains(plan.pk, revision) is True
+
+    ticks[0] += CACHE_TTL_SECONDS + 1
+    assert cache.contains(plan.pk, revision) is False
+
+
+# --- Per-licence overrides are governed ------------------------------------------------------
+
+
+def test_an_override_is_time_boxed_by_default():
+    """A forgotten override is an entitlement nobody is charging for."""
+    key = _license_key(tag="ovdefault")
+    _assign(key, Plan.objects.get(code="FREE"))
+    result = set_license_grant_override(
+        _staff(StaffPermission.GRANT_ENTITLEMENT),
+        SetLicenseGrantOverrideData(
+            idempotency_key="catalogue-override-1",
+            license_key_id=str(key.id),
+            dimension_key=NDI_KEY,
+            raw_value="3",
+            reason="Conference loan for the summer.",
+        ),
+    )
+    assert result.override.expires_at is not None
+    window = result.override.expires_at - timezone.now()
+    assert timedelta(days=DEFAULT_OVERRIDE_DAYS - 1) < window <= timedelta(
+        days=DEFAULT_OVERRIDE_DAYS
+    )
+    assert resolve_entitlement(key).values[NDI_KEY] == 3
+
+
+def test_an_expired_override_stops_applying():
+    key = _license_key(tag="ovexpired")
+    _assign(key, Plan.objects.get(code="FREE"))
+    _override(key, NDI_KEY, "3", expires_at=timezone.now() - timedelta(seconds=1))
+    # Falls back to the plan's value, not to the override's.
+    assert resolve_entitlement(key).values[NDI_KEY] == 0
+    # Positive control: the same row, unexpired, does apply — so "ignored" is not just a
+    # resolver that never reads overrides at all.
+    LicenseGrantOverride.objects.filter(license_key=key).update(
+        expires_at=timezone.now() + timedelta(days=1)
+    )
+    assert resolve_entitlement(key).values[NDI_KEY] == 3
+
+
+def test_a_permanent_override_is_possible_but_must_be_asked_for():
+    key = _license_key(tag="ovpermanent")
+    _assign(key, Plan.objects.get(code="FREE"))
+    result = set_license_grant_override(
+        _staff(StaffPermission.GRANT_ENTITLEMENT),
+        SetLicenseGrantOverrideData(
+            idempotency_key="catalogue-override-2",
+            license_key_id=str(key.id),
+            dimension_key=NDI_KEY,
+            raw_value="3",
+            reason="Permanent contractual exception.",
+            permanent=True,
+        ),
+    )
+    assert result.override.expires_at is None
+
+
+def test_an_override_records_who_granted_it_why_and_is_audited():
+    key = _license_key(tag="ovaudit")
+    before = AuditEvent.objects.filter(action="catalogue.license_grant_override_set").count()
+    result = set_license_grant_override(
+        _staff(StaffPermission.GRANT_ENTITLEMENT),
+        SetLicenseGrantOverrideData(
+            idempotency_key="catalogue-override-3",
+            license_key_id=str(key.id),
+            dimension_key=NDI_KEY,
+            raw_value="3",
+            reason="Pilot extension agreed with the owner.",
+        ),
+    )
+    assert result.override.granted_by_actor_id == "staff_ops_1"
+    assert result.override.reason == "Pilot extension agreed with the owner."
+    assert (
+        AuditEvent.objects.filter(action="catalogue.license_grant_override_set").count()
+        == before + 1
+    )
+
+
+def test_an_override_requires_the_entitlement_permission_and_a_reason():
+    key = _license_key(tag="ovperm")
+    data = SetLicenseGrantOverrideData(
+        idempotency_key="catalogue-override-4",
+        license_key_id=str(key.id),
+        dimension_key=NDI_KEY,
+        raw_value="3",
+        reason="Long enough reason.",
+    )
+    with pytest.raises(SafeAPIError) as caught:
+        set_license_grant_override(_staff(StaffPermission.VIEW_CUSTOMERS), data)
+    assert caught.value.code == ErrorCode.PERMISSION_DENIED
+
+    with pytest.raises(SafeAPIError) as caught:
+        set_license_grant_override(
+            _staff(StaffPermission.GRANT_ENTITLEMENT),
+            SetLicenseGrantOverrideData(
+                idempotency_key="catalogue-override-5",
+                license_key_id=str(key.id),
+                dimension_key=NDI_KEY,
+                raw_value="3",
+                reason="short",
+            ),
+        )
+    assert caught.value.code == ErrorCode.VALIDATION_FAILED
+    assert LicenseGrantOverride.objects.count() == 0
+
+
+# --- Dimension keys are allow-listed before they can reach a signed payload ------------------
+
+
+@pytest.mark.parametrize(
+    "bad_key",
+    ["Screen_Outputs", "screen outputs", "9lives", "with-dash", "UPPER", "", "x" * 65],
+)
+def test_the_database_refuses_a_malformed_dimension_key(bad_key):
+    """A key that ships in a signed manifest is permanent, and the field is operator-settable
+    free text. The constraint binds every writer, including a shell that skips the service."""
+    from django.db import IntegrityError, transaction
+
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            GrantDimension.objects.create(
+                key=bad_key,
+                display_name="Bad",
+                value_type=GrantValueType.INTEGER,
+                default_raw_value="1",
+            )
+
+
+@pytest.mark.parametrize("reserved", ["selahcue_meta", "sc_internal"])
+def test_the_database_refuses_a_reserved_dimension_key(reserved):
+    from django.db import IntegrityError, transaction
+
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            GrantDimension.objects.create(
+                key=reserved,
+                display_name="Reserved",
+                value_type=GrantValueType.INTEGER,
+                default_raw_value="1",
+            )
+
+
+def test_a_well_formed_dimension_key_is_still_accepted():
+    """Positive control: the constraint refuses bad keys, it does not refuse everything."""
+    dimension = GrantDimension.objects.create(
+        key="alt_output_count",
+        display_name="Alt",
+        value_type=GrantValueType.INTEGER,
+        default_raw_value="1",
+        sort_order=97,
+    )
+    assert GrantDimension.objects.filter(pk=dimension.pk).exists()
+
+
+@pytest.mark.parametrize("bad_key", ["Screen_Outputs", "sc_internal", "with-dash", ""])
+def test_the_override_service_refuses_a_malformed_dimension_key(bad_key):
+    key = _license_key(tag="keyval")
+    with pytest.raises(SafeAPIError) as caught:
+        set_license_grant_override(
+            _staff(StaffPermission.GRANT_ENTITLEMENT),
+            SetLicenseGrantOverrideData(
+                idempotency_key="catalogue-override-6",
+                license_key_id=str(key.id),
+                dimension_key=bad_key,
+                raw_value="3",
+                reason="Attempt with a malformed key.",
+            ),
+        )
+    assert caught.value.code == ErrorCode.VALIDATION_FAILED

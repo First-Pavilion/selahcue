@@ -26,25 +26,25 @@ from django.db.models.signals import post_delete, post_save
 from selahcue_api.apps.catalogue.models import (
     CatalogueRevision,
     GrantDimension,
-    LicenseGrantOverride,
-    LicensePlanAssignment,
     Plan,
     PlanGrant,
-    PlanScopeAlias,
 )
 
 logger = logging.getLogger(__name__)
 
-# Every model whose contents can change a resolved entitlement. `CatalogueRevision` is
-# deliberately absent — it is the counter, not catalogue data, and watching it would
-# recurse.
+# Exactly the models the CACHE holds, and nothing else. The cache stores one resolved
+# grant map per plan; aliases, assignments and per-licence overrides are all read fresh on
+# every resolution and are never cached, so bumping the counter for them would discard
+# every plan's map for a write that cannot have changed any of them. Assigning one licence
+# to a plan would then cold-start the cache for every other licence on it — under a billing
+# run that assigns many licences, permanently.
+#
+# `CatalogueRevision` is deliberately absent too: it is the counter, not catalogue data,
+# and watching it would recurse.
 WATCHED_MODELS = (
     Plan,
     GrantDimension,
     PlanGrant,
-    PlanScopeAlias,
-    LicensePlanAssignment,
-    LicenseGrantOverride,
 )
 
 _DISPATCH_UID = "selahcue_catalogue.bump_revision"
