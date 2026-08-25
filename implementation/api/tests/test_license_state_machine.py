@@ -203,23 +203,82 @@ def _edge_id(edge) -> str:
 
 
 # --- The table itself -------------------------------------------------------------------
-def test_the_table_matches_the_prd_transition_list():
-    """The PRD's §13 list, transcribed once, here, as the check on the production table.
-
-    This is the one place a hand-written copy is legitimate: it is the requirement, and its
-    whole job is to disagree with the table if the table drifts away from the PRD."""
+# The PRD's §13 clauses, transcribed LITERALLY — every edge the exhaustive list grants when
+# read word for word, including the one this implementation refuses. Transcribing the
+# already-resolved table instead would agree with `LEGAL_TRANSITIONS` by construction and
+# could never surface where the code departs from the requirement.
+def _prd_literal_transitions() -> dict[LicenseKeyStatus, set]:
     S = LicenseKeyStatus
-    expected = {
-        S.ISSUED: {S.ACTIVATED, S.EXPIRING, S.SUSPENDED, S.REVOKED},
-        S.ACTIVATED: {S.EXPIRING, S.SUSPENDED, S.REVOKED, S.CONVERTED},
-        S.EXPIRING: {S.ACTIVATED, S.EXPIRED, S.SUSPENDED, S.REVOKED, S.CONVERTED},
-        S.EXPIRED: {S.ACTIVATED, S.SUSPENDED, S.REVOKED, S.ARCHIVED},
-        S.SUSPENDED: {PRIOR_STATUS, S.REVOKED},
-        S.CONVERTED: {S.SUSPENDED, S.REVOKED, S.ARCHIVED},
-        S.REVOKED: {S.ARCHIVED},
-        S.ARCHIVED: set(),
+    literal: dict[S, set] = {status: set() for status in S}
+    terminal = {S.REVOKED, S.ARCHIVED}
+
+    literal[S.ISSUED].add(S.ACTIVATED)  # "ISSUED->ACTIVATED (first activation)"
+    literal[S.ISSUED].add(S.EXPIRING)  # "ISSUED/ACTIVATED->EXPIRING (clock, FR-502)"
+    literal[S.ACTIVATED].add(S.EXPIRING)
+    literal[S.EXPIRING].add(S.ACTIVATED)  # "EXPIRING->ACTIVATED (renewal, FR-509)"
+    literal[S.EXPIRING].add(S.EXPIRED)  # "EXPIRING->EXPIRED (clock, FR-503)"
+    literal[S.EXPIRED].add(S.ACTIVATED)  # "EXPIRED->ACTIVATED (late renewal, FR-509)"
+    # "any non-terminal->SUSPENDED (FR-504)" — self-edges are replays, not transitions.
+    for status in set(S) - terminal - {S.SUSPENDED}:
+        literal[status].add(S.SUSPENDED)
+    literal[S.SUSPENDED].add(PRIOR_STATUS)  # "SUSPENDED->its prior status (FR-510)"
+    # "any->REVOKED (FR-505)" — read literally, "any" includes ARCHIVED.
+    for status in set(S) - {S.REVOKED}:
+        literal[status].add(S.REVOKED)
+    literal[S.ACTIVATED].add(S.CONVERTED)  # "ACTIVATED/EXPIRING->CONVERTED (FR-506, D1)"
+    literal[S.EXPIRING].add(S.CONVERTED)
+    for status in (S.EXPIRED, S.REVOKED, S.CONVERTED):  # "EXPIRED/REVOKED/CONVERTED->ARCHIVED"
+        literal[status].add(S.ARCHIVED)
+    return literal
+
+
+# The single, named departure from the literal reading. §13 also says "REVOKED and ARCHIVED
+# are otherwise terminal", and FR-505's own acceptance criterion says "no mutation can leave
+# REVOKED except ARCHIVED" — which is the requirements author expressing terminality as a
+# by-name bound on a terminal status's OUTBOUND edges. Granting ARCHIVED an outbound edge in
+# the same breath as calling it terminal contradicts that, and ARCHIVED is never named as a
+# source anywhere in §13. Recorded as a footnote on PRD §13.
+DOCUMENTED_DEPARTURES: dict[tuple, str] = {
+    (LicenseKeyStatus.ARCHIVED, LicenseKeyStatus.REVOKED): (
+        "ARCHIVED is terminal (§13 + FR-505 AC), so the literal 'any->REVOKED' does not "
+        "reach it — un-archiving a licence into a kill state is not a lifecycle §13 describes"
+    ),
+}
+
+
+def test_the_table_matches_the_prd_transition_list_except_where_documented():
+    expected = {status: set(targets) for status, targets in _prd_literal_transitions().items()}
+    for (source, target), why in DOCUMENTED_DEPARTURES.items():
+        assert target in expected[source], (
+            f"{source.value}->{target.value} is recorded as a departure from §13 but the "
+            f"literal transcription does not grant it — the departure is stale ({why})"
+        )
+        expected[source].discard(target)
+
+    actual = {source: set(targets) for source, targets in LEGAL_TRANSITIONS.items()}
+    assert actual == expected
+
+
+def test_the_only_departure_from_the_prd_is_the_documented_one():
+    """Guards the list of exceptions itself: adding a second departure without recording it
+    has to fail here, not pass because the test subtracted whatever disagreed."""
+    literal = _prd_literal_transitions()
+    departures = {
+        (source, target)
+        for source, targets in literal.items()
+        for target in targets
+        if target not in LEGAL_TRANSITIONS[source]
     }
-    assert {source: set(targets) for source, targets in LEGAL_TRANSITIONS.items()} == expected
+    additions = {
+        (source, target)
+        for source, targets in LEGAL_TRANSITIONS.items()
+        for target in targets
+        if target not in literal[source]
+    }
+    assert departures == set(DOCUMENTED_DEPARTURES), (
+        f"undocumented refusals of edges §13 grants: {sorted(departures - set(DOCUMENTED_DEPARTURES))}"
+    )
+    assert additions == set(), f"the table grants edges §13 does not: {sorted(additions)}"
 
 
 def test_terminal_statuses_have_only_their_named_exits():
@@ -292,6 +351,16 @@ def test_every_illegal_transition_is_refused_and_changes_nothing(edge):
     assert row.before["status"] == source.value
     assert row.after["status"] == source.value
     assert row.after["requested_status"] == _label(target)
+    # AC6 applies to DENIED rows too. Without these, blanking reason and request_id on the
+    # refusal path left the entire battery green — a refusal nobody can attribute is not an
+    # audit record.
+    assert row.actor_kind == ActorKind.STAFF.value
+    assert row.actor_id == "staff_lifecycle_1"
+    assert row.reason == REASON
+    assert row.request_id == f"sm-{tag}-{_label(target).lower()}-99"
+    assert row.after["refusal_code"], "a refusal must say WHY, machine-readably"
+    assert row.after["refusal_detail"]
+    assert row.before["prior_status"] == before_prior
 
 
 def test_the_illegal_edge_battery_is_not_empty_and_covers_the_complement():
@@ -530,13 +599,27 @@ def test_each_status_is_actually_reached_through_the_audited_writer(status):
         assert _audit_rows(key).filter(result=AuditResult.SUCCESS).count() >= transitions
 
 
-def test_suspendable_sources_are_derived_from_the_table_not_restated():
-    assert SUSPENDABLE_SOURCES == frozenset(
-        source
-        for source, targets in LEGAL_TRANSITIONS.items()
-        if LicenseKeyStatus.SUSPENDED in targets
-    )
-    assert LicenseKeyStatus.SUSPENDED not in SUSPENDABLE_SOURCES
+def test_suspendable_sources_match_the_prd_not_the_production_comprehension():
+    """Derived independently, from the literal §13 transcription.
+
+    Re-running the production comprehension against the production table proves only that the
+    comprehension is deterministic: a hand-restated literal in `SUSPENDABLE_SOURCES` would
+    survive it. §13 says "any non-terminal -> SUSPENDED", and names REVOKED and ARCHIVED as
+    the terminal pair, so the expected set follows from the requirement rather than the code.
+    """
+    non_terminal = {
+        status
+        for status in LicenseKeyStatus
+        if status not in {LicenseKeyStatus.REVOKED, LicenseKeyStatus.ARCHIVED}
+    }
+    # SUSPENDED -> SUSPENDED is a self-edge: an idempotent replay, not a transition.
+    expected = non_terminal - {LicenseKeyStatus.SUSPENDED}
+
+    assert set(SUSPENDABLE_SOURCES) == expected
+    # And a second, independent traversal of the table agrees with it.
+    assert set(SUSPENDABLE_SOURCES) == {
+        source for source, target in _legal_edges() if target is LicenseKeyStatus.SUSPENDED
+    }
     assert TERMINAL_STATUSES.isdisjoint(SUSPENDABLE_SOURCES)
 
 
@@ -672,30 +755,52 @@ _MUTATING_CALLS = frozenset({"delete", "update", "bulk_update", "save", "update_
 _PRODUCTION_ROOT = pathlib.Path(__file__).resolve().parent.parent / "selahcue_api"
 
 
-def _audit_mutation_sites() -> list[str]:
-    """Every call in the production package that would mutate or remove a persisted audit
-    row. Parsed rather than grepped so a mention in a comment or docstring is not a finding.
+def _audit_mutation_sites(root: pathlib.Path | None = None) -> list[str]:
+    """Every call in the production package that would mutate or remove a persisted audit row.
+
+    Parsed rather than grepped, so a mention in a comment or docstring is not a finding. The
+    scan follows local aliases — `qs = AuditEvent.objects.filter(...)` then `qs.delete()` is
+    the natural shape of a retention job, and matching only on the literal `AuditEvent.` chain
+    walks straight past it.
+
+    `root` is a parameter so the scan can be pointed at a fixture containing a known offender
+    and shown to find it. A scan that can only ever be run against a clean tree is
+    indistinguishable from a scan that returns nothing at all.
     """
+    root = root or _PRODUCTION_ROOT
     findings: list[str] = []
-    for path in sorted(_PRODUCTION_ROOT.rglob("*.py")):
+    for path in sorted(root.rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
+        relative = path.relative_to(root.parent)
+
+        # Names bound to an AuditEvent-rooted expression anywhere in the module.
+        aliases: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and node.value is not None:
+                value = ast.unparse(node.value)
+                if value.split(".")[0] == "AuditEvent":
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            aliases.add(target.id)
+
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
             if node.func.attr not in _MUTATING_CALLS:
                 continue
             chain = ast.unparse(node.func)
-            if chain.split(".")[0] == "AuditEvent" or ".AuditEvent." in f".{chain}":
-                findings.append(f"{path.relative_to(_PRODUCTION_ROOT.parent)}:{node.lineno} {chain}")
+            root_name = chain.split(".")[0]
+            if root_name == "AuditEvent" or root_name in aliases or ".AuditEvent." in f".{chain}":
+                findings.append(f"{relative}:{node.lineno} {chain}")
     return findings
 
 
 def test_the_audit_store_has_no_update_or_delete_surface():
     """NFR-506: append-only. No production module may mutate or remove an audit row, and the
     audit app must expose exactly one writer."""
-    assert _audit_mutation_sites() == [], (
-        "the audit store is append-only; these calls would mutate or remove a row: "
-        f"{_audit_mutation_sites()}"
+    sites = _audit_mutation_sites()
+    assert sites == [], (
+        f"the audit store is append-only; these calls would mutate or remove a row: {sites}"
     )
 
     from selahcue_api.apps.audit import services as audit_services
@@ -709,40 +814,91 @@ def test_the_audit_store_has_no_update_or_delete_surface():
     assert not {name for name in public if any(word in name for word in ("delete", "update"))}
 
 
-def test_the_append_only_scan_can_actually_find_a_mutation():
-    """Positive control for the scan above. Without this, an `_audit_mutation_sites()` that
-    silently returned nothing — a bad path, a parse that found no files — would read exactly
-    like a clean codebase."""
-    assert list(_PRODUCTION_ROOT.rglob("*.py")), "the scan found no production modules at all"
+@pytest.mark.parametrize(
+    ("shape", "source"),
+    [
+        ("direct-delete", "AuditEvent.objects.filter(id=1).delete()\n"),
+        ("direct-update", "AuditEvent.objects.all().update(reason='')\n"),
+        # The retention-job shape, which evaded the first version of this scan entirely.
+        ("aliased-delete", "qs = AuditEvent.objects.filter(id=1)\nqs.delete()\n"),
+        ("aliased-update", "rows = AuditEvent.objects.all()\nrows.update(reason='')\n"),
+    ],
+)
+def test_the_append_only_scan_actually_finds_a_mutation(tmp_path, shape, source):
+    """Positive control that calls the real function.
 
-    tree = ast.parse("AuditEvent.objects.filter(id=1).delete()")
-    found = [
-        ast.unparse(node.func)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in _MUTATING_CALLS
-        and ast.unparse(node.func).split(".")[0] == "AuditEvent"
-    ]
-    assert found == ["AuditEvent.objects.filter(id=1).delete"]
+    The previous version of this control re-implemented the walk inline against a literal
+    string, so `_audit_mutation_sites()` could have returned `[]` unconditionally — a bad
+    root, a glob that matched nothing — and both it and the test above would still pass. This
+    points the actual function at a fixture tree and requires it to report.
+    """
+    package = tmp_path / "selahcue_api"
+    package.mkdir()
+    (package / "offender.py").write_text(source)
+
+    findings = _audit_mutation_sites(package)
+
+    assert findings, f"the {shape} mutation shape is invisible to the append-only scan"
+    assert all("offender.py" in finding for finding in findings), findings
+
+
+def test_the_append_only_scan_reads_the_real_production_tree():
+    """The other half: the clean result above must come from a scan that really looked."""
+    modules = list(_PRODUCTION_ROOT.rglob("*.py"))
+    assert len(modules) > 20, f"the scan only found {len(modules)} production modules"
+    assert any(path.name == "services.py" for path in modules)
 
 
 # --- Writer discipline ------------------------------------------------------------------
-def test_no_production_module_assigns_a_licence_status_outside_the_state_machine():
-    """The table is only "the single place" if nothing writes around it. The two shipped
-    writers are grandfathered by name: issuance sets the seed status on an unsaved row, and
-    first activation is the ISSUED -> ACTIVATED transition this ticket must not change."""
-    grandfathered = {
-        "selahcue_api/apps/license_keys/services.py",
-        "selahcue_api/apps/devices/services.py",
-        "selahcue_api/apps/license_keys/state_machine.py",
-    }
-    offenders: list[str] = []
-    for path in sorted(_PRODUCTION_ROOT.rglob("*.py")):
-        relative = str(path.relative_to(_PRODUCTION_ROOT.parent))
-        if relative in grandfathered:
+# The table is only "the single place" if nothing writes around it. Grandfathering is BY
+# SITE, never by file: excusing a whole module would excuse the new direct write that
+# 86ak1090r (revoke/extend, landing in license_keys/services.py) or 86ak109dv (the expiry
+# job, whose natural shape is `AppLicenseKey.objects.filter(...).update(status=...)`) might
+# add next to the old one.
+_STATUS_FIELDS = frozenset({"status", "prior_status"})
+_QUERYSET_WRITERS = frozenset(
+    {"update", "create", "update_or_create", "get_or_create", "bulk_create", "bulk_update"}
+)
+
+# `state_machine.py` is the writer itself — the module this rule is *about* — so its internal
+# writes are the sanctioned ones by definition. Every other module is pinned site by site.
+_THE_WRITER = "selahcue_api/apps/license_keys/state_machine.py"
+
+# The two writes that predate this module, named individually. A third anywhere fails.
+_KNOWN_DIRECT_WRITES = {
+    # Staff issuance seeds ISSUED onto a new, unsaved row (apps/license_keys/services.py).
+    # Not a transition — there is no prior status to move from.
+    ("selahcue_api/apps/license_keys/services.py", "construct", "AppLicenseKey(status=...)"),
+    # First activation flips ISSUED -> ACTIVATED inline and audits it as target_type="device".
+    # The one real bypass of the state machine; tracked as 86ak5v7av, deliberately not changed
+    # by this ticket. If it is ever routed through the writer, DELETE this entry — do not
+    # leave it behind, or the slot stays open for a new bypass.
+    ("selahcue_api/apps/devices/services.py", "assign", "license_key.status"),
+}
+
+
+def _licence_status_write_sites(root: pathlib.Path | None = None) -> set[tuple[str, str, str]]:
+    """Every place outside the state machine that writes a licence status.
+
+    Three layers, because a pure AST scan cannot resolve types and pretending otherwise
+    would be the weaker claim:
+
+    * exact — any constructor or queryset write rooted at the `AppLicenseKey` name, with a
+      status keyword. This is the `.objects.filter(...).update(status=...)` shape.
+    * exact — any assignment to `.prior_status`. That field name exists nowhere else in the
+      codebase, so the attribute alone identifies a licence.
+    * scoped — any assignment to `.status` in a module that mentions `AppLicenseKey`, which
+      catches `lk.status`, `key.status` and `row.status` without guessing from the name.
+    """
+    root = root or _PRODUCTION_ROOT
+    sites: set[tuple[str, str, str]] = set()
+    for path in sorted(root.rglob("*.py")):
+        relative = str(path.relative_to(root.parent))
+        if relative == _THE_WRITER:
             continue
-        tree = ast.parse(path.read_text(), filename=str(path))
+        source = path.read_text()
+        mentions_licence = "AppLicenseKey" in source
+        tree = ast.parse(source, filename=str(path))
         for node in ast.walk(tree):
             targets = []
             if isinstance(node, ast.Assign):
@@ -750,10 +906,165 @@ def test_no_production_module_assigns_a_licence_status_outside_the_state_machine
             elif isinstance(node, ast.AnnAssign):
                 targets = [node.target]
             for target in targets:
-                if isinstance(target, ast.Attribute) and target.attr in {"status", "prior_status"}:
-                    if "license" in ast.unparse(target).lower():
-                        offenders.append(f"{relative}:{node.lineno} {ast.unparse(target)}")
-    assert offenders == [], (
-        "licence status must only be written through apply_license_status_transition: "
-        f"{offenders}"
+                if not isinstance(target, ast.Attribute) or target.attr not in _STATUS_FIELDS:
+                    continue
+                if target.attr == "prior_status" or mentions_licence:
+                    sites.add((relative, "assign", ast.unparse(target)))
+
+            if not isinstance(node, ast.Call):
+                continue
+            written = sorted({kw.arg for kw in node.keywords if kw.arg in _STATUS_FIELDS})
+            if not written:
+                continue
+            if isinstance(node.func, ast.Name) and node.func.id == "AppLicenseKey":
+                sites.add((relative, "construct", "AppLicenseKey(status=...)"))
+            elif (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in _QUERYSET_WRITERS
+                and ast.unparse(node.func).split(".")[0] == "AppLicenseKey"
+            ):
+                sites.add((relative, "queryset", f"{ast.unparse(node.func)}({written})"))
+    return sites
+
+
+def test_no_production_module_writes_a_licence_status_outside_the_state_machine():
+    found = _licence_status_write_sites()
+    assert found == _KNOWN_DIRECT_WRITES, (
+        "licence status must only be written through apply_license_status_transition.\n"
+        f"  unexpected: {sorted(found - _KNOWN_DIRECT_WRITES)}\n"
+        f"  expected but gone (delete the entry if intentional): "
+        f"{sorted(_KNOWN_DIRECT_WRITES - found)}"
     )
+
+
+@pytest.mark.parametrize(
+    ("shape", "source"),
+    [
+        ("queryset-update", "AppLicenseKey.objects.filter(pk=1).update(status='REVOKED')\n"),
+        ("queryset-create", "AppLicenseKey.objects.create(status='ISSUED')\n"),
+        ("constructor", "row = AppLicenseKey(status='ISSUED')\n"),
+        ("aliased-assign", "lk = AppLicenseKey.objects.get(pk=1)\nlk.status = 'REVOKED'\n"),
+        ("short-name-assign", "row = AppLicenseKey.objects.get(pk=1)\nrow.status = 'REVOKED'\n"),
+        ("prior-status-assign", "obj.prior_status = 'ACTIVATED'\n"),
+    ],
+)
+def test_the_writer_discipline_scan_catches_every_bypass_shape(tmp_path, shape, source):
+    """The control that makes the test above worth having.
+
+    Each of these survived the first version of the scan, which looked only at assignments
+    whose unparsed text contained the substring "license". The queryset shape is the one that
+    matters most: it is an `ast.Call` with no assignment node anywhere, and it is exactly how
+    86ak109dv's expiry job will want to be written.
+    """
+    package = tmp_path / "selahcue_api"
+    package.mkdir()
+    (package / "offender.py").write_text(source)
+
+    found = _licence_status_write_sites(package)
+
+    assert found, f"the {shape} bypass shape is invisible to the scan"
+    assert all(site[0].endswith("offender.py") for site in found), found
+
+
+def test_the_writer_discipline_scan_does_not_flag_unrelated_status_writes(tmp_path):
+    """Negative control: a device status write in a module that never mentions a licence is
+    not this test's business, and flagging it would make the guard unusable for the tickets
+    working on devices."""
+    package = tmp_path / "selahcue_api"
+    package.mkdir()
+    (package / "devices_only.py").write_text(
+        "token = DeviceToken.objects.get(pk=1)\ntoken.status = 'REVOKED'\n"
+    )
+
+    assert _licence_status_write_sites(package) == set()
+
+
+# --- The refusal-durability trade-off, pinned -------------------------------------------
+# `apply_license_status_transition` writes its DENIED row AFTER its own `atomic()` block
+# unwinds, so the row commits on its own in the case that matters. These two tests pin both
+# halves of the resulting asymmetry, including the half that LOSES the row. That is the
+# accepted behaviour, not a bug — but it is accepted only as long as case [A] keeps working,
+# and nothing else in the suite would notice if a later tidy-up moved `record_audit_event`
+# back inside the transaction. Such a change passes every other test here while making the
+# loss strictly worse: case [A] would start losing denials too.
+#
+# `transaction=True` is load-bearing. Under the default `django_db` every test already runs
+# inside an outer atomic block, so case [A] — a caller in autocommit — is not reachable and
+# both tests would measure case [B].
+@pytest.mark.django_db(transaction=True)
+def test_a_refusal_in_autocommit_leaves_a_durable_denial_row():
+    """Case [A] — the one production actually takes.
+
+    The project does not set `ATOMIC_REQUESTS`, so a top-level GraphQL resolver is in
+    autocommit and the denial survives.
+    """
+    from django.db import connection
+
+    tag = "durable-autocommit"
+    key = _seed_license_key(tag=tag)
+    _drive_to(key, LicenseKeyStatus.ARCHIVED, tag=tag)
+    before_denied = _audit_rows(key).filter(result=AuditResult.DENIED).count()
+
+    assert not connection.in_atomic_block, "case [A] requires the caller to be in autocommit"
+    with pytest.raises(IllegalLicenseTransition):
+        _transition(key, LicenseKeyStatus.REVOKED, tag=tag, step=1)
+
+    assert _audit_rows(key).filter(result=AuditResult.DENIED).count() == before_denied + 1, (
+        "a refusal raised to a caller in autocommit must leave a durable DENIED row"
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_refusal_inside_a_callers_transaction_is_lost_when_the_error_propagates():
+    """Case [B] — the ACCEPTED loss, asserted so it cannot get quietly worse.
+
+    A caller that wraps the transition in its own `atomic()` and lets the error propagate
+    rolls the denial back with everything else. On one database connection there is no way to
+    make a write survive its enclosing rollback, so this is a trade-off rather than an
+    oversight, and the asymmetry is coherent: a SUCCESS row *must* roll back with the
+    transition it describes, and only a refusal can outlive its transaction because a refusal
+    changes nothing.
+
+    `transaction.atomic(durable=True)` is not the escape it appears to be — it raises when
+    nested, which would forbid FR-506's conversion flow from wrapping a transition at all.
+
+    If a flow ever needs BOTH a durable denial and a wider atomic block, the agreed answer is
+    a separate `audit` database alias used for DENIED rows only, never for SUCCESS rows.
+    """
+    from django.db import transaction as db_transaction
+
+    tag = "durable-wrapped"
+    key = _seed_license_key(tag=tag)
+    _drive_to(key, LicenseKeyStatus.ARCHIVED, tag=tag)
+    before_denied = _audit_rows(key).filter(result=AuditResult.DENIED).count()
+
+    with pytest.raises(IllegalLicenseTransition):
+        with db_transaction.atomic():
+            _transition(key, LicenseKeyStatus.REVOKED, tag=tag, step=1)
+
+    assert _audit_rows(key).filter(result=AuditResult.DENIED).count() == before_denied, (
+        "expected the accepted loss: a denial raised out of a caller's transaction is rolled "
+        "back with it. If this now finds a row, the trade-off has changed and the module "
+        "docstring's calling contract needs rewriting"
+    )
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.ARCHIVED, "the refused transition still changed nothing"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_caller_that_catches_the_refusal_inside_its_transaction_keeps_the_row():
+    """Case [C] — the escape hatch available today, so callers that need both know what to do:
+    catch `IllegalLicenseTransition` inside the block and commit, rather than letting it
+    unwind the transaction."""
+    from django.db import transaction as db_transaction
+
+    tag = "durable-caught"
+    key = _seed_license_key(tag=tag)
+    _drive_to(key, LicenseKeyStatus.ARCHIVED, tag=tag)
+    before_denied = _audit_rows(key).filter(result=AuditResult.DENIED).count()
+
+    with db_transaction.atomic():
+        with pytest.raises(IllegalLicenseTransition):
+            _transition(key, LicenseKeyStatus.REVOKED, tag=tag, step=1)
+
+    assert _audit_rows(key).filter(result=AuditResult.DENIED).count() == before_denied + 1

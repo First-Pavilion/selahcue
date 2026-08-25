@@ -1,9 +1,41 @@
 """The licence lifecycle state machine — the single normative model (FR-501).
 
-Everything that changes `AppLicenseKey.status` goes through
-`apply_license_status_transition`. That function is the only audited writer: it consults
-`LEGAL_TRANSITIONS` below, refuses anything absent from it with a coded error, and writes
-exactly one audit row per outcome (FR-508, NFR-506).
+`apply_license_status_transition` is the audited writer for `AppLicenseKey.status`: it
+consults `LEGAL_TRANSITIONS` below, refuses anything absent from it with a coded error, and
+writes exactly one audit row per outcome (FR-508, NFR-506).
+
+**One shipped writer bypasses it**, and saying otherwise would be false: first activation
+flips ISSUED -> ACTIVATED inline at `apps/devices/services.py:443-445` and audits the move
+as `target_type="device"`, not `app_license_key`. That predates this module and this ticket
+was scoped not to change it; routing it through here is tracked as 86ak5v7av. Until that
+lands, "every transition writes one licence audit row" holds for every transition EXCEPT
+that one. `tests/test_license_state_machine.py` pins the bypass by site, so a second one
+cannot appear quietly.
+
+Calling contract — durability of refusals
+--------------------------------------------------------------------------------------
+**Call this outside any wrapping transaction.** A refusal writes its DENIED audit row after
+this function's own `atomic()` block unwinds, so the row commits on its own. A caller that
+wraps the transition in a wider `atomic()` and lets `IllegalLicenseTransition` propagate
+rolls that row back with everything else, and the denial is lost. Measured on Postgres:
+autocommit -> 1 DENIED row; wrapped with the error propagating -> 0; wrapped with the error
+caught inside the block -> 1.
+
+This is a trade-off, not an oversight. On one connection there is no way to make a write
+survive its enclosing rollback, and the asymmetry is coherent: a SUCCESS row *must* roll
+back with the transition it describes, and only a refusal can outlive its transaction
+because a refusal changes nothing. `transaction.atomic(durable=True)` is not the escape it
+appears to be — it raises when nested, which would forbid FR-506's conversion flow from
+wrapping a transition at all.
+
+The project does not set `ATOMIC_REQUESTS`, so a top-level GraphQL resolver runs in
+autocommit and gets the durable case for free. Admin mutations should assert
+`not connection.in_atomic_block` at their boundary rather than assume it.
+
+**Agreed escalation, recorded so it is not re-litigated under pressure:** if a flow ever
+needs both a durable denial and a wider atomic block, the answer is a small `audit` database
+alias used for DENIED rows only — never for SUCCESS rows, which must stay transactional with
+the change they describe.
 
 The individual mutations — revoke/extend (86ak1090r), the expiry job (86ak109dv),
 suspend/reinstate (86ak5mn0c), conversion (86ak5mn2k), archiving (86ak5mn2m) — live in
@@ -130,22 +162,38 @@ LEGAL_TRANSITIONS: dict[LicenseKeyStatus, frozenset[TransitionTarget]] = {
     LicenseKeyStatus.ARCHIVED: frozenset(),  # terminal
 }
 
-# Compile-time premise: the table must cover the enum exhaustively. A ninth status added
-# without a row here would otherwise reach `LEGAL_TRANSITIONS[before]` and raise KeyError
-# deep inside a transaction rather than being caught at import.
-assert set(LEGAL_TRANSITIONS) == set(LicenseKeyStatus), (
-    "LEGAL_TRANSITIONS must name every LicenseKeyStatus; missing: "
-    f"{sorted(status.value for status in set(LicenseKeyStatus) - set(LEGAL_TRANSITIONS))}"
-)
-# Compile-time premise: terminality means what the docstring above says it means. ARCHIVED
-# is a sink, and REVOKED's only exit is retention hygiene. Widening either — e.g. adding
-# ARCHIVED -> ACTIVATED to "fix" a support ticket — has to break here first.
-assert LEGAL_TRANSITIONS[LicenseKeyStatus.ARCHIVED] == frozenset(), (
-    "ARCHIVED is terminal: it must have no outbound transitions"
-)
-assert LEGAL_TRANSITIONS[LicenseKeyStatus.REVOKED] == frozenset({LicenseKeyStatus.ARCHIVED}), (
-    "REVOKED is terminal apart from ARCHIVED: it must have exactly one outbound transition"
-)
+def _validate_table() -> None:
+    """Import-time premises about the table. Load-bearing, so they RAISE rather than assert:
+    `python -O` strips `assert`, and a table that silently lost its exhaustiveness check
+    would fail later as a `KeyError` deep inside a transaction instead of at import.
+
+    Terminality is enforced through `TERMINAL_STATUSES` rather than by naming REVOKED and
+    ARCHIVED again here, so the constant is what the rule actually consults — a constant only
+    the tests read is a constant that can drift away from the behaviour it claims to describe.
+    """
+    missing = sorted(status.value for status in set(LicenseKeyStatus) - set(LEGAL_TRANSITIONS))
+    if missing:
+        raise RuntimeError(
+            f"LEGAL_TRANSITIONS must name every LicenseKeyStatus; missing: {missing}"
+        )
+    unknown = sorted(str(status) for status in set(LEGAL_TRANSITIONS) - set(LicenseKeyStatus))
+    if unknown:
+        raise RuntimeError(f"LEGAL_TRANSITIONS names statuses that do not exist: {unknown}")
+
+    # A terminal status may only lead to another terminal status. ARCHIVED is a sink;
+    # REVOKED's single exit is retention hygiene into ARCHIVED. Widening either — say, an
+    # ARCHIVED -> ACTIVATED edge added to unblock a support ticket — has to fail here first.
+    for status in TERMINAL_STATUSES:
+        escapes = {
+            target
+            for target in LEGAL_TRANSITIONS[status]
+            if target is PRIOR_STATUS or target not in TERMINAL_STATUSES
+        }
+        if escapes:
+            raise RuntimeError(
+                f"{status.value} is terminal but can transition to "
+                f"{sorted(_target_label(target) for target in escapes)}"
+            )
 
 
 # The statuses a licence can be suspended FROM, derived from the table rather than
@@ -163,8 +211,27 @@ AUDIT_TARGET_TYPE = "app_license_key"
 REFUSED_ACTION = "license_key.status_change_refused"
 REINSTATE_ACTION = "license_key.reinstated"
 
-# `AuditEvent.request_id` is CharField(max_length=128).
-REQUEST_ID_MAX_LENGTH = 128
+# Derived from the audit fields, not restated. A migration that widens or narrows either
+# column moves these with it; a hardcoded copy would keep validating against the old width
+# and start failing inside the transaction instead of at the boundary.
+REQUEST_ID_MAX_LENGTH: int = AuditEvent._meta.get_field("request_id").max_length
+ACTION_MAX_LENGTH: int = AuditEvent._meta.get_field("action").max_length
+
+
+class RefusalCode(str, Enum):
+    """Why a transition was refused, machine-readable, recorded on the DENIED audit row.
+
+    Without this every refusal reads identically in the trail. The three reinstatement
+    refusals in particular — not suspended, nothing recorded, recorded value unusable — are
+    the DEC-010 failure modes support will actually be asked to explain, and "denied" alone
+    does not distinguish them.
+    """
+
+    ILLEGAL_TRANSITION = "illegal_transition"
+    NOT_SUSPENDED = "not_suspended"
+    NO_PRIOR_STATUS_RECORDED = "no_prior_status_recorded"
+    PRIOR_STATUS_NOT_A_STATUS = "prior_status_not_a_status"
+    PRIOR_STATUS_NOT_SUSPENDABLE = "prior_status_not_suspendable"
 
 
 class IllegalLicenseTransition(SafeAPIError):
@@ -180,10 +247,12 @@ class IllegalLicenseTransition(SafeAPIError):
         *,
         from_status: LicenseKeyStatus,
         requested: TransitionTarget,
+        refusal_code: "RefusalCode",
         detail: str,
     ) -> None:
         self.from_status = from_status
         self.requested = requested
+        self.refusal_code = refusal_code
         self.detail = detail
         super().__init__(ErrorCode.CONFLICT)
 
@@ -192,10 +261,22 @@ class _Refused(Exception):
     """Internal control flow: abandons the transaction so nothing is written, then the
     refusal audit row is recorded OUTSIDE it and the public error raised."""
 
-    def __init__(self, *, before: LicenseKeyStatus, requested: TransitionTarget, detail: str) -> None:
+    def __init__(
+        self,
+        *,
+        before: LicenseKeyStatus,
+        requested: TransitionTarget,
+        refusal_code: RefusalCode,
+        detail: str,
+        prior_status: str = "",
+    ) -> None:
         self.before = before
         self.requested = requested
+        self.refusal_code = refusal_code
         self.detail = detail
+        # Carried so the DENIED row can show what the row actually held. Without it the three
+        # reinstatement refusals are indistinguishable in the trail.
+        self.prior_status = prior_status
         super().__init__(detail)
 
 
@@ -294,6 +375,24 @@ def _target_label(target: TransitionTarget) -> str:
     return target.value
 
 
+def _require_action(value: str | None) -> str | None:
+    """A caller-supplied action must fit `AuditEvent.action`.
+
+    Unvalidated, an over-long action silently truncates on SQLite and raises inside the
+    transaction on Postgres — after the status row has been written but before the audit row
+    lands, which is the one outcome NFR-506 exists to prevent.
+    """
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned or len(cleaned) > ACTION_MAX_LENGTH:
+        raise SafeAPIError(
+            ErrorCode.VALIDATION_FAILED,
+            f"Audit action must be 1-{ACTION_MAX_LENGTH} characters.",
+        )
+    return cleaned
+
+
 def apply_license_status_transition(
     license_key: AppLicenseKey,
     *,
@@ -335,6 +434,7 @@ def apply_license_status_transition(
     """
     cleaned_reason = require_reason(reason)
     cleaned_request_id = _require_request_id(request_id)
+    cleaned_action = _require_action(action)
     requested = _coerce_target(to_status)
 
     try:
@@ -360,6 +460,8 @@ def apply_license_status_transition(
                 raise _Refused(
                     before=before,
                     requested=requested,
+                    refusal_code=RefusalCode.ILLEGAL_TRANSITION,
+                    prior_status=before_prior,
                     detail=(
                         f"{before.value} -> {_target_label(requested)} is not a legal licence "
                         "transition"
@@ -375,18 +477,22 @@ def apply_license_status_transition(
 
             event = record_audit_event(
                 actor,
-                action=action or _default_action(resolved, requested),
+                action=cleaned_action or _default_action(resolved, requested),
                 target_type=AUDIT_TARGET_TYPE,
                 target_id=str(locked.pk),
                 request_id=cleaned_request_id,
                 reason=cleaned_reason,
                 source_surface=source_surface,
                 result=AuditResult.SUCCESS,
-                before={"status": before.value, "prior_status": before_prior, **(extra_before or {})},
+                # Extras FIRST, mandated fields LAST: the FR-508 fields are authoritative and
+                # a caller must not be able to overwrite them. Five downstream tickets call
+                # this, and a transition audited with a `status` its own caller chose is worse
+                # than no audit row at all.
+                before={**(extra_before or {}), "status": before.value, "prior_status": before_prior},
                 after={
+                    **(extra_after or {}),
                     "status": locked.status,
                     "prior_status": locked.prior_status,
-                    **(extra_after or {}),
                 },
             )
             _sync(license_key, locked)
@@ -408,17 +514,23 @@ def apply_license_status_transition(
             reason=cleaned_reason,
             source_surface=source_surface,
             result=AuditResult.DENIED,
-            before={"status": refused.before.value},
+            before={"status": refused.before.value, "prior_status": refused.prior_status},
             # The status did not move, so `after` reports the same status, plus what was asked
-            # for. FR-508 wants before/after on every row, refusals included.
+            # for and WHY it was refused. FR-508 wants before/after on every row, refusals
+            # included; the code and detail are what make the three distinct reinstatement
+            # refusals tell themselves apart in the trail instead of reading identically.
             after={
                 "status": refused.before.value,
+                "prior_status": refused.prior_status,
                 "requested_status": _target_label(refused.requested),
+                "refusal_code": refused.refusal_code.value,
+                "refusal_detail": refused.detail,
             },
         )
         raise IllegalLicenseTransition(
             from_status=refused.before,
             requested=refused.requested,
+            refusal_code=refused.refusal_code,
             detail=refused.detail,
         ) from None
 
@@ -442,12 +554,16 @@ def _resolve_target(
         raise _Refused(
             before=before,
             requested=requested,
+            refusal_code=RefusalCode.NOT_SUSPENDED,
+            prior_status=prior_status,
             detail=f"{before.value} is not suspended, so it has no prior status to return to",
         )
     if not prior_status:
         raise _Refused(
             before=before,
             requested=requested,
+            refusal_code=RefusalCode.NO_PRIOR_STATUS_RECORDED,
+            prior_status=prior_status,
             detail="no prior status was recorded at suspension time",
         )
     try:
@@ -456,12 +572,16 @@ def _resolve_target(
         raise _Refused(
             before=before,
             requested=requested,
+            refusal_code=RefusalCode.PRIOR_STATUS_NOT_A_STATUS,
+            prior_status=prior_status,
             detail=f"recorded prior status {prior_status!r} is not a licence status",
         ) from None
     if resolved not in SUSPENDABLE_SOURCES:
         raise _Refused(
             before=before,
             requested=requested,
+            refusal_code=RefusalCode.PRIOR_STATUS_NOT_SUSPENDABLE,
+            prior_status=prior_status,
             detail=(
                 f"recorded prior status {resolved.value} is not a status a licence can be "
                 "suspended from"
@@ -481,3 +601,8 @@ def _sync(caller_instance: AppLicenseKey, locked: AppLicenseKey) -> None:
     caller_instance.status = locked.status
     caller_instance.prior_status = locked.prior_status
     caller_instance.updated_at = locked.updated_at
+
+
+# Checked at import: a table that has drifted must fail loudly here, not as a KeyError deep
+# inside somebody's transaction three tickets from now.
+_validate_table()
