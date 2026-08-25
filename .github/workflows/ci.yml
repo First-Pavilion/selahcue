@@ -253,8 +253,17 @@ jobs:
       - name: Test (workspace, incl. GPU parity where an adapter exists)
         if: ${{ !cancelled() }}
         # --no-fail-fast: without it cargo stops at the first failing test BINARY, so a
-        # failure in an early crate hides every later crate's. Measured on this
-        # workspace: 1 binary reported FAILED without it, 2 with.
+        # failure in an early crate hides every later crate's results.
+        #
+        # Measured on the real ubuntu run 32896017248: 124 binaries execute and 138 suites
+        # report, and 51 of them sit at or after the failing binary -- so without this flag
+        # 51 suites' results simply never appear. Exactly ONE binary FAILS on that run; do
+        # not go looking for a second. (An earlier version of this comment quoted "1 without,
+        # 2 with", which was a SYNTHETIC measurement taken by injecting deliberate failures
+        # into two independent crates to prove the flag changed behaviour before adopting it.
+        # Stated without that qualifier it sent a reader hunting a failure that does not
+        # exist -- in a comment justifying a flag whose purpose is to stop results going
+        # missing.)
         run: cargo test --workspace --no-fail-fast
       # Structural merge gates for the presentation importer (threat model B2 + the design's
       # no-I/O rule + the ADR-0025 decoder pin). These are one-line checks only because the
