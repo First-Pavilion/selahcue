@@ -206,3 +206,98 @@ def test_concurrent_remints_leave_exactly_one_live_token():
     assert sorted(r.full_token is None for r in results) == [False, True]
     minted = [r.full_token for r in results if r.full_token is not None]
     assert live.get().token_prefix == minted[0][:12]
+
+
+# --- 86ak5mn00: the lifecycle state machine under a real race ---------------------------
+def test_concurrent_transitions_write_exactly_one_audit_row():
+    """NFR-506 says 100% of transitions are audited, exactly once. Two staff members (or one
+    retrying client) revoking the same licence at the same instant must produce ONE status
+    change and ONE audit row — not two rows describing the same ACTIVATED -> REVOKED move.
+
+    The serialisation is the `select_for_update` in `apply_license_status_transition`, which
+    makes the loser re-read the row AFTER the winner commits and see REVOKED, turning its
+    call into the idempotent replay that writes nothing. Without the lock both callers read
+    ACTIVATED, both pass the legality check, and both audit.
+    """
+    from selahcue_api.apps.audit.models import AuditEvent, AuditResult
+    from selahcue_api.apps.license_keys.models import LicenseKeyStatus
+    from selahcue_api.apps.license_keys.state_machine import (
+        AUDIT_TARGET_TYPE,
+        apply_license_status_transition,
+    )
+    from selahcue_api.graphql.context import ActorContext, ActorKind
+
+    key, full_key = _seed_license_key(tag="lifecycleconc", device_limit=1)
+    # First activation flips ISSUED -> ACTIVATED, so the race starts from a real status.
+    activate_device(
+        ActivateDeviceData(
+            idempotency_key="lifecycle-conc-seed",
+            presented_key=full_key,
+            device_fingerprint="fp-lifecycle-conc",
+            platform="macos",
+        )
+    )
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.ACTIVATED
+
+    baseline = AuditEvent.objects.filter(
+        target_type=AUDIT_TARGET_TYPE, target_id=str(key.pk)
+    ).count()
+
+    results = []
+    errors = []
+    start = threading.Barrier(2, timeout=30)
+    barrier_failures = []
+
+    def revoke(n):
+        try:
+            start.wait()
+        except threading.BrokenBarrierError as exc:
+            barrier_failures.append(exc)
+            connections.close_all()
+            return
+        try:
+            results.append(
+                apply_license_status_transition(
+                    key,
+                    to_status=LicenseKeyStatus.REVOKED,
+                    actor=ActorContext(kind=ActorKind.STAFF, actor_id=f"staff_race_{n}"),
+                    reason="Chargeback received; revoking the licence.",
+                    # Distinct request ids: two genuinely separate staff actions, not one
+                    # request retried, so nothing upstream can dedupe them for us.
+                    request_id=f"race-revoke-{n}",
+                )
+            )
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            connections.close_all()
+
+    threads = [threading.Thread(target=revoke, args=(n,)) for n in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert barrier_failures == [], f"the two revocations never overlapped: {barrier_failures}"
+    assert errors == [], f"a legal transition must not race into an error: {errors}"
+
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.REVOKED
+    # Exactly one caller transitioned; the other found REVOKED already in effect.
+    assert sorted(r.changed for r in results) == [False, True]
+
+    written = (
+        AuditEvent.objects.filter(target_type=AUDIT_TARGET_TYPE, target_id=str(key.pk)).count()
+        - baseline
+    )
+    assert written == 1, (
+        f"one status change produced {written} audit rows — concurrent callers must not each "
+        "audit the same transition (NFR-506)"
+    )
+    assert (
+        AuditEvent.objects.filter(
+            target_type=AUDIT_TARGET_TYPE, target_id=str(key.pk), result=AuditResult.DENIED
+        ).count()
+        == 0
+    ), "the losing caller replays idempotently; it is not a refusal"

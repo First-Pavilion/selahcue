@@ -165,7 +165,13 @@ def test_only_activatable_statuses_are_issued_a_manifest(activated, status):
     # Keep expires_at in the future so the device token stays live and auth still passes —
     # this is what makes the REVOKED case reachable at all.
     key.status = status
-    key.save(update_fields=["status", "updated_at"])
+    # A SUSPENDED licence must carry the status it came from (DEC-010); the
+    # `license_key_prior_status_iff_suspended` constraint refuses a SUSPENDED row without
+    # one, and refuses a stale one on every other status. The licence is ACTIVATED here.
+    key.prior_status = (
+        LicenseKeyStatus.ACTIVATED.value if status == LicenseKeyStatus.SUSPENDED else ""
+    )
+    key.save(update_fields=["status", "prior_status", "updated_at"])
 
     if status in {s.value for s in ACTIVATABLE_KEY_STATUSES}:
         assert build_entitlement_manifest(token).envelope["alg"] == "Ed25519"

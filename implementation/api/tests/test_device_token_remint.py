@@ -159,7 +159,10 @@ def _renew(key, *, expires_at, status=LicenseKeyStatus.ACTIVATED):
     activatable status. (The lifecycle mutations themselves are gap G2, a separate ticket —
     tests drive the same end state directly.)"""
     AppLicenseKey.objects.filter(pk=key.pk).update(
-        expires_at=expires_at, status=status, updated_at=timezone.now()
+        # `prior_status` is cleared alongside the status: it is only ever set while a licence
+        # is SUSPENDED (DEC-010), and `license_key_prior_status_iff_suspended` enforces that,
+        # so leaving a stale value behind here would reject the renewal at the database.
+        expires_at=expires_at, status=status, prior_status="", updated_at=timezone.now()
     )
     key.refresh_from_db()
     return key
@@ -219,7 +222,11 @@ def test_restored_licence_revives_a_revoked_device_token(client):
     assert _refresh(client, original_token).status_code == 200
 
     # Suspend, then let the real hourly cascade revoke the live token.
-    AppLicenseKey.objects.filter(pk=key.pk).update(status=LicenseKeyStatus.SUSPENDED)
+    # A real suspension records where it came from in the same statement (DEC-010); the
+    # database constraint refuses a SUSPENDED row without it. The licence is ACTIVATED here.
+    AppLicenseKey.objects.filter(pk=key.pk).update(
+        status=LicenseKeyStatus.SUSPENDED, prior_status=LicenseKeyStatus.ACTIVATED
+    )
     from selahcue_api.apps.devices.tasks import cascade_license_revocations
 
     assert cascade_license_revocations() == 1
