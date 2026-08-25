@@ -26,6 +26,80 @@ import '../models/stored_session.dart';
 /// host state must re-read it — see `_confirmedView`.
 enum CommandOutcome { applied, denied, failed }
 
+/// The wire `DenyReason` that means "your role may not do this" — the closed set
+/// lives in Rust (`selahcue-lan/src/protocol.rs:952`: `forbidden` /
+/// `unauthenticated` / `bad_request`) and is pinned cross-language by the
+/// protocol fixtures.
+///
+/// This single string is why the enforcement sheet needs no heuristics. A
+/// malformed reference comes back `bad_request`, and telling an operator
+/// "that's not in your role" for a typo would be a lie; only `forbidden` is a
+/// role problem, whatever this client's capability mirror happens to believe.
+const String denyReasonForbidden = 'forbidden';
+
+/// A command the desktop refused **because of this device's role**.
+///
+/// Carries the parsed action rather than the raw wire string so the UI can say
+/// what was refused and who could have done it (MOBILE-2.0-SPEC §4.10). [action]
+/// is null when this build does not recognise the command — a real state, not an
+/// error: the sheet then drops the roles card instead of inventing one.
+@immutable
+class PermissionDenial {
+  /// The wire `DenyReason` (always [denyReasonForbidden] for a raised sheet).
+  final String reason;
+
+  /// What was attempted, or null when this mirror cannot name it.
+  final CommandAction? action;
+
+  /// The role held at the moment of the refusal.
+  final MobileRole role;
+
+  const PermissionDenial({
+    required this.reason,
+    required this.action,
+    required this.role,
+  });
+
+  /// The roles that could have run this command, most-capable first. Empty when
+  /// the command is unrecognised.
+  List<MobileRole> get qualifyingRoles =>
+      action == null ? const [] : rolesWith(action!.capability);
+
+  /// The least-capable role that would have been enough — the honest single
+  /// answer for `needs the <role> role`.
+  MobileRole? get requiredRole =>
+      action == null ? null : minimalRoleFor(action!.capability);
+}
+
+/// A role reassignment this device observed (MOBILE-2.0-SPEC §4.11).
+///
+/// A re-role is only ever visible as a DIFFERENCE between the role we were
+/// acting under and the one the host is granting now — there is no "you were
+/// demoted" frame on the wire. Diffing the capability sets is what turns "your
+/// role changed" into the list of controls that just disappeared.
+///
+/// Where that difference shows up is the part that is easy to get wrong: the
+/// desktop's `SetSessionRole` mutates the session registry and
+/// `selahcue-lan/src/server.rs` re-derives the live authority from it **per
+/// request**, so a re-role takes effect on the connection that is already open
+/// (86ajxer8n). It is not a reconnect-only event.
+@immutable
+class RoleChange {
+  final MobileRole from;
+  final MobileRole to;
+  const RoleChange({required this.from, required this.to});
+
+  /// Capabilities the operator had a moment ago and no longer has.
+  Set<Capability> get removed =>
+      from.capabilities.difference(to.capabilities);
+
+  /// Capabilities the change granted (an upgrade rather than a downgrade).
+  Set<Capability> get gained => to.capabilities.difference(from.capabilities);
+
+  /// True when controls were taken away — the case §4.11 draws.
+  bool get isDowngrade => removed.isNotEmpty;
+}
+
 class LiveController extends ChangeNotifier {
   ControllerSession _session;
   final StoredSession stored;
@@ -51,6 +125,13 @@ class LiveController extends ChangeNotifier {
   // it could be seen — hence the split.
   String? _statusError;
   String? _denial;
+  // The three enforcement states (MOBILE-2.0-SPEC §4.10–§4.12). Each is a single
+  // nullable/boolean slot that is REPLACED, never appended to — an enforcement
+  // event is news, not a log, and a queue of them would be exactly the unbounded
+  // growth the project forbids.
+  PermissionDenial? _blocked;
+  RoleChange? _roleChange;
+  bool _rejected = false;
   bool _reconnecting = false;
   bool _refreshing = false;
   bool _disposed = false;
@@ -71,6 +152,18 @@ class LiveController extends ChangeNotifier {
   /// [_epoch] because we have not read the host yet.
   int _viewEpoch = -1;
 
+  /// The role this device is currently acting under — the last grant actually
+  /// OBSERVED from the session, and the single value both the capability gate
+  /// ([role]) and the receipt ([roleChange]) are read from.
+  ///
+  /// Reading the gate straight off `_session.grantedRole` is what made an
+  /// in-place re-role silent: the gating would move the instant the host changed
+  /// its mind, with nothing left to compare against and therefore no receipt.
+  /// Holding the observed grant here means the two can never disagree — every
+  /// change to this field goes through [_syncRole], which raises the receipt in
+  /// the same step.
+  late MobileRole _knownRole;
+
   LiveController({
     required this._session,
     required this.stored,
@@ -81,6 +174,7 @@ class LiveController extends ChangeNotifier {
       required Credentials creds,
     })? connect,
   }) : _connect = connect ?? SelahSession.connect {
+    _knownRole = _session.grantedRole;
     _poll = Timer.periodic(const Duration(seconds: 1), (_) => refresh());
     refresh();
   }
@@ -110,13 +204,32 @@ class LiveController extends ChangeNotifier {
   /// the "Access removed" screen and offers to re-pair. Terminal for this session.
   bool get revoked => _revoked;
 
-  /// The role the host granted this device. Reads through the CURRENT session,
-  /// so a reconnect that re-roles the device is reflected once it lands.
-  MobileRole get role => _session.grantedRole;
+  /// The role the host granted this device — the last grant [_syncRole]
+  /// observed. Reads through [_knownRole] rather than the live session so that
+  /// gating and the [roleChange] receipt are the same observation: a control
+  /// can never vanish without the receipt that explains it, and the receipt can
+  /// never appear while a stale control is still under the operator's thumb.
+  MobileRole get role => _knownRole;
 
   /// Whether the granted role may perform [capability] (UX gate only; the server
   /// is still authoritative and denies anything this mirror gets wrong).
   bool can(Capability capability) => role.can(capability);
+
+  /// The pending role refusal, if the host said `forbidden` and nothing has
+  /// dismissed it yet (MOBILE-2.0-SPEC §4.10).
+  PermissionDenial? get blocked => _blocked;
+
+  /// The role reassignment this device last observed, until dismissed
+  /// (MOBILE-2.0-SPEC §4.11). Null when the role did not change.
+  RoleChange? get roleChange => _roleChange;
+
+  /// A command reached the wire and was lost with the connection — not queued,
+  /// not retried (FR-097, MOBILE-2.0-SPEC §4.12).
+  ///
+  /// Deliberately NOT set by the pre-flight [syncing] refusal: a control that
+  /// was already inert did not have an action "rejected", it simply never fired,
+  /// and the connection banner already explains that state.
+  bool get rejected => _rejected;
 
   void dismissError() {
     _denial = null;
@@ -124,8 +237,51 @@ class LiveController extends ChangeNotifier {
     _notify();
   }
 
+  /// Close the permission sheet. Clears the denial NOTICE too, otherwise
+  /// dismissing the sheet would hand the same refusal straight back as a red
+  /// banner — the operator would have to dismiss one refusal twice.
+  void dismissBlocked() {
+    _blocked = null;
+    _denial = null;
+    _notify();
+  }
+
+  /// Dismiss the role-changed receipt. The role itself is unaffected — the
+  /// receipt is a record of what already happened, never a control.
+  void dismissRoleChange() {
+    _roleChange = null;
+    _notify();
+  }
+
   void _notify() {
     if (!_disposed) notifyListeners();
+  }
+
+  /// Observe the grant the session is carrying **now** and turn any difference
+  /// from the role this device has been acting under into a [RoleChange].
+  ///
+  /// This is the one place [_knownRole] moves, and it is called from every path
+  /// that touches the session — the 1s poll, the post-command re-read, each
+  /// outgoing command, and the reconnect — rather than from the reconnect
+  /// alone. A reconnect-only diff models a desktop that only re-roles on the
+  /// next handshake, and that is not the desktop we have: `SetSessionRole`
+  /// mutates the registry and `server.rs` re-derives authority per request, so
+  /// the change lands on the OPEN socket (86ajxer8n). Diffing only across a
+  /// reconnect meant an in-place downgrade silently took the controls with it —
+  /// no FR-090 banner, no "PREVIOUS CONTROLS" receipt, and a permission sheet
+  /// that would have named the role the operator no longer held.
+  ///
+  /// Bounded like the rest of the enforcement state: one slot, replaced. Two
+  /// re-roles in a row leave the latest, never a queue.
+  ///
+  /// Returns true when the role moved; the caller decides when to notify, so a
+  /// change can be published in the same frame as the state that caused it.
+  bool _syncRole() {
+    final granted = _session.grantedRole;
+    if (granted == _knownRole) return false;
+    _roleChange = RoleChange(from: _knownRole, to: granted);
+    _knownRole = granted;
+    return true;
   }
 
   /// Pull the host-authoritative operator view. Skipped while a previous poll is
@@ -140,9 +296,18 @@ class LiveController extends ChangeNotifier {
       if (_epoch != epoch) return;
       _view = view;
       _viewEpoch = epoch;
+      // The poll is the app's heartbeat, so it is also where an in-place
+      // re-role is noticed: within one tick of the desktop changing this
+      // device's grant, the gate moves and the receipt appears together.
+      _syncRole();
       // Connection is healthy — clear only the transient status. A pending
       // denial is left untouched so it survives the poll (see field docs).
       _statusError = null;
+      // The link is healthy AND live state has been re-read: exactly the
+      // condition §4.12 gives for the action-rejected toast to retire itself.
+      // A role refusal is NOT cleared here — that one is about the operator's
+      // permissions, not the link, and re-reading state does not answer it.
+      _rejected = false;
       _notify();
     } on SessionException {
       await _reconnect();
@@ -170,7 +335,9 @@ class LiveController extends ChangeNotifier {
       if (_disposed || _epoch != epoch) return null;
       _view = view;
       _viewEpoch = epoch;
+      _syncRole();
       _statusError = null;
+      _rejected = false;
       _notify();
       return view;
     } on SessionException {
@@ -265,12 +432,31 @@ class LiveController extends ChangeNotifier {
     // without sending a command. Screens still disable their controls so a dead
     // button never looks live; this is the backstop that makes that cosmetic.
     if (syncing) return CommandOutcome.failed;
+    // The gate this command is about to be judged against. Cheap, local, and
+    // taken before the send so a re-role that landed between two taps is news
+    // the operator gets now rather than one poll later.
+    if (_syncRole()) _notify();
     // The connection this intent is being formed against.
     final epoch = _epoch;
     try {
       final reply = await _session.command(cmd);
+      // The host answered; re-observe the grant before interpreting the answer,
+      // so a `forbidden` raised below names the role the operator holds NOW
+      // rather than the one they held when they reached for the control.
+      final reRoled = _syncRole();
       if (reply is Denied) {
         _denial = 'Not allowed (${reply.reason}).';
+        // Only a ROLE refusal raises the enforcement sheet. `bad_request` (an
+        // unknown reference, a stale detection id) and `unauthenticated` are not
+        // things a different role would fix, and "That's not in your role" would
+        // simply be untrue for them — they keep the notice banner.
+        if (reply.reason == denyReasonForbidden) {
+          _blocked = PermissionDenial(
+            reason: reply.reason,
+            action: commandActionFor(cmd),
+            role: role,
+          );
+        }
         _notify();
         await refresh();
         return CommandOutcome.denied;
@@ -279,13 +465,24 @@ class LiveController extends ChangeNotifier {
         // A command went through — the earlier denial notice is now stale.
         _denial = null;
         _notify();
+      } else if (reRoled) {
+        _notify();
       }
       await refresh();
       // Acknowledged — but only "applied" if we are still on the connection that
       // carried it. A swap in between means the host we proved something about
       // is no longer the host we are talking to.
-      return _epoch == epoch ? CommandOutcome.applied : CommandOutcome.failed;
+      if (_epoch == epoch) return CommandOutcome.applied;
+      // The pairing moved under a command that was already on the wire. Nothing
+      // is replayed; the operator is told the action was dropped (§4.12).
+      _rejected = true;
+      _notify();
+      return CommandOutcome.failed;
     } on SessionException {
+      // Same story, one step earlier: the command left this device and the link
+      // died before it could be acknowledged. "Rejected" is the honest word —
+      // it did not run, and it will not be retried.
+      _rejected = true;
       await _reconnect();
       return CommandOutcome.failed;
     }
@@ -318,6 +515,12 @@ class LiveController extends ChangeNotifier {
           return;
         }
         _session = fresh;
+        // A reconnect can ALSO carry a new grant (the handshake re-issues it),
+        // so diff here too — before anything else reads the new session. Same
+        // helper, same one slot: the controls vanish immediately (FR-090) and
+        // the receipt is the only trace of WHY, since otherwise a chip in the
+        // app bar would quietly change word and nothing else would say so.
+        _syncRole();
         // A new connection: every snapshot taken and every intent formed against
         // the old one is now stale by definition.
         _epoch++;

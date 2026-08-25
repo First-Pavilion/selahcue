@@ -26,6 +26,7 @@ import '../controllers/live_controller.dart';
 import '../models/design_tokens.dart';
 import '../models/protocol.dart';
 import '../models/rbac.dart';
+import '../models/selah_theme.dart';
 import '../models/settings.dart';
 import 'widgets/mobile_widgets.dart';
 import 'widgets/responsive.dart';
@@ -117,25 +118,27 @@ class _DetectionsViewState extends State<DetectionsView> {
           // button, so the banner above says why.
           final gated = live.syncing;
           return Scaffold(
-            backgroundColor: DesignTokens.bgBase,
+            backgroundColor: DesignTokens.d2Base,
             appBar: AppBar(
-              backgroundColor: DesignTokens.bgPanel,
+              backgroundColor: DesignTokens.d2Base,
+              surfaceTintColor: Colors.transparent,
               elevation: 0,
-              titleSpacing: 16,
-              iconTheme: const IconThemeData(color: DesignTokens.textMuted),
+              scrolledUnderElevation: 0,
+              titleSpacing: SelahSpace.gutter,
+              iconTheme: const IconThemeData(
+                color: DesignTokens.d2TextSecondary,
+              ),
               title: Semantics(
                 namesRoute: true,
                 child: Row(
                   children: [
-                    const Flexible(
+                    Flexible(
                       child: Text(
                         'Needs your approval',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: DesignTokens.textPrimary,
+                        style: SelahType.appBar.copyWith(
+                          color: DesignTokens.d2Text,
                         ),
                       ),
                     ),
@@ -145,7 +148,9 @@ class _DetectionsViewState extends State<DetectionsView> {
                       const SizedBox(width: 8),
                       StatusBadge(
                         text: '${detections.length}',
-                        color: DesignTokens.warnFill,
+                        tone: SelahTone.warn,
+                        semanticLabel:
+                            '${detections.length} waiting for approval',
                       ),
                     ],
                   ],
@@ -159,23 +164,32 @@ class _DetectionsViewState extends State<DetectionsView> {
                   children: [
                     ConnectionBanner(live: live),
                     Expanded(
-                      child: detections.isEmpty
-                          ? const _AllCaughtUp()
-                          : ListView.builder(
-                              padding:
-                                  const EdgeInsets.fromLTRB(14, 12, 14, 20),
-                              // +1 for the footnote, which rides as the last
-                              // list child so it costs no vertical space once
-                              // scrolled past.
-                              itemCount: detections.length + 1,
-                              itemBuilder: (context, i) => i == detections.length
-                                  ? const _Footnote()
-                                  : _DetectionCard(
-                                      detection: detections[i],
-                                      live: live,
-                                      gated: gated,
-                                    ),
-                            ),
+                      // This route COVERS the shell, so it must carry the
+                      // permission sheet as well as the banner — otherwise a
+                      // denial raised from Approve/Reject would open behind the
+                      // route and the operator would see a control do nothing.
+                      // Same rule as the banner (DETECTIONS-VIEW-spec §7.3).
+                      child: PermissionBlockedHost(
+                        live: live,
+                        child: detections.isEmpty
+                            ? const _AllCaughtUp()
+                            : ListView.builder(
+                                padding:
+                                    const EdgeInsets.fromLTRB(14, 12, 14, 20),
+                                // +1 for the footnote, which rides as the last
+                                // list child so it costs no vertical space once
+                                // scrolled past.
+                                itemCount: detections.length + 1,
+                                itemBuilder: (context, i) =>
+                                    i == detections.length
+                                    ? const _Footnote()
+                                    : _DetectionCard(
+                                        detection: detections[i],
+                                        live: live,
+                                        gated: gated,
+                                      ),
+                              ),
+                      ),
                     ),
                     // Always-on emergency chrome. Without this, the approvals
                     // screen would be the ONLY place in the app where an
@@ -202,11 +216,15 @@ class _Footnote extends StatelessWidget {
   const _Footnote();
 
   @override
-  Widget build(BuildContext context) => const Padding(
-        padding: EdgeInsets.fromLTRB(4, 8, 4, 4),
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
         child: Text(
           'Approving stages the verse in Preview. It does not go on air.',
-          style: TextStyle(fontSize: 11, color: DesignTokens.textMuted),
+          style: SelahType.overline.copyWith(
+            fontWeight: FontWeight.w400,
+            letterSpacing: 0,
+            color: DesignTokens.d2TextSecondary,
+          ),
         ),
       );
 }
@@ -229,38 +247,32 @@ class _AllCaughtUp extends StatelessWidget {
               width: 56,
               height: 56,
               decoration: BoxDecoration(
-                color: DesignTokens.previewFill.withValues(alpha: 0.18),
+                color: DesignTokens.d2PreviewSoft,
                 borderRadius: BorderRadius.circular(28),
+                border: Border.all(color: DesignTokens.d2PreviewBorder),
               ),
               alignment: Alignment.center,
               child: const Icon(Icons.check_circle_outline,
-                  color: DesignTokens.previewInk, size: 28),
+                  color: DesignTokens.d2Preview, size: 28),
             ),
             const SizedBox(height: 18),
             // Focusable header: without it a screen-reader user hears nothing
             // at all when the queue empties under them.
             Semantics(
               header: true,
-              child: const Text('All caught up',
+              child: Text('All caught up',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                      color: DesignTokens.textPrimary)),
+                  style: SelahType.h2.copyWith(color: DesignTokens.d2Text)),
             ),
             const SizedBox(height: 10),
-            const Text('No verses are waiting for approval.',
+            Text('No verses are waiting for approval.',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 13, color: DesignTokens.textMuted)),
-            const SizedBox(height: 20),
-            OutlinedButton(
-              style: OutlinedButton.styleFrom(
-                minimumSize: const Size(0, 48),
-                side: const BorderSide(color: DesignTokens.border),
-                foregroundColor: DesignTokens.textPrimary,
-              ),
+                style: SelahType.bodySmall.copyWith(
+                    color: DesignTokens.d2TextSecondary)),
+            const SizedBox(height: SelahSpace.gutter),
+            SelahButton(
+              label: 'Back to Scripture',
               onPressed: () => Navigator.of(context).maybePop(),
-              child: const Text('Back to Scripture'),
             ),
           ],
         ),
@@ -320,9 +332,9 @@ class _DetectionCard extends StatelessWidget {
         margin: const EdgeInsets.only(bottom: 10),
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: DesignTokens.bgPanel,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: DesignTokens.border),
+          color: DesignTokens.d2Surface,
+          borderRadius: BorderRadius.circular(SelahRadius.card),
+          border: Border.all(color: DesignTokens.d2Border),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -335,14 +347,17 @@ class _DetectionCard extends StatelessWidget {
                     reference.isEmpty ? 'Unknown reference' : reference,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 15,
+                    style: SelahType.rowTitle.copyWith(
                       fontWeight: FontWeight.w700,
                       fontStyle:
                           reference.isEmpty ? FontStyle.italic : FontStyle.normal,
+                      // Gold is the scripture signal (handoff §2) — this row is
+                      // a scripture reference, so it wears it. An UNKNOWN
+                      // reference deliberately does not: gold would assert an
+                      // identity the detection could not establish.
                       color: reference.isEmpty
-                          ? DesignTokens.textMuted
-                          : DesignTokens.textPrimary,
+                          ? DesignTokens.d2TextSecondary
+                          : DesignTokens.d2Gold,
                     ),
                   ),
                 ),
@@ -358,10 +373,8 @@ class _DetectionCard extends StatelessWidget {
                 child: Text(d.text,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 13,
-                        height: 1.4,
-                        color: DesignTokens.textMuted)),
+                    style: SelahType.bodySmall.copyWith(
+                        color: DesignTokens.d2TextSecondary)),
               ),
             const SizedBox(height: 10),
             // Side by side normally; stacked once the text scale would squeeze
@@ -409,16 +422,13 @@ class _ConfidencePill extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
           decoration: BoxDecoration(
-            color: DesignTokens.bgBase,
-            borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: DesignTokens.border),
+            color: DesignTokens.d2Inset,
+            borderRadius: BorderRadius.circular(SelahRadius.badge),
+            border: Border.all(color: DesignTokens.d2Border),
           ),
           child: Text('$confidence% MATCH',
-              style: const TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.5,
-                  color: DesignTokens.textMuted)),
+              style: SelahType.chip.copyWith(
+                  color: DesignTokens.d2TextSecondary)),
         ),
       );
 }
@@ -444,33 +454,22 @@ class _ActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final child = Text(label);
-    final button = filled
-        ? FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: DesignTokens.previewFill,
-              minimumSize: const Size(0, 48),
-            ),
-            onPressed: gated ? null : onPressed,
-            child: child,
-          )
-        : OutlinedButton(
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size(0, 48),
-              side: const BorderSide(color: DesignTokens.border),
-              foregroundColor: DesignTokens.textPrimary,
-            ),
-            onPressed: gated ? null : onPressed,
-            child: child,
-          );
-    return Semantics(
-      button: true,
-      enabled: !gated,
-      label: gated
-          ? '$semanticLabel, unavailable while reconnecting'
-          : semanticLabel,
-      excludeSemantics: true,
-      child: Opacity(opacity: gated ? 0.4 : 1, child: button),
+    // Approve is the success variant: white on `d2Preview` measures 3.15:1 and
+    // fails AA, so the label is the dark `d2PreviewSoft` ink (spec §4.7).
+    // Disabled dimming, the reason-carrying announcement and the ≥48 height all
+    // come from SelahButton, so this path cannot drift from every other gated
+    // control in the app.
+    return SelahButton(
+      label: label,
+      semanticLabel: semanticLabel,
+      disabledReason: 'unavailable while reconnecting',
+      variant: filled
+          ? SelahButtonVariant.success
+          : SelahButtonVariant.secondary,
+      // Approve commits to the operator's preview — an audience-adjacent
+      // action, so it carries the haptic (spec §6.7).
+      haptic: filled,
+      onPressed: gated ? null : onPressed,
     );
   }
 }

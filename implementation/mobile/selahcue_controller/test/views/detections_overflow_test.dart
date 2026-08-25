@@ -381,8 +381,8 @@ void main() {
     expect(find.textContaining('Reconnecting to the host'), findsOneWidget);
 
     // Tapping Approve must not silently do nothing — the button is disabled.
-    final approve = tester.widget<FilledButton>(
-        find.widgetWithText(FilledButton, 'Approve').first);
+    final approve = tester.widget<SelahButton>(
+        find.widgetWithText(SelahButton, 'Approve').first);
     expect(approve.onPressed, isNull,
         reason: 'a silent no-op is worse than a greyed button');
 
@@ -463,9 +463,9 @@ void main() {
     }
 
     Rect approve() =>
-        tester.getRect(find.widgetWithText(FilledButton, 'Approve').first);
+        tester.getRect(find.widgetWithText(SelahButton, 'Approve').first);
     Rect reject() =>
-        tester.getRect(find.widgetWithText(OutlinedButton, 'Reject').first);
+        tester.getRect(find.widgetWithText(SelahButton, 'Reject').first);
 
     // 1.29 → side by side: the two share a row (their vertical extents overlap)
     // and Reject sits to the right of Approve.
@@ -527,8 +527,8 @@ void main() {
     final style = tester.widget<Text>(find.text('90% MATCH')).style!;
     // Green means "preview / staged" everywhere else in the app; this card's
     // whole point is that the verse is NOT staged yet.
-    expect(style.color, isNot(DesignTokens.previewInk));
-    expect(style.color, DesignTokens.textMuted);
+    expect(style.color, isNot(DesignTokens.d2Preview));
+    expect(style.color, DesignTokens.d2TextSecondary);
     live.dispose();
   });
 
@@ -549,7 +549,7 @@ void main() {
     expect(badge, findsAtLeastNWidgets(1),
         reason: 'pending approvals must be visible from every tab');
     expect(tester.widget<Badge>(badge.first).backgroundColor,
-        DesignTokens.warnFill);
+        DesignTokens.d2Warn);
 
     await tester.pumpWidget(const SizedBox()); // dispose → cancel the 1s poll
   });

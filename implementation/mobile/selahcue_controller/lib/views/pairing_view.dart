@@ -1,5 +1,8 @@
-/// Pairing view (V in MVC): scan the operator's QR (or paste the invite URI) and
-/// name this device. All logic lives in [PairingController]; this is widgets only.
+/// Pairing view (V in MVC): pick a nearby host, scan the operator's QR, or paste
+/// the invite URI, and name this device. All logic lives in [PairingController];
+/// this is widgets only.
+///
+/// Design 2.0: MOBILE-2.0-SPEC §4.1, Figma `342:133`.
 library;
 
 import 'dart:io' show Platform;
@@ -7,11 +10,14 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
-import '../models/design_tokens.dart';
 import '../controllers/discovery_controller.dart';
 import '../controllers/pairing_controller.dart';
+import '../models/design_tokens.dart';
 import '../models/discovery.dart';
+import '../models/selah_theme.dart';
+import '../models/stored_session.dart';
 import 'controller_view.dart';
+import 'widgets/mobile_widgets.dart';
 import 'widgets/responsive.dart';
 
 class PairingView extends StatefulWidget {
@@ -27,6 +33,16 @@ class _PairingViewState extends State<PairingView> {
   final _uriField = TextEditingController();
   final _nameField = TextEditingController();
 
+  /// The host this device already holds credentials for, if any — the only
+  /// truthful source for the frame's PAIRED chip.
+  ///
+  /// This screen is reachable in two ways: with no stored session (first run, or
+  /// after an explicit unpair, which clears them) and WITH one (the launcher
+  /// tried to reconnect and the host was off or had moved). Only the second can
+  /// light the chip, and in that case it is genuinely useful — it points at the
+  /// host you are already paired to among several on the network.
+  StoredSession? _paired;
+
   @override
   void initState() {
     super.initState();
@@ -35,7 +51,24 @@ class _PairingViewState extends State<PairingView> {
     // entry so the foregrounded list fills itself instead of stranding a
     // first-run user on an empty "None found…" until they find the refresh icon.
     _discovery.refresh();
+    _loadPaired();
   }
+
+  Future<void> _loadPaired() async {
+    StoredSession? stored;
+    try {
+      stored = await StoredSession.load();
+    } on Object {
+      // The keystore is unavailable (or there is no platform channel, as under
+      // a widget test). The chip is an affordance, not a security control —
+      // losing it must never keep the operator off the pairing screen.
+      stored = null;
+    }
+    if (mounted && stored != null) setState(() => _paired = stored);
+  }
+
+  bool _isPaired(DiscoveredHost h) =>
+      _paired != null && _paired!.host == h.host && _paired!.port == h.port;
 
   static String _defaultDeviceName() {
     try {
@@ -69,6 +102,7 @@ class _PairingViewState extends State<PairingView> {
     // untrusted (a rogue can advertise its own). Before the single-use code is
     // disclosed, the operator MUST confirm the discovered fingerprint matches
     // the one the host prints (press P) — otherwise the code could be phished.
+    // The flow is unchanged by the re-skin; only its surface colours moved.
     final code = await showDialog<String>(
       context: context,
       builder: (context) {
@@ -76,41 +110,71 @@ class _PairingViewState extends State<PairingView> {
         var confirmed = false;
         return StatefulBuilder(
           builder: (context, setInner) => AlertDialog(
-            title: Text('Pair with ${h.name}'),
+            backgroundColor: DesignTokens.d2Surface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(SelahRadius.card),
+            ),
+            title: Text(
+              'Pair with ${h.name}',
+              style: SelahType.h2.copyWith(color: DesignTokens.d2Text),
+            ),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   '${h.host}:${h.port}',
-                  style: const TextStyle(fontSize: 12),
+                  style: SelahType.caption.copyWith(
+                    color: DesignTokens.d2TextSecondary,
+                  ),
                 ),
-                const SizedBox(height: 12),
-                const Text('Host fingerprint', style: TextStyle(fontSize: 12)),
-                SelectableText(
-                  h.fingerprint,
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
+                const SizedBox(height: SelahSpace.md),
+                Text(
+                  'Host fingerprint',
+                  style: SelahType.caption.copyWith(
+                    color: DesignTokens.d2TextSecondary,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: SelahSpace.md,
+                    vertical: SelahSpace.sm,
+                  ),
+                  decoration: BoxDecoration(
+                    color: DesignTokens.d2Inset,
+                    borderRadius: BorderRadius.circular(SelahRadius.badge),
+                    border: Border.all(color: DesignTokens.d2Border),
+                  ),
+                  child: SelectableText(
+                    h.fingerprint,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: DesignTokens.d2Text,
+                    ),
                   ),
                 ),
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
                   value: confirmed,
                   onChanged: (v) => setInner(() => confirmed = v ?? false),
-                  title: const Text(
+                  title: Text(
                     'This matches the fingerprint the host shows',
-                    style: TextStyle(fontSize: 13),
+                    style: SelahType.bodySmall.copyWith(
+                      color: DesignTokens.d2Text,
+                    ),
                   ),
                 ),
                 TextField(
                   controller: field,
                   enabled: confirmed,
                   textCapitalization: TextCapitalization.characters,
+                  style: SelahType.body.copyWith(color: DesignTokens.d2Text),
                   decoration: const InputDecoration(
                     labelText: 'Pairing code (on the host: press P)',
-                    border: OutlineInputBorder(),
                   ),
                   onSubmitted: (v) =>
                       confirmed ? Navigator.of(context).pop(v) : null,
@@ -118,15 +182,17 @@ class _PairingViewState extends State<PairingView> {
               ],
             ),
             actions: [
-              TextButton(
+              SelahButton(
+                label: 'Cancel',
+                variant: SelahButtonVariant.ghost,
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel'),
               ),
-              FilledButton(
+              SelahButton(
+                label: 'Pair',
+                variant: SelahButtonVariant.primary,
                 onPressed: confirmed
                     ? () => Navigator.of(context).pop(field.text)
                     : null,
-                child: const Text('Pair'),
               ),
             ],
           ),
@@ -153,31 +219,31 @@ class _PairingViewState extends State<PairingView> {
               height: 30,
               child: CircularProgressIndicator(strokeWidth: 3),
             ),
-            const SizedBox(height: 24),
-            const Text(
+            const SizedBox(height: SelahSpace.section),
+            Text(
               'Waiting for the host to allow this device',
               textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 17,
+              style: SelahType.h2.copyWith(
                 fontWeight: FontWeight.w600,
-                color: DesignTokens.textPrimary,
+                color: DesignTokens.d2Text,
               ),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: SelahSpace.sm),
             Text(
               'You appear as "$name" — the operator approves you (with a role) '
               'from the Remote Control console.',
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 13,
-                color: DesignTokens.textMuted,
+              style: SelahType.bodySmall.copyWith(
+                color: DesignTokens.d2TextSecondary,
               ),
             ),
             const SizedBox(height: 6),
-            const Text(
+            Text(
               'This request expires in about 2 minutes.',
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 12, color: DesignTokens.textMuted),
+              style: SelahType.caption.copyWith(
+                color: DesignTokens.d2TextSecondary,
+              ),
             ),
           ],
         ),
@@ -202,73 +268,59 @@ class _PairingViewState extends State<PairingView> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Pair with SelahCue')),
-      body: ResponsiveBody(
-        child: ListenableBuilder(
-          listenable: _controller,
-          builder: (context, _) {
-            final busy = _controller.busy;
-            if (busy) return _waiting();
-            return ListView(
-              padding: const EdgeInsets.all(20),
-              children: [
-                // Brand header (design handoff §3): logo mark + wordmark.
-                Row(
-                  children: [
-                    Image.asset(
-                      'assets/selahcue-logo.png',
-                      width: 32,
-                      height: 32,
-                      semanticLabel: '',
-                    ),
-                    const SizedBox(width: 10),
-                    const Text(
-                      'SelahCue',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                        color: DesignTokens.textPrimary,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                const Text(
-                  'Connect to a host',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: DesignTokens.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  'On the SelahCue host, press P to start pairing. Pick it '
-                  'below, scan its QR, or paste the invite.',
-                  style: TextStyle(fontSize: 13, color: DesignTokens.textMuted),
-                ),
-                const SizedBox(height: 20),
-
-                // Nearby hosts (primary path)
-                ListenableBuilder(
-                  listenable: _discovery,
-                  builder: (context, _) => Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
+      backgroundColor: DesignTokens.d2Base,
+      body: SafeArea(
+        child: ResponsiveBody(
+          child: ListenableBuilder(
+            listenable: _controller,
+            builder: (context, _) {
+              if (_controller.busy) return _waiting();
+              return ListView(
+                padding: const EdgeInsets.all(SelahSpace.gutter),
+                children: [
+                  // Brand header (spec §4.1): the violet mark on the dark
+                  // surface, no background tile.
+                  Row(
                     children: [
-                      Row(
-                        children: [
-                          const Expanded(
-                            child: Text(
-                              'DISCOVERED ON YOUR NETWORK',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: 0.7,
-                                color: DesignTokens.textMuted,
-                              ),
-                            ),
-                          ),
-                          _discovery.searching
+                      Image.asset(
+                        'assets/selahcue-logo.png',
+                        width: 32,
+                        height: 32,
+                        semanticLabel: '',
+                      ),
+                      const SizedBox(width: SelahSpace.sm),
+                      Text(
+                        'SelahCue',
+                        style: SelahType.appBar.copyWith(
+                          color: DesignTokens.d2Text,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: SelahSpace.lg),
+                  Text(
+                    'Connect to a host',
+                    style: SelahType.h2.copyWith(color: DesignTokens.d2Text),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'On the SelahCue host, press P to start pairing. Pick it '
+                    'below, scan its QR, or paste the invite.',
+                    style: SelahType.bodySmall.copyWith(
+                      color: DesignTokens.d2TextSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: SelahSpace.gutter),
+
+                  // Nearby hosts (primary path)
+                  ListenableBuilder(
+                    listenable: _discovery,
+                    builder: (context, _) => Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SectionLabel(
+                          'DISCOVERED ON YOUR NETWORK',
+                          trailing: _discovery.searching
                               ? const SizedBox(
                                   width: 18,
                                   height: 18,
@@ -278,127 +330,215 @@ class _PairingViewState extends State<PairingView> {
                                 )
                               : IconButton(
                                   tooltip: 'Search the network',
+                                  constraints: const BoxConstraints(
+                                    minWidth: kSelahMinTouchTarget,
+                                    minHeight: kSelahMinTouchTarget,
+                                  ),
                                   onPressed: _discovery.refresh,
                                   icon: const Icon(
                                     Icons.refresh,
-                                    color: DesignTokens.textMuted,
+                                    color: DesignTokens.d2TextSecondary,
                                   ),
                                 ),
-                        ],
+                        ),
+                        if (_discovery.hosts.isEmpty && !_discovery.searching)
+                          Padding(
+                            padding: const EdgeInsets.only(
+                              bottom: SelahSpace.xs,
+                            ),
+                            child: Text(
+                              'None found — make sure this phone is on the '
+                              'same Wi-Fi as the host, then tap refresh.',
+                              style: SelahType.caption.copyWith(
+                                color: DesignTokens.d2TextSecondary,
+                              ),
+                            ),
+                          ),
+                        for (final h in _discovery.hosts)
+                          Padding(
+                            padding: const EdgeInsets.only(
+                              top: SelahSpace.sm,
+                            ),
+                            child: _HostRow(
+                              host: h,
+                              paired: _isPaired(h),
+                              onConnect: () => _pairDiscovered(h),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: SelahSpace.xl),
+
+                  // Scan QR (primary)
+                  SelahButton(
+                    label: 'Scan the pairing QR',
+                    icon: Icons.qr_code_scanner,
+                    variant: SelahButtonVariant.primary,
+                    height: 54,
+                    textStyle: SelahType.cta.copyWith(fontSize: 15),
+                    onPressed: _scan,
+                  ),
+                  const SizedBox(height: SelahSpace.xl),
+
+                  // Device name
+                  SelahInput(
+                    controller: _nameField,
+                    label: 'This device shows to the operator as',
+                  ),
+                  const SizedBox(height: SelahSpace.xs),
+
+                  // Paste invite (tucked behind a disclosure)
+                  Theme(
+                    data: Theme.of(
+                      context,
+                    ).copyWith(dividerColor: Colors.transparent),
+                    child: ExpansionTile(
+                      tilePadding: EdgeInsets.zero,
+                      title: Text(
+                        'Enter an invite manually',
+                        style: SelahType.bodySmall.copyWith(
+                          color: DesignTokens.d2TextSecondary,
+                        ),
                       ),
-                      if (_discovery.hosts.isEmpty && !_discovery.searching)
-                        const Padding(
-                          padding: EdgeInsets.only(bottom: 4),
-                          child: Text(
-                            'None found — make sure this phone is on the same '
-                            'Wi-Fi as the host, then tap refresh.',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: DesignTokens.textMuted,
-                            ),
-                          ),
+                      children: [
+                        SelahInput(
+                          controller: _uriField,
+                          label: 'selahcue://pair?...',
                         ),
-                      for (final h in _discovery.hosts)
-                        Card(
-                          color: DesignTokens.bgPanel,
-                          margin: const EdgeInsets.only(bottom: 8),
-                          child: ListTile(
-                            leading: const Icon(
-                              Icons.cast,
-                              color: DesignTokens.accentBrand,
-                            ),
-                            title: Text(
-                              h.name,
-                              style: const TextStyle(
-                                color: DesignTokens.textPrimary,
-                              ),
-                            ),
-                            subtitle: Text(
-                              '${h.host}:${h.port}',
-                              style: const TextStyle(
-                                color: DesignTokens.textMuted,
-                              ),
-                            ),
-                            trailing: const Icon(
-                              Icons.chevron_right,
-                              color: DesignTokens.textMuted,
-                            ),
-                            onTap: () => _pairDiscovered(h),
-                          ),
+                        const SizedBox(height: SelahSpace.sm),
+                        SelahButton(
+                          label: 'Pair with this invite',
+                          onPressed: _pair,
                         ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-                const SizedBox(height: 16),
-
-                // Scan QR (primary)
-                FilledButton.icon(
-                  onPressed: _scan,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: DesignTokens.accentBrand,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                  icon: const Icon(Icons.qr_code_scanner),
-                  label: const Text('Scan the pairing QR'),
-                ),
-                const SizedBox(height: 16),
-
-                // Device name
-                TextField(
-                  controller: _nameField,
-                  style: const TextStyle(color: DesignTokens.textPrimary),
-                  decoration: const InputDecoration(
-                    labelText: 'This device shows to the operator as',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 8),
-
-                // Paste invite (tucked behind a disclosure)
-                Theme(
-                  data: Theme.of(
-                    context,
-                  ).copyWith(dividerColor: Colors.transparent),
-                  child: ExpansionTile(
-                    tilePadding: EdgeInsets.zero,
-                    title: const Text(
-                      'Enter an invite manually',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: DesignTokens.textMuted,
+                  if (_controller.error != null) ...[
+                    const SizedBox(height: SelahSpace.md),
+                    Text(
+                      _controller.error!,
+                      style: SelahType.bodySmall.copyWith(
+                        fontWeight: FontWeight.w500,
+                        color: DesignTokens.d2Live,
                       ),
                     ),
-                    children: [
-                      TextField(
-                        controller: _uriField,
-                        style: const TextStyle(color: DesignTokens.textPrimary),
-                        decoration: const InputDecoration(
-                          labelText: 'selahcue://pair?...',
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      FilledButton.tonal(
-                        onPressed: _pair,
-                        child: const Text('Pair with this invite'),
-                      ),
-                    ],
-                  ),
-                ),
-                if (_controller.error != null) ...[
-                  const SizedBox(height: 12),
-                  Text(
-                    _controller.error!,
-                    style: const TextStyle(color: DesignTokens.liveInk),
-                  ),
+                  ],
+                  const SizedBox(height: SelahSpace.gutter),
+                  const _QrHintCard(),
                 ],
-              ],
-            );
-          },
+              );
+            },
+          ),
         ),
       ),
     );
   }
+}
+
+/// One discovered host (spec §4.1). A host this device already holds credentials
+/// for takes the selected row treatment and a PAIRED chip instead of a Connect
+/// button — the chip is a statement of fact, so it is only ever drawn from a
+/// real stored session.
+class _HostRow extends StatelessWidget {
+  final DiscoveredHost host;
+  final bool paired;
+  final VoidCallback onConnect;
+
+  const _HostRow({
+    required this.host,
+    required this.paired,
+    required this.onConnect,
+  });
+
+  @override
+  Widget build(BuildContext context) => SelahListRow(
+    state: paired ? SelahRowState.selected : SelahRowState.normal,
+    onTap: onConnect,
+    semanticLabel: paired
+        ? 'Pair again with ${host.name}, ${host.host}, already paired'
+        : 'Pair with ${host.name}, ${host.host}',
+    child: Row(
+      children: [
+        const Icon(
+          Icons.desktop_windows_outlined,
+          size: 20,
+          color: DesignTokens.d2TextSecondary,
+        ),
+        const SizedBox(width: SelahSpace.md),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                host.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: SelahType.rowTitle.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: DesignTokens.d2Text,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '${host.host}:${host.port}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: SelahType.caption.copyWith(
+                  color: DesignTokens.d2TextSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: SelahSpace.xs),
+        if (paired)
+          const StatusBadge(text: 'PAIRED', tone: SelahTone.preview, dot: true)
+        else
+          SizedBox(
+            width: 85,
+            child: SelahButton(
+              label: 'Connect',
+              variant: SelahButtonVariant.primary,
+              onPressed: onConnect,
+            ),
+          ),
+      ],
+    ),
+  );
+}
+
+/// The QR hint card (spec §4.1). It is a real control — tapping it opens the
+/// scanner — rather than a decorative panel, because a card that looks tappable
+/// and is not is the same dead end as a fake affordance.
+class _QrHintCard extends StatelessWidget {
+  const _QrHintCard();
+
+  @override
+  Widget build(BuildContext context) => SelahCard(
+    padding: const EdgeInsets.symmetric(
+      horizontal: SelahSpace.gutter,
+      vertical: SelahSpace.section,
+    ),
+    child: Column(
+      children: [
+        const Icon(
+          Icons.qr_code_2,
+          size: 84,
+          color: DesignTokens.d2TextSecondary,
+        ),
+        const SizedBox(height: SelahSpace.md),
+        Text(
+          'Scan the QR on the desktop to pair a new booth',
+          textAlign: TextAlign.center,
+          style: SelahType.bodySmall.copyWith(
+            color: DesignTokens.d2TextSecondary,
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 /// Full-screen camera scan; pops with the first `selahcue://pair?...` payload seen.
@@ -415,6 +555,7 @@ class _ScanViewState extends State<ScanView> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: DesignTokens.d2Base,
       appBar: AppBar(title: const Text('Scan the pairing QR')),
       body: MobileScanner(
         onDetect: (capture) {

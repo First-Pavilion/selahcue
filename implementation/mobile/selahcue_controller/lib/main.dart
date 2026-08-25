@@ -11,6 +11,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'models/design_tokens.dart';
+import 'models/selah_theme.dart';
 import 'models/session.dart';
 import 'models/settings.dart';
 import 'models/stored_session.dart';
@@ -39,15 +40,14 @@ class SelahCueApp extends StatelessWidget {
         title: 'SelahCue Controller',
         // No "DEBUG" ribbon over the live-control UI (it overlaps the top-bar).
         debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          brightness: Brightness.dark,
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: DesignTokens.accentBrand,
-            brightness: Brightness.dark,
-          ),
-          scaffoldBackgroundColor: DesignTokens.bgBase,
-          useMaterial3: true,
-        ),
+        // Design 2.0. This is the ONLY place the theme is installed, and it is
+        // what puts the `d2*` palette behind every ambient consumer the views
+        // never colour by hand — Switch, dialogs, the text-field cursor and
+        // selection, focus rings, snackbars, and any Scaffold that does not name
+        // its own background. An inline `ThemeData` here (which is what shipped)
+        // left `SelahTheme` dead code and every one of those surfaces on the
+        // Design 1.0 blue/navy, invisibly to the widget suite.
+        theme: SelahTheme.dark(),
         // Reduced motion (story 86ajp0b3d): the OS accessibility setting OR the
         // in-app preference (Config → PREFERENCES) disables page transitions.
         builder: (context, child) {
@@ -158,9 +158,18 @@ class _LauncherState extends State<Launcher> {
 }
 
 /// The branded splash (design handoff §2B): logo mark + wordmark + "CONTROLLER"
-/// overline + a slim spinner, on `bgBase`. Stateless so it renders identically
-/// during launch/reconnect and is directly widget-testable. Matches the native
-/// splash so there's no cold-start flash.
+/// overline + a slim spinner, on `d2Base`. Stateless so it renders identically
+/// during launch/reconnect and is directly widget-testable.
+///
+/// The overline uses `d2TextSecondary`, not `d2TextMuted`: muted measures under
+/// 4.5:1 on `d2Base` (`design_tokens_test.dart`) and this is text.
+///
+/// The native cold-start splash is a GENERATED asset — `pubspec.yaml`'s
+/// `flutter_native_splash.color` is its source of truth and now names the same
+/// `d2Base` hex, but the emitted bitmaps are only rewritten by
+/// `dart run flutter_native_splash:create`, which is a build step, not a code
+/// change. Until that is run the cold-start colour is the Design 1.0 base —
+/// 3/255 per channel away from this one.
 class SplashView extends StatelessWidget {
   final String? status;
   const SplashView({super.key, this.status});
@@ -168,7 +177,7 @@ class SplashView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: DesignTokens.bgBase,
+      backgroundColor: DesignTokens.d2Base,
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -187,7 +196,7 @@ class SplashView extends StatelessWidget {
               style: TextStyle(
                 fontSize: 26,
                 fontWeight: FontWeight.w700,
-                color: DesignTokens.textPrimary,
+                color: DesignTokens.d2Text,
               ),
             ),
             const Text(
@@ -196,7 +205,7 @@ class SplashView extends StatelessWidget {
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 3,
-                color: DesignTokens.textMuted,
+                color: DesignTokens.d2TextSecondary,
               ),
             ),
             const SizedBox(height: 28),
@@ -212,7 +221,7 @@ class SplashView extends StatelessWidget {
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   fontSize: 13,
-                  color: DesignTokens.textMuted,
+                  color: DesignTokens.d2TextSecondary,
                 ),
               ),
             ],

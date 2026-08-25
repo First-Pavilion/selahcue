@@ -1,8 +1,8 @@
-/// Controller view (V in MVC) — the tabbed Producer shell (revamp 86ajpx7bd).
-/// A bottom tab bar (Live · Plan · Scripture · Timer) with a PERSISTENT
-/// emergency strip above it on every tab, a compact top bar (plan name · LIVE
-/// pill · unpair), and a non-blocking reconnecting banner. All logic lives in
-/// [LiveController]; this is widgets only.
+/// Controller view (V in MVC) — the tabbed shell, Design 2.0 (Figma `363:124`).
+/// A role-scoped bottom tab bar (Live · Plan · Scripture · Timer) with a
+/// PERSISTENT emergency strip above it on every tab, a compact top bar (plan
+/// name · LIVE chip · role · clock · ⓘ), and a non-blocking reconnecting banner.
+/// All logic lives in [LiveController]; this is widgets only.
 library;
 
 import 'package:flutter/material.dart';
@@ -12,17 +12,18 @@ import '../controllers/live_controller.dart';
 import '../models/design_tokens.dart';
 import '../models/discovery.dart' show pinFingerprint;
 import '../models/rbac.dart';
+import '../models/selah_theme.dart';
 import '../models/session.dart';
 import '../models/settings.dart';
-import '../models/tab_scope.dart';
-import 'widgets/responsive.dart';
 import '../models/stored_session.dart';
+import '../models/tab_scope.dart';
 import 'pairing_view.dart';
 import 'tabs/live_tab.dart';
 import 'tabs/plan_tab.dart';
 import 'tabs/scripture_tab.dart';
 import 'tabs/timer_tab.dart';
 import 'widgets/mobile_widgets.dart';
+import 'widgets/responsive.dart';
 
 class ControllerView extends StatefulWidget {
   // The interface (not the concrete SelahSession) so the shell is widget-testable
@@ -32,7 +33,13 @@ class ControllerView extends StatefulWidget {
 
   /// Optional reconnect factory, forwarded to [LiveController] (a test seam so
   /// the revoked/reconnect path can be exercised without a real socket).
-  final Future<SelahSession> Function({
+  ///
+  /// Typed to [ControllerSession], matching [LiveController]'s own seam. It used
+  /// to name the concrete `SelahSession`, which let a test simulate a reconnect
+  /// that FAILS but not one that SUCCEEDS with a different grant — the only way
+  /// a re-role reaches this device (spec §4.11). Return types are covariant, so
+  /// every existing caller still type-checks.
+  final Future<ControllerSession> Function({
     required String host,
     required int port,
     required String pinHex,
@@ -92,10 +99,12 @@ class _ControllerViewState extends State<ControllerView> {
   void _showAbout() {
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: DesignTokens.bgPanel,
+      backgroundColor: DesignTokens.d2Base,
       showDragHandle: true,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(SelahRadius.card),
+        ),
       ),
       isScrollControlled: true,
       builder: (sheetContext) => ConfigSheet(
@@ -156,22 +165,23 @@ class _ControllerViewState extends State<ControllerView> {
       Widget marked = Icon(i);
       if (spec.viewOnly) {
         marked = Badge(
-          backgroundColor: DesignTokens.textMuted,
+          backgroundColor: DesignTokens.d2TextSecondary,
           smallSize: 7,
           // The count is actionable and time-critical, so it keeps the
           // conventional top-end corner and the ambient view-only dot yields to
           // top-start — a view-only tab must still show BOTH markers, not one
           // stacked under the other. AlignmentDirectional so RTL mirrors it.
-          alignment:
-              count > 0 ? AlignmentDirectional.topStart : null,
+          alignment: count > 0 ? AlignmentDirectional.topStart : null,
           offset: count > 0 ? const Offset(-2, -2) : null,
           child: marked,
         );
       }
       if (count > 0) {
         marked = Badge(
-          backgroundColor: DesignTokens.warnFill,
-          textColor: Colors.white,
+          backgroundColor: DesignTokens.d2Warn,
+          // Dark-on-amber: white on `warn` is ~2:1 and fails AA, the same trap
+          // the GO LIVE label avoids.
+          textColor: DesignTokens.d2Base,
           // Capped: an uncapped count blows the badge out past the nav icon and
           // starts shoving the bar's labels around.
           label: Text(count > 99 ? '99+' : '$count'),
@@ -228,12 +238,16 @@ class _ControllerViewState extends State<ControllerView> {
         final pendingApprovals = view?.detections.length ?? 0;
         final pages = [for (final s in specs) _pageFor(s.tab)];
         final currentTitle = _tabTitle(specs[tab].tab);
+        // Hoisted so the null check promotes for the widget below.
+        final roleChange = _live.roleChange;
         return Scaffold(
-          backgroundColor: DesignTokens.bgBase,
+          backgroundColor: DesignTokens.d2Base,
           appBar: AppBar(
-            backgroundColor: DesignTokens.bgPanel,
+            backgroundColor: DesignTokens.d2Base,
+            surfaceTintColor: Colors.transparent,
             elevation: 0,
-            titleSpacing: 16,
+            scrolledUnderElevation: 0,
+            titleSpacing: SelahSpace.gutter,
             title: Row(
               children: [
                 Flexible(
@@ -245,18 +259,17 @@ class _ControllerViewState extends State<ControllerView> {
                         ? view!.planName
                         : currentTitle,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      color: DesignTokens.textPrimary,
+                    style: SelahType.appBar.copyWith(
+                      color: DesignTokens.d2Text,
                     ),
                   ),
                 ),
                 if (onAir) ...[
-                  const SizedBox(width: 8),
+                  const SizedBox(width: SelahSpace.xs),
                   const StatusBadge(
-                    text: '● LIVE',
-                    color: DesignTokens.liveFill,
+                    text: 'LIVE',
+                    tone: SelahTone.live,
+                    dot: true,
                   ),
                 ],
               ],
@@ -272,10 +285,10 @@ class _ControllerViewState extends State<ControllerView> {
                 child: Center(
                   child: Text(
                     _wallClock(),
-                    style: const TextStyle(
-                      fontSize: 13,
+                    style: SelahType.bodySmall.copyWith(
                       fontWeight: FontWeight.w600,
-                      color: DesignTokens.textMuted,
+                      color: DesignTokens.d2TextSecondary,
+                      fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
                 ),
@@ -285,9 +298,13 @@ class _ControllerViewState extends State<ControllerView> {
               IconButton(
                 icon: const Icon(
                   Icons.info_outline,
-                  color: DesignTokens.textMuted,
+                  color: DesignTokens.d2TextSecondary,
                 ),
-                tooltip: 'About & connection',
+                constraints: const BoxConstraints(
+                  minWidth: kSelahMinTouchTarget,
+                  minHeight: kSelahMinTouchTarget,
+                ),
+                tooltip: 'Session, settings and about',
                 onPressed: _showAbout,
               ),
             ],
@@ -295,11 +312,25 @@ class _ControllerViewState extends State<ControllerView> {
           body: Column(
             children: [
               ConnectionBanner(live: _live),
+              // Under the connection banner, above the body — spec §4.11. The
+              // role has ALREADY changed everywhere else on this screen by the
+              // time this renders (the tab row above was rebuilt from the new
+              // grant, and every `can()` gate with it); this is the receipt for
+              // that, not the mechanism.
+              if (roleChange != null)
+                ResponsiveBody(
+                  child: RoleChangedBanner(live: _live, change: roleChange),
+                ),
               // Constrain + centre the control column so it doesn't stretch
               // edge-to-edge on a tablet / in landscape (design handoff §1).
               Expanded(
-                child: ResponsiveBody(
-                  child: IndexedStack(index: tab, children: pages),
+                // The permission sheet is scoped to the CONTENT region, so its
+                // scrim never reaches the emergency strip below (spec §4.13).
+                child: PermissionBlockedHost(
+                  live: _live,
+                  child: ResponsiveBody(
+                    child: IndexedStack(index: tab, children: pages),
+                  ),
                 ),
               ),
               // Persistent emergency chrome — on every tab, above the nav.
@@ -309,14 +340,25 @@ class _ControllerViewState extends State<ControllerView> {
                 ResponsiveBody(child: EmergencyStrip(live: _live)),
             ],
           ),
-          bottomNavigationBar: NavigationBar(
-            backgroundColor: DesignTokens.bgPanel,
-            indicatorColor: DesignTokens.accentBrand.withValues(alpha: 0.22),
-            selectedIndex: tab,
-            onDestinationSelected: (i) => setState(() => _tab = i),
-            destinations: [
-              for (final s in specs) _destinationFor(s, pendingApprovals),
-            ],
+          bottomNavigationBar: DecoratedBox(
+            decoration: const BoxDecoration(
+              border: Border(top: BorderSide(color: DesignTokens.d2Border)),
+            ),
+            child: NavigationBar(
+              backgroundColor: DesignTokens.d2Surface,
+              surfaceTintColor: Colors.transparent,
+              // Selection is carried by the violet ink + the label, matching
+              // the frame; the M3 pill would be a second, louder signal for
+              // the same fact (spec Q9).
+              indicatorColor: Colors.transparent,
+              overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+              elevation: 0,
+              selectedIndex: tab,
+              onDestinationSelected: (i) => setState(() => _tab = i),
+              destinations: [
+                for (final s in specs) _destinationFor(s, pendingApprovals),
+              ],
+            ),
           ),
         );
       },
@@ -324,13 +366,11 @@ class _ControllerViewState extends State<ControllerView> {
   }
 }
 
-/// The About & connection sheet: what this device is paired to, its role, the
-/// certificate fingerprint (for trust verification), live connection status,
-/// and Disconnect (un-pair). Presented as a modal sheet from the top bar so it
-/// never becomes a second navigation surface alongside the bottom tabs.
-/// The Config / About session sheet (Figma 363-124), opened from the top-bar ⓘ:
-/// CONNECTION (status/host/role/fingerprint + disconnect), PREFERENCES (keep
-/// awake / haptics / reduce motion), and ABOUT (version / licenses / help).
+/// The Config / About session sheet (Figma `366:128`), opened from the top-bar
+/// ⓘ: the identity header, CONNECTION (status/host/role/fingerprint +
+/// disconnect), PREFERENCES (keep awake / haptics / reduce motion), and ABOUT
+/// (version / policies / licenses / help). Presented as a modal sheet from the
+/// top bar so it never becomes a second navigation surface alongside the tabs.
 class ConfigSheet extends StatelessWidget {
   final StoredSession stored;
   final LiveController live;
@@ -351,7 +391,12 @@ class ConfigSheet extends StatelessWidget {
       top: false,
       child: ResponsiveBody(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+          padding: const EdgeInsets.fromLTRB(
+            SelahSpace.gutter,
+            4,
+            SelahSpace.gutter,
+            SelahSpace.gutter,
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -364,121 +409,156 @@ class ConfigSheet extends StatelessWidget {
                     height: 44,
                     semanticLabel: '',
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: SelahSpace.md),
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
+                      Text(
                         'SelahCue',
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w700,
-                          color: DesignTokens.textPrimary,
+                        style: SelahType.appBar.copyWith(
+                          color: DesignTokens.d2Text,
                         ),
                       ),
                       Text(
                         'Controller · ${live.role.label}',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          letterSpacing: 1.5,
-                          color: DesignTokens.textMuted,
+                        style: SelahType.caption.copyWith(
+                          color: DesignTokens.d2TextSecondary,
                         ),
                       ),
                     ],
                   ),
                 ],
               ),
-              const Divider(color: DesignTokens.border, height: 28),
-              const Padding(
-                padding: EdgeInsets.only(bottom: 4),
+              const Divider(
+                color: DesignTokens.d2Border,
+                height: SelahSpace.section + 4,
+              ),
+              const SectionLabel(
+                'CONNECTION',
+                padding: EdgeInsets.only(bottom: SelahSpace.sm),
+              ),
+              SelahCard(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: SelahSpace.lg,
+                  vertical: SelahSpace.xs,
+                ),
+                child: Column(
+                  children: [
+                    // Status tracks the live connection while the sheet is open.
+                    ListenableBuilder(
+                      listenable: live,
+                      builder: (context, _) => _row(
+                        'Status',
+                        live.reconnecting ? 'Reconnecting…' : 'Connected',
+                        valueColor: live.reconnecting
+                            ? DesignTokens.d2Warn
+                            : DesignTokens.d2Preview,
+                      ),
+                    ),
+                    _row('Host', '${stored.host}:${stored.port}'),
+                    _row('Role', live.role.label),
+                    _row('Fingerprint', pinFingerprint(stored.pinHex)),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(
+                  top: SelahSpace.sm,
+                  bottom: SelahSpace.md,
+                ),
                 child: Text(
-                  'CONNECTION',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.7,
-                    color: DesignTokens.textMuted,
+                  'Your role is assigned & managed on the desktop.',
+                  style: SelahType.caption.copyWith(
+                    color: DesignTokens.d2TextSecondary,
                   ),
                 ),
               ),
-              // Status tracks the live connection while the sheet is open.
-              ListenableBuilder(
-                listenable: live,
-                builder: (context, _) => _row(
-                  'Status',
-                  live.reconnecting ? 'Reconnecting…' : 'Connected',
-                  valueColor: live.reconnecting
-                      ? DesignTokens.warnInk
-                      : DesignTokens.previewInk,
-                ),
-              ),
-              _row('Host', '${stored.host}:${stored.port}'),
-              _row('Role', live.role.label),
-              _row('Fingerprint', pinFingerprint(stored.pinHex)),
-              const Padding(
-                padding: EdgeInsets.only(top: 6, bottom: 12),
-                child: Text(
-                  'Your role is assigned & managed on the desktop.',
-                  style: TextStyle(fontSize: 12, color: DesignTokens.textMuted),
-                ),
-              ),
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: DesignTokens.liveInk,
-                  side: const BorderSide(color: DesignTokens.liveInk),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                ),
-                icon: const Icon(Icons.link_off),
-                label: const Text('Disconnect this device'),
+              SelahButton(
+                label: 'Disconnect this device',
+                icon: Icons.link_off,
+                variant: SelahButtonVariant.dangerOutline,
                 onPressed: onDisconnect,
               ),
-              const Divider(color: DesignTokens.border, height: 28),
-              _sectionLabel('PREFERENCES'),
+              const Divider(
+                color: DesignTokens.d2Border,
+                height: SelahSpace.section + 4,
+              ),
+              const SectionLabel(
+                'PREFERENCES',
+                padding: EdgeInsets.only(bottom: SelahSpace.sm),
+              ),
               // Rebuilds with the controller so the switches reflect the persisted
               // state and each toggle applies immediately (keep-awake → wakelock).
               ListenableBuilder(
                 listenable: settings,
-                builder: (context, _) => Column(
+                builder: (context, _) => SelahCard(
+                  padding: const EdgeInsets.symmetric(
+                    vertical: SelahSpace.xs,
+                  ),
+                  child: Column(
+                    children: [
+                      SelahToggle(
+                        label: 'Keep screen awake',
+                        value: settings.keepAwake,
+                        onChanged: settings.setKeepAwake,
+                      ),
+                      const Divider(color: DesignTokens.d2Border),
+                      SelahToggle(
+                        label: 'Haptic feedback',
+                        value: settings.haptics,
+                        onChanged: settings.setHaptics,
+                      ),
+                      const Divider(color: DesignTokens.d2Border),
+                      SelahToggle(
+                        label: 'Reduce motion',
+                        value: settings.reduceMotion,
+                        onChanged: settings.setReduceMotion,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: SelahSpace.section),
+              const SectionLabel(
+                'ABOUT',
+                padding: EdgeInsets.only(bottom: SelahSpace.sm),
+              ),
+              SelahCard(
+                padding: EdgeInsets.zero,
+                child: Column(
                   children: [
-                    _toggle(
-                      'Keep screen awake',
-                      settings.keepAwake,
-                      settings.setKeepAwake,
+                    FutureBuilder<PackageInfo>(
+                      future: PackageInfo.fromPlatform(),
+                      builder: (context, snap) => Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: SelahSpace.lg,
+                          vertical: SelahSpace.xs,
+                        ),
+                        child: _row(
+                          'Version',
+                          snap.hasData
+                              ? '${snap.data!.version} (${snap.data!.buildNumber})'
+                              : '…',
+                        ),
+                      ),
                     ),
-                    _toggle(
-                      'Haptic feedback',
-                      settings.haptics,
-                      settings.setHaptics,
+                    const Divider(color: DesignTokens.d2Border),
+                    _linkRow('Privacy policy', () => _showPrivacy(context)),
+                    const Divider(color: DesignTokens.d2Border),
+                    _linkRow('Terms of use', () => _showTerms(context)),
+                    const Divider(color: DesignTokens.d2Border),
+                    _linkRow(
+                      'Open-source licenses',
+                      () => showLicensePage(
+                        context: context,
+                        applicationName: 'SelahCue Controller',
+                      ),
                     ),
-                    _toggle(
-                      'Reduce motion',
-                      settings.reduceMotion,
-                      settings.setReduceMotion,
-                    ),
+                    const Divider(color: DesignTokens.d2Border),
+                    _linkRow('Help & support', () => _showHelp(context)),
                   ],
                 ),
               ),
-              const Divider(color: DesignTokens.border, height: 28),
-              _sectionLabel('ABOUT'),
-              FutureBuilder<PackageInfo>(
-                future: PackageInfo.fromPlatform(),
-                builder: (context, snap) => _row(
-                  'Version',
-                  snap.hasData
-                      ? '${snap.data!.version} (${snap.data!.buildNumber})'
-                      : '…',
-                ),
-              ),
-              _linkRow('Privacy policy', () => _showPrivacy(context)),
-              _linkRow('Terms of use', () => _showTerms(context)),
-              _linkRow(
-                'Open-source licenses',
-                () => showLicensePage(
-                  context: context,
-                  applicationName: 'SelahCue Controller',
-                ),
-              ),
-              _linkRow('Help & support', () => _showHelp(context)),
             ],
           ),
         ),
@@ -486,60 +566,23 @@ class ConfigSheet extends StatelessWidget {
     );
   }
 
-  Widget _sectionLabel(String text) => Padding(
-    padding: const EdgeInsets.only(bottom: 4),
-    child: Text(
-      text,
-      style: const TextStyle(
-        fontSize: 11,
-        fontWeight: FontWeight.w800,
-        letterSpacing: 0.7,
-        color: DesignTokens.textMuted,
-      ),
-    ),
-  );
-
-  Widget _toggle(
-    String label,
-    bool value,
-    Future<void> Function(bool) onChanged,
-  ) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 2),
-    child: Row(
-      children: [
-        Expanded(
-          child: Text(
-            label,
-            style: const TextStyle(
-              fontSize: 14,
-              color: DesignTokens.textPrimary,
-            ),
-          ),
-        ),
-        Switch(value: value, onChanged: (v) => onChanged(v)),
-      ],
-    ),
-  );
-
   Widget _linkRow(String label, VoidCallback onTap) => InkWell(
     onTap: onTap,
-    child: Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
+    child: Container(
+      constraints: const BoxConstraints(minHeight: kSelahMinTouchTarget),
+      padding: const EdgeInsets.symmetric(horizontal: SelahSpace.lg),
       child: Row(
         children: [
           Expanded(
             child: Text(
               label,
-              style: const TextStyle(
-                fontSize: 14,
-                color: DesignTokens.textPrimary,
-              ),
+              style: SelahType.body.copyWith(color: DesignTokens.d2Text),
             ),
           ),
           const Icon(
             Icons.chevron_right,
             size: 18,
-            color: DesignTokens.textMuted,
+            color: DesignTokens.d2TextSecondary,
           ),
         ],
       ),
@@ -550,7 +593,7 @@ class ConfigSheet extends StatelessWidget {
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: DesignTokens.bgPanel,
+        backgroundColor: DesignTokens.d2Surface,
         title: const Text('Privacy'),
         content: const SingleChildScrollView(
           child: Text(
@@ -576,7 +619,7 @@ class ConfigSheet extends StatelessWidget {
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: DesignTokens.bgPanel,
+        backgroundColor: DesignTokens.d2Surface,
         title: const Text('Terms of use'),
         content: const SingleChildScrollView(
           child: Text(
@@ -604,7 +647,7 @@ class ConfigSheet extends StatelessWidget {
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: DesignTokens.bgPanel,
+        backgroundColor: DesignTokens.d2Surface,
         title: const Text('Help & support'),
         content: const Text(
           'Pairing, roles, and outputs are managed on the SelahCue desktop. '
@@ -621,7 +664,7 @@ class ConfigSheet extends StatelessWidget {
   }
 
   Widget _row(String label, String value, {Color? valueColor}) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 7),
+    padding: const EdgeInsets.symmetric(vertical: SelahSpace.xs),
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -629,16 +672,17 @@ class ConfigSheet extends StatelessWidget {
           width: 104,
           child: Text(
             label,
-            style: const TextStyle(fontSize: 13, color: DesignTokens.textMuted),
+            style: SelahType.bodySmall.copyWith(
+              color: DesignTokens.d2TextSecondary,
+            ),
           ),
         ),
         Expanded(
           child: Text(
             value,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-              color: valueColor ?? DesignTokens.textPrimary,
+            style: SelahType.bodySmall.copyWith(
+              fontWeight: FontWeight.w600,
+              color: valueColor ?? DesignTokens.d2Text,
             ),
           ),
         ),
@@ -656,7 +700,7 @@ class AccessRemovedScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: DesignTokens.bgBase,
+      backgroundColor: DesignTokens.d2Base,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(28),
@@ -667,59 +711,58 @@ class AccessRemovedScreen extends StatelessWidget {
                 width: 56,
                 height: 56,
                 decoration: BoxDecoration(
-                  color: DesignTokens.liveFill.withValues(alpha: 0.18),
+                  color: DesignTokens.d2LiveSoft,
                   borderRadius: BorderRadius.circular(28),
+                  border: Border.all(color: DesignTokens.d2LiveBorder),
                 ),
                 alignment: Alignment.center,
                 child: const Icon(
                   Icons.link_off,
-                  color: DesignTokens.liveInk,
+                  color: DesignTokens.d2Live,
                   size: 28,
                 ),
               ),
-              const SizedBox(height: 20),
-              const Text(
-                'Access removed',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w700,
-                  color: DesignTokens.textPrimary,
+              const SizedBox(height: SelahSpace.gutter),
+              Semantics(
+                header: true,
+                child: Text(
+                  'Access removed',
+                  textAlign: TextAlign.center,
+                  style: SelahType.h1.copyWith(color: DesignTokens.d2Text),
                 ),
               ),
-              const SizedBox(height: 10),
-              const Text(
+              const SizedBox(height: SelahSpace.sm),
+              Text(
                 'An administrator unpaired this device. Your role and keys are '
                 'no longer valid.',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 14, color: DesignTokens.textMuted),
+                style: SelahType.body.copyWith(
+                  color: DesignTokens.d2TextSecondary,
+                ),
               ),
-              const SizedBox(height: 18),
-              Container(
+              const SizedBox(height: SelahSpace.xl + 2),
+              SelahCard(
+                color: DesignTokens.d2PreviewSoft,
+                borderColor: DesignTokens.d2PreviewBorder,
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 12,
+                  horizontal: SelahSpace.lg,
+                  vertical: SelahSpace.md,
                 ),
-                decoration: BoxDecoration(
-                  color: DesignTokens.previewFill.withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: DesignTokens.previewInk),
-                ),
-                child: const Row(
+                radius: SelahRadius.control,
+                child: Row(
                   children: [
-                    Icon(
+                    const Icon(
                       Icons.check_circle_outline,
-                      color: DesignTokens.previewInk,
+                      color: DesignTokens.d2Preview,
                       size: 18,
                     ),
-                    SizedBox(width: 8),
+                    const SizedBox(width: SelahSpace.xs),
                     Expanded(
                       child: Text(
                         'The live service is unaffected — the desktop keeps '
                         'running.',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: DesignTokens.previewInk,
+                        style: SelahType.bodySmall.copyWith(
+                          color: DesignTokens.d2Preview,
                         ),
                       ),
                     ),
@@ -727,17 +770,12 @@ class AccessRemovedScreen extends StatelessWidget {
                 ),
               ),
               const Spacer(),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: DesignTokens.accentBrand,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                  icon: const Icon(Icons.qr_code_scanner),
-                  label: const Text('Scan QR to pair again'),
-                  onPressed: onRepair,
-                ),
+              SelahButton(
+                label: 'Scan QR to pair again',
+                icon: Icons.qr_code_scanner,
+                variant: SelahButtonVariant.primary,
+                height: 54,
+                onPressed: onRepair,
               ),
             ],
           ),
@@ -748,26 +786,19 @@ class AccessRemovedScreen extends StatelessWidget {
 }
 
 /// The granted-role chip shown in the app bar (the real backend role — the
-/// 7-role design vocabulary is a tracked follow-up). Colour-coded but always
-/// carries the text label (WCAG 1.4.1). Rebuilds with the controller so a role
-/// change on reconnect is reflected.
+/// 7-role design vocabulary is a tracked follow-up, ClickUp 86ajxuf81 /
+/// 86ajxufbg). Tone-coded but always carrying the text label (WCAG 1.4.1).
+/// Rebuilds with the controller so a role change on reconnect is reflected.
 class RoleBadge extends StatelessWidget {
   final LiveController live;
   const RoleBadge({super.key, required this.live});
 
-  static Color colorFor(MobileRole r) {
-    switch (r) {
-      case MobileRole.operator:
-        return DesignTokens.accentBrand;
-      case MobileRole.producer:
-        return DesignTokens.previewInk;
-      case MobileRole.assistant:
-        return DesignTokens.warnInk;
-      case MobileRole.viewer:
-      case MobileRole.unknown:
-        return DesignTokens.textMuted;
-    }
-  }
+  /// The role→tone table now lives beside the tone vocabulary in
+  /// `primitives.dart`, because the permission sheet's `ROLES THAT CAN …` chips
+  /// have to agree with this badge — two tables would eventually disagree and
+  /// paint the same role two colours on two screens. Kept as an alias so the
+  /// symbol call sites already reach for still resolves.
+  static SelahTone toneFor(MobileRole r) => roleTone(r);
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
@@ -777,7 +808,11 @@ class RoleBadge extends StatelessWidget {
       child: Center(
         child: StatusBadge(
           text: live.role.label.toUpperCase(),
-          color: colorFor(live.role),
+          tone: toneFor(live.role),
+          dot: true,
+          large: true,
+          // "PRODUCER" is read letter-by-letter by some VoiceOver voices.
+          semanticLabel: 'Role: ${live.role.label}',
         ),
       ),
     ),

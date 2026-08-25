@@ -116,3 +116,129 @@ enum MobileRole {
     }
   }
 }
+
+/// A human name for a capability, used by the "PREVIOUS CONTROLS" receipt when
+/// a role change takes controls away (MOBILE-2.0-SPEC §4.11). These are the
+/// operator's words for the control, not the wire's — "Go live", not `go_live`.
+extension CapabilityLabel on Capability {
+  String get label {
+    switch (this) {
+      case Capability.goLive:
+        return 'Go live';
+      case Capability.navigate:
+        return 'Next / Previous';
+      case Capability.clearLive:
+        return 'Clear live';
+      case Capability.blackout:
+        return 'Blackout';
+      case Capability.timer:
+        return 'Service timer';
+      case Capability.searchScripture:
+        return 'Scripture search & staging';
+      case Capability.transcribe:
+        // NOT "Transcript". `Transcribe` is a WRITE grant: it gates exactly one
+        // command, `IngestTranscript` — the STT ingestion channel
+        // (`selahcue-lan/src/rbac.rs:127`) — and no client on a phone sends it.
+        // READING the transcript rides inside `GetOperatorState`, which needs
+        // only `Monitor`. Labelled "Transcript", the role-changed receipt told
+        // a demoted Viewer their transcript had been removed while the row two
+        // below correctly promised they could still watch it. Naming the grant
+        // for what it actually is settles that in favour of the truth.
+        return 'Live transcription feed';
+      case Capability.monitor:
+        return 'Watch previews';
+      case Capability.editPlan:
+        return 'Edit the plan';
+      case Capability.manageDevices:
+        return 'Manage devices';
+      case Capability.configureOutputs:
+        return 'Configure outputs';
+    }
+  }
+}
+
+/// What a wire command needs, and how to say it to the operator.
+///
+/// [capability] is transcribed from Rust `required_permission(cmd)`
+/// (`selahcue-lan/src/rbac.rs:100`) for the commands THIS client can send —
+/// the desktop is still the authority, this only lets a refusal be explained in
+/// words instead of a raw wire reason.
+class CommandAction {
+  /// The permission the desktop checks before running the command.
+  final Capability capability;
+
+  /// Sentence-leading gerund for the blocked-sheet body: "Approving scripture".
+  final String phrase;
+
+  /// Overline form for `ROLES THAT CAN <verb>`: "APPROVE SCRIPTURE".
+  final String verb;
+
+  const CommandAction(this.capability, this.phrase, this.verb);
+}
+
+const Map<String, CommandAction> _commandActions = {
+  'go_live': CommandAction(Capability.goLive, 'Going live', 'GO LIVE'),
+  'next': CommandAction(
+      Capability.navigate, 'Moving to the next item', 'MOVE THROUGH THE PLAN'),
+  'previous': CommandAction(Capability.navigate,
+      'Moving to the previous item', 'MOVE THROUGH THE PLAN'),
+  'select_item':
+      CommandAction(Capability.navigate, 'Staging a plan item', 'STAGE AN ITEM'),
+  'select_slide':
+      CommandAction(Capability.navigate, 'Staging a slide', 'STAGE A SLIDE'),
+  'clear': CommandAction(
+      Capability.clearLive, 'Clearing the live output', 'CLEAR THE OUTPUT'),
+  'blackout': CommandAction(
+      Capability.blackout, 'Blacking out the output', 'BLACK OUT THE OUTPUT'),
+  'start_timer':
+      CommandAction(Capability.timer, 'Starting the timer', 'RUN THE TIMER'),
+  'stop_timer':
+      CommandAction(Capability.timer, 'Stopping the timer', 'RUN THE TIMER'),
+  'adjust_timer':
+      CommandAction(Capability.timer, 'Adjusting the timer', 'RUN THE TIMER'),
+  'pause_timer':
+      CommandAction(Capability.timer, 'Pausing the timer', 'RUN THE TIMER'),
+  'resume_timer':
+      CommandAction(Capability.timer, 'Resuming the timer', 'RUN THE TIMER'),
+  'stage_scripture': CommandAction(
+      Capability.searchScripture, 'Staging scripture', 'STAGE SCRIPTURE'),
+  'get_chapter': CommandAction(
+      Capability.searchScripture, 'Browsing scripture', 'BROWSE SCRIPTURE'),
+  'approve_detection': CommandAction(
+      Capability.searchScripture, 'Approving scripture', 'APPROVE SCRIPTURE'),
+  'dismiss_detection': CommandAction(Capability.searchScripture,
+      'Rejecting a detection', 'APPROVE SCRIPTURE'),
+  'get_operator_state':
+      CommandAction(Capability.monitor, 'Reading live state', 'WATCH PREVIEWS'),
+  'set_theme': CommandAction(
+      Capability.configureOutputs, 'Changing the theme', 'CONFIGURE OUTPUTS'),
+};
+
+/// What [cmd] needs, or null when this mirror does not recognise the command.
+///
+/// Null is a real answer, not a failure: a newer host may know commands this
+/// build does not, and the enforcement sheet has a copy path for exactly that
+/// case (spec §4.10 "if the app cannot name the qualifying roles"). Guessing
+/// would be worse than saying less.
+CommandAction? commandActionFor(Map<String, dynamic> cmd) =>
+    _commandActions[cmd['cmd']];
+
+/// The roles that hold [capability], most-capable first.
+///
+/// `unknown` is never listed — it is the fail-closed parse of a role string this
+/// build does not recognise, not something an administrator can assign.
+List<MobileRole> rolesWith(Capability capability) => [
+      for (final r in MobileRole.values)
+        if (r != MobileRole.unknown && r.can(capability)) r,
+    ];
+
+/// The LEAST-capable role that holds [capability], or null if none does.
+///
+/// Well-defined because the roles form a strict superset ladder
+/// (`viewer ⊂ assistant ⊂ producer ⊂ operator`, mirrored from
+/// `Role::permissions()`), so "the role you need" has one honest answer rather
+/// than a list — which is what the blocked sheet's body line asks for.
+MobileRole? minimalRoleFor(Capability capability) {
+  final holders = rolesWith(capability);
+  return holders.isEmpty ? null : holders.last;
+}

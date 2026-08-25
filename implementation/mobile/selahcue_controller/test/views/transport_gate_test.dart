@@ -23,6 +23,7 @@ import 'package:selahcue_controller/models/protocol.dart';
 import 'package:selahcue_controller/models/rbac.dart';
 import 'package:selahcue_controller/models/session.dart';
 import 'package:selahcue_controller/models/stored_session.dart';
+import 'package:selahcue_controller/views/widgets/primitives.dart';
 import 'package:selahcue_controller/views/tabs/live_tab.dart';
 import 'package:selahcue_controller/views/tabs/plan_tab.dart';
 import 'package:selahcue_controller/views/tabs/scripture_tab.dart';
@@ -243,10 +244,10 @@ void main() {
       session: (sent) => _Fake(sent: sent, timer: _runningTimer),
     );
 
-    await tester.tap(find.text('+1:00'));
-    await tester.tap(find.text('−1:00'));
-    await tester.tap(find.text('⏱ 5:00'));
-    await tester.tap(find.text('Stop'));
+    await tester.tap(find.text('+ 1:00'));
+    await tester.tap(find.text('− 1:00'));
+    await tester.tap(find.widgetWithText(SelahButton, '5:00'));
+    await tester.tap(find.widgetWithText(SelahButton, 'Stop'));
     await tester.pump(const Duration(milliseconds: 60));
 
     expect(sent, isEmpty,
@@ -264,10 +265,11 @@ void main() {
     );
 
     // Disabled, not hidden — the control is untrustworthy, not forbidden.
-    for (final label in ['+1:00', '−1:00', '⏱ 5:00', 'Stop', 'Pause']) {
-      expect(find.text(label), findsOneWidget, reason: '$label stays on screen');
+    for (final label in ['+ 1:00', '− 1:00', '5:00', 'Stop', 'Pause']) {
+      expect(find.widgetWithText(SelahButton, label), findsOneWidget,
+          reason: '$label stays on screen');
       final button =
-          tester.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, label));
+          tester.widget<SelahButton>(find.widgetWithText(SelahButton, label));
       expect(button.onPressed, isNull, reason: '$label must not be tappable');
     }
     live.dispose();

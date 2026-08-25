@@ -1,9 +1,13 @@
-/// Scripture tab (revamp 86ajpx7bd; verse-list refine): the desktop chapter
-/// browser on the phone. Type/pick a reference → the host sends the whole
-/// chapter over the wire (`get_chapter`) → the numbered verse list renders, and
-/// a single tap stages a verse in Preview while a double-tap sends it live —
-/// mirroring the desktop console. Against an older host that predates the
-/// chapter command it degrades to reference-only staging.
+/// Scripture tab — the desktop chapter browser on the phone, Design 2.0
+/// (Figma `343:128`). Type/pick a reference → the host sends the whole chapter
+/// over the wire (`get_chapter`) → the numbered verse list renders, and a single
+/// tap stages a verse in Preview while a double-tap sends it live — mirroring
+/// the desktop console. Against an older host that predates the chapter command
+/// it degrades to reference-only staging.
+///
+/// Gold is the scripture signal here and nowhere else (handoff §2): the chapter
+/// heading, the translation pill and every verse number are `d2Gold`. Gold never
+/// means status — staged/live are still green/red, and both carry a glyph.
 library;
 
 import 'package:flutter/material.dart';
@@ -13,8 +17,9 @@ import '../../models/bible_books.dart';
 import '../../models/design_tokens.dart';
 import '../../models/protocol.dart';
 import '../../models/rbac.dart';
-import '../../models/settings.dart';
+import '../../models/selah_theme.dart';
 import '../detections_view.dart';
+import '../widgets/mobile_widgets.dart';
 
 class ScriptureTab extends StatefulWidget {
   final LiveController live;
@@ -61,7 +66,8 @@ class _ScriptureTabState extends State<ScriptureTab> {
 
   void _onChanged() {
     final next = suggestBooks(_ctrl.text);
-    final changed = next.length != _suggestions.length ||
+    final changed =
+        next.length != _suggestions.length ||
         (next.isNotEmpty && next.first != _suggestions.first);
     if (changed) setState(() => _suggestions = next);
   }
@@ -76,8 +82,10 @@ class _ScriptureTabState extends State<ScriptureTab> {
     final ref = reference.trim();
     if (_loading || ref.isEmpty) return;
     setState(() => _loading = true);
-    final result = await widget.live
-        .fetchChapter(ref, translation: asTranslation ?? _translation);
+    final result = await widget.live.fetchChapter(
+      ref,
+      translation: asTranslation ?? _translation,
+    );
     if (!mounted) return;
     setState(() {
       _loading = false;
@@ -99,10 +107,12 @@ class _ScriptureTabState extends State<ScriptureTab> {
       // screen — report the miss and re-sync the field rather than failing
       // silently (and leaving the picker/field pointing at the wrong place).
       _setField('${_chapter!.bookName} ${_chapter!.chapter}');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Couldn’t load “$ref”.'),
-        duration: const Duration(seconds: 2),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Couldn’t load “$ref”.'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
     }
   }
 
@@ -135,11 +145,14 @@ class _ScriptureTabState extends State<ScriptureTab> {
   String _verseRef(VerseView v) =>
       v.reference(_chapter!.bookName, _chapter!.chapter);
 
-  void _stageVerse(VerseView v) =>
-      widget.live.act(cmdStageScripture(_verseRef(v), translation: _translation));
+  void _stageVerse(VerseView v) => widget.live.act(
+    cmdStageScripture(_verseRef(v), translation: _translation),
+  );
 
-  void _liveVerse(VerseView v) => widget.live
-      .stageScriptureAndGoLive(_verseRef(v), translation: _translation);
+  void _liveVerse(VerseView v) => widget.live.stageScriptureAndGoLive(
+    _verseRef(v),
+    translation: _translation,
+  );
 
   @override
   void dispose() {
@@ -154,19 +167,26 @@ class _ScriptureTabState extends State<ScriptureTab> {
     // Scripture search/stage requires the SearchScripture capability (Producer/
     // Assistant). A role without it (Viewer) gets a read-only notice, no field.
     if (!widget.live.can(Capability.searchScripture)) {
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text('Scripture control is not part of your role.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: DesignTokens.textMuted)),
+          padding: const EdgeInsets.all(SelahSpace.section),
+          child: Text(
+            'Scripture control is not part of your role.',
+            textAlign: TextAlign.center,
+            style: SelahType.body.copyWith(
+              color: DesignTokens.d2TextSecondary,
+            ),
+          ),
         ),
       );
     }
     final view = widget.live.view;
-    final options =
-        (view?.translations.isNotEmpty ?? false) ? view!.translations : ['KJV'];
-    final current = options.contains(_translation) ? _translation : options.first;
+    final options = (view?.translations.isNotEmpty ?? false)
+        ? view!.translations
+        : ['KJV'];
+    final current = options.contains(_translation)
+        ? _translation
+        : options.first;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -183,53 +203,67 @@ class _ScriptureTabState extends State<ScriptureTab> {
             count: view.detections.length,
             onTap: () => DetectionsView.open(context, widget.live),
           ),
-        // Controls: translation picker + reference/search field.
+        // Controls: reference/search field + translation pill.
         Padding(
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+          padding: const EdgeInsets.fromLTRB(
+            SelahSpace.gutter,
+            SelahSpace.md,
+            SelahSpace.gutter,
+            SelahSpace.xs,
+          ),
           child: Row(
             children: [
-              _TranslationPicker(
-                  current: current, options: options, onPick: _setTranslation),
-              const SizedBox(width: 10),
               Expanded(
-                child: TextField(
+                child: SelahInput(
                   controller: _ctrl,
                   textInputAction: TextInputAction.search,
-                  style: const TextStyle(color: DesignTokens.textPrimary),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    filled: true,
-                    fillColor: DesignTokens.bgBase,
-                    hintText: 'Reference — e.g. gen 1 1',
-                    hintStyle: const TextStyle(color: DesignTokens.textMuted),
-                    border: const OutlineInputBorder(),
-                    suffixIcon: IconButton(
-                      icon: const Icon(Icons.search,
-                          size: 20, color: DesignTokens.textMuted),
-                      tooltip: 'Browse chapter',
-                      onPressed: _onSubmit,
+                  hint: 'Reference — e.g. gen 1 1',
+                  prefix: const Icon(
+                    Icons.search,
+                    size: 20,
+                    color: DesignTokens.d2TextSecondary,
+                  ),
+                  suffix: IconButton(
+                    icon: const Icon(
+                      Icons.arrow_forward,
+                      size: 20,
+                      color: DesignTokens.d2TextSecondary,
                     ),
+                    tooltip: 'Browse chapter',
+                    onPressed: _onSubmit,
                   ),
                   onSubmitted: (_) => _onSubmit(),
                 ),
+              ),
+              const SizedBox(width: SelahSpace.sm),
+              _TranslationPicker(
+                current: current,
+                options: options,
+                onPick: _setTranslation,
               ),
             ],
           ),
         ),
         if (_suggestions.isNotEmpty)
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+            padding: const EdgeInsets.fromLTRB(
+              SelahSpace.gutter,
+              0,
+              SelahSpace.gutter,
+              SelahSpace.xs,
+            ),
             child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
+              spacing: SelahSpace.xs,
+              runSpacing: SelahSpace.xs,
               children: [
                 for (final b in _suggestions)
                   ActionChip(
                     label: Text(b),
-                    backgroundColor: DesignTokens.bgPanel,
-                    side: const BorderSide(color: DesignTokens.border),
-                    labelStyle: const TextStyle(
-                        fontSize: 13, color: DesignTokens.textPrimary),
+                    backgroundColor: DesignTokens.d2Surface,
+                    side: const BorderSide(color: DesignTokens.d2Border),
+                    labelStyle: SelahType.bodySmall.copyWith(
+                      color: DesignTokens.d2Text,
+                    ),
                     onPressed: () => _pickBook(b),
                   ),
               ],
@@ -237,48 +271,82 @@ class _ScriptureTabState extends State<ScriptureTab> {
           ),
         if (_loading)
           const LinearProgressIndicator(
-              minHeight: 2, color: DesignTokens.accentBrand),
+            minHeight: 2,
+            color: DesignTokens.d2Primary,
+          ),
         if (_chapter != null) _chapterNav(_chapter!),
         Expanded(child: _body(view)),
-        const Padding(
-          padding: EdgeInsets.fromLTRB(14, 6, 14, 12),
-          child: Text('Tap a verse to stage · double-tap to send live',
-              style: TextStyle(fontSize: 11, color: DesignTokens.textMuted)),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            SelahSpace.gutter,
+            SelahSpace.xs,
+            SelahSpace.gutter,
+            SelahSpace.md,
+          ),
+          child: Text(
+            'Tap a verse to stage · double-tap to send live',
+            style: SelahType.caption.copyWith(
+              color: DesignTokens.d2TextSecondary,
+            ),
+          ),
         ),
       ],
     );
   }
 
+  /// The chapter heading in gold (the frame's `ISAIAH 61 · KJV` overline), with
+  /// the ‹ › chapter pager either side.
   Widget _chapterNav(ChapterResult ch) => Padding(
-        padding: const EdgeInsets.fromLTRB(14, 4, 14, 6),
-        child: Row(
-          children: [
-            _NavBtn(
-                glyph: '‹',
-                label: 'Previous chapter',
-                onTap: ch.prevRef == null ? null : () => _load(ch.prevRef!)),
-            Expanded(
-              child: Text(ch.heading,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: DesignTokens.textPrimary)),
-            ),
-            _NavBtn(
-                glyph: '›',
-                label: 'Next chapter',
-                onTap: ch.nextRef == null ? null : () => _load(ch.nextRef!)),
-          ],
+    padding: const EdgeInsets.fromLTRB(
+      SelahSpace.gutter,
+      4,
+      SelahSpace.gutter,
+      SelahSpace.xs,
+    ),
+    child: Row(
+      children: [
+        _NavBtn(
+          icon: Icons.chevron_left,
+          label: 'Previous chapter',
+          onTap: ch.prevRef == null ? null : () => _load(ch.prevRef!),
         ),
-      );
+        Expanded(
+          child: Text(
+            '${ch.heading.toUpperCase()} · $_translation',
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            // Spec §4.5 measures this overline in `d2TextSecondary`, not
+            // gold: the gold budget on this screen is spent on the verse
+            // NUMBERS and the translation pill, which is where a reader looks
+            // to place a verse. A gold heading as well turns the signal into a
+            // decoration.
+            style: SelahType.overline.copyWith(
+              color: DesignTokens.d2TextSecondary,
+            ),
+          ),
+        ),
+        _NavBtn(
+          icon: Icons.chevron_right,
+          label: 'Next chapter',
+          onTap: ch.nextRef == null ? null : () => _load(ch.nextRef!),
+        ),
+      ],
+    ),
+  );
 
   Widget _body(OperatorStateView? view) {
     final ch = _chapter;
     if (ch != null) {
-      return ListView.builder(
-        padding: const EdgeInsets.fromLTRB(14, 2, 14, 2),
+      return ListView.separated(
+        padding: const EdgeInsets.fromLTRB(
+          SelahSpace.gutter,
+          2,
+          SelahSpace.gutter,
+          2,
+        ),
         itemCount: ch.verses.length,
+        separatorBuilder: (context, i) => const SizedBox(height: SelahSpace.sm),
         itemBuilder: (context, i) {
           final v = ch.verses[i];
           final ref = _verseRef(v);
@@ -295,59 +363,66 @@ class _ScriptureTabState extends State<ScriptureTab> {
       );
     }
     if (_fetchFailed) return _fallback();
-    return const Center(
+    return Center(
       child: Padding(
-        padding: EdgeInsets.all(24),
-        child: Text('Type a reference above to browse its chapter.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: DesignTokens.textMuted)),
+        padding: const EdgeInsets.all(SelahSpace.section),
+        child: Text(
+          'Type a reference above to browse its chapter.',
+          textAlign: TextAlign.center,
+          style: SelahType.body.copyWith(color: DesignTokens.d2TextSecondary),
+        ),
       ),
     );
   }
 
   /// Old-host / bad-reference fallback: stage the typed reference directly.
   Widget _fallback() => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+    child: Padding(
+      padding: const EdgeInsets.all(SelahSpace.gutter),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Couldn’t load that chapter here. You can still stage the '
+            'reference directly.',
+            textAlign: TextAlign.center,
+            style: SelahType.bodySmall.copyWith(
+              color: DesignTokens.d2TextSecondary,
+            ),
+          ),
+          const SizedBox(height: SelahSpace.lg),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Text(
-                  'Couldn’t load that chapter here. You can still stage the '
-                  'reference directly.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: DesignTokens.textMuted, fontSize: 13)),
-              const SizedBox(height: 14),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  OutlinedButton(
-                    onPressed: () {
-                      final ref = _ctrl.text.trim();
-                      if (ref.isEmpty) return;
-                      widget.live.act(
-                          cmdStageScripture(ref, translation: _translation));
-                    },
-                    child: const Text('Stage'),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    style: FilledButton.styleFrom(
-                        backgroundColor: DesignTokens.previewFill),
-                    onPressed: () {
-                      final ref = _ctrl.text.trim();
-                      if (ref.isEmpty) return;
-                      widget.live.stageScriptureAndGoLive(ref,
-                          translation: _translation);
-                    },
-                    child: const Text('Live'),
-                  ),
-                ],
+              SelahButton(
+                label: 'Stage',
+                onPressed: () {
+                  final ref = _ctrl.text.trim();
+                  if (ref.isEmpty) return;
+                  widget.live.act(
+                    cmdStageScripture(ref, translation: _translation),
+                  );
+                },
+              ),
+              const SizedBox(width: SelahSpace.sm),
+              SelahButton(
+                label: 'Live',
+                variant: SelahButtonVariant.success,
+                onPressed: () {
+                  final ref = _ctrl.text.trim();
+                  if (ref.isEmpty) return;
+                  widget.live.stageScriptureAndGoLive(
+                    ref,
+                    translation: _translation,
+                  );
+                },
               ),
             ],
           ),
-        ),
-      );
+        ],
+      ),
+    ),
+  );
 }
 
 /// The entry point to the detection-approval queue (FR-095).
@@ -371,53 +446,63 @@ class _DetectionBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final label =
-        count == 1 ? '1 verse needs approval' : '$count verses need approval';
+    final label = count == 1
+        ? '1 verse needs approval'
+        : '$count verses need approval';
+    final tone = SelahToneStyle.of(SelahTone.warn);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+      padding: const EdgeInsets.fromLTRB(
+        SelahSpace.gutter,
+        SelahSpace.md,
+        SelahSpace.gutter,
+        0,
+      ),
       child: Semantics(
         button: true,
         label: label,
         hint: 'Opens the approval list',
         excludeSemantics: true,
         child: Material(
-          color: DesignTokens.warnFill.withValues(alpha: 0.14),
-          borderRadius: BorderRadius.circular(10),
+          color: tone.fill,
+          borderRadius: BorderRadius.circular(SelahRadius.row),
           child: InkWell(
-            borderRadius: BorderRadius.circular(10),
-            onTap: () {
-              SettingsScope.maybeOf(context)?.haptic();
-              onTap();
-            },
+            borderRadius: BorderRadius.circular(SelahRadius.row),
+            onTap: onTap,
             child: Container(
-              constraints: const BoxConstraints(minHeight: 48),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              constraints: const BoxConstraints(minHeight: kSelahMinTouchTarget),
+              padding: const EdgeInsets.symmetric(
+                horizontal: SelahSpace.md,
+                vertical: SelahSpace.sm,
+              ),
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: DesignTokens.warnInk),
+                borderRadius: BorderRadius.circular(SelahRadius.row),
+                border: Border.all(color: tone.border),
               ),
               child: Row(
-                children: [
+            children: [
                   // Real icons, not the ⚠ / › glyphs: U+26A0 has an emoji
-                  // presentation on iOS that ignores warnInk, and glyph metrics
-                  // differ across Android OEM fonts.
-                  const Icon(Icons.warning_amber_rounded,
-                      size: 18, color: DesignTokens.warnInk),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(label,
-                        maxLines: 1,
-                        softWrap: false,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.2,
-                            color: DesignTokens.warnInk)),
+                  // presentation on iOS that ignores the ink colour, and glyph
+                  // metrics differ across Android OEM fonts.
+                  Icon(
+                    Icons.warning_amber_rounded,
+                    size: 18,
+                    color: tone.ink,
                   ),
-                  const Icon(Icons.chevron_right,
-                      size: 20, color: DesignTokens.warnInk),
+                  const SizedBox(width: SelahSpace.xs),
+                  Expanded(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
+                      style: SelahType.bodySmall.copyWith(
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.2,
+                        color: tone.ink,
+                      ),
+                    ),
+                  ),
+                  Icon(Icons.chevron_right, size: 20, color: tone.ink),
                 ],
               ),
             ),
@@ -428,55 +513,61 @@ class _DetectionBanner extends StatelessWidget {
   }
 }
 
+/// The translation pill (`KJV ▾`) — gold, because the translation is part of the
+/// scripture reference.
 class _TranslationPicker extends StatelessWidget {
   final String current;
   final List<String> options;
   final ValueChanged<String> onPick;
-  const _TranslationPicker(
-      {required this.current, required this.options, required this.onPick});
+  const _TranslationPicker({
+    required this.current,
+    required this.options,
+    required this.onPick,
+  });
 
   @override
   Widget build(BuildContext context) => PopupMenuButton<String>(
-        tooltip: 'Translation',
-        color: DesignTokens.bgPanel,
-        initialValue: current,
-        onSelected: onPick,
-        itemBuilder: (context) => [
-          for (final code in options)
-            PopupMenuItem<String>(
-              value: code,
-              child: Text(code,
-                  style: const TextStyle(color: DesignTokens.textPrimary)),
+    tooltip: 'Translation',
+    initialValue: current,
+    onSelected: onPick,
+    itemBuilder: (context) => [
+      for (final code in options)
+        PopupMenuItem<String>(value: code, child: Text(code)),
+    ],
+    child: Container(
+      height: kSelahMinTouchTarget,
+      padding: const EdgeInsets.symmetric(horizontal: SelahSpace.md),
+      decoration: BoxDecoration(
+        color: DesignTokens.d2Surface,
+        borderRadius: BorderRadius.circular(SelahRadius.control),
+        border: Border.all(color: DesignTokens.d2Border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            current,
+            style: SelahType.label.copyWith(
+              fontSize: 13,
+              color: DesignTokens.d2Gold,
             ),
+          ),
+          const Icon(
+            Icons.arrow_drop_down,
+            size: 18,
+            color: DesignTokens.d2Gold,
+          ),
         ],
-        child: Container(
-          height: 40,
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          decoration: BoxDecoration(
-            color: DesignTokens.bgBase,
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: DesignTokens.border),
-          ),
-          child: Row(
-            children: [
-              Text(current,
-                  style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: DesignTokens.textPrimary)),
-              const Icon(Icons.arrow_drop_down,
-                  size: 18, color: DesignTokens.textMuted),
-            ],
-          ),
-        ),
-      );
+      ),
+    ),
+  );
 }
 
 class _NavBtn extends StatelessWidget {
-  final String glyph;
+  final IconData icon;
   final String label;
   final VoidCallback? onTap;
-  const _NavBtn({required this.glyph, required this.label, this.onTap});
+  const _NavBtn({required this.icon, required this.label, this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -486,26 +577,24 @@ class _NavBtn extends StatelessWidget {
       enabled: enabled,
       label: label,
       excludeSemantics: true,
-      child: Material(
-        color: DesignTokens.bgPanel,
-        borderRadius: BorderRadius.circular(8),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: onTap,
-          child: Container(
-            width: 40,
-            height: 34,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              border: Border.all(color: DesignTokens.border),
-              borderRadius: BorderRadius.circular(8),
+      child: Opacity(
+        opacity: enabled ? 1 : 0.4,
+        child: Material(
+          color: DesignTokens.d2Elevated,
+          borderRadius: BorderRadius.circular(SelahRadius.badge),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(SelahRadius.badge),
+            onTap: onTap,
+            child: Container(
+              width: kSelahMinTouchTarget,
+              height: 36,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                border: Border.all(color: DesignTokens.d2Border),
+                borderRadius: BorderRadius.circular(SelahRadius.badge),
+              ),
+              child: Icon(icon, size: 20, color: DesignTokens.d2Text),
             ),
-            child: Text(glyph,
-                style: TextStyle(
-                    fontSize: 20,
-                    color: enabled
-                        ? DesignTokens.textPrimary
-                        : DesignTokens.textMuted)),
           ),
         ),
       ),
@@ -513,6 +602,11 @@ class _NavBtn extends StatelessWidget {
   }
 }
 
+/// One verse row: gold number, verse text, and a trailing glyph that says what a
+/// tap will do (→ stage) or what already happened (✓ staged / ● live).
+///
+/// The staged/live tint is never the only cue — the trailing glyph and the
+/// semantic label carry the same fact (WCAG 1.4.1).
 class _VerseRow extends StatelessWidget {
   final VerseView verse;
   final bool staged;
@@ -529,64 +623,96 @@ class _VerseRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // The staged verse gets the green preview box; a live verse the red one —
-    // canonical colour + the surrounding number/label carry the meaning too.
     // Live wins the colour when a verse is both staged AND live — after go-live
     // the host reports staged==live for the same reference, and the operator
     // needs the red "on the audience" cue (matches plan_tab's ordering).
-    final Color? border = live
-        ? DesignTokens.liveInk
+    final state = live
+        ? SelahRowState.live
         : staged
-            ? DesignTokens.previewInk
-            : null;
-    final Color? fill = live
-        ? DesignTokens.liveFill.withValues(alpha: 0.12)
-        : staged
-            ? DesignTokens.previewFill.withValues(alpha: 0.12)
-            : null;
-    return Semantics(
-      button: true,
-      label: 'Verse ${verse.number}'
-          '${live ? ", live" : staged ? ", staged" : ""}',
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Material(
-          color: fill ?? Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(8),
-            onTap: onTap,
-            onDoubleTap: onDoubleTap,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-              decoration: BoxDecoration(
-                border: border == null ? null : Border.all(color: border),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: 26,
-                    child: Text('${verse.number}',
-                        style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: DesignTokens.warnInk)),
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(verse.text,
-                        style: const TextStyle(
-                            fontSize: 14,
-                            height: 1.35,
-                            color: DesignTokens.textPrimary)),
-                  ),
-                ],
+        ? SelahRowState.staged
+        : SelahRowState.normal;
+    return SelahListRow(
+      state: state,
+      onTap: onTap,
+      onDoubleTap: onDoubleTap,
+      padding: const EdgeInsets.symmetric(
+        horizontal: SelahSpace.md,
+        vertical: SelahSpace.md,
+      ),
+      semanticLabel:
+          'Verse ${verse.number}'
+          '${live
+              ? ", live"
+              : staged
+              ? ", staged"
+              : ""}',
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ≥26 wide: the frame draws 16 and a two-digit verse number wraps
+          // onto a second line there (spec §4.5, measured on `355:239`).
+          SizedBox(
+            width: 26,
+            child: Text(
+              '${verse.number}',
+              style: SelahType.bodySmall.copyWith(
+                fontWeight: FontWeight.w700,
+                color: DesignTokens.d2Gold,
               ),
             ),
           ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              verse.text,
+              style: SelahType.body.copyWith(color: DesignTokens.d2Text),
+            ),
+          ),
+          const SizedBox(width: SelahSpace.xs),
+          _StageAffordance(live: live, staged: staged),
+        ],
+      ),
+    );
+  }
+}
+
+/// The trailing stage affordance on a verse row (spec §4.5): `→` on an
+/// `elevated` well by default, a solid `d2Preview` pill with a `d2PreviewSoft`
+/// check once staged, and the live dot once it is on the audience screen.
+///
+/// It is not an independent tap target — the whole row is tappable — so it is
+/// excluded from semantics; the row's own label already says ", staged" /
+/// ", live".
+class _StageAffordance extends StatelessWidget {
+  final bool live;
+  final bool staged;
+  const _StageAffordance({required this.live, required this.staged});
+
+  @override
+  Widget build(BuildContext context) {
+    final (IconData glyph, Color fill, Color ink) = live
+        ? (Icons.circle, DesignTokens.d2LiveSoft, DesignTokens.d2Live)
+        : staged
+        ? (
+            Icons.check,
+            DesignTokens.d2Preview,
+            DesignTokens.d2PreviewSoft,
+          )
+        : (
+            Icons.arrow_forward,
+            DesignTokens.d2Elevated,
+            DesignTokens.d2TextSecondary,
+          );
+    return ExcludeSemantics(
+      child: Container(
+        width: 28,
+        height: 28,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: fill,
+          borderRadius: BorderRadius.circular(SelahRadius.badge),
         ),
+        child: Icon(glyph, size: live ? 10 : 16, color: ink),
       ),
     );
   }

@@ -114,10 +114,14 @@ flutter_launcher_icons:
   adaptive_icon_foreground: "assets/selahcue-logo.png"
 
 # Native (cold-start) splash so there's no flash before Flutter boots — matches
-# the in-app SplashView (dart run flutter_native_splash:create).
+# the in-app SplashView, which is Design 2.0 `d2Base` (#0B0D12). The emitted
+# bitmaps/styles are GENERATED from this block and are still on the Design 1.0
+# base until someone runs `dart run flutter_native_splash:create`; the delta is
+# 3/255 per channel, so the config is corrected here rather than regenerating
+# binary assets as a side-effect of a code fix.
 flutter_native_splash:
-  color: "#0E1116"
+  color: "#0B0D12"
   image: assets/selahcue-logo.png
   android_12:
-    color: "#0E1116"
+    color: "#0B0D12"
     image: assets/selahcue-logo.png

@@ -70,8 +70,8 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final live = await _pump(tester, MobileRole.producer);
-    final previewTop = tester.getTopLeft(find.text('PREVIEW · STAGED'));
-    final liveTop = tester.getTopLeft(find.text('● LIVE · ON AIR'));
+    final previewTop = tester.getTopLeft(find.text('PREVIEW'));
+    final liveTop = tester.getTopLeft(find.text('LIVE'));
     // Same row → aligned tops; Live is to the RIGHT of Preview.
     expect(liveTop.dy, previewTop.dy);
     expect(liveTop.dx, greaterThan(previewTop.dx));
@@ -84,8 +84,8 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final live = await _pump(tester, MobileRole.producer);
-    final previewTop = tester.getTopLeft(find.text('PREVIEW · STAGED'));
-    final liveTop = tester.getTopLeft(find.text('● LIVE · ON AIR'));
+    final previewTop = tester.getTopLeft(find.text('PREVIEW'));
+    final liveTop = tester.getTopLeft(find.text('LIVE'));
     expect(liveTop.dy, greaterThan(previewTop.dy)); // Live below Preview
     live.dispose();
   });
