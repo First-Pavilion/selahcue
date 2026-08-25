@@ -107,6 +107,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-034 | yes | Every mutating `gh` call is withheld under DRY_RUN | run the alarm with `DRY_RUN=true` against a stub `gh` that logs real invocations | 0 real writes executed | recorded terminal output | PASS |
 | C-036 | yes | A step with a NON-STATUS `if:` after a gate is also flagged as stranded | add `if: runner.os == 'Linux'` between two gates; run the checker | checker exits 1 naming the step; actionlint exits 0 | recorded terminal output | PASS |
 | C-037 | yes | That rule is guarded (reverting it to "no `if:` only" is caught) | mutate `STATUS_FN.search(cond)` back to `not cond`, and disable the rule | self-test exits 1 in both cases | recorded terminal output | PASS |
+| C-038 | yes | CI can actually run on a pull request | open PR #2 and observe the pipeline | `changes` succeeds and the matrix runs, rather than failing on a refused API call | GitHub PR #2 checks | PASS |
 | C-035 | yes | The four reviewers have reviewed and blocking findings are cleared | Cody, Vera, Sana, Quinn (+ Codex counterparts) | no unresolved blocking findings | ClickUp 86ak5rc9c comments | PASS |
 
 ## Verification plan
@@ -212,6 +213,16 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Result: checker exits 1 naming the step while actionlint exits 0 on the same file; both mutations turn the self-test red. Self-test grew to 12 cases, including a status-function conditional and an explicit `always()` after a gate, both correctly accepted.
 - New evidence: none contradicting; the three legitimate shapes Quinn built are all accepted, so the rule did not gain false positives.
 - Decision: complete — all four reviewers pass.
+
+### Iteration 10 — the PR exposed a defect that had been latent for months
+
+- Target criterion: C-038
+- Hypothesis: none — this was discovered by opening the PR, which produced a red pipeline in 20 seconds.
+- Change or investigation: `detect changed areas` failed with `Resource not accessible by integration` and every downstream job was skipped. `dorny/paths-filter` uses git against the merge base on a push, but on a `pull_request` it calls the GitHub API (`listFiles`), which needs `pull-requests: read`; the repository default grants only contents and packages. Granted the `changes` job `contents: read` + `pull-requests: read`.
+- Verifier executed: `gh run view` on the failing run; then `gh run list --event pull_request` over the repository's history.
+- Result: fixed in `f491735`. Dropping `contents` from that same block makes `check_workflows.py` flag it, which is the pairing that guard exists to enforce.
+- New evidence: **this was not introduced here.** The only other PR run in the repository's history, `30718327254` on 2026-08-01, died the same way in 17s with the identical error. It went unnoticed because work is pushed straight to `main`, where paths-filter takes the git path and never calls the API — nothing had ever exercised the PR path. It is the same shape as the failure this whole goal addresses: a gate failing for months somewhere nobody was looking, found only because someone finally looked.
+- Decision: complete
 
 ## Risks and rollback
 
