@@ -12,6 +12,33 @@ lands, "every transition writes one licence audit row" holds for every transitio
 that one. `tests/test_license_state_machine.py` pins the bypass by site, so a second one
 cannot appear quietly.
 
+Calling contract — authorisation is the CALLER's job
+--------------------------------------------------------------------------------------
+**This function performs no authorisation.** It takes whatever `ActorContext` it is handed
+and will revoke a licence for a CUSTOMER or DEVICE actor as readily as for staff, auditing
+it faithfully either way. PRD §19 names the control pair for staff-surface abuse as "§15
+actor gating + FR-508 audit"; this module implements the audit half and none of the gating
+half, so a caller that forgets is protected by nothing.
+
+That split is deliberate, not an omission. Callers are not all staff: the expiry job
+(86ak109dv) runs on its own authority, and FR-537 requires billing webhooks to write "only
+through the FR-501 writers". Hardcoding `require_staff_permission` here would lock those
+paths out, so gating belongs in the service layer where the five mutation tickets sit.
+
+What each caller owes:
+
+* **Staff-facing callers** must call `require_staff_permission(actor, ...)` (§15) BEFORE
+  calling this, and must carry a test that an unauthorised actor is refused with
+  `PERMISSION_DENIED` *and* that no transition occurs.
+* **System callers** must pass a non-staff `ActorContext` that names the job, the way the
+  revocation cascade does (`ActorKind.SERVICE`, `actor_id="revocation-cascade"`), so the
+  trail distinguishes an automated move from a person's.
+* **`StaffPermission` has no suspend, reinstate, convert or archive permission yet** — only
+  `generate_license_key`, `extend_license_key` and `revoke_license_key` exist. Downstream
+  tickets must ADD the permission they need rather than reusing `REVOKE_LICENSE_KEY`, which
+  would let a licence be suspended by anyone entitled to revoke one and make the audit trail
+  unable to tell the two authorities apart.
+
 Calling contract — durability of refusals
 --------------------------------------------------------------------------------------
 **Call this outside any wrapping transaction.** A refusal writes its DENIED audit row after
@@ -216,6 +243,7 @@ REINSTATE_ACTION = "license_key.reinstated"
 # and start failing inside the transaction instead of at the boundary.
 REQUEST_ID_MAX_LENGTH: int = AuditEvent._meta.get_field("request_id").max_length
 ACTION_MAX_LENGTH: int = AuditEvent._meta.get_field("action").max_length
+SOURCE_SURFACE_MAX_LENGTH: int = AuditEvent._meta.get_field("source_surface").max_length
 
 
 class RefusalCode(str, Enum):
@@ -375,6 +403,24 @@ def _target_label(target: TransitionTarget) -> str:
     return target.value
 
 
+def _require_source_surface(value: str) -> str:
+    """The surface an audit row is attributed to. Caller-supplied, and bounded by the column.
+
+    Unvalidated this is worse than `action`, because the refusal path writes its row inside
+    the `except` block: an over-length value turns a clean CONFLICT into an unhandled
+    `DataError` AND destroys the DENIED row — losing exactly the compliance record NFR-506
+    exists to guarantee. On SQLite it is stored over-length instead, silently corrupting a
+    column the audit trail is queried by.
+    """
+    cleaned = (value or "").strip()
+    if not cleaned or len(cleaned) > SOURCE_SURFACE_MAX_LENGTH:
+        raise SafeAPIError(
+            ErrorCode.VALIDATION_FAILED,
+            f"Audit source surface must be 1-{SOURCE_SURFACE_MAX_LENGTH} characters.",
+        )
+    return cleaned
+
+
 def _require_action(value: str | None) -> str | None:
     """A caller-supplied action must fit `AuditEvent.action`.
 
@@ -405,7 +451,13 @@ def apply_license_status_transition(
     extra_before: dict[str, Any] | None = None,
     extra_after: dict[str, Any] | None = None,
 ) -> LicenseTransitionResult:
-    """The one audited writer for `AppLicenseKey.status` (FR-501, FR-508, NFR-506).
+    """The audited writer for `AppLicenseKey.status` (FR-501, FR-508, NFR-506).
+
+    **Performs no authorisation.** `actor` is recorded, never checked — a CUSTOMER or DEVICE
+    actor will transition a licence just as a staff actor would. Staff-facing callers must
+    gate with `require_staff_permission` (§15) before calling; system callers must pass a
+    non-staff `ActorContext` naming the job. See the module docstring for why the split is
+    deliberate and what each caller owes.
 
     Pass `PRIOR_STATUS` as `to_status` to reinstate a suspended licence; the target is read
     from the row, never assumed.
@@ -435,6 +487,7 @@ def apply_license_status_transition(
     cleaned_reason = require_reason(reason)
     cleaned_request_id = _require_request_id(request_id)
     cleaned_action = _require_action(action)
+    cleaned_surface = _require_source_surface(source_surface)
     requested = _coerce_target(to_status)
 
     try:
@@ -482,7 +535,7 @@ def apply_license_status_transition(
                 target_id=str(locked.pk),
                 request_id=cleaned_request_id,
                 reason=cleaned_reason,
-                source_surface=source_surface,
+                source_surface=cleaned_surface,
                 result=AuditResult.SUCCESS,
                 # Extras FIRST, mandated fields LAST: the FR-508 fields are authoritative and
                 # a caller must not be able to overwrite them. Five downstream tickets call
@@ -512,7 +565,7 @@ def apply_license_status_transition(
             target_id=str(license_key.pk),
             request_id=cleaned_request_id,
             reason=cleaned_reason,
-            source_surface=source_surface,
+            source_surface=cleaned_surface,
             result=AuditResult.DENIED,
             before={"status": refused.before.value, "prior_status": refused.prior_status},
             # The status did not move, so `after` reports the same status, plus what was asked

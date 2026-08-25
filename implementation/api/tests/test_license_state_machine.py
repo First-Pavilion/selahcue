@@ -31,6 +31,7 @@ from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatu
 from selahcue_api.apps.license_keys.state_machine import (
     ACTION_MAX_LENGTH,
     AUDIT_TARGET_TYPE,
+    SOURCE_SURFACE_MAX_LENGTH,
     LEGAL_TRANSITIONS,
     PRIOR_STATUS,
     REFUSED_ACTION,
@@ -1181,3 +1182,163 @@ def test_the_table_validator_passes_on_the_real_table():
     """Positive control: the rejections above must come from the drift, not from a validator
     that raises unconditionally."""
     state_machine._validate_table()
+
+
+# --- source_surface is caller-supplied and bounded, exactly like action ------------------
+def test_an_over_long_source_surface_is_refused_at_the_boundary():
+    """`AuditEvent.source_surface` is `max_length=64` and arrives from the caller, so it needs
+    the same boundary check `action` gets.
+
+    Unvalidated it is worse than `action` on the refusal path: the over-length value reaches
+    `record_audit_event` INSIDE the except block, so on Postgres the DENIED row is lost and
+    the caller receives a raw `django.db.utils.DataError` instead of the safe
+    `IllegalLicenseTransition` envelope. On SQLite it is stored over-length instead, silently
+    corrupting the column the audit trail is queried by. Five downstream tickets are about to
+    start passing this parameter.
+    """
+    tag = "surface-too-long"
+    key = _seed_license_key(tag=tag)
+    before_rows = _audit_rows(key).count()
+
+    with pytest.raises(SafeAPIError) as raised:
+        apply_license_status_transition(
+            key,
+            to_status=LicenseKeyStatus.REVOKED,
+            actor=_staff_actor(),
+            reason="A surface name beyond the column width.",
+            request_id="req-surface-too-long",
+            source_surface="s" * (SOURCE_SURFACE_MAX_LENGTH + 1),
+        )
+
+    assert raised.value.code == ErrorCode.VALIDATION_FAILED
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.ISSUED, "nothing may move when the surface is invalid"
+    assert _audit_rows(key).count() == before_rows
+
+    # Positive control: a surface that fits succeeds and is stored verbatim, so the refusal
+    # above is the bound biting rather than the parameter being broken outright.
+    result = apply_license_status_transition(
+        key,
+        to_status=LicenseKeyStatus.REVOKED,
+        actor=_staff_actor(),
+        reason="A surface name that fits the column.",
+        request_id="req-surface-ok",
+        source_surface="s" * SOURCE_SURFACE_MAX_LENGTH,
+    )
+    assert result.changed is True
+    stored = _audit_rows(key).order_by("-id").first().source_surface
+    assert stored == "s" * SOURCE_SURFACE_MAX_LENGTH, (
+        f"source_surface was stored as {len(stored)} chars — the column was not respected"
+    )
+
+
+def test_an_over_long_source_surface_on_the_REFUSAL_path_keeps_the_safe_envelope():
+    """The severe half, asserted separately.
+
+    The refusal path writes its audit row inside the `except` block, so before validation an
+    over-length surface turned a clean CONFLICT into an unhandled driver error AND destroyed
+    the DENIED row — losing the compliance record this whole ticket exists to guarantee.
+    """
+    tag = "surface-too-long-refusal"
+    key = _seed_license_key(tag=tag)
+    _drive_to(key, LicenseKeyStatus.ARCHIVED, tag=tag)
+    before_denied = _audit_rows(key).filter(result=AuditResult.DENIED).count()
+
+    # ARCHIVED -> REVOKED is illegal, so this would take the refusal path if it got that far.
+    with pytest.raises(SafeAPIError) as raised:
+        apply_license_status_transition(
+            key,
+            to_status=LicenseKeyStatus.REVOKED,
+            actor=_staff_actor(),
+            reason="Refusing with an over-long surface name.",
+            request_id="req-surface-refusal",
+            source_surface="s" * (SOURCE_SURFACE_MAX_LENGTH + 1),
+        )
+
+    # Rejected at the boundary, so it never reaches the refusal path at all.
+    assert raised.value.code == ErrorCode.VALIDATION_FAILED
+    assert not isinstance(raised.value, IllegalLicenseTransition)
+    assert _audit_rows(key).filter(result=AuditResult.DENIED).count() == before_denied
+
+    # Positive control: the same illegal transition with a valid surface still produces the
+    # coded refusal and its durable DENIED row.
+    with pytest.raises(IllegalLicenseTransition):
+        apply_license_status_transition(
+            key,
+            to_status=LicenseKeyStatus.REVOKED,
+            actor=_staff_actor(),
+            reason="Refusing with a valid surface name.",
+            request_id="req-surface-refusal-ok",
+            source_surface="admin_graphql",
+        )
+    assert _audit_rows(key).filter(result=AuditResult.DENIED).count() == before_denied + 1
+
+
+# --- Authorisation is the caller's job, and that has to be findable ---------------------
+@pytest.mark.parametrize(
+    "actor",
+    [
+        ActorContext(kind=ActorKind.CUSTOMER, actor_id="cust_1", org_id="org_1", role="MEMBER"),
+        ActorContext(kind=ActorKind.DEVICE, actor_id="device_1"),
+        ActorContext(kind=ActorKind.SERVICE, actor_id="expiry-sweep"),
+        ActorContext(kind=ActorKind.STAFF, actor_id="staff_no_perms"),
+    ],
+    ids=["customer", "device", "service", "staff-with-no-permissions"],
+)
+def test_the_writer_performs_no_authorisation_by_design(actor):
+    """Pins the architectural seam, so it cannot move without someone noticing.
+
+    This is NOT an assertion that unauthorised licence changes are acceptable. It records
+    that gating lives in the service layer above this function, because callers are not all
+    staff — the expiry job runs on its own authority and FR-537 requires billing webhooks to
+    write "only through the FR-501 writers", so a hardcoded `require_staff_permission` here
+    would lock those paths out.
+
+    The consequence is that every staff-facing caller MUST gate before calling, and must
+    carry its own test that an unauthorised actor gets `PERMISSION_DENIED` with no transition
+    (PRD §19: "§15 actor gating + FR-508 audit" — this module is only the audit half).
+
+    If someone later adds authorisation inside the writer, this test fails — which is the
+    intended prompt to move it to the right layer, or to update the module contract if the
+    decision has genuinely changed.
+    """
+    tag = f"authz-{actor.kind.value}-{actor.actor_id}".lower()
+    key = _seed_license_key(tag=tag)
+
+    result = apply_license_status_transition(
+        key,
+        to_status=LicenseKeyStatus.REVOKED,
+        actor=actor,
+        reason="Recording the actor without checking it, by design.",
+        request_id=f"req-{tag}"[:64],
+    )
+
+    assert result.changed is True
+    # The actor is RECORDED faithfully — which is what makes the missing gate detectable
+    # after the fact, and what the caller's own authorisation test complements.
+    row = _audit_rows(key).order_by("-id").first()
+    assert row.actor_kind == actor.kind.value
+    assert row.actor_id == actor.actor_id
+
+
+def test_the_module_states_the_authorisation_contract():
+    """Guards the finding itself.
+
+    A security review found the contract missing from the tree entirely: the docstring was
+    exhaustive about transaction and writer discipline, so a reader would reasonably conclude
+    every caller obligation was listed. Prose is the deliverable here, so prose is what this
+    checks — loosely, on the obligations rather than the wording.
+    """
+    from selahcue_api.apps.license_keys import state_machine as module
+
+    contract = (module.__doc__ or "").lower()
+    for obligation in ("no authorisation", "require_staff_permission", "staffpermission"):
+        assert obligation in contract, (
+            f"the module contract must state {obligation!r} — five tickets call this writer "
+            "and the gating half of PRD §19 is enforced by nobody if it is unwritten"
+        )
+
+    writer_contract = (apply_license_status_transition.__doc__ or "").lower()
+    assert "no authorisation" in writer_contract, (
+        "the writer's own docstring must state it too — that is what is read at the call site"
+    )
