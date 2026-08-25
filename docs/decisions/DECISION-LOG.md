@@ -4,6 +4,123 @@ Durable record of material product/scope/architecture decisions, with traceabili
 
 ---
 
+## DEC-012 — EXPIRED error code: split by surface — explicit on licence/entitlement, collapsed on auth tokens (D6)
+
+- **Date:** 2026-08-25
+- **Stage:** Platform licensing decision round (Platform PRD v1.2 amendment; decision ticket D6 [86ak120fz](https://app.clickup.com/t/86ak120fz))
+- **Decided by:** User (product owner)
+- **Type:** Product + security posture (API error-surface design)
+- **Status:** DECIDED
+
+**Decision.** The "distinct EXPIRED error code?" question is split by surface rather than answered once:
+
+1. **Licence/entitlement state → expose `EXPIRED` explicitly** (Platform PRD FR-523): a distinct coded error on the authenticated licence/entitlement surfaces (refresh, manifest issuance, activation).
+2. **Auth tokens (`verify_email`, `confirm_password_reset`) → keep the collapse** (FR-529): unknown / consumed / expired / wrong-purpose token failures stay indistinguishable.
+3. **Two fixes that leak nothing**, decided alongside: **(a)** `confirm_password_reset` must validate the token **before** the new password — a live defect verified in the tree (`apps/accounts/services.py:968` calls `_validate_password()` before the token lookup at 973–987, both raising the same `_validation_error()`, so a valid link plus a weak password is indistinguishable from a dead link and the user loops forever); reorder plus a regression test pinning the order (FR-551). **(b)** The `/verify` and `/reset` landing pages always offer "request a new link", whatever the error, since the API deliberately cannot say why a token failed (FR-552; `resendVerificationEmail` already ships, 86ak120ac).
+
+**User rationale.** No enumeration oracle exists on the licence surfaces — a church told "your licence expired" learns nothing about anyone else's account, and collapsing it into VALIDATION_FAILED only generates support load. On auth tokens the anti-enumeration stance of the independent security review stands. The two fixes remove the user-visible dead end (a verification email in spam past its 24h TTL; a reset link clicked after its 1h TTL) without telling an attacker anything: reordering converts "your link is broken" into "your password is too short", and the unconditional resend affordance is the entire remedy when a link expired.
+
+**Affected items.** Platform PRD v1.2: FR-523 and FR-529 finalised, FR-551/552 added, CON-P6's sanctioned exception recorded. Delivery: a defect ticket for (a) — a user-visible loop, not a nice-to-have.
+
+**Reversibility.** Additive error code on authenticated surfaces only; the public-surface collapse is untouched, so the anti-enumeration posture cannot regress by this decision.
+
+---
+
+## DEC-011 — Entitlement signing keys: no KMS at MVP (accepted risk, named revisit trigger); client trusts a key SET + `key_id` from the first build; both activation paths retained (D5)
+
+- **Date:** 2026-08-25
+- **Stage:** Platform licensing decision round (Platform PRD v1.2 amendment; decision ticket D5 [86ak10gb9](https://app.clickup.com/t/86ak10gb9))
+- **Decided by:** User (product owner)
+- **Type:** Security architecture (entitlement signing custody + rotation), deliberately split by cost and reversibility
+- **Status:** DECIDED
+
+**Decision.** Three parts:
+
+1. **Custody: NO KMS at MVP.** The Ed25519 entitlement signing key stays in the hosting platform's encrypted secret store, with a single documented holder. **Accepted risk, recorded explicitly:** whoever obtains the private key can mint unlimited entitlements at any tier, valid for any duration, entirely offline — no server call to rate-limit, no login to detect, no audit row, no way to know it happened; rotation is the only remedy. **Revisit trigger: first revenue, or the first N paying orgs — whichever comes first.** A deferral with a named end, not a permanent position. It enters the launch security review (86ak11w10) as an accepted-risk item rather than being discovered there as a finding.
+2. **Rotation: the client trusts a KEY SET from the first shipped build — not deferrable.** The public key is compiled into every installed desktop copy; a single-key client means any future key change rejects every new entitlement everywhere at once, unfixable by shipping an update because the machines that matter are deliberately offline. Required in the first build that verifies an entitlement: the client holds a **set** of trusted public keys; the manifest carries a **`key_id`**; the rotation procedure is documented (add new key to the client set → ship → wait for adoption → start signing with the new key → retire the old after the overlap window). Cost: an array instead of a constant, plus one field — and it is what makes part 1 a safe deferral.
+3. **Activation: account login is the primary path; the enrolment key is retained as delegation. No code change** — this is already DEC-004's model and both paths ship. Removing the key path was considered and rejected: it deletes tested code, and it costs the volunteer-installer case (a volunteer setting up sound-booth machines would otherwise need the admin's account password on each one).
+
+**Scope bar (recorded with the decision).** Signing raises the attack cost from "edit a JSON file" to "patch and re-sign a binary". It does not defeat an attacker who controls the machine, and no custody scheme would — build to that bar and no further.
+
+**Affected items.** Platform PRD v1.2: FR-518 (trust-set shape + `key_id`) and FR-538 (custody, accepted risk, revisit trigger, rotation procedure, runbook) finalised; RISK-502 mitigation updated. Launch security review 86ak11w10 gains the accepted-risk item.
+
+**Reversibility.** Part 2 is the reversibility mechanism itself: once the key set + `key_id` ship, custody can be upgraded (or a leaked key rotated out) at any time without touching an installed copy. Part 1 is explicitly temporary with a named trigger.
+
+---
+
+## DEC-010 — SUSPENDED is a soft, reversible licence state; REVOKED remains the terminal, token-killing act (D3)
+
+- **Date:** 2026-08-25
+- **Stage:** Platform licensing decision round (Platform PRD v1.2 amendment; decision ticket D3 [86ak10g8q](https://app.clickup.com/t/86ak10g8q))
+- **Decided by:** User (product owner)
+- **Type:** Product policy (licence lifecycle severity)
+- **Status:** DECIDED
+
+**Decision.** `SUSPENDED` is softer than `REVOKED`, and reversible. Suspended: running devices keep working (existing device tokens stay valid), new activations are refused, cloud/AI features stop, and reinstatement returns the licence to its **prior status**. Revoked: tokens killed by the hourly cascade, terminal. Today the two are operationally identical — both sit outside `ACTIVATABLE_KEY_STATUSES` (`apps/devices/services.py:40`), so the cascade (`apps/devices/tasks.py`) kills device tokens for both, making SUSPENDED a status with no distinct meaning.
+
+**User rationale.** A commercial problem degrades commercial surfaces, not the show. A suspension is a lever for a billing situation that is expected to resolve; killing a church's presentation tokens over a failed card is disproportionate and hits during a service. Revocation is the deliberate, terminal act and keeps its teeth.
+
+**Implementation notes (recorded with the decision).**
+- `SUSPENDED → prior status` requires the **prior status to be recorded at suspension time** — a schema implication, not just a service one — or reinstatement cannot know where to return.
+- The revocation cascade must be **scoped so SUSPENDED is not a token-killing state** — the actual code change, landing with cascade correctness (86ak1099u); reachability of SUSPENDED is the state-machine ticket's job (86ak5mn00).
+- A suspended licence's already-cached offline entitlement keeps working until its own expiry, consistent with the PRD's RISK-501 — intended behaviour, not a hole.
+
+**Affected items.** Platform PRD v1.2: FR-504, FR-510, FR-522 finalised (plus FLOW-506, the SUSPENDED state-machine row, and the FR-520 enforcement ladder); FR-535's deferral narrows to D2 only.
+
+**Reversibility.** The severity split is policy over an existing state machine; tightening SUSPENDED later (e.g. a tiered abuse-suspension) is additive and does not invalidate the recorded-prior-status schema.
+
+---
+
+## DEC-009 — Renewal grace: 7-day grace period, then fallback to the Free tier at the next session start (D4 — AMENDS DEC-005)
+
+- **Date:** 2026-08-25
+- **Stage:** Platform licensing decision round (Platform PRD v1.2 amendment; decision ticket D4 [86ak10ga1](https://app.clickup.com/t/86ak10ga1))
+- **Decided by:** User (product owner)
+- **Type:** Product policy (renewal/lapse behaviour) — **amendment to DEC-005**, not a free-standing decision
+- **Status:** DECIDED
+- **Amends:** DEC-005 point 2 (offline entitlement = full licence window, **no separate grace**). That rule is reopened and amended; DEC-005 point 1 and everything else stand.
+
+**Decision.** A lapsed subscription gets a **7-day grace period, after which it falls back to the FREE TIER** — not a shutdown. A lapsed licence never stops the app: for 7 days after `expires_at` the entitlement keeps the full tier grants with renewal notices; after day 7 it degrades to Free (watermark, 1 device, 2 outputs, no NDI, 30 min STT).
+
+**Two rules are the substance of the decision, both normative:**
+
+1. **The Free-tier fallback takes effect at the NEXT SESSION START; a session already running finishes on the entitlement it began with** (PRD FR-549). Falling to Free is a downgrade that changes four things a congregation can see — the watermark appears, NDI feeds stop, outputs drop to 2, the device allowance drops to 1 — and if day 7 elapses at 10:40 on a Sunday, all four would land mid-service. FR-548 already forbade exactly this for the watermark ("never applied, removed or altered mid-session as an enforcement reaction"); the identical rule now extends to the **whole** downgrade. Grace expiry is a state change the operator console reflects immediately and the output path honours only at a session boundary. Without this rule, a 7-day grace merely delays a mid-service degradation by a week.
+2. **A downgrade must not deactivate or revoke surplus devices** (PRD FR-550). When a 3-seat Pro org drops to Free's 1 device, all device records and tokens stay intact; the limit is enforced at **session start** — the first device to start a session gets it, the others are told why and offered the upgrade path. Re-subscribing restores the org exactly as it was, with no re-activation and no burnt instance slots. The rejected alternative — deactivating surplus devices on downgrade — destroys state on a billing event and forces every device through re-activation on renewal.
+
+**Affected items.** Platform PRD v1.2: FR-521 finalised; FLOW-505 (the hard case) resolved; FR-549/550 added to carry the two rules; FR-516, the EXPIRED state-machine row, AS-P5, §18 and §24 updated. DEC-005's status annotated with this amendment.
+
+**Reversibility.** The grace length (7 days) is policy data; the two rules are invariants of the never-blank posture (NFR-024/NG-P2) and should survive any future change to the grace length or fallback tier.
+
+---
+
+## DEC-008 — D1 partial closure: tier structure and entitlement limits (Free/Pro/Platinum), seat unit, STT quota period and scope; pricing and affiliate terms stay open
+
+- **Date:** 2026-08-25
+- **Stage:** Platform licensing decision round (Platform PRD v1.1 amendment, same day as the PRD's first issue; decision ticket D1 [86ak10gph](https://app.clickup.com/t/86ak10gph))
+- **Decided by:** User (product owner)
+- **Type:** Product / commercial model — **partial closure of D1**; the remainder stays open
+- **Status:** PARTIALLY DECIDED
+
+**Decision.** The plan/tier structure and entitlement limits:
+
+| | Free | Pro | Platinum |
+|---|---|---|---|
+| Seats | 1 device | 3 seats, each with its own licence | 7 seats, each with its own licence |
+| Screens/outputs | 2 | 5 | 10 |
+| NDI outputs | none | 5 | 10 |
+| STT | 30 minutes | 5 hours | 10 hours |
+| Watermark | on all output | none | none |
+
+Owner, verbatim: "the names can change in the nearest future, the hrs for STT can also change as this is dependent on the AI subscription we start using" — hence the PRD makes the catalogue data-driven (FR-544) and keeps tier names out of the manifest's semantics (FR-545). **Same-day follow-up decisions:** a **seat** is a device instance/activation under the org's **single** licence key — "each with its own license" means its own activation/device token, not its own `AppLicenseKey` (AS-P8; DEC-004 unchanged, matches the shipped code, no migration); the **STT quota period** is per calendar month, resetting on the billing anniversary (AS-P6); the **STT quota scope** is pooled per org across all seats (AS-P7).
+
+**Affected items.** Platform PRD v1.1 (2026-08-25 amendment): FR-515/516/533/546 released; EPIC-PL-I (FR-544–548: data-driven catalogue, value-carrying manifest, org-pooled monthly STT metering, exhaustion degrade, Free watermark) added; OQ-P1 reframed as a defect finding (sum-of-key-limits capacity contradicts the one-key-per-org seat model).
+
+**Still open in D1.** Pricing/price points; affiliate terms (the portal stays NOT-V1, 86ak11w7g); AS-P9 (what a screen/output counts); final STT hour values (tied to the AI-subscription choice); tier naming. These continue to gate FR-506, FR-509 (automation facet), FR-534, catalogue pricing content, and METRIC-505's baseline.
+
+**Reversibility.** The volatile values (names, STT hours) are data by design (FR-544/545), so revising them is a data change, not a release; the seat-unit and quota-scope decisions match the shipped code and require no migration to hold.
+
+---
+
 ## DEC-007 — Customer identity: traditional email/password auth (SelahCue-owned), superseding self-hosted Logto/OIDC
 
 - **Date:** 2026-08-11
@@ -62,7 +179,7 @@ Durable record of material product/scope/architecture decisions, with traceabili
 - **Stage:** Account-setup / Platform API (post-DEC-004 licensing build)
 - **Decided by:** User (product owner)
 - **Type:** Product + architecture scope (builds on DEC-004)
-- **Status:** DECIDED
+- **Status:** DECIDED — **point 2 amended by DEC-009 (2026-08-25):** a 7-day renewal grace now follows the licence window, after which the subscription falls back to the Free tier at the next session start
 
 **Decision.** For the Desktop **Account setup** flow:
 
