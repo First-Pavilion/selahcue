@@ -7,7 +7,9 @@
 //! # Both paths, permanently
 //!
 //! - [`LicensingClient::sign_in`] then [`LicensingClient::activate_with_session`] is the
-//!   **primary** path (DEC-005/007, DEC-011 pt 3).
+//!   **primary** path (DEC-005/007, DEC-011 pt 3). It is implemented and contract-tested,
+//!   but **blocked against the deployed API by CSRF on `/graphql/account` (86ak5t1gw)** —
+//!   see the crate docs. Treat it as not yet reachable in production.
 //! - [`LicensingClient::activate_with_enrollment_key`] is the **delegation** path, and is
 //!   not legacy. It exists for the case DEC-011 records: a volunteer setting up machines
 //!   in the sound booth, who would otherwise need the administrator's account password on
@@ -118,9 +120,19 @@ impl Activation {
         }
     }
 
-    /// Whether this activation replaced a previously-issued token, which is now revoked
-    /// server-side. Only the REST path reports it.
-    pub fn is_remint(&self) -> bool {
+    /// Whether the server **told us** this activation replaced a previously-issued token.
+    ///
+    /// Named for what it actually answers. `reminted` is `None` for *every* session
+    /// activation — the payload simply does not carry the field — and a session activation
+    /// genuinely can be a re-mint, because that path delegates into the same
+    /// `_activate_device_for_key`. So `false` here means "not known to be a re-mint", not
+    /// "not a re-mint", and the old name `is_remint` quietly asserted the stronger claim.
+    ///
+    /// Nothing depends on this for correctness: [`Activation::persist`] decides from the
+    /// presence of a token, which is reported on both paths. Read
+    /// [`Activation::reminted`] directly when the difference between `false` and unknown
+    /// matters.
+    pub fn is_known_remint(&self) -> bool {
         self.reminted.unwrap_or(false)
     }
 
@@ -209,7 +221,7 @@ impl<T: HttpTransport> LicensingClient<T> {
             },
         };
         let payload: LoginPayload = self
-            .graphql::<_, LoginData>(&request, None)
+            .graphql::<_, LoginData>(&request, None, ActivationPath::AccountSession)
             .map(|data| data.login)?;
 
         Ok(AccountSession {
@@ -245,7 +257,11 @@ impl<T: HttpTransport> LicensingClient<T> {
         };
 
         let payload: ActivateDevicePayload = self
-            .graphql::<_, ActivateWithSessionData>(&request, Some(session))
+            .graphql::<_, ActivateWithSessionData>(
+                &request,
+                Some(session),
+                ActivationPath::AccountSession,
+            )
             .map(|data| data.activate_device_with_session)?;
 
         Ok(Activation {
@@ -292,7 +308,8 @@ impl<T: HttpTransport> LicensingClient<T> {
             .post_json(&self.url(ACTIVATIONS_PATH), &body, None)
             .map_err(|e| ActivationFailure::Unreachable(e.to_string()))?;
 
-        let parsed: ActivationResponse = Self::decode_rest(response)?;
+        let parsed: ActivationResponse =
+            Self::decode_rest(response, ActivationPath::EnrollmentKey)?;
 
         Ok(Activation {
             path: ActivationPath::EnrollmentKey,
@@ -318,6 +335,7 @@ impl<T: HttpTransport> LicensingClient<T> {
         &self,
         request: &GraphQlRequest<V>,
         bearer: Option<&Token>,
+        path: ActivationPath,
     ) -> Result<D, ActivationFailure> {
         let body = serde_json::to_string(request)
             .map_err(|e| ActivationFailure::Malformed(e.to_string()))?;
@@ -346,7 +364,7 @@ impl<T: HttpTransport> LicensingClient<T> {
                         .iter()
                         .find_map(|e| e.code())
                         .unwrap_or(ErrorCode::Unknown("GRAPHQL_ERROR".to_string()));
-                    return Err(ActivationFailure::from_code(code));
+                    return Err(ActivationFailure::from_code(code, path));
                 }
                 parsed.data.ok_or_else(|| {
                     ActivationFailure::Malformed(
@@ -358,7 +376,7 @@ impl<T: HttpTransport> LicensingClient<T> {
             // method. Fall back to classifying by status.
             Err(e) => {
                 if !(200..300).contains(&response.status) {
-                    Err(Self::rest_error(&response))
+                    Err(Self::rest_error(&response, path))
                 } else {
                     Err(ActivationFailure::Malformed(e.to_string()))
                 }
@@ -367,9 +385,12 @@ impl<T: HttpTransport> LicensingClient<T> {
     }
 
     /// Decode a REST response, mapping non-2xx onto coded failures.
-    fn decode_rest<D: DeserializeOwned>(response: HttpResponse) -> Result<D, ActivationFailure> {
+    fn decode_rest<D: DeserializeOwned>(
+        response: HttpResponse,
+        path: ActivationPath,
+    ) -> Result<D, ActivationFailure> {
         if !(200..300).contains(&response.status) {
-            return Err(Self::rest_error(&response));
+            return Err(Self::rest_error(&response, path));
         }
         serde_json::from_str(&response.body)
             .map_err(|e| ActivationFailure::Malformed(e.to_string()))
@@ -380,17 +401,21 @@ impl<T: HttpTransport> LicensingClient<T> {
     /// The coded body is authoritative when present. It is not always present: a wrong
     /// HTTP method yields a bare Django 405 with an HTML body, so an unparseable error is
     /// classified by status rather than being reported as contract drift.
-    fn rest_error(response: &HttpResponse) -> ActivationFailure {
+    fn rest_error(response: &HttpResponse, path: ActivationPath) -> ActivationFailure {
         match serde_json::from_str::<ApiErrorEnvelope>(&response.body) {
-            Ok(envelope) => ActivationFailure::from_code(ErrorCode::parse(&envelope.error.code)),
+            Ok(envelope) => {
+                ActivationFailure::from_code(ErrorCode::parse(&envelope.error.code), path)
+            }
+            // Not a coded body. A 5xx is the server failing; anything else at a non-2xx is
+            // something in FRONT of the application answering — a proxy page, a Django
+            // middleware rejection, a wrong-method 405. Neither is contract drift, and
+            // calling them `Malformed` sent the reader hunting for a schema change that
+            // does not exist.
             Err(_) => {
                 if (500..600).contains(&response.status) {
                     ActivationFailure::Server(response.status)
                 } else {
-                    ActivationFailure::Malformed(format!(
-                        "status {} with an unrecognised body",
-                        response.status
-                    ))
+                    ActivationFailure::UnexpectedStatus(response.status)
                 }
             }
         }

@@ -5,8 +5,17 @@
 //! desktop a client of the Platform API at all — and it is deliberately a *narrow* one.
 //! It does exactly three things:
 //!
-//! 1. **Activates a device**, over both shipped paths — account sign-in (primary) and
+//! 1. **Activates a device**, over both server-side paths — account sign-in (primary) and
 //!    enrollment key (delegation). See [`client`].
+//!
+//!    **The sign-in path does not currently work end to end against the deployed API**, and
+//!    nothing here should be read as saying it does. Django's CSRF middleware rejects
+//!    `POST /graphql/account` with an HTML 403 before the mutation runs, and the injected
+//!    `HttpTransport` can only carry a bearer, so the call cannot succeed from this client.
+//!    It fails closed — no credential is exposed and nothing is blocked — and now reports
+//!    [`ActivationFailure::UnexpectedStatus`] rather than pretending the contract drifted.
+//!    Resolution is an API-side decision, tracked as **86ak5t1gw**; it is deliberately not
+//!    worked around here. The enrollment-key path is unaffected.
 //! 2. **Keeps the resulting device token in the OS secret store**, never in a file and
 //!    never in the app database, and keeps it there across sign-out. See [`custody`].
 //! 3. **Holds the trusted entitlement-signing keys as a rotation-ready set** selected by

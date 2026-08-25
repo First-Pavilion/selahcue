@@ -183,6 +183,9 @@ fn re_adding_a_trusted_key_consumes_no_slot() {
 
     let again = store.insert(key(9)).unwrap();
     assert_eq!(again, first, "the same key must derive the same id");
+    // `len()` is a weak witness here: `BTreeMap::insert` REPLACES under an existing id, so
+    // the count stays 1 whether or not the dedupe ran. Retrievability by id is the real
+    // assertion, and `re_adding_a_key_to_a_completely_full_store_still_succeeds` covers the ordering.
     assert_eq!(store.len(), 1, "re-adding a key must not consume a slot");
 
     // And it is still the same key, not a replaced one.
@@ -260,6 +263,57 @@ fn a_key_id_collision_is_refused_not_silently_dropped() {
         &first,
         "the stored key must still be the first one, not silently replaced"
     );
+}
+
+#[test]
+fn re_adding_a_key_to_a_completely_full_store_still_succeeds() {
+    // The dedupe has to run BEFORE the cap check, and only a full store can tell the
+    // difference. `re_adding_a_trusted_key_consumes_no_slot` uses a store with one entry, so
+    // removing the dedupe leaves it green: the cap is never reached, `insert` falls through
+    // and `BTreeMap::insert` REPLACES rather than adds, so `len()` stays 1 either way.
+    //
+    // At the cap the two orders diverge visibly: dedupe-first returns `Ok`, cap-first
+    // returns `Err(Full)` for a key the store already trusts. That is the failure an
+    // operator would hit re-running a loader on a fully-populated store.
+    let mut store = TrustedKeys::new();
+    let mut ids = Vec::new();
+    for n in 0..MAX_TRUSTED_KEYS {
+        ids.push(store.insert(key(n as u8)).unwrap());
+    }
+
+    // Positive control before the re-add: the store really is full and the key really is in
+    // it, so an `Ok` below is about the dedupe and not about a store with room to spare.
+    assert_eq!(store.len(), MAX_TRUSTED_KEYS, "the store must be full");
+    let existing = ids[0].clone();
+    assert!(
+        store.get(&existing).is_some(),
+        "the key being re-added must already be present, or this proves nothing"
+    );
+
+    let again = store
+        .insert(key(0))
+        .expect("re-adding a key the FULL store already trusts must succeed, not hit the cap");
+    assert_eq!(again, existing);
+    assert_eq!(
+        store.len(),
+        MAX_TRUSTED_KEYS,
+        "no slot consumed, none freed"
+    );
+
+    // Per-key retrievability, not just a count: the entry must still be the SAME material.
+    // A count alone survives `BTreeMap::insert` replacing the value under the same id.
+    assert_eq!(
+        store.get(&existing).unwrap().public_key(),
+        &key(0),
+        "the re-added key must still resolve to its own material"
+    );
+    for (n, id) in ids.iter().enumerate() {
+        assert_eq!(
+            store.get(id).map(|k| *k.public_key()),
+            Some(key(n as u8)),
+            "key {n} is no longer retrievable by its own id after the re-add"
+        );
+    }
 }
 
 #[test]

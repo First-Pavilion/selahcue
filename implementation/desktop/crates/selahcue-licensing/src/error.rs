@@ -16,19 +16,32 @@
 //!   Enforcement is a separate ticket (86ak5mn1t) and a separate, *deliberately* ladder-
 //!   shaped decision (FR-520); this crate obtains credentials and reports state.
 //!
-//! # A note on what this client cannot tell you
+//! # What this client can and cannot tell apart — and why it is path-aware
 //!
 //! The account-setup design (`ACCOUNT-SETUP-HANDOFF.md` §5) specifies distinct frames for
-//! "instance limit reached" (A5) and "licence expired / not yet active" (A6). **The
-//! shipped server cannot distinguish them.** Both raise `SafeAPIError(POLICY_DENIED)`
-//! with no detail — the over-limit checks at `devices/services.py:327-331,416-417` and the
-//! validity-window check at `:134-139` produce byte-identical responses, and
-//! `SAFE_MESSAGES[POLICY_DENIED]` is a fixed string. So [`ActivationFailure::PolicyDenied`]
-//! is one variant, not two. Splitting it here would mean guessing, and a guess that
-//! renders "your plan is full" at a church whose licence merely expired is worse than an
-//! honest single state. Closing this needs a server-side sub-code; it is written up for
-//! the follow-up rather than faked here.
+//! "instance limit reached" (A5) and "licence expired / not yet active" (A6). Whether the
+//! server distinguishes them **depends on which path you came in by**. An earlier version
+//! of this note said flatly that it could not, which was generalising from the
+//! enrollment-key path and was wrong:
+//!
+//! - **Account-session path (primary).** The server *does* distinguish. An org with no
+//!   currently-valid licence key fails in `_resolve_org_active_license_key`
+//!   (`devices/services.py:511-529`) with `NOT_FOUND` — covering expired, not yet started,
+//!   and never issued — while the device limit still arrives as `POLICY_DENIED`. A5 and A6
+//!   are separable here, and throwing that away is throwing away something the server took
+//!   the trouble to tell us.
+//! - **Enrollment-key path (delegation).** `NOT_FOUND` already means something else on this
+//!   path — "that key is not recognised" (A4) — and both the over-limit checks
+//!   (`:327-331`, `:416-417`) and the validity-window check (`:134-139`) raise an
+//!   identical, detail-free `POLICY_DENIED`. Here A5 and A6 genuinely are indistinguishable,
+//!   and [`ActivationFailure::PolicyDenied`] stays one honest state rather than a guess.
+//!
+//! Hence [`ActivationFailure::from_code`] takes the [`ActivationPath`]. The same
+//! `NOT_FOUND` means "no active licence" on one path and "unknown key" on the other, and
+//! collapsing them told a signed-in admin whose plan had lapsed to go and check their
+//! enrollment key for typos — a key that path never uses.
 
+use crate::client::ActivationPath;
 use crate::contract::ErrorCode;
 
 /// Why an activation attempt did not produce a device token.
@@ -43,6 +56,14 @@ pub enum ActivationFailure {
     /// operator-facing warning while the device is inside its entitlement window; it is
     /// the "unknown", not a fault. The message never contains request bodies or secrets.
     Unreachable(String),
+
+    /// The org has no currently-valid licence: expired, not yet started, or never issued.
+    /// Frame **A6** — "Your SelahCue plan has expired… Renew it."
+    ///
+    /// Reached only on the account-session path, where `NOT_FOUND` from
+    /// `_resolve_org_active_license_key` means exactly this. On the enrollment-key path the
+    /// same code means [`Self::UnknownKey`] instead — see the module docs.
+    NoActiveLicense,
 
     /// The presented enrollment key is unknown, or its hash did not match. Frame A4.
     ///
@@ -83,16 +104,32 @@ pub enum ActivationFailure {
     /// newer server's state is at least reportable.
     Coded(ErrorCode),
 
+    /// The platform answered outside the API contract at a non-5xx status — an HTML error
+    /// page from a proxy or from Django middleware rather than a coded refusal.
+    ///
+    /// Distinct from [`Self::Malformed`], which says the *contract* drifted, and from
+    /// [`Self::Server`], which says the server failed. This one says something in front of
+    /// the application answered instead of it. A CSRF rejection and a wrong-method 405 both
+    /// land here, and reporting either as contract drift sends the reader hunting for a
+    /// schema change that does not exist.
+    UnexpectedStatus(u16),
+
     /// The response did not parse as the contract. Kept distinct from `Server` because it
     /// means the contract drifted, which is a developer-facing problem.
     Malformed(String),
 }
 
 impl ActivationFailure {
-    /// Map a coded server error onto a classified failure.
-    pub fn from_code(code: ErrorCode) -> Self {
+    /// Map a coded server error onto a classified failure, for the path it arrived on.
+    ///
+    /// The path is not decoration: `NOT_FOUND` means "no active licence" on the session
+    /// path and "unknown enrollment key" on the key path. See the module docs.
+    pub fn from_code(code: ErrorCode, path: ActivationPath) -> Self {
         match code {
-            ErrorCode::NotFound => ActivationFailure::UnknownKey,
+            ErrorCode::NotFound => match path {
+                ActivationPath::AccountSession => ActivationFailure::NoActiveLicense,
+                ActivationPath::EnrollmentKey => ActivationFailure::UnknownKey,
+            },
             ErrorCode::PolicyDenied => ActivationFailure::PolicyDenied,
             ErrorCode::Unauthenticated => ActivationFailure::Unauthenticated,
             ErrorCode::PermissionDenied => ActivationFailure::PermissionDenied,
@@ -113,6 +150,7 @@ impl ActivationFailure {
     pub fn permits_presentation(&self) -> bool {
         match self {
             ActivationFailure::Unreachable(_) => true,
+            ActivationFailure::NoActiveLicense => true,
             ActivationFailure::UnknownKey => true,
             ActivationFailure::PolicyDenied => true,
             ActivationFailure::Unauthenticated => true,
@@ -121,6 +159,7 @@ impl ActivationFailure {
             ActivationFailure::RateLimited => true,
             ActivationFailure::Server(_) => true,
             ActivationFailure::Coded(_) => true,
+            ActivationFailure::UnexpectedStatus(_) => true,
             ActivationFailure::Malformed(_) => true,
         }
     }
@@ -146,6 +185,10 @@ impl core::fmt::Display for ActivationFailure {
             ActivationFailure::Unreachable(why) => {
                 write!(f, "the SelahCue platform could not be reached: {why}")
             }
+            ActivationFailure::NoActiveLicense => write!(
+                f,
+                "this account has no active SelahCue plan; renew it to activate a device"
+            ),
             ActivationFailure::UnknownKey => {
                 write!(f, "that enrollment key was not recognised")
             }
@@ -176,6 +219,10 @@ impl core::fmt::Display for ActivationFailure {
             ActivationFailure::Coded(code) => {
                 write!(f, "the platform refused the request ({})", code.as_str())
             }
+            ActivationFailure::UnexpectedStatus(status) => write!(
+                f,
+                "the SelahCue platform answered unexpectedly (status {status})"
+            ),
             ActivationFailure::Malformed(why) => {
                 write!(f, "the platform's response could not be read: {why}")
             }

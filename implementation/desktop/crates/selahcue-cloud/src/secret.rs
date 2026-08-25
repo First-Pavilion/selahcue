@@ -23,8 +23,37 @@ use std::sync::Mutex;
 /// The reverse direction is omitted on purpose. Nothing in this codebase should ever
 /// serialize a token back out into JSON, and leaving `Serialize` off means that is a
 /// compile error rather than a code-review question.
-#[derive(Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Clone, Eq, serde::Deserialize)]
 pub struct Token(String);
+
+/// Constant-time equality.
+///
+/// The derived `PartialEq` short-circuits on the first differing byte, which over a
+/// credential is a timing side channel: an attacker who can submit candidate tokens and
+/// measure the comparison learns the secret one byte at a time. Nothing compares two
+/// `Token`s outside tests today — but this type now carries **device tokens** on the
+/// response path, and "does the presented token match the stored one" is the obvious next
+/// thing someone writes. Making it timing-invariant now costs nothing and removes the
+/// chance that the obvious code is quietly wrong.
+///
+/// Lengths are compared first and non-constant-time, which is standard and accepted: token
+/// length is not the secret.
+impl PartialEq for Token {
+    fn eq(&self, other: &Self) -> bool {
+        let a = self.0.as_bytes();
+        let b = other.0.as_bytes();
+        if a.len() != b.len() {
+            return false;
+        }
+        // Fold every byte pair into an accumulator; no early exit, so the work done does
+        // not depend on WHERE the values differ.
+        let mut diff = 0u8;
+        for (x, y) in a.iter().zip(b.iter()) {
+            diff |= x ^ y;
+        }
+        diff == 0
+    }
+}
 
 impl Token {
     pub fn new(value: impl Into<String>) -> Self {
@@ -46,7 +75,24 @@ impl Token {
 // Redacting formatters: printing a Token never reveals its value.
 impl core::fmt::Debug for Token {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("Token(***redacted***)")
+        // An EMPTY token renders distinguishably. Whether a credential is empty is not
+        // secret material — an empty token is not a credential at all — and hiding the
+        // difference costs twice over:
+        //
+        //   * diagnostically, an empty entry rendering as "redacted" disguises exactly the
+        //     bug `is_activated` exists to catch, where a present-but-empty keychain entry
+        //     makes an install insist it is activated while every call 401s;
+        //   * for testing, a redaction sweep cannot otherwise tell "this fixture carries a
+        //     real secret and hid it" from "this fixture was empty and hid nothing" — so a
+        //     neutered fixture passes while exercising nothing.
+        //
+        // Same reasoning as comparing lengths in the constant-time `PartialEq` above:
+        // presence and size are not the secret; the bytes are.
+        if self.0.is_empty() {
+            f.write_str("Token(<empty>)")
+        } else {
+            f.write_str("Token(***redacted***)")
+        }
     }
 }
 

@@ -185,6 +185,22 @@ echo ">> checking selahcue-import is covered by the workspace test run"
 grep -q '"crates/selahcue-import"' "$DESKTOP/Cargo.toml" \
   || fail "selahcue-import is not a workspace member — its hostile-input battery would not run in CI"
 
+# --- selahcue-licensing is a workspace member, so the default test run covers it ----------
+# The licensing crate deliberately has NO Cargo features of its own: its network transport
+# and secret store are selahcue-cloud's feature-gated impls, injected by the shell. The
+# whole argument for that design is that 100% of its logic is therefore exercised by the
+# plain `cargo test --workspace` — which rests entirely on it BEING a workspace member.
+#
+# Drop the member line and `--workspace` silently stops running its tests while the gate
+# stays green: the never-blank closure guard, the credential-redaction sweep and the
+# trust-store bounds all quietly stop protecting anything. This cannot be checked from
+# inside the crate — `cargo test -p selahcue-licensing` fails to resolve the package, so a
+# test living there never runs to report it. Same reasoning as the selahcue-import check
+# above, and the same one-line fix.
+echo ">> checking selahcue-licensing is covered by the workspace test run"
+grep -q '"crates/selahcue-licensing"' "$DESKTOP/Cargo.toml" \
+  || fail "selahcue-licensing is not a workspace member — its activation, custody, trust-store and never-blank guards would not run in CI"
+
 # --- the JPEG decoder stays pinned, scalar-only and rayon-free ----------------------------
 # The determinism contract (ADR-0025 decision 3) is a property of the PIN, not of the format:
 # without `platform_independent` the crate does runtime SSSE3/NEON dispatch and the same binary

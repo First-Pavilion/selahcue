@@ -32,6 +32,15 @@ pub const PUBLIC_KEY_BYTES: usize = 32;
 /// (`apps/entitlements/signing.py:72-79`).
 pub const KEY_ID_HEX_CHARS: usize = 8;
 
+// The derivation below emits two hex characters per byte, so it can only land on
+// KEY_ID_HEX_CHARS exactly when that number is even. It is pinned rather than handled: an
+// odd id length would be a change to a cross-language contract, not a local tweak, and it
+// should stop the build here rather than be silently trimmed to fit.
+const _: () = assert!(
+    KEY_ID_HEX_CHARS.is_multiple_of(2),
+    "KEY_ID_HEX_CHARS must be even: the derivation emits whole bytes as two hex chars each"
+);
+
 /// The most trusted keys this client will hold at once.
 ///
 /// A bound, not a target. The rotation procedure needs two at a time (outgoing plus
@@ -83,7 +92,6 @@ pub fn derive_key_id(public_key: &[u8; PUBLIC_KEY_BYTES]) -> String {
         // Infallible for a String sink.
         let _ = write!(out, "{byte:02x}");
     }
-    out.truncate(KEY_ID_HEX_CHARS);
     out
 }
 

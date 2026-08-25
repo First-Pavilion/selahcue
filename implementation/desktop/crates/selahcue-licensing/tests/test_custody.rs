@@ -19,10 +19,18 @@ use selahcue_licensing::contract::{
     DeviceDto, GraphQlResponse, LicenseDto, LoginData, LoginInput, LoginPayload, TokenMetaDto,
 };
 use selahcue_licensing::{
-    AccountSession, DeviceCredentials, InMemorySecretStore, SecretStore, Token,
-    ACCOUNT_SESSION_NAME, DEVICE_TOKEN_NAME,
+    AccountSession, DeviceCredentials, DeviceIdentity, IdempotencyKey, InMemorySecretStore,
+    LicensingClient, ScriptedTransport, SecretStore, Token, ACCOUNT_SESSION_NAME,
+    DEVICE_TOKEN_NAME,
 };
 use std::path::PathBuf;
+
+/// Number of `.rs` modules in `src/`. Pinned so a sweep cannot silently cover less.
+const EXPECTED_SRC_MODULES: usize = 8;
+
+/// Number of formatted renderings the credential sweep covers. Pinned so an entry cannot
+/// quietly disappear from it.
+const SWEPT_RENDERINGS: usize = 14;
 
 /// A realistic device token: the server's format is `SC-DEV-` + 8 groups of 4.
 const DEVICE_TOKEN: &str = "SC-DEV-A1B2-C3D4-E5F6-G7H8-J9K2-L3M4-N5P6-Q7R8";
@@ -55,6 +63,31 @@ fn the_device_token_round_trips_through_the_secret_store() {
         creds.device_token().unwrap().unwrap().expose(),
         DEVICE_TOKEN
     );
+}
+
+#[test]
+fn an_empty_token_does_not_count_as_activated() {
+    // F11: `is_activated` used `is_some_and(|t| !t.is_empty())`, and replacing that with a
+    // bare `is_some()` survived every test — nothing pinned the emptiness check. A keychain
+    // entry can be present and empty after a partial write or a manual edit, and an install
+    // in that state would report itself activated while every call it made 401'd.
+    let creds = credentials();
+    creds.store_device_token(&Token::new("")).unwrap();
+
+    // Positive control: the entry really is present, so the `false` below is about
+    // emptiness and not about an absent token.
+    assert!(
+        creds.device_token().unwrap().is_some(),
+        "the empty entry must be present, or this test proves nothing about emptiness"
+    );
+    assert!(
+        !creds.is_activated().unwrap(),
+        "an empty string is not a usable device token"
+    );
+
+    // ...and a real token still reads as activated, so this is not a blanket refusal.
+    creds.store_device_token(&Token::new(DEVICE_TOKEN)).unwrap();
+    assert!(creds.is_activated().unwrap());
 }
 
 #[test]
@@ -272,12 +305,62 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
         format!("{graphql_envelope:?}"),
     ));
 
+    // --- the test-support transport ----------------------------------------------------
+    // `ScriptedTransport` records request bodies verbatim, and those bodies carry the
+    // password on sign-in and the enrollment key on activation. Its own comment said a test
+    // fixture is exactly where a credential gets copied into a log and then into a bug
+    // report — while it printed one. Swept here so that stays fixed.
+    let transport = ScriptedTransport::new();
+    let client = LicensingClient::new(transport, "https://api.selahcue.example");
+    let _ = client.sign_in("admin@example.test", &Token::new(PASSWORD));
+    let _ = client.activate_with_enrollment_key(
+        &Token::new(ENROLLMENT_KEY),
+        &DeviceIdentity::new("fp-1", "macos", "1.0.0", "Booth").unwrap(),
+        &IdempotencyKey::new("idem-0123456789ab").unwrap(),
+    );
+    assert!(
+        client.transport().request_count() >= 2,
+        "both credential-bearing calls must have been recorded, or this entry sweeps nothing"
+    );
+    formatted.push((
+        "RecordedRequest/Debug",
+        format!("{:?}", client.transport().recorded()),
+    ));
+    formatted.push((
+        "ScriptedTransport/Debug",
+        format!("{:?}", client.transport()),
+    ));
+
     // Positive control: the sweep must be looking at real, non-empty renderings. Without
     // this, a formatter that returned "" would pass every assertion below.
+    // --- G4: the sweep list is pinned -------------------------------------------------
+    // Deleting an entry is otherwise invisible. Less serious now the fields are `Token`-
+    // typed and the source backstop below catches new ones, but it is free to close.
+    assert_eq!(
+        formatted.len(),
+        SWEPT_RENDERINGS,
+        "the sweep list changed size; update SWEPT_RENDERINGS deliberately rather than \
+         letting an entry disappear"
+    );
+
+    // --- G3: PER-ENTRY positive controls ----------------------------------------------
+    // Not merely "non-empty". Each entry must visibly carry a REDACTED secret, which is
+    // what proves this particular type was exercised with a real credential in it.
+    //
+    // Without this the sweep passes by coincidence: neutering any fixture — setting
+    // `activation_token: None`, `full_token: None`, or `session_token: Token::new("")` —
+    // leaves the entry present and non-empty while it exercises nothing at all. All three
+    // were demonstrated to survive before this control existed.
     for (name, rendered) in &formatted {
         assert!(
             !rendered.is_empty(),
             "{name} rendered empty, so the leak sweep below exercises nothing"
+        );
+        assert!(
+            rendered.contains("***redacted***"),
+            "{name} shows no redaction marker, so either its fixture carries no secret or \
+             its secret is not redacted at all — either way this entry proves nothing. \
+             Rendered: {rendered}"
         );
     }
 
@@ -292,70 +375,129 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
 }
 
 #[test]
-fn every_secret_bearing_wire_field_is_token_typed_so_the_sweep_cannot_fall_behind() {
-    // The sweep above enumerates types by hand, and a hand-written list is exactly the
-    // thing that falls behind: the first version of it named five types while the crate
-    // exposed more, so removing a redaction on the response payloads could never have gone
-    // red. Enumerating the FIELDS from the source closes that, because a new
-    // secret-bearing field cannot be added without this noticing.
+fn every_secret_bearing_public_field_is_token_typed_so_the_sweep_cannot_fall_behind() {
+    // The sweep above enumerates types by hand, and a hand-written list falls behind. This
+    // reads the SOURCE instead, so a new secret-bearing field cannot be added without it
+    // being noticed — including in a type nobody adds to the sweep.
     //
-    // The rule: any public wire field whose NAME says it holds a secret must be typed with
-    // `Token`, which redacts itself. Exceptions must be listed here with a reason, so
-    // adding one is a visible decision rather than an omission.
-    let contract = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/contract.rs");
-    let body = std::fs::read_to_string(&contract).unwrap();
+    // Two earlier limits, both demonstrated rather than theorised:
+    //
+    // - The vocabulary was `token|password|secret`, so `bearer`, `credential` and — worst —
+    //   `api_key` all slipped through. `key` is the sharp one: this product's other
+    //   credential is an **enrollment key / license key**, so `key` is exactly the word a
+    //   future leak will be spelled with.
+    // - It read only `contract.rs`, while the rule stated in `lib.rs` has no file qualifier.
+    //   `client.rs` already exposes public `token` fields.
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
 
-    // Fields that legitimately are NOT `Token`, each with the reason it is safe.
-    let allowed: &[(&str, &str)] = &[
-        // Non-secret metadata about a token: masked form, prefix, suffix, fingerprint,
-        // expiry. Carries no secret by construction.
-        ("pub token: TokenMetaDto", "metadata only, never the secret"),
-        // Must be a plain String to serialize, and is protected by a hand-written
-        // redacting Debug asserted in the sweep above.
-        ("pub password: String", "hand-redacted Debug on LoginInput"),
+    // Words that mark a field as credential-bearing. Deliberately broad: a false positive
+    // costs one line in `ALLOWED` with a reason, a false negative costs a leaked secret.
+    const SECRET_WORDS: &[&str] = &["token", "key", "cred", "bearer", "auth", "pass", "secret"];
+
+    // Fields that legitimately are NOT `Token`, each with the reason it is safe. This list
+    // is meant to read as a COMPLETE inventory of exceptions — which it did not, while
+    // `license_key` was invisible to the heuristic and so never needed an entry.
+    const ALLOWED: &[(&str, &str)] = &[
+        (
+            "pub token: TokenMetaDto",
+            "metadata only (masked/prefix/suffix/fingerprint); no secret",
+        ),
+        (
+            "pub password: String",
+            "must be String to serialize; hand-redacted Debug on LoginInput",
+        ),
+        (
+            "pub license_key: String",
+            "must be String to serialize; hand-redacted Debug on ActivationRequest",
+        ),
+        (
+            "pub idempotency_key: String",
+            "a client-chosen correlation id, deliberately visible in logs",
+        ),
+        ("pub key_id: String", "names a PUBLIC key; not secret"),
+        (
+            "pub had_bearer: bool",
+            "a flag recording THAT a bearer was sent, never its value",
+        ),
+        (
+            "pub token_meta: Option<TokenMetaDto>",
+            "metadata only; no secret",
+        ),
     ];
 
     let mut checked = 0usize;
     let mut token_typed = 0usize;
-    for (lineno, line) in body.lines().enumerate() {
-        let code = line.trim();
-        if !code.starts_with("pub ") || !code.contains(':') {
-            continue;
-        }
-        let name = code
-            .trim_start_matches("pub ")
-            .split(':')
-            .next()
-            .unwrap_or("");
-        let lowered = name.to_lowercase();
-        if !(lowered.contains("token")
-            || lowered.contains("password")
-            || lowered.contains("secret"))
-        {
-            continue;
-        }
-        checked += 1;
+    let mut scanned_files = 0usize;
 
-        if allowed.iter().any(|(pattern, _)| code.starts_with(pattern)) {
-            continue;
+    let mut paths: Vec<_> = std::fs::read_dir(&src)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+        .collect();
+    paths.sort();
+
+    for path in &paths {
+        scanned_files += 1;
+        let body = std::fs::read_to_string(path).unwrap();
+        for (lineno, line) in body.lines().enumerate() {
+            let code = line.trim();
+            // Struct FIELDS only. `pub const DEVICE_TOKEN_NAME: &str = "device_token"` is a
+            // keyring entry NAME, not a credential, and every other `pub` item form —
+            // fn/mod/use/struct/enum/type/static — is not a field either. A field
+            // declaration has a type and no initialiser.
+            if !code.starts_with("pub ") || !code.contains(':') || code.contains('=') {
+                continue;
+            }
+            const NOT_FIELDS: &[&str] = &[
+                "pub fn ",
+                "pub mod ",
+                "pub use ",
+                "pub struct ",
+                "pub enum ",
+                "pub type ",
+                "pub const ",
+                "pub static ",
+                "pub trait ",
+                "pub impl ",
+            ];
+            if NOT_FIELDS.iter().any(|kw| code.starts_with(kw)) {
+                continue;
+            }
+            let name = code
+                .trim_start_matches("pub ")
+                .split(':')
+                .next()
+                .unwrap_or("");
+            let lowered = name.to_lowercase();
+            if !SECRET_WORDS.iter().any(|w| lowered.contains(w)) {
+                continue;
+            }
+            checked += 1;
+            if ALLOWED.iter().any(|(pattern, _)| code.starts_with(pattern)) {
+                continue;
+            }
+            assert!(
+                code.contains("Token"),
+                "{}:{} declares a credential-named field that is not `Token`-typed, so a \
+                 `{{:?}}` on its struct would print the secret verbatim:\n  {code}\n\
+                 Type it as `Token`, or add it to ALLOWED with the reason it is safe.",
+                path.display(),
+                lineno + 1
+            );
+            token_typed += 1;
         }
-        assert!(
-            code.contains("Token"),
-            "{}:{} declares a secret-bearing field that is not `Token`-typed, so a `{{:?}}` \
-             on its struct would print the secret verbatim:\n  {code}\n\
-             Type it as `Token`, or add it to `allowed` above with the reason it is safe.",
-            contract.display(),
-            lineno + 1
-        );
-        token_typed += 1;
     }
 
     // Positive controls. Without these the loop could match nothing — a renamed field, a
-    // moved file, a broken parse — and the test would pass having checked zero fields.
+    // moved directory, a broken parse — and pass having checked zero fields.
+    assert_eq!(
+        scanned_files, EXPECTED_SRC_MODULES,
+        "expected to scan {EXPECTED_SRC_MODULES} modules, scanned {scanned_files}"
+    );
     assert!(
-        checked >= 4,
-        "expected to find several secret-bearing wire fields, found {checked}; this guard \
-         is no longer looking at the right thing"
+        checked >= 8,
+        "expected several credential-named fields across the crate, found {checked}; the \
+         guard is no longer looking at the right thing"
     );
     assert!(
         token_typed >= 3,
@@ -399,10 +541,12 @@ fn no_filesystem_primitive_is_reachable_from_this_crate() {
     }
 
     // Positive control: the sweep found the sources it is meant to scan.
-    assert!(
-        sources.len() >= 6,
-        "expected to scan the crate's modules, found {} files — the sweep is looking in \
-         the wrong place and would pass vacuously",
+    // Exact, not `>=`: a floor lets modules disappear from the scan unnoticed.
+    assert_eq!(
+        sources.len(),
+        EXPECTED_SRC_MODULES,
+        "expected exactly {EXPECTED_SRC_MODULES} modules, found {} — add or remove the pin \
+         deliberately rather than letting the sweep cover less",
         sources.len()
     );
 

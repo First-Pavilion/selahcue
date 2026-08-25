@@ -262,7 +262,7 @@ fn a_replay_keeps_the_token_the_device_already_holds() {
         .expect("a replay is a success");
 
     assert!(!activation.created);
-    assert!(!activation.is_remint());
+    assert!(!activation.is_known_remint());
     assert_eq!(activation.disposition(), TokenDisposition::KeepExisting);
     assert_eq!(
         activation.persist(&creds).unwrap(),
@@ -289,7 +289,10 @@ fn a_remint_overwrites_the_cached_token_because_the_old_one_is_revoked() {
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
         .unwrap();
 
-    assert!(activation.is_remint(), "the server reported a re-mint");
+    assert!(
+        activation.is_known_remint(),
+        "the server reported a re-mint"
+    );
     assert_eq!(
         activation.disposition(),
         TokenDisposition::Store(Token::new(TOKEN_B))
@@ -340,6 +343,71 @@ fn an_unknown_enrollment_key_is_classified_as_such() {
         .unwrap_err();
 
     assert_eq!(failure, ActivationFailure::UnknownKey);
+}
+
+#[test]
+fn not_found_on_the_session_path_means_no_active_plan_not_a_bad_key() {
+    // THE F3 FIX. On the account-session path there IS no enrollment key, so `NOT_FOUND`
+    // cannot mean "bad key". It comes from `_resolve_org_active_license_key`
+    // (`devices/services.py:511-529`) and means the org has no currently-valid licence —
+    // expired, not yet started, or never issued. Frame A6.
+    //
+    // Before this, a signed-in admin whose plan had lapsed was told to check their
+    // enrollment key for typos — a key that path never uses and they may never have had.
+    let transport = ScriptedTransport::responding(
+        200,
+        r#"{"data":null,"errors":[{"message":"The requested resource was not found.",
+        "extensions":{"code":"NOT_FOUND"}}]}"#,
+    );
+    let client = LicensingClient::new(transport, BASE);
+
+    let failure = client
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap_err();
+
+    assert_eq!(
+        failure,
+        ActivationFailure::NoActiveLicense,
+        "NOT_FOUND on the session path is an expired/absent plan (A6), not a bad key (A4)"
+    );
+    assert_ne!(
+        failure,
+        ActivationFailure::UnknownKey,
+        "telling a signed-in admin to check a key they never used is the bug this fixes"
+    );
+
+    // The copy the console renders must talk about the plan, not about a key.
+    let rendered = failure.to_string();
+    assert!(
+        rendered.contains("plan"),
+        "A6 copy should name the plan, got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("enrollment key"),
+        "A6 copy must not mention an enrollment key, got: {rendered}"
+    );
+}
+
+#[test]
+fn not_found_on_the_enrollment_key_path_still_means_a_bad_key() {
+    // The other half of the same fix: making the session path correct must not break the
+    // path where NOT_FOUND genuinely does mean "that key is not recognised" (A4).
+    let transport = ScriptedTransport::responding(
+        404,
+        rest_error("NOT_FOUND", "The requested resource was not found."),
+    );
+    let client = LicensingClient::new(transport, BASE);
+
+    let failure = client
+        .activate_with_enrollment_key(&Token::new("SC-TRIAL-nope"), &identity(), &idem())
+        .unwrap_err();
+
+    assert_eq!(failure, ActivationFailure::UnknownKey);
+    let rendered = failure.to_string();
+    assert!(
+        rendered.contains("enrollment key"),
+        "A4 copy should name the key, got: {rendered}"
+    );
 }
 
 #[test]
@@ -492,9 +560,50 @@ fn rate_limiting_and_server_errors_are_retryable_but_refusals_are_not() {
 
 #[test]
 fn a_bare_405_html_body_is_classified_by_status_not_reported_as_contract_drift() {
-    // A wrong HTTP method yields a bare Django 405 with an HTML body, not the JSON error
-    // envelope. Treating every unparseable error as "the contract drifted" would make that
-    // case shout about the wrong problem.
+    // This test was named for a 405 and fixtured with a 500, so it exercised the 5xx branch
+    // and never the case it was named for — and the 4xx-with-HTML branch it was supposed to
+    // cover did not exist: everything non-5xx fell through to `Malformed`, i.e. "the
+    // contract drifted", which is the wrong thing to tell anyone about a middleware
+    // rejection.
+    let transport = ScriptedTransport::responding(
+        405,
+        "<html><head><title>405 Method Not Allowed</title></head><body></body></html>",
+    );
+    let client = LicensingClient::new(transport, BASE);
+
+    let failure = client
+        .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
+        .unwrap_err();
+
+    assert_eq!(failure, ActivationFailure::UnexpectedStatus(405));
+    assert!(
+        !matches!(failure, ActivationFailure::Malformed(_)),
+        "an HTML error page is not contract drift"
+    );
+}
+
+#[test]
+fn an_html_403_is_reported_as_an_unexpected_status_not_as_contract_drift() {
+    // The live shape of this is 86ak5t1gw: Django's CSRF middleware answers the GraphQL
+    // surface with an HTML 403. Until that is settled server-side the client cannot
+    // succeed, but it can at least say something true about what happened rather than
+    // sending the reader hunting for a schema change.
+    let transport = ScriptedTransport::responding(
+        403,
+        "<html><body>CSRF verification failed. Request aborted.</body></html>",
+    );
+    let client = LicensingClient::new(transport, BASE);
+
+    let failure = client
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap_err();
+
+    assert_eq!(failure, ActivationFailure::UnexpectedStatus(403));
+}
+
+#[test]
+fn a_5xx_html_body_is_a_retryable_server_error() {
+    // The branch the 405 test used to cover by accident, now covered on purpose.
     let transport = ScriptedTransport::responding(500, "<html><body>Server Error</body></html>");
     let client = LicensingClient::new(transport, BASE);
 
@@ -504,6 +613,73 @@ fn a_bare_405_html_body_is_classified_by_status_not_reported_as_contract_drift()
 
     assert_eq!(failure, ActivationFailure::Server(500));
     assert!(failure.is_retryable());
+}
+
+#[test]
+fn errors_win_over_data_when_a_response_carries_both() {
+    // Every other GraphQL fixture here has `"data":null`, so the ordering rule — check
+    // `errors` BEFORE `data` — was never actually exercised. A body carrying both is the
+    // only shape that can tell a correct implementation from one that happens to work
+    // because data was always absent when errors were present.
+    let transport = ScriptedTransport::responding(
+        200,
+        format!(
+            r#"{{"data":{{"activateDeviceWithSession":{{"fullToken":"{TOKEN_A}","created":true,
+            "devicePublicId":"{DEVICE_ID}","platform":"macos"}}}},
+            "errors":[{{"message":"The current policy does not allow this action.",
+            "extensions":{{"code":"POLICY_DENIED"}}}}]}}"#
+        ),
+    );
+    let client = LicensingClient::new(transport, BASE);
+
+    let result = client.activate_with_session(&Token::new(SESSION), &identity(), &idem());
+
+    assert_eq!(
+        result.unwrap_err(),
+        ActivationFailure::PolicyDenied,
+        "a populated `errors` array must lose nothing to a populated `data`"
+    );
+}
+
+#[test]
+fn a_session_activation_reports_remint_as_unknown_rather_than_false() {
+    // F6: `reminted` is None for EVERY session activation, and a session activation
+    // genuinely can be a re-mint — that path delegates into the same
+    // `_activate_device_for_key`. `is_known_remint()` answering false must not be read as
+    // the server saying "no".
+    let transport = ScriptedTransport::responding(
+        200,
+        format!(
+            r#"{{"data":{{"activateDeviceWithSession":{{"fullToken":"{TOKEN_A}","created":false,
+            "devicePublicId":"{DEVICE_ID}","platform":"macos"}}}}}}"#
+        ),
+    );
+    let client = LicensingClient::new(transport, BASE);
+    let activation = client
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap();
+
+    assert_eq!(
+        activation.reminted, None,
+        "the session payload carries no `reminted`, so it must stay unknown, not false"
+    );
+    assert!(
+        !activation.is_known_remint(),
+        "unknown is not a known re-mint..."
+    );
+    // ...and the REST path, which does report it, must still distinguish a real false.
+    let rest = LicensingClient::new(
+        ScriptedTransport::responding(200, rest_body(false, false, None)),
+        BASE,
+    );
+    let rest_activation = rest
+        .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
+        .unwrap();
+    assert_eq!(
+        rest_activation.reminted,
+        Some(false),
+        "a reported false must remain distinguishable from unknown"
+    );
 }
 
 #[test]

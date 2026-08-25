@@ -13,7 +13,16 @@ use selahcue_cloud::{HttpResponse, HttpTransport, TransportError};
 use std::sync::Mutex;
 
 /// One recorded outbound request.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` is hand-written and **redacts `body`**. The comment on `had_bearer` below has
+/// always said a test fixture is exactly where a credential gets copied into a log and
+/// then into a bug report — and then this type recorded, verbatim, the request body that
+/// carries the password on the sign-in call and the enrollment key on the activation call.
+/// Redacting only the bearer while printing the body defeated the entire point.
+///
+/// `body` stays a public field, because assertions about what left the device are the
+/// reason this type exists. Only the *formatter* is redacted.
+#[derive(Clone, PartialEq, Eq)]
 pub struct RecordedRequest {
     pub method: &'static str,
     pub url: String,
@@ -24,8 +33,22 @@ pub struct RecordedRequest {
     pub had_bearer: bool,
 }
 
+impl core::fmt::Debug for RecordedRequest {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Method, URL and body LENGTH keep every diagnostic that made this useful; the
+        // bytes themselves are the only part that is dangerous.
+        f.debug_struct("RecordedRequest")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("body", &"***redacted***")
+            .field("body_len", &self.body.len())
+            .field("had_bearer", &self.had_bearer)
+            .finish()
+    }
+}
+
 /// A queued answer: either an HTTP response or a transport-level failure.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum Step {
     Respond(HttpResponse),
     Fail(String),
@@ -35,7 +58,10 @@ enum Step {
 ///
 /// Running past the end of the queue is a transport failure rather than a panic, so an
 /// over-eager client under test surfaces as a clean, assertable error.
-#[derive(Debug)]
+///
+/// `Debug` is hand-written here too, and for a second reason beyond the recorded requests:
+/// the *queued responses* are activation payloads, which carry show-once device tokens. A
+/// derived `Debug` on this struct would print every one of them.
 pub struct ScriptedTransport {
     steps: Mutex<std::collections::VecDeque<Step>>,
     requests: Mutex<Vec<RecordedRequest>>,
@@ -125,6 +151,22 @@ impl ScriptedTransport {
             Some(Step::Fail(reason)) => Err(TransportError(reason)),
             None => Err(TransportError("scripted transport: no step queued".into())),
         }
+    }
+}
+
+impl core::fmt::Debug for ScriptedTransport {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Counts only. Both queues hold credential-bearing payloads.
+        f.debug_struct("ScriptedTransport")
+            .field("queued_steps", &self.lock_steps().len())
+            .field("recorded_requests", &self.lock_requests().len())
+            // Named rather than merely omitted: both queues hold credential-bearing
+            // payloads (request bodies carry the password and the enrollment key; queued
+            // responses carry show-once device tokens). Stating that they are withheld also
+            // lets the credential sweep verify this rendering redacts, instead of having to
+            // trust that an absence was deliberate.
+            .field("payloads", &"***redacted***")
+            .finish()
     }
 }
 

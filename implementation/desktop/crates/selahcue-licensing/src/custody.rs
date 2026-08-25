@@ -68,7 +68,12 @@ impl<S: SecretStore> DeviceCredentials<S> {
         self.store.set(DEVICE_TOKEN_NAME, token)
     }
 
-    /// Whether this install holds a device token.
+    /// Whether this install holds a **usable** device token.
+    ///
+    /// An empty string is not a token. The distinction is not hypothetical: a keychain
+    /// entry can be present and empty after a partial write or a manual edit, and
+    /// `is_some()` alone would report such an install activated — then every call made with
+    /// that "token" would 401, with the install insisting it was fine.
     pub fn is_activated(&self) -> Result<bool, SecretError> {
         Ok(self.device_token()?.is_some_and(|t| !t.is_empty()))
     }

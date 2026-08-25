@@ -22,75 +22,141 @@ use selahcue_licensing::{
 };
 use std::path::PathBuf;
 
+/// Number of `.rs` modules in `src/`. Pinned so a scan cannot silently cover less.
+const EXPECTED_SRC_MODULES: usize = 8;
+
 // ---------------------------------------------------------------------------
 // Structural: licensing is not on the render / go-live / live-control path
 // ---------------------------------------------------------------------------
 
 /// The crates that make up the render, composition and live-control paths.
 ///
-/// `selahcue-engine` and `selahcue-gpu` rasterise and composite; `selahcue-present` owns
-/// slide composition and the Preview→Live transition (go-live); `selahcue-app` is the
-/// `LiveController` that maps remote commands onto the presenter (live control);
-/// `selahcue-core` is the pure domain everything else sits on. `selahcue-desktop` is the
-/// `selahcue-output` binary — the process that owns the wgpu surface, the frame loop and
-/// the live state, so it is as much the render path as the crates it composes.
+/// The roots of the render / go-live / live-control paths.
 ///
-/// The natural home for launch-time entitlement refresh is therefore **not** here but the
-/// Tauri operator console, which is where the account-setup screens (86ajy7anx) and the
-/// renewal banner already live, and which ADR-0002/0003 already separates from the
-/// compositor. That is a deliberate placement, not an accident of this guard.
-const LIVE_PATH_CRATES: &[&str] = &[
+/// `selahcue-desktop` is the `selahcue-output` binary — the process that owns the wgpu
+/// surface, the frame loop and the live state. `selahcue-app` is the `LiveController` that
+/// maps remote commands onto the presenter. Everything those two link is, by definition,
+/// code that ships inside the process that drives the screen.
+///
+/// Only the ROOTS are listed, because the guard walks the closure. An earlier version
+/// listed six crates and checked them directly, which looked equivalent and was not:
+/// `selahcue-app` also pulls `selahcue-lan` and `selahcue-scripture`, and
+/// `selahcue-desktop` pulls `selahcue-data` and `selahcue-lan` — none of which were on the
+/// list. Adding licensing to `selahcue-lan` linked it straight into the output process
+/// with the suite still green.
+///
+/// The natural home for launch-time entitlement refresh is therefore the Tauri operator
+/// console, which is where the account-setup screens (86ajy7anx) and the renewal banner
+/// already live, and which ADR-0002/0003 already separates from the compositor. That is a
+/// deliberate placement, not an accident of this guard.
+const LIVE_PATH_ROOTS: &[&str] = &["selahcue-desktop", "selahcue-app"];
+
+/// Crates the closure of `selahcue-desktop` must contain, or the walk is broken.
+const CLOSURE_SANITY: &[&str] = &[
     "selahcue-core",
     "selahcue-engine",
-    "selahcue-gpu",
     "selahcue-present",
-    "selahcue-app",
-    "selahcue-desktop",
+    "selahcue-lan",
+    "selahcue-data",
 ];
 
+/// Every `selahcue-*` crate `name` depends on, from its manifest's **normal** dependency
+/// sections only.
+///
+/// Dev- and build-dependencies are excluded deliberately: the question this guard answers
+/// is what gets LINKED INTO the shipping process, and a dev-dependency does not.
+/// `[target.'cfg(...)'.dependencies]` counts, because it does.
+///
+/// Reading declared dependency lines rather than grepping the file also removes the
+/// fragility of the previous version, where a comment merely *mentioning* the crate would
+/// have turned it red.
+fn direct_deps(crates_dir: &std::path::Path, name: &str) -> Vec<String> {
+    let manifest = crates_dir.join(name).join("Cargo.toml");
+    let body = std::fs::read_to_string(&manifest).unwrap_or_else(|e| {
+        panic!(
+            "cannot read {} ({e}) — if a crate was renamed or moved, repoint this guard, \
+             never drop it",
+            manifest.display()
+        )
+    });
+    assert!(
+        body.contains(&format!("name = \"{name}\"")),
+        "{} does not declare package `{name}`; the guard is reading the wrong file",
+        manifest.display()
+    );
+
+    let mut in_deps = false;
+    let mut found = Vec::new();
+    for line in body.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_deps = t.contains("dependencies")
+                && !t.contains("dev-dependencies")
+                && !t.contains("build-dependencies");
+            continue;
+        }
+        if !in_deps || t.starts_with('#') {
+            continue;
+        }
+        if let Some(dep) = t.split('=').next().map(str::trim) {
+            if dep.starts_with("selahcue-") {
+                found.push(dep.to_string());
+            }
+        }
+    }
+    found
+}
+
+/// The transitive closure of `roots`, following normal dependencies.
+fn closure(crates_dir: &std::path::Path, roots: &[&str]) -> std::collections::BTreeSet<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut queue: Vec<String> = roots.iter().map(|r| r.to_string()).collect();
+    while let Some(next) = queue.pop() {
+        if !seen.insert(next.clone()) {
+            continue;
+        }
+        for dep in direct_deps(crates_dir, &next) {
+            if !seen.contains(&dep) {
+                queue.push(dep);
+            }
+        }
+    }
+    seen
+}
+
 #[test]
-fn no_render_or_live_control_crate_depends_on_licensing() {
-    // CON-P1/CON-P2, asserted rather than assumed. A licensing call cannot sit on the
-    // render or live-control path if the crates on that path cannot name this crate at
-    // all. Adding `selahcue-licensing` to `selahcue-present`'s dependencies turns this red
-    // — which is the point: it forces the conversation before the dependency lands, not
-    // after a Sunday morning.
+fn licensing_is_absent_from_the_entire_render_and_live_control_closure() {
+    // CON-P1/CON-P2, asserted rather than assumed — and asserted over the TRANSITIVE
+    // closure, because "no direct dependency" is not the property that matters. What
+    // matters is whether licensing code can end up linked into the process that drives the
+    // screen, and that happens through any depth of the graph.
     let crates_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .canonicalize()
         .unwrap();
 
-    let mut checked = 0usize;
-    for name in LIVE_PATH_CRATES {
-        let manifest = crates_dir.join(name).join("Cargo.toml");
-        let body = std::fs::read_to_string(&manifest).unwrap_or_else(|e| {
-            panic!(
-                "cannot read {} ({e}) — if a live-path crate was renamed or moved, this \
-                 guard must be repointed, never dropped",
-                manifest.display()
-            )
-        });
+    let reachable = closure(&crates_dir, LIVE_PATH_ROOTS);
 
-        // Positive control per crate: we really read a manifest for THIS crate, so a
-        // mistyped path cannot make the assertion below pass vacuously.
+    // Positive controls FIRST. A walk that silently returned just the roots — a parser
+    // change, a renamed section — would otherwise satisfy the assertion below while
+    // checking nothing.
+    for expected in CLOSURE_SANITY {
         assert!(
-            body.contains(&format!("name = \"{name}\"")),
-            "{} does not declare package `{name}`; this guard is reading the wrong file",
-            manifest.display()
+            reachable.contains(*expected),
+            "the dependency walk did not reach {expected}, so it is not actually walking \
+             the graph and the assertion below proves nothing. Reached: {reachable:?}"
         );
-
-        assert!(
-            !body.contains("selahcue-licensing"),
-            "{name} depends on selahcue-licensing. No licensing call may sit on the \
-             render, go-live or live-control path (CON-P1/CON-P2, NFR-501/502)."
-        );
-        checked += 1;
     }
+    assert!(
+        reachable.len() > LIVE_PATH_ROOTS.len(),
+        "the closure is no bigger than its roots; the walk is broken"
+    );
 
-    assert_eq!(
-        checked,
-        LIVE_PATH_CRATES.len(),
-        "not every live-path crate was checked"
+    assert!(
+        !reachable.contains("selahcue-licensing"),
+        "selahcue-licensing is reachable from {LIVE_PATH_ROOTS:?}. No licensing code may \
+         be linked into the render, go-live or live-control path (CON-P1/CON-P2, \
+         NFR-501/502). Closure: {reachable:?}"
     );
 }
 
@@ -138,10 +204,12 @@ fn this_crate_exposes_no_enforcement_entry_point() {
             }
         }
     }
-    assert!(
-        scanned >= 6,
-        "expected to scan the crate's modules, scanned {scanned} — the guard is looking in \
-         the wrong place"
+    // Exact, not `>=`. With a floor of 6 against 8 modules, two could be deleted and the
+    // control would still pass while the scan silently covered less.
+    assert_eq!(
+        scanned, EXPECTED_SRC_MODULES,
+        "expected to scan exactly {EXPECTED_SRC_MODULES} modules, scanned {scanned} — a \
+         module was added or removed, so update this pin deliberately"
     );
 }
 
@@ -159,6 +227,7 @@ fn every_failure_variant() -> Vec<ActivationFailure> {
     let sample = ActivationFailure::UnknownKey;
     match sample {
         ActivationFailure::Unreachable(_) => {}
+        ActivationFailure::NoActiveLicense => {}
         ActivationFailure::UnknownKey => {}
         ActivationFailure::PolicyDenied => {}
         ActivationFailure::Unauthenticated => {}
@@ -167,11 +236,13 @@ fn every_failure_variant() -> Vec<ActivationFailure> {
         ActivationFailure::RateLimited => {}
         ActivationFailure::Server(_) => {}
         ActivationFailure::Coded(_) => {}
+        ActivationFailure::UnexpectedStatus(_) => {}
         ActivationFailure::Malformed(_) => {}
     }
 
     vec![
         ActivationFailure::Unreachable("dns failure".into()),
+        ActivationFailure::NoActiveLicense,
         ActivationFailure::UnknownKey,
         ActivationFailure::PolicyDenied,
         ActivationFailure::Unauthenticated,
@@ -180,6 +251,7 @@ fn every_failure_variant() -> Vec<ActivationFailure> {
         ActivationFailure::RateLimited,
         ActivationFailure::Server(503),
         ActivationFailure::Coded(ErrorCode::Conflict),
+        ActivationFailure::UnexpectedStatus(403),
         ActivationFailure::Malformed("bad json".into()),
     ]
 }
@@ -189,7 +261,7 @@ fn every_activation_failure_permits_presentation() {
     let variants = every_failure_variant();
     assert_eq!(
         variants.len(),
-        10,
+        12,
         "the variant list drifted from the exhaustive match above"
     );
 
