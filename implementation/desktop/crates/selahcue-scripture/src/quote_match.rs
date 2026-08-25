@@ -220,6 +220,106 @@ fn quote_index(t: Translation) -> &'static QuoteIndex {
     CELLS[t as usize].get_or_init(|| build_index(index_of(t)))
 }
 
+/// How many **alternative** verses a quotation match reports alongside the best one.
+///
+/// A spoken paraphrase often fits several verses — "by grace you have been saved" scores against
+/// Ephesians 2:5 and 2:8 — and the matcher used to compute every one of them and then throw all
+/// but the winner away. The operator, who is the one deciding, never saw that a second reading
+/// existed. Small on purpose: this is a disambiguation aid on one approval card, not a search
+/// results page.
+pub const MAX_ALTERNATIVES: usize = 2;
+
+/// Total ranked results: the best plus its alternatives.
+pub const MAX_RANKED: usize = MAX_ALTERNATIVES + 1;
+
+/// The ranked list must be able to hold more than one entry, or "alternatives" is a contradiction
+/// and every test about truncation would be asserting against a branch that can never run.
+const _: () = assert!(MAX_RANKED >= 2);
+
+/// One scored candidate verse.
+#[derive(Debug, Clone, Copy)]
+struct Ranked {
+    score: f64,
+    shared_mass: f64,
+    verse: u32,
+}
+
+/// Does `a` rank ahead of `b`?
+///
+/// This is the ORIGINAL tie-break, preserved exactly: strictly higher score wins; on an equal
+/// score the greater shared IDF mass wins; on both equal the lower verse index wins (the old
+/// loop iterated ascending and replaced only on a strict improvement, so the first-seen verse
+/// held its place). Changing any leg of this silently changes which verse the operator is
+/// offered first, so it is kept in one function rather than inlined.
+fn ranks_before(a: &Ranked, b: &Ranked) -> bool {
+    if a.score != b.score {
+        return a.score > b.score;
+    }
+    // NOTE: this leg is **unreachable with the current scoring function**, and no test covers
+    // it. `score` is `max(shared_mass/verse_mass, shared_mass/query_mass)`, and in the case
+    // that produces ties the dominant term divides by a constant — so an equal score implies an
+    // equal shared mass. Measured across 12 quotation queries: 30 tie groups, **0** in which
+    // the masses differed. It is retained because it is pre-existing tie-break semantics that
+    // would start deciding the moment the scoring function changes, but it is unreached rather
+    // than verified — a mutation removing it survives the battery, correctly.
+    if a.shared_mass != b.shared_mass {
+        return a.shared_mass > b.shared_mass;
+    }
+    // This leg IS reachable and load-bearing: it is what makes ranking deterministic when
+    // several verses match a stock phrase equally well ("and it came to pass in those days"
+    // ties 17 ways). Pinned by `tied_candidates_are_ordered_deterministically`.
+    false
+}
+
+/// A bounded top-N accumulator: a **fixed-size array**, so it cannot allocate and cannot grow.
+///
+/// The bound is a property of the type rather than of a cap a caller must remember to apply —
+/// there is no `Vec` here to forget to truncate. `offered` counts every candidate presented,
+/// which is what lets a test prove it actually saw more candidates than it kept; without that,
+/// a corpus where no verse ever has a runner-up would leave the truncation branch dead and its
+/// test silently vacuous.
+struct TopRanked {
+    slots: [Option<Ranked>; MAX_RANKED],
+    offered: usize,
+}
+
+impl TopRanked {
+    fn new() -> Self {
+        TopRanked {
+            slots: [None; MAX_RANKED],
+            offered: 0,
+        }
+    }
+
+    /// Offer a candidate. Kept if it ranks above one already held, or if there is room; the
+    /// worst is displaced when full.
+    fn offer(&mut self, cand: Ranked) {
+        self.offered += 1;
+        for i in 0..MAX_RANKED {
+            match self.slots[i] {
+                None => {
+                    self.slots[i] = Some(cand);
+                    return;
+                }
+                Some(held) if ranks_before(&cand, &held) => {
+                    // Shift the tail down one and drop whatever falls off the end.
+                    for j in (i + 1..MAX_RANKED).rev() {
+                        self.slots[j] = self.slots[j - 1];
+                    }
+                    self.slots[i] = Some(cand);
+                    return;
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    /// The kept candidates, best first.
+    fn ranked(&self) -> impl Iterator<Item = &Ranked> {
+        self.slots.iter().flatten()
+    }
+}
+
 /// Most-likely verse(s) for a spoken quotation, in the DEFAULT translation (KJV).
 ///
 /// Returns canonical references (e.g. `["John 3:16"]`) — at most one, the best match above
@@ -252,11 +352,54 @@ fn score_to_confidence(score: f64) -> u8 {
 }
 
 /// [`match_quote_scored`] against an explicit translation.
+///
+/// Still at most ONE result — the best match. Alternatives are a separate, opt-in read
+/// ([`match_quote_ranked_in`]), because this function feeds the detection queue and every entry
+/// it returns becomes its own approval card: reporting three here would put three cards in front
+/// of the operator for a single spoken sentence, which is noise, not disambiguation.
 pub fn match_quote_scored_in(t: Translation, text: &str) -> Vec<(String, u8)> {
+    let (mut ranked, _) = rank_in(t, text);
+    ranked.truncate(1);
+    ranked
+}
+
+/// The best match for a spoken quotation **plus up to [`MAX_ALTERNATIVES`] runner-ups**, best
+/// first, each with its confidence — in the default translation (KJV).
+///
+/// For the operator's approval card: when a paraphrase fits several verses, the second reading
+/// is a fact the matcher already computed, and hiding it made the card look more certain than
+/// the evidence was. Bounded by construction — see [`MAX_RANKED`].
+pub fn match_quote_ranked(text: &str) -> Vec<(String, u8)> {
+    match_quote_ranked_in(Translation::default(), text)
+}
+
+/// [`match_quote_ranked`] against an explicit translation.
+pub fn match_quote_ranked_in(t: Translation, text: &str) -> Vec<(String, u8)> {
+    rank_in(t, text).0
+}
+
+/// How many candidates passed the precision thresholds and were offered to the bounded top-N.
+///
+/// **A test seam, not a product API.** A truncation test that does not first establish that more
+/// candidates existed than were kept proves nothing — the corpus may simply never produce a
+/// runner-up, leaving the branch dead. This makes that premise checkable.
+#[doc(hidden)]
+pub fn ranked_offered_in(t: Translation, text: &str) -> usize {
+    rank_in(t, text).1
+}
+
+/// Rank a spoken quotation against a translation: the best match plus up to
+/// [`MAX_ALTERNATIVES`] runner-ups, best first, with each one's confidence.
+///
+/// Returns the ranked list and **how many candidates were offered** to the bounded top-N. The
+/// count exists for tests: proving the truncation actually truncated requires knowing that more
+/// candidates were seen than kept, and without it a corpus that never produces a runner-up would
+/// leave the truncation branch dead and its test vacuous.
+fn rank_in(t: Translation, text: &str) -> (Vec<(String, u8)>, usize) {
     let verses = index_of(t);
     let n = verses.len();
     if n == 0 {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let idx = quote_index(t);
 
@@ -267,7 +410,7 @@ pub fn match_quote_scored_in(t: Translation, text: &str) -> Vec<(String, u8)> {
         .filter(|tok| idx.postings.contains_key(*tok))
         .collect();
     if discriminative.len() < MIN_DISCRIMINATIVE_TOKENS {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     // Rarest tokens first (deterministic: by df, then by token) so the candidate cap keeps
     // the most informative postings.
@@ -290,9 +433,10 @@ pub fn match_quote_scored_in(t: Translation, text: &str) -> Vec<(String, u8)> {
     q_sorted.sort();
     let query_mass: f64 = q_sorted.iter().map(|t| idx.idf(t)).sum();
 
-    // Score each candidate; keep the strictly-best (ties resolve to the lowest verse index
-    // because we iterate ascending and only replace on a strict improvement).
-    let mut best: Option<(f64, f64, u32)> = None; // (score, shared_mass, verse_idx)
+    // Score each candidate into a BOUNDED top-N. Previously this kept a single running best and
+    // discarded every runner-up as it went, so the alternatives the matcher had already computed
+    // were unrecoverable by the time the operator saw the suggestion.
+    let mut top = TopRanked::new();
     for &vi in &candidates {
         let v = &verses[vi as usize];
         // Shared IDF mass, summed over the verse's tokens in sorted order (deterministic).
@@ -318,22 +462,21 @@ pub fn match_quote_scored_in(t: Translation, text: &str) -> Vec<(String, u8)> {
         if score < COVERAGE_THRESHOLD {
             continue;
         }
-        let better = match best {
-            None => true,
-            Some((bscore, bmass, _)) => score > bscore || (score == bscore && shared_mass > bmass),
-        };
-        if better {
-            best = Some((score, shared_mass, vi));
-        }
+        top.offer(Ranked {
+            score,
+            shared_mass,
+            verse: vi,
+        });
     }
 
-    match best {
-        Some((score, _, vi)) => {
-            vec![(
-                display_reference(&verses[vi as usize]),
-                score_to_confidence(score),
-            )]
-        }
-        None => Vec::new(),
-    }
+    let ranked = top
+        .ranked()
+        .map(|r| {
+            (
+                display_reference(&verses[r.verse as usize]),
+                score_to_confidence(r.score),
+            )
+        })
+        .collect();
+    (ranked, top.offered)
 }
