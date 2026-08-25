@@ -383,7 +383,7 @@ fn timer_view(remaining: u32, total: u32, time_up: bool, warn: bool) -> TimerVie
 
 /// Does the framebuffer contain a pixel close to `target` (per-channel tolerance)?
 fn has_color(fb: &FrameBuffer, target: (u8, u8, u8)) -> bool {
-    fb.bytes().chunks_exact(4).any(|px| {
+    fb.bytes().as_chunks::<4>().0.iter().any(|px| {
         let d = |a: u8, b: u8| (a as i32 - b as i32).pow(2);
         d(px[0], target.0) + d(px[1], target.1) + d(px[2], target.2) < 900
     })

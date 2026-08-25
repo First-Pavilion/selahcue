@@ -30,7 +30,9 @@ fn composed_qr_renders_black_on_white_with_quiet_zone() {
     // Modules render black somewhere.
     let has_black = fb
         .bytes()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|p| p[0] == 0 && p[1] == 0 && p[2] == 0);
     assert!(has_black, "dark modules must render");
 }

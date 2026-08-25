@@ -268,7 +268,7 @@ fn baseline_grayscale_decodes_to_rgba() {
     assert_eq!((img.width(), img.height()), (8, 8));
     assert_eq!(img.rgba().len(), 8 * 8 * 4);
     // A flat DC-only block reconstructs to mid grey, fully opaque.
-    for px in img.rgba().chunks_exact(4) {
+    for px in img.rgba().as_chunks::<4>().0 {
         assert_eq!(px[0], px[1], "grayscale expands to equal channels");
         assert_eq!(px[1], px[2]);
         assert_eq!(px[3], 255, "opaque alpha");

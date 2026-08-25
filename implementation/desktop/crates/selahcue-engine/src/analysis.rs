@@ -151,12 +151,16 @@ pub fn ssim(a: &FrameBuffer, b: &FrameBuffer) -> f64 {
 fn channel_ssim(a: &FrameBuffer, b: &FrameBuffer, ch: usize) -> f64 {
     let va: Vec<f64> = a
         .bytes()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|p| p[ch] as f64 / 255.0)
         .collect();
     let vb: Vec<f64> = b
         .bytes()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|p| p[ch] as f64 / 255.0)
         .collect();
     let n = va.len() as f64;
