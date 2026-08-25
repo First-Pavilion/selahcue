@@ -90,7 +90,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-015 | yes | Both workflows pass a real workflow linter, not review by eye | `actionlint 1.7.12` over both files | exit 0 | recorded terminal output | PASS |
 | C-016 | yes | A failing gate no longer suppresses the gates after it in CI | parse `ci.yml`; check every GATE step (Format onward) in `rust` and `operator` | all carry `if: ${{ !cancelled() }}`; setup steps deliberately do not | `.github/workflows/ci.yml` | PASS |
 | C-017 | yes | `--no-fail-fast` measurably surfaces a failure it would otherwise hide | inject a failing test in two independent crates, run with and without | 1 binary reported FAILED without, 2 with | recorded terminal output | PASS |
-| C-018 | yes | Every job holding a `permissions` block that checks out code also has `contents` access | `check_workflow_permissions.py` over all workflows | exit 0 | `.github/scripts/check_workflow_permissions.py` | PASS |
+| C-018 | yes | Every job holding a `permissions` block that checks out code also has `contents` access | `check_workflows.py` over all workflows | exit 0 | `.github/scripts/check_workflows.py` | PASS |
 | C-019 | yes | That check detects the shipped defect, and actionlint does not | restore `issues: write`-only on `ci-alarm`; run both | check exits 1 naming the job; actionlint exits 0 | recorded terminal output | PASS |
 | C-020 | yes | Every job that can fail on `main` is inside the alarm's `needs` | compare `jobs:` keys with `ci-alarm.needs` | only `ci-alarm` itself absent | `.github/workflows/ci.yml` | PASS |
 | C-021 | yes | Placeholder staging cannot truncate an existing file | run the `stage()` helper over a non-empty file | contents preserved; missing file created at 0 bytes | recorded terminal output | PASS |
@@ -100,7 +100,12 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-026 | yes | A fully green run still closes a marker-less issue (the fallback self-heals) | self-test `conservative_outstanding` + `reconcile` over an all-success run | outstanding empties | `.github/scripts/ci_alarm.py` | PASS |
 | C-027 | yes | The pin parser accepts either TOML quote style and still rejects a floating one | `--print-channel` against `"1.98.0"`, `'1.98.0'`, `'stable'` | 0, 0, 1 | recorded terminal output | PASS |
 | C-028 | yes | No claim in `CLAUDE.md` is falsified by this branch | re-read every claim this branch touches | `--no-fail-fast` and operator-coverage sentences corrected | `CLAUDE.md` | PASS |
-| C-029 | yes | The four reviewers have reviewed and blocking findings are cleared | Cody, Vera, Sana, Quinn (+ Codex counterparts) | no unresolved blocking findings | ClickUp 86ak5rc9c comments | PENDING |
+| C-030 | yes | No corrupt marker shape can produce a false all-clear | 9 shapes (absent, mangled, 2 empty spellings, commas-only, whitespace, prepended-empty, intact, pruned) through `outstanding_from` + `reconcile` | 0 shapes close while `rust` is red | recorded terminal output | PASS |
+| C-031 | yes | The self-test actually guards the trust decision (is not vacuous) | revert `if not recorded` to `if recorded is None`; re-run self-test | exits 1 | recorded terminal output | PASS |
+| C-032 | yes | No `success()` step follows a `!cancelled()` step in any job | `check_workflows.py` ordinal check | exit 0 | `.github/scripts/check_workflows.py` | PASS |
+| C-033 | yes | That ordering check detects the stranded staging step, and actionlint does not | strand staging back between Format and Check; run both | checker exits 1 naming the step; actionlint exits 0 | recorded terminal output | PASS |
+| C-034 | yes | Every mutating `gh` call is withheld under DRY_RUN | run the alarm with `DRY_RUN=true` against a stub `gh` that logs real invocations | 0 real writes executed | recorded terminal output | PASS |
+| C-035 | yes | The four reviewers have reviewed and blocking findings are cleared | Cody, Vera, Sana, Quinn (+ Codex counterparts) | no unresolved blocking findings | ClickUp 86ak5rc9c comments | PENDING |
 
 ## Verification plan
 
@@ -169,8 +174,8 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 - Target criterion: C-018 … C-021
 - Hypothesis: `ci-alarm` declared `permissions: issues: write` only. Declaring any scope sets the rest to `none`, so `contents: none` on a private repo means `actions/checkout` cannot clone and the job dies at step 1 — a permanently dead alarm shipped next to documentation calling it the only alarm.
-- Change or investigation: confirmed the asymmetry directly (the canary had `contents: read` + `issues: write`; `ci-alarm` did not; repo confirmed `private: true`). Added `contents: read`. Added `lint-workflows` to the alarm's `needs` — it could fail on `main` and never enter the outstanding set. Added `persist-credentials: false` to both checkouts. Made both workflows' placeholder staging create-only. Added `check_workflow_permissions.py` so this class cannot recur, since actionlint does not model it.
-- Verifier executed: `check_workflow_permissions.py` plus a mutation restoring the exact shipped defect; `actionlint` on the same mutated file; a `stage()` helper trial over a non-empty file.
+- Change or investigation: confirmed the asymmetry directly (the canary had `contents: read` + `issues: write`; `ci-alarm` did not; repo confirmed `private: true`). Added `contents: read`. Added `lint-workflows` to the alarm's `needs` — it could fail on `main` and never enter the outstanding set. Added `persist-credentials: false` to both checkouts. Made both workflows' placeholder staging create-only. Added a workflow checker (now `check_workflows.py`) so this class cannot recur, since actionlint does not model it.
+- Verifier executed: the workflow checker plus a mutation restoring the exact shipped defect; `actionlint` on the same mutated file; a `stage()` helper trial over a non-empty file.
 - Result: the check exits 1 and names `ci-alarm`; **actionlint exits 0 on the same file**, confirming nothing else in the pipeline would have caught it. `stage()` preserves a 16-byte file that `: >` destroys.
 - New evidence: the finding sat exactly where the contract was thin — C-013 verified the reconcile *logic*, never the GitHub write path. C-022 now names that gap explicitly and stays PENDING until a post-merge dispatch proves it, and `CLAUDE.md` describes the alarm as **unproven, not live** until then.
 - Decision: gate-review
@@ -184,6 +189,16 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Result: **4/4 mutants caught**, including Quinn's survivor (`results.get(job, "success")`) and her second door (marker stripped). Gate-step audit reports no gate step without `!cancelled()`. Quote styles 0/0/1 as expected.
 - New evidence: the `!cancelled()` claim had been *literally true and materially false* — the operator's Clippy was the middle line of one `run:` under `bash -e`, so an operator clippy failure still hid the operator's own tests. Fixed rather than reworded. Separately, `CLAUDE.md`'s "no `--no-fail-fast` anywhere" became false in this very branch (8 occurrences in the Makefile, 8 in `ci.yml`), and its "CI only compile-checks" the operator was already inaccurate — both corrected.
 - Residual, stated rather than hidden: the alarm's state remains a label plus a body marker, both collaborator-editable. The fallback makes corruption fail *safe* rather than impossible; reconstructing state from run history would remove the editable surface entirely and is the stronger fix if this ever proves noisy. C-022 (post-merge proof of the write path) stays PENDING.
+- Decision: gate-review
+
+### Iteration 8 — QA delta (Quinn) + security exactness (Sana)
+
+- Target criterion: C-030 … C-034
+- Hypothesis: the previous round shut the *delete* door on marker corruption and left the *empty* door open, and the self-test asserted the defective behaviour as correct.
+- Change or investigation: verified Quinn's proof against the shipped code — `if not new_outstanding:` returns and closes at line 291, before the only production `render_marker` at 323, so **the alarm can never write an empty marker onto an open issue**; an empty one is therefore always corruption, not a legitimate state. That turns Sana's accepted residual into something rejectable at no cost. One-line fix at the call site (`if not recorded`), and the self-test's assertion — which I had written to bless the defect one iteration earlier — inverted. Extracted the decision into `outstanding_from()` so the self-test drives the real rule instead of a copy of it. Hoisted the operator's staging step above the gate boundary. Replaced the hand-audited gate partition with an ordinal check. Routed `gh label create` through `gh_write`. Renamed the CI step to what it actually checks, pinned `pyyaml`, recorded the checker's known gaps.
+- Verifier executed: 9 corruption shapes; a 5-mutant battery on the alarm; A/B mutation of both workflow checks against their motivating defects with actionlint run on the same files; a stub-`gh` DRY_RUN run.
+- Result: **0 of 9 shapes** produce a false all-clear (was 4). **5/5 alarm mutants caught.** Both workflow checks exit 1 on their real defect while actionlint exits 0 on the same file. DRY_RUN executed **0** real writes.
+- New evidence — the sharpest finding of the whole review, and it was about my verification rather than my code: `gate steps WITHOUT !cancelled(): none` could not see the stranded staging step, because my audit exempted it **by name**. The partition was hand-maintained, so the parse validated a labelling I had chosen rather than an independent property. Replaced with a purely ordinal rule that needs no list. Separately, my first attempt at pinning C-030 was itself vacuous: the self-test re-implemented the call-site rule, so reverting the real fix left it green. Caught by mutating it.
 - Decision: gate-review
 
 ## Risks and rollback
@@ -203,5 +218,5 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Validator result: see the run recorded on ClickUp 86ak5rc9c
 - Independent verification result: PENDING — four-reviewer gate not yet run
 - Terminal state: GATE_REVIEW
-- Remaining failed or blocked criteria: C-022 (post-merge proof of the alarm's write path) and C-029 (independent review) PENDING — Cody, Sana and Quinn complete; Vera outstanding
+- Remaining failed or blocked criteria: C-022 (post-merge proof of the alarm's write path, non-mandatory) and C-035 (independent review) PENDING — Cody and Sana pass; Quinn re-checking D1/D2; Vera outstanding. Owner acceptance of the collaborator-editable marker/label residual is recorded on 86ak5rc9c and is the owner's to give.
 - ClickUp final evidence comment: posted on 86ak5rc9c

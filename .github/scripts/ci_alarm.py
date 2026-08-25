@@ -26,12 +26,37 @@ second door: strip the marker, then send an api-only push, and the issue closes
 while `main` is still red. It needs no malice -- a well-meaning edit, or a manual
 close-and-reopen, desynchronises it just as effectively.
 
-The state is therefore treated as a HINT, never as authority. If the issue is
-open and its marker is missing or unparseable, the alarm does not guess and does
-not close: it conservatively treats every tracked job that is not reporting
-success in this run as outstanding. Corrupting the marker can then only make the
-alarm STRICTER, never looser, and a genuinely all-green run still clears it. That
-is the safe direction for a control whose whole purpose is to be trustworthy.
+If the issue is open and its marker is absent, unreadable, OR EMPTY, the alarm
+does not guess and does not close: it conservatively treats every tracked job not
+reporting success in this run as outstanding, so only a fully green run can clear
+it.
+
+Empty belongs in that list by proof, not by taste. `if not new_outstanding:`
+returns and closes the issue BEFORE any body is composed, and the sole production
+`render_marker` call sits in the branch below it -- so every marker this alarm
+writes names at least one job. An OPEN issue carrying an empty marker is
+unreachable by the alarm's own writes: it is always corruption. Rejecting it
+therefore costs nothing and is not a trade. Four corrupt shapes reached a false
+all-clear through this door before it was shut -- an emptied payload in two
+spellings, a commas-only payload, and an empty marker prepended ahead of the real
+one (the regex takes the first match).
+
+What remains trusted, stated exactly so nobody inherits a false invariant: a
+WELL-FORMED marker naming at least one real job. Someone who forges that -- say by
+pruning the broken job out of a list that still names another -- is believed. That
+residual is accepted, because forging it requires `issues: write`, and anyone
+holding that already has a strictly simpler attack with the identical effect:
+close the issue by hand. So:
+
+    absent / unreadable / empty -> rejected; fails safe (stricter, never looser)
+    well-formed, names a job    -> trusted; INSIDE the trust boundary
+
+Reconstructing the outstanding set from run history would defend the marker but
+not the manual close, so it removes no adversarial capability -- while making the
+one job that must be reliable depend on API availability, pagination, 90-day
+retention and rate limits, and still leaving it unable to observe a job that never
+ran. The trust boundary here is write access to the repository, not the format of
+this comment.
 
 The reconcile step is a pure function so it can be tested without GitHub
 (`--self-test`); the workflow's first real execution should not be its first
@@ -95,6 +120,25 @@ def render_marker(outstanding: set[str]) -> str:
     return f"<!-- {MARKER}: {','.join(sorted(outstanding))} -->"
 
 
+def outstanding_from(body: str | None, results: dict[str, str]) -> tuple[set[str], bool]:
+    """Where to start reconciling for an OPEN issue carrying `body`.
+
+    Returns (outstanding, trusted). This is THE decision about whether the recorded
+    state is believed, and it lives in one function on purpose: the self-test calls
+    exactly this, so reverting the rule cannot leave the test green. An earlier
+    version re-implemented the rule inside the test, which meant the test passed
+    whether or not the fix was present.
+
+    `not recorded` deliberately rejects an EMPTY marker as well as an absent one --
+    see the module docstring for why an empty marker on an open issue is always
+    corruption rather than a legitimate state.
+    """
+    recorded = parse_marker(body)
+    if not recorded:
+        return conservative_outstanding(results), False
+    return recorded, True
+
+
 # --------------------------------------------------------------------------
 # Self-test — runs anywhere, no GitHub needed
 # --------------------------------------------------------------------------
@@ -149,7 +193,6 @@ def self_test() -> int:
     # Marker round-trip. None (absent) and set() (present, empty) must stay distinct.
     check("marker round-trip", parse_marker(render_marker({"b", "a"})), {"a", "b"})
     check("absent marker is None, not empty", parse_marker("no marker here"), None)
-    check("empty marker parses as empty set", parse_marker(f"<!-- {MARKER}:  -->"), set())
 
     # A stripped marker must not become a clean bill of health. This is the second
     # door into the same false all-clear: edit the body, then send a push that skips
@@ -159,6 +202,32 @@ def self_test() -> int:
     check("a missing marker assumes the unobserved jobs are still broken", seeded, {"rust"})
     out, _, _ = reconcile(seeded, results)
     check("...so a body-stripped issue does NOT close on a skipping run", out, {"rust"})
+
+    # Every corrupt shape that reached a false all-clear must be REJECTED, i.e. must
+    # be falsy so the call site falls back conservatively. `not recorded` is the
+    # contract, so assert exactly that rather than the parse result.
+    for label, body in (
+        ("empty payload, two spaces", f"<!-- {MARKER}:  -->"),
+        ("empty payload, no space", f"<!-- {MARKER}: -->"),
+        ("commas-only payload", f"<!-- {MARKER}: ,,, -->"),
+        ("empty marker prepended before the real one",
+         f"<!-- {MARKER}:  -->\n" + render_marker({"rust"})),
+        ("absent entirely", "no marker here"),
+        ("mangled, no colon", f"<!-- {MARKER} rust -->"),
+    ):
+        seeded, trusted = outstanding_from(body, results)
+        check(f"corrupt marker is NOT trusted: {label}", trusted, False)
+        out, _, _ = reconcile(seeded, results)
+        check(f"...so it cannot close the alarm: {label}", out, {"rust"})
+
+    # The half that IS still trusted, asserted so the docstring cannot drift from the
+    # code: a well-formed marker naming a real job is believed, including a forged one
+    # that pruned the broken job out. Accepted -- it needs `issues: write`, and that
+    # actor can simply close the issue by hand.
+    seeded, trusted = outstanding_from(render_marker({"operator"}), results)
+    check("a well-formed marker IS trusted", trusted, True)
+    out, _, _ = reconcile(seeded, results)
+    check("a forged PRUNED marker is believed -- inside the trust boundary", out, {"operator"})
 
     # ...but a genuinely all-green run still clears it, so the alarm self-heals.
     all_green = {"rust": "success", "api": "success", "changes": "success"}
@@ -192,19 +261,25 @@ def gh(*args: str, check: bool = True) -> str:
     return proc.stdout.strip()
 
 
-def gh_write(*args: str) -> None:
+def gh_write(*args: str, check: bool = True) -> None:
     """A mutating gh call, suppressed in dry-run.
 
     Dry-run exists so the alarm can be exercised on a branch before it is merged --
     otherwise its first execution ever is on an already-broken `main`, which is the
     worst possible moment to discover a typo. Reads still happen, so the run is a
-    real rehearsal; only the writes are withheld, because a branch's results must
-    never open or close the real `main` issue.
+    real rehearsal; every write is withheld, because a branch's results must never
+    open or close the real `main` issue.
+
+    Note what DRY_RUN is and is not. It is a SAFETY INTERLOCK against a rehearsal
+    touching production state -- not a security boundary. A branch controls both the
+    workflow file and this script, so anyone who can dispatch from a branch can also
+    edit away the interlock. What actually confines this is write access to the
+    repository; the interlock only stops honest mistakes.
     """
     if DRY_RUN:
         print(f"DRY-RUN, would run: gh {' '.join(args)}")
         return
-    gh(*args)
+    gh(*args, check=check)
 
 
 def main() -> int:
@@ -224,8 +299,10 @@ def main() -> int:
     if DRY_RUN:
         print("DRY-RUN: reads happen, writes are printed and withheld.")
 
-    gh("label", "create", LABEL, "--repo", repo, "--color", "B60205",
-       "--description", "main's pipeline is failing", "--force", check=False)
+    # Idempotent and harmless, but still a WRITE -- it goes through gh_write so that
+    # "every write is withheld in dry-run" is true without qualification.
+    gh_write("label", "create", LABEL, "--repo", repo, "--color", "B60205",
+             "--description", "main's pipeline is failing", "--force", check=False)
 
     found = gh("issue", "list", "--repo", repo, "--label", LABEL, "--state", "open",
                "--limit", "1", "--json", "number,body")
@@ -235,15 +312,13 @@ def main() -> int:
     if issue is None:
         outstanding: set[str] = set()
     else:
-        recorded = parse_marker(issue["body"])
-        if recorded is None:
-            outstanding = conservative_outstanding(results)
-            print(f"WARNING: issue #{issue['number']} has no readable "
-                  f"`{MARKER}` marker. Its state was lost or edited, so it is not "
-                  f"trusted: assuming every job not observed succeeding in this run is "
-                  f"still outstanding. Only a fully green run can close it.")
-        else:
-            outstanding = recorded
+        outstanding, trusted = outstanding_from(issue["body"], results)
+        if not trusted:
+            print(f"WARNING: issue #{issue['number']} has no usable "
+                  f"`{MARKER}` marker (absent, unreadable, or empty). Its state was "
+                  f"lost or edited, so it is not trusted: assuming every job not "
+                  f"observed succeeding in this run is still outstanding. Only a fully "
+                  f"green run can close it.")
 
     new_outstanding, newly_failed, newly_recovered = reconcile(outstanding, results)
 

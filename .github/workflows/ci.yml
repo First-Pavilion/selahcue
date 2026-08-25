@@ -161,16 +161,24 @@ jobs:
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
-      # actionlint does not model the deny-by-omission rule for `permissions:`, so a
-      # job can declare `issues: write`, silently lose `contents`, and fail to check
-      # out on a private repo -- dying at step 1 with its real work never attempted.
-      # The ci-alarm job shipped exactly that in review. Verified: actionlint exits 0
-      # on it. This check does not.
-      - name: Token scopes match what each job actually does
+      # Two invariants actionlint does not model, both of which shipped as real
+      # defects in this branch and were caught by human review rather than any gate:
+      #   - a job declaring `permissions` loses every scope it does not list, so an
+      #     `issues: write`-only job cannot check out a private repo and dies at step 1;
+      #   - a `success()` setup step stranded after the first `!cancelled()` gate gets
+      #     skipped by an earlier failure, and the gates after it then fail for the
+      #     wrong reason.
+      # Verified: actionlint exits 0 on both. This does not. The name is deliberately
+      # narrow -- it checks checkout-vs-`contents` and step ordering, NOT that every
+      # job's scopes match everything it does (a job declaring `contents: read` and
+      # then running `gh issue create` dies the same way and is not detected).
+      - name: Checkout scopes + setup/gate ordering
         run: |
-          python3 -m pip install --quiet --break-system-packages pyyaml
-          python3 .github/scripts/check_workflow_permissions.py --self-test
-          python3 .github/scripts/check_workflow_permissions.py
+          # Pinned, matching the playwright pin below: an unpinned install makes this
+          # gate's behaviour depend on whatever PyPI serves that morning.
+          python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
+          python3 .github/scripts/check_workflows.py --self-test
+          python3 .github/scripts/check_workflows.py
 
   rust:
     name: rust (${{ matrix.os }})
@@ -362,13 +370,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev libx11-dev libxkbcommon-dev
-      # From the first GATE step onward, `!cancelled()`. Setup steps above deliberately
-      # keep the default `success()`: if checkout, the toolchain install or the pin
-      # assertion fails, every downstream result is meaningless or measured on the wrong
-      # compiler, so running them would produce noise rather than information.
-      - name: Format
-        if: ${{ !cancelled() }}
-        run: cargo fmt --check
       - name: Stage Tauri sidecar/resource placeholders (compile-check only)
         # tauri-build validates that the externalBin sidecar (`selahcue-output`) and the NDI
         # resource dll exist at build time. This job COMPILE-checks the operator (it does not
@@ -395,6 +396,16 @@ jobs:
       # Three steps, not one `run:` block. As a single block under `bash -e`, a clippy
       # failure aborted before `cargo test` ever ran -- so this job still had exactly
       # the masking the rest of this change removes, while appearing to be covered.
+      # From the first GATE step onward, `!cancelled()`, and NO setup step after it.
+      # Staging used to sit between Format and Check as a `success()` step, so a
+      # formatting failure skipped it and Check/Clippy/Test then ran WITHOUT the
+      # placeholders — turning one formatting error into four red steps, three failing
+      # for a reason unrelated to the code. In a change about signals that lie, that was
+      # one. Setup steps above keep `success()`: if checkout, the toolchain install or
+      # the pin assertion fails, every downstream result is meaningless.
+      - name: Format
+        if: ${{ !cancelled() }}
+        run: cargo fmt --check
       - name: Check
         if: ${{ !cancelled() }}
         run: cargo check
