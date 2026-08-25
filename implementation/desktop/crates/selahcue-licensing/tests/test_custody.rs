@@ -34,9 +34,16 @@ const SWEPT_RENDERINGS: usize = 14;
 
 /// Number of sanctioned `Token::expose()` call sites in `src/`.
 ///
-/// Each one hands out a raw credential. They are all "attach this to an outbound request";
-/// none may be a formatter. Pinned so adding one is a decision made here, in the open.
-const SANCTIONED_EXPOSE_SITES: usize = 2;
+/// Each one hands out a raw credential. All three are "attach this to an outbound request",
+/// and none may be a formatter:
+///
+/// - `client.rs` — the password into the sign-in mutation's variables
+/// - `client.rs` — the enrollment key into the activation request body
+/// - `client.rs` — `bearer.map(Token::expose)`, the session token into the Authorization
+///   header. This one is a **path call**, which is exactly the form the guard used to miss.
+///
+/// Pinned so adding one is a decision made here, in the open.
+const SANCTIONED_EXPOSE_SITES: usize = 3;
 
 /// A realistic device token: the server's format is `SC-DEV-` + 8 groups of 4.
 const DEVICE_TOKEN: &str = "SC-DEV-A1B2-C3D4-E5F6-G7H8-J9K2-L3M4-N5P6-Q7R8";
@@ -587,7 +594,16 @@ fn the_raw_token_is_never_handed_to_a_formatter() {
         let body = std::fs::read_to_string(path).unwrap();
         for (lineno, line) in body.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
-            if !code.contains("expose()") {
+            // `expose`, not `expose()`. Matching the method-call spelling with literal
+            // empty parens missed the path-call form entirely —
+            // `Token::expose(password)` inside an `eprintln!` put a raw password on stderr
+            // while this test reported ok. Same mistake as the manifest guard that matched
+            // a TOML key instead of the resolved package: pinning a spelling, not a class.
+            //
+            // The tell was already here. SANCTIONED_EXPOSE_SITES said 2 while `src/` held
+            // 3 — `bearer.map(Token::expose)` is invisible to the same substring — so the
+            // pin was one short of the inventory it claims to fix, and the number said so.
+            if !code.contains("expose") {
                 continue;
             }
             expose_sites += 1;

@@ -89,7 +89,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-011 | yes | Every named guard is mutation-verified: broken → RED, restored → GREEN | mutation batteries with landing proof, clean-baseline re-verification and `--no-fail-fast` | every mutation caught by the guard it names | battery summaries | PASS |
 | C-012 | yes | Independent review findings remediated | Sana + Cody review | all in-scope findings closed; out-of-scope ticketed | ClickUp comments | PASS |
 | C-014 | yes | A fresh install activates via sign-in **end to end against the deployed API** (FR-517 criterion 1 as written) | run the client against the API | a device token is issued | — | BLOCKED |
-| C-015 | yes | AC-5 — a deactivated machine re-activates when a slot is free | `cargo test -p selahcue-licensing --test test_client` | see the note below: the shipped server refuses this | test output | BLOCKED |
+| C-015 | no | AC-5 — a deactivated machine re-activates when a slot is free | — | struck from this ticket; raised as `86ak66uzg` | ClickUp `86ak66uzg` | NOT_APPLICABLE |
 | C-013 | no | Live integration against the API under Docker Compose | `docker compose up` + client run | activation succeeds end to end | — | BLOCKED |
 
 **`C-014` (FR-517 criterion 1) is BLOCKED and must not be recorded as PASS.** The criterion
@@ -101,17 +101,22 @@ criterion to C-001's wording and move end-to-end proof to `86ak5t1gw`, or hold t
 `GATE_REVIEW` until that ticket lands. Recorded here rather than quietly satisfied by the
 mocked evidence.
 
-**`C-015` (AC-5) is BLOCKED by a mismatch between the acceptance criterion and the shipped
-server.** AC-5 says a deactivated machine re-activates when a slot is free. It does not:
-`_assert_device_activatable` (`apps/devices/services.py:127-131`) refuses any device whose
-status is not `ACTIVE` with `POLICY_DENIED`, and says so deliberately — *"A revoked device is
-terminal for this slice... Re-provisioning a revoked install is a separate future flow."*
-What the server does support is re-minting for a device that is still `ACTIVE` but whose
-token was revoked or expired, gated on the plan's allowance. Both behaviours are pinned by
-tests (`a_deactivated_machine_is_refused_by_policy_and_keeps_presenting` and
-`a_device_whose_token_was_revoked_is_re_minted_which_is_the_supported_recovery`) so the
-client is correct either way, but the criterion itself needs either a server-side
-re-provisioning flow or a rewrite. Owner's call.
+**`C-015` (AC-5) has been struck from this ticket and raised as `86ak66uzg`.** It is a
+product gap in the Platform API, not missing client work, and QA's call not to rewrite the
+criterion is the right one: restating it as *"a deactivated machine is refused"* would turn a
+gap into a specification — the same anti-pattern as a test that pins drift in place.
+
+The gap: `_assert_device_activatable` (`apps/devices/services.py:127-131`) refuses any device
+whose status is not `ACTIVE` with `POLICY_DENIED`, and the `(license_key, device_fingerprint)`
+row stays `REVOKED` and terminal. So **a machine deactivated once can never come back** — a
+church that deactivates a booth machine to move a licence, or does it by mistake, has no
+recovery and support has no tool either. It also collides with **FR-550**, which promises a
+downgrade will not burn slots because re-subscribing restores the org exactly; that guarantee
+assumes deactivation is reversible.
+
+The client is correct either way and both real behaviours are pinned meanwhile —
+`a_deactivated_machine_is_refused_by_policy_and_keeps_presenting` and
+`a_device_whose_token_was_revoked_is_re_minted_which_is_the_supported_recovery`.
 
 **FR-518 is only partially addressed here and must not be recorded as satisfied.** This
 ticket lands the trusted-key **set** selected by `key_id` — the clause that becomes
@@ -170,7 +175,7 @@ while keeping the last valid cache) belong to `86ak5mn1d`.
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/GOAL-desktop-licensing-client.md`
 - Validator result: see ClickUp evidence comment.
-- Independent verification result: Sana PASS with required remediations (closed); Cody not-ready-for-PR (closed); Vera PASS; Quinn one blocking finding plus four surviving mutations (closed).
+- Independent verification result: **all four reviewers cleared the branch** — Cody (code), Sana (security), Vera (performance) and Quinn (QA). Every finding remediated and mutation-verified.
 - Terminal state: GATE_REVIEW — implementation and review remediation complete; Vera and Quinn outstanding before any PR.
-- Remaining failed or blocked criteria: `C-013` (non-mandatory), `C-014` (FR-517 criterion 1, owner decision), `C-015` (AC-5 vs shipped server, owner decision).
+- Remaining failed or blocked criteria: `C-013` (non-mandatory), `C-014` (FR-517 criterion 1, owner decision), `C-015` (AC-5, struck and moved to `86ak66uzg`).
 - ClickUp final evidence comment: https://app.clickup.com/t/86ak5mn11
