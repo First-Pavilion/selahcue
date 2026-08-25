@@ -487,20 +487,49 @@ def test_reset_token_is_single_use(client, sender):
 # broken. They fetched a fresh link, retyped the same short password, and looped — no
 # exit, no clue, a burnt token per lap.
 #
-# WHAT EACH TEST BELOW ACTUALLY GUARDS. These two mutations are different, and a
-# different test catches each; neither test catches both. Do not delete one as redundant.
+# WHAT EACH TEST BELOW ACTUALLY GUARDS. The catch map is the point of this block: the
+# mutations are different, and different tests catch each. Do not delete a test as
+# redundant without re-deriving this table — and keep it ACCURATE, because a catch map
+# that overstates one test's reach is worse than none. (An earlier version of this block
+# said mutation B was caught by ONE test. Three catch it. Corrected in review.)
+#
+# The counts below are MEASURED, by applying each mutation and running this whole file.
+# Do not adjust one from reasoning alone; re-run it.
 #
 #   Mutation A — move the `_validate_password` call back above the token lookup, keeping
-#                `error=_password_error`. The ORDER is wrong again.
-#                Caught ONLY by `test_a_dead_token_with_a_weak_password_never_mentions_the_password`,
-#                because under A an unknown token + weak password answers PASSWORD_INVALID
-#                and hands an unauthenticated caller a brand-new oracle.
-#                NOT caught by the valid-token test, which still sees PASSWORD_INVALID.
+#                `code=ErrorCode.PASSWORD_INVALID`. The ORDER is wrong again.
+#                Caught by TWO tests (2 failed, 32 passed): the two dead-token tests,
+#                `..._never_mentions_the_password` and `..._stays_collapsed`. Under A any
+#                token that is not live answers PASSWORD_INVALID and hands an
+#                UNAUTHENTICATED caller a brand-new oracle.
+#                NOT caught by the live-token tests, which still see PASSWORD_INVALID.
 #
-#   Mutation B — the full revert: move it back AND drop `error=_password_error`.
-#                Caught ONLY by `test_a_live_token_with_a_short_password_blames_the_password`,
-#                which then sees the collapsed VALIDATION_FAILED — the original defect.
-#                NOT caught by the dead-token test, which sees VALIDATION_FAILED either way.
+#   Mutation B — the full revert: move it back AND drop the code argument.
+#                Caught by FOUR tests (4 failed, 30 passed): both live-token tests, which
+#                then see the collapsed VALIDATION_FAILED — the original defect —
+#                `test_a_rejected_password_does_not_burn_the_users_link`, and
+#                `..._stays_collapsed` via its positive control.
+#
+#   Mutation F — move the call below the row lookup but ABOVE the purpose/consumed/expired
+#                block. The subtlest of the four, and the most dangerous.
+#                Caught ONLY by `test_a_dead_but_real_token_with_a_weak_password_stays_collapsed`
+#                (1 failed, 33 passed).
+#                Under F a token that EXISTS but is spent/expired/wrong-purpose answers
+#                PASSWORD_INVALID while an unknown token still answers VALIDATION_FAILED —
+#                so an unauthenticated caller can tell "this token never existed" from
+#                "this token existed", with NO valid token of their own. That is a direct
+#                FR-529 breach and strictly worse than the sanctioned live-token oracle.
+#                Every other test in this file stays GREEN under F. It was found in review,
+#                not by the suite, which is exactly why the test below exists.
+#
+#   Mutation D — move the call BELOW `token.consumed_at = now`.
+#                Caught by NOTHING (34 passed), here or anywhere in the repository, and that is
+#                CORRECT, not a gap: the link-preservation property comes from the
+#                enclosing `transaction.atomic()` rolling the consume back, so D changes
+#                no observable behaviour. `test_a_rejected_password_does_not_burn_the_users_link`
+#                guards the PROPERTY, never the placement — see its docstring. What guards
+#                the transaction boundary itself is
+#                `test_a_failed_reset_rolls_back_the_consume_and_the_password`.
 #
 # `test_signup_weak_password_rejected` above is NOT coverage for any of this: signup is a
 # different function and would keep passing however broken this path became.
@@ -572,7 +601,18 @@ def test_a_live_token_with_an_all_whitespace_password_blames_the_password(client
 
 @pytest.mark.django_db
 def test_a_rejected_password_does_not_burn_the_users_link(client, sender):
-    """A failed password must cost the user nothing. Their link still works."""
+    """A failed password must cost the user nothing. Their link still works.
+
+    SCOPE, precisely. This guards the user-visible PROPERTY, not the placement of the
+    `_validate_password` call relative to the consume. Moving that call below
+    `token.consumed_at = now` (mutation D) leaves this test green, because the enclosing
+    `transaction.atomic()` rolls the consume back either way. The transaction is what
+    delivers the property; the placement is redundant defence in depth.
+
+    What this test DOES catch is mutation B — the full revert — via the PASSWORD_INVALID
+    assertion below. What guards the transaction boundary is
+    `test_a_failed_reset_rolls_back_the_consume_and_the_password`.
+    """
     email = "pastor@grace.example"
     reset_token = live_reset_token(client, sender, email=email)
 
@@ -653,8 +693,116 @@ def test_every_token_failure_stays_mutually_indistinguishable(client, sender):
     }
     for name, resp in responses.items():
         assert error_code(resp) == "VALIDATION_FAILED", f"{name} did not return the collapsed code"
+    # SECOND-ORDER, and labelled as such so it is not mistaken for an independent guard.
+    # `safe_graphql_error` rebuilds every message from `SAFE_MESSAGES[code]`, so with the
+    # four code assertions above already passing, the message is a pure function of the
+    # code and this cannot fail on its own. It bites only if the view's scrubbing is ALSO
+    # removed — a real regression, just not one the codes above would catch.
     assert len({error_message(resp) for resp in responses.values()}) == 1, (
-        "the four token failures are no longer byte-identical — one of them has become an oracle"
+        "the four token failures are no longer byte-identical — the view's message scrubbing "
+        "has been lost and the message itself has become an oracle"
+    )
+
+
+@pytest.mark.django_db
+def test_a_dead_but_real_token_with_a_weak_password_stays_collapsed(client, sender):
+    """The FR-529 hole that a green suite did not see. Catches mutation F.
+
+    Every OTHER weak-password test in this file uses an UNKNOWN token, which fails at the
+    row lookup — so none of them ever drives a weak password into the
+    purpose/consumed/expired block. That left a mutation that passes 32/32 while turning
+    the API into an enumeration oracle:
+
+        unknown        -> VALIDATION_FAILED     ("this token never existed")
+        consumed       -> PASSWORD_INVALID      ("this token EXISTED")
+        expired        -> PASSWORD_INVALID
+        wrong purpose  -> PASSWORD_INVALID
+
+    An UNAUTHENTICATED caller holding no valid token could then separate "never existed"
+    from "existed" just by attaching a short password — strictly worse than the sanctioned
+    live-token oracle, which at least requires a working link first.
+
+    So: a token that is REAL but DEAD must answer exactly like one that never existed, no
+    matter what the password is.
+    """
+    email = "pastor@grace.example"
+    signup_and_verify(client, sender, email=email)
+
+    # consumed — mint one and spend it
+    post_account(client, REQUEST_RESET, {"e": email})
+    spent = sender.reset_tokens[-1]
+    post_account(client, CONFIRM_RESET, {"input": {"token": spent, "newPassword": "a-first-new-passphrase"}})
+
+    # expired — mint one and age it out
+    post_account(client, REQUEST_RESET, {"e": email})
+    stale = sender.reset_tokens[-1]
+    stale_row = token_row(stale)
+    stale_row.expires_at = timezone.now() - timezone.timedelta(seconds=1)
+    stale_row.save(update_fields=["expires_at"])
+
+    # wrong purpose — an EMAIL_VERIFY token offered to the reset mutation
+    verify_token = sender.verify_tokens[-1]
+
+    # PREMISES, asserted before the contract. Each row must be REAL and DEAD for the
+    # right reason; if any of these slips, the case below stops exercising the
+    # purpose/consumed/expired block and passes for the wrong reason.
+    assert token_row(spent).consumed_at is not None, "the consumed case was NOT set up — token never spent"
+    assert token_row(stale).expires_at <= timezone.now(), "the expired case was NOT set up — token still live"
+    assert token_row(stale).consumed_at is None, "the expired token was spent, so it is not testing EXPIRY"
+    assert token_row(verify_token).purpose == CredentialTokenPurpose.EMAIL_VERIFY, (
+        "the wrong-purpose case was NOT set up — this is not a verification token"
+    )
+
+    dead_but_real = {"consumed": spent, "expired": stale, "wrong_purpose": verify_token}
+    for name, raw in dead_but_real.items():
+        resp = post_account(client, CONFIRM_RESET, {"input": {"token": raw, "newPassword": SHORT_PASSWORD}})
+        assert error_code(resp) == "VALIDATION_FAILED", (
+            f"a {name} token answered {error_code(resp)} for a weak password. If that is "
+            f"PASSWORD_INVALID, the password is being checked before the token's state, and "
+            f"an unauthenticated caller can now tell a token that EXISTED from one that never "
+            f"did (FR-529)"
+        )
+
+    # POSITIVE CONTROL. Without this, every assertion above would still pass if
+    # PASSWORD_INVALID had been deleted outright or the weak password had silently become
+    # acceptable — "refused" would be indistinguishable from a dead mechanism.
+    post_account(client, REQUEST_RESET, {"e": email})
+    live = sender.reset_tokens[-1]
+    live_resp = post_account(client, CONFIRM_RESET, {"input": {"token": live, "newPassword": SHORT_PASSWORD}})
+    assert error_code(live_resp) == "PASSWORD_INVALID", (
+        "the SAME weak password behind a LIVE token no longer reports PASSWORD_INVALID, so "
+        "the collapse asserted above proves nothing — the mechanism is dead, not working"
+    )
+
+
+@pytest.mark.django_db
+def test_a_failed_reset_rolls_back_the_consume_and_the_password(client, sender, monkeypatch):
+    """The transaction boundary itself — the thing that actually preserves the user's link.
+
+    `test_a_rejected_password_does_not_burn_the_users_link` cannot catch the loss of
+    `transaction.atomic()`, because with the password check above the consume the property
+    holds without it. This test bites: it fails the reset AFTER the token has been consumed
+    and the password written, at the audit call, so only a real rollback can restore both.
+
+    Mirrors `test_signup_audit_failure_rolls_back_everything`, which does the same job for
+    signup.
+    """
+    email = "pastor@grace.example"
+    reset_token = live_reset_token(client, sender, email=email)
+    original = CustomerUser.objects.get(email=email).password_hash
+
+    def boom(*a, **k):
+        raise RuntimeError("audit down")
+
+    monkeypatch.setattr("selahcue_api.apps.accounts.services.record_audit_event", boom)
+    post_account(client, CONFIRM_RESET, {"input": {"token": reset_token, "newPassword": "a-perfectly-good-passphrase"}})
+
+    assert token_row(reset_token).consumed_at is None, (
+        "the token stayed consumed through a failed reset — the user's link is burnt and the "
+        "password was never changed, the worst of both outcomes"
+    )
+    assert CustomerUser.objects.get(email=email).password_hash == original, (
+        "the password was changed even though the reset failed"
     )
 
 

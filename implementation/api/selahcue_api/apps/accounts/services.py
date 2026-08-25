@@ -6,7 +6,6 @@ import logging
 import secrets
 import threading
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -72,16 +71,6 @@ class CreateCustomerResult:
 
 def _validation_error() -> SafeAPIError:
     return SafeAPIError(ErrorCode.VALIDATION_FAILED)
-
-
-def _password_error() -> SafeAPIError:
-    """The password is the problem — and the caller has EARNED the right to be told.
-
-    Only ever raised after a credential token has been looked up and found live, so it
-    cannot become an enumeration oracle (FR-529 / CON-P6 stand untouched). See the note on
-    `ErrorCode.PASSWORD_INVALID`.
-    """
-    return SafeAPIError(ErrorCode.PASSWORD_INVALID)
 
 
 def _clean_customer(customer: CustomerOrg) -> None:
@@ -509,21 +498,20 @@ def _email_fingerprint(email: str) -> str:
     return _fingerprint(email)
 
 
-def _validate_password(
-    password: str, *, error: Callable[[], SafeAPIError] = _validation_error
-) -> None:
+def _validate_password(password: str, *, code: ErrorCode = ErrorCode.VALIDATION_FAILED) -> None:
     """Length policy only (v1); complexity/breach checks are a later slice.
 
-    `error` selects which coded failure this rejection raises, and the choice is a security
-    boundary, not a style preference. It defaults to the collapsed `_validation_error` so an
-    UNAUTHENTICATED caller (signup) learns nothing. `confirm_password_reset` passes
-    `_password_error` — but only from BEHIND a validated token, never before one.
+    `code` selects which coded failure a rejection raises, and the choice is a security
+    boundary, not a style preference. The default is the collapsed VALIDATION_FAILED, so a
+    caller who has proved nothing (signup) learns nothing. `confirm_password_reset` passes
+    PASSWORD_INVALID — but only from BEHIND a validated token, never before one. Defaulting
+    to the collapsed code is what makes a future third caller fail SAFE.
     """
     # Do NOT strip — spaces can be intentional — but reject an all-whitespace password.
     if not isinstance(password, str) or not password.strip():
-        raise error()
+        raise SafeAPIError(code)
     if not (MIN_PASSWORD_LENGTH <= len(password) <= MAX_PASSWORD_LENGTH):
-        raise error()
+        raise SafeAPIError(code)
 
 
 def _generate_token(label: str) -> str:
@@ -1230,11 +1218,19 @@ def confirm_password_reset(raw_token: str, new_password: str) -> ConfirmPassword
         # never arrives, so unknown / consumed / expired / wrong-purpose remain mutually
         # indistinguishable (FR-529).
         #
-        # It also sits ABOVE the consume below, so a rejected password does not burn the
-        # user's link — their next attempt uses the same one. The surrounding
-        # `transaction.atomic()` would roll the consume back anyway; this does not depend
-        # on that.
-        _validate_password(new_password, error=_password_error)
+        # ON THE PLACEMENT RELATIVE TO THE CONSUME BELOW — read this before "tidying" it.
+        # A rejected password does not burn the user's link. That guarantee comes from the
+        # enclosing `transaction.atomic()`, which rolls the consume back on the raise; it
+        # does NOT come from this line sitting above `token.consumed_at`. The two are
+        # redundant, and the transaction is the one doing the work.
+        #
+        # Said plainly because an earlier version of this comment claimed the opposite:
+        # moving this call BELOW the consume changes no observable behaviour and no test in
+        # the repository fails (reviewed as mutation D). Keep it here anyway — it is defence
+        # in depth that survives the transaction boundary being refactored away — but do not
+        # believe the link-preservation property is tested by its position. It is tested
+        # through `atomic()`, by the audit-rollback test in the auth slice.
+        _validate_password(new_password, code=ErrorCode.PASSWORD_INVALID)
         token.consumed_at = now
         token.save(update_fields=["consumed_at"])
         user = token.customer_user
