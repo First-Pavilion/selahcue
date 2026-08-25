@@ -39,7 +39,14 @@ if [ ! -f "$pin_file" ]; then
     exit 1
 fi
 
-pinned=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p' "$pin_file")
+# TOML accepts either quote style, and rustup honours both. Parsing only double quotes
+# would reject a perfectly legal `channel = '1.98.0'` -- and because this same parser
+# feeds the `changes` job that every other job depends on, one quote-style edit would
+# fail the whole pipeline with a message about a missing channel. Not a bypass (every
+# divergence lands RED), but a false RED from the guard whose entire job is to make the
+# signal trustworthy.
+pinned=$(sed -n -e 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p' \
+                -e "s/^[[:space:]]*channel[[:space:]]*=[[:space:]]*'\([^']*\)'.*\$/\1/p" "$pin_file")
 if [ -z "$pinned" ]; then
     echo "toolchain: no [toolchain] channel found in $pin_file" >&2
     exit 1

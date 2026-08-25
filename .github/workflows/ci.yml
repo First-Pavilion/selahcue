@@ -154,13 +154,23 @@ jobs:
   # Ungated on purpose: it costs seconds on the cheapest runner, and gating a
   # workflow linter behind a path filter is how a broken workflow slips through.
   lint-workflows:
-    name: workflows (actionlint)
+    name: workflows (actionlint + permissions)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
+      # actionlint does not model the deny-by-omission rule for `permissions:`, so a
+      # job can declare `issues: write`, silently lose `contents`, and fail to check
+      # out on a private repo -- dying at step 1 with its real work never attempted.
+      # The ci-alarm job shipped exactly that in review. Verified: actionlint exits 0
+      # on it. This check does not.
+      - name: Token scopes match what each job actually does
+        run: |
+          python3 -m pip install --quiet --break-system-packages pyyaml
+          python3 .github/scripts/check_workflow_permissions.py --self-test
+          python3 .github/scripts/check_workflow_permissions.py
 
   rust:
     name: rust (${{ matrix.os }})
@@ -197,9 +207,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libx11-dev libxkbcommon-dev libwayland-dev \
             libvulkan1 mesa-vulkan-drivers libdbus-1-dev
+      # From the first GATE step onward, `!cancelled()`. Setup steps above deliberately
+      # keep the default `success()`: if checkout, the toolchain install or the pin
+      # assertion fails, every downstream result is meaningless or measured on the wrong
+      # compiler, so running them would produce noise rather than information.
       - name: Format
+        if: ${{ !cancelled() }}
         run: cargo fmt --check
       - name: Clippy (default features)
+        if: ${{ !cancelled() }}
         run: cargo clippy --workspace --all-targets -- -D warnings
       # `!cancelled()` from here down. A failing Clippy step used to suppress every
       # step after it (default `if: success()`), which is exactly how the E0063 in
@@ -346,7 +362,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev libx11-dev libxkbcommon-dev
+      # From the first GATE step onward, `!cancelled()`. Setup steps above deliberately
+      # keep the default `success()`: if checkout, the toolchain install or the pin
+      # assertion fails, every downstream result is meaningless or measured on the wrong
+      # compiler, so running them would produce noise rather than information.
       - name: Format
+        if: ${{ !cancelled() }}
         run: cargo fmt --check
       - name: Stage Tauri sidecar/resource placeholders (compile-check only)
         # tauri-build validates that the externalBin sidecar (`selahcue-output`) and the NDI
@@ -358,18 +379,31 @@ jobs:
         run: |
           triple="$(rustc -vV | sed -n 's/^host: //p')"
           mkdir -p binaries
+          # CREATE-ONLY. `: > file` truncates, and these names include the
+          # owner-supplied NDI dll. That is harmless on an ephemeral runner, but this
+          # is the snippet people copy to reproduce CI locally, where truncating a real
+          # dll is silent and git-unrecoverable (binaries/ is gitignored). Never make
+          # this unconditional. 86ak5rjh7.
+          stage() { [ -e "$1" ] || : > "$1"; }
           if [[ "$triple" == *windows* ]]; then
-            : > "binaries/selahcue-output-${triple}.exe"
+            stage "binaries/selahcue-output-${triple}.exe"
           else
-            : > "binaries/selahcue-output-${triple}"
+            stage "binaries/selahcue-output-${triple}"
           fi
-          : > "binaries/Processing.NDI.Lib.x64.dll"
+          stage "binaries/Processing.NDI.Lib.x64.dll"
           echo "staged Tauri placeholders for ${triple}"
-      - name: Check + Clippy + Test
-        run: |
-          cargo check
-          cargo clippy --all-targets -- -D warnings
-          cargo test
+      # Three steps, not one `run:` block. As a single block under `bash -e`, a clippy
+      # failure aborted before `cargo test` ever ran -- so this job still had exactly
+      # the masking the rest of this change removes, while appearing to be covered.
+      - name: Check
+        if: ${{ !cancelled() }}
+        run: cargo check
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        if: ${{ !cancelled() }}
+        run: cargo test --no-fail-fast
       # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
       # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
       # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-
@@ -606,18 +640,38 @@ jobs:
   ci-alarm:
     name: alarm (main red/green tracking)
     needs:
-      [changes, rust, launch-smoke, operator, flutter, api, marketing, audit, supply-chain]
+      [changes, lint-workflows, rust, launch-smoke, operator, flutter, api, marketing,
+       audit, supply-chain]
     # always(): several of the above are legitimately skipped by the path filters, and a
     # skipped dependency would otherwise skip the alarm exactly when it is needed.
+    # Every job that can fail on `main` must be in this list, or its failure is invisible
+    # -- which is the nine-days-unnoticed failure mode, recreated for one job.
+    # A push only ever reaches here from `main` (see `on:` at the top). A dispatch is
+    # additionally allowed from ANY ref so the alarm can be rehearsed before it is
+    # merged -- but off `main` it runs in DRY_RUN, doing every read and withholding
+    # every write. Without that, its first execution ever would be on an already-broken
+    # `main`, which is the worst possible moment to discover a typo; and letting a
+    # branch's results write to the real issue could close a genuine alarm.
     if: >-
       ${{ always()
-          && github.ref == 'refs/heads/main'
-          && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+          && ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+              || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
+    # BOTH scopes are load-bearing. Declaring any `permissions` block sets every scope
+    # NOT listed to `none`, so an `issues: write`-only block leaves `contents: none` --
+    # and on a private repo that means actions/checkout cannot clone, the first step
+    # fails, and the alarm never runs at all. A dead alarm shipped next to a CLAUDE.md
+    # that calls it "the only alarm" is this ticket's own worst case. 86ak5rc9c.
     permissions:
+      contents: read
       issues: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # This job holds `issues: write`; nothing here needs the token afterwards
+          # (the reconcile step gets it via a step-scoped `env:`), so keep it out of
+          # .git/config rather than leaving a writable credential lying in the tree.
+          persist-credentials: false
       # Prove the reconcile logic before trusting it with the verdict. Cheap, and it
       # runs on every main push, so the alarm cannot rot into being wrong unnoticed.
       - name: Self-test the alarm logic
@@ -629,4 +683,5 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.sha }}
           NEEDS: ${{ toJSON(needs) }}
+          DRY_RUN: ${{ github.ref != 'refs/heads/main' }}
         run: python3 .github/scripts/ci_alarm.py

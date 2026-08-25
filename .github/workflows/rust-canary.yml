@@ -47,6 +47,15 @@ jobs:
       RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@v4
+        with:
+          # This job holds `issues: write` AND runs full-workspace clippy on a
+          # deliberately FLOATING toolchain -- which executes every dependency's
+          # build.rs and proc-macros against a freshly resolved graph. Without this,
+          # checkout writes the token into .git/config where any of that code could
+          # read it and use `issues: write` to close or vandalise the ci-red issue,
+          # i.e. make the alarm lie. GH_TOKEN is step-scoped to Report, so this costs
+          # nothing functionally.
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -87,8 +96,11 @@ jobs:
         run: |
           triple="$(rustc -vV | sed -n 's/^host: //p')"
           mkdir -p binaries
-          : > "binaries/selahcue-output-${triple}"
-          : > "binaries/Processing.NDI.Lib.x64.dll"
+          # CREATE-ONLY -- see the same note in ci.yml. `: >` truncates, and one of these
+          # names is the owner-supplied NDI dll. 86ak5rjh7.
+          stage() { [ -e "$1" ] || : > "$1"; }
+          stage "binaries/selahcue-output-${triple}"
+          stage "binaries/Processing.NDI.Lib.x64.dll"
 
       # continue-on-error so a red canary still reaches the reporting step below
       # instead of aborting the job and telling nobody.
