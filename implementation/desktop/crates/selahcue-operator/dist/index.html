@@ -179,6 +179,103 @@
             </div>
           </div>
         </div>
+        <!-- ============== SYSTEM & RECOVERY STATES (Design 2.0 Frame G, node 346:124) ==============
+             "How the app behaves when things go wrong — reliability is the product's first promise."
+
+             Every row below is driven by a REAL host signal, and the three-way rule from
+             docs/delivery/HOST-SIGNAL-WEBVIEW-CONTRACT.md holds throughout: a reported problem
+             renders as the fault, a reported-healthy value renders as healthy, and an ABSENT value
+             renders as UNKNOWN — never as either of the other two. Nothing here is inferred from
+             the absence of data.
+
+             The whole region is [hidden] whenever there is nothing true to say, which is the normal
+             case. `.zone` is a flex column with a gap, and a display:none child creates no gap, so
+             the console's resting layout is byte-identical to what it was before this existed.
+
+             Placement is deliberate: inside the console card, BELOW the monitors and ABOVE the GO
+             LIVE row. It therefore can never overlay, displace or obscure the emergency footer —
+             UX-STATE-MATRIX.md:22 invariant 2 requires CLEAR and BLACKOUT to stay present,
+             focusable and operable in EVERY state, with zero network dependency. -->
+        <section id="recovery" class="rcv" aria-label="System status" hidden>
+
+          <!-- G.5 · Session recovery (347:147) — a NOTICE, never the frame's choice dialog.
+               The host restores the persisted session unconditionally at launch, before the console
+               can render anything (selahcue-desktop/src/main.rs:1705), and NO command exists to undo
+               it — the Tauri handler list has no start_fresh/discard_session equivalent. So the
+               frame's "Restore session" / "Start fresh" pair would be two buttons that cannot act on
+               anything. UX-CANONICAL.md:32-34 independently forbids blocking modals over the live
+               chrome during a service, which is what that dialog is.
+               Dismissible: an informational notice must not hold console space for a whole service. -->
+          <div id="rcv-session" class="rcv-card rcv-info" role="status" hidden>
+            <span class="rcv-badge" aria-hidden="true">↺</span>
+            <div class="rcv-body">
+              <p class="rcv-title" id="rcv-session-title"></p>
+              <p class="rcv-text" id="rcv-session-text"></p>
+              <p class="rcv-chip" id="rcv-session-chip" hidden></p>
+            </div>
+            <button type="button" id="rcv-session-x" class="rcv-x" aria-label="Dismiss session notice">✕</button>
+          </div>
+
+          <!-- G.2 · Control-link loss (346:159). Scoped to the OPERATOR↔HOST link, which is the only
+               network state the console can observe. The frame's "Mobile remotes are paused" is NOT
+               built: no seam in the contract reports LAN controller peers or a paused state for them,
+               so asserting it would be a fabrication through a truthful-looking surface.
+               Only meaningful for a REMOTE console — a Local backend has no link and none is wanted,
+               so this stays hidden there rather than reporting a healthy link that does not exist. -->
+          <div id="rcv-link" class="rcv-card rcv-warn" role="status" hidden>
+            <span class="rcv-glyph" aria-hidden="true">⚠</span>
+            <div class="rcv-body">
+              <p class="rcv-title">Host link lost</p>
+              <p class="rcv-sub" id="rcv-link-sub">This console cannot reach the host.</p>
+              <!-- The reassurance the operator actually needs under pressure, and it is true:
+                   the product is desktop-authoritative, so the host keeps presenting without us. -->
+              <p class="rcv-row rcv-row-ok"><span aria-hidden="true">✓</span><span>The host keeps
+                  presenting — slides, outputs and timers are unaffected.</span></p>
+              <!-- NOT the frame's "Reconnecting… attempt 3" spinner. build_backend() runs exactly
+                   once at startup and AppState.backend is immutable, so nothing re-dials: the 1 Hz
+                   poll retries a CALL on a dead socket, which is not reconnecting. Saying otherwise
+                   is the exact fabrication this programme exists to remove. An honest sentence
+                   rather than a dead button, per the house pattern at app.js:6549-6551. -->
+              <p class="rcv-row" id="rcv-link-retry"><span aria-hidden="true">↻</span><span>No automatic
+                  reconnect — restart the console to reconnect.</span></p>
+            </div>
+          </div>
+
+          <!-- G.3 · Output signal lost (346:175). role="alert" because the UX matrix assigns alert by
+               SCOPE, not severity: a per-output fault is scoped to one output and must not read as a
+               global failure (UX-STATE-MATRIX.md:181). The emergency bar is unaffected.
+               Driven by view.outputs[].signal — real telemetry that moves today (a detached monitor
+               ⇒ "no_signal"). This is NOT view.output_health, which is a different signal about GPU
+               and decoder faults and carries no display identity. -->
+          <div id="rcv-output" class="rcv-card rcv-live" role="alert" hidden>
+            <div class="rcv-head">
+              <span class="rcv-name" id="rcv-output-name"></span>
+              <span class="rcv-pill" id="rcv-output-pill"><span class="rcv-dot" aria-hidden="true"></span><span
+                  id="rcv-output-pill-label"></span></span>
+            </div>
+            <!-- The frame names "HDMI-2". No seam carries a display identity for a lost output, so the
+                 name comes from the output's own role/display fields or is omitted — never invented. -->
+            <p class="rcv-text" id="rcv-output-text"></p>
+            <!-- Present only while the host actually reports a hold. Worded per the contract: held
+                 means the never-blank guarantee WORKING, not a failure. -->
+            <p class="rcv-row rcv-row-hold" id="rcv-output-held" hidden><span aria-hidden="true">◼</span><span>Live
+                output is holding its last good frame — the audience still sees content.</span></p>
+            <!-- NOT "attempt 2 of ∞". FR-041 restoration is automatic and unbounded retry counters
+                 contradict the contract's bounded-retry guarantee. States the guarantee, counts nothing. -->
+            <p class="rcv-row rcv-row-info" id="rcv-output-reattach"><span aria-hidden="true">↻</span><span>Reattaches
+                automatically, with its content, when the display is reconnected.</span></p>
+          </div>
+
+          <!-- G.3 · Recovery confirmation (346:186) — the one Frame G element with a fully shipped
+               producer. `recoveries` is a monotonic edge counter, absent at zero, and the console
+               polls at 1 Hz with no event channel: a hold that begins AND ends between two polls
+               leaves `held` false in both samples, so this is only reachable by diffing the counter
+               against the previous poll. Transient — cleared by a later poll, not by a timer. -->
+          <div id="rcv-recovered" class="rcv-card rcv-ok" role="status" hidden>
+            <span class="rcv-glyph" aria-hidden="true">✓</span>
+            <p class="rcv-text" id="rcv-recovered-text"></p>
+          </div>
+        </section>
         <div class="golive-row">
           <button id="prev" aria-label="Previous — stage the previous plan item"><span class="gl-label">◀
               Previous</span><span class="key">←</span></button>

@@ -49,7 +49,7 @@ use selahcue_lan::protocol::{
 use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
 use selahcue_lan::{generate_pairing_code, generate_token, ControlServer, Role, SelfSigned};
 use selahcue_present::qr_modules;
-use selahcue_present::Theme;
+use selahcue_present::{Fault, Theme};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -385,6 +385,127 @@ fn report_disk(status: guard::DiskStatus) {
             available / (1024 * 1024)
         ),
     }
+}
+
+/// One latch slot per [`Fault`] kind.
+const FAULT_KINDS: usize = Fault::ALL.len();
+
+/// Which host-produced NFR-024 faults have ALREADY been reported for the incident currently
+/// in progress.
+///
+/// Every fault signal this host owns is a **level**, not an event: "the last present attempt
+/// on the audience surface failed" and "the storage guard's verdict is below the floor" both
+/// stay true for as long as the trouble lasts. The frame loop samples them ~60 times a
+/// second. Reporting the level each time it is seen would drive `output_health.holds` up by
+/// sixty every second — an unbounded, meaningless counter, and a live lie to the operator
+/// about how many times the audience output was actually held. This latch turns each level
+/// into an **edge**: the first frame of an incident reports, the rest do not, and the latch
+/// clears when the condition clears so the *next* incident reports again.
+///
+/// Deliberately ONE `bool` per kind — never a queue, a log, a map, or a `Vec<FaultEvent>`.
+/// A per-event container is exactly the unbounded growth `CLAUDE.md` forbids, and it would
+/// grow fastest precisely when the host is in trouble. Boundedness here is a property of the
+/// TYPE, so there is no cap for a later edit to raise.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct FaultLatch {
+    reported: [bool; FAULT_KINDS],
+}
+
+/// The premises the latch rests on, pinned at COMPILE time so neither can be quietly
+/// falsified — a runtime test cannot catch a change that makes itself vacuous.
+///
+/// Adding a `Fault` variant grows the array here *and* breaks [`fault_slot`]'s exhaustive
+/// match, so latch coverage can never silently shrink to a subset of the kinds. Swapping the
+/// array for any heap collection (the fault-log mistake above) adds at least a pointer plus a
+/// length and breaks the size bound before a test ever runs.
+const _: () = assert!(FAULT_KINDS == 4);
+const _: () = assert!(std::mem::size_of::<FaultLatch>() <= 8);
+
+/// The latch slot for a fault kind. Exhaustive on purpose: a new [`Fault`] variant must fail
+/// to compile here rather than quietly share another kind's slot, which would let one
+/// incident mute a different, unrelated one.
+const fn fault_slot(fault: Fault) -> usize {
+    match fault {
+        Fault::GpuDeviceLost => 0,
+        Fault::DecoderFault => 1,
+        Fault::IpcStall => 2,
+        Fault::DiskFull => 3,
+    }
+}
+
+impl FaultLatch {
+    /// Claim the right to report `fault`. Returns `true` exactly ONCE per incident: on the
+    /// first call after the latch was clear, and never again until [`FaultLatch::clear`].
+    fn claim(&mut self, fault: Fault) -> bool {
+        let slot = &mut self.reported[fault_slot(fault)];
+        !std::mem::replace(slot, true)
+    }
+
+    /// The condition ended — the next [`FaultLatch::claim`] for this kind reports again.
+    fn clear(&mut self, fault: Fault) {
+        self.reported[fault_slot(fault)] = false;
+    }
+}
+
+/// Report `fault` to the shared controller on the EDGE into `active` — at most once per
+/// incident (NFR-024; the host half of the never-blank seam).
+///
+/// `active` is the CURRENT level of the real condition, sampled by the caller every frame
+/// ([`surface_fault_active`], [`disk_fault_active`]). Returns whether this call actually
+/// reported, so a caller — and a test — can tell "reported now" from "already reported".
+///
+/// The controller lock is taken ONLY on the reporting edge, so a fault that lasts a whole
+/// service costs one lock, not one per frame. A poisoned lock drops the report exactly the
+/// way every other host path does (see [`drive`]), and the latch deliberately stays claimed
+/// so the frame loop does not hammer a lock that is not going to recover.
+fn report_fault_edge(
+    latch: &mut FaultLatch,
+    controller: &Mutex<LiveController>,
+    fault: Fault,
+    active: bool,
+) -> bool {
+    if !active {
+        latch.clear(fault);
+        return false;
+    }
+    if !latch.claim(fault) {
+        return false;
+    }
+    match controller.lock() {
+        Ok(mut c) => {
+            c.report_fault(fault);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Whether the AUDIENCE surface is currently in the wgpu-surface-loss fault (NFR-024).
+///
+/// True when the `main` window's last present ATTEMPT failed — `get_current_texture()`
+/// returned a lost/outdated (or otherwise unusable) swapchain, so the audience could not be
+/// given the frame the compositor produced. NFR-024 is a guarantee about the audience
+/// output, so the stage/confidence monitor is deliberately not consulted: a held speaker
+/// view is not a broadcast fault.
+///
+/// Two things that look like failures are not:
+/// - an intentional frame-rate SKIP, which returns early from `present_output` *without*
+///   recording, so `last_present_ok` keeps its previous value; and
+/// - no `main` window at all (the screen is disabled), where nothing was attempted.
+fn surface_fault_active(main: Option<&OutputTelemetry>) -> bool {
+    main.is_some_and(|t| !t.last_present_ok)
+}
+
+/// Whether the storage guard's cached verdict is the full-disk fault (NFR-024).
+///
+/// Only [`guard::DiskStatus::Critical`] qualifies. A `Low` warning deliberately does NOT:
+/// it means "free space soon", checkpoint writes continue, and reporting it would put
+/// "OUTPUT HELD — disk full" on the console of every service whose drive is merely filling
+/// up. `None` does not qualify either — a platform that cannot report free space has not
+/// told us the disk is full, and calling that a fault is the same fabrication as
+/// [`storage_tag`] mapping `None` onto `"ok"`, just in the alarming direction.
+fn disk_fault_active(status: Option<guard::DiskStatus>) -> bool {
+    matches!(status, Some(guard::DiskStatus::Critical { .. }))
 }
 
 /// The demo service plan used on a first run (no persisted session yet).
@@ -1362,6 +1483,11 @@ struct App {
     /// Built-in windows whose creation FAILED this run — in-memory only, never persisted.
     /// See [`OpenFailures`] and [`record_open_outcome`].
     open_failures: OpenFailures,
+    /// Which host-produced NFR-024 faults have already been reported for the incident in
+    /// progress. See [`FaultLatch`]: one `bool` per fault kind, reported on the EDGE into the
+    /// condition so a fault that lasts a whole service counts as one hold, not as one per
+    /// frame.
+    output_faults: FaultLatch,
 }
 
 /// Apply one command to the shared controller (a poisoned lock just drops the input
@@ -1765,6 +1891,7 @@ impl App {
             ndi_warned: std::collections::HashSet::new(),
             ndi_frames: std::collections::HashMap::new(),
             open_failures: OpenFailures::default(),
+            output_faults: FaultLatch::default(),
         }
     }
 
@@ -1967,6 +2094,29 @@ impl App {
                 }
             }
         }
+        // NFR-024 host fault producers. `Presenter::inject_fault` / `LiveController::report_fault`
+        // are the seam that makes a held audience output visible to the operator; these two
+        // calls are the only things in the shipped host that fire it, so without them
+        // `output_health` is permanently `{"held":false}` however badly the host is doing.
+        //
+        // Both signals are LEVELS and this function runs every frame (~60 Hz), so both go
+        // through `report_fault_edge`, which reports the transition INTO the fault and nothing
+        // afterwards — see `FaultLatch`. Placed after the storage check above so the disk
+        // verdict is this frame's, and before the halted-checkpoint early return below, which
+        // triggers in exactly the full-disk case being reported. The surface telemetry is one
+        // frame old (redraws are requested after this call), which at 16 ms is immaterial.
+        report_fault_edge(
+            &mut self.output_faults,
+            &self.controller,
+            Fault::GpuDeviceLost,
+            surface_fault_active(telemetry_of(&self.main)),
+        );
+        report_fault_edge(
+            &mut self.output_faults,
+            &self.controller,
+            Fault::DiskFull,
+            disk_fault_active(self.last_disk_status),
+        );
         if self.disk_critical || self.clean_mode {
             // Critical disk: never risk corrupting a full store. Clean mode:
             // the preserved session must stay untouched. State stays in memory.
@@ -3829,6 +3979,335 @@ mod ndi_tests {
             resident,
             320 * 180 * 4,
             "resident cache bytes must be exactly one composed frame after 500 generations"
+        );
+    }
+}
+
+/// The host's NFR-024 fault PRODUCERS.
+///
+/// `Presenter::inject_fault` and `LiveController::report_fault` were complete, tested and
+/// called by nothing outside `tests/` — so on the shipped host `output_health` was
+/// permanently `{"held":false}` and the operator console's held-frame and recovery states
+/// could never appear. These tests drive the real host producers
+/// ([`report_fault_edge`] plus the two level functions that feed it) and read the result back
+/// out of `operator_view()`, so a producer that stops firing, or fires too often, fails here.
+///
+/// The GPU and filesystem halves themselves are not runnable in CI, so — following the
+/// `window_lifecycle_tests` precedent in this file — the DECISIONS are tested here and the
+/// winit/wgpu half only performs what these tests pin.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod output_fault_tests {
+    use super::{
+        demo_plan, disk_fault_active, fault_slot, report_fault_edge, surface_fault_active,
+        telemetry_of, Command, Fault, FaultLatch, LiveController, OutputTelemetry, Theme,
+        FAULT_KINDS,
+    };
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// Four seconds of a ~60 Hz frame loop. Every "sustained fault" test drives at least this
+    /// many frames, because that is the number the bug produces: an unlatched producer would
+    /// report `SUSTAINED_FRAMES` holds where the operator saw ONE.
+    const SUSTAINED_FRAMES: usize = 240;
+    /// Pinned at compile time: a single-frame loop would make every anti-inflation assertion
+    /// below vacuously true, and nothing at runtime could notice.
+    const _: () = assert!(SUSTAINED_FRAMES > 1);
+
+    /// A small controller (fast composes) with real content on Live, so a hold has a good
+    /// frame to hold ONTO and `holds` / `recoveries` mean something.
+    fn controller() -> Mutex<LiveController> {
+        let mut c = LiveController::new(demo_plan(), 320, 180, Theme::dark());
+        let first = c.plan().items()[0].id.0;
+        c.apply(&Command::SelectItem { item_id: first });
+        c.apply(&Command::GoLive);
+        assert!(
+            !c.operator_view().output_health.unwrap().held,
+            "test setup: a fresh host must start healthy, or a hold assertion proves nothing"
+        );
+        Mutex::new(c)
+    }
+
+    /// `(held, fault tag, holds, recoveries)` as the operator console actually receives them.
+    fn health(c: &Mutex<LiveController>) -> (bool, Option<String>, u64, u64) {
+        let v = c
+            .lock()
+            .unwrap()
+            .operator_view()
+            .output_health
+            .expect("a host that owns a compositor must always report health, even good news");
+        (v.held, v.fault, v.holds, v.recoveries)
+    }
+
+    /// Drive a successful compose — the only way an output recovers. There is no "recover"
+    /// call for the host to make; the engine clears the hold on the next good frame.
+    fn compose_a_good_frame(c: &Mutex<LiveController>) {
+        let mut g = c.lock().unwrap();
+        let last = g.plan().items()[3].id.0;
+        g.apply(&Command::SelectItem { item_id: last });
+        g.apply(&Command::GoLive);
+    }
+
+    /// End to end: the host producer must reach `output_health` and NAME the fault. A hold
+    /// the operator cannot name is barely better than no hold at all — "something is wrong"
+    /// is not an instruction.
+    #[test]
+    fn a_fault_reported_by_the_host_producer_reaches_output_health_as_a_named_hold() {
+        let c = controller();
+        let mut latch = FaultLatch::default();
+
+        let reported = report_fault_edge(&mut latch, &c, Fault::GpuDeviceLost, true);
+
+        assert!(
+            reported,
+            "the producer must report the first frame of an incident — if it reported \
+             nothing, every assertion below is about a mechanism that never ran"
+        );
+        let (held, fault, holds, recoveries) = health(&c);
+        assert!(held, "the operator view must report the output HELD");
+        assert_eq!(
+            fault.as_deref(),
+            Some("gpu_device_lost"),
+            "and must name the reason the operator has to act on"
+        );
+        assert_eq!(holds, 1, "the hold must be counted exactly once");
+        assert_eq!(recoveries, 0, "nothing has recovered yet");
+    }
+
+    /// **The anti-inflation control.** `autosave` runs every frame (~60 Hz) and both fault
+    /// signals are LEVELS that stay true for as long as the trouble lasts. A producer that
+    /// reported the level rather than the edge would add sixty holds a second: an unbounded
+    /// counter, and a live lie about how many times the audience output was held. The count
+    /// asserted here is exact for that reason — `> 0` would pass the very bug it exists for.
+    #[test]
+    fn a_fault_sustained_across_many_frames_is_counted_exactly_once() {
+        const _: () = assert!(SUSTAINED_FRAMES > 1);
+        let c = controller();
+        let mut latch = FaultLatch::default();
+
+        let mut reports = 0usize;
+        for _ in 0..SUSTAINED_FRAMES {
+            if report_fault_edge(&mut latch, &c, Fault::DiskFull, true) {
+                reports += 1;
+            }
+        }
+
+        assert_eq!(
+            reports, 1,
+            "the producer must fire on the TRANSITION into a fault: {SUSTAINED_FRAMES} \
+             frames of one full disk is ONE incident, not {SUSTAINED_FRAMES}"
+        );
+        let (held, fault, holds, recoveries) = health(&c);
+        assert!(held, "and the output must still be held throughout");
+        assert_eq!(fault.as_deref(), Some("disk_full"));
+        assert_eq!(
+            holds, 1,
+            "`holds` counts INCIDENTS, not frames — a per-frame report would read {SUSTAINED_FRAMES}"
+        );
+        assert_eq!(recoveries, 0);
+    }
+
+    /// The positive control. "Reported nothing" and "the producer is dead" are the same
+    /// observation unless the benign path is also exercised, so this drives a long healthy
+    /// stretch through the SAME call and then proves a real fault still gets through.
+    #[test]
+    fn a_healthy_stretch_reports_nothing_and_leaves_the_producer_live() {
+        const _: () = assert!(SUSTAINED_FRAMES > 1);
+        let c = controller();
+        let mut latch = FaultLatch::default();
+
+        let mut reports = 0usize;
+        for _ in 0..SUSTAINED_FRAMES {
+            if report_fault_edge(&mut latch, &c, Fault::GpuDeviceLost, false) {
+                reports += 1;
+            }
+        }
+        assert_eq!(reports, 0, "a healthy surface must never report a fault");
+        assert_eq!(
+            health(&c).2,
+            0,
+            "and must never move the hold counter the operator reads"
+        );
+
+        assert!(
+            report_fault_edge(&mut latch, &c, Fault::GpuDeviceLost, true),
+            "after {SUSTAINED_FRAMES} healthy frames a REAL fault must still be reported — \
+             without this, 'reported nothing' above is equally consistent with a producer \
+             that can no longer report anything at all"
+        );
+        assert_eq!(health(&c).2, 1, "and it must reach the operator view");
+    }
+
+    /// Recovery: implicit, and it must clear both the hold and the reason.
+    #[test]
+    fn a_good_frame_after_a_reported_fault_clears_the_hold_and_counts_the_recovery() {
+        let c = controller();
+        let mut latch = FaultLatch::default();
+        assert!(
+            report_fault_edge(&mut latch, &c, Fault::GpuDeviceLost, true),
+            "premise: the producer reported, or there is no hold to recover from"
+        );
+        assert!(health(&c).0, "premise: the output is held");
+
+        compose_a_good_frame(&c);
+
+        let (held, fault, holds, recoveries) = health(&c);
+        assert!(!held, "a good frame must clear the hold");
+        assert_eq!(
+            fault, None,
+            "a recovered output must name NO fault — a stale reason beside a healthy output \
+             is exactly the lie this seam exists to prevent"
+        );
+        assert_eq!(holds, 1);
+        assert_eq!(recoveries, 1, "and the recovery must be counted");
+    }
+
+    /// The latch must be a gate, not a mute. A second, genuinely separate incident has to be
+    /// counted separately — otherwise the fix for per-frame inflation would silently become
+    /// "report the first fault of the service and nothing ever again", which is the same
+    /// blindness in the other direction. Bounded-memory control too: 500 incidents accumulate
+    /// nothing but counters.
+    #[test]
+    fn each_new_incident_is_counted_again_and_nothing_accumulates() {
+        const INCIDENTS: usize = 500;
+        const FRAMES_PER_INCIDENT: usize = 10;
+        const _: () = assert!(INCIDENTS > 1 && FRAMES_PER_INCIDENT > 1);
+        let c = controller();
+        let mut latch = FaultLatch::default();
+
+        let mut reports = 0usize;
+        for _ in 0..INCIDENTS {
+            for _ in 0..FRAMES_PER_INCIDENT {
+                if report_fault_edge(&mut latch, &c, Fault::DiskFull, true) {
+                    reports += 1;
+                }
+            }
+            // The disk drops back below the floor's threshold: the incident is over.
+            report_fault_edge(&mut latch, &c, Fault::DiskFull, false);
+        }
+
+        assert_eq!(
+            reports, INCIDENTS,
+            "each of {INCIDENTS} separate incidents must report exactly once — no more \
+             (per-frame inflation) and no fewer (a latch that never reopens)"
+        );
+        assert_eq!(health(&c).2, INCIDENTS as u64);
+        assert_eq!(
+            std::mem::size_of_val(&latch),
+            FAULT_KINDS,
+            "the latch must still be one bool per fault kind after {INCIDENTS} incidents — \
+             an event log or a per-incident collection would have grown here"
+        );
+    }
+
+    /// Fault kinds must not share a latch slot: a full disk that muted a lost GPU (or the
+    /// reverse) would hide the more serious of the two behind the one that happened first.
+    #[test]
+    fn each_fault_kind_latches_independently() {
+        const _: () = assert!(FAULT_KINDS == 4);
+        assert_eq!(
+            Fault::ALL.len(),
+            FAULT_KINDS,
+            "premise: one latch slot per fault kind"
+        );
+        let mut seen = [false; FAULT_KINDS];
+        for f in Fault::ALL {
+            let slot = fault_slot(f);
+            assert!(
+                !seen[slot],
+                "two fault kinds share latch slot {slot} — one would mute the other"
+            );
+            seen[slot] = true;
+        }
+
+        let c = controller();
+        let mut latch = FaultLatch::default();
+        assert!(report_fault_edge(&mut latch, &c, Fault::DiskFull, true));
+        assert!(
+            report_fault_edge(&mut latch, &c, Fault::GpuDeviceLost, true),
+            "a full disk must not suppress a lost surface — they are different incidents"
+        );
+        assert_eq!(health(&c).2, 2, "both must reach the operator view");
+    }
+
+    /// The wgpu half of the producer: which telemetry state actually means "the audience
+    /// could not be given the frame".
+    #[test]
+    fn a_deferred_present_is_the_surface_fault_and_a_lifetime_drop_count_is_not() {
+        let now = Instant::now();
+        assert!(
+            !surface_fault_active(None),
+            "no main window at all means nothing was attempted, so nothing failed"
+        );
+        assert!(
+            !surface_fault_active(telemetry_of(&None)),
+            "and the host's own accessor for an absent output must agree"
+        );
+
+        let mut t = OutputTelemetry::new();
+        assert!(
+            !surface_fault_active(Some(&t)),
+            "a fresh output has not failed a present"
+        );
+        t.record(now, true);
+        assert!(
+            !surface_fault_active(Some(&t)),
+            "a successful present is not a fault"
+        );
+
+        t.record(now + Duration::from_millis(16), false);
+        assert!(
+            surface_fault_active(Some(&t)),
+            "a deferred present — a lost/outdated swapchain — IS the surface fault"
+        );
+        assert_eq!(
+            t.dropped_frames, 1,
+            "premise: the deferred present was counted, so the next assertion is about a \
+             non-zero lifetime drop count"
+        );
+
+        t.record(now + Duration::from_millis(32), true);
+        assert!(
+            !surface_fault_active(Some(&t)),
+            "a good present clears the fault: the level is the LAST attempt's outcome, not \
+             the lifetime `dropped_frames` count, which never comes back down and would \
+             pin the output held for the rest of the service"
+        );
+    }
+
+    /// The storage half: only the verdict that actually halts writes is a fault.
+    #[test]
+    fn only_a_critical_disk_is_the_full_disk_fault() {
+        use super::guard::{disk_status_from, DiskStatus, DISK_CRITICAL, DISK_LOW};
+        const _: () = assert!(DISK_CRITICAL < DISK_LOW);
+
+        assert!(
+            !disk_fault_active(None),
+            "a platform that cannot report free space has not told us the disk is full"
+        );
+        assert!(!disk_fault_active(Some(disk_status_from(u64::MAX))));
+
+        // Pin each premise through the guard's OWN mapping, so changing a threshold cannot
+        // leave this test asserting about a status the guard no longer produces there.
+        let low = disk_status_from(DISK_LOW - 1);
+        assert!(
+            matches!(low, DiskStatus::Low { .. }),
+            "premise: just below DISK_LOW is the Low verdict"
+        );
+        assert!(
+            !disk_fault_active(Some(low)),
+            "a LOW-headroom warning must not hold the audience output: checkpoint writes \
+             continue, and every service on a filling drive would be told its output is held"
+        );
+
+        let critical = disk_status_from(DISK_CRITICAL - 1);
+        assert!(
+            matches!(critical, DiskStatus::Critical { .. }),
+            "premise: below the floor is the Critical verdict"
+        );
+        assert!(
+            disk_fault_active(Some(critical)),
+            "the full-disk verdict IS the fault (present.rs names this mapping verbatim)"
         );
     }
 }

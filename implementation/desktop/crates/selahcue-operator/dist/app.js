@@ -25,6 +25,11 @@
         // DOM nor eats an in-flight Stage/Dismiss click.
         syncTranscript(view);
         syncDetections(view);
+        // System & recovery states (Frame G). MUST run before the early-returns below: the
+        // change-key at 37-42 covers plan_name/items/themes/saved_themes only, so a host that
+        // reports a NEW fault while the plan is unchanged would never reach a sync placed after
+        // it — the console would sit on a stale "healthy" while the output was held.
+        syncRecovery(view);
         // Never clobber an open editor or a pending delete-confirm, and skip
         // identical re-renders (the 1s poll must not eat in-flight clicks).
         // The key is scoped to EXACTLY the fields the plan build below reads:
@@ -5344,21 +5349,399 @@
         window.__gsearch = { open, close, isOpen };
       })();
 
+      // ===================================================================================
+      // SYSTEM & RECOVERY STATES (Design 2.0 Frame G, node 346:124)
+      // Contract: docs/delivery/HOST-SIGNAL-WEBVIEW-CONTRACT.md
+      //
+      // THE ONE RULE: there are always THREE cases, never two — the host reports a problem,
+      // the host reports it is fine, or the host DOES NOT REPORT. The third is *unknown*. It
+      // is not a fault (that is the `else -> NO SIGNAL` bug this replaces) and it is not
+      // healthy (a subsystem nobody is asking about is not confirmed fine). Every branch
+      // below is written so that absent data produces neither of the other two answers.
+      //
+      // TWO ENCODINGS OF ABSENT, and they differ BY NESTING LEVEL on the Tauri path:
+      //   - `view.output_health` / `.storage` / `.session` are top-level fields of
+      //     OperatorView, which carries no skip_serializing_if, so absent is JSON `null`
+      //     with the key PRESENT.
+      //   - the fields INSIDE those objects are the selahcue-lan protocol structs, whose
+      //     skip_serializing_if applies on the Tauri path too, so `holds`/`recoveries` are a
+      //     genuinely MISSING KEY at zero and a healthy session serialises as `{}`.
+      // Hence: never `"key" in obj`, never a truthiness test on a counter, and read every
+      // optional number through numOr0(). (The headless fixture omits these keys entirely,
+      // giving `undefined` where real Tauri gives `null` — both must behave identically.)
+      //
+      // MEMORY: this whole feature retains four scalars and one short string, below. No
+      // queue, no history, no timer handles — the transient confirmation is cleared by a
+      // later poll comparing timestamps, not by an accumulating set of setTimeouts.
+      // ===================================================================================
+
+      // Previous-poll counters for EDGE detection. `null` means "no previous observation",
+      // which is distinct from 0 and must not itself read as an edge.
+      let prevHolds = null;
+      let prevRecoveries = null;
+      // The transient "recovered" confirmation: one message + one timestamp.
+      let recoveredMsg = "";
+      let recoveredAt = 0;
+      // How many times a recovery edge has been ANNOUNCED this session. Exposed below for the
+      // headless gate, alongside the existing __detHealthRefresh hook.
+      let rcvAnnounced = 0;
+      // The session notice is informational, so the operator can dismiss it for the service.
+      let sessionDismissed = false;
+      // Real link state once link_status is available; null until then.
+      let linkState = null;
+      // Whether a host link exists at all (false = stand-alone/demo backend, where there is
+      // no link and none is wanted — reporting that as "Connected" was fabrication #3).
+      let hostRemote = null;
+
+      const RECOVERED_MS = 8000;
+
+      // Optional host numbers are absent-or-number. `x || 0` would also swallow a real 0 but,
+      // worse, `x.toFixed()` on an omitted key throws — so normalise once, here.
+      function numOr0(x) { return (typeof x === "number" && isFinite(x)) ? x : 0; }
+
+      function rcvEl(id) { return document.getElementById(id); }
+
+      // A human name for an output that NEVER invents one. The frame says "HDMI-2"; no seam
+      // carries a display identity, so we use what the host actually reports and fall back to
+      // the role, never to a made-up connector name.
+      function outputName(o) {
+        if (o && typeof o.display === "string" && o.display) return o.display;
+        const role = o && typeof o.role === "string" ? o.role : "";
+        if (role === "main") return "Main output";
+        if (role === "stage") return "Stage output";
+        return role ? role.charAt(0).toUpperCase() + role.slice(1) + " output" : "Output";
+      }
+
+      // G.5 — session recovery. A notice, not a dialog: the host has already restored (or
+      // already started clean) before this renders, and no command exists to change that.
+      function syncSessionNotice(view) {
+        const card = rcvEl("rcv-session");
+        if (!card) return false;
+        const s = view && view.session;
+        // `null`/absent = this host does not report session health at all -> unknown -> say
+        // nothing. `{}` = it reports and there is nothing wrong. Both are silent, for
+        // different reasons, and neither is an error.
+        if (sessionDismissed || !s || typeof s !== "object") { card.hidden = true; return false; }
+        const loop = s.crash_loop === true;
+        const restored = s.restored === true;
+        const err = (typeof s.autosave_error === "string" && s.autosave_error) ? s.autosave_error : "";
+        const st = view && view.storage;
+        const paused = !!(st && typeof st === "object" && st.checkpoints_paused === true);
+        if (!loop && !restored && !err && !paused) { card.hidden = true; return false; }
+
+        let title, text;
+        if (loop) {
+          // The breaker tripped. "Started clean" reads as data loss unless we say the session
+          // is preserved — protocol.rs:803-807 is explicit that it is skipped, never deleted.
+          const n = numOr0(s.rapid_launches);
+          title = "Started clean after repeated restarts";
+          text = (n > 1 ? "SelahCue restarted " + n + " times in quick succession, so this launch did not resume automatically. "
+            : "SelahCue restarted repeatedly, so this launch did not resume automatically. ")
+            + "Your previous session is preserved — relaunch once this run is stable to resume it.";
+        } else if (restored) {
+          // NOT the frame's "SelahCue closed unexpectedly". `restored` is documented as
+          // "crash OR restart", and a clean exit also saves a session, so a normal
+          // quit-and-relaunch sets it too. Asserting a crash here would be false most times.
+          title = "Session restored";
+          text = "Your plan, themes, slides and edits were restored from the last autosave.";
+        } else {
+          title = "Your recent work may not be saved";
+          text = "The host is not writing checkpoints right now. Live output is unaffected — only saving has stopped.";
+        }
+        rcvEl("rcv-session-title").textContent = title;
+        rcvEl("rcv-session-text").textContent = text;
+
+        const chip = rcvEl("rcv-session-chip");
+        if (err) {
+          // The host's OWN reason, not a generic "something went wrong". Already truncated to
+          // 200 bytes host-side by truncate_for_wire, so this cannot grow unbounded.
+          chip.textContent = "Last autosave failed: " + err;
+          chip.hidden = false;
+        } else if (paused) {
+          chip.textContent = "Checkpoints are paused — recent changes are not being saved.";
+          chip.hidden = false;
+        } else {
+          chip.textContent = "";
+          chip.hidden = true;
+        }
+        card.hidden = false;
+        return true;
+      }
+
+      // The link state the UI should render. Prefers the real producer; falls back to what is
+      // knowable without it, and NEVER invents "reconnecting" — nothing re-dials.
+      function currentLinkState() {
+        if (linkState) return linkState;
+        if (hostRemote === false) return "local";
+        if (hostRemote === null) return null;      // not yet known -> unknown, render nothing
+        return lastConn === false ? "disconnected" : "connected";
+      }
+
+      // G.2 — control-link loss, scoped to the operator<->host link. The frame's "Mobile
+      // remotes are paused" is deliberately NOT built: no seam reports LAN controller peers.
+      function syncLinkState() {
+        const card = rcvEl("rcv-link");
+        if (!card) return false;
+        const st = currentLinkState();
+        // "local" is a real, healthy answer meaning there is no link and none is wanted.
+        // "connected" is healthy. null is unknown. None of the three is a banner.
+        if (st !== "disconnected" && st !== "reconnecting") { card.hidden = true; return false; }
+        const retry = rcvEl("rcv-link-retry");
+        if (st === "reconnecting") {
+          // Reachable only once a producer guarantees an attempt really is scheduled. The
+          // contract makes that a biconditional, so if we ever read it, it is true.
+          retry.lastElementChild.textContent = "Reconnecting…";
+        } else {
+          retry.lastElementChild.textContent = "No automatic reconnect — restart the console to reconnect.";
+        }
+        card.hidden = false;
+        return true;
+      }
+
+      // G.3 — per-output signal loss AND the never-blank hold. These are two DIFFERENT host
+      // signals and are deliberately not conflated:
+      //   view.outputs[].signal  — real per-output telemetry that moves today (a detached
+      //                            monitor reports "no_signal"); carries a display identity.
+      //   view.output_health     — GPU/decoder/disk faults against the LIVE output; carries no
+      //                            display identity, and means "holding last good frame".
+      function syncOutputState(view) {
+        const card = rcvEl("rcv-output");
+        if (!card) return false;
+        const outs = (view && Array.isArray(view.outputs)) ? view.outputs : [];
+        let bad = null;
+        for (let i = 0; i < outs.length; i++) {
+          const o = outs[i];
+          if (!o || o.assigned !== true) continue;   // nothing assigned is not a fault
+          // Only a REPORTED bad signal counts. An absent `signal` is unknown and is skipped —
+          // this is the exact fallthrough that used to render unknown telemetry as NO SIGNAL.
+          if (o.signal === "no_signal" || o.signal === "degraded") { bad = o; break; }
+        }
+        const oh = view && view.output_health;
+        const held = !!(oh && typeof oh === "object" && oh.held === true);
+        if (!bad && !held) { card.hidden = true; return false; }
+
+        const pill = rcvEl("rcv-output-pill");
+        const label = rcvEl("rcv-output-pill-label");
+        const nameEl = rcvEl("rcv-output-name");
+        pill.classList.remove("unknown", "degraded");
+        let text;
+        if (bad && bad.signal === "no_signal") {
+          nameEl.textContent = outputName(bad);
+          label.textContent = "SIGNAL LOST";
+          text = outputName(bad) + " reports no display signal.";
+        } else if (bad) {
+          nameEl.textContent = outputName(bad);
+          pill.classList.add("degraded");
+          label.textContent = "DEGRADED";
+          const dropped = numOr0(bad.dropped_frames);
+          text = outputName(bad) + " is dropping frames"
+            + (dropped > 0 ? " (" + dropped + " dropped)." : ".");
+        } else {
+          // Held with no per-output fault: the live output is holding, but the host does not
+          // attribute it to a display. Name the live output generically rather than guessing.
+          nameEl.textContent = "Live output";
+          label.textContent = "OUTPUT HELD";
+          text = "The live output is holding its last good frame.";
+        }
+        // "Other outputs are unaffected" is ASSERTED FROM DATA, never as boilerplate: only
+        // when there really are other assigned outputs and all of them report healthy.
+        if (bad) {
+          let others = 0, ok = 0;
+          for (let i = 0; i < outs.length; i++) {
+            const o = outs[i];
+            if (!o || o === bad || o.assigned !== true) continue;
+            others++;
+            if (o.signal === "healthy") ok++;
+          }
+          if (others > 0 && others === ok) text += " Other outputs are unaffected.";
+        }
+        rcvEl("rcv-output-text").textContent = text;
+        // The held line appears ONLY while the host reports a hold, and is worded as the
+        // guarantee working — "output held (audience unaffected)" is accurate, "output
+        // failed" is not. `fault` is never cached across a recovery, so nothing stale shows.
+        rcvEl("rcv-output-held").hidden = !held;
+        // A reattach promise only makes sense for a display that went away.
+        rcvEl("rcv-output-reattach").hidden = !(bad && bad.signal === "no_signal");
+        card.hidden = false;
+        return true;
+      }
+
+      // G.3 — the recovery confirmation. THE reason holds/recoveries exist as counters.
+      //
+      // The console polls at 1 Hz and there is NO health event channel, so a hold that begins
+      // and ends between two polls leaves `held` false in BOTH samples and would be invisible
+      // forever. Reading these as LEVELS is the documented way to get this wrong: `recoveries
+      // > 0` means recoveries have happened at some point, NOT that one is happening now.
+      // Only the DELTA against the previous poll is an event.
+      function syncRecovered(view) {
+        const card = rcvEl("rcv-recovered");
+        if (!card) return false;
+        const oh = view && view.output_health;
+        if (!oh || typeof oh !== "object") {
+          // Unknown -> drop the baseline. Keeping it would make the next known sample look
+          // like a delta against a world we can no longer vouch for.
+          prevHolds = null;
+          prevRecoveries = null;
+          card.hidden = true;
+          return false;
+        }
+        const holds = numOr0(oh.holds);
+        const recs = numOr0(oh.recoveries);
+        if (prevHolds === null) {
+          // First observation establishes a baseline only. Treating it as a delta would
+          // announce a "recovery" for every counter the host happened to be carrying already.
+          prevHolds = holds;
+          prevRecoveries = recs;
+        } else {
+          // A DECREASE needs no branch of its own, and must not have one. Both counters are
+          // monotonic and saturating host-side, so a decrease means a new host or a new
+          // session — and the delta test below already refuses it, because a negative delta is
+          // not a positive one. An explicit decrease branch would produce the identical result
+          // by a second route, and two mechanisms guarding one behaviour cannot BOTH be pinned
+          // by a test: removing either leaves the other, so the suite goes green on a real
+          // regression. (Found by mutation: disabling either one alone changed nothing.)
+          // Re-baselining is unconditional at the end of this branch, which is what a new
+          // host needs anyway.
+          const gained = recs - prevRecoveries;
+          if (gained > 0) {
+            recoveredMsg = gained > 1
+              ? "Live output recovered " + gained + " times — it held its last frame each time and has resumed."
+              : "Live output recovered — it held its last frame and has resumed.";
+            recoveredAt = Date.now();
+            // A monotonic count of ANNOUNCEMENTS (not of recoveries). The confirmation is a
+            // transient whose visible window outlives the moment it fired, so "is the card on
+            // screen?" cannot distinguish "a new edge fired" from "the last one is still
+            // showing". Tests assert the edge itself against this. One integer, never reset.
+            rcvAnnounced++;
+          }
+          prevHolds = holds;
+          prevRecoveries = recs;
+        }
+        // Still showing? Cleared by a later poll, not by a timer — no setTimeout to leak and
+        // nothing to cancel if the host goes away mid-window.
+        const showing = !!recoveredMsg && (Date.now() - recoveredAt) < RECOVERED_MS;
+        if (!showing) { card.hidden = true; return false; }
+        rcvEl("rcv-recovered-text").textContent = recoveredMsg;
+        card.hidden = false;
+        return true;
+      }
+
+      // The region is visible exactly when at least one state is. Derived from the cards' own
+      // visibility rather than from a return value, so the several callers that update only ONE
+      // card (the link surfaces, the dismiss handler) cannot strand the region open or closed.
+      function rcvRegionSync() {
+        const region = rcvEl("recovery");
+        if (!region) return;
+        const ids = ["rcv-session", "rcv-link", "rcv-output", "rcv-recovered"];
+        let any = false;
+        for (let i = 0; i < ids.length; i++) {
+          const e = rcvEl(ids[i]);
+          if (e && !e.hidden) { any = true; break; }
+        }
+        region.hidden = !any;
+      }
+
+      // Test seam (mirrors window.__detHealthRefresh): the headless gate asserts recovery
+      // EDGES, and an edge is an event, not a visible state.
+      window.__rcvAnnounced = function () { return rcvAnnounced; };
+
+      function syncRecovery(view) {
+        if (!rcvEl("recovery")) return;
+        // Evaluate all four unconditionally (no short-circuit): each owns its own card's
+        // visibility, and skipping one would strand a card visible after its cause cleared.
+        syncSessionNotice(view);
+        syncLinkState();
+        syncOutputState(view);
+        syncRecovered(view);
+        rcvRegionSync();
+      }
+
+      (function wireSessionDismiss() {
+        const x = document.getElementById("rcv-session-x");
+        if (!x) return;
+        x.onclick = () => {
+          sessionDismissed = true;
+          const card = rcvEl("rcv-session");
+          if (card) card.hidden = true;
+          rcvRegionSync();
+        };
+      })();
+
       // Host connection pill: green "Connected" while the view poll succeeds; amber
       // "Reconnecting…" when a poll throws (a remote host dropped). Local mode never fails.
       // Only touch the DOM when the state actually FLIPS — the 1s poll must not rewrite the
       // pill every second (no needless class/text/attr churn on the hot path).
       let lastConn = null;
-      const setConn = (ok) => {
-        if (ok === lastConn) return;
-        lastConn = ok;
+      let lastPillKey = "";
+
+      const setConn = (ok) => { lastConn = ok; paintConnPill(); };
+
+      // The pill, rewritten against the real link state. It previously carried three separate
+      // fabrications, all removed here:
+      //   1. a permanent green "Connected" in the stand-alone build, because that backend's
+      //      view() cannot fail — green for the absence of a failure path, not for a host;
+      //   2. "Reconnecting…" while nothing whatsoever was retrying;
+      //   3. no way at all to say "I do not know yet".
+      function paintConnPill() {
         const pill = document.getElementById("conn-pill");
         const label = document.getElementById("conn-label");
         if (!pill) return;
-        pill.classList.toggle("reconnecting", !ok);
-        if (label) label.textContent = ok ? "Connected" : "Reconnecting…";
-        pill.setAttribute("aria-label", ok ? "Host connected" : "Reconnecting to host");
-      };
+        const st = currentLinkState();
+        let cls, text, aria;
+        if (st === "local") {
+          // Plainly stated, per the contract. Not a degraded connection — no link is wanted.
+          cls = "local"; text = "Local"; aria = "Stand-alone — no host link, and none needed";
+        } else if (st === "connected") {
+          cls = ""; text = "Connected"; aria = "Host connected";
+        } else if (st === "reconnecting") {
+          // Honest here and ONLY here. Unreachable until a producer schedules real attempts.
+          cls = "reconnecting"; text = "Reconnecting…"; aria = "Reconnecting to host";
+        } else if (st === "disconnected") {
+          // Down, and nothing is happening. The label must not imply otherwise, and no retry
+          // control is offered because this shell has none to honour.
+          cls = "down"; text = "Host unreachable"; aria = "Host unreachable — restart the console to reconnect";
+        } else {
+          cls = "unknown"; text = "Checking…"; aria = "Checking the host link";
+        }
+        const key = cls + "|" + text;
+        // The 1 Hz poll must not rewrite the pill every second — only on a real flip.
+        if (key === lastPillKey) return;
+        lastPillKey = key;
+        pill.classList.remove("reconnecting", "local", "down", "unknown");
+        if (cls) pill.classList.add(cls);
+        if (label) label.textContent = text;
+        pill.setAttribute("aria-label", aria);
+      }
+
+      // Tier 2 producer. Absence of the command is UNKNOWN, never a fault: an older shell simply
+      // leaves linkState null and currentLinkState() falls back to what is knowable.
+      async function readLinkStatus() {
+        try {
+          const r = await invoke("link_status");
+          linkState = (r && typeof r.state === "string") ? r.state : null;
+        } catch (e) {
+          linkState = null;
+        }
+        refreshLinkSurfaces();
+      }
+
+      // THE PROPERTY THAT MATTERS: the pill and the link banner must stay truthful with NO
+      // operator interaction. They cannot ride render(), because render() is only reached when
+      // the view poll SUCCEEDS — exactly the case where the link is fine. When the link drops,
+      // render() stops being called at all, so anything that depended on it would freeze
+      // showing "Connected" forever. Hence both failure and success paths call this.
+      function refreshLinkSurfaces() {
+        paintConnPill();
+        syncLinkState();
+        rcvRegionSync();
+      }
+      // Does a host link exist at all? `false` means the stand-alone/demo backend, where there
+      // is no link and none is wanted — which is a healthy answer, not a disconnection. Left
+      // `null` (unknown) if the call fails, so a failure here can never manufacture a banner.
+      (async () => {
+        try { hostRemote = (await invoke("host_connected")) === true; }
+        catch (e) { hostRemote = null; }
+      })();
       (async () => {
         try { render(await invoke("view")); setConn(true); }
         catch (e) { setConn(false); }
@@ -5384,11 +5767,17 @@
           render(await invoke("view"));
           setConn(true);
         } catch (e) {
+          // The link (or a render) just failed, so render() did NOT run and syncRecovery() was
+          // never reached. Refresh the link surfaces directly — otherwise the one state that
+          // exists to report a dropped link would be unreachable precisely when it is true.
           setConn(false);
+          refreshLinkSurfaces();
         }
         readDetectionHealth();
+        readLinkStatus();
       }, 1000);
       readDetectionHealth();
+      readLinkStatus();
 
       // ===================================================================================
       // Detector liveness (CON-128 / CON-139) — docs/delivery/HOST-SIGNAL-WEBVIEW-CONTRACT.md
@@ -7605,6 +7994,25 @@
           const thumb = document.createElement("span"); thumb.className = "pm-insp-thumb"; info.appendChild(thumb);
           const nm = document.createElement("span"); nm.className = el.missing ? "pm-insp-missing" : "pm-insp-lbl"; nm.textContent = (el.missing ? "⚠ Missing — " : "") + (el.name || "image"); info.appendChild(nm);
           body.appendChild(info);
+          // G.6 · Missing-media fallback (Frame G, node 347:165). The inspector already NAMED the
+          // missing file; what it never said is the thing the operator actually needs under
+          // pressure — what the AUDIENCE is seeing right now. FR-070 (PRD:206) guarantees a safe
+          // placeholder and never an unintended black screen, and the host already honours it:
+          // a missing image composes to a placeholder in the rasterizer (raster.rs:1105-1110),
+          // so the console does not synthesize a fallback, it only explains the one that exists.
+          //
+          // The second sentence is a real trap, not padding: repairing the deck does NOT repair
+          // what is already on air. Every deck_* repair routes through with_deck, which mutates
+          // the workspace and never calls present_authored_slide — correct under FR-012
+          // (staging never changes Live), and precisely why the operator must be told to re-push.
+          if (el.missing) {
+            const miss = document.createElement("p");
+            miss.className = "pm-insp-miss";
+            miss.setAttribute("role", "status");
+            miss.textContent = "The slide still composes without it — the audience sees the background, never an error. "
+              + "Relinking fixes the deck; re-push the slide to change what is already on air.";
+            body.appendChild(miss);
+          }
           const rep = document.createElement("button"); rep.type = "button"; rep.className = "pm-insp-ctrl"; rep.dataset.ik = "replace"; rep.style.width = "100%"; rep.style.maxWidth = "none"; rep.textContent = el.missing ? "Relink…" : "Replace…"; rep.onclick = () => pmStartReplace(idx); body.appendChild(rep);
           // Live Fit control (C-008): Stretch (distort) / Fit (letterbox) / Fill (cover+crop),
           // driving the additive `fit` on the image element — the raster honours all three.

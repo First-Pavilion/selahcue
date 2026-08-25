@@ -277,6 +277,34 @@
         background: var(--sc-warn);
       }
 
+      /* The pill's honest states (Tier 2, HOST-SIGNAL-WEBVIEW-CONTRACT.md).
+         Green is reserved for a link that really is up. `local` is NEUTRAL, not green: the
+         stand-alone build has no host and wants none, and painting that green reported the
+         absence of a failure path rather than the presence of a host. `unknown` is neutral for
+         the same reason in reverse — a link nobody has asked about yet is not confirmed fine.
+         Only a genuinely dropped link is red. */
+      .tb-conn.local,
+      .tb-conn.unknown {
+        background: var(--sc-elevated);
+        border-color: var(--sc-border);
+        color: var(--sc-text-secondary);
+      }
+
+      .tb-conn.local .tb-conn-dot,
+      .tb-conn.unknown .tb-conn-dot {
+        background: var(--sc-text-muted);
+      }
+
+      .tb-conn.down {
+        background: var(--sc-live-soft);
+        border-color: var(--sc-live-border);
+        color: var(--sc-live);
+      }
+
+      .tb-conn.down .tb-conn-dot {
+        background: var(--sc-live);
+      }
+
       /* --- Console body: the OBS-studio 3-zone layout (Figma 165:124) ---
          LEFT  = service plan + live transcript
          CENTER= OBS Preview | Live + GO LIVE + scriptures
@@ -4643,6 +4671,279 @@
       }
 
       /* ===================================================================================
+         SYSTEM & RECOVERY STATES (Design 2.0 Frame G, node 346:124).
+
+         Geometry and colour are taken from the frame; every colour resolves to an existing
+         --sc-* token (the frame introduces no new ones for these states), so nothing here
+         changes a token VALUE — that is a four-surface lockstep change pinned by
+         design2_palette_is_pinned_across_surfaces and is deliberately out of scope.
+
+         Ink policy: --sc-text-muted (#6b7383) is AA-large ONLY (3.79:1 on surface). Recovery
+         copy is essential — if the output is degraded the operator MUST be able to read why —
+         so all of it uses --sc-text-secondary or better. The only muted use below is the
+         decorative dismiss glyph, which has an accessible name of its own.
+
+         [hidden] GUARDS ARE MANDATORY HERE. This webview has a known trap: a class rule
+         setting `display` defeats the `hidden` attribute, so every class below that sets a
+         display value carries an explicit higher-specificity [hidden] companion. The headless
+         gate asserts COMPUTED display for exactly this reason. */
+      .rcv {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        flex: none;
+      }
+
+      .rcv-card {
+        display: flex;
+        align-items: flex-start;
+        gap: 11px;
+        border-radius: 11px;
+        padding: 12px 14px;
+        border: 1px solid transparent;
+      }
+
+      /* The whole region and every card must obey [hidden] even though the rules above set
+         `display`. Without these four selectors the states would be permanently visible. */
+      .rcv[hidden],
+      .rcv-card[hidden],
+      .rcv-row[hidden],
+      .rcv-chip[hidden] {
+        display: none;
+      }
+
+      /* Tints. 346:160 warn / 346:176 live / 346:186 preview-green / 347:147 primary-tinted. */
+      .rcv-warn {
+        background: var(--sc-warn-soft);
+        border-color: var(--sc-warn-border);
+      }
+
+      .rcv-live {
+        background: var(--sc-live-soft);
+        border-color: var(--sc-live-border);
+        border-radius: 12px;
+        padding: 13px;
+        flex-direction: column;
+        gap: 9px;
+      }
+
+      .rcv-ok {
+        background: var(--sc-preview-soft);
+        border-color: var(--sc-preview-border);
+        border-radius: 10px;
+        padding: 11px 13px;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .rcv-info {
+        background: var(--sc-elevated);
+        border-color: rgba(110, 92, 240, 0.4);
+        border-radius: 14px;
+        padding: 16px;
+        align-items: center;
+        gap: 12px;
+      }
+
+      /* 347:148 — the badge is 46x48, deliberately not square. */
+      .rcv-badge {
+        flex: none;
+        width: 46px;
+        height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--sc-preview-soft);
+        border: 1px solid var(--sc-preview-border);
+        border-radius: 13px;
+        color: var(--sc-preview);
+        font-size: 22px;
+        font-weight: 700;
+      }
+
+      .rcv-glyph {
+        flex: none;
+        font-size: 16px;
+        font-weight: 700;
+        line-height: 1.1;
+        color: var(--sc-warn);
+      }
+
+      .rcv-ok .rcv-glyph {
+        font-size: 13px;
+        color: var(--sc-preview);
+      }
+
+      .rcv-body {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+
+      .rcv-title {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--sc-text);
+      }
+
+      .rcv-info .rcv-title {
+        font-size: 16px;
+      }
+
+      .rcv-sub {
+        margin: 0;
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--sc-warn);
+      }
+
+      .rcv-text {
+        margin: 0;
+        font-size: 12px;
+        font-weight: 400;
+        line-height: 1.35;
+        color: var(--sc-text-secondary);
+      }
+
+      .rcv-info .rcv-text {
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 1.45;
+      }
+
+      .rcv-ok .rcv-text {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--sc-preview);
+      }
+
+      /* 346:165 / 346:168 / 346:183 — the inset rows inside a state. */
+      .rcv-row {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        margin: 6px 0 0;
+        border-radius: 10px;
+        padding: 9px 12px;
+        background: var(--sc-inset);
+        border: 1px solid var(--sc-border);
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--sc-text-secondary);
+      }
+
+      .rcv-row-ok {
+        background: var(--sc-preview-soft);
+        border-color: var(--sc-preview-border);
+        color: var(--sc-preview);
+      }
+
+      /* 346:183 carries --sc-info as a "working on it" ink — its only use in the design. */
+      .rcv-row-info span:first-child {
+        color: var(--sc-info);
+        font-weight: 700;
+        font-size: 12px;
+      }
+
+      .rcv-row-hold span:first-child {
+        color: var(--sc-live);
+        font-size: 10px;
+      }
+
+      /* 347:153 — the autosave chip. */
+      .rcv-chip {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 2px 0 0;
+        background: var(--sc-inset);
+        border: 1px solid var(--sc-border);
+        border-radius: 8px;
+        padding: 9px 12px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--sc-text-secondary);
+      }
+
+      /* 346:177 — the signal-lost card's head row. */
+      .rcv-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        width: 100%;
+      }
+
+      .rcv-name {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--sc-text);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* 346:179 — the pill's ground equals the card's ground in the frame; only the border and
+         the 999px radius separate them. Reproduced exactly rather than "improved". */
+      .rcv-pill {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: var(--sc-live-soft);
+        border: 1px solid var(--sc-live-border);
+        border-radius: 999px;
+        padding: 4px 10px 4px 9px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: .04em;
+        color: var(--sc-live);
+        white-space: nowrap;
+      }
+
+      .rcv-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      /* An UNKNOWN output state is neutral, never red: absent telemetry is not a fault. */
+      .rcv-pill.unknown {
+        background: var(--sc-elevated);
+        border-color: var(--sc-border);
+        color: var(--sc-text-secondary);
+      }
+
+      .rcv-pill.degraded {
+        background: var(--sc-warn-soft);
+        border-color: var(--sc-warn-border);
+        color: var(--sc-warn);
+      }
+
+      .rcv-x {
+        flex: none;
+        align-self: flex-start;
+        background: none;
+        border: none;
+        color: var(--sc-text-muted);
+        font-size: 13px;
+        line-height: 1;
+        padding: 4px;
+        cursor: pointer;
+        border-radius: 6px;
+      }
+
+      .rcv-x:hover {
+        color: var(--sc-text);
+        background: var(--sc-inset);
+      }
+
+      /* ===================================================================================
          Review fixes (adversarial a11y + design-fidelity pass). Kept as one block, placed
          last, so it wins by source order and survives the CSS reformatter. Each rule cites
          the finding it resolves. --sc-text-muted (#6b7383) is AA-large ONLY, so essential
@@ -5104,6 +5405,20 @@
       .pm-insp-align button[aria-pressed="true"] { background: var(--sc-primary); border-color: var(--sc-primary); color: #fff; }
       .pm-insp-missing { color: var(--sc-live); font-size: 12px; }
       .pm-insp-note { font-size: 11px; color: var(--sc-text-muted); }
+      /* G.6 (347:170) — the missing-media explanation. --sc-text-secondary, not --sc-text-muted:
+         this is essential copy (it is what tells the operator the audience is fine), and muted
+         is AA-large only. Warn tint matches the frame's #2a2415 / #4a3a15 pairing. */
+      .pm-insp-miss {
+        margin: 6px 0 0;
+        background: var(--sc-warn-soft);
+        border: 1px solid var(--sc-warn-border);
+        border-radius: 9px;
+        padding: 10px 12px;
+        font-size: 11px;
+        font-weight: 600;
+        line-height: 1.4;
+        color: var(--sc-text-secondary);
+      }
       .pm-insp-thumb { width: 52px; height: 38px; border-radius: 6px; border: 1px solid var(--sc-border); background: linear-gradient(135deg, #232634, #1a1d27); flex: 0 0 auto; }
       /* Media-cell selected (the asset used by the current image element) + hover/focus. */
       .pm-asset.in-use .pm-asset-thumb { border-color: var(--sc-primary); box-shadow: 0 0 0 1px var(--sc-primary); }

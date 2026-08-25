@@ -42,7 +42,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # (Raised with the Design 2.0 parity batch 1 block — CON-046 / CON-142 / PME-001 / PME-005 /
 # PME-014 / PME-015 — which adds 67 checks: 640 -> 707. Set to the REAL observed count, not a
 # round number, so that dropping even one of the new checks trips exit 4.)
-EXPECTED_MIN_CHECKS = 771
+EXPECTED_MIN_CHECKS = 829
 
 
 def find_chrome():
@@ -125,6 +125,12 @@ STUB = r"""
     outputs:[{role:"main", assigned:true, assigned_key:"d1", display:"Main", width:1920, height:1080}],
     displays:[{key:"d1", name:"Main", width:1920, height:1080}], translations:["KJV"],
     theme:"classic", themes:["classic"], saved_themes:[], screen_themes:[],
+    // Health seams. Real Tauri ALWAYS sends these three keys (OperatorView carries no
+    // skip_serializing_if on them), so absent is `null` with the key present — never a
+    // missing key. The nested counters DO skip at zero, which is why `output_health` here is
+    // {held:false} with no holds/recoveries: that is the exact byte shape
+    // test_health_view.rs:177 pins for a healthy controller.
+    output_health:{held:false}, storage:null, session:null,
     screens:[
       {screen:"main", role:"main", enabled:true, deletable:false, theme:null},
       {screen:"stage", role:"stage", enabled:true, deletable:false, theme:null}
@@ -230,6 +236,10 @@ STUB = r"""
     if (cmd === "remote_new_code")
       return Promise.resolve({code:"AB12CD34", fingerprint:"A1 B2 C3 D4", expires_in_secs:120});
     if (cmd === "host_connected") return Promise.resolve(!window.__psNoHost); // a real output window (unless the test says otherwise)
+  // Tier 2 control-link state. Defaults to a healthy remote link; __link overrides it.
+  // Returning `null` here would exercise the "older shell" path instead, which the driver
+  // covers separately by deleting the override.
+  if (cmd === "link_status") return Promise.resolve(window.__link || {state:"connected", epoch:1, attempts:0, last_error:null});
     if (cmd === "stt_ready") return Promise.resolve(window.__psStt || {ready:true, state:"ready", model:"Small", detail:"On-device model ready"});
     if (cmd === "audio_input") return Promise.resolve(window.__psAudio || {available:true, state:"ok", name:"Focusrite Scarlett 2i2", channels:2, detail:"Focusrite Scarlett 2i2 · 2 ch"});
     if (cmd === "disk_free")
@@ -3556,6 +3566,301 @@ DRIVER = r"""
         ok(wRdyH > 0 && wRdyR >= wRdyH / 2,
            "\u00a710 case 5: the Offline-ready chip is a PILL — radius " + wRdyR.toFixed(1) + "px >= half its " + wRdyH.toFixed(1) + "px height (canonical frame 312:151; was 10px)");
       }
+
+      // ===================================================================================
+      // SYSTEM & RECOVERY STATES (Design 2.0 Frame G, node 346:124) + the honest pill.
+      //
+      // What these checks defend, in one line: ABSENT TELEMETRY IS UNKNOWN, NEVER A FAULT AND
+      // NEVER HEALTHY. Every state below therefore ships with a negative control, because
+      // "the banner appeared" proves nothing unless "it stays away when it should" also holds.
+      //
+      // The edge checks are the load-bearing ones. The console polls at 1 Hz with NO health
+      // event channel, so a hold that begins AND ends between two polls reads `held:false` in
+      // both samples. Reading the counters as LEVELS would miss it entirely; only a delta
+      // against the previous poll sees it. Those checks drive two real polls to prove it.
+      // ===================================================================================
+      var gPoll = function(pred){ return waitFor(pred, 120); };   // past the 1s poll, virtual
+      // Count completed view polls. `gPoll(function(){ return true; })` does NOT wait — waitFor
+      // returns immediately on an already-true predicate — so anything that must observe a real
+      // poll (every edge check does, by definition) waits on THIS instead.
+      var gViews = function(){
+        var n = 0;
+        for (var i = 0; i < window.__calls.length; i++) if (window.__calls[i].cmd === "view") n++;
+        return n;
+      };
+      var gTicks = function(n){ var t = gViews(); return waitFor(function(){ return gViews() >= t + n; }, 200); };
+      var gTx = function(id){ var e = el(id); return e ? e.textContent.replace(/\s+/g," ").trim() : ""; };
+      // Painted = COMPUTED display + a real client rect. Never `.hidden` and never DOM
+      // presence: a class `display` rule defeats the [hidden] attribute in this webview.
+      var gOn = function(id){
+        var e = el(id);
+        return !!e && getComputedStyle(e).display !== "none" && e.getClientRects().length > 0;
+      };
+
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      await gPoll(function(){ return el("surface-console").classList.contains("active"); });
+
+      // ---- resting state -------------------------------------------------------------
+      ok(!!el("recovery"), "Frame G: the recovery region exists in the console");
+      ok(!gOn("recovery"),
+         "Frame G (control): with a healthy host NOTHING is painted — the region stays out of the way, so every 'it appeared' below means something");
+
+      // ---- G.5 session recovery ------------------------------------------------------
+      V.session = {restored:true};
+      await gPoll(function(){ return gOn("rcv-session"); });
+      ok(gOn("rcv-session"), "G.5: session.restored paints the recovery notice (computed display)");
+      var gS = gTx("rcv-session-title") + " " + gTx("rcv-session-text");
+      ok(/restored/i.test(gS), "G.5: it says the session was restored (\"" + gS.slice(0,60) + "\")");
+      ok(!/unexpectedly|crashed/i.test(gS),
+         "G.5: it does NOT claim a crash — `restored` means crash OR restart, and a clean exit also saves a session, so 'closed unexpectedly' would be false after an ordinary relaunch");
+      ok(!/Start fresh|Restore session/i.test(gTx("rcv-session")),
+         "G.5: no Restore/Start-fresh buttons — the host already restored before this rendered and NO command exists to undo it, so the frame's choice dialog would be two buttons that cannot act");
+
+      // The crash-loop case is the one where "started clean" would read as data loss.
+      V.session = {crash_loop:true, rapid_launches:4};
+      await gPoll(function(){ return /clean/i.test(gTx("rcv-session-title")); });
+      var gL = gTx("rcv-session-title") + " " + gTx("rcv-session-text");
+      ok(/clean/i.test(gL) && /4/.test(gL), "G.5: the crash-loop breaker is reported with its real launch count (\"" + gL.slice(0,64) + "\")");
+      ok(/preserved/i.test(gL),
+         "G.5: it says the previous session is PRESERVED — the breaker skips it, never deletes it, and omitting that reads as data loss");
+
+      // Storage: checkpoints paused is about SAVING, and must not imply the audience is affected.
+      V.session = {restored:true}; V.storage = {status:"critical", checkpoints_paused:true};
+      await gPoll(function(){ return gOn("rcv-session-chip"); });
+      ok(gOn("rcv-session-chip") && /checkpoint/i.test(gTx("rcv-session-chip")),
+         "G.5: checkpoints_paused surfaces as a chip (\"" + gTx("rcv-session-chip").slice(0,52) + "\")");
+      // The host's OWN reason, not a generic failure.
+      V.session = {restored:true, autosave_error:"disk quota exceeded"};
+      await gPoll(function(){ return /quota/i.test(gTx("rcv-session-chip")); });
+      ok(/disk quota exceeded/.test(gTx("rcv-session-chip")),
+         "G.5: an autosave failure shows the HOST'S reason, not a generic 'something went wrong'");
+
+      el("rcv-session-x").click();
+      ok(!gOn("rcv-session"), "G.5: the notice is dismissible — an informational banner must not hold console space for a whole service");
+      ok(!gOn("recovery"), "G.5: dismissing the only live state hides the whole region too");
+
+      V.session = null; V.storage = null;
+      await gPoll(function(){ return !gOn("rcv-session"); });
+      ok(!gOn("rcv-session"),
+         "G.5 (control): session:null paints NOTHING — a host that does not report session health is UNKNOWN, not a host with a healthy session and not one with a fault");
+
+      // ---- G.2 control-link loss + the pill ------------------------------------------
+      ok(!gOn("rcv-link"), "G.2 (control): a healthy link paints no banner");
+      ok(gTx("conn-label") === "Connected", "pill (control): a real connected link reads Connected");
+
+      window.__link = {state:"disconnected", epoch:1, attempts:0, last_error:"connection closed"};
+      await gPoll(function(){ return gOn("rcv-link"); });
+      ok(gOn("rcv-link"), "G.2: a dropped link paints the banner");
+      var gK = gTx("rcv-link");
+      ok(!/reconnecting/i.test(gK),
+         "G.2: it does NOT say 'Reconnecting' — build_backend() runs once and nothing re-dials, so claiming a retry is the exact fabrication this seam removes");
+      ok(/host keeps presenting|unaffected/i.test(gK),
+         "G.2: it states the thing the operator needs under pressure — the host keeps presenting (\"" + gK.slice(0,64) + "\")");
+      ok(!/mobile remote/i.test(gK),
+         "G.2: it does NOT claim 'Mobile remotes are paused' — no seam reports LAN controller peers, so the frame's line would be a fabrication through a truthful-looking surface");
+      ok(gTx("conn-label") === "Host unreachable",
+         "pill: a dropped link reads 'Host unreachable', not 'Connected' and not 'Reconnecting…' (\"" + gTx("conn-label") + "\")");
+      ok(el("conn-pill").classList.contains("down") && !el("conn-pill").classList.contains("reconnecting"),
+         "pill: the dropped state is red, and is NOT the amber reconnecting state");
+
+      // `local` is the fabrication that mattered most: green for the ABSENCE of a failure path.
+      window.__link = {state:"local", epoch:0, attempts:0, last_error:null};
+      await gPoll(function(){ return gTx("conn-label") === "Local"; });
+      ok(gTx("conn-label") === "Local",
+         "pill: the stand-alone backend says 'Local' — it has no host and wants none");
+      ok(!el("conn-pill").classList.contains("down"),
+         "pill: 'local' is NEUTRAL, not an error — no link is wanted, so it is not a failure");
+      var gPc = getComputedStyle(el("conn-pill")).color;
+      var gGreen = getComputedStyle(document.documentElement).getPropertyValue("--sc-preview").trim();
+      ok(_cr(_rgba(gPc), _rgba(getComputedStyle(el("conn-pill")).backgroundColor)) >= 4.5,
+         "pill: the Local label clears AA-NORMAL on its own ground (" + _f(_cr(_rgba(gPc), _rgba(getComputedStyle(el("conn-pill")).backgroundColor))) + ":1)");
+      ok(!gOn("rcv-link"),
+         "G.2 (control): 'local' paints NO banner — a console with no host link is healthy, not disconnected");
+
+      window.__link = {state:"connected", epoch:1, attempts:0, last_error:null};
+      await gPoll(function(){ return gTx("conn-label") === "Connected"; });
+      ok(gTx("conn-label") === "Connected" && !gOn("rcv-link"),
+         "pill (positive control): the pill and banner both recover when the link does — so 'it went red' above was the state changing, not a dead mechanism");
+
+      // ---- G.3 output signal lost + the never-blank hold ------------------------------
+      ok(!gOn("rcv-output"),
+         "G.3 (control): an assigned output with NO `signal` reported paints nothing — absent telemetry is UNKNOWN, which is exactly the `else -> NO SIGNAL` bug this replaces");
+
+      V.outputs = [{role:"stage", assigned:true, assigned_key:"d2", display:"Stage Display", width:1920, height:1080, signal:"no_signal"},
+                   {role:"main", assigned:true, assigned_key:"d1", display:"Main", width:1920, height:1080, signal:"healthy"}];
+      await gPoll(function(){ return gOn("rcv-output"); });
+      ok(gOn("rcv-output"), "G.3: a reported no_signal on an ASSIGNED output paints the card");
+      ok(gTx("rcv-output-pill-label") === "SIGNAL LOST", "G.3: the pill reads SIGNAL LOST");
+      var gO = gTx("rcv-output-text");
+      ok(/Stage Display/.test(gO),
+         "G.3: it names the output the HOST reported, not the frame's invented 'HDMI-2' (\"" + gO.slice(0,56) + "\")");
+      ok(!/HDMI/i.test(gO), "G.3: no invented connector name — no seam carries a display identity for a lost output");
+      ok(/Other outputs are unaffected/i.test(gO),
+         "G.3: isolation is asserted FROM DATA — the sibling output really does report healthy");
+      ok(!/attempt|∞/i.test(gTx("rcv-output")),
+         "G.3: no 'attempt 2 of ∞' — retries are bounded by contract and unbounded counters contradict it");
+      ok(gOn("rcv-output-reattach") && /automatically/i.test(gTx("rcv-output-reattach")),
+         "G.3: it states FR-041's real guarantee — content reattaches automatically on reconnect");
+      ok(!gOn("rcv-output-held"),
+         "G.3 (control): with held:false the held-frame line is NOT painted, so its appearance below means the host really reported a hold");
+
+      // The isolation claim must disappear when it stops being true.
+      V.outputs = [{role:"stage", assigned:true, assigned_key:"d2", display:"Stage Display", width:1920, height:1080, signal:"no_signal"}];
+      await gPoll(function(){ return !/Other outputs/i.test(gTx("rcv-output-text")); });
+      ok(!/Other outputs are unaffected/i.test(gTx("rcv-output-text")),
+         "G.3: with no healthy sibling the isolation sentence is DROPPED — it is asserted from data, never printed as boilerplate");
+
+      V.output_health = {held:true, fault:"gpu_device_lost", holds:1};
+      await gPoll(function(){ return gOn("rcv-output-held"); });
+      var gH = gTx("rcv-output-held");
+      ok(gOn("rcv-output-held"), "G.3: held:true paints the never-blank explanation");
+      ok(/still sees content|holding its last good frame/i.test(gH),
+         "G.3: it is worded as the GUARANTEE WORKING — 'output held (audience unaffected)' is accurate, 'output failed' is not (\"" + gH.slice(0,56) + "\")");
+      ok(!/failed|failure/i.test(gH), "G.3: it never calls the never-blank guarantee a failure");
+
+      // Everything healthy again -> the region must retract on its own. Placed HERE, before any
+      // recovery is announced, so it does not have to wait out the confirmation's 8s window.
+      V.output_health = {held:false}; V.session = null; V.storage = null;
+      V.outputs = [{role:"main", assigned:true, assigned_key:"d1", display:"Main", width:1920, height:1080, signal:"healthy"}];
+      await gPoll(function(){ return !gOn("recovery"); });
+      ok(!gOn("recovery"),
+         "Frame G: with every seam healthy again the whole region retracts (positive control for the region itself — it is not simply stuck open)");
+
+      // ---- G.3 recovery: EDGES ACROSS POLLS, NOT LEVELS ------------------------------
+      // These assert the EDGE (an announcement fired), not the card's visibility. The
+      // confirmation is a transient whose 8s window deliberately outlives the moment it
+      // fired, so "is it on screen?" cannot tell a NEW edge from the previous one still
+      // showing — and a test that cannot tell those apart would pass on a broken edge.
+      var gAnn = function(){ return window.__rcvAnnounced(); };
+
+      V.outputs = [{role:"main", assigned:true, assigned_key:"d1", display:"Main", width:1920, height:1080, signal:"healthy"}];
+      // Go UNKNOWN first so the next sample is genuinely a FIRST observation. (Without this the
+      // baseline from the checks above is still live, and 1 -> 3 is a real delta of 3.)
+      V.output_health = null;
+      await gTicks(2);
+      var gA0 = gAnn();
+      V.output_health = {held:false, holds:3, recoveries:3};
+      await gTicks(2);
+      ok(gAnn() === gA0,
+         "G.3 EDGE (control): a FIRST observation carrying recoveries:3 announces NOTHING — a non-zero counter is a level, not an event; baselining it is the whole point (announcements " + gA0 + " -> " + gAnn() + ")");
+
+      var gA1 = gAnn();
+      V.output_health = {held:false, holds:4, recoveries:4};
+      await gPoll(function(){ return gAnn() > gA1; });
+      ok(gAnn() === gA1 + 1,
+         "G.3 EDGE: recoveries incrementing between two polls announces EXACTLY ONE recovery — THE case `held` cannot see, because a hold that begins and ends between polls reads false in both samples");
+      ok(gOn("rcv-recovered") && /recovered/i.test(gTx("rcv-recovered-text")),
+         "G.3 EDGE: the confirmation is actually painted (\"" + gTx("rcv-recovered-text").slice(0,52) + "\")");
+
+      // Re-polling the SAME counters is not a new event.
+      var gA2 = gAnn();
+      await gTicks(2);
+      ok(gAnn() === gA2,
+         "G.3 EDGE (control): polling again with UNCHANGED counters announces nothing — otherwise every poll would re-announce the same recovery forever");
+
+      // A counter going DOWN is a new host/session, not a recovery.
+      var gA3 = gAnn();
+      V.output_health = {held:false, holds:1, recoveries:1};
+      await gTicks(2);
+      ok(gAnn() === gA3,
+         "G.3 EDGE: counters DECREASING announces nothing — both are monotonic and saturating, so a decrease means a new host/session, never a recovery (announcements " + gA3 + " -> " + gAnn() + ")");
+
+      // ...and the re-baseline must be the NEW low value, not the old high one: climbing back
+      // to 2 is one recovery, not a replay of the gap.
+      var gA4 = gAnn();
+      V.output_health = {held:false, holds:2, recoveries:2};
+      await gPoll(function(){ return gAnn() > gA4; });
+      ok(gAnn() === gA4 + 1 && /recovered — /i.test(gTx("rcv-recovered-text")),
+         "G.3 EDGE: after a decrease the baseline is the NEW value — climbing 1 -> 2 announces ONE recovery, not a replay (\"" + gTx("rcv-recovered-text").slice(0,44) + "\")");
+
+      // Unknown health must drop the baseline, or the next known sample fakes a huge delta.
+      var gA5 = gAnn();
+      V.output_health = null;
+      await gTicks(2);
+      V.output_health = {held:false, holds:9, recoveries:9};
+      await gTicks(2);
+      ok(gAnn() === gA5,
+         "G.3 EDGE: after output_health goes UNKNOWN the baseline is DROPPED, so the next known sample re-baselines instead of reading as a 7-recovery delta (announcements " + gA5 + " -> " + gAnn() + ")");
+
+      V.output_health = {held:false}; V.session = null; V.storage = null;
+      V.outputs = [{role:"main", assigned:true, assigned_key:"d1", display:"Main", width:1920, height:1080, signal:"healthy"}];
+
+      // ---- G.6 missing-media fallback (347:165) --------------------------------------
+      // The inspector already NAMED a missing file. What it never said is the only thing that
+      // matters mid-service: what the AUDIENCE is seeing. FR-070 guarantees a safe placeholder
+      // and never a black screen, and the rasterizer already honours it — so the console does
+      // not synthesize a fallback, it explains the one that exists.
+      //
+      // Driven entirely through the app's OWN commands (add image -> go missing -> refresh) so
+      // the fixture and the editor can never disagree about which deck is open. The negative
+      // control is therefore the SAME element before it goes missing, which is stronger than a
+      // different element that happens to be fine.
+      document.querySelector('.nav-item[data-surface="presentation"]').click();
+      await waitFor(function(){ return el("surface-presentation").classList.contains("active"); }, 200);
+      // Navigating to the surface lands on the LIBRARY, not the editor, and the grid renders
+      // asynchronously — so a one-shot "is the grid hidden?" test can run before it exists and
+      // silently skip the Edit click, leaving every later check measuring a display:none subtree.
+      var gBody = function(){ return getComputedStyle(document.querySelector("#surface-presentation .pm-body")).display; };
+      await waitFor(function(){ return gBody() !== "none" || (el("pm-grid-edit") && !el("pm-grid").hidden); }, 200);
+      if (gBody() === "none" && el("pm-grid-edit")) el("pm-grid-edit").click();
+      await waitFor(function(){ return gBody() !== "none"; }, 200);
+      ok(gBody() !== "none", "G.6 (setup): the deck editor is open, so the inspector checks measure a painted subtree");
+      if (el("pm-tab-inspector")) el("pm-tab-inspector").click();
+      document.querySelector('#surface-presentation .pm-tool[data-add="image"]').click();
+      await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_add_image_element"; }); }, 200);
+      await waitFor(function(){ return /image/i.test(el("pm-inspector-body").textContent); }, 200);
+      ok(/image/i.test(el("pm-inspector-body").textContent),
+         "G.6 (setup): an image element is selected in the inspector, so the missing state has something real to attach to");
+      ok(!document.querySelector(".pm-insp-miss"),
+         "G.6 (control): a PRESENT asset paints no missing-media explanation — the same element, before it goes missing");
+
+      // Take it missing at the host, exactly as a deleted file would, then let the app refresh
+      // through its own round-trip (the eye toggle returns a fresh DeckView; toggled twice so
+      // visibility ends where it started and only `missing` differs).
+      var gIx = D.slide.elements.length - 1;
+      D.slide.elements[gIx].missing = true;
+      D.slide.elements[gIx].name = "Harvest field.jpg";
+      var gEye = document.querySelector("#pm-layers .td-layer.sel .td-layer-eye") || document.querySelector("#pm-layers .td-layer-eye");
+      ok(!!gEye, "G.6 (setup): the layer row exposes a visibility control to drive a real host refresh");
+      if (gEye) {
+        gEye.click();
+        await waitFor(function(){ return !!document.querySelector(".pm-insp-miss"); }, 200);
+        var gEye2 = document.querySelector("#pm-layers .td-layer.sel .td-layer-eye") || document.querySelector("#pm-layers .td-layer-eye");
+        if (gEye2) gEye2.click();
+        await waitFor(function(){ return !!document.querySelector(".pm-insp-miss"); }, 200);
+        // Re-assert the Inspector tab: the rect check below is meaningless if an ANCESTOR is
+        // display:none, and an element's own computed display stays "block" in that case — so
+        // without this the check could pass on an invisible panel or fail on a correct one.
+        if (el("pm-tab-inspector")) el("pm-tab-inspector").click();
+        await waitFor(function(){
+          var m = document.querySelector(".pm-insp-miss");
+          return !!m && m.getClientRects().length > 0;
+        }, 200);
+        var gMiss = document.querySelector(".pm-insp-miss");
+        var gDbg = "surface=" + el("surface-presentation").classList.contains("active")
+          + " pmBody=" + getComputedStyle(document.querySelector("#surface-presentation .pm-body")).display
+          + " inspHidden=" + (el("pm-inspector-body") ? el("pm-inspector-body").hidden : "n/a")
+          + " inspDisp=" + (el("pm-inspector-body") ? getComputedStyle(el("pm-inspector-body")).display : "n/a")
+          + " missDisp=" + (gMiss ? getComputedStyle(gMiss).display : "n/a")
+          + " rects=" + (gMiss ? gMiss.getClientRects().length : "n/a");
+        ok(!!gMiss && getComputedStyle(gMiss).display !== "none" && gMiss.getClientRects().length > 0,
+           "G.6: a missing image paints the fallback explanation (computed display + a real rect) [" + gDbg + "]");
+        var gMt = gMiss ? gMiss.textContent.replace(/\s+/g, " ").trim() : "";
+        ok(/audience/i.test(gMt) && /background/i.test(gMt),
+           "G.6: it says what the AUDIENCE sees — the slide composes without the asset (\"" + gMt.slice(0, 58) + "\")");
+        ok(/never an error/i.test(gMt),
+           "G.6: it states FR-070's guarantee explicitly rather than leaving the operator to fear a black screen");
+        ok(/re-push/i.test(gMt) && /on air/i.test(gMt),
+           "G.6: it warns that repairing the DECK does not repair what is already ON AIR — deck repairs route through with_deck and never present (FR-012)");
+        ok(gMiss && gMiss.getAttribute("role") === "status",
+           "G.6: the explanation is announced to assistive tech, not a silent visual-only cue");
+        var gMc = _cr(_rgba(getComputedStyle(gMiss).color), _rgba(getComputedStyle(gMiss).backgroundColor));
+        ok(gMc >= 4.5,
+           "G.6: the explanation clears AA-NORMAL on its own warn ground (" + _f(gMc) + ":1) — essential copy, so --sc-text-secondary not the AA-large-only --sc-text-muted");
+        ok(/Relink/i.test(el("pm-inspector-body").textContent),
+           "G.6: the repair affordance is offered and reads 'Relink…' for a missing asset, not the generic 'Replace…'");
+      }
+
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
     el("__r").textContent = "RESULTS\n"+R.join("\n")+"\nDONE("+R.length+")";
   }
@@ -3599,7 +3904,12 @@ try:
              # its checks legitimately FAIL (each spending its wait budget) must still have time
              # left to WRITE the results. Without the headroom a real regression surfaces as
              # "NO RESULTS BLOCK" (exit 2, infra) instead of a named FAIL.
-             "--virtual-time-budget=20000", "--dump-dom", "file://" + path],
+             # Raised again to 60000 for the Frame G recovery block, which is wait-heavy by
+             # nature: every edge check must observe TWO successive 1 Hz polls (that is the
+             # whole point of holds/recoveries being counters), so it spends ~1s of virtual
+             # time per assertion pair and cannot be made cheaper without testing something
+             # weaker than the real poll path.
+             "--virtual-time-budget=60000", "--dump-dom", "file://" + path],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=90).stdout
     except subprocess.TimeoutExpired:

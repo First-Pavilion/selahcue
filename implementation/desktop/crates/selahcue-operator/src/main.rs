@@ -776,6 +776,16 @@ struct AppState {
     /// The SelahCue account/session token store (FR-134): OS keychain in a `cloud-live` build,
     /// in-memory otherwise. Never a user-pasted third-party key.
     secrets: Box<dyn selahcue_cloud::SecretStore + Send + Sync>,
+    /// The last observed outcome of a call over the control link (`Remote` backend only).
+    ///
+    /// `None` = the last call succeeded, or none has been made yet — and for a `Remote` backend
+    /// that is honest at boot, because `build_backend` only produces `Remote` when
+    /// `connect_remote` actually established the link. `Some(err)` = the last call failed, and
+    /// carries the host's own reason.
+    ///
+    /// This is an OBSERVATION, not a retry state machine. Nothing in this shell re-dials, so a
+    /// failure means the link is down and stays down — see [`link_status`].
+    link_error: Mutex<Option<String>>,
 }
 
 /// Reply to the Remote Control device commands: the host's paired devices + pending requests.
@@ -1036,7 +1046,82 @@ async fn audio_input() -> AudioInputReply {
 
 #[tauri::command]
 async fn view(state: State<'_, AppState>) -> Result<OperatorView, String> {
-    state.backend.view().await
+    // The 1 Hz view poll is the console's only regular traffic over the control link, so it is
+    // also the only place the link's liveness is observable. Record the outcome so `link_status`
+    // reports what actually happened rather than a static "is this a remote build" boolean.
+    let r = state.backend.view().await;
+    if state.backend.is_remote() {
+        if let Ok(mut slot) = state.link_error.lock() {
+            *slot = match &r {
+                Ok(_) => None,
+                // Bound the retained reason the same way the wire does, so a pathological
+                // transport error cannot grow this field without limit.
+                Err(e) => Some(selahcue_lan::protocol::truncate_for_wire(
+                    e,
+                    selahcue_lan::protocol::MAX_ERROR_TEXT_LEN,
+                )),
+            };
+        }
+    }
+    r
+}
+
+/// Reply to `link_status` — the operator↔host control-link state (Tier 2).
+///
+/// The `state` strings come from [`LinkState::tag`], so this cannot drift from the state machine
+/// in `selahcue-lan::link` that defines the vocabulary.
+#[derive(serde::Serialize)]
+struct LinkStatusReply {
+    state: &'static str,
+    epoch: u64,
+    attempts: u32,
+    last_error: Option<String>,
+}
+
+/// The control-link state, replacing three fabrications at once: a permanent green "Connected"
+/// in the stand-alone build, an untrue "Reconnecting…", and absent telemetry rendered as a fault.
+///
+/// **Read-only by design.** `build_backend` runs exactly once at startup and `AppState.backend` is
+/// an immutable field, so nothing in this shell re-dials. `LinkState::Reconnecting` is therefore
+/// deliberately unreachable here: the contract makes "reconnecting" true *exactly* when an
+/// automatic attempt is scheduled, and none ever is. Reporting it would restore the very lie this
+/// seam exists to remove — so a dropped link reports `disconnected`, which is the truth, and the
+/// console offers no retry it cannot honour. A real re-dial loop is separate work; when it lands,
+/// this command grows a `reconnecting` arm and the biconditional still holds.
+///
+/// `attempts` is always 0 for the same reason. `epoch` mirrors `LinkStatus`'s own convention:
+/// 0 for `local` (no link was ever established), 1 for a link established at startup.
+#[tauri::command]
+fn link_status(state: State<'_, AppState>) -> LinkStatusReply {
+    use selahcue_lan::LinkState;
+    if !state.backend.is_remote() {
+        // Not a degraded connection — there is no link and none is wanted. Distinct from
+        // `connected`, because the demo backend's view() cannot fail, so calling it connected
+        // would report the absence of a failure path rather than the presence of a host.
+        return LinkStatusReply {
+            state: LinkState::Local.tag(),
+            epoch: 0,
+            attempts: 0,
+            last_error: None,
+        };
+    }
+    // A poisoned lock must not manufacture a disconnection: fall back to the healthy reading
+    // that matches how the backend was built (Remote only exists because connect_remote worked).
+    let last = state.link_error.lock().ok().and_then(|s| s.clone());
+    match last {
+        None => LinkStatusReply {
+            state: LinkState::Connected.tag(),
+            epoch: 1,
+            attempts: 0,
+            last_error: None,
+        },
+        Some(e) => LinkStatusReply {
+            state: LinkState::Disconnected.tag(),
+            epoch: 1,
+            attempts: 0,
+            last_error: Some(e),
+        },
+    }
 }
 #[tauri::command]
 async fn next(state: State<'_, AppState>) -> Result<OperatorView, String> {
@@ -2904,6 +2989,7 @@ fn main() {
                 providers: Mutex::new(providers),
                 providers_db: providers_db.map(Mutex::new),
                 secrets: make_secret_store(),
+                link_error: Mutex::new(None),
             });
             Ok(())
         })
@@ -2915,6 +3001,7 @@ fn main() {
             remote_set_role,
             remote_new_code,
             host_connected,
+            link_status,
             disk_free,
             stt_ready,
             audio_input,
