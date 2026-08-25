@@ -68,11 +68,27 @@ fi
 # Capture rather than pipe. `rustc --version | awk` reports awk's exit status, so a missing or
 # broken rustc would sail through as success -- the same swallowed-exit-code pattern that has
 # already produced false greens in this repository twice.
-if ! rustc_version=$(rustc --version 2>&1); then
-    echo "toolchain: could not run rustc: $rustc_version" >&2
+#
+# Capture stdout ONLY, and parse by pattern rather than by field position. rustup writes
+# progress to stderr, and when rust-toolchain.toml names components the running toolchain does
+# not have yet, it installs them on first use and prints "info: syncing channel updates..."
+# first. An earlier version of this merged stderr in and took field 2 of the whole blob, so it
+# read the version as "syncing" and failed both launch-smoke jobs -- the fix for a swallowed
+# exit code introducing a parsing bug of its own.
+# `if !` rather than a bare assignment: under `set -e` a failing command substitution in an
+# assignment exits the shell immediately with the child's status, so the diagnostic below
+# would never print. It failed closed either way, but with a bare "exit 127" and no reason.
+if ! rustc_out=$(rustc --version 2>/dev/null); then
+    echo "toolchain: could not run rustc. Its output was:" >&2
+    rustc --version >&2 2>&1 || true
     exit 1
 fi
-active=$(echo "$rustc_version" | awk '{print $2}')
+active=$(printf '%s\n' "$rustc_out" | sed -n 's/^rustc \([0-9][0-9.]*\).*/\1/p' | head -1)
+if [ -z "$active" ]; then
+    echo "toolchain: could not parse a version out of rustc --version:" >&2
+    printf '  %s\n' "$rustc_out" >&2
+    exit 1
+fi
 
 if [ "$active" != "$pinned" ]; then
     echo "toolchain: MISMATCH -- refusing to gate on a compiler nobody pinned." >&2
@@ -88,16 +104,18 @@ fi
 
 # clippy reports its own version as 0.1.<rust-minor>; anything else means the clippy on PATH
 # came from a different toolchain than the rustc we just verified.
-if clippy_version=$(cargo clippy --version 2>/dev/null); then
+if clippy_out=$(cargo clippy --version 2>/dev/null); then
+    # Same pattern-based parse as rustc above, for the same reason.
+    clippy_version=$(printf '%s\n' "$clippy_out" | sed -n 's/^clippy \([0-9][0-9.]*\).*/\1/p' | head -1)
     pinned_minor=$(echo "$pinned" | cut -d. -f2)
-    clippy_minor=$(echo "$clippy_version" | awk '{print $2}' | cut -d. -f3)
-    if [ "$clippy_minor" != "$pinned_minor" ]; then
+    clippy_minor=$(echo "$clippy_version" | cut -d. -f3)
+    if [ -n "$clippy_version" ] && [ "$clippy_minor" != "$pinned_minor" ]; then
         echo "toolchain: clippy does not belong to the pinned toolchain." >&2
         echo "           expected clippy 0.1.$pinned_minor (for rustc $pinned)" >&2
-        echo "           got      $clippy_version" >&2
+        echo "           got      $clippy_out" >&2
         exit 1
     fi
-    echo "toolchain: rustc $active + $clippy_version (pinned by rust-toolchain.toml)"
+    echo "toolchain: rustc $active + clippy $clippy_version (pinned by rust-toolchain.toml)"
 else
     echo "toolchain: rustc $active (pinned by rust-toolchain.toml); clippy not installed here, not checked"
 fi
