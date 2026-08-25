@@ -31,134 +31,30 @@ const EXPECTED_SRC_MODULES: usize = 8;
 
 /// The crates that make up the render, composition and live-control paths.
 ///
-/// The roots of the render / go-live / live-control paths.
-///
-/// `selahcue-desktop` is the `selahcue-output` binary — the process that owns the wgpu
-/// surface, the frame loop and the live state. `selahcue-app` is the `LiveController` that
-/// maps remote commands onto the presenter. Everything those two link is, by definition,
-/// code that ships inside the process that drives the screen.
-///
-/// Only the ROOTS are listed, because the guard walks the closure. An earlier version
-/// listed six crates and checked them directly, which looked equivalent and was not:
-/// `selahcue-app` also pulls `selahcue-lan` and `selahcue-scripture`, and
-/// `selahcue-desktop` pulls `selahcue-data` and `selahcue-lan` — none of which were on the
-/// list. Adding licensing to `selahcue-lan` linked it straight into the output process
-/// with the suite still green.
-///
-/// The natural home for launch-time entitlement refresh is therefore the Tauri operator
-/// console, which is where the account-setup screens (86ajy7anx) and the renewal banner
-/// already live, and which ADR-0002/0003 already separates from the compositor. That is a
-/// deliberate placement, not an accident of this guard.
-const LIVE_PATH_ROOTS: &[&str] = &["selahcue-desktop", "selahcue-app"];
-
-/// Crates the closure of `selahcue-desktop` must contain, or the walk is broken.
-const CLOSURE_SANITY: &[&str] = &[
-    "selahcue-core",
-    "selahcue-engine",
-    "selahcue-present",
-    "selahcue-lan",
-    "selahcue-data",
-];
-
-/// Every `selahcue-*` crate `name` depends on, from its manifest's **normal** dependency
-/// sections only.
-///
-/// Dev- and build-dependencies are excluded deliberately: the question this guard answers
-/// is what gets LINKED INTO the shipping process, and a dev-dependency does not.
-/// `[target.'cfg(...)'.dependencies]` counts, because it does.
-///
-/// Reading declared dependency lines rather than grepping the file also removes the
-/// fragility of the previous version, where a comment merely *mentioning* the crate would
-/// have turned it red.
-fn direct_deps(crates_dir: &std::path::Path, name: &str) -> Vec<String> {
-    let manifest = crates_dir.join(name).join("Cargo.toml");
-    let body = std::fs::read_to_string(&manifest).unwrap_or_else(|e| {
-        panic!(
-            "cannot read {} ({e}) — if a crate was renamed or moved, repoint this guard, \
-             never drop it",
-            manifest.display()
-        )
-    });
-    assert!(
-        body.contains(&format!("name = \"{name}\"")),
-        "{} does not declare package `{name}`; the guard is reading the wrong file",
-        manifest.display()
-    );
-
-    let mut in_deps = false;
-    let mut found = Vec::new();
-    for line in body.lines() {
-        let t = line.trim();
-        if t.starts_with('[') {
-            in_deps = t.contains("dependencies")
-                && !t.contains("dev-dependencies")
-                && !t.contains("build-dependencies");
-            continue;
-        }
-        if !in_deps || t.starts_with('#') {
-            continue;
-        }
-        if let Some(dep) = t.split('=').next().map(str::trim) {
-            if dep.starts_with("selahcue-") {
-                found.push(dep.to_string());
-            }
-        }
-    }
-    found
-}
-
-/// The transitive closure of `roots`, following normal dependencies.
-fn closure(crates_dir: &std::path::Path, roots: &[&str]) -> std::collections::BTreeSet<String> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut queue: Vec<String> = roots.iter().map(|r| r.to_string()).collect();
-    while let Some(next) = queue.pop() {
-        if !seen.insert(next.clone()) {
-            continue;
-        }
-        for dep in direct_deps(crates_dir, &next) {
-            if !seen.contains(&dep) {
-                queue.push(dep);
-            }
-        }
-    }
-    seen
-}
-
-#[test]
-fn licensing_is_absent_from_the_entire_render_and_live_control_closure() {
-    // CON-P1/CON-P2, asserted rather than assumed — and asserted over the TRANSITIVE
-    // closure, because "no direct dependency" is not the property that matters. What
-    // matters is whether licensing code can end up linked into the process that drives the
-    // screen, and that happens through any depth of the graph.
-    let crates_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .canonicalize()
-        .unwrap();
-
-    let reachable = closure(&crates_dir, LIVE_PATH_ROOTS);
-
-    // Positive controls FIRST. A walk that silently returned just the roots — a parser
-    // change, a renamed section — would otherwise satisfy the assertion below while
-    // checking nothing.
-    for expected in CLOSURE_SANITY {
-        assert!(
-            reachable.contains(*expected),
-            "the dependency walk did not reach {expected}, so it is not actually walking \
-             the graph and the assertion below proves nothing. Reached: {reachable:?}"
-        );
-    }
-    assert!(
-        reachable.len() > LIVE_PATH_ROOTS.len(),
-        "the closure is no bigger than its roots; the walk is broken"
-    );
-
-    assert!(
-        !reachable.contains("selahcue-licensing"),
-        "selahcue-licensing is reachable from {LIVE_PATH_ROOTS:?}. No licensing code may \
-         be linked into the render, go-live or live-control path (CON-P1/CON-P2, \
-         NFR-501/502). Closure: {reachable:?}"
-    );
-}
+// --- where the closure guard actually lives ------------------------------------------
+//
+// A transitive-closure guard used to live HERE, hand-parsing each manifest. It has been
+// removed rather than patched, because its claim was wider than its detection and that is
+// worse than having no guard: two ordinary declaration forms walked straight past it while
+// it reported success —
+//
+//     [dependencies.selahcue-licensing]                              # name is in the HEADER
+//     licensing = { package = "selahcue-licensing", path = "..." }   # key renamed
+//
+// — both confirmed to link licensing into the `selahcue-output` process while the suite
+// stayed green. Both matched on the TOML key rather than the resolved package, and adding
+// two more spellings would have left the class open.
+//
+// The guard now asks cargo, in `scripts/import_guards.sh` (`make ci` runs it): `cargo tree
+// -p selahcue-desktop -e normal` and the same for `selahcue-app`, with a positive control
+// that the walk reached `selahcue-present`. That resolves real packages, so no spelling
+// evades it. It lives in the script rather than in a test for the same reason the
+// importer's B2 allowlist does — it shells out to cargo, which is not something to do from
+// inside a `cargo test` run.
+//
+// What remains in this file is the behavioural half of never-blank, which needs no
+// dependency graph: every failure and status permits presentation, an unreachable platform
+// is a silent retryable unknown, and a failed activation destroys nothing.
 
 #[test]
 fn this_crate_exposes_no_enforcement_entry_point() {

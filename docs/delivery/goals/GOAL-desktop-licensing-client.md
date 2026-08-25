@@ -76,7 +76,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | A fresh install activates via sign-in and receives a device token | `cargo test -p selahcue-licensing --test test_client` | `a_fresh_install_activates_by_signing_in_and_receives_a_device_token` passes | test output | PASS |
+| C-001 | yes | The client implements sign-in activation against the pinned contract (request shape, camelCase input, bearer, token custody) | `cargo test -p selahcue-licensing --test test_client` | `a_fresh_install_activates_by_signing_in_and_receives_a_device_token` passes | test output | PASS |
 | C-002 | yes | The enrollment-key path activates the same machine | same | `the_enrollment_key_path_activates_the_same_machine` passes | test output | PASS |
 | C-003 | yes | The device token is reachable only through the OS secret store; no plaintext copy on disk or in the database | `cargo test -p selahcue-licensing --test test_custody` | redaction sweep + no-filesystem-primitive sweep + DB-schema sweep all pass | test output | PASS |
 | C-004 | yes | Signing out leaves the device token intact | same | `sign_out_leaves_the_device_token_intact` passes; mutation-verified RED | test output; battery log | PASS |
@@ -88,7 +88,36 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-010 | yes | The full local CI gate is green | `make ci` | exit 0; 147 cargo test-result lines; 0 failures | `MAKECI_REAL_EXIT=0` | PASS |
 | C-011 | yes | Every named guard is mutation-verified: broken → RED, restored → GREEN | mutation batteries with landing proof, clean-baseline re-verification and `--no-fail-fast` | every mutation caught by the guard it names | battery summaries | PASS |
 | C-012 | yes | Independent review findings remediated | Sana + Cody review | all in-scope findings closed; out-of-scope ticketed | ClickUp comments | PASS |
+| C-014 | yes | A fresh install activates via sign-in **end to end against the deployed API** (FR-517 criterion 1 as written) | run the client against the API | a device token is issued | — | BLOCKED |
+| C-015 | yes | AC-5 — a deactivated machine re-activates when a slot is free | `cargo test -p selahcue-licensing --test test_client` | see the note below: the shipped server refuses this | test output | BLOCKED |
 | C-013 | no | Live integration against the API under Docker Compose | `docker compose up` + client run | activation succeeds end to end | — | BLOCKED |
+
+**`C-014` (FR-517 criterion 1) is BLOCKED and must not be recorded as PASS.** The criterion
+is end-to-end; the evidence for C-001 is a mocked transport, which proves the client speaks
+the pinned contract and proves nothing about reaching the deployed API. CSRF on
+`/graphql/account` (`86ak5t1gw`) makes the end-to-end path unreachable from this client at
+all. Two ways to close it, and the choice is the **owner's**, not this role's: re-scope the
+criterion to C-001's wording and move end-to-end proof to `86ak5t1gw`, or hold this goal in
+`GATE_REVIEW` until that ticket lands. Recorded here rather than quietly satisfied by the
+mocked evidence.
+
+**`C-015` (AC-5) is BLOCKED by a mismatch between the acceptance criterion and the shipped
+server.** AC-5 says a deactivated machine re-activates when a slot is free. It does not:
+`_assert_device_activatable` (`apps/devices/services.py:127-131`) refuses any device whose
+status is not `ACTIVE` with `POLICY_DENIED`, and says so deliberately — *"A revoked device is
+terminal for this slice... Re-provisioning a revoked install is a separate future flow."*
+What the server does support is re-minting for a device that is still `ACTIVE` but whose
+token was revoked or expired, gated on the plan's allowance. Both behaviours are pinned by
+tests (`a_deactivated_machine_is_refused_by_policy_and_keeps_presenting` and
+`a_device_whose_token_was_revoked_is_re_minted_which_is_the_supported_recovery`) so the
+client is correct either way, but the criterion itself needs either a server-side
+re-provisioning flow or a rewrite. Owner's call.
+
+**FR-518 is only partially addressed here and must not be recorded as satisfied.** This
+ticket lands the trusted-key **set** selected by `key_id` — the clause that becomes
+unshippable if deferred. Its other clauses (fetching the manifest, verifying the Ed25519
+signature, caching a verified manifest, and refusing an envelope naming an unknown `key_id`
+while keeping the last valid cache) belong to `86ak5mn1d`.
 
 `C-013` is non-mandatory and BLOCKED: the compose file bind-mounts `implementation/api`, which peer sessions are actively editing, so a run would exercise their mid-edit state rather than the shipped contract; it also requires an `api/.env` absent from the repo. It is additionally blocked behind `86ak5t1gw`. The wire contract is instead pinned byte-for-byte to server source, including `key_id` fixtures computed by Python running the server's own `derive_key_id`.
 
@@ -141,7 +170,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/GOAL-desktop-licensing-client.md`
 - Validator result: see ClickUp evidence comment.
-- Independent verification result: Sana PASS with required remediations (closed); Cody not-ready-for-PR (closed); Vera and Quinn pending.
+- Independent verification result: Sana PASS with required remediations (closed); Cody not-ready-for-PR (closed); Vera PASS; Quinn one blocking finding plus four surviving mutations (closed).
 - Terminal state: GATE_REVIEW — implementation and review remediation complete; Vera and Quinn outstanding before any PR.
-- Remaining failed or blocked criteria: `C-013` (BLOCKED, non-mandatory).
+- Remaining failed or blocked criteria: `C-013` (non-mandatory), `C-014` (FR-517 criterion 1, owner decision), `C-015` (AC-5 vs shipped server, owner decision).
 - ClickUp final evidence comment: https://app.clickup.com/t/86ak5mn11

@@ -9,6 +9,7 @@
 //! test can assert exactly what left the device, in what order, and with which
 //! credential attached. It never touches the network.
 
+use crate::contract::redacted;
 use selahcue_cloud::{HttpResponse, HttpTransport, TransportError};
 use std::sync::Mutex;
 
@@ -40,7 +41,7 @@ impl core::fmt::Debug for RecordedRequest {
         f.debug_struct("RecordedRequest")
             .field("method", &self.method)
             .field("url", &self.url)
-            .field("body", &"***redacted***")
+            .field("body", &redacted(&self.body))
             .field("body_len", &self.body.len())
             .field("had_bearer", &self.had_bearer)
             .finish()
@@ -156,16 +157,30 @@ impl ScriptedTransport {
 
 impl core::fmt::Debug for ScriptedTransport {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // Counts only. Both queues hold credential-bearing payloads.
+        // Both locks are taken and RELEASED before the builder runs. Reading them inline —
+        // `.field("queued_steps", &self.lock_steps().len())` — looks equivalent and
+        // deadlocks: a temporary in a method-chain lives to the end of the whole statement,
+        // so the guard is still held when the next field re-locks the same mutex. That hung
+        // the credential sweep rather than failing it, which is the worse outcome.
+        let queued_steps = self.lock_steps().len();
+        let recorded_requests = self.lock_requests().len();
+
+        // Counts only. Request bodies carry the password and the enrollment key; queued
+        // responses carry show-once device tokens.
+        //
+        // The marker is conditional for the same reason it is on `Token`: printed
+        // unconditionally it asserts nothing about a transport holding nothing, which is
+        // exactly the state a neutered fixture leaves it in.
+        let payloads = if queued_steps == 0 && recorded_requests == 0 {
+            "<none>"
+        } else {
+            "***redacted***"
+        };
+
         f.debug_struct("ScriptedTransport")
-            .field("queued_steps", &self.lock_steps().len())
-            .field("recorded_requests", &self.lock_requests().len())
-            // Named rather than merely omitted: both queues hold credential-bearing
-            // payloads (request bodies carry the password and the enrollment key; queued
-            // responses carry show-once device tokens). Stating that they are withheld also
-            // lets the credential sweep verify this rendering redacts, instead of having to
-            // trust that an absence was deliberate.
-            .field("payloads", &"***redacted***")
+            .field("queued_steps", &queued_steps)
+            .field("recorded_requests", &recorded_requests)
+            .field("payloads", &payloads)
             .finish()
     }
 }

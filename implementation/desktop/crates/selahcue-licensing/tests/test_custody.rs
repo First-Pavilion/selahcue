@@ -32,6 +32,12 @@ const EXPECTED_SRC_MODULES: usize = 8;
 /// quietly disappear from it.
 const SWEPT_RENDERINGS: usize = 14;
 
+/// Number of sanctioned `Token::expose()` call sites in `src/`.
+///
+/// Each one hands out a raw credential. They are all "attach this to an outbound request";
+/// none may be a formatter. Pinned so adding one is a decision made here, in the open.
+const SANCTIONED_EXPOSE_SITES: usize = 2;
+
 /// A realistic device token: the server's format is `SC-DEV-` + 8 groups of 4.
 const DEVICE_TOKEN: &str = "SC-DEV-A1B2-C3D4-E5F6-G7H8-J9K2-L3M4-N5P6-Q7R8";
 const SESSION_TOKEN: &str = "sess-11112222333344445555666677778888";
@@ -311,6 +317,27 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
     // fixture is exactly where a credential gets copied into a log and then into a bug
     // report — while it printed one. Swept here so that stays fixed.
     let transport = ScriptedTransport::new();
+    // Queue REAL responses carrying a device token, so both halves of the transport's
+    // redaction claim are exercised. The fixture previously used a bare `new()` and never
+    // queued a step, which left "queued responses carry show-once device tokens" — half of
+    // what its `Debug` claims to protect — completely untested.
+    transport.push_response(
+        200,
+        format!(
+            r#"{{"data":{{"login":{{"sessionToken":"{SESSION_TOKEN}","expiresAt":"x",
+            "role":"ADMIN","orgId":"o"}}}}}}"#
+        ),
+    );
+    transport.push_response(
+        200,
+        format!(
+            r#"{{"created":true,"reminted":false,"activation_token":"{DEVICE_TOKEN}",
+            "device":{{"device_public_id":"dev_1","status":"ACTIVE","platform":"macos"}},
+            "token":{{}},"license":{{"status":"ACTIVATED","expires_at":"x"}}}}"#
+        ),
+    );
+    // ...and one left UNCONSUMED, so the queued-steps side is non-empty when Debug runs.
+    transport.push_response(200, format!(r#"{{"activation_token":"{DEVICE_TOKEN}"}}"#));
     let client = LicensingClient::new(transport, "https://api.selahcue.example");
     let _ = client.sign_in("admin@example.test", &Token::new(PASSWORD));
     let _ = client.activate_with_enrollment_key(
@@ -318,9 +345,15 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
         &DeviceIdentity::new("fp-1", "macos", "1.0.0", "Booth").unwrap(),
         &IdempotencyKey::new("idem-0123456789ab").unwrap(),
     );
+    // Positive controls for BOTH halves of what this transport's Debug redacts.
     assert!(
         client.transport().request_count() >= 2,
         "both credential-bearing calls must have been recorded, or this entry sweeps nothing"
+    );
+    assert!(
+        format!("{:?}", client.transport()).contains("queued_steps: 1"),
+        "a queued response must remain unconsumed, or the queued-payload half of the \
+         transport's redaction claim is never exercised"
     );
     formatted.push((
         "RecordedRequest/Debug",
@@ -380,48 +413,56 @@ fn every_secret_bearing_public_field_is_token_typed_so_the_sweep_cannot_fall_beh
     // reads the SOURCE instead, so a new secret-bearing field cannot be added without it
     // being noticed — including in a type nobody adds to the sweep.
     //
-    // Two earlier limits, both demonstrated rather than theorised:
+    // Four limits found by review, each demonstrated rather than theorised:
     //
-    // - The vocabulary was `token|password|secret`, so `bearer`, `credential` and — worst —
-    //   `api_key` all slipped through. `key` is the sharp one: this product's other
-    //   credential is an **enrollment key / license key**, so `key` is exactly the word a
-    //   future leak will be spelled with.
-    // - It read only `contract.rs`, while the rule stated in `lib.rs` has no file qualifier.
-    //   `client.rs` already exposes public `token` fields.
+    // - The vocabulary was `token|password|secret`, so `bearer`, `credential` and `api_key`
+    //   slipped through. `key` is the sharp one: this product's other credential is an
+    //   **enrollment key / license key**, so `key` is the word a future leak is spelled with.
+    // - It read only `contract.rs`, while the rule in `lib.rs` has no file qualifier.
+    // - It filtered on `starts_with("pub ")`, so `pub(crate) recovery_token: String` was
+    //   invisible — yet a `pub(crate)` field is printed verbatim by its struct's derived
+    //   `Debug` just the same.
+    // - It tested `contains("Token")` against the WHOLE LINE, so
+    //   `pub refresh_key: String, // TODO: wrap in Token` satisfied the guard with a
+    //   promise instead of a type.
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
 
     // Words that mark a field as credential-bearing. Deliberately broad: a false positive
-    // costs one line in `ALLOWED` with a reason, a false negative costs a leaked secret.
+    // costs one line in ALLOWED with a reason, a false negative costs a leaked secret.
     const SECRET_WORDS: &[&str] = &["token", "key", "cred", "bearer", "auth", "pass", "secret"];
 
-    // Fields that legitimately are NOT `Token`, each with the reason it is safe. This list
-    // is meant to read as a COMPLETE inventory of exceptions — which it did not, while
-    // `license_key` was invisible to the heuristic and so never needed an entry.
+    // `pub` item forms that are not fields.
+    const NOT_FIELDS: &[&str] = &[
+        "fn ", "mod ", "use ", "struct ", "enum ", "type ", "const ", "static ", "trait ", "impl ",
+    ];
+
+    // Fields that legitimately are NOT `Token`, each with the reason it is safe. Meant to
+    // read as a COMPLETE inventory of exceptions.
     const ALLOWED: &[(&str, &str)] = &[
         (
-            "pub token: TokenMetaDto",
+            "token: TokenMetaDto",
             "metadata only (masked/prefix/suffix/fingerprint); no secret",
         ),
         (
-            "pub password: String",
+            "password: String",
             "must be String to serialize; hand-redacted Debug on LoginInput",
         ),
         (
-            "pub license_key: String",
+            "license_key: String",
             "must be String to serialize; hand-redacted Debug on ActivationRequest",
         ),
         (
-            "pub idempotency_key: String",
+            "idempotency_key: String",
             "a client-chosen correlation id, deliberately visible in logs",
         ),
-        ("pub key_id: String", "names a PUBLIC key; not secret"),
+        ("key_id: String", "names a PUBLIC key; not secret"),
         (
-            "pub had_bearer: bool",
-            "a flag recording THAT a bearer was sent, never its value",
+            "token_meta: Option<TokenMetaDto>",
+            "metadata only; no secret",
         ),
         (
-            "pub token_meta: Option<TokenMetaDto>",
-            "metadata only; no secret",
+            "had_bearer: bool",
+            "a flag recording THAT a bearer was sent, never its value",
         ),
     ];
 
@@ -440,45 +481,46 @@ fn every_secret_bearing_public_field_is_token_typed_so_the_sweep_cannot_fall_beh
         scanned_files += 1;
         let body = std::fs::read_to_string(path).unwrap();
         for (lineno, line) in body.lines().enumerate() {
-            let code = line.trim();
-            // Struct FIELDS only. `pub const DEVICE_TOKEN_NAME: &str = "device_token"` is a
-            // keyring entry NAME, not a credential, and every other `pub` item form —
-            // fn/mod/use/struct/enum/type/static — is not a field either. A field
-            // declaration has a type and no initialiser.
-            if !code.starts_with("pub ") || !code.contains(':') || code.contains('=') {
+            // Strip any trailing line comment BEFORE looking at the declaration, so a
+            // comment can never stand in for a type.
+            let code = line.split("//").next().unwrap_or("").trim();
+            if !(code.starts_with("pub ") || code.starts_with("pub(")) {
                 continue;
             }
-            const NOT_FIELDS: &[&str] = &[
-                "pub fn ",
-                "pub mod ",
-                "pub use ",
-                "pub struct ",
-                "pub enum ",
-                "pub type ",
-                "pub const ",
-                "pub static ",
-                "pub trait ",
-                "pub impl ",
-            ];
-            if NOT_FIELDS.iter().any(|kw| code.starts_with(kw)) {
+            // Everything after the visibility marker, including `pub(crate)` / `pub(in ...)`.
+            let declaration = if code.starts_with("pub(") {
+                match code.find(')') {
+                    Some(paren) => code[paren + 1..].trim(),
+                    None => continue,
+                }
+            } else {
+                code.trim_start_matches("pub ").trim()
+            };
+            if NOT_FIELDS.iter().any(|kw| declaration.starts_with(kw)) {
                 continue;
             }
-            let name = code
-                .trim_start_matches("pub ")
-                .split(':')
-                .next()
-                .unwrap_or("");
-            let lowered = name.to_lowercase();
-            if !SECRET_WORDS.iter().any(|w| lowered.contains(w)) {
+            // A field declaration has a type and no initialiser.
+            let Some((name, ty)) = declaration.split_once(':') else {
+                continue;
+            };
+            if declaration.contains('=') {
+                continue;
+            }
+            let (name, ty) = (name.trim(), ty.trim().trim_end_matches(','));
+            if !SECRET_WORDS.iter().any(|w| name.to_lowercase().contains(w)) {
                 continue;
             }
             checked += 1;
-            if ALLOWED.iter().any(|(pattern, _)| code.starts_with(pattern)) {
+            if ALLOWED
+                .iter()
+                .any(|(pattern, _)| format!("{name}: {ty}").starts_with(pattern))
+            {
                 continue;
             }
+            // The TYPE must be Token — not the line, not a comment on it.
             assert!(
-                code.contains("Token"),
-                "{}:{} declares a credential-named field that is not `Token`-typed, so a \
+                ty.contains("Token"),
+                "{}:{} declares a credential-named field whose TYPE is not `Token`, so a \
                  `{{:?}}` on its struct would print the secret verbatim:\n  {code}\n\
                  Type it as `Token`, or add it to ALLOWED with the reason it is safe.",
                 path.display(),
@@ -503,6 +545,76 @@ fn every_secret_bearing_public_field_is_token_typed_so_the_sweep_cannot_fall_beh
         token_typed >= 3,
         "expected at least the three show-once token fields to be Token-typed, found \
          {token_typed}"
+    );
+}
+
+#[test]
+fn the_raw_token_is_never_handed_to_a_formatter() {
+    // `Token::expose()` is the one sanctioned way out of the redaction, and nothing stopped
+    // `println!("{}", t.expose())` from undoing every other control in this file. The
+    // legitimate uses are all "attach this to an outbound request"; none is a formatter.
+    //
+    // Same spirit as the filesystem-primitive sweep below: make the dangerous shape
+    // unwritable rather than merely discouraged.
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    const FORMATTERS: &[&str] = &[
+        "println!",
+        "eprintln!",
+        "print!",
+        "eprint!",
+        "format!",
+        "write!",
+        "writeln!",
+        "dbg!",
+        "panic!",
+        "todo!",
+        "unimplemented!",
+        "log::",
+        "tracing::",
+    ];
+
+    let mut expose_sites = 0usize;
+    let mut scanned = 0usize;
+    let mut paths: Vec<_> = std::fs::read_dir(&src)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+        .collect();
+    paths.sort();
+
+    for path in &paths {
+        scanned += 1;
+        let body = std::fs::read_to_string(path).unwrap();
+        for (lineno, line) in body.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            if !code.contains("expose()") {
+                continue;
+            }
+            expose_sites += 1;
+            for formatter in FORMATTERS {
+                assert!(
+                    !code.contains(formatter),
+                    "{}:{} passes an exposed token to {formatter} — the raw secret must \
+                     never reach a formatter:\n  {}",
+                    path.display(),
+                    lineno + 1,
+                    code.trim()
+                );
+            }
+        }
+    }
+
+    assert_eq!(
+        scanned, EXPECTED_SRC_MODULES,
+        "expected to scan {EXPECTED_SRC_MODULES} modules, scanned {scanned}"
+    );
+    // Pinned so a NEW call site is a deliberate decision someone has to make here, not an
+    // edit that slips by. Raising this number should always come with a reason.
+    assert_eq!(
+        expose_sites, SANCTIONED_EXPOSE_SITES,
+        "the number of `expose()` call sites changed ({expose_sites} vs \
+         {SANCTIONED_EXPOSE_SITES}). Every one hands out a raw credential — confirm the new \
+         site attaches it to a request and nothing else, then update this pin."
     );
 }
 

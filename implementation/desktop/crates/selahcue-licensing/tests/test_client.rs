@@ -306,6 +306,77 @@ fn a_remint_overwrites_the_cached_token_because_the_old_one_is_revoked() {
 }
 
 #[test]
+fn a_deactivated_machine_is_refused_by_policy_and_keeps_presenting() {
+    // AC-5 says "a deactivated machine re-activates when a slot is free". **The shipped
+    // server does not do that.** `_assert_device_activatable` (`devices/services.py:127-131`)
+    // refuses any device whose status is not ACTIVE with `POLICY_DENIED`, and says why:
+    // "A revoked device is terminal for this slice... Re-provisioning a revoked install is a
+    // separate future flow."
+    //
+    // So this pins what the system ACTUALLY does rather than the criterion as written: the
+    // refusal is classified correctly, the local token is untouched, and — the part that
+    // matters on a Sunday — the app carries on presenting. The gap between AC-5 and the
+    // server is recorded in the Goal Contract and raised for the owner; it is not something
+    // to paper over with a green test.
+    let creds = credentials();
+    creds.store_device_token(&Token::new(TOKEN_A)).unwrap();
+
+    let transport = ScriptedTransport::responding(
+        403,
+        rest_error(
+            "POLICY_DENIED",
+            "The current policy does not allow this action.",
+        ),
+    );
+    let client = LicensingClient::new(transport, BASE);
+
+    let failure = client
+        .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
+        .unwrap_err();
+
+    assert_eq!(failure, ActivationFailure::PolicyDenied);
+    assert!(
+        failure.permits_presentation(),
+        "a deactivated machine must keep presenting; licensing gates nothing (CON-P1)"
+    );
+    assert!(
+        !failure.is_retryable(),
+        "a policy refusal is a decision somebody made, not a blip to retry silently"
+    );
+    assert_eq!(
+        creds.device_token().unwrap().unwrap().expose(),
+        TOKEN_A,
+        "a refused re-activation must not clear the token the machine already holds"
+    );
+}
+
+#[test]
+fn a_device_whose_token_was_revoked_is_re_minted_which_is_the_supported_recovery() {
+    // The half of AC-5 the server DOES support: the device row stays ACTIVE but its token
+    // was revoked or expired, so a re-activation mints a replacement
+    // (`devices/services.py:300-312`) — gated on the plan's allowance, which is where a
+    // downgraded licence would otherwise leak seats. This is the real "machine comes back"
+    // path, and it consumes the allowance like any activation.
+    let creds = credentials();
+    creds.store_device_token(&Token::new(TOKEN_A)).unwrap();
+
+    let transport = ScriptedTransport::responding(200, rest_body(false, true, Some(TOKEN_B)));
+    let client = LicensingClient::new(transport, BASE);
+
+    let activation = client
+        .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
+        .unwrap();
+
+    assert!(activation.is_known_remint());
+    assert_eq!(activation.persist(&creds).unwrap(), PersistOutcome::Stored);
+    assert_eq!(
+        creds.device_token().unwrap().unwrap().expose(),
+        TOKEN_B,
+        "the replacement token must be stored; the old one is revoked server-side"
+    );
+}
+
+#[test]
 fn a_replay_with_no_local_token_is_reported_rather_than_silently_succeeding() {
     // The awkward case: the server replays (so it will not re-show the token) but this
     // install has none — a deleted keychain entry, or a re-image. Retrying cannot fix it.

@@ -36,6 +36,21 @@
 use selahcue_cloud::Token;
 use serde::{Deserialize, Serialize};
 
+/// How a hand-redacted field renders.
+///
+/// `Token` distinguishes empty from redacted for a reason that applies just as much to the
+/// wire types that must hold a raw `String`: a marker printed unconditionally cannot tell
+/// "this hid a real secret" from "this had nothing to hide", so a test fixture neutered to
+/// `""` sails through a redaction sweep while exercising none of it. Emptiness is not
+/// secret material — only the bytes are — so it is safe to say which happened.
+pub(crate) fn redacted(value: &str) -> &'static str {
+    if value.is_empty() {
+        "<empty>"
+    } else {
+        "***redacted***"
+    }
+}
+
 /// Enrollment-key activation (REST). **No trailing slash** — the route is registered as
 /// `path("activations", ...)` (`platform/urls.py:7`), so a trailing slash is a 404.
 pub const ACTIVATIONS_PATH: &str = "/v1/activations";
@@ -82,7 +97,7 @@ impl core::fmt::Debug for ActivationRequest {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ActivationRequest")
             .field("idempotency_key", &self.idempotency_key)
-            .field("license_key", &"***redacted***")
+            .field("license_key", &redacted(&self.license_key))
             .field("device_fingerprint", &self.device_fingerprint)
             .field("platform", &self.platform)
             .field("app_version", &self.app_version)
@@ -273,7 +288,7 @@ impl core::fmt::Debug for LoginInput {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LoginInput")
             .field("email", &self.email)
-            .field("password", &"***redacted***")
+            .field("password", &redacted(&self.password))
             .finish()
     }
 }
