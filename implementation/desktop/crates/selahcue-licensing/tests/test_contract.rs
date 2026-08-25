@@ -14,6 +14,7 @@ use selahcue_licensing::contract::{
     ACCOUNT_GRAPHQL_PATH, ACTIVATIONS_PATH, ENTITLEMENT_MANIFEST_PATH, ENVELOPE_ALG,
     ENVELOPE_VERSION,
 };
+use selahcue_licensing::Token;
 
 #[test]
 fn the_endpoint_paths_match_the_servers_routes() {
@@ -86,7 +87,7 @@ fn a_real_activation_success_body_parses() {
     assert!(parsed.created);
     assert!(!parsed.reminted);
     assert_eq!(
-        parsed.activation_token.as_deref(),
+        parsed.activation_token.as_ref().map(Token::expose),
         Some("SC-DEV-A1B2-C3D4-E5F6-G7H8-J9K2-L3M4-N5P6-Q7R8")
     );
     assert_eq!(
@@ -197,14 +198,17 @@ fn graphql_payloads_parse_from_their_camel_cased_wire_form() {
       "expiresAt": "2026-09-24T10:11:12.123456+00:00", "role": "ADMIN", "orgId": "org_1"}}}"#;
     let parsed: GraphQlResponse<LoginData> = serde_json::from_str(login).unwrap();
     let payload = parsed.data.unwrap().login;
-    assert_eq!(payload.session_token, "sess-abc");
+    assert_eq!(payload.session_token.expose(), "sess-abc");
     assert_eq!(payload.role, "ADMIN");
 
     let activate = r#"{"data": {"activateDeviceWithSession": {"fullToken": "SC-DEV-XYZ",
       "created": true, "devicePublicId": "dev_1", "platform": "macos"}}}"#;
     let parsed: GraphQlResponse<ActivateWithSessionData> = serde_json::from_str(activate).unwrap();
     let payload = parsed.data.unwrap().activate_device_with_session;
-    assert_eq!(payload.full_token.as_deref(), Some("SC-DEV-XYZ"));
+    assert_eq!(
+        payload.full_token.as_ref().map(Token::expose),
+        Some("SC-DEV-XYZ")
+    );
     assert!(payload.created);
 
     // The device token is `fullToken` here and `activation_token` over REST. Same secret,

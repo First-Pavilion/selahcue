@@ -38,9 +38,18 @@
 //! Every secret — enrollment key, account session token, device token — is carried in
 //! [`Token`], whose `Debug` and `Display` are redacted, so the usual ways a credential
 //! escapes into a log cannot reach it. Tokens are persisted only through [`SecretStore`].
+//!
+//! That applies in **both** directions. The wire types that must hold a raw secret to
+//! serialize it — the enrollment key and the password — carry hand-written redacting
+//! `Debug` impls; the response types that receive a secret name [`Token`] directly, so
+//! their derived `Debug` redacts structurally rather than by remembering to.
+//!
 //! The desktop equivalent of the server's audit-redaction discipline is
-//! `tests/test_custody.rs`, which sweeps the formatted forms of every type this crate
-//! exposes for token material.
+//! `tests/test_custody.rs`. It sweeps the formatted forms of the credential-bearing types
+//! for token material, and — because a hand-written list of types is precisely the thing
+//! that falls behind — it also reads `contract.rs` and fails if any public field whose
+//! name says it holds a secret is not [`Token`]-typed. That second check is what stops the
+//! sweep quietly going out of date as the contract grows.
 //!
 //! # Deliberately not here
 //!

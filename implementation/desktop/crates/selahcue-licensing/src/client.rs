@@ -213,7 +213,7 @@ impl<T: HttpTransport> LicensingClient<T> {
             .map(|data| data.login)?;
 
         Ok(AccountSession {
-            token: Token::new(payload.session_token),
+            token: payload.session_token,
             expires_at: payload.expires_at,
             role: payload.role,
             org_id: payload.org_id,
@@ -250,7 +250,7 @@ impl<T: HttpTransport> LicensingClient<T> {
 
         Ok(Activation {
             path: ActivationPath::AccountSession,
-            token: payload.full_token.map(Token::new),
+            token: payload.full_token,
             created: payload.created,
             // Not reported on this path — see `Activation::reminted`.
             reminted: None,
@@ -296,7 +296,7 @@ impl<T: HttpTransport> LicensingClient<T> {
 
         Ok(Activation {
             path: ActivationPath::EnrollmentKey,
-            token: parsed.activation_token.map(Token::new),
+            token: parsed.activation_token,
             created: parsed.created,
             reminted: Some(parsed.reminted),
             device_public_id: parsed.device.device_public_id,

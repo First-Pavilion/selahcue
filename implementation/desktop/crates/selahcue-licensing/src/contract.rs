@@ -33,6 +33,7 @@
 //! the message**: `PERMISSION_DENIED` and `POLICY_DENIED` both map to 403, and the
 //! message string is a constant per code that carries no detail at all.
 
+use selahcue_cloud::Token;
 use serde::{Deserialize, Serialize};
 
 /// Enrollment-key activation (REST). **No trailing slash** — the route is registered as
@@ -91,7 +92,11 @@ impl core::fmt::Debug for ActivationRequest {
 }
 
 /// Success body for `POST /v1/activations` (HTTP 200).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// No `Serialize` here, and that is deliberate: this is a response type, the client only
+// ever reads it, and leaving the derive off means the show-once token below cannot be
+// written back out to JSON by accident. The same reasoning applies to the two GraphQL
+// payloads further down.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ActivationResponse {
     pub created: bool,
     /// `true` when an existing device was issued a **replacement** token because its own
@@ -100,8 +105,12 @@ pub struct ActivationResponse {
     pub reminted: bool,
     /// The show-once device token. `None` on an idempotent replay where the device still
     /// holds a live token — the server refuses to re-show a secret it already issued.
+    ///
+    /// Typed as [`Token`], not `String`, so the derived `Debug` on this struct prints
+    /// `Some(Token(***redacted***))`. The redaction is a property of the field's type
+    /// rather than of a hand-written formatter someone has to remember to update.
     #[serde(default)]
-    pub activation_token: Option<String>,
+    pub activation_token: Option<Token>,
     pub device: DeviceDto,
     #[serde(default)]
     pub token: TokenMetaDto,
@@ -335,8 +344,9 @@ pub struct LoginData {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginPayload {
-    /// The show-once account session token.
-    pub session_token: String,
+    /// The show-once account session token. [`Token`]-typed for the reason given on
+    /// [`ActivationResponse::activation_token`].
+    pub session_token: Token,
     #[serde(default)]
     pub expires_at: String,
     #[serde(default)]
@@ -360,9 +370,10 @@ pub struct ActivateWithSessionData {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivateDevicePayload {
-    /// The show-once device token; `null` on an idempotent replay.
+    /// The show-once device token; `null` on an idempotent replay. [`Token`]-typed for
+    /// the reason given on [`ActivationResponse::activation_token`].
     #[serde(default)]
-    pub full_token: Option<String>,
+    pub full_token: Option<Token>,
     pub created: bool,
     #[serde(default)]
     pub device_public_id: String,

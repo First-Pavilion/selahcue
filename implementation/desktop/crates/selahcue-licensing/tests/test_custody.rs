@@ -14,7 +14,10 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_licensing::client::{Activation, ActivationPath};
-use selahcue_licensing::contract::{ActivationRequest, LoginInput};
+use selahcue_licensing::contract::{
+    ActivateDevicePayload, ActivateWithSessionData, ActivationRequest, ActivationResponse,
+    DeviceDto, GraphQlResponse, LicenseDto, LoginData, LoginInput, LoginPayload, TokenMetaDto,
+};
 use selahcue_licensing::{
     AccountSession, DeviceCredentials, InMemorySecretStore, SecretStore, Token,
     ACCOUNT_SESSION_NAME, DEVICE_TOKEN_NAME,
@@ -203,6 +206,72 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
         ),
     ));
 
+    // --- the RESPONSE side ------------------------------------------------------------
+    // The request types were the obvious half. These carry the same class of secret in the
+    // other direction and were missed the first time round: the sweep named five types
+    // while the crate exposed more, so removing a redaction here could never have gone
+    // red. They are typed `Token` now, so the derived `Debug` redacts structurally — and
+    // these entries are what pin that, rather than merely describing it.
+    let activation_response = ActivationResponse {
+        created: true,
+        reminted: false,
+        activation_token: Some(Token::new(DEVICE_TOKEN)),
+        device: DeviceDto {
+            device_public_id: "dev_1".into(),
+            status: "ACTIVE".into(),
+            platform: "macos".into(),
+        },
+        token: TokenMetaDto::default(),
+        license: LicenseDto::default(),
+    };
+    formatted.push((
+        "ActivationResponse/Debug",
+        format!("{activation_response:?}"),
+    ));
+
+    let login_payload = LoginPayload {
+        session_token: Token::new(SESSION_TOKEN),
+        expires_at: "2026-09-24T10:11:12.123456+00:00".into(),
+        role: "ADMIN".into(),
+        org_id: "org_1".into(),
+    };
+    formatted.push(("LoginPayload/Debug", format!("{login_payload:?}")));
+
+    let activate_payload = ActivateDevicePayload {
+        full_token: Some(Token::new(DEVICE_TOKEN)),
+        created: true,
+        device_public_id: "dev_1".into(),
+        platform: "macos".into(),
+    };
+    formatted.push((
+        "ActivateDevicePayload/Debug",
+        format!("{activate_payload:?}"),
+    ));
+
+    // ...and the wrappers that print them transitively. A leak-free leaf is worth nothing
+    // if the envelope around it re-exposes the value.
+    let login_data = LoginData {
+        login: login_payload,
+    };
+    formatted.push(("LoginData/Debug", format!("{login_data:?}")));
+
+    let activate_data = ActivateWithSessionData {
+        activate_device_with_session: activate_payload,
+    };
+    formatted.push((
+        "ActivateWithSessionData/Debug",
+        format!("{activate_data:?}"),
+    ));
+
+    let graphql_envelope: GraphQlResponse<LoginData> = GraphQlResponse {
+        data: Some(login_data),
+        errors: None,
+    };
+    formatted.push((
+        "GraphQlResponse<LoginData>/Debug",
+        format!("{graphql_envelope:?}"),
+    ));
+
     // Positive control: the sweep must be looking at real, non-empty renderings. Without
     // this, a formatter that returned "" would pass every assertion below.
     for (name, rendered) in &formatted {
@@ -220,6 +289,79 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
             );
         }
     }
+}
+
+#[test]
+fn every_secret_bearing_wire_field_is_token_typed_so_the_sweep_cannot_fall_behind() {
+    // The sweep above enumerates types by hand, and a hand-written list is exactly the
+    // thing that falls behind: the first version of it named five types while the crate
+    // exposed more, so removing a redaction on the response payloads could never have gone
+    // red. Enumerating the FIELDS from the source closes that, because a new
+    // secret-bearing field cannot be added without this noticing.
+    //
+    // The rule: any public wire field whose NAME says it holds a secret must be typed with
+    // `Token`, which redacts itself. Exceptions must be listed here with a reason, so
+    // adding one is a visible decision rather than an omission.
+    let contract = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/contract.rs");
+    let body = std::fs::read_to_string(&contract).unwrap();
+
+    // Fields that legitimately are NOT `Token`, each with the reason it is safe.
+    let allowed: &[(&str, &str)] = &[
+        // Non-secret metadata about a token: masked form, prefix, suffix, fingerprint,
+        // expiry. Carries no secret by construction.
+        ("pub token: TokenMetaDto", "metadata only, never the secret"),
+        // Must be a plain String to serialize, and is protected by a hand-written
+        // redacting Debug asserted in the sweep above.
+        ("pub password: String", "hand-redacted Debug on LoginInput"),
+    ];
+
+    let mut checked = 0usize;
+    let mut token_typed = 0usize;
+    for (lineno, line) in body.lines().enumerate() {
+        let code = line.trim();
+        if !code.starts_with("pub ") || !code.contains(':') {
+            continue;
+        }
+        let name = code
+            .trim_start_matches("pub ")
+            .split(':')
+            .next()
+            .unwrap_or("");
+        let lowered = name.to_lowercase();
+        if !(lowered.contains("token")
+            || lowered.contains("password")
+            || lowered.contains("secret"))
+        {
+            continue;
+        }
+        checked += 1;
+
+        if allowed.iter().any(|(pattern, _)| code.starts_with(pattern)) {
+            continue;
+        }
+        assert!(
+            code.contains("Token"),
+            "{}:{} declares a secret-bearing field that is not `Token`-typed, so a `{{:?}}` \
+             on its struct would print the secret verbatim:\n  {code}\n\
+             Type it as `Token`, or add it to `allowed` above with the reason it is safe.",
+            contract.display(),
+            lineno + 1
+        );
+        token_typed += 1;
+    }
+
+    // Positive controls. Without these the loop could match nothing — a renamed field, a
+    // moved file, a broken parse — and the test would pass having checked zero fields.
+    assert!(
+        checked >= 4,
+        "expected to find several secret-bearing wire fields, found {checked}; this guard \
+         is no longer looking at the right thing"
+    );
+    assert!(
+        token_typed >= 3,
+        "expected at least the three show-once token fields to be Token-typed, found \
+         {token_typed}"
+    );
 }
 
 // --- structural sweeps ----------------------------------------------------------------

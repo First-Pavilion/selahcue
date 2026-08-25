@@ -92,6 +92,9 @@ pub fn derive_key_id(public_key: &[u8; PUBLIC_KEY_BYTES]) -> String {
 pub enum TrustError {
     /// The store already holds [`MAX_TRUSTED_KEYS`] distinct keys.
     Full { cap: usize },
+    /// A **different** key derives an id the store already holds. Refused loudly rather
+    /// than dropped silently — see [`TrustedKeys::insert`].
+    Collision { key_id: String },
 }
 
 impl core::fmt::Display for TrustError {
@@ -100,6 +103,10 @@ impl core::fmt::Display for TrustError {
             TrustError::Full { cap } => {
                 write!(f, "the trust store already holds its maximum of {cap} keys")
             }
+            TrustError::Collision { key_id } => write!(
+                f,
+                "a different key already occupies key_id {key_id}; refusing to replace it silently"
+            ),
         }
     }
 }
@@ -139,12 +146,26 @@ impl TrustedKeys {
 
     /// Add a key, deriving its id. Returns the id.
     ///
-    /// Idempotent: re-adding a key already present succeeds and consumes no extra slot,
-    /// so a loader that runs twice cannot exhaust the cap.
+    /// Idempotent for the *same key material*: re-adding a key already present succeeds
+    /// and consumes no extra slot, so a loader that runs twice cannot exhaust the cap.
+    ///
+    /// A **different** key deriving an id already in the store is refused with
+    /// [`TrustError::Collision`]. `key_id` is only 32 bits, so a colliding pair is
+    /// findable in about a second; treating "id already present" as success without
+    /// comparing the bytes would silently keep the first key and drop the second. That is
+    /// not a forgery vector — verification uses the stored full 32-byte key, so a
+    /// collision makes a legitimate manifest fail, which is fail-closed — but it is a
+    /// silent rotation denial-of-service on the exact mechanism DEC-011's accepted
+    /// no-KMS risk rests on: the operator adds the incoming key, the call returns `Ok`,
+    /// and the rotation then fails in the field as unexplained verification errors with
+    /// nothing anywhere saying why.
     pub fn insert(&mut self, public_key: [u8; PUBLIC_KEY_BYTES]) -> Result<String, TrustError> {
         let key_id = derive_key_id(&public_key);
-        if self.keys.contains_key(&key_id) {
-            return Ok(key_id);
+        if let Some(existing) = self.keys.get(&key_id) {
+            if existing.public_key == public_key {
+                return Ok(key_id);
+            }
+            return Err(TrustError::Collision { key_id });
         }
         if self.keys.len() >= MAX_TRUSTED_KEYS {
             return Err(TrustError::Full {

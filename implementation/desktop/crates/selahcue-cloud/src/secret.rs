@@ -11,7 +11,19 @@ use std::sync::Mutex;
 /// A SelahCue account/session token. Its `Debug`/`Display` are **redacted** — the
 /// secret is reachable only through [`Token::expose`], which the code calls exactly
 /// once at the point of use (the `Authorization` header) and never logs.
-#[derive(Clone, PartialEq, Eq)]
+///
+/// # `Deserialize` but deliberately not `Serialize`
+///
+/// A token arrives from the wire, so wire types can name this type directly for their
+/// secret-bearing fields and inherit the redaction structurally — rather than relying on
+/// a hand-written `Debug` that the next field added to the struct would slip straight
+/// past. That is worth more than it looks: it is the difference between "we remembered"
+/// and "it cannot happen".
+///
+/// The reverse direction is omitted on purpose. Nothing in this codebase should ever
+/// serialize a token back out into JSON, and leaving `Serialize` off means that is a
+/// compile error rather than a code-review question.
+#[derive(Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct Token(String);
 
 impl Token {

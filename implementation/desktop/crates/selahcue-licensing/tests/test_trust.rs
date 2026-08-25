@@ -189,6 +189,79 @@ fn re_adding_a_trusted_key_consumes_no_slot() {
     assert_eq!(store.get(&first).unwrap().public_key(), &key(9));
 }
 
+/// Two DIFFERENT 32-byte keys that derive the SAME `key_id` (`12bf2ed8`).
+///
+/// Found by brute force in about a second, which is the whole point: `key_id` is the first
+/// 8 hex characters of SHA-256, so only 32 bits, and a colliding pair is cheap to find
+/// deliberately and possible to hit by accident. Both values are pinned here so the test
+/// is deterministic and needs no search at runtime.
+fn colliding_pair() -> ([u8; PUBLIC_KEY_BYTES], [u8; PUBLIC_KEY_BYTES]) {
+    let mut a = [0u8; PUBLIC_KEY_BYTES];
+    a[0..4].copy_from_slice(&5264u32.to_le_bytes());
+    let mut b = [0u8; PUBLIC_KEY_BYTES];
+    b[0..4].copy_from_slice(&57654u32.to_le_bytes());
+    (a, b)
+}
+
+#[test]
+fn the_colliding_pair_really_does_collide() {
+    // Premise check for the test below. Without it, a change to `derive_key_id` would stop
+    // these two keys colliding and `a_key_id_collision_is_refused_not_silently_dropped`
+    // would pass while exercising nothing at all.
+    let (a, b) = colliding_pair();
+    assert_ne!(a, b, "the two keys must be different key material");
+    assert_eq!(
+        derive_key_id(&a),
+        derive_key_id(&b),
+        "these keys no longer collide; the collision test below is now vacuous and needs \
+         a fresh pair"
+    );
+    assert_eq!(derive_key_id(&a), "12bf2ed8");
+}
+
+#[test]
+fn a_key_id_collision_is_refused_not_silently_dropped() {
+    // Treating "id already present" as idempotent success without comparing key material
+    // would keep the first key, discard the second, and return Ok. Verification then uses
+    // the stored full 32-byte key, so it is fail-closed rather than a forgery vector — but
+    // it is a SILENT rotation denial-of-service on the mechanism DEC-011's accepted
+    // no-KMS risk depends on, surfacing in the field only as unexplained verification
+    // failures.
+    let (first, second) = colliding_pair();
+    let mut store = TrustedKeys::new();
+
+    let id = store.insert(first).unwrap();
+
+    // Positive control before the refusal: the first key really is stored and selectable,
+    // so the error below is about the collision and not about a store that rejects
+    // everything.
+    assert_eq!(store.len(), 1);
+    assert_eq!(
+        store.get(&id).unwrap().public_key(),
+        &first,
+        "the first key must be retrievable, or the refusal below proves nothing"
+    );
+
+    let refused = store.insert(second);
+    assert_eq!(
+        refused,
+        Err(TrustError::Collision { key_id: id.clone() }),
+        "a different key deriving an existing id must be refused, not swallowed"
+    );
+
+    // The store is unchanged: still one entry, still the ORIGINAL key material.
+    assert_eq!(
+        store.len(),
+        1,
+        "a refused collision must not change the count"
+    );
+    assert_eq!(
+        store.get(&id).unwrap().public_key(),
+        &first,
+        "the stored key must still be the first one, not silently replaced"
+    );
+}
+
 #[test]
 fn key_ids_are_reported_deterministically() {
     // Deterministic ordering keeps diagnostics and any future logging stable.
