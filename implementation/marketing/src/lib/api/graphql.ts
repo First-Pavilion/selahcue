@@ -1,11 +1,11 @@
 /**
  * The marketing SPA's single HTTP seam.
  *
- * This is the FIRST networking code in `implementation/marketing/src` — before this
- * there were no fetch/axios/gql calls anywhere — so it is deliberately the one place
- * that knows about transport, CSRF, cancellation and the API's error envelope. Later
- * work (sign-in wiring 86ak11r67, account portal 86ak11rjz) should add typed wrappers
- * next to `account.ts` and reuse `graphqlRequest`, not re-open `fetch`.
+ * This is the ONLY networking code in `implementation/marketing/src`, and deliberately
+ * the one place that knows about transport, CSRF, cancellation and the API's error
+ * envelope. The sign-in group (86ak11r67) followed the rule this comment used to state
+ * as a request: typed wrappers next to `account.ts`, reusing `graphqlRequest`. The
+ * account portal (86ak11rjz) should do the same — do not re-open `fetch`.
  *
  * Three decisions worth knowing before you change anything here.
  *
@@ -24,7 +24,18 @@
  *    `response.ok` sees success. `graphqlRequest` therefore inspects the body, and
  *    raises `ApiError` carrying the server's `code`.
  *
- * 3. TRANSPORT FAILURE IS NOT A VALIDATION FAILURE. `ApiErrorCode.NETWORK` exists
+ * 3. THE CSRF COOKIE IS SEEDED HERE, NOT BY A CALLER. `CsrfViewMiddleware` is active and
+ *    both GraphQL surfaces declare `*_session_with_csrf`, but the SPA is served as static
+ *    files, so Django never rendered a page and nothing ever called `get_token()` — the
+ *    `csrftoken` cookie could not come into existence and every account mutation was a
+ *    permanent 403 for every real browser. `GET /graphql/csrf` exists to seed it
+ *    (`graphql/views.py:csrf_bootstrap`). It is fetched from INSIDE `graphqlRequest`
+ *    rather than exposed as a helper views must remember to call, because a seam that can
+ *    be forgotten will be: the failure it produces is a 403 on a route that worked in
+ *    every test, which is the most expensive kind of bug to find. There is still exactly
+ *    one transport path — callers only ever reach the network through this function.
+ *
+ * 4. TRANSPORT FAILURE IS NOT A VALIDATION FAILURE. `ApiErrorCode.NETWORK` exists
  *    specifically so a caller can tell "we could not reach the server" from "the
  *    server rejected this". On /reset that distinction is the whole difference
  *    between showing R7 ("something went wrong on our side, your link still works")
@@ -92,6 +103,16 @@ const DEFAULT_TIMEOUT_MS = 15000
 const CSRF_COOKIE_NAME = 'csrftoken'
 const CSRF_HEADER_NAME = 'X-CSRFToken'
 
+/** Seeds `csrftoken` for the browser surfaces (`selahcue_api/urls.py`, `csrf_bootstrap`). */
+export const CSRF_BOOTSTRAP_PATH = '/graphql/csrf'
+
+/**
+ * The in-flight bootstrap, so a page that fires several mutations at once issues ONE GET
+ * rather than a stampede. Cleared when it settles: a bootstrap that failed must be
+ * retryable, and once the cookie exists `needsCsrfBootstrap` stops asking anyway.
+ */
+let csrfBootstrap: Promise<void> | null = null
+
 function apiBaseUrl(): string {
   // `import.meta.env` is a Vite BUILD-TIME construct. It does not exist under plain Node,
   // which is where these modules are unit tested — and reading `.VITE_API_BASE_URL` off
@@ -113,6 +134,52 @@ function readCookie(name: string): string {
     return decodeURIComponent(part.slice(separator + 1).trim())
   }
   return ''
+}
+
+/**
+ * True when this runtime has a cookie jar and does not yet hold a CSRF token.
+ *
+ * The `document` guard is not defensive noise. These modules are unit tested under plain
+ * Node, where there is no cookie jar at all — a bootstrap there would issue a request
+ * that cannot store its own result, and would silently change the call count every
+ * request-shape test in `apiSeam.test.ts` measures. No document, no bootstrap.
+ */
+function needsCsrfBootstrap(): boolean {
+  if (typeof document === 'undefined') return false
+  return readCookie(CSRF_COOKIE_NAME) === ''
+}
+
+/**
+ * Fetch `/graphql/csrf` so Django sets the `csrftoken` cookie this request will carry.
+ *
+ * BEST EFFORT, DELIBERATELY. A failure here does not abort the mutation that triggered
+ * it: the cookie may already exist under a name we cannot read, a deployment may not
+ * enforce CSRF, and turning one transient GET failure into a total authentication outage
+ * would be a far worse outcome than letting the mutation try and report its own result.
+ *
+ * Never throws, and — like the rest of this module — never logs.
+ */
+function ensureCsrfCookie(send: typeof fetch): Promise<void> {
+  if (csrfBootstrap) return csrfBootstrap
+
+  const attempt = (async () => {
+    try {
+      await send(`${apiBaseUrl()}${CSRF_BOOTSTRAP_PATH}`, {
+        method: 'GET',
+        // The whole point: accept the Set-Cookie this response carries.
+        credentials: 'same-origin',
+        referrerPolicy: 'no-referrer',
+        headers: { Accept: 'application/json' },
+      })
+    } catch {
+      // Swallowed on purpose. See above.
+    }
+  })().then(() => {
+    csrfBootstrap = null
+  })
+
+  csrfBootstrap = attempt
+  return attempt
 }
 
 /**
@@ -163,17 +230,28 @@ export async function graphqlRequest<TData>(
   variables: Record<string, unknown>,
   options: GraphQLRequestOptions = {},
 ): Promise<TData> {
+  const send = options.fetchImpl ?? fetch
+
+  // Checked BEFORE anything reaches the network, including the CSRF bootstrap: a caller
+  // who has already aborted gets no requests issued on their behalf at all.
+  if (options.signal?.aborted) {
+    throw options.signal.reason ?? new DOMException('Aborted', 'AbortError')
+  }
+
+  // Seeded before the timeout starts, so a slow bootstrap does not eat the mutation's
+  // budget and report a healthy API as unreachable.
+  if (needsCsrfBootstrap()) await ensureCsrfCookie(send)
+
+  // The bootstrap is awaited, so re-check: the user may have navigated away during it.
+  if (options.signal?.aborted) {
+    throw options.signal.reason ?? new DOMException('Aborted', 'AbortError')
+  }
+
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
 
   const abortFromCaller = () => controller.abort(options.signal?.reason)
-  if (options.signal) {
-    if (options.signal.aborted) {
-      clearTimeout(timeout)
-      throw options.signal.reason ?? new DOMException('Aborted', 'AbortError')
-    }
-    options.signal.addEventListener('abort', abortFromCaller, { once: true })
-  }
+  options.signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -181,12 +259,10 @@ export async function graphqlRequest<TData>(
   }
   // The account surface's declared auth context is `customer_session_with_csrf`
   // (`graphql/route_contracts.py`) and Django's CsrfViewMiddleware is active, so send
-  // the token whenever the cookie is readable. It is absent today — nothing issues one
-  // to this origin yet — which is tracked on 86ak11r67.
+  // the token whenever the cookie is readable. Read AFTER the bootstrap above, which is
+  // the thing that brings the cookie into existence in the first place.
   const csrfToken = readCookie(CSRF_COOKIE_NAME)
   if (csrfToken) headers[CSRF_HEADER_NAME] = csrfToken
-
-  const send = options.fetchImpl ?? fetch
   // Built OUTSIDE the try on purpose: only genuine transport failures may be classified
   // as NETWORK, so nothing that could throw for another reason belongs inside it.
   const endpoint = `${apiBaseUrl()}${ACCOUNT_GRAPHQL_PATH}`

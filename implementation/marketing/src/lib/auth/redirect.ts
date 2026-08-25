@@ -1,0 +1,70 @@
+/**
+ * Sanitising the `?next=` that the route guard round-trips through sign-in.
+ *
+ * A guard that bounces someone to `/signin?next=/account` and then sends them wherever
+ * `next` says is an OPEN REDIRECT if `next` is not checked. The attack is ordinary and
+ * effective: mail a church admin `…/signin?next=https://selahcue-billing.example/pay`,
+ * they sign in on the real SelahCue with the real padlock, and land on a page they have
+ * every reason to trust. Nothing about the sign-in was fake, which is what makes it work.
+ *
+ * So the rule is a whitelist, not a blacklist: a same-site ABSOLUTE PATH and nothing
+ * else. No scheme, no host, no protocol-relative form. Anything that does not obviously
+ * qualify falls back to the caller's default, because the cost of a wrong fallback is
+ * one extra click and the cost of a wrong redirect is a phished credential.
+ *
+ * Pure and dependency-free so it can be unit tested under `node --test`.
+ */
+
+import type { QueryTokenValue } from './tokenParam.ts'
+
+/**
+ * Auth routes are refused as destinations.
+ *
+ * Not for safety — for termination. `/signin?next=/signin` would sign someone in and
+ * return them to the sign-in page, where the guard is not involved and nothing tells them
+ * why they are back. A loop with no error message is the hardest kind to report.
+ */
+const NON_DESTINATIONS = ['/signin', '/signup', '/forgot-password', '/verify', '/reset']
+
+/**
+ * C0 controls and DEL.
+ *
+ * Tested by code point rather than with a regex character range, so the source carries no
+ * literal control bytes — a file that does is one careless copy-paste away from a range
+ * that silently means something else.
+ */
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0
+    if (code < 0x20 || code === 0x7f) return true
+  }
+  return false
+}
+
+/**
+ * Return `value` if it is a safe same-site path, otherwise `fallback`.
+ *
+ * Refused, in order: non-strings; anything not starting with `/`; `//host`, which
+ * browsers resolve as a protocol-relative URL to ANOTHER ORIGIN despite the leading
+ * slash; any backslash at all, since several parsers normalise it to `/` and `/\host` is
+ * the same attack wearing a different hat; any control character, which can truncate or
+ * split a URL downstream; and the auth routes themselves.
+ */
+export function safeNextPath(value: QueryTokenValue, fallback: string): string {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (typeof raw !== 'string') return fallback
+
+  const candidate = raw.trim()
+  if (candidate === '') return fallback
+
+  // The single most important check. `//evil.example/x` is a URL to another origin.
+  if (!candidate.startsWith('/')) return fallback
+  if (candidate.startsWith('//')) return fallback
+  if (candidate.includes('\\')) return fallback
+  if (hasControlCharacter(candidate)) return fallback
+
+  const path = candidate.split(/[?#]/)[0]
+  if (NON_DESTINATIONS.includes(path)) return fallback
+
+  return candidate
+}

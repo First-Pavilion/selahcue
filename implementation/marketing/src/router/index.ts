@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '@/views/HomeView.vue'
+import { confirmSession, refreshIfExpiringSoon } from '@/lib/auth/sessionStore.ts'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -22,7 +23,18 @@ const router = createRouter({
     { path: '/careers', name: 'careers', component: () => import('@/views/CareersView.vue') },
     { path: '/privacy', name: 'privacy', component: () => import('@/views/PrivacyView.vue') },
     { path: '/terms', name: 'terms', component: () => import('@/views/TermsView.vue') },
-    { path: '/signin', name: 'signin', component: () => import('@/views/SignInView.vue') },
+    // The auth trio. `meta.bare` for the same reason /verify and /reset carry it (design
+    // §2.1): these frames are cloned from Sign in `505:124`, which is a bare centred card
+    // with its own brand lockup. Someone signing in is mid-task, and a nav bar offering
+    // Features / Pricing / Download is an invitation to wander off before they finish.
+    { path: '/signin', name: 'signin', component: () => import('@/views/SignInView.vue'), meta: { bare: true } },
+    { path: '/signup', name: 'signup', component: () => import('@/views/SignUpView.vue'), meta: { bare: true } },
+    {
+      path: '/forgot-password',
+      name: 'forgot-password',
+      component: () => import('@/views/ForgotPasswordView.vue'),
+      meta: { bare: true },
+    },
 
     // Token landing pages. These paths are NOT free to change: `apps/accounts/tasks.py`
     // builds `{FRONTEND_BASE_URL}/verify?token=` and `/reset?token=` into emails that
@@ -32,7 +44,14 @@ const router = createRouter({
     // here invites them to wander off before the account is verified.
     { path: '/verify', name: 'verify', component: () => import('@/views/VerifyView.vue'), meta: { bare: true } },
     { path: '/reset', name: 'reset', component: () => import('@/views/ResetView.vue'), meta: { bare: true } },
-    { path: '/account', name: 'account', component: () => import('@/views/AccountView.vue') },
+    // `requiresSession` is enforced by the guard below. See its comment for what that
+    // does and — more importantly — what it does not.
+    {
+      path: '/account',
+      name: 'account',
+      component: () => import('@/views/AccountView.vue'),
+      meta: { requiresSession: true },
+    },
     { path: '/affiliates', name: 'affiliates', component: () => import('@/views/AffiliatesView.vue') },
 
     // External Affiliate Portal Routes
@@ -54,6 +73,55 @@ const router = createRouter({
     { path: '/admin/payouts', name: 'admin-payouts', component: () => import('@/views/admin/AdminPayoutsView.vue') },
     { path: '/admin/settings', name: 'admin-settings', component: () => import('@/views/admin/AdminSettingsView.vue') },
   ]
+})
+
+/**
+ * Keep signed-out visitors off `meta.requiresSession` routes.
+ *
+ * THIS IS NOT A SECURITY BOUNDARY, and reading it as one would be a mistake with
+ * consequences. The server authorises every request against the `selahcue_account_session`
+ * cookie; a guard living in JavaScript that anyone can step over in devtools protects
+ * nothing. What it does is stop a signed-out visitor landing on a page of empty panels
+ * and failed requests, and stop a signed-OUT one being told they are signed in.
+ *
+ * It asks the server rather than trusting local state, every time. The session hint is
+ * attacker-writable localStorage and goes stale in the one direction that matters —
+ * claiming a session that was revoked minutes ago by a password change or a sign-out
+ * elsewhere. `confirmSession` is the only thing here that decides.
+ *
+ * The `unreachable` branch lets the visitor through ON PURPOSE. A transport failure says
+ * nothing about whether the session is valid, and bouncing a signed-in user to a sign-in
+ * page because their connection blipped signs them out of their own account and asks for
+ * a password that was never the problem. Since the guard is not the boundary, letting
+ * them through costs nothing: the page's own requests will fail and it will say so, which
+ * is the accurate thing for it to say. Reporting "your session ended" would not be.
+ */
+router.beforeEach((to) => {
+  // Returns a BOOLEAN, not a promise, for every route that is not guarded — which is all
+  // of them but one. An `async` guard returns a promise even on the early-exit path, and
+  // vue-router awaits it on every navigation, delaying the FIRST paint of every page on
+  // the site to serve a check that only /account needs. That is not theoretical: it made
+  // the /verify state harness flaky the moment it was introduced, because the view no
+  // longer mounted inside the window that scenario allows.
+  if (to.meta.requiresSession !== true) return true
+
+  return confirmSession().then((check) => {
+    if (check === 'live') {
+      // Opportunistic and unawaited: extending a session that still has weeks left on it
+      // must not hold up the navigation the visitor actually asked for. It is a no-op
+      // unless the session is inside its last week — see the threshold's comment for why
+      // rotation is done rarely rather than often.
+      void refreshIfExpiringSoon()
+      return true
+    }
+    if (check === 'unreachable') return true
+
+    // `next` so the visitor lands where they were going once they sign in — sanitised at
+    // the point of use by `safeNextPath`, never trusted as a URL here. `reason` is what
+    // lets /signin say "you've been signed out" instead of showing a bare form to someone
+    // who was mid-task and has no idea why they are looking at it.
+    return { path: '/signin', query: { next: to.fullPath, reason: 'expired' } }
+  })
 })
 
 export default router

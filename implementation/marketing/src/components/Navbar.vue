@@ -1,8 +1,41 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { isProbablySignedIn, signOut } from '@/lib/auth/sessionStore.ts'
+
+const router = useRouter()
 
 const isScrolled = ref(false)
 const isMobileMenuOpen = ref(false)
+
+const signOutPending = ref(false)
+/** Empty when there is nothing to report. Announced, because it is a failed action. */
+const signOutError = ref('')
+
+/**
+ * Sign out for real, and say so honestly when it does not work.
+ *
+ * The session cookie is HttpOnly — JavaScript cannot delete it. Only the server can, and
+ * it does that by responding to the `logout` mutation. So there is no local "clear it
+ * anyway" fallback available here, and pretending otherwise would be the worst thing
+ * this component could do: painting "signed out" over a browser that is still carrying a
+ * working credential, on a machine that in this product is frequently a shared church
+ * office PC. `signOut` rejects when the session survived, and this shows that.
+ */
+const handleSignOut = async () => {
+  if (signOutPending.value) return
+  signOutPending.value = true
+  signOutError.value = ''
+  try {
+    await signOut()
+    isMobileMenuOpen.value = false
+    await router.push('/')
+  } catch {
+    signOutError.value = "We couldn't sign you out. Check your connection and try again."
+  } finally {
+    signOutPending.value = false
+  }
+}
 
 const handleScroll = () => {
   isScrolled.value = window.scrollY > 10
@@ -39,9 +72,25 @@ onUnmounted(() => {
         </nav>
       </div>
 
-      <!-- Right Group: Sign In + Download Free CTA -->
+      <!-- Right Group: account state + Download Free CTA -->
+      <!-- `isProbablySignedIn` is the session HINT, not an authorisation check. It is
+           allowed to be wrong here and costs nothing when it is: the worst case is a
+           visitor clicking Account and being redirected to sign in by the route guard,
+           which asks the server. Waiting for that round trip before painting the navbar
+           would flash "Sign in" at every signed-in user on every page load. -->
       <div class="right-group">
-        <router-link to="/signin" class="signin-btn">Sign in</router-link>
+        <template v-if="isProbablySignedIn">
+          <router-link to="/account" class="signin-btn">Account</router-link>
+          <button
+            type="button"
+            class="signout-btn"
+            :disabled="signOutPending"
+            @click="handleSignOut"
+          >
+            {{ signOutPending ? 'Signing out…' : 'Sign out' }}
+          </button>
+        </template>
+        <router-link v-else to="/signin" class="signin-btn">Sign in</router-link>
         <router-link to="/download" class="download-cta">Download free</router-link>
       </div>
 
@@ -58,10 +107,25 @@ onUnmounted(() => {
       <router-link to="/pricing" class="mobile-link" @click="toggleMobileMenu">Pricing</router-link>
       <router-link to="/download" class="mobile-link" @click="toggleMobileMenu">Download</router-link>
       <div class="mobile-actions">
-        <router-link to="/signin" class="signin-btn" @click="toggleMobileMenu">Sign in</router-link>
+        <template v-if="isProbablySignedIn">
+          <router-link to="/account" class="signin-btn" @click="toggleMobileMenu">Account</router-link>
+          <button
+            type="button"
+            class="signout-btn"
+            :disabled="signOutPending"
+            @click="handleSignOut"
+          >
+            {{ signOutPending ? 'Signing out…' : 'Sign out' }}
+          </button>
+        </template>
+        <router-link v-else to="/signin" class="signin-btn" @click="toggleMobileMenu">Sign in</router-link>
         <router-link to="/download" class="download-cta" @click="toggleMobileMenu">Download free</router-link>
       </div>
     </div>
+
+    <!-- Announced: a sign-out that silently did nothing is the failure most worth
+         hearing about, and the button returns to its resting label either way. -->
+    <p v-if="signOutError" class="signout-error" role="alert">{{ signOutError }}</p>
   </header>
 </template>
 
@@ -153,6 +217,38 @@ onUnmounted(() => {
 
 .signin-btn:hover {
   color: #ffffff;
+}
+
+/* Matches `.signin-btn`'s ink and weight so the pair reads as one control group, but it
+   is a real <button> because it performs an action rather than navigating. */
+.signout-btn {
+  background: none;
+  border: none;
+  padding: 6px 0;
+  color: #9aa4b2;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.signout-btn:hover:not(:disabled) {
+  color: #ffffff;
+}
+
+.signout-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.signout-error {
+  margin: 0;
+  padding: 8px 24px;
+  background: var(--sc-live-soft);
+  color: var(--sc-text);
+  font-size: 13px;
+  text-align: center;
 }
 
 .download-cta {
