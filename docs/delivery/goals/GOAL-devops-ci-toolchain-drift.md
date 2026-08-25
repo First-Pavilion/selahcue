@@ -85,7 +85,12 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-010 | yes | `make ci` and CI invoke the same guard before any gate | read `Makefile` `ci:` and all three Rust jobs in `ci.yml` | `sh scripts/check_toolchain.sh` present in all four | `make -n ci`, `grep` over `ci.yml` | PASS |
 | C-011 | yes | Both workflow files are valid and the canary genuinely floats | `yaml.safe_load` both; confirm `RUSTUP_TOOLCHAIN: stable` in the canary | parse clean; canary overrides the pin | recorded output | PASS |
 | C-012 | yes | `CLAUDE.md` no longer claims `make ci` mirrors CI | read the Conventions section | claim replaced by an explicit covered/not-covered statement | `CLAUDE.md` diff | PASS |
-| C-013 | yes | The four reviewers have reviewed and blocking findings are cleared | Cody, Vera, Sana, Quinn (+ Codex counterparts) | no unresolved blocking findings | ClickUp 86ak5rc9c comments | PENDING |
+| C-013 | yes | The alarm cannot close itself on a run that merely SKIPPED the failing job | `ci_alarm.py --self-test`, incl. the api-only-push case | exit 0; skipped never clears | `.github/scripts/ci_alarm.py` | PASS |
+| C-014 | yes | That self-test detects the bug it exists to prevent | reintroduce "skipped counts as recovery", re-run | self-test exits 1 naming the case | recorded terminal output | PASS |
+| C-015 | yes | Both workflows pass a real workflow linter, not review by eye | `actionlint 1.7.12` over both files | exit 0 | recorded terminal output | PASS |
+| C-016 | yes | A failing gate no longer suppresses the gates after it in CI | read the `rust`/`operator` jobs | every step after Clippy carries `if: ${{ !cancelled() }}` | `.github/workflows/ci.yml` | PASS |
+| C-017 | yes | `--no-fail-fast` measurably surfaces a failure it would otherwise hide | inject a failing test in two independent crates, run with and without | 1 binary reported FAILED without, 2 with | recorded terminal output | PASS |
+| C-018 | yes | The four reviewers have reviewed and blocking findings are cleared | Cody, Vera, Sana, Quinn (+ Codex counterparts) | no unresolved blocking findings | ClickUp 86ak5rc9c comments | PENDING |
 
 ## Verification plan
 
@@ -136,6 +141,20 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - New evidence: `make ci` cannot run in a fresh worktree at all — CI stages Tauri sidecar placeholders in a dedicated step and `make ci` does not. Added to 86ak5rjh7.
 - Decision: gate-review
 
+### Iteration 5 — code review (Cody) rework
+
+- Target criterion: C-013 … C-017
+- Hypothesis: the alarm's close condition treats a SKIPPED job as evidence of health, so a path-filtered push could clear it while `main` was still broken.
+- Change or investigation: confirmed the defect. Replaced the two `if:`-driven alert jobs with one `ci-alarm` job whose logic lives in `.github/scripts/ci_alarm.py` and tracks the outstanding job set; a job clears only by reporting `success`. Added `actionlint` to CI and ran it locally over both workflows. Added `if: ${{ !cancelled() }}` after Clippy and `--no-fail-fast` to the test commands. Extended the canary to the `selahcue-operator` root. Hardened the guard (`cd "$root"`, captured `rustc --version` instead of piping it, single `--print-channel` parser now used by `ci.yml`).
+- Verifier executed: `ci_alarm.py --self-test` plus a mutation of it; `actionlint` over both workflows plus a probe workflow; injected two-crate failures to measure `--keep-going` and `--no-fail-fast`.
+- Result: self-test passes and goes RED when the bug is reintroduced; actionlint clean; `--no-fail-fast` surfaced a second failing binary (1 → 2).
+- New evidence — three review claims did not survive checking, and are recorded rather than quietly accepted:
+  1. `needs.launch-smoke.result` is **valid** GitHub Actions syntax, not runtime-fatal. actionlint models the context as `{launch-smoke: {outputs: {}; result: string}}` and accepts dot notation, while correctly rejecting a genuinely undefined job. The bracket form is defensive style, not a bug fix.
+  2. actionlint would **not** have caught it — verified by reintroducing the expression and re-running actionlint (exit 0). actionlint earns its place on other grounds.
+  3. `--keep-going` is a **no-op for this workspace**: every crate holding a hidden lint site depends on `selahcue-engine`, so nothing could compile past its failure, and for independent siblings cargo already reported both without the flag. Not adopted; the honest fix for that masking is the step-level one.
+- Also found: `selahcue-stt` is linted by no gate at all and already fails its own `unwrap_used` policy (3 errors). Deliberately excluded from the canary so it cannot manufacture a permanent false alarm; raised on 86ak5rjh7.
+- Decision: gate-review
+
 ## Risks and rollback
 
 - Risks: the pin is a deliberate lag — new compiler and clippy releases stop arriving automatically, so the canary must actually be watched. Landing the pin will move every developer and every in-flight worktree to 1.98.0 on their next `cargo` invocation, which may surface new lints in their unmerged work.
@@ -153,5 +172,5 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Validator result: see the run recorded on ClickUp 86ak5rc9c
 - Independent verification result: PENDING — four-reviewer gate not yet run
 - Terminal state: GATE_REVIEW
-- Remaining failed or blocked criteria: C-013 (independent review) PENDING
+- Remaining failed or blocked criteria: C-018 (independent review) PENDING — Cody complete, Sana/Quinn/Vera outstanding
 - ClickUp final evidence comment: posted on 86ak5rc9c

@@ -45,6 +45,10 @@ on:
       - "docs/**"
       - "**.md"
       - "TODO"
+  # Lets the alarm (and the whole matrix) be driven on demand against `main`. Without
+  # this the alarm's first ever execution would be in production on an already-broken
+  # `main`, which is precisely when you do not want to find a typo in it.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -127,14 +131,36 @@ jobs:
       # gate a real mirror of this one rather than a hopeful claim.
       - id: toolchain
         name: Read the pinned Rust toolchain
+        # Delegates to the same script the gates use, rather than re-implementing the
+        # parse. The re-implementation this replaces only checked the value was
+        # non-empty, so it would happily have passed a floating "stable" down to three
+        # jobs that then reject it. One parser, one set of rules.
         run: |
-          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p' rust-toolchain.toml)"
-          if [ -z "$channel" ]; then
-            echo "::error file=rust-toolchain.toml::no [toolchain] channel found"
-            exit 1
-          fi
+          channel="$(sh scripts/check_toolchain.sh --print-channel)"
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "pinned Rust toolchain: $channel"
+
+  # Static analysis for the workflows themselves. Added because this file grew real
+  # logic (the alarm, the toolchain plumbing) and a workflow is the one thing here
+  # that nothing else compiles, type-checks or tests -- its first execution is
+  # production. actionlint catches undefined `needs` job references, unknown context
+  # properties, bad `if:` expressions, and shellcheck issues inside `run:` blocks.
+  #
+  # Scope note, so nobody over-trusts it: it does NOT catch every expression mistake.
+  # It accepts both `needs.launch-smoke.result` and `needs['launch-smoke'].result`
+  # (both are valid; hyphens are legal in context property names). It is a real gate
+  # against real classes of error, not a proof of correctness.
+  #
+  # Ungated on purpose: it costs seconds on the cheapest runner, and gating a
+  # workflow linter behind a path filter is how a broken workflow slips through.
+  lint-workflows:
+    name: workflows (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
 
   rust:
     name: rust (${{ matrix.os }})
@@ -175,33 +201,46 @@ jobs:
         run: cargo fmt --check
       - name: Clippy (default features)
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # `!cancelled()` from here down. A failing Clippy step used to suppress every
+      # step after it (default `if: success()`), which is exactly how the E0063 in
+      # selahcue-present stayed invisible in this job for two runs while the standing
+      # clippy failure held the door shut. One broken gate should cost you one gate's
+      # worth of information, not the whole job's. 86ak5rc9c.
       - name: Clippy (server features)
+        if: ${{ !cancelled() }}
         run: |
           cargo clippy -p selahcue-lan --features server --all-targets -- -D warnings
           cargo clippy -p selahcue-app --features server --all-targets -- -D warnings
           cargo clippy -p selahcue-scripture --features download --all-targets -- -D warnings
       - name: Test (workspace, incl. GPU parity where an adapter exists)
-        run: cargo test --workspace
+        if: ${{ !cancelled() }}
+        # --no-fail-fast: without it cargo stops at the first failing test BINARY, so a
+        # failure in an early crate hides every later crate's. Measured on this
+        # workspace: 1 binary reported FAILED without it, 2 with.
+        run: cargo test --workspace --no-fail-fast
       # Structural merge gates for the presentation importer (threat model B2 + the design's
       # no-I/O rule + the ADR-0025 decoder pin). These are one-line checks only because the
       # importer is its own crate; inside the operator, whose graph legitimately contains a TLS
       # stack, the no-network property would not even be stateable.
       - name: Import structural guards (no network, no filesystem, pinned decoder)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: sh scripts/import_guards.sh
       - name: Test (LAN server + app server features — E2E over real TLS)
+        if: ${{ !cancelled() }}
         run: |
-          cargo test -p selahcue-lan --features server
-          cargo test -p selahcue-app --features server
+          cargo test -p selahcue-lan --features server --no-fail-fast
+          cargo test -p selahcue-app --features server --no-fail-fast
       - name: Test (scripture download — feature-gated, loopback only)
-        run: cargo test -p selahcue-scripture --features download
+        if: ${{ !cancelled() }}
+        run: cargo test -p selahcue-scripture --features download --no-fail-fast
       - name: Test (at-rest encryption — SQLCipher + vendored OpenSSL)
         # The vendored OpenSSL build needs perl+nasm on Windows; covered on the
         # other two OSes (the feature is platform-independent Rust).
-        if: runner.os != 'Windows'
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
         run: |
-          cargo test -p selahcue-data --features encryption
-          cargo test -p selahcue-desktop --features encryption
+          cargo test -p selahcue-data --features encryption --no-fail-fast
+          cargo test -p selahcue-desktop --features encryption --no-fail-fast
 
   # Proves the app actually LAUNCHES (windows created, first frame presented, exit
   # 0) on every OS — not just build+test — and records a per-OS cold-start figure
@@ -342,7 +381,7 @@ jobs:
       # CLOSED on a Chrome change (spurious RED, never a false green); if a bump ever breaks it,
       # pin a version here or switch the boot-render wait from a fixed sleep to a poll (#11).
       - name: Webview behavioural check (Linux, headless Chrome)
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
         env:
           SELAHCUE_HEADLESS_REQUIRE: "1"
@@ -353,7 +392,7 @@ jobs:
       # break Blink can't. Playwright bundles its own WebKit (self-contained; no GTK-version
       # coupling). REQUIRE=1 makes a missing engine a hard fail, never a silent no-op.
       - name: Install Playwright WebKit (Linux)
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
         # Pinned so the WebKit engine under test is reproducible (bump deliberately); the
         # runner ships whatever WebKit that release bundles. `--break-system-packages` keeps the
@@ -363,7 +402,7 @@ jobs:
           python3 -m pip install --user --break-system-packages playwright==1.60.0
           python3 -m playwright install --with-deps webkit
       - name: Webview WebKit-engine smoke (Linux, Playwright WebKit)
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
         env:
           SELAHCUE_WEBKIT_REQUIRE: "1"
@@ -550,100 +589,44 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # Nine days without a green run on `main` went unnoticed because a failure notifies nobody.
-  # There is no branch protection available on this plan for a private repo, so a red
-  # commit lands regardless -- which makes an alarm the ONLY available control, not a
-  # nice-to-have. These two jobs are that alarm: one files (or updates) a tracking
-  # issue while `main` is broken, the other closes it once `main` is green again, so
-  # the signal cannot go stale and start being ignored. ClickUp 86ak5rc9c.
+  # The alarm. Nine days without a green run on `main` went unnoticed because a
+  # failure notifies nobody, and branch protection is unavailable for a private repo
+  # on this plan -- so a red commit lands regardless and an alarm is the ONLY control
+  # available. ClickUp 86ak5rc9c.
   #
-  # `always() && contains(needs.*.result, 'failure')` rather than `failure()`: the
-  # path filters legitimately SKIP whole jobs, and a skipped dependency would
-  # otherwise skip the alarm too.
-  alert-on-red-main:
-    name: alert (main is red)
+  # It tracks WHICH jobs are outstanding, not a single red/green bit, because CI
+  # path-filters by area: an api-only push to `main` SKIPS the entire desktop matrix.
+  # A red/green alarm would read that skip as "nothing failed" and close itself while
+  # `main` was still broken on `rust`, having verified nothing about `rust`. A job
+  # leaves the outstanding set only by actually reporting success.
+  #
+  # The logic lives in a script with a self-test rather than in `if:` expressions,
+  # because expressions cannot be tested and this one has to be right the first time
+  # it matters -- by definition that is a moment when `main` is already broken.
+  ci-alarm:
+    name: alarm (main red/green tracking)
     needs:
       [changes, rust, launch-smoke, operator, flutter, api, marketing, audit, supply-chain]
+    # always(): several of the above are legitimately skipped by the path filters, and a
+    # skipped dependency would otherwise skip the alarm exactly when it is needed.
     if: >-
       ${{ always()
-          && contains(needs.*.result, 'failure')
-          && github.event_name == 'push'
-          && github.ref == 'refs/heads/main' }}
+          && github.ref == 'refs/heads/main'
+          && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     permissions:
       issues: write
     steps:
-      - name: File or update the "main is red" tracking issue
+      - uses: actions/checkout@v4
+      # Prove the reconcile logic before trusting it with the verdict. Cheap, and it
+      # runs on every main push, so the alarm cannot rot into being wrong unnoticed.
+      - name: Self-test the alarm logic
+        run: python3 .github/scripts/ci_alarm.py --self-test
+      - name: Reconcile the ci-red issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.sha }}
-          TITLE: "CI is failing on `main`"
-        run: |
-          set -euo pipefail
-          gh label create ci-red --color B60205 \
-            --description "main's pipeline is failing" --force >/dev/null 2>&1 || true
-
-          existing="$(gh issue list --repo "$REPO" --label ci-red --state open \
-                        --limit 1 --json number --jq '.[0].number // empty')"
-
-          {
-            echo "\`main\` failed CI at commit \`${SHA:0:8}\`."
-            echo
-            echo "Run: $RUN_URL"
-            echo
-            echo "Failed jobs:"
-            echo "- rust: ${{ needs.rust.result }}"
-            echo "- launch-smoke: ${{ needs['launch-smoke'].result }}"
-            echo "- operator: ${{ needs.operator.result }}"
-            echo "- flutter: ${{ needs.flutter.result }}"
-            echo "- api: ${{ needs.api.result }}"
-            echo "- marketing: ${{ needs.marketing.result }}"
-            echo "- audit: ${{ needs.audit.result }}"
-            echo "- supply-chain: ${{ needs['supply-chain'].result }}"
-            echo
-            echo "While this is open, every branch's CI result is unreadable: a real"
-            echo "failure cannot be told apart from this standing one. Fix or revert"
-            echo "before merging anything else."
-          } > body.md
-
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --repo "$REPO" --body-file body.md
-            echo "updated issue #$existing"
-          else
-            gh issue create --repo "$REPO" --label ci-red \
-              --title "$TITLE" --body-file body.md
-          fi
-
-  clear-red-main-alert:
-    name: alert (main recovered)
-    needs:
-      [changes, rust, launch-smoke, operator, flutter, api, marketing, audit, supply-chain]
-    if: >-
-      ${{ always()
-          && !contains(needs.*.result, 'failure')
-          && !contains(needs.*.result, 'cancelled')
-          && github.event_name == 'push'
-          && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    steps:
-      - name: Close the "main is red" tracking issue
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          open_issue="$(gh issue list --repo "$REPO" --label ci-red --state open \
-                          --limit 1 --json number --jq '.[0].number // empty')"
-          if [ -z "$open_issue" ]; then
-            echo "main is green and no ci-red issue is open; nothing to do."
-            exit 0
-          fi
-          gh issue close "$open_issue" --repo "$REPO" --reason completed \
-            --comment "\`main\` is green again at \`${SHA:0:8}\`. Run: $RUN_URL"
-          echo "closed issue #$open_issue"
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 .github/scripts/ci_alarm.py

@@ -257,6 +257,15 @@ mobile-test: ## Analyze + unit-test the Flutter controller
 # Playwright WebKit engine smoke, launch-smoke + `make nfr`, the Android APK
 # compile-check, and the `api (django)` and `marketing (vue spa)` jobs entirely.
 # Run those areas' own tooling before pushing changes to them.
+#
+# One masking difference from CI, deliberate and not yet closed: CI now runs the
+# steps after Clippy under `if: !cancelled()`, so one failing gate no longer hides
+# the rest. Make still aborts the target at the first failing recipe line, so a
+# clippy failure here still stops you seeing the test results. The test commands
+# below carry --no-fail-fast (measured: it surfaces a second failing test binary
+# that would otherwise be hidden), but line-level aborts remain. Tracked on
+# 86ak5rjh7 -- fixing it means restructuring this target, which is not a change to
+# smuggle into a toolchain fix.
 ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that this does not)
 	sh scripts/check_toolchain.sh
 	cd $(DESKTOP) && $(CARGO) fmt --check
@@ -266,15 +275,15 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	$(CARGO) clippy $(WS) -p selahcue-app --features server --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-scripture --features download --all-targets -- -D warnings
 	$(CARGO) clippy $(OP) --all-targets -- -D warnings
-	$(CARGO) test $(WS) --workspace
+	$(CARGO) test $(WS) --workspace --no-fail-fast
 	sh scripts/import_guards.sh
-	$(CARGO) test $(WS) -p selahcue-lan --features server
-	$(CARGO) test $(WS) -p selahcue-app --features server
-	$(CARGO) test $(WS) -p selahcue-data --features encryption
-	$(CARGO) test $(WS) -p selahcue-desktop --features encryption
-	$(CARGO) test $(WS) -p selahcue-scripture --features download
+	$(CARGO) test $(WS) -p selahcue-lan --features server --no-fail-fast
+	$(CARGO) test $(WS) -p selahcue-app --features server --no-fail-fast
+	$(CARGO) test $(WS) -p selahcue-data --features encryption --no-fail-fast
+	$(CARGO) test $(WS) -p selahcue-desktop --features encryption --no-fail-fast
+	$(CARGO) test $(WS) -p selahcue-scripture --features download --no-fail-fast
 	$(CARGO) check $(OP)
-	$(CARGO) test $(OP)
+	$(CARGO) test $(OP) --no-fail-fast
 	python3 scripts/operator_headless.py
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 	@echo ""

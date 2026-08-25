@@ -16,10 +16,23 @@
 # sub-check is skipped where clippy is not installed at all (CI's launch-smoke job builds and
 # runs the app but never lints, so it installs no clippy component) -- skipping there is not a
 # hole, because every job that actually RUNS clippy installs it and is therefore checked.
+#
+# Usage:
+#   check_toolchain.sh                  assert the running toolchain matches the pin
+#   check_toolchain.sh --print-channel  print the pinned version and exit (no toolchain needed)
+#
+# --print-channel exists so ci.yml does not re-implement the parsing. It did, once, and the
+# copy validated less than this one: it accepted a floating channel that three jobs later
+# rejected. One parser, one set of rules.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 pin_file="$root/rust-toolchain.toml"
+
+# rustup resolves the toolchain from the CURRENT directory, but the pin is found relative to
+# this script. Run the checks from the repository root so the two can never disagree about
+# which directory's toolchain is being asserted.
+cd "$root"
 
 if [ ! -f "$pin_file" ]; then
     echo "toolchain: $pin_file is missing. The pin IS the gate -- restore it." >&2
@@ -40,7 +53,20 @@ if ! echo "$pinned" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     exit 1
 fi
 
-active=$(rustc --version | awk '{print $2}')
+if [ "${1:-}" = "--print-channel" ]; then
+    echo "$pinned"
+    exit 0
+fi
+
+# Capture rather than pipe. `rustc --version | awk` reports awk's exit status, so a missing or
+# broken rustc would sail through as success -- the same swallowed-exit-code pattern that has
+# already produced false greens in this repository twice.
+if ! rustc_version=$(rustc --version 2>&1); then
+    echo "toolchain: could not run rustc: $rustc_version" >&2
+    exit 1
+fi
+active=$(echo "$rustc_version" | awk '{print $2}')
+
 if [ "$active" != "$pinned" ]; then
     echo "toolchain: MISMATCH -- refusing to gate on a compiler nobody pinned." >&2
     echo "           rust-toolchain.toml pins : $pinned" >&2
