@@ -19,6 +19,7 @@ THE TWO PROPERTIES THIS FILE PINS
 
 import json
 import logging
+import random
 import statistics
 import time
 
@@ -233,15 +234,84 @@ def test_a_disabled_account_gets_no_new_link(client, sender):
 
 
 # --- AC3: no timing oracle --------------------------------------------------------------
+# The dispatch the probe injects, standing in for a broker publish. It MUST stay larger than
+# the spread the probe tolerates: if it were smaller, the probe would still pass with the
+# constant-time floor deleted entirely, and would be pinning nothing at all. Asserted here
+# rather than trusted, so neither constant can be retuned into vacuity on its own: a premise
+# a test depends on belongs next to the constant, not in prose somebody has to remember.
+PROBE_DISPATCH_SECONDS = 0.06
+# ABSOLUTE, on purpose. A timing leak is an absolute quantity: what an attacker can resolve is
+# milliseconds, not a percentage of the server's speed, so a ratio-based budget would let the
+# permitted leak GROW on slower hardware — backwards. An absolute budget is only affordable
+# because the floor below is calibrated to the host; at a fixed floor it was not (see the
+# docstring), and that is the bug this replaces rather than the thing to relax.
+PROBE_SPREAD_BUDGET_SECONDS = 0.030
+assert PROBE_DISPATCH_SECONDS > PROBE_SPREAD_BUDGET_SECONDS, (
+    "the simulated dispatch must exceed the tolerated spread, or deleting the constant-time "
+    "floor would not make this probe fail and it would be pinning nothing"
+)
+# The floor the probe imposes, as a multiple of the slowest branch's measured cost on THIS
+# host. 1.5x mirrors the margin `test_the_eligible_branch_costs_well_under_the_constant_time_
+# floor` requires of the shipped floor (work < floor * 2/3), so the probe asks the same
+# question of the host it is actually running on.
+PROBE_FLOOR_MULTIPLE = 1.5
+# A case whose median lands further than this past the floor was not padded — the host is
+# slower now than it was at calibration.
+PROBE_FLOOR_FIT_TOLERANCE = 1.10
+# Beyond this the probe would take minutes for one assertion. A host that slow is reported,
+# not measured.
+PROBE_MAX_FLOOR_SECONDS = 2.0
+
+
 @pytest.mark.django_db(transaction=True)
 def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
-    """THE timing probe. `make_password` costs ~120ms and email dispatch costs a broker
-    round trip; without deliberate equalisation the unverified case is an order of
-    magnitude slower than the unknown one, and the identical body in the test above buys
-    nothing at all.
+    """THE timing probe. `make_password` costs a PBKDF2 hash and email dispatch costs a broker
+    round trip, so without deliberate equalisation the unverified case is measurably slower
+    than the unknown one and the byte-identical body pinned above buys nothing.
 
-    Each sample uses a FRESH address so the per-address rate limit never interferes, and
-    the three cases are interleaved so warm-up or GC drift cannot land on one case.
+    WHAT THIS PINS: that `_pad_to_floor` actually equalises the three cases. It deliberately
+    does NOT pin how big the shipped floor should be — that is
+    `test_the_eligible_branch_costs_well_under_the_constant_time_floor`, which measures the
+    branch's own work against the value that ships. Separating those two questions is the
+    whole point of the rewrite, because they answer to different things: equalisation is a
+    property of the code, and floor SIZING is a property of the hardware.
+
+    WHY THE PREVIOUS FORM COULD NOT PASS ON CI, EVER. It hardcoded
+    `ACCOUNT_RESEND_MIN_SECONDS = 0.25`, commented "the production default" — which it stopped
+    being in 419d8a6, where the floor moved to 0.4 precisely because 0.25 left too little
+    headroom. The probe went on running the value that commit had just rejected. That alone
+    was drift; the hardware made it fatal. A padded floor equalises only while every branch
+    finishes INSIDE it, and on the GitHub runner one PBKDF2 costs ~460ms, so all three cases
+    ran past a 250ms floor and NOTHING was padded. The measured spread was then just the
+    eligible branch's extra work — overwhelmingly this probe's own 60ms injected dispatch —
+    and the assertion reduced to `66ms < 30ms`. Deterministically false, which is exactly what
+    CI reported: 67.1ms, 66.2ms and 68.0ms on three runs across eleven days. Those are three
+    measurements of the same real quantity, not three flakes, and no threshold that still
+    meant anything could have absorbed them.
+
+    SO THE FLOOR IS CALIBRATED TO THIS HOST. The probe first measures the slowest branch
+    unpadded, then imposes the floor a deployment on hardware this speed would need. Machine
+    speed then cancels: an adequate floor collapses the spread to scheduler noise — 1.4ms
+    measured over 15 samples per case on the development machine — whatever the host. The
+    absolute budget above is therefore generous rather than lucky, and it stays absolute
+    because that is the unit an attacker measures in.
+
+    HOW TO READ A RED HERE — none of these mean "re-run it":
+    * SPREAD OVER BUDGET while every case sat at the floor: a real, observable timing
+      difference has been introduced between the three cases. This is the finding the test
+      exists for.
+    * `min(medians)` BELOW the floor: the padding did not run. The equalisation is gone, not
+      merely degraded.
+    * SKIPPED, "every case outgrew the floor": the host became materially slower between
+      calibration and measurement (a parallel build, a throttled runner). Nothing is claimed
+      about the code either way. Note this cannot hide a regression in ONE branch: that leaves
+      the other two padded, so it fails on spread instead of skipping.
+
+    KNOWN LIMIT, stated so nobody re-derives it: because the floor is calibrated from the
+    eligible branch, a change that makes that branch MORE expensive raises the floor with it
+    and stays invisible here. That is deliberate — an adequate floor genuinely does hide it —
+    and it is the sibling headroom test, which measures the same cost against the SHIPPED
+    floor, that refuses to let the cost grow unnoticed.
 
     `transaction=True` is LOAD-BEARING, not incidental. Every other test here runs inside
     django_db's outer atomic, where the real COMMIT never happens and `transaction.on_commit`
@@ -251,33 +321,28 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
     service, INSIDE the padded window. Without this the probe measures a pytest artifact and
     reports a ~60ms leak that the deployed code does not have.
     """
-    settings.ACCOUNT_RESEND_MIN_SECONDS = 0.25  # the production default
-    # The probe needs `samples * 3` calls from one IP, which the real per-IP and global
-    # budgets (10/hr and 500/hr) would refuse partway through — a rate-limited call is fast
-    # and would be measured as if it were a fast branch. Lift the two budgets that are not
-    # this test's subject; the per-address budget is untouched because each sample uses a
-    # fresh address anyway.
+    assert PRODUCTION_FLOOR == services.RESEND_MIN_SECONDS_DEFAULT, (
+        "settings.ACCOUNT_RESEND_MIN_SECONDS and RESEND_MIN_SECONDS_DEFAULT have drifted; the "
+        "probe reports the shipped floor in its diagnostics and must not report a stale one"
+    )
+    # The probe needs `samples * 3` calls plus calibration from one IP, which the real per-IP
+    # and global budgets (10/hr and 500/hr) would refuse partway through — a rate-limited call
+    # is fast and would be measured as if it were a fast branch. Lift the two budgets that are
+    # not this test's subject; the per-address budget is untouched because every call here
+    # uses a fresh address anyway.
     settings.SELAHCUE_THROTTLE_RESEND_IP = (1000, 3600)
     settings.SELAHCUE_THROTTLE_RESEND_GLOBAL = (1000, 3600)
-    # 60ms represents a slow but entirely plausible dispatch — a remote broker, or the
-    # inline SMTP send that CELERY_TASK_ALWAYS_EAGER performs in dev. It is chosen to be
-    # comfortably ABOVE the assertion threshold below, so that removing the constant-time
-    # floor makes this test fail rather than merely wobble: the dummy-hash equaliser alone
-    # cannot absorb a dispatch cost, and this probe has to be able to see that.
-    slow = CapturingSender(dispatch_delay=0.06)
+    slow = CapturingSender(dispatch_delay=PROBE_DISPATCH_SECONDS)
     services.set_email_sender(slow)
     try:
         samples = 5
+        calibration_samples = 4
         for i in range(samples):
             _make_user(f"u{i}@timing.example", tag=f"t-u{i}")
             _make_user(f"v{i}@timing.example", verified=True, tag=f"t-v{i}")
+        for i in range(calibration_samples):
+            _make_user(f"cal{i}@timing.example", tag=f"t-cal{i}")
 
-        timings = {"unknown": [], "unverified": [], "verified": []}
-        addresses = {
-            "unknown": lambda i: f"ghost{i}@timing.example",
-            "unverified": lambda i: f"u{i}@timing.example",
-            "verified": lambda i: f"v{i}@timing.example",
-        }
         # A plain post, NOT `post_account`: under `transaction=True` the on_commit callback
         # already fired inside the service, and wrapping the call in captureOnCommitCallbacks
         # would put an empty-list bookkeeping pass inside the measured window for no reason.
@@ -290,19 +355,100 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
             )
             return time.perf_counter() - started
 
+        # CALIBRATION. Measure the ELIGIBLE branch — the slowest of the three, and the only one
+        # that mints, audits and dispatches — with the padding off, so what is measured is the
+        # work the floor has to cover.
+        #
+        # MAXIMUM, and this is the opposite choice from the sibling headroom test ON PURPOSE.
+        # That test ESTIMATES AN INTRINSIC COST, a property of the code, so it takes the
+        # minimum: noise only ever adds time, and the fastest sample is the cleanest estimate.
+        # This one PROVISIONS A FLOOR that has to keep covering the branch for the whole
+        # measurement that follows, so the machine can only be assumed as fast as its worst
+        # observed sample. Taking the minimum here sizes the floor for a machine that is
+        # already gone by the time the probe runs: on a host degrading under parallel load,
+        # `min` calibration produced floors the eligible branch then overran, which reads as
+        # an oracle and is really just a floor provisioned from an optimistic sample.
+        settings.ACCOUNT_RESEND_MIN_SECONDS = 0.0
+        slowest_branch = max(
+            timed_resend(f"cal{i}@timing.example") for i in range(calibration_samples)
+        )
+        floor = slowest_branch * PROBE_FLOOR_MULTIPLE
+        if floor > PROBE_MAX_FLOOR_SECONDS:
+            pytest.skip(
+                f"host too slow to probe: the eligible branch costs {slowest_branch * 1000:.0f}ms "
+                f"here, needing a {floor * 1000:.0f}ms floor and minutes of wall clock for one "
+                f"assertion. Note this is itself a finding about the shipped "
+                f"{PRODUCTION_FLOOR * 1000:.0f}ms floor on hardware this speed."
+            )
+        settings.ACCOUNT_RESEND_MIN_SECONDS = floor
+
+        timings = {"unknown": [], "unverified": [], "verified": []}
+        addresses = {
+            "unknown": lambda i: f"ghost{i}@timing.example",
+            "unverified": lambda i: f"u{i}@timing.example",
+            "verified": lambda i: f"v{i}@timing.example",
+        }
+        # Interleaved so warm-up or GC drift cannot land on one case, and SHUFFLED within each
+        # round so a case cannot inherit a systematic cost from its fixed position in the
+        # round. Seeded, so a failure is reproducible.
+        rng = random.Random(20260825)
         for i in range(samples):
-            for case, address in addresses.items():
+            cases = list(addresses.items())
+            rng.shuffle(cases)
+            for case, address in cases:
                 timings[case].append(timed_resend(address(i)))
 
         medians = {case: statistics.median(values) for case, values in timings.items()}
-        spread = max(medians.values()) - min(medians.values())
-        assert spread < 0.030, (
-            f"response time distinguishes the three cases (spread {spread * 1000:.1f}ms): "
-            f"{ {c: round(v * 1000, 1) for c, v in medians.items()} }"
+        report = {c: round(v * 1000, 1) for c, v in medians.items()}
+        outgrew = {c: m for c, m in medians.items() if m > floor * PROBE_FLOOR_FIT_TOLERANCE}
+        # NULL CONTROL, free and measured in the same run under the same load: `unknown` and
+        # `verified` are not merely similar, they are the SAME code path — both land in the
+        # `not eligible` branch. Whatever separates their medians is therefore instrument
+        # noise, not signal, which makes it a direct read of how finely this run could resolve
+        # anything at all. Reported rather than asserted on: it must never be able to excuse a
+        # real difference, only to say how much weight the numbers below carry. On the CI runs
+        # that produced this rewrite it was 0.0ms and 0.7ms while `unverified` sat 66ms out —
+        # which is how we know that 66ms was work and not weather.
+        instrument_noise = abs(medians["unknown"] - medians["verified"])
+
+        # Every case past the floor means the padding was defeated across the board, i.e. the
+        # host slowed down after calibration. Nothing can be concluded about the code, and
+        # saying so is more honest than either a red or a green. One case past the floor is NOT
+        # this: it leaves the others padded and falls through to the spread assertion below.
+        if len(outgrew) == len(medians):
+            pytest.skip(
+                f"host slowed after calibration: every case outgrew the {floor * 1000:.0f}ms "
+                f"floor ({report}), so the padding equalised nothing and this run cannot say "
+                f"whether the three cases are distinguishable. Not a claim about the code."
+            )
+
+        # Guards the equalisation from being satisfied by doing no real work at all: if the
+        # padding is gone, every case returns in its own time, which is BELOW the floor.
+        assert min(medians.values()) >= floor, (
+            f"the constant-time floor did not pad these calls at all — the fastest case "
+            f"returned in {min(medians.values()) * 1000:.1f}ms against a {floor * 1000:.0f}ms "
+            f"floor ({report}). The equalisation is absent, not merely degraded."
         )
-        # Guards the equalisation from being satisfied by doing no real work at all.
-        assert min(medians.values()) >= 0.25
-        assert len(slow.verify_tokens) == samples
+        spread = max(medians.values()) - min(medians.values())
+        assert spread < PROBE_SPREAD_BUDGET_SECONDS, (
+            f"response time distinguishes the three cases (spread {spread * 1000:.1f}ms "
+            f"against a {PROBE_SPREAD_BUDGET_SECONDS * 1000:.0f}ms budget): {report}, at a "
+            f"calibrated {floor * 1000:.0f}ms floor. The two same-code-path cases (unknown "
+            f"vs verified) differed by {instrument_noise * 1000:.1f}ms, which is this run's "
+            f"instrument noise — compare it against the spread before reading anything into "
+            f"the number"
+            + (
+                f". {sorted(outgrew)} outgrew the floor, so the branch is doing more work than "
+                f"the floor can hide — raise ACCOUNT_RESEND_MIN_SECONDS or make the branch "
+                f"cheaper."
+                if outgrew
+                else ". Every case sat at the floor, so this is a real difference introduced "
+                "inside the padded window."
+            )
+        )
+        # The sending path really ran: `samples` probe sends plus the calibration sends. A
+        # spread of zero because nothing was ever dispatched would otherwise read as a pass.
+        assert len(slow.verify_tokens) == samples + calibration_samples
     finally:
         services.set_email_sender(services.EmailSender())
 
@@ -473,14 +619,20 @@ def test_a_limiter_outage_bounds_the_sending_without_denying_the_response(
             _make_user(f"outage{i}@degrade.example", tag=f"o{i}")
 
         with caplog.at_level(logging.WARNING, logger="selahcue_api.apps.accounts.services"):
-            results = [
-                services.resend_email_verification(
-                    services.ResendVerificationData(
-                        email=f"outage{i}@degrade.example", client_ip="10.0.0.1"
+            # The send is registered with `transaction.on_commit`, so under django_db's
+            # rollback it never fires and the count below would read 0 no matter what the
+            # ceiling did — a green that proved nothing. `post_account` solves this for the
+            # tests that go through the view; this one calls the service directly, so it
+            # needs the same wrapper for the same reason.
+            with TestCase.captureOnCommitCallbacks(execute=True):
+                results = [
+                    services.resend_email_verification(
+                        services.ResendVerificationData(
+                            email=f"outage{i}@degrade.example", client_ip="10.0.0.1"
+                        )
                     )
-                )
-                for i in range(5)
-            ]
+                    for i in range(5)
+                ]
 
         # Every caller is told the same thing — no oracle, no outage-shaped error.
         assert [r.accepted for r in results] == [True] * 5

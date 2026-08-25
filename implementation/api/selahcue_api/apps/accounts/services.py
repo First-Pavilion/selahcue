@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import logging
 import secrets
+import threading
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -31,7 +32,10 @@ from selahcue_api.apps.accounts.models import (
 from selahcue_api.apps.audit.services import record_audit_event
 # Safe at module scope: `throttling.guards` depends only on the cache, the pure limiter and
 # the error enum — nothing in accounts — so this cannot close an import cycle.
-from selahcue_api.apps.throttling.guards import enforce_budget
+from selahcue_api.apps.throttling.guards import (
+    enforce_budget,
+    enforce_budget_reporting_outage,
+)
 from selahcue_api.graphql.context import (
     ActorContext,
     ActorKind,
@@ -289,6 +293,106 @@ def _report_unresolved_client_ip() -> None:
 RESEND_ADDRESS_BUDGET = (3, 900)
 RESEND_IP_BUDGET = (10, 3600)
 RESEND_GLOBAL_BUDGET = (500, 3600)
+
+# --- sending while the limiter is down ---------------------------------------------------
+# All three budgets above FAIL OPEN. That is right for the RESPONSE — refusing because the
+# limiter is unreachable would turn an outage into a second outage, and a refusal is
+# structurally distinct from `accepted:true`, so failing closed here would hand back exactly
+# the enumeration oracle this endpoint is built to deny. It is wrong for the SEND: while the
+# store is down, "inside your budget" and "we could not check" are the same answer, so an
+# unauthenticated mail-sending endpoint would have NO ceiling at all for as long as Redis is
+# out. That is mailbox flooding and unmetered provider spend, i.e. both of the things the
+# three budgets exist to stop, available to anyone who notices the outage.
+#
+# So the response is unchanged and the SEND degrades instead, under this process-local
+# ceiling. A caller whose send is skipped is left strictly no worse off than before it asked:
+# the mint is skipped with it, so an existing link is neither superseded nor replaced.
+#
+# PROCESS-LOCAL is the design and the limitation, in one. The shared store is precisely what
+# is broken, so the fallback cannot use it; with N web workers the effective ceiling is N x
+# the limit. It is a bound on catastrophe during an outage, not a budget — hence a default
+# well under the (500, 3600) global one it stands in for.
+#
+# Memory is three module-level scalars, deliberately NOT a per-address or per-IP map: a map
+# here would be keyed by attacker-chosen values on an unauthenticated endpoint, which is the
+# unbounded growth the repo forbids, and it would grow fastest exactly during the flood.
+RESEND_DEGRADED_SEND_CEILING = (20, 3600)
+_DEGRADED_SEND_LOG_INTERVAL_SECONDS = 60.0
+# A lock, where the log suppressors above accept a benign race. Those cost at most a spare
+# log line; this is a CEILING, and the flood it bounds is concurrent by definition, so an
+# unsynchronised read-modify-write would let it be overspent by however many workers raced.
+_degraded_send_lock = threading.Lock()
+_degraded_window_started = float("-inf")
+_degraded_window_sends = 0
+_last_degraded_send_log = float("-inf")
+
+
+def _degraded_send_ceiling() -> tuple[int, float]:
+    """(limit, window_seconds) for the degraded ceiling, read per call like the floor."""
+    limit, window = getattr(
+        settings, "SELAHCUE_RESEND_DEGRADED_SEND_CEILING", RESEND_DEGRADED_SEND_CEILING
+    )
+    return int(limit), float(window)
+
+
+def _reset_degraded_send_window() -> None:
+    """Test seam: forget the current window and the last report, so a test can observe the
+    first skip and the first warning deterministically without waiting out either interval."""
+    global _degraded_window_started, _degraded_window_sends, _last_degraded_send_log
+    with _degraded_send_lock:
+        _degraded_window_started = float("-inf")
+        _degraded_window_sends = 0
+    _last_degraded_send_log = float("-inf")
+
+
+def _claim_degraded_send() -> bool:
+    """Claim one unit of the degraded ceiling. False means: do not send, and do not mint.
+
+    A fixed window on `time.monotonic()` — the same shape as the store-backed limiter, so the
+    degraded path is not a second rate limiter with its own semantics to reason about. It is
+    claimed only by a call that would ACTUALLY send, so the ceiling bounds mail rather than
+    being spent by probes for addresses that have nothing to resend.
+    """
+    limit, window = _degraded_send_ceiling()
+    global _degraded_window_started, _degraded_window_sends
+    now = time.monotonic()
+    with _degraded_send_lock:
+        if now - _degraded_window_started >= window:
+            _degraded_window_started = now
+            _degraded_window_sends = 0
+        if _degraded_window_sends >= limit:
+            return False
+        _degraded_window_sends += 1
+        return True
+
+
+def _report_degraded_send_skipped() -> None:
+    """Warn — at most once per interval — that mail is being dropped, and why.
+
+    Rate limited for the same reason every other report on this path is: one line per dropped
+    send at flood rate is the unbounded logging the repo forbids. The throttle store logs its
+    own fail-open; this line carries the part that one cannot know, which is that the
+    fail-open has started COSTING something.
+    """
+    global _last_degraded_send_log
+    now = time.monotonic()
+    if now - _last_degraded_send_log < _DEGRADED_SEND_LOG_INTERVAL_SECONDS:
+        return
+    _last_degraded_send_log = now
+    limit, window = _degraded_send_ceiling()
+    logger.warning(
+        "resend-verification skipped a send: limiter unavailable, so all three budgets "
+        "failed open and the process-local fallback ceiling (%d per %.0fs, PER WORKER) is "
+        "spent. Callers still receive the normal accepted:true — the response must not "
+        "reveal the outage — and no link was superseded, so an existing one still works. "
+        "The remedy is to restore the rate-limit store; raising "
+        "SELAHCUE_RESEND_DEGRADED_SEND_CEILING only buys more unmetered mail while it is "
+        "down. Further reports suppressed for %.0fs.",
+        limit,
+        window,
+        _DEGRADED_SEND_LOG_INTERVAL_SECONDS,
+    )
+
 
 # A fixed hash to run check_password against on unknown-email login, so the unknown-email and
 # wrong-password paths take the same PBKDF2 time (no timing oracle on account existence).
@@ -692,6 +796,11 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
     flooding), the source IP (spraying distinct addresses), and a global ceiling (total send
     cost). The address budget is spent whether or not the account exists — a limiter that
     only bit for real accounts would itself be the oracle this function exists to avoid.
+
+    All three FAIL OPEN when the limiter store is down, which would otherwise leave this
+    endpoint's send path unbounded for the length of the outage. It does not: an outage
+    degrades the SEND under `_claim_degraded_send`, never the response. See the ceiling's
+    comment for why that asymmetry is the only safe one here.
     """
     started = time.monotonic()
     normalized = _require_valid_email(data.email)
@@ -702,7 +811,13 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
     # Redis keys. Rate-limited calls are NOT padded — a RATE_LIMITED response is already
     # structurally distinct from accepted:true, so its timing reveals nothing further, and
     # padding a rejection would hand an attacker a way to tie up threads.
-    enforce_budget("resend_verify", "global", "SELAHCUE_THROTTLE_RESEND_GLOBAL", RESEND_GLOBAL_BUDGET)
+    # `enforce_budget_reporting_outage`, not `enforce_budget`: a fail-open still permits the
+    # call (see below), but the send path needs to KNOW it was a fail-open rather than a real
+    # allow. `|=` and three separate statements, never `or`: short-circuiting would stop
+    # spending the later budgets, and every one of them must be spent on every call.
+    limiter_degraded = enforce_budget_reporting_outage(
+        "resend_verify", "global", "SELAHCUE_THROTTLE_RESEND_GLOBAL", RESEND_GLOBAL_BUDGET
+    )
     # The per-IP budget is ALWAYS spent. It used to be conditional (`if data.client_ip`), which
     # made it fail open: `client_ip()` itself never returns empty (it falls back to "unknown"),
     # so the only way to get here without an address is the transport failing to supply a
@@ -713,13 +828,15 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
     # unmetered send path.
     if not data.client_ip:
         _report_unresolved_client_ip()
-    enforce_budget(
+    limiter_degraded |= enforce_budget_reporting_outage(
         "resend_verify_ip",
         data.client_ip or UNRESOLVED_CLIENT_IP,
         "SELAHCUE_THROTTLE_RESEND_IP",
         RESEND_IP_BUDGET,
     )
-    enforce_budget("resend_verify_addr", fingerprint, "SELAHCUE_THROTTLE_RESEND_ADDRESS", RESEND_ADDRESS_BUDGET)
+    limiter_degraded |= enforce_budget_reporting_outage(
+        "resend_verify_addr", fingerprint, "SELAHCUE_THROTTLE_RESEND_ADDRESS", RESEND_ADDRESS_BUDGET
+    )
 
     try:
         now = djtz.now()
@@ -737,6 +854,16 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
                 # Defence in depth for a misconfigured floor (ACCOUNT_RESEND_MIN_SECONDS=0):
                 # run the same PBKDF2 the minting branch runs, mirroring _DUMMY_PASSWORD_HASH
                 # on the login path, so the branches stay comparable even unpadded.
+                make_password("selahcue-resend-timing-equalizer-not-a-real-token")
+                return AcceptedResult(accepted=True)
+
+            # The limiter failed open and the fallback ceiling is spent: skip the send. The
+            # MINT is skipped with it, on purpose — superseding a live link and then not
+            # delivering its replacement would leave this caller worse off than if they had
+            # never asked, trading a working link for nothing. Same equaliser as the branch
+            # above, because this branch now does the same amount of nothing.
+            if limiter_degraded and not _claim_degraded_send():
+                _report_degraded_send_skipped()
                 make_password("selahcue-resend-timing-equalizer-not-a-real-token")
                 return AcceptedResult(accepted=True)
 
