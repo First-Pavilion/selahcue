@@ -26,8 +26,10 @@ from django.db import models
 from django.utils import timezone
 
 from selahcue_api.apps.audit.models import AuditEvent, AuditResult
+from selahcue_api.apps.license_keys import state_machine
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.apps.license_keys.state_machine import (
+    ACTION_MAX_LENGTH,
     AUDIT_TARGET_TYPE,
     LEGAL_TRANSITIONS,
     PRIOR_STATUS,
@@ -1068,3 +1070,114 @@ def test_a_caller_that_catches_the_refusal_inside_its_transaction_keeps_the_row(
             _transition(key, LicenseKeyStatus.REVOKED, tag=tag, step=1)
 
     assert _audit_rows(key).filter(result=AuditResult.DENIED).count() == before_denied + 1
+
+
+# --- The audit payload is the writer's to own, not the caller's -------------------------
+def test_caller_supplied_extras_cannot_overwrite_the_mandated_audit_fields():
+    """`extra_before`/`extra_after` exist so the mutation tickets can add context — the new
+    `expires_at` on a renewal, the successor key on a conversion — without inventing a second
+    audit shape. They must not be able to reach the FR-508 fields.
+
+    The spread used to come last, so a caller passing `status` silently replaced the
+    authoritative value and the row described a transition that never happened. Five
+    downstream tickets call this function.
+    """
+    tag = "extras-precedence"
+    key = _seed_license_key(tag=tag)
+    _drive_to(key, LicenseKeyStatus.ACTIVATED, tag=tag)
+
+    apply_license_status_transition(
+        key,
+        to_status=LicenseKeyStatus.SUSPENDED,
+        actor=_staff_actor(),
+        reason="Suspending while the caller lies about the payload.",
+        request_id="req-extras-precedence",
+        extra_before={"status": "NONSENSE", "prior_status": "NONSENSE", "note": "kept"},
+        extra_after={"status": "NONSENSE", "prior_status": "NONSENSE", "note": "kept"},
+    )
+
+    row = _audit_rows(key).order_by("-id").first()
+    assert row.before["status"] == LicenseKeyStatus.ACTIVATED.value
+    assert row.after["status"] == LicenseKeyStatus.SUSPENDED.value
+    assert row.after["prior_status"] == LicenseKeyStatus.ACTIVATED.value
+    # The caller's own, non-conflicting context still lands — the point is precedence, not
+    # refusing extras outright.
+    assert row.before["note"] == "kept"
+    assert row.after["note"] == "kept"
+
+
+def test_an_over_long_caller_action_is_refused_at_the_boundary():
+    """`AuditEvent.action` is bounded. Unchecked, an over-long action truncates silently on
+    SQLite and raises inside the transaction on Postgres — after the status row is written but
+    before the audit row lands, which is the one outcome NFR-506 exists to prevent."""
+    tag = "action-too-long"
+    key = _seed_license_key(tag=tag)
+    before_rows = _audit_rows(key).count()
+
+    with pytest.raises(SafeAPIError) as raised:
+        apply_license_status_transition(
+            key,
+            to_status=LicenseKeyStatus.REVOKED,
+            actor=_staff_actor(),
+            reason="An action name far beyond the column width.",
+            request_id="req-action-too-long",
+            action="x" * (ACTION_MAX_LENGTH + 1),
+        )
+
+    assert raised.value.code == ErrorCode.VALIDATION_FAILED
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.ISSUED, "nothing may move when the action is invalid"
+    assert _audit_rows(key).count() == before_rows
+
+    # Positive control: the same call with an action that fits succeeds, so the refusal above
+    # is the length check biting rather than the action parameter being broken outright.
+    result = apply_license_status_transition(
+        key,
+        to_status=LicenseKeyStatus.REVOKED,
+        actor=_staff_actor(),
+        reason="An action name that fits the column.",
+        request_id="req-action-ok",
+        action="x" * ACTION_MAX_LENGTH,
+    )
+    assert result.changed is True
+    assert _audit_rows(key).order_by("-id").first().action == "x" * ACTION_MAX_LENGTH
+
+
+# --- The import-time table premises ------------------------------------------------------
+@pytest.mark.parametrize(
+    ("label", "broken"),
+    [
+        (
+            "terminality-widened",
+            {**LEGAL_TRANSITIONS, LicenseKeyStatus.ARCHIVED: frozenset({LicenseKeyStatus.ACTIVATED})},
+        ),
+        (
+            "revoked-escapes",
+            {**LEGAL_TRANSITIONS, LicenseKeyStatus.REVOKED: frozenset({LicenseKeyStatus.ISSUED})},
+        ),
+        (
+            "status-missing-from-table",
+            {k: v for k, v in LEGAL_TRANSITIONS.items() if k is not LicenseKeyStatus.CONVERTED},
+        ),
+    ],
+)
+def test_the_table_validator_rejects_a_drifted_table(monkeypatch, label, broken):
+    """`_validate_table()` runs at import, so a drifted table takes the whole suite down with
+    it. That is the right blast radius, but it makes the guard awkward to assert — a
+    collection error from this firing correctly looks exactly like a collection error from a
+    typo. Calling it directly against a deliberately-drifted table pins the behaviour instead
+    of leaving it to be inferred from a stack trace.
+
+    It must RAISE rather than assert: `python -O` strips assertions, and these premises are
+    load-bearing.
+    """
+    monkeypatch.setattr(state_machine, "LEGAL_TRANSITIONS", broken)
+
+    with pytest.raises(RuntimeError):
+        state_machine._validate_table()
+
+
+def test_the_table_validator_passes_on_the_real_table():
+    """Positive control: the rejections above must come from the drift, not from a validator
+    that raises unconditionally."""
+    state_machine._validate_table()
