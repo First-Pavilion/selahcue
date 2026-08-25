@@ -68,6 +68,20 @@ jobs:
   changes:
     name: detect changed areas
     runs-on: ubuntu-latest
+    # `dorny/paths-filter` compares against the merge base using git on a push, but on a
+    # PULL_REQUEST it calls the GitHub API (`listFiles`) instead, which needs
+    # `pull-requests: read`. The repository default grants only contents+packages, so the
+    # job failed with "Resource not accessible by integration" and every downstream job
+    # was skipped -- a whole pipeline reporting nothing.
+    #
+    # This was latent for months rather than new: the only previous PR run in this repo
+    # (run 30718327254, 2026-08-01) died the same way in 17s. It went unnoticed because
+    # work is pushed straight to `main`, where the git path is used and no API call
+    # happens, so nothing exercised the PR path. `contents: read` is listed explicitly
+    # because naming any scope sets the rest to `none` -- checkout needs it.
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       desktop: ${{ steps.filter.outputs.desktop }}
       mobile: ${{ steps.filter.outputs.mobile }}
