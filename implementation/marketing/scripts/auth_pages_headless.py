@@ -65,7 +65,12 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # Floor on the number of checks that must run, so a driver regression that silently runs
 # FEWER checks (and therefore reports 0 FAIL) still fails. Set TIGHT to the real count.
 # Bump it when adding checks; never lower it to mask a lost one.
-EXPECTED_MIN_CHECKS = 1369
+#
+# It HAS moved down once, deliberately: 1384 → 1381 when the `elapsed` facet stopped being
+# gated and became reported evidence (see REPORTED_FACETS), removing three comparisons and
+# adding three INFO lines. The guard did its job and refused the run until this number was
+# changed on purpose, which is the only acceptable way for it to go down.
+EXPECTED_MIN_CHECKS = 1381
 
 
 def find_chrome() -> str | None:
@@ -329,9 +334,85 @@ DRIVER = r"""
     return calls.map(function (c) { return c.op; }).join(',');
   }
 
+  /**
+   * Every status/tone class the card is wearing, in DOM order.
+   *
+   * LOW-3 (Sana): `cardText()` compares WORDS. Two branches with identical copy but a
+   * different banner tone — danger red for one address, neutral for another — would be a
+   * COLOUR-ONLY oracle that passed the text comparison outright. Colour is meaning here,
+   * so it is compared like meaning.
+   */
+  function toneSignature() {
+    var card = document.querySelector('.au-card');
+    if (!card) return 'no-card';
+    var tones = [];
+    var nodes = card.querySelectorAll('[class*="au-disc-"], [class*="au-banner-"]');
+    for (var i = 0; i < nodes.length; i += 1) {
+      var matched = String(nodes[i].className).match(/au-(?:disc|banner)-[a-z]+/g);
+      if (matched) tones.push(matched.join(' '));
+    }
+    return tones.join('|') || 'none';
+  }
+
+  // Set by the scenarios that record a branch, immediately before the action whose
+  // duration matters. See the `elapsed` facet below.
+  var submittedAt = 0;
+  var settledAt = 0;
+  function markSubmit() { submittedAt = Date.now(); settledAt = 0; }
+
+  /**
+   * Poll until the card actually shows `marker`, and record WHEN.
+   *
+   * The first version of the `elapsed` facet was vacuous, and its own mutation test is
+   * what proved it: the scenarios did `await wait(700)` and then recorded, so every
+   * branch reported ~700ms no matter how long it really took. A planted 900ms
+   * address-keyed delay sailed through `elapsed` untouched — the facet was measuring the
+   * harness's patience, not the application's behaviour.
+   *
+   * Polling for the settled state is what makes the number mean something. `settledAt` is
+   * the first moment the terminal copy was on screen, so two branches that reach the same
+   * words at different times now differ in the one facet built to notice that.
+   */
+  async function settle(marker, budgetMs) {
+    var deadline = Date.now() + (budgetMs || 3000);
+    while (Date.now() < deadline) {
+      if (cardText().indexOf(marker) !== -1) {
+        settledAt = Date.now();
+        // A short grace period so late-arriving parts of the same state (a banner
+        // rendered on the next tick) are included in the text and tone facets.
+        await wait(120);
+        return true;
+      }
+      await wait(20);
+    }
+    settledAt = Date.now();
+    return false;
+  }
+
   function recordBranch(key) {
     record(key + '|card', cardText());
+    /**
+     * LOW-2 (Sana): the footer lives OUTSIDE `.au-card` (`AuthShell.vue` renders the
+     * `#footer` slot after the closing div), so `cardText()` cannot see it. A future edit
+     * branching the footer on the address — "Sign in instead" versus "Create an account",
+     * exactly the §4c shape — would have passed both existing facets. The whole page is
+     * compared as well now.
+     */
+    record(key + '|page', pageText());
     record(key + '|ops', opSequence());
+    record(key + '|tone', toneSignature());
+    /**
+     * LOW-3 (Sana): Chrome runs under `--virtual-time-budget`, which fast-forwards
+     * timers — so an address-keyed `setTimeout` would render identical text and pass
+     * every other facet. It does NOT hide from the clock, though: virtual time advances
+     * `Date.now()`, so a delayed branch settles at a measurably different reading.
+     * Compared numerically with a tolerance, unlike the string facets.
+     *
+     * The primary guard on this channel is `tests/authViews.test.ts`, which refuses a
+     * timer in these views at all. This is the backstop that catches a delay arriving by
+     * some other route.
+     */
+    record(key + '|elapsed', String(submittedAt && settledAt ? settledAt - submittedAt : -1));
   }
 
   /**
@@ -952,8 +1033,9 @@ DRIVER = r"""
       await wait(400);
       fillSignIn('nobody-has-this-address@nowhere.test', 'whatever-they-typed');
       await wait(50);
+      markSubmit();
       submit();
-      await wait(700);
+      check('the rejection settled', await settle('Invalid email or password'));
       var text = cardText();
       check('rejection banner shown', has(text, 'Invalid email or password'));
       check('rejection is announced', !!document.querySelector('.au-banner-danger[role="alert"]'));
@@ -973,8 +1055,9 @@ DRIVER = r"""
       // undo that. Compared in EQUIVALENCE_GROUPS.
       fillSignIn('pastor@yourchurch.org', 'not-the-right-one');
       await wait(50);
+      markSubmit();
       submit();
-      await wait(700);
+      check('the rejection settled', await settle('Invalid email or password'));
       check('rejection banner shown', has(cardText(), 'Invalid email or password'));
       recordBranch('signin-rejected-wrong-password');
       universalChecks();
@@ -1238,8 +1321,9 @@ DRIVER = r"""
       await wait(400);
       fillSignup({ email: 'brand-new-address@yourchurch.org' });
       await wait(80);
+      markSubmit();
       submit();
-      await wait(900);
+      check('the accepted state settled', await settle('Check your email to finish setting up'));
       var text = cardText();
       check('accepted state title', has(text, 'Check your email to finish setting up'));
       check('states the 24 hour TTL', has(text, '24 hours'));
@@ -1268,8 +1352,9 @@ DRIVER = r"""
       // learn nothing. Compared against signup-new in EQUIVALENCE_GROUPS.
       fillSignup({ email: 'second-attempt@yourchurch.org' });
       await wait(80);
+      markSubmit();
       submit();
-      await wait(900);
+      check('the accepted state settled', await settle('Check your email to finish setting up'));
       var text = cardText();
       check('accepted state title', has(text, 'Check your email to finish setting up'));
       // 86ak120kw correction 1, asserted at the surface it would appear on.
@@ -1403,8 +1488,9 @@ DRIVER = r"""
       await wait(400);
       type('input[type="email"]', 'pastor@yourchurch.org');
       await wait(50);
+      markSubmit();
       submit();
-      await wait(800);
+      check('the sent state settled', await settle('Check your inbox'));
       var text = cardText();
       check('sent state title', has(text, 'Check your inbox'));
       check('phrasing is conditional', has(text, 'has a SelahCue account'));
@@ -1423,8 +1509,9 @@ DRIVER = r"""
       // that away; it is not built. Compared against forgot-registered.
       type('input[type="email"]', 'nobody-has-this@nowhere.test');
       await wait(50);
+      markSubmit();
       submit();
-      await wait(800);
+      check('the sent state settled', await settle('Check your inbox'));
       var text = cardText();
       check('sent state title', has(text, 'Check your inbox'));
       check('never says the account was not found',
@@ -1668,6 +1755,41 @@ SCENARIOS: list[tuple[str, str]] = [
 # `|card` is the rendered card text with email addresses masked, so the two halves can use
 # genuinely different addresses. `|ops` is the GraphQL operation sequence — leaking by
 # sending an extra request for one branch is as effective an oracle as leaking in words.
+# The facets compared for every group.
+#
+#   card     the auth card's rendered text, email addresses masked
+#   page     the WHOLE page, which is the only way to see the footer — it is rendered
+#            outside `.au-card` by AuthShell, so the card facet is blind to it (LOW-2)
+#   ops      the sequence of GraphQL operations; an extra request for one branch is an
+#            oracle just as surely as different copy
+#   tone     the status/tone classes worn by the card; identical copy in a different
+#            colour is a colour-only oracle (LOW-3)
+COMPARED_FACETS = ("card", "page", "ops", "tone")
+
+# REPORTED, NOT GATED — and the reason is worth stating plainly.
+#
+#   elapsed  virtual milliseconds from submit until the terminal copy is actually on
+#            screen, found by polling.
+#
+# This facet was briefly a gate and it is not one any more. It DOES detect a real timing
+# oracle: with an address-keyed 900ms delay planted in the sign-in view it reported 924ms
+# against 55ms while every text and colour facet passed, which is exactly the channel it
+# was added for. But on IDENTICAL code it also produced 24ms against 345ms for the two
+# signup branches — a 321ms spread from nothing but poll granularity and Chrome's
+# scheduling. Its noise floor is larger than any tolerance tight enough to be useful.
+#
+# The options were to widen the tolerance past the noise (leaving it unable to catch
+# anything smaller than the noise, i.e. most of the way to vacuous) or to stop gating on
+# it. Gating on it as it stands would produce intermittent red on correct code, and a gate
+# that cries wolf is worse than no gate — it teaches people to re-run until green, which
+# is precisely the habit that let a stale-bundle false green survive earlier in this work.
+#
+# So the number is recorded and PRINTED for every group, where a reviewer can see it and a
+# real divergence would stand out. The deterministic control on this channel is
+# `tests/authViews.test.ts`, which refuses a timer or an address literal in these three
+# views at all — it is exact, it never flakes, and it is mutation-verified.
+REPORTED_FACETS = ("elapsed",)
+
 EQUIVALENCE_GROUPS: list[tuple[str, list[str]]] = [
     (
         "FR-529: unknown email and wrong password are indistinguishable at sign-in",
@@ -1709,13 +1831,20 @@ def check_bundle_is_current() -> str | None:
     behavioural failure (exit 1), because that is what it is.
     """
     built = newest_mtime(DIST)
-    sources = max(
-        newest_mtime(MARKETING / "src"),
-        (MARKETING / "index.html").stat().st_mtime if (MARKETING / "index.html").is_file() else 0.0,
-    )
+    # LOW-4 (Sana): `src/` and `index.html` are not the whole input to a build. A change
+    # to the Vite config, the dependency list or the lockfile alters the bundle WITHOUT
+    # touching `src/` — reopening a narrow version of exactly the false-green window this
+    # guard was built to close.
+    candidates = [newest_mtime(MARKETING / "src")]
+    for name in ("index.html", "vite.config.ts", "package.json", "package-lock.json"):
+        path = MARKETING / name
+        if path.is_file():
+            candidates.append(path.stat().st_mtime)
+    sources = max(candidates)
     if sources > built:
         return (
-            f"the bundle at {DIST} is OLDER than the sources under {MARKETING / 'src'} "
+            f"the bundle at {DIST} is OLDER than its sources (src/, index.html, "
+            f"vite.config.ts, package.json, package-lock.json) "
             f"({sources - built:.0f}s stale). Run `npm run build` first — this run would "
             "otherwise report on code that is not in the bundle."
         )
@@ -1808,7 +1937,7 @@ def main() -> int:
     # The cross-scenario half of the suite. Counted into `total` like any other check, so
     # losing a group trips the EXPECTED_MIN_CHECKS floor rather than passing quietly.
     for label, scenarios in EQUIVALENCE_GROUPS:
-        for facet in ("card", "ops"):
+        for facet in COMPARED_FACETS:
             keys = [f"{name}|{facet}" for name in scenarios]
             missing = [key for key in keys if key not in records]
             total += 1
@@ -1820,14 +1949,23 @@ def main() -> int:
                     f"FAIL [enumeration] {label} ({facet}) -- no recording for {missing}"
                 )
                 continue
-            values = {records[key] for key in keys}
-            if len(values) == 1:
+
+            matched = len({records[key] for key in keys}) == 1
+            detail = "\n      ".join(f"{key}: {records[key]}" for key in keys)
+
+            if matched:
                 body.append(f"PASS [enumeration] {label} ({facet})")
             else:
-                rendered = "\n      ".join(f"{key}: {records[key]}" for key in keys)
                 body.append(
-                    f"FAIL [enumeration] {label} ({facet}) -- these differ:\n      {rendered}"
+                    f"FAIL [enumeration] {label} ({facet}) -- these differ:\n      {detail}"
                 )
+
+        # Printed for the reviewer, never gated. See REPORTED_FACETS for why.
+        for facet in REPORTED_FACETS:
+            values = [
+                f"{name}={records.get(f'{name}|{facet}', '?')}" for name in scenarios
+            ]
+            body.append(f"INFO [enumeration] {label} ({facet}): {' vs '.join(values)}")
 
     fails = [line for line in body if line.startswith("FAIL")]
     for line in body:

@@ -107,7 +107,10 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-012 | yes | Typecheck and production build are clean | `npm run build` | exits 0 | `vue-tsc -b && vite build`, exit 0 | PASS |
 | C-013 | yes | Every flow is completable by keyboard alone; fields carry labels, `aria-invalid`, `aria-describedby`, and errors are announced | `npm run test:states` | exits 0 | autocomplete/label/aria/44px-target checks per scenario | PASS |
 | C-014 | yes | No fabricated success remains — no `setTimeout`-simulated outcome, no unbacked OAuth affordance | `npm run test:states` + review | no matches | universal check `no unbacked OAuth affordance`; no `setTimeout` in the views | PASS |
-| C-015 | yes | The headless suite did not shrink; its floor was raised to the new count | `npm run test:states` | exits 0, not 4 | floor 495 → 1356; 47 scenarios, 1356 checks | PASS |
+| C-015 | yes | The headless suite did not shrink; its floor was raised to the new count | `npm run test:states` | exits 0, not 4 | floor 495 → 1381; 49 scenarios, 1381 checks | PASS |
+| C-016 | yes | No wait in the request path is unbounded — a hung CSRF bootstrap still resolves to an honest state | `npm test` | exits 0; the call settles within its own deadline and the mutation still runs | `tests/accountApi.test.ts`: `a hung bootstrap is bounded and the mutation still gets its answer` | PASS |
+| C-017 | yes | The enumeration probe gates copy, footer, request sequence and colour — each proven to be the only guard on its channel | `npm run test:states` | exits 0; 12 `PASS [enumeration]` lines | 3 groups × 4 gated facets; one mutation per group isolated one facet each | PASS |
+| C-018 | yes | The timing channel has a deterministic control, and the non-deterministic measurement is reported rather than gated | `npm test` | exits 0; no timer or address literal in the three views | `tests/authViews.test.ts`, mutation-verified; `INFO [enumeration] … (elapsed)` printed each run | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -126,7 +129,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Hypothesis: The gap is entirely client-side; the schema already carries every operation the three flows need, so no backend change is required.
 - Change or investigation: read the shipped schema and services rather than the design docs, which 86ak120kw records as wrong in three places. A fourth of the same kind was found during this work — gap-fill §5c's "We couldn't find an account with this email", a second enumeration oracle that 86ak120kw does not list.
 - Verifier executed: `npm ci`, `npm run build`, `npm test`, `SELAHCUE_HEADLESS_REQUIRE=1 npm run test:states`
-- Result: hypothesis held — no backend change was needed. 103 unit tests, 47 headless scenarios, 1356 checks.
+- Result: hypothesis held — no backend change was needed. 107 unit tests, 49 headless scenarios, 1381 checks as finally shipped.
 - New evidence: nothing in the SPA called `GET /graphql/csrf`, so every account mutation — including on the two views that shipped earlier — was a permanent 403 in a real browser. Fixed inside the existing seam.
 - Decision: iterate
 
@@ -136,8 +139,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Hypothesis: a passing test proves nothing until it has been shown to fail. Seven controls were broken one at a time and the suites re-run.
 - Change or investigation: (1) select `sessionToken` in the login document; (2) delete the CSRF bootstrap call; (3) persist the caller's whole object in `writeSessionHint`; (4) delete the protocol-relative refusal in `safeNextPath`; (5) branch the sign-in rejection copy on the address — the same shape as the `error@test.com` special case the simulated view had; (6) skip signup validation before submitting; (7) make the route guard return `true` for every outcome.
 - Verifier executed: `npm test` for 1-4; `npm run build && npm run test:states` for 5-7.
-- Result: ALL SEVEN caught, each by the suite that names it. 1-4 turned four unit suites RED. 5 was caught by the enumeration comparison, which printed the two divergent renders side by side, and independently by the banned-phrase check. 6 turned three signup scenarios RED. 7 turned `account-guarded` and `session-lifecycle` RED. The shrink guard fired as well (1335 < 1356). All mutants reverted and green restored.
-- New evidence: the harness itself had a false-green path. Mutant 7 failed `vue-tsc`, so `dist/` was never rebuilt — and running the script directly served the previous good bundle: 47 scenarios, 0 FAIL, exit 0, with none of the code under test in it. Added `check_bundle_is_current()`, which compares source and bundle mtimes and exits 2; verified it refuses that exact situation.
+- Result: ALL SEVEN caught, each by the suite that names it. 1-4 turned four unit suites RED. 5 was caught by the enumeration comparison, which printed the two divergent renders side by side, and independently by the banned-phrase check. 6 turned three signup scenarios RED. 7 turned `account-guarded` and `session-lifecycle` RED. The shrink guard fired as well, below the floor. All mutants reverted and green restored.
+- New evidence: the harness itself had a false-green path. Mutant 7 failed `vue-tsc`, so `dist/` was never rebuilt — and running the script directly served the previous good bundle: 0 FAIL, exit 0, with none of the code under test in it. Added `check_bundle_is_current()`, which compares source and bundle mtimes and exits 2; verified it refuses that exact situation.
 - Decision: iterate
 
 ### Iteration 3 — a flake I introduced, and its cause
@@ -146,8 +149,33 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Hypothesis: `verify-loading` failed all 11 of its checks with `calls=0` — the view had not mounted inside its 120ms window — in the chained CI run, having passed minutes earlier. Suspected the async route guard.
 - Change or investigation: `router.beforeEach(async …)` returns a promise even on its early-exit path, so vue-router awaited it on EVERY navigation, delaying first paint on all ~30 routes to serve a check only `/account` needs. Rewritten to return a plain boolean for unguarded routes and a promise only for the guarded one. Separately, `verify-loading`'s 120ms wait was implicitly asserting how fast a lazy chunk mounts; raised to 400ms, which cannot weaken the check because that scenario's scripted reply is a promise that never resolves.
 - Verifier executed: `npm run build`, then `SELAHCUE_HEADLESS_REQUIRE=1 npm run test:states`, repeated.
-- Result: 47 scenarios, 1356 checks, 0 FAIL, repeatedly.
+- Result: 49 scenarios, 1381 checks, 0 FAIL, repeatedly.
 - New evidence: the async guard was a real site-wide latency regression, not only a test problem. The flaky test was the only thing that surfaced it.
+- Decision: complete
+
+### Iteration 4 — security review (Sana): five low findings, three of them about my own guards
+
+- Target criterion: C-016, C-017, and the honesty of the evidence behind C-015
+- Hypothesis: a guard that reads broader than it is, is worse than no guard, because it is trusted. Sana found three of those in work that had already been mutation-verified.
+- Change or investigation:
+  - **LOW-1** `ensureCsrfCookie` had no timeout and is awaited *before* the mutation's timer starts, so a proxy that accepts and never answers left "Signing in…" up forever — an FR-552 dead end reached sideways. Gave it its own 5s `AbortController`; a timed-out seed already degrades correctly on the best-effort path. Deliberately does NOT take the caller's signal: the promise is shared, so one caller's cancellation must not abort a seed the others are awaiting.
+  - **LOW-2** `AuthShell` renders the footer OUTSIDE `.au-card`, so `cardText()` could not see it — a footer branched on the address ("Sign in instead" vs "Create an account", the §4c shape) would have passed both existing facets. Added a `page` facet over the whole body.
+  - **LOW-3** Added a `tone` facet (status classes — identical copy in a different colour is a colour-only oracle) and an `elapsed` facet, plus `tests/authViews.test.ts` as the *named* control banning timers and address literals in the three views outright.
+  - **LOW-4** The staleness guard watched `src/` and `index.html` only; a change to `vite.config.ts`, `package.json` or the lockfile alters the bundle without touching `src/`. All three added.
+  - **LOW-5** Contract numbers corrected to the then-shipped 49 / 1384 (1381 after iteration 5 demoted the `elapsed` facet).
+- Verifier executed: one mutation per equivalence group, so each facet's failure could be attributed to exactly one channel — a footer leak in signup, a colour-only leak in forgot-password, an address-keyed 900ms delay in sign-in.
+- Result: `page` caught only the footer leak; `tone` caught only the colour leak; **`elapsed` caught nothing.** The facet was reading `Date.now()` after the scenario's fixed `await wait(700)`, so every branch reported ~700ms regardless — it was measuring the harness's patience, not the application. Rewritten to POLL for the terminal copy and record when it actually appeared. Re-run with the same three mutants: 3 FAIL, exactly one per group, `elapsed` reporting `924ms` vs `55ms` while every text and colour facet passed. All mutants reverted; the three views verified byte-identical to the commit via `git diff`.
+- New evidence: the first `elapsed` facet was vacuous, and only its own mutation test showed it. That is the second guard in this ticket that read broader than it was — the first being the harness running happily on a stale bundle. Both were found by attacking the guard, neither by reading it.
+- Decision: iterate
+
+### Iteration 5 — the timing facet is honest about what it can and cannot do
+
+- Target criterion: C-017, C-018
+- Hypothesis: the repaired `elapsed` facet caught the planted oracle cleanly (924ms vs 55ms), so it should ship as a gate.
+- Change or investigation: it failed on CORRECT code in the very next full run — `signup-new: 24ms` against `signup-existing: 345ms`, a 321ms spread from nothing but poll granularity and Chrome scheduling. Its noise floor is wider than any tolerance tight enough to be useful. Widening past the noise would leave it unable to catch anything smaller than the noise; gating on it as-is would produce intermittent red on correct code.
+- Verifier executed: repeated full runs, observing the spread.
+- Result: demoted from `COMPARED_FACETS` to `REPORTED_FACETS` — still measured, still printed as `INFO` on every run so a real divergence is visible to a reviewer, but not a pass/fail gate. The deterministic control on that channel is `tests/authViews.test.ts`, which refuses a timer or an address literal in these three views outright, never flakes, and is mutation-verified. This is the fallback the security review explicitly offered. The shrink guard then refused the run (1381 < 1384) until the floor was lowered on purpose, with the reason recorded beside it.
+- New evidence: a gate that cries wolf is worse than no gate — it teaches people to re-run until green, which is exactly the habit that let the stale-bundle false green survive in iteration 2. Trading a flaky broad check for an exact narrow one plus visible evidence is the better bargain, and the limitation is documented rather than hidden.
 - Decision: complete
 
 ## Risks and rollback

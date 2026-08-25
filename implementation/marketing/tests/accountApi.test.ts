@@ -342,6 +342,47 @@ describe('CSRF bootstrap', () => {
     assert.deepEqual(calls, ['GET', 'POST'])
   })
 
+  test('a hung bootstrap is bounded and the mutation still gets its answer', async () => {
+    // LOW-1 (Sana). The bootstrap is awaited BEFORE the mutation's timer starts, so
+    // nothing else bounds it — a proxy that accepts the connection and never answers
+    // would leave "Signing in…" on screen forever. Not an error, not a retry, just a
+    // spinner: the FR-552 dead end reached from an unusual direction.
+    withDocument('')
+
+    const seen: string[] = []
+    const impl = (async (input: unknown, init: RequestInit = {}) => {
+      seen.push(String(init.method))
+      if (init.method === 'GET') {
+        // Never resolves on its own. It must be the bootstrap's OWN deadline that ends
+        // this, which is exactly what the assertion below is checking.
+        return new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener(
+            'abort',
+            () => reject(init.signal?.reason ?? new DOMException('Aborted', 'AbortError')),
+            { once: true },
+          )
+        })
+      }
+      return new Response(JSON.stringify({ data: { logout: { revoked: true } } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+
+    const startedAt = Date.now()
+    assert.equal(await logout(false, { fetchImpl: impl }), true)
+    const elapsed = Date.now() - startedAt
+
+    // Bounded, and by the bootstrap's 5s rather than by luck. Asserting an upper bound
+    // AND a lower one: without the lower bound this passes just as well if the bootstrap
+    // were skipped entirely, which is the other way to be wrong here.
+    assert.ok(elapsed >= 4500, `the bootstrap did not run to its deadline (${elapsed}ms)`)
+    assert.ok(elapsed < 9000, `the bootstrap was not bounded (${elapsed}ms)`)
+    // And the mutation still happened: a timed-out seed degrades via the best-effort
+    // path rather than taking the request down with it.
+    assert.deepEqual(seen, ['GET', 'POST'])
+  })
+
   test('a caller who already aborted gets no requests at all, bootstrap included', async () => {
     withDocument('')
     const { calls, impl } = recorder(() => ({ data: { logout: { revoked: true } } }))

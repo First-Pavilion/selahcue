@@ -34,6 +34,8 @@
  *    be forgotten will be: the failure it produces is a 403 on a route that worked in
  *    every test, which is the most expensive kind of bug to find. There is still exactly
  *    one transport path — callers only ever reach the network through this function.
+ *    It carries its own 5s deadline, because it is awaited before the mutation's timer
+ *    starts and would otherwise be the one unbounded wait in this module.
  *
  * 4. TRANSPORT FAILURE IS NOT A VALIDATION FAILURE. `ApiErrorCode.NETWORK` exists
  *    specifically so a caller can tell "we could not reach the server" from "the
@@ -113,6 +115,22 @@ export const CSRF_BOOTSTRAP_PATH = '/graphql/csrf'
  */
 let csrfBootstrap: Promise<void> | null = null
 
+/**
+ * The bootstrap's own deadline, separate from and shorter than the mutation's.
+ *
+ * It needs one BECAUSE it is awaited before the mutation's timer starts — which is
+ * deliberate, so a slow seed does not eat the mutation's budget, but it means nothing
+ * else bounds it. Without this a proxy that accepts the connection and never answers
+ * leaves "Signing in…" on screen forever: not an error state, not a retry, just a
+ * spinner. That is the dead end FR-552 exists to prevent, arrived at from an unusual
+ * direction.
+ *
+ * Five seconds because a timed-out bootstrap is not a failure — the request proceeds
+ * regardless on the best-effort path below — so the only thing this trades away is a few
+ * seconds before an honest error appears.
+ */
+const CSRF_BOOTSTRAP_TIMEOUT_MS = 5000
+
 function apiBaseUrl(): string {
   // `import.meta.env` is a Vite BUILD-TIME construct. It does not exist under plain Node,
   // which is where these modules are unit tested — and reading `.VITE_API_BASE_URL` off
@@ -163,6 +181,13 @@ function ensureCsrfCookie(send: typeof fetch): Promise<void> {
   if (csrfBootstrap) return csrfBootstrap
 
   const attempt = (async () => {
+    // Its OWN controller, and deliberately NOT the caller's signal. This promise is
+    // shared by every request that arrives while it is in flight, so honouring one
+    // caller's cancellation would abort a seed the others are still waiting on. The
+    // caller's cancellation is respected the correct way — `graphqlRequest` re-checks
+    // `signal.aborted` the moment this resolves, and issues no mutation if it was.
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), CSRF_BOOTSTRAP_TIMEOUT_MS)
     try {
       await send(`${apiBaseUrl()}${CSRF_BOOTSTRAP_PATH}`, {
         method: 'GET',
@@ -170,9 +195,12 @@ function ensureCsrfCookie(send: typeof fetch): Promise<void> {
         credentials: 'same-origin',
         referrerPolicy: 'no-referrer',
         headers: { Accept: 'application/json' },
+        signal: controller.signal,
       })
     } catch {
-      // Swallowed on purpose. See above.
+      // Swallowed on purpose — a timeout included. See above.
+    } finally {
+      clearTimeout(timeout)
     }
   })().then(() => {
     csrfBootstrap = null
