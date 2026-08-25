@@ -1,0 +1,41 @@
+# The single Rust toolchain this repository builds, lints and gates on.
+#
+# WHY THIS FILE EXISTS
+# CI used `dtolnay/rust-toolchain@stable`, which installs whatever is latest
+# stable AT RUN TIME, while developers ran whatever they happened to have
+# installed. Nothing made the two agree. On 2026-08-18 stable moved 1.97.1 ->
+# 1.98.0, bringing the new lint `clippy::chunks_exact_to_as_chunks`; because the
+# clippy gate runs with `-D warnings`, a new lint is a hard build failure. `main`
+# went red on the next push and had no green run for nine days, while `make ci`
+# kept printing "ALL GREEN" locally on the older compiler. See ClickUp 86ak5rc9c.
+#
+# HOW IT FIXES THAT
+# rustup reads this file for EVERY cargo/rustc invocation anywhere under the
+# repository -- including the two crates that sit outside the workspace
+# (selahcue-operator, selahcue-stt) -- and installs the toolchain on first use.
+# So `make ci` and .github/workflows/ci.yml now compile with the same compiler by
+# construction rather than by luck. `scripts/check_toolchain.sh` asserts it, and
+# both gates call that script before running anything.
+#
+# THE TRADE-OFF WE ACCEPTED
+# A pinned toolchain is a DELIBERATE LAG: new compiler and clippy releases no
+# longer reach us automatically, so a new lint that would catch a real bug
+# arrives only when somebody bumps this file. We accepted that because a silent
+# disagreement between local and CI is far more expensive -- it blocks every
+# engineer at once and makes every branch's CI result unreadable. The lag is
+# covered by `.github/workflows/rust-canary.yml`, which runs the gate against
+# floating stable on a schedule and files an issue when a future release would
+# break us -- warning, never blocking.
+#
+# BUMPING IT
+# Editing `channel` is a normal, reviewable change: bump it, run `make ci`, fix
+# what the new release's lints find, and open one merge request for the bump
+# alone. The canary issue tells you in advance what that will cost.
+#
+# `channel` MUST be an exact version (x.y.z), never "stable" -- a floating
+# channel here would reintroduce the exact drift this file exists to stop, and
+# scripts/check_toolchain.sh rejects it.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

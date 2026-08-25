@@ -16,10 +16,11 @@ SelahCue — a cross-platform church presentation & ministry-assistance app. The
 The root `Makefile` wraps all the manifest paths and feature flags — prefer it. `make` alone lists all targets.
 
 ```bash
-make ci          # the FULL local CI gate (fmt --check, clippy -D warnings, all test
-                 # suites incl. feature-gated ones, operator check, headless operator
-                 # webview check, flutter analyze+test). Run before every push —
-                 # CI has a cargo fmt --check gate.
+make ci          # the local RUST + FLUTTER gate (toolchain check, fmt --check, clippy
+                 # -D warnings, all test suites incl. feature-gated ones, operator
+                 # check, headless operator webview check, flutter analyze+test).
+                 # Run before every push. It is NOT everything CI runs — see
+                 # "What `make ci` does not cover" below.
 make launch      # run the app: output window + Tauri operator shell together
 make output      # just the native output window (press P to pair a mobile controller)
 make operator    # just the Tauri operator shell
@@ -79,7 +80,10 @@ Guiding principles (from `ARCHITECTURE.md`): desktop-authoritative, offline-firs
 - Timers/animation take an **injected clock** — keep new time-dependent code deterministic the same way.
 - Memory must stay bounded: no unbounded queues/caches/logs; new buffering code gets a bounded-memory test — one that actually bites, see below.
 - A SelahCue "theme" is a slide-design template (typography/background/elements, ProPresenter-style) — **not** a light/dark colour mode. See `docs/design/THEME-MODEL-spec.md`.
-- CI (`.github/workflows/ci.yml`) path-filters desktop vs mobile jobs and skips docs-only changes; `make ci` is the local mirror of its gates.
+- CI (`.github/workflows/ci.yml`) path-filters desktop vs mobile vs api vs marketing jobs and skips docs-only changes.
+- **The Rust toolchain is pinned in `rust-toolchain.toml`, and that pin is the gate.** rustup reads it for every `cargo`/`rustc` call under the repo (including the two out-of-workspace crates), so `make ci` and CI compile with the same compiler *by construction*; `scripts/check_toolchain.sh` then asserts it, and both gates run that same script first. Before the pin existed, CI installed whatever stable was newest at run time while developers ran whatever they had: on 2026-08-18 stable moved 1.97.1 → 1.98.0, the new `clippy::chunks_exact_to_as_chunks` met `-D warnings`, and `main` went red on the next push and had no green run for nine days while `make ci` kept printing ALL GREEN. Bumping the pin is a normal reviewable change — edit `channel`, run `make ci`, fix what the new lints find, one MR for the bump. `.github/workflows/rust-canary.yml` runs the gates weekly against floating stable and files an issue when a future release would break us, so the pin's deliberate lag stays visible. Never set `channel` to a floating value; the check script refuses it.
+- **What `make ci` does not cover** — it is the Rust/Flutter gate, not the whole pipeline. CI additionally runs `cargo audit` + `cargo deny` (supply chain), the Playwright **WebKit** engine smoke (`scripts/operator_webkit_smoke.py` — the Blink gate in `make ci` cannot catch a WebKit-only break), `launch-smoke` + `make nfr`, the Android APK compile-check, and the **`api (django)` and `marketing (vue spa)` jobs — which `make ci` does not touch at all.** Changing `implementation/api` or `implementation/marketing` and running only `make ci` verifies **nothing** about that change; run those projects' own tooling.
+- **A failing run on `main` opens a `ci-red` GitHub issue** (and closes it when `main` goes green). The repo has no branch protection available on this plan, so nothing prevents a red commit landing — the issue is the only alarm. While one is open, treat every branch's CI result as unreadable: a real failure cannot be distinguished from the standing one.
 - Design-doc validators live in `scripts/` (`validate_prd.py`, `validate_goal_contract.py`, `validate_delivery_plan.py`) — run the matching one after editing those artefacts.
 - **`cargo test --workspace` fail-fasts** (no `--no-fail-fast` anywhere), and so does `make ci` — each recipe line aborts the target. A failure in the `--workspace` line means the feature-gated suites, operator check, headless webview check and Flutter gate never ran at all. A green `--workspace` after a fix is therefore not evidence the *later* crates passed: re-verify the specific crate too.
 - **Run one `make ci` at a time in this checkout.** Concurrent Flutter runs race on `implementation/mobile/selahcue_controller/ios/Flutter/ephemeral/Packages`, which `generatePluginsSwiftPackage` deletes and recreates on every invocation. Two signatures — `Waiting for another flutter command to release the startup lock…` followed by a delete failure, and `FileSystemException: Deletion failed, OS Error: Directory not empty, errno = 66` — are **false reds** (never false greens) and pass on retry with no code change. Check for other active sessions and serialise instead of re-diagnosing them.

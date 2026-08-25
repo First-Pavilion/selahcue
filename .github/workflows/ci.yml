@@ -12,6 +12,18 @@
 #   - Ubuntu runners: Mesa software Vulkan (lavapipe, installed below)
 #   - Windows runners: DX12/WARP where available
 name: ci
+#
+# TOOLCHAIN: every Rust job below installs the EXACT version pinned in
+# rust-toolchain.toml (read once by the `changes` job, passed down as
+# `needs.changes.outputs.rust`), and then runs scripts/check_toolchain.sh to prove
+# that is what is actually running. `make ci` runs the same script, so the local
+# gate and this pipeline compile with the same compiler by construction.
+#
+# `dtolnay/rust-toolchain@stable` still appears below: `@stable` there is the
+# ACTION's own git ref (the branch the action lives on), NOT the Rust channel. The
+# Rust version comes solely from the `toolchain:` input. Do not "simplify" it back
+# to a bare `@stable` with no input -- that is precisely the floating-toolchain bug
+# that left `main` without a green run for nine days (ClickUp 86ak5rc9c).
 
 # Docs-only changes skip the matrix (saves runner minutes; docs carry no code to
 # verify). A `changes` job (below) further gates the desktop vs mobile jobs by
@@ -58,6 +70,10 @@ jobs:
       android: ${{ steps.filter.outputs.android }}
       api: ${{ steps.filter.outputs.api }}
       marketing: ${{ steps.filter.outputs.marketing }}
+      # The one Rust version every Rust job below installs. Read from
+      # rust-toolchain.toml so the file is the single source of truth and CI cannot
+      # drift from `make ci` (86ak5rc9c).
+      rust: ${{ steps.toolchain.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -76,6 +92,9 @@ jobs:
               # `marketing:` below is, and why it is no longer caught here.
               - 'implementation/web/**'
               - '.github/workflows/ci.yml'
+              # A toolchain bump changes which compiler every desktop gate runs, so
+              # it must re-run the whole desktop matrix.
+              - 'rust-toolchain.toml'
             mobile:
               - 'implementation/mobile/**'
               - '.github/workflows/ci.yml'
@@ -102,6 +121,20 @@ jobs:
             marketing:
               - 'implementation/marketing/**'
               - '.github/workflows/ci.yml'
+      # Single source of truth for the compiler. Every Rust job installs exactly this
+      # version, and scripts/check_toolchain.sh then asserts the running toolchain
+      # matches it -- the same script `make ci` runs, which is what makes the local
+      # gate a real mirror of this one rather than a hopeful claim.
+      - id: toolchain
+        name: Read the pinned Rust toolchain
+        run: |
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p' rust-toolchain.toml)"
+          if [ -z "$channel" ]; then
+            echo "::error file=rust-toolchain.toml::no [toolchain] channel found"
+            exit 1
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "pinned Rust toolchain: $channel"
 
   rust:
     name: rust (${{ matrix.os }})
@@ -119,7 +152,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ needs.changes.outputs.rust }}
           components: clippy, rustfmt
+      # Refuse to gate on a compiler nobody pinned. Same script `make ci` runs, so a
+      # divergence between this pipeline and the local gate fails loudly here instead
+      # of silently producing a green that means nothing (86ak5rc9c).
+      - name: Verify the pinned toolchain is what is running
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: sh scripts/check_toolchain.sh
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
@@ -191,6 +232,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.changes.outputs.rust }}
+      # Refuse to gate on a compiler nobody pinned. Same script `make ci` runs, so a
+      # divergence between this pipeline and the local gate fails loudly here instead
+      # of silently producing a green that means nothing (86ak5rc9c).
+      - name: Verify the pinned toolchain is what is running
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: sh scripts/check_toolchain.sh
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
@@ -238,7 +288,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ needs.changes.outputs.rust }}
           components: clippy, rustfmt
+      # Refuse to gate on a compiler nobody pinned. Same script `make ci` runs, so a
+      # divergence between this pipeline and the local gate fails loudly here instead
+      # of silently producing a green that means nothing (86ak5rc9c).
+      - name: Verify the pinned toolchain is what is running
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: sh scripts/check_toolchain.sh
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop/crates/selahcue-operator
@@ -490,3 +548,102 @@ jobs:
           name: sbom-cyclonedx
           path: implementation/desktop/**/*.cdx.json
           if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Nine days without a green run on `main` went unnoticed because a failure notifies nobody.
+  # There is no branch protection available on this plan for a private repo, so a red
+  # commit lands regardless -- which makes an alarm the ONLY available control, not a
+  # nice-to-have. These two jobs are that alarm: one files (or updates) a tracking
+  # issue while `main` is broken, the other closes it once `main` is green again, so
+  # the signal cannot go stale and start being ignored. ClickUp 86ak5rc9c.
+  #
+  # `always() && contains(needs.*.result, 'failure')` rather than `failure()`: the
+  # path filters legitimately SKIP whole jobs, and a skipped dependency would
+  # otherwise skip the alarm too.
+  alert-on-red-main:
+    name: alert (main is red)
+    needs:
+      [changes, rust, launch-smoke, operator, flutter, api, marketing, audit, supply-chain]
+    if: >-
+      ${{ always()
+          && contains(needs.*.result, 'failure')
+          && github.event_name == 'push'
+          && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: File or update the "main is red" tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          TITLE: "CI is failing on `main`"
+        run: |
+          set -euo pipefail
+          gh label create ci-red --color B60205 \
+            --description "main's pipeline is failing" --force >/dev/null 2>&1 || true
+
+          existing="$(gh issue list --repo "$REPO" --label ci-red --state open \
+                        --limit 1 --json number --jq '.[0].number // empty')"
+
+          {
+            echo "\`main\` failed CI at commit \`${SHA:0:8}\`."
+            echo
+            echo "Run: $RUN_URL"
+            echo
+            echo "Failed jobs:"
+            echo "- rust: ${{ needs.rust.result }}"
+            echo "- launch-smoke: ${{ needs['launch-smoke'].result }}"
+            echo "- operator: ${{ needs.operator.result }}"
+            echo "- flutter: ${{ needs.flutter.result }}"
+            echo "- api: ${{ needs.api.result }}"
+            echo "- marketing: ${{ needs.marketing.result }}"
+            echo "- audit: ${{ needs.audit.result }}"
+            echo "- supply-chain: ${{ needs['supply-chain'].result }}"
+            echo
+            echo "While this is open, every branch's CI result is unreadable: a real"
+            echo "failure cannot be told apart from this standing one. Fix or revert"
+            echo "before merging anything else."
+          } > body.md
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body-file body.md
+            echo "updated issue #$existing"
+          else
+            gh issue create --repo "$REPO" --label ci-red \
+              --title "$TITLE" --body-file body.md
+          fi
+
+  clear-red-main-alert:
+    name: alert (main recovered)
+    needs:
+      [changes, rust, launch-smoke, operator, flutter, api, marketing, audit, supply-chain]
+    if: >-
+      ${{ always()
+          && !contains(needs.*.result, 'failure')
+          && !contains(needs.*.result, 'cancelled')
+          && github.event_name == 'push'
+          && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Close the "main is red" tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          open_issue="$(gh issue list --repo "$REPO" --label ci-red --state open \
+                          --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -z "$open_issue" ]; then
+            echo "main is green and no ci-red issue is open; nothing to do."
+            exit 0
+          fi
+          gh issue close "$open_issue" --repo "$REPO" --reason completed \
+            --comment "\`main\` is green again at \`${SHA:0:8}\`. Run: $RUN_URL"
+          echo "closed issue #$open_issue"

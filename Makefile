@@ -245,7 +245,20 @@ mobile: ## Run the Flutter controller on this Mac (pair it with a running `make 
 mobile-test: ## Analyze + unit-test the Flutter controller
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 
-ci: ## Run the CI gate locally (same gates as .github/workflows/ci.yml, minus the CI-only audit)
+# Mirrors the Rust/Flutter gates in .github/workflows/ci.yml. It does NOT cover
+# everything CI runs -- see the "Not covered here" list below and in CLAUDE.md.
+#
+# The FIRST line is load-bearing: it asserts the running toolchain is the one
+# rust-toolchain.toml pins, which is the same assertion CI makes. Without it this
+# target could pass on one compiler while CI failed on another -- which is exactly
+# how `main` went nine days without a green run while this printed ALL GREEN (86ak5rc9c).
+#
+# Not covered here (CI-only): cargo audit / cargo deny (supply chain), the
+# Playwright WebKit engine smoke, launch-smoke + `make nfr`, the Android APK
+# compile-check, and the `api (django)` and `marketing (vue spa)` jobs entirely.
+# Run those areas' own tooling before pushing changes to them.
+ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that this does not)
+	sh scripts/check_toolchain.sh
 	cd $(DESKTOP) && $(CARGO) fmt --check
 	cd $(OPERATOR) && $(CARGO) fmt --check
 	$(CARGO) clippy $(WS) --workspace --all-targets -- -D warnings
@@ -265,7 +278,7 @@ ci: ## Run the CI gate locally (same gates as .github/workflows/ci.yml, minus th
 	python3 scripts/operator_headless.py
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 	@echo ""
-	@echo "== local CI gate: ALL GREEN =="
+	@echo "== local Rust/Flutter gate: ALL GREEN (see the ci: header for CI-only gates) =="
 
 nfr: ## Measure the walking-skeleton NFRs (idle memory / cold start) on a release build
 	sh scripts/measure_nfr.sh
