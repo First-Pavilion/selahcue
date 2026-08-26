@@ -69,8 +69,9 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # It HAS moved down once, deliberately: 1384 → 1381 when the `elapsed` facet stopped being
 # gated and became reported evidence (see REPORTED_FACETS), removing three comparisons and
 # adding three INFO lines. The guard did its job and refused the run until this number was
-# changed on purpose, which is the only acceptable way for it to go down.
-EXPECTED_MIN_CHECKS = 1381
+# changed on purpose, which is the only acceptable way for it to go down. Back to 1384 with
+# the `attrs` facet, which adds one comparison per equivalence group.
+EXPECTED_MIN_CHECKS = 1384
 
 
 def find_chrome() -> str | None:
@@ -343,10 +344,13 @@ DRIVER = r"""
    * so it is compared like meaning.
    */
   function toneSignature() {
-    var card = document.querySelector('.au-card');
-    if (!card) return 'no-card';
+    // document.body, NOT `.au-card`. Quinn: LOW-2 widened TEXT to the whole page but left
+    // COLOUR scoped to the card, and `AuthShell` renders the footer outside it — so a
+    // status colour in the footer was uncovered by both.
+    var root = document.body;
+    if (!root) return 'no-body';
     var tones = [];
-    var nodes = card.querySelectorAll('[class*="au-disc-"], [class*="au-banner-"]');
+    var nodes = root.querySelectorAll('[class*="au-disc-"], [class*="au-banner-"]');
     for (var i = 0; i < nodes.length; i += 1) {
       var matched = String(nodes[i].className).match(/au-(?:disc|banner)-[a-z]+/g);
       if (matched) tones.push(matched.join(' '));
@@ -389,6 +393,55 @@ DRIVER = r"""
     return false;
   }
 
+  /**
+   * Attributes that are not text and not colour — the channel four facets could not see.
+   *
+   * Quinn's mutation is the proof this exists for: a footer link whose VISIBLE TEXT is
+   * identical for both branches and whose destination is not.
+   *
+   *     <router-link :to="submittedEmail.startsWith('second-attempt') ? '/signin' : '/support'">
+   *       Contact support
+   *     </router-link>
+   *
+   * `card` and `page` read innerText, `tone` read a class whitelist, `ops` read operation
+   * names. All four passed. Registration status was readable straight off the DOM as
+   * `href="/signin"` versus `href="/support"`.
+   *
+   * TWO NORMALISATIONS, both load-bearing. `FormField` generates its id from
+   * `Math.random()`, so `id`, `for` and `aria-describedby` differ on EVERY render — left
+   * raw, this facet would fail constantly on correct code and be switched off within a
+   * week. Ids are collapsed to `<ID>`, which keeps the security-relevant signal (is this
+   * field described? is that control disabled?) while discarding the randomness. Email
+   * addresses are masked for the same reason the text facets mask them.
+   */
+  var SIGNED_ATTRS = [
+    'href', 'target', 'rel', 'disabled', 'type', 'name', 'role', 'class', 'checked',
+    'autocomplete', 'aria-invalid', 'aria-busy', 'aria-live', 'aria-pressed',
+    'aria-label', 'aria-hidden', 'aria-describedby', 'aria-current', 'tabindex'
+  ];
+
+  function attributeSignature() {
+    var parts = [];
+    var nodes = document.body ? document.body.querySelectorAll('*') : [];
+    for (var i = 0; i < nodes.length; i += 1) {
+      var node = nodes[i];
+      // The driver's own output blocks are appended after this runs, but skip them
+      // defensively so a future reordering cannot poison the comparison.
+      if (node.id === '__results' || node.id === '__records') continue;
+      var pairs = [];
+      for (var a = 0; a < SIGNED_ATTRS.length; a += 1) {
+        var attr = SIGNED_ATTRS[a];
+        if (!node.hasAttribute(attr)) continue;
+        var value = String(node.getAttribute(attr))
+          .replace(/field-[a-z0-9]+/gi, '<ID>')
+          .replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, '<EMAIL>');
+        pairs.push(attr + '=' + value);
+      }
+      if (pairs.length) parts.push(node.tagName.toLowerCase() + '[' + pairs.join(',') + ']');
+    }
+    return parts.join(' ');
+  }
+
   function recordBranch(key) {
     record(key + '|card', cardText());
     /**
@@ -401,6 +454,7 @@ DRIVER = r"""
     record(key + '|page', pageText());
     record(key + '|ops', opSequence());
     record(key + '|tone', toneSignature());
+    record(key + '|attrs', attributeSignature());
     /**
      * LOW-3 (Sana): Chrome runs under `--virtual-time-budget`, which fast-forwards
      * timers — so an address-keyed `setTimeout` would render identical text and pass
@@ -1762,9 +1816,13 @@ SCENARIOS: list[tuple[str, str]] = [
 #            outside `.au-card` by AuthShell, so the card facet is blind to it (LOW-2)
 #   ops      the sequence of GraphQL operations; an extra request for one branch is an
 #            oracle just as surely as different copy
-#   tone     the status/tone classes worn by the card; identical copy in a different
-#            colour is a colour-only oracle (LOW-3)
-COMPARED_FACETS = ("card", "page", "ops", "tone")
+#   tone     the status/tone classes anywhere on the page — the footer included, since
+#            AuthShell renders it outside the card; identical copy in a different colour
+#            is a colour-only oracle (LOW-3, widened per Quinn)
+#   attrs    tag name plus href/disabled/aria-*/type/name/class for every element; the
+#            channel the other four are blind to. A link with identical visible text and
+#            an address-keyed destination passed all of them (Quinn)
+COMPARED_FACETS = ("card", "page", "ops", "tone", "attrs")
 
 # REPORTED, NOT GATED — and the reason is worth stating plainly.
 #
@@ -1836,15 +1894,25 @@ def check_bundle_is_current() -> str | None:
     # touching `src/` — reopening a narrow version of exactly the false-green window this
     # guard was built to close.
     candidates = [newest_mtime(MARKETING / "src")]
-    for name in ("index.html", "vite.config.ts", "package.json", "package-lock.json"):
+    # `tsconfig.app.json` carries the `@/*` path alias, and everything in `public/` is
+    # copied verbatim into `dist/` — both are real build inputs that leave `src/`
+    # untouched. Same class as LOW-4; found by Quinn after the first widening.
+    candidates.append(newest_mtime(MARKETING / "public"))
+    for name in (
+        "index.html",
+        "vite.config.ts",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.app.json",
+    ):
         path = MARKETING / name
         if path.is_file():
             candidates.append(path.stat().st_mtime)
     sources = max(candidates)
     if sources > built:
         return (
-            f"the bundle at {DIST} is OLDER than its sources (src/, index.html, "
-            f"vite.config.ts, package.json, package-lock.json) "
+            f"the bundle at {DIST} is OLDER than its sources (src/, public/, index.html, "
+            f"vite.config.ts, tsconfig.app.json, package.json, package-lock.json) "
             f"({sources - built:.0f}s stale). Run `npm run build` first — this run would "
             "otherwise report on code that is not in the bundle."
         )

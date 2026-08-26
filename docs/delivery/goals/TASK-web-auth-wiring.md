@@ -107,12 +107,40 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-012 | yes | Typecheck and production build are clean | `npm run build` | exits 0 | `vue-tsc -b && vite build`, exit 0 | PASS |
 | C-013 | yes | Every flow is completable by keyboard alone; fields carry labels, `aria-invalid`, `aria-describedby`, and errors are announced | `npm run test:states` | exits 0 | autocomplete/label/aria/44px-target checks per scenario | PASS |
 | C-014 | yes | No fabricated success remains — no `setTimeout`-simulated outcome, no unbacked OAuth affordance | `npm run test:states` + review | no matches | universal check `no unbacked OAuth affordance`; no `setTimeout` in the views | PASS |
-| C-015 | yes | The headless suite did not shrink; its floor was raised to the new count | `npm run test:states` | exits 0, not 4 | floor 495 → 1381; 49 scenarios, 1381 checks | PASS |
+| C-015 | yes | The headless suite did not shrink; its floor was raised to the new count | `npm run test:states` | exits 0, not 4 | floor 495 → 1384; 49 scenarios, 1384 checks | PASS |
 | C-016 | yes | No wait in the request path is unbounded — a hung CSRF bootstrap still resolves to an honest state | `npm test` | exits 0; the call settles within its own deadline and the mutation still runs | `tests/accountApi.test.ts`: `a hung bootstrap is bounded and the mutation still gets its answer` | PASS |
-| C-017 | yes | The enumeration probe gates copy, footer, request sequence and colour — each proven to be the only guard on its channel | `npm run test:states` | exits 0; 12 `PASS [enumeration]` lines | 3 groups × 4 gated facets; one mutation per group isolated one facet each | PASS |
-| C-018 | yes | The timing channel has a deterministic control, and the non-deterministic measurement is reported rather than gated | `npm test` | exits 0; no timer or address literal in the three views | `tests/authViews.test.ts`, mutation-verified; `INFO [enumeration] … (elapsed)` printed each run | PASS |
+| C-017 | yes | The enumeration probe gates five channels — copy, whole-page text, request sequence, colour, and DOM attributes — and each is mutation-verified to be the sole catcher of its own channel | `npm run test:states` | exits 0; 15 `PASS [enumeration]` lines | 3 groups × 5 gated facets; one mutation per group isolated exactly one facet | PASS |
+| C-018 | yes | The timing channel is covered by a deterministic control whose scope is stated, and the noisy measurement is reported rather than gated | `npm test` | exits 0; no timer, address inspection or address literal in the three views | `tests/authViews.test.ts` (mutation-verified, with an anti-vacuity guard and a positive control on its own regexes); `INFO [enumeration] … (elapsed)` printed each run | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
+
+### What the probe does NOT cover, stated so it is not mistaken for more
+
+The five gated facets are each mutation-verified as the only catcher of their own channel.
+That is not the same as proving the set is exhaustive, and C-017 must not be read as
+saying so — the `attrs` facet exists precisely because a QA review found a sixth channel
+the first four were blind to, after they had all been mutation-verified. Known limits:
+
+- **The timing channel is not gated.** `elapsed` is measured and printed, never asserted;
+  its noise floor is structural (a 20ms poll under `--virtual-time-budget`, so the reading
+  is "how many quanta" plus a 120ms grace) and is wider than any useful threshold.
+  Observed spreads on CORRECT code, across machine loads 5.85→41: 321ms, and independently
+  29/7/23ms and 0/4/2ms.
+- **The deterministic timing control covers three files.** `tests/authViews.test.ts` refuses
+  timers and address inspection in `SignInView`, `SignUpView` and `ForgotPasswordView`
+  only. A timer added to `account.ts`, `graphql.ts`, `sessionStore.ts`, `AuthBanner.vue` or
+  `AuthShell.vue` is **not** covered by it.
+- **The strongest guarantee on timing is structural, not a test.** The server equalises the
+  branches itself — `check_password` against `_DUMMY_PASSWORD_HASH` on the unknown-email
+  path, and a dummy-PBKDF2 pad in `request_password_reset` — and its responses to the two
+  branches are byte-identical. **The client is never told which branch occurred, so it
+  holds no registration knowledge to time-branch on.** A client-side timing oracle would
+  require the client to first acquire the very fact the whole design withholds.
+- **The fixtures never present a difference.** Every scenario scripts identical responses
+  for both branches, because that is what the API really returns. So the probe proves the
+  client does not **invent** a distinction; it cannot prove the client would not **render**
+  one if the server ever started emitting it. "No *response* difference reveals whether an
+  address is registered" is a server property, and this branch verifies it nowhere.
 
 ## Verification plan
 
@@ -129,7 +157,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Hypothesis: The gap is entirely client-side; the schema already carries every operation the three flows need, so no backend change is required.
 - Change or investigation: read the shipped schema and services rather than the design docs, which 86ak120kw records as wrong in three places. A fourth of the same kind was found during this work — gap-fill §5c's "We couldn't find an account with this email", a second enumeration oracle that 86ak120kw does not list.
 - Verifier executed: `npm ci`, `npm run build`, `npm test`, `SELAHCUE_HEADLESS_REQUIRE=1 npm run test:states`
-- Result: hypothesis held — no backend change was needed. 107 unit tests, 49 headless scenarios, 1381 checks as finally shipped.
+- Result: hypothesis held — no backend change was needed. 108 unit tests, 49 headless scenarios, 1384 checks as finally shipped.
 - New evidence: nothing in the SPA called `GET /graphql/csrf`, so every account mutation — including on the two views that shipped earlier — was a permanent 403 in a real browser. Fixed inside the existing seam.
 - Decision: iterate
 
@@ -149,7 +177,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Hypothesis: `verify-loading` failed all 11 of its checks with `calls=0` — the view had not mounted inside its 120ms window — in the chained CI run, having passed minutes earlier. Suspected the async route guard.
 - Change or investigation: `router.beforeEach(async …)` returns a promise even on its early-exit path, so vue-router awaited it on EVERY navigation, delaying first paint on all ~30 routes to serve a check only `/account` needs. Rewritten to return a plain boolean for unguarded routes and a promise only for the guarded one. Separately, `verify-loading`'s 120ms wait was implicitly asserting how fast a lazy chunk mounts; raised to 400ms, which cannot weaken the check because that scenario's scripted reply is a promise that never resolves.
 - Verifier executed: `npm run build`, then `SELAHCUE_HEADLESS_REQUIRE=1 npm run test:states`, repeated.
-- Result: 49 scenarios, 1381 checks, 0 FAIL, repeatedly.
+- Result: 49 scenarios, 1384 checks, 0 FAIL, repeatedly.
 - New evidence: the async guard was a real site-wide latency regression, not only a test problem. The flaky test was the only thing that surfaced it.
 - Decision: complete
 
@@ -162,7 +190,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
   - **LOW-2** `AuthShell` renders the footer OUTSIDE `.au-card`, so `cardText()` could not see it — a footer branched on the address ("Sign in instead" vs "Create an account", the §4c shape) would have passed both existing facets. Added a `page` facet over the whole body.
   - **LOW-3** Added a `tone` facet (status classes — identical copy in a different colour is a colour-only oracle) and an `elapsed` facet, plus `tests/authViews.test.ts` as the *named* control banning timers and address literals in the three views outright.
   - **LOW-4** The staleness guard watched `src/` and `index.html` only; a change to `vite.config.ts`, `package.json` or the lockfile alters the bundle without touching `src/`. All three added.
-  - **LOW-5** Contract numbers corrected to the then-shipped 49 / 1384 (1381 after iteration 5 demoted the `elapsed` facet).
+  - **LOW-5** Contract numbers corrected to the then-shipped 49 / 1384 (1381 after iteration 5 demoted the `elapsed` facet, and 1384 again after iteration 6 added `attrs`).
 - Verifier executed: one mutation per equivalence group, so each facet's failure could be attributed to exactly one channel — a footer leak in signup, a colour-only leak in forgot-password, an address-keyed 900ms delay in sign-in.
 - Result: `page` caught only the footer leak; `tone` caught only the colour leak; **`elapsed` caught nothing.** The facet was reading `Date.now()` after the scenario's fixed `await wait(700)`, so every branch reported ~700ms regardless — it was measuring the harness's patience, not the application. Rewritten to POLL for the terminal copy and record when it actually appeared. Re-run with the same three mutants: 3 FAIL, exactly one per group, `elapsed` reporting `924ms` vs `55ms` while every text and colour facet passed. All mutants reverted; the three views verified byte-identical to the commit via `git diff`.
 - New evidence: the first `elapsed` facet was vacuous, and only its own mutation test showed it. That is the second guard in this ticket that read broader than it was — the first being the harness running happily on a stale bundle. Both were found by attacking the guard, neither by reading it.
@@ -176,6 +204,52 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Verifier executed: repeated full runs, observing the spread.
 - Result: demoted from `COMPARED_FACETS` to `REPORTED_FACETS` — still measured, still printed as `INFO` on every run so a real divergence is visible to a reviewer, but not a pass/fail gate. The deterministic control on that channel is `tests/authViews.test.ts`, which refuses a timer or an address literal in these three views outright, never flakes, and is mutation-verified. This is the fallback the security review explicitly offered. The shrink guard then refused the run (1381 < 1384) until the floor was lowered on purpose, with the reason recorded beside it.
 - New evidence: a gate that cries wolf is worse than no gate — it teaches people to re-run until green, which is exactly the habit that let the stale-bundle false green survive in iteration 2. Trading a flaky broad check for an exact narrow one plus visible evidence is the better bargain, and the limitation is documented rather than hidden.
+- Decision: complete
+
+### Iteration 6 — QA review (Quinn): the channel four facets could not see
+
+- Target criterion: C-017, C-018, and the accuracy of what C-017 claims
+- Hypothesis: after two rounds of mutation verification the probe was complete. It was not.
+- Change or investigation: Quinn built a mutant with **identical visible text** and an
+  address-keyed destination — `<router-link :to="submittedEmail.startsWith('second-attempt') ? '/signin' : '/support'">Contact support</router-link>`
+  — and ran the full gate against it: **1384 checks, 0 FAIL, exit 0, every facet PASS**,
+  with registration status readable straight off the DOM as `href="/signin"` versus
+  `href="/support"`. `card`/`page` read innerText, `tone` read a class whitelist, `ops`
+  read operation names; nothing sampled any other attribute.
+  - Added an **`attrs` facet**: tag name plus `href`/`target`/`rel`/`disabled`/`type`/
+    `name`/`role`/`class`/`checked`/`autocomplete`/`aria-*`/`tabindex` for every element on
+    the page. Two normalisations are load-bearing: `FormField` derives its id from
+    `Math.random()`, so ids are collapsed to `<ID>` (keeping "is this field described?"
+    while discarding the randomness), and addresses are masked as elsewhere.
+  - **Widened `toneSignature()` from `.au-card` to `document.body`.** LOW-2 had widened
+    *text* to the whole page but left *colour* scoped to the card, and `AuthShell` renders
+    the footer outside it — so footer colour was uncovered by both.
+  - **Widened the address-literal ban** in `authViews.test.ts`. It matched only a full
+    address in quotes, so `startsWith('second-attempt')` walked past a test that claims to
+    forbid exactly that. It now refuses any string-inspection method on an address-bearing
+    ref and any direct comparison to a literal — and carries a **positive control on its
+    own regexes**, asserting they match Quinn's mutation verbatim while not matching the
+    legitimate `email.value.trim()` and `validateEmail(email.value)` the views use.
+  - **Two more staleness inputs**: `tsconfig.app.json` (carries the `@/*` alias) and
+    `public/` (copied verbatim into `dist/`). All eight inputs re-verified to bite
+    individually, each restoring to clean.
+- Verifier executed: Quinn's mutant verbatim, then the full gate.
+- Result: `attrs` FAILed for the signup group alone; `card`, `page`, `ops` and `tone` all
+  passed, confirming the leak was invisible to every pre-existing facet. The widened
+  literal ban caught it independently in `npm test` — defence in depth. Mutant reverted;
+  views confirmed byte-identical to the commit by `git diff`.
+- Rulings accepted on the two open judgement calls, both upheld with better reasoning than
+  I had: gating `elapsed` at ~750ms would be **worse** than not gating (a real timing
+  oracle is a stable few-millisecond difference over many samples, invisible at that
+  threshold, while the gate would imply the channel is covered); and tightening the
+  bootstrap 5s→3s would move the worst case only 20s→18s while risking a spuriously
+  timed-out seed on a cold path (DNS + TLS + Django cold start on mobile) sending the
+  mutation tokenless into a 403 rendered as "we couldn't reach SelahCue" **on a working
+  network** — trading 2s for a new false-failure mode.
+- New evidence: this is the third guard in this ticket that read broader than it was, and
+  the first one that survived two rounds of my own mutation testing before an independent
+  reviewer broke it. The lesson recorded in the contract is that mutation-verifying each
+  facet proves each facet, and proves nothing about whether the SET is complete.
 - Decision: complete
 
 ## Risks and rollback

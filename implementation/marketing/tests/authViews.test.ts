@@ -76,18 +76,54 @@ describe('no auth view can fake, delay or vary an outcome', () => {
     }
   })
 
-  test('none of them tests an email address against a literal', () => {
+  test('none of them inspects an email address against a literal', () => {
     // The other half of the same defect. `email === 'error@test.com'` was the shape of
-    // the simulation, and any comparison of an address to a hardcoded string is a branch
-    // keyed on who the user is.
+    // the simulation, and any branch keyed on WHO the user is is the enumeration oracle
+    // arriving through the front door.
+    //
+    // THIS BAN USED TO BE NARROWER THAN IT READ. It matched only a full address in
+    // quotes — `@…(com|org|test|net)'` — so a QA mutation of the form
+    // `submittedEmail.startsWith('second-attempt')` walked straight past it while doing
+    // exactly what the test claims to forbid. Both shapes are refused now: any
+    // string-inspection method called on an address-bearing ref, and any direct
+    // comparison of one to a literal.
+    const ADDRESS_REFS = 'email|submittedEmail|sentToEmail|address|sentToEmail'
+    const INSPECTORS = 'startsWith|endsWith|includes|indexOf|lastIndexOf|search|match|slice|substring|charAt'
+    const inspection = new RegExp(`\\b(?:${ADDRESS_REFS})(?:\\.value)?\\s*\\.\\s*(?:${INSPECTORS})\\s*\\(`, 'i')
+    const comparison = new RegExp(`\\b(?:${ADDRESS_REFS})(?:\\.value)?\\s*[=!]==?\\s*['"\`]`, 'i')
+    const fullAddress = /@[\w.-]+\.(com|org|test|net)['"\`]/
+
     for (const view of VIEWS) {
-      const text = codeOnly(view)
+      const text = codeOnly(view).replace(/placeholder="[^"]*"/g, '')
       codeIsIntact(view, text)
-      assert.ok(
-        !/@[\w.-]+\.(com|org|test|net)['"`]/.test(text.replace(/placeholder="[^"]*"/g, '')),
-        `${view} compares an address to a literal, outside a placeholder attribute.`,
-      )
+      assert.ok(!inspection.test(text), `${view} inspects an email address as a string`)
+      assert.ok(!comparison.test(text), `${view} compares an email address to a literal`)
+      assert.ok(!fullAddress.test(text), `${view} contains a hardcoded email address`)
     }
+  })
+
+  test('the literal ban actually matches the shapes it claims to', () => {
+    // Positive control on the regexes themselves, because the previous version of this
+    // test passed for a year of code review while missing the shape QA used to break it.
+    // Asserting on samples means "no match" in the test above cannot be the regex being
+    // quietly wrong rather than the views being clean.
+    const ADDRESS_REFS = 'email|submittedEmail|sentToEmail|address'
+    const INSPECTORS = 'startsWith|endsWith|includes|indexOf|lastIndexOf|search|match|slice|substring|charAt'
+    const inspection = new RegExp(`\\b(?:${ADDRESS_REFS})(?:\\.value)?\\s*\\.\\s*(?:${INSPECTORS})\\s*\\(`, 'i')
+    const comparison = new RegExp(`\\b(?:${ADDRESS_REFS})(?:\\.value)?\\s*[=!]==?\\s*['"\`]`, 'i')
+
+    // Quinn's mutation, verbatim, plus the shape the deleted simulation used.
+    assert.ok(inspection.test("submittedEmail.startsWith('second-attempt')"))
+    assert.ok(inspection.test('email.value.includes("nowhere")'))
+    assert.ok(inspection.test("sentToEmail.indexOf('nobody') !== -1"))
+    assert.ok(comparison.test("email.value === 'error@test.com'"))
+    assert.ok(comparison.test('email !== "someone"'))
+
+    // And does NOT match the legitimate uses these views actually make, or the ban would
+    // be unusable and get deleted rather than fixed.
+    assert.ok(!inspection.test('email.value.trim()'))
+    assert.ok(!inspection.test('validateEmail(email.value)'))
+    assert.ok(!comparison.test("password.value === ''"))
   })
 
   test('every view reaches the network only through the shared seam', () => {
