@@ -38,6 +38,10 @@ fn token_debug_and_display_are_redacted() {
         "Display leaked: {disp}"
     );
     assert!(dbg.contains("redacted"));
+    // An empty token is reported as empty rather than as a hidden secret: emptiness is not
+    // secret material, and a sweep that cannot tell the two apart passes on fixtures that
+    // carry nothing.
+    assert_eq!(format!("{:?}", Token::new("")), "Token(<empty>)");
     // The value is still reachable explicitly where actually needed.
     assert_eq!(token.expose(), "super-secret-value");
 }

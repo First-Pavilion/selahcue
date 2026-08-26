@@ -2881,6 +2881,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "selahcue-licensing"
+version = "0.1.0"
+dependencies = [
+ "selahcue-cloud",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "selahcue-present"
 version = "0.1.0"
 dependencies = [

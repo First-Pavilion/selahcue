@@ -1,0 +1,31 @@
+[package]
+name = "selahcue-licensing"
+publish.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Platform licensing client: device activation over both shipped paths (account sign-in, primary; enrollment key, delegation — DEC-011 pt 3), device-token custody in the OS secret store (FR-517), and the rotation-ready trusted-key SET selected by key_id (FR-518/DEC-011 pt 2). Obtains and stores credentials; gates nothing (CON-P1/CON-P2)."
+
+# NOTE — deliberately NO features of its own. The network transport (`http`) and the OS
+# secret store (`keyring`) are selahcue-cloud's feature-gated implementations of the
+# `HttpTransport` / `SecretStore` seams; the application shell turns them on and injects
+# them. Everything in THIS crate is written against the injected traits, so 100% of its
+# own logic is compiled and exercised by the default `cargo test --workspace` run —
+# there is no feature-gated code here that a gate could silently skip.
+
+[dependencies]
+# Reused, not re-implemented: `HttpTransport` (+ ReqwestTransport / MockTransport),
+# `SecretStore` (+ KeyringSecretStore / InMemorySecretStore) and the self-redacting
+# `Token` are already the desktop's hosted-service seams. Licensing is a second consumer
+# of them, not a second copy.
+selahcue-cloud = { path = "../selahcue-cloud" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# key_id derivation only: SHA-256 over a raw Ed25519 public key, first 8 hex chars —
+# mirroring the server's `derive_key_id` so a key and its id cannot drift apart.
+# Already in the workspace lock (selahcue-lan cert pinning), so this adds no new tree.
+sha2 = "0.10"
+
+[lints]
+workspace = true

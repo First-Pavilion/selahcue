@@ -185,6 +185,54 @@ echo ">> checking selahcue-import is covered by the workspace test run"
 grep -q '"crates/selahcue-import"' "$DESKTOP/Cargo.toml" \
   || fail "selahcue-import is not a workspace member — its hostile-input battery would not run in CI"
 
+# --- licensing is absent from the render / go-live / live-control closure (CON-P1/P2) -----
+# NFR-024 says no component failure may blank live output, and CON-P1/CON-P2 sharpen that:
+# no licensing state, response or outage may sit on the path that drives the screen. The way
+# to make that structural is to ensure licensing code cannot be LINKED INTO the process at
+# all — transitively, not just as a direct dependency.
+#
+# This asks cargo rather than reading Cargo.toml. A hand-written TOML walk lived in the
+# crate's own test suite and was evadable by two ordinary declaration forms, both confirmed
+# to link licensing into `selahcue-output` while the guard passed:
+#
+#   [dependencies.selahcue-licensing]                              # name lives in the HEADER
+#   licensing = { package = "selahcue-licensing", path = "..." }   # key renamed
+#
+# Both matched on the KEY, not the package. `cargo tree` resolves real packages, so the
+# whole class goes away instead of two more spellings being special-cased. `-e normal`
+# excludes dev- and build-dependencies deliberately: the question is what ships inside the
+# running process.
+echo ">> checking selahcue-licensing is absent from the render/live-control closure (CON-P1/CON-P2)"
+for root in selahcue-desktop selahcue-app; do
+  LIVE_TREE=$("$CARGO" tree --manifest-path "$DESKTOP/Cargo.toml" -p "$root" -e normal --prefix none)
+  LIVE_PKGS=$(echo "$LIVE_TREE" | awk 'NF {print $1}' | sort -u)
+
+  # Positive control: a walk that silently returned nothing would otherwise "pass".
+  echo "$LIVE_PKGS" | grep -qx "selahcue-present" \
+    || fail "the dependency walk for $root did not reach selahcue-present, so it is not resolving the graph and the check below proves nothing"
+
+  if echo "$LIVE_PKGS" | grep -qx "selahcue-licensing"; then
+    "$CARGO" tree --manifest-path "$DESKTOP/Cargo.toml" -p "$root" -e normal -i selahcue-licensing >&2 || true
+    fail "selahcue-licensing is reachable from $root (see the inverted tree above). No licensing code may be linked into the render, go-live or live-control path — CON-P1/CON-P2, NFR-024/501/502"
+  fi
+done
+
+# --- selahcue-licensing is a workspace member, so the default test run covers it ----------
+# The licensing crate deliberately has NO Cargo features of its own: its network transport
+# and secret store are selahcue-cloud's feature-gated impls, injected by the shell. The
+# whole argument for that design is that 100% of its logic is therefore exercised by the
+# plain `cargo test --workspace` — which rests entirely on it BEING a workspace member.
+#
+# Drop the member line and `--workspace` silently stops running its tests while the gate
+# stays green: the never-blank closure guard, the credential-redaction sweep and the
+# trust-store bounds all quietly stop protecting anything. This cannot be checked from
+# inside the crate — `cargo test -p selahcue-licensing` fails to resolve the package, so a
+# test living there never runs to report it. Same reasoning as the selahcue-import check
+# above, and the same one-line fix.
+echo ">> checking selahcue-licensing is covered by the workspace test run"
+grep -q '"crates/selahcue-licensing"' "$DESKTOP/Cargo.toml" \
+  || fail "selahcue-licensing is not a workspace member — its activation, custody, trust-store and never-blank guards would not run in CI"
+
 # --- the JPEG decoder stays pinned, scalar-only and rayon-free ----------------------------
 # The determinism contract (ADR-0025 decision 3) is a property of the PIN, not of the format:
 # without `platform_independent` the crate does runtime SSSE3/NEON dispatch and the same binary
