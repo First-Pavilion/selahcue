@@ -12,6 +12,18 @@
 #   - Ubuntu runners: Mesa software Vulkan (lavapipe, installed below)
 #   - Windows runners: DX12/WARP where available
 name: ci
+#
+# TOOLCHAIN: every Rust job below installs the EXACT version pinned in
+# rust-toolchain.toml (read once by the `changes` job, passed down as
+# `needs.changes.outputs.rust`), and then runs scripts/check_toolchain.sh to prove
+# that is what is actually running. `make ci` runs the same script, so the local
+# gate and this pipeline compile with the same compiler by construction.
+#
+# `dtolnay/rust-toolchain@stable` still appears below: `@stable` there is the
+# ACTION's own git ref (the branch the action lives on), NOT the Rust channel. The
+# Rust version comes solely from the `toolchain:` input. Do not "simplify" it back
+# to a bare `@stable` with no input -- that is precisely the floating-toolchain bug
+# that left `main` without a green run for nine days (ClickUp 86ak5rc9c).
 
 # Docs-only changes skip the matrix (saves runner minutes; docs carry no code to
 # verify). A `changes` job (below) further gates the desktop vs mobile jobs by
@@ -33,6 +45,10 @@ on:
       - "docs/**"
       - "**.md"
       - "TODO"
+  # Lets the alarm (and the whole matrix) be driven on demand against `main`. Without
+  # this the alarm's first ever execution would be in production on an already-broken
+  # `main`, which is precisely when you do not want to find a typo in it.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -52,12 +68,30 @@ jobs:
   changes:
     name: detect changed areas
     runs-on: ubuntu-latest
+    # `dorny/paths-filter` compares against the merge base using git on a push, but on a
+    # PULL_REQUEST it calls the GitHub API (`listFiles`) instead, which needs
+    # `pull-requests: read`. The repository default grants only contents+packages, so the
+    # job failed with "Resource not accessible by integration" and every downstream job
+    # was skipped -- a whole pipeline reporting nothing.
+    #
+    # This was latent for months rather than new: the only previous PR run in this repo
+    # (run 30718327254, 2026-08-01) died the same way in 17s. It went unnoticed because
+    # work is pushed straight to `main`, where the git path is used and no API call
+    # happens, so nothing exercised the PR path. `contents: read` is listed explicitly
+    # because naming any scope sets the rest to `none` -- checkout needs it.
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       desktop: ${{ steps.filter.outputs.desktop }}
       mobile: ${{ steps.filter.outputs.mobile }}
       android: ${{ steps.filter.outputs.android }}
       api: ${{ steps.filter.outputs.api }}
       marketing: ${{ steps.filter.outputs.marketing }}
+      # The one Rust version every Rust job below installs. Read from
+      # rust-toolchain.toml so the file is the single source of truth and CI cannot
+      # drift from `make ci` (86ak5rc9c).
+      rust: ${{ steps.toolchain.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -76,6 +110,9 @@ jobs:
               # `marketing:` below is, and why it is no longer caught here.
               - 'implementation/web/**'
               - '.github/workflows/ci.yml'
+              # A toolchain bump changes which compiler every desktop gate runs, so
+              # it must re-run the whole desktop matrix.
+              - 'rust-toolchain.toml'
             mobile:
               - 'implementation/mobile/**'
               - '.github/workflows/ci.yml'
@@ -102,6 +139,60 @@ jobs:
             marketing:
               - 'implementation/marketing/**'
               - '.github/workflows/ci.yml'
+      # Single source of truth for the compiler. Every Rust job installs exactly this
+      # version, and scripts/check_toolchain.sh then asserts the running toolchain
+      # matches it -- the same script `make ci` runs, which is what makes the local
+      # gate a real mirror of this one rather than a hopeful claim.
+      - id: toolchain
+        name: Read the pinned Rust toolchain
+        # Delegates to the same script the gates use, rather than re-implementing the
+        # parse. The re-implementation this replaces only checked the value was
+        # non-empty, so it would happily have passed a floating "stable" down to three
+        # jobs that then reject it. One parser, one set of rules.
+        run: |
+          channel="$(sh scripts/check_toolchain.sh --print-channel)"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "pinned Rust toolchain: $channel"
+
+  # Static analysis for the workflows themselves. Added because this file grew real
+  # logic (the alarm, the toolchain plumbing) and a workflow is the one thing here
+  # that nothing else compiles, type-checks or tests -- its first execution is
+  # production. actionlint catches undefined `needs` job references, unknown context
+  # properties, bad `if:` expressions, and shellcheck issues inside `run:` blocks.
+  #
+  # Scope note, so nobody over-trusts it: it does NOT catch every expression mistake.
+  # It accepts both `needs.launch-smoke.result` and `needs['launch-smoke'].result`
+  # (both are valid; hyphens are legal in context property names). It is a real gate
+  # against real classes of error, not a proof of correctness.
+  #
+  # Ungated on purpose: it costs seconds on the cheapest runner, and gating a
+  # workflow linter behind a path filter is how a broken workflow slips through.
+  lint-workflows:
+    name: workflows (actionlint + permissions)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+      # Two invariants actionlint does not model, both of which shipped as real
+      # defects in this branch and were caught by human review rather than any gate:
+      #   - a job declaring `permissions` loses every scope it does not list, so an
+      #     `issues: write`-only job cannot check out a private repo and dies at step 1;
+      #   - a `success()` setup step stranded after the first `!cancelled()` gate gets
+      #     skipped by an earlier failure, and the gates after it then fail for the
+      #     wrong reason.
+      # Verified: actionlint exits 0 on both. This does not. The name is deliberately
+      # narrow -- it checks checkout-vs-`contents` and step ordering, NOT that every
+      # job's scopes match everything it does (a job declaring `contents: read` and
+      # then running `gh issue create` dies the same way and is not detected).
+      - name: Checkout scopes + setup/gate ordering
+        run: |
+          # Pinned, matching the playwright pin below: an unpinned install makes this
+          # gate's behaviour depend on whatever PyPI serves that morning.
+          python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
+          python3 .github/scripts/check_workflows.py --self-test
+          python3 .github/scripts/check_workflows.py
 
   rust:
     name: rust (${{ matrix.os }})
@@ -119,7 +210,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ needs.changes.outputs.rust }}
           components: clippy, rustfmt
+      # Refuse to gate on a compiler nobody pinned. Same script `make ci` runs, so a
+      # divergence between this pipeline and the local gate fails loudly here instead
+      # of silently producing a green that means nothing (86ak5rc9c).
+      - name: Verify the pinned toolchain is what is running
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: sh scripts/check_toolchain.sh
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
@@ -130,37 +229,65 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libx11-dev libxkbcommon-dev libwayland-dev \
             libvulkan1 mesa-vulkan-drivers libdbus-1-dev
+      # From the first GATE step onward, `!cancelled()`. Setup steps above deliberately
+      # keep the default `success()`: if checkout, the toolchain install or the pin
+      # assertion fails, every downstream result is meaningless or measured on the wrong
+      # compiler, so running them would produce noise rather than information.
       - name: Format
+        if: ${{ !cancelled() }}
         run: cargo fmt --check
       - name: Clippy (default features)
+        if: ${{ !cancelled() }}
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # `!cancelled()` from here down. A failing Clippy step used to suppress every
+      # step after it (default `if: success()`), which is exactly how the E0063 in
+      # selahcue-present stayed invisible in this job for two runs while the standing
+      # clippy failure held the door shut. One broken gate should cost you one gate's
+      # worth of information, not the whole job's. 86ak5rc9c.
       - name: Clippy (server features)
+        if: ${{ !cancelled() }}
         run: |
           cargo clippy -p selahcue-lan --features server --all-targets -- -D warnings
           cargo clippy -p selahcue-app --features server --all-targets -- -D warnings
           cargo clippy -p selahcue-scripture --features download --all-targets -- -D warnings
       - name: Test (workspace, incl. GPU parity where an adapter exists)
-        run: cargo test --workspace
+        if: ${{ !cancelled() }}
+        # --no-fail-fast: without it cargo stops at the first failing test BINARY, so a
+        # failure in an early crate hides every later crate's results.
+        #
+        # Measured on the real ubuntu run 32896017248: 124 binaries execute and 138 suites
+        # report, and 51 of them sit at or after the failing binary -- so without this flag
+        # 51 suites' results simply never appear. Exactly ONE binary FAILS on that run; do
+        # not go looking for a second. (An earlier version of this comment quoted "1 without,
+        # 2 with", which was a SYNTHETIC measurement taken by injecting deliberate failures
+        # into two independent crates to prove the flag changed behaviour before adopting it.
+        # Stated without that qualifier it sent a reader hunting a failure that does not
+        # exist -- in a comment justifying a flag whose purpose is to stop results going
+        # missing.)
+        run: cargo test --workspace --no-fail-fast
       # Structural merge gates for the presentation importer (threat model B2 + the design's
       # no-I/O rule + the ADR-0025 decoder pin). These are one-line checks only because the
       # importer is its own crate; inside the operator, whose graph legitimately contains a TLS
       # stack, the no-network property would not even be stateable.
       - name: Import structural guards (no network, no filesystem, pinned decoder)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: sh scripts/import_guards.sh
       - name: Test (LAN server + app server features — E2E over real TLS)
+        if: ${{ !cancelled() }}
         run: |
-          cargo test -p selahcue-lan --features server
-          cargo test -p selahcue-app --features server
+          cargo test -p selahcue-lan --features server --no-fail-fast
+          cargo test -p selahcue-app --features server --no-fail-fast
       - name: Test (scripture download — feature-gated, loopback only)
-        run: cargo test -p selahcue-scripture --features download
+        if: ${{ !cancelled() }}
+        run: cargo test -p selahcue-scripture --features download --no-fail-fast
       - name: Test (at-rest encryption — SQLCipher + vendored OpenSSL)
         # The vendored OpenSSL build needs perl+nasm on Windows; covered on the
         # other two OSes (the feature is platform-independent Rust).
-        if: runner.os != 'Windows'
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
         run: |
-          cargo test -p selahcue-data --features encryption
-          cargo test -p selahcue-desktop --features encryption
+          cargo test -p selahcue-data --features encryption --no-fail-fast
+          cargo test -p selahcue-desktop --features encryption --no-fail-fast
 
   # Proves the app actually LAUNCHES (windows created, first frame presented, exit
   # 0) on every OS — not just build+test — and records a per-OS cold-start figure
@@ -191,6 +318,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.changes.outputs.rust }}
+      # Refuse to gate on a compiler nobody pinned. Same script `make ci` runs, so a
+      # divergence between this pipeline and the local gate fails loudly here instead
+      # of silently producing a green that means nothing (86ak5rc9c).
+      - name: Verify the pinned toolchain is what is running
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: sh scripts/check_toolchain.sh
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
@@ -238,7 +374,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ needs.changes.outputs.rust }}
           components: clippy, rustfmt
+      # Refuse to gate on a compiler nobody pinned. Same script `make ci` runs, so a
+      # divergence between this pipeline and the local gate fails loudly here instead
+      # of silently producing a green that means nothing (86ak5rc9c).
+      - name: Verify the pinned toolchain is what is running
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: sh scripts/check_toolchain.sh
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop/crates/selahcue-operator
@@ -249,8 +393,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev libx11-dev libxkbcommon-dev
-      - name: Format
-        run: cargo fmt --check
       - name: Stage Tauri sidecar/resource placeholders (compile-check only)
         # tauri-build validates that the externalBin sidecar (`selahcue-output`) and the NDI
         # resource dll exist at build time. This job COMPILE-checks the operator (it does not
@@ -261,18 +403,41 @@ jobs:
         run: |
           triple="$(rustc -vV | sed -n 's/^host: //p')"
           mkdir -p binaries
+          # CREATE-ONLY. `: > file` truncates, and these names include the
+          # owner-supplied NDI dll. That is harmless on an ephemeral runner, but this
+          # is the snippet people copy to reproduce CI locally, where truncating a real
+          # dll is silent and git-unrecoverable (binaries/ is gitignored). Never make
+          # this unconditional. 86ak5rjh7.
+          stage() { [ -e "$1" ] || : > "$1"; }
           if [[ "$triple" == *windows* ]]; then
-            : > "binaries/selahcue-output-${triple}.exe"
+            stage "binaries/selahcue-output-${triple}.exe"
           else
-            : > "binaries/selahcue-output-${triple}"
+            stage "binaries/selahcue-output-${triple}"
           fi
-          : > "binaries/Processing.NDI.Lib.x64.dll"
+          stage "binaries/Processing.NDI.Lib.x64.dll"
           echo "staged Tauri placeholders for ${triple}"
-      - name: Check + Clippy + Test
-        run: |
-          cargo check
-          cargo clippy --all-targets -- -D warnings
-          cargo test
+      # Three steps, not one `run:` block. As a single block under `bash -e`, a clippy
+      # failure aborted before `cargo test` ever ran -- so this job still had exactly
+      # the masking the rest of this change removes, while appearing to be covered.
+      # From the first GATE step onward, `!cancelled()`, and NO setup step after it.
+      # Staging used to sit between Format and Check as a `success()` step, so a
+      # formatting failure skipped it and Check/Clippy/Test then ran WITHOUT the
+      # placeholders — turning one formatting error into four red steps, three failing
+      # for a reason unrelated to the code. In a change about signals that lie, that was
+      # one. Setup steps above keep `success()`: if checkout, the toolchain install or
+      # the pin assertion fails, every downstream result is meaningless.
+      - name: Format
+        if: ${{ !cancelled() }}
+        run: cargo fmt --check
+      - name: Check
+        if: ${{ !cancelled() }}
+        run: cargo check
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        if: ${{ !cancelled() }}
+        run: cargo test --no-fail-fast
       # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
       # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
       # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-
@@ -284,7 +449,7 @@ jobs:
       # CLOSED on a Chrome change (spurious RED, never a false green); if a bump ever breaks it,
       # pin a version here or switch the boot-render wait from a fixed sleep to a poll (#11).
       - name: Webview behavioural check (Linux, headless Chrome)
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
         env:
           SELAHCUE_HEADLESS_REQUIRE: "1"
@@ -295,7 +460,7 @@ jobs:
       # break Blink can't. Playwright bundles its own WebKit (self-contained; no GTK-version
       # coupling). REQUIRE=1 makes a missing engine a hard fail, never a silent no-op.
       - name: Install Playwright WebKit (Linux)
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
         # Pinned so the WebKit engine under test is reproducible (bump deliberately); the
         # runner ships whatever WebKit that release bundles. `--break-system-packages` keeps the
@@ -305,7 +470,7 @@ jobs:
           python3 -m pip install --user --break-system-packages playwright==1.60.0
           python3 -m playwright install --with-deps webkit
       - name: Webview WebKit-engine smoke (Linux, Playwright WebKit)
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
         env:
           SELAHCUE_WEBKIT_REQUIRE: "1"
@@ -490,3 +655,67 @@ jobs:
           name: sbom-cyclonedx
           path: implementation/desktop/**/*.cdx.json
           if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # The alarm. Nine days without a green run on `main` went unnoticed because a
+  # failure notifies nobody, and branch protection is unavailable for a private repo
+  # on this plan -- so a red commit lands regardless and an alarm is the ONLY control
+  # available. ClickUp 86ak5rc9c.
+  #
+  # It tracks WHICH jobs are outstanding, not a single red/green bit, because CI
+  # path-filters by area: an api-only push to `main` SKIPS the entire desktop matrix.
+  # A red/green alarm would read that skip as "nothing failed" and close itself while
+  # `main` was still broken on `rust`, having verified nothing about `rust`. A job
+  # leaves the outstanding set only by actually reporting success.
+  #
+  # The logic lives in a script with a self-test rather than in `if:` expressions,
+  # because expressions cannot be tested and this one has to be right the first time
+  # it matters -- by definition that is a moment when `main` is already broken.
+  ci-alarm:
+    name: alarm (main red/green tracking)
+    needs:
+      [changes, lint-workflows, rust, launch-smoke, operator, flutter, api, marketing,
+       audit, supply-chain]
+    # always(): several of the above are legitimately skipped by the path filters, and a
+    # skipped dependency would otherwise skip the alarm exactly when it is needed.
+    # Every job that can fail on `main` must be in this list, or its failure is invisible
+    # -- which is the nine-days-unnoticed failure mode, recreated for one job.
+    # A push only ever reaches here from `main` (see `on:` at the top). A dispatch is
+    # additionally allowed from ANY ref so the alarm can be rehearsed before it is
+    # merged -- but off `main` it runs in DRY_RUN, doing every read and withholding
+    # every write. Without that, its first execution ever would be on an already-broken
+    # `main`, which is the worst possible moment to discover a typo; and letting a
+    # branch's results write to the real issue could close a genuine alarm.
+    if: >-
+      ${{ always()
+          && ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+              || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    # BOTH scopes are load-bearing. Declaring any `permissions` block sets every scope
+    # NOT listed to `none`, so an `issues: write`-only block leaves `contents: none` --
+    # and on a private repo that means actions/checkout cannot clone, the first step
+    # fails, and the alarm never runs at all. A dead alarm shipped next to a CLAUDE.md
+    # that calls it "the only alarm" is this ticket's own worst case. 86ak5rc9c.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # This job holds `issues: write`; nothing here needs the token afterwards
+          # (the reconcile step gets it via a step-scoped `env:`), so keep it out of
+          # .git/config rather than leaving a writable credential lying in the tree.
+          persist-credentials: false
+      # Prove the reconcile logic before trusting it with the verdict. Cheap, and it
+      # runs on every main push, so the alarm cannot rot into being wrong unnoticed.
+      - name: Self-test the alarm logic
+        run: python3 .github/scripts/ci_alarm.py --self-test
+      - name: Reconcile the ci-red issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          NEEDS: ${{ toJSON(needs) }}
+          DRY_RUN: ${{ github.ref != 'refs/heads/main' }}
+        run: python3 .github/scripts/ci_alarm.py

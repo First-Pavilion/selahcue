@@ -191,7 +191,7 @@ fn parse_sof(payload: &[u8], progressive: bool) -> Result<(u32, u32, bool, u8), 
         .ok_or(DecodeError::Malformed)?;
     let end = 6usize.checked_add(per).ok_or(DecodeError::Malformed)?;
     let table = payload.get(6..end).ok_or(DecodeError::Malformed)?;
-    for spec in table.chunks_exact(3) {
+    for spec in table.as_chunks::<3>().0 {
         let sampling = *spec.get(1).ok_or(DecodeError::Malformed)?;
         let h = sampling >> 4;
         let v = sampling & 0x0F;

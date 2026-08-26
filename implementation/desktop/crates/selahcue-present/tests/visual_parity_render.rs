@@ -248,7 +248,7 @@ fn ink_fraction(fb: &FrameBuffer) -> f64 {
     let bucket = |p: &[u8]| {
         ((p[0] as usize >> 3) << 10) | ((p[1] as usize >> 3) << 5) | (p[2] as usize >> 3)
     };
-    for px in fb.bytes().chunks_exact(4) {
+    for px in fb.bytes().as_chunks::<4>().0 {
         hist[bucket(px)] += 1;
     }
     let total: u64 = fb.bytes().len() as u64 / 4;

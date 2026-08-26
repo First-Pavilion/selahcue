@@ -16,10 +16,11 @@ SelahCue — a cross-platform church presentation & ministry-assistance app. The
 The root `Makefile` wraps all the manifest paths and feature flags — prefer it. `make` alone lists all targets.
 
 ```bash
-make ci          # the FULL local CI gate (fmt --check, clippy -D warnings, all test
-                 # suites incl. feature-gated ones, operator check, headless operator
-                 # webview check, flutter analyze+test). Run before every push —
-                 # CI has a cargo fmt --check gate.
+make ci          # the local RUST + FLUTTER gate (toolchain check, fmt --check, clippy
+                 # -D warnings, all test suites incl. feature-gated ones, operator
+                 # check, headless operator webview check, flutter analyze+test).
+                 # Run before every push. It is NOT everything CI runs — see
+                 # "What `make ci` does not cover" below.
 make launch      # run the app: output window + Tauri operator shell together
 make output      # just the native output window (press P to pair a mobile controller)
 make operator    # just the Tauri operator shell
@@ -46,7 +47,9 @@ cargo test -p selahcue-gpu                                   # GPU↔CPU parity 
 Two crates are **excluded from the workspace** (each is its own root — `cargo test --workspace` does NOT cover them):
 
 ```bash
-# Tauri operator shell (GUI; heavy toolchain deps). CI only compile-checks it:
+# Tauri operator shell (GUI; heavy toolchain deps). CI runs check + clippy + its unit
+# tests, but never launches the GUI — the behavioural cover is the two headless webview
+# gates below. Locally, compile-check it with:
 cargo check --manifest-path implementation/desktop/crates/selahcue-operator/Cargo.toml
 python3 scripts/operator_headless.py   # its behavioural check (headless Chrome; in `make ci`)
 
@@ -79,9 +82,17 @@ Guiding principles (from `ARCHITECTURE.md`): desktop-authoritative, offline-firs
 - Timers/animation take an **injected clock** — keep new time-dependent code deterministic the same way.
 - Memory must stay bounded: no unbounded queues/caches/logs; new buffering code gets a bounded-memory test — one that actually bites, see below.
 - A SelahCue "theme" is a slide-design template (typography/background/elements, ProPresenter-style) — **not** a light/dark colour mode. See `docs/design/THEME-MODEL-spec.md`.
-- CI (`.github/workflows/ci.yml`) path-filters desktop vs mobile jobs and skips docs-only changes; `make ci` is the local mirror of its gates.
+- CI (`.github/workflows/ci.yml`) path-filters desktop vs mobile vs api vs marketing jobs and skips docs-only changes.
+- **The Rust toolchain is pinned in `rust-toolchain.toml`, and that pin is the gate.** rustup reads it for every `cargo`/`rustc` call under the repo (including the two out-of-workspace crates), so `make ci` and CI compile with the same compiler *by construction*; `scripts/check_toolchain.sh` then asserts it, and both gates run that same script first. Before the pin existed, CI installed whatever stable was newest at run time while developers ran whatever they had: on 2026-08-18 stable moved 1.97.1 → 1.98.0, the new `clippy::chunks_exact_to_as_chunks` met `-D warnings`, and `main` went red on the next push and had no green run for nine days while `make ci` kept printing ALL GREEN. Bumping the pin is a normal reviewable change — edit `channel`, run `make ci`, fix what the new lints find, one MR for the bump. `.github/workflows/rust-canary.yml` runs the gates weekly against floating stable and files an issue when a future release would break us, so the pin's deliberate lag stays visible. Never set `channel` to a floating value; the check script refuses it.
+- **What `make ci` does not cover** — it is the Rust/Flutter gate on *one* machine, not the whole pipeline. The two biggest gaps are structural and cannot be closed locally:
+  - **One OS, not three.** CI runs `rust` and `operator` as a **ubuntu + macOS + Windows** matrix. `make ci` runs whichever one you are sitting at. Cross-OS breaks (path handling, line endings, the vendored-OpenSSL encryption suite that CI skips on Windows) are invisible locally.
+  - **A different GPU stack.** The ADR-0015 parity oracle runs on **Metal** on a Mac, **lavapipe** (software Vulkan) on CI's Linux, and **DX12/WARP** on Windows. A local pass says the CPU rasterizer matches *your* GPU, not that it matches the ones CI uses.
+
+  Beyond those, CI also runs `cargo audit` + `cargo deny` (supply chain), the Playwright **WebKit** engine smoke (`scripts/operator_webkit_smoke.py` — the Blink gate in `make ci` cannot catch a WebKit-only break), `launch-smoke` + `make nfr`, the Android APK compile-check, `actionlint` over the workflows, and the **`api (django)` and `marketing (vue spa)` jobs — which `make ci` does not touch at all.** Changing `implementation/api` or `implementation/marketing` and running only `make ci` verifies **nothing** about that change; run those projects' own tooling. Closing this gap is tracked as 86ak5rjh7.
+- **`selahcue-stt` is linted by nothing.** It is excluded from the workspace and no CI job references it, so its own `unwrap_used = "warn"` policy is unenforced — it currently has three violations under `-D warnings`. Only `cargo test --manifest-path .../selahcue-stt/Cargo.toml` exercises it, and nothing runs that in CI either. Tracked on 86ak5rjh7.
+- **A failing run on `main` opens a `ci-red` GitHub issue** (**its execution path is proven — run `32900486643` ran the job end to end with two failing dependencies and wrote nothing under `DRY_RUN` — but no issue has ever actually been created, so treat the write path as unproven until the first `workflow_dispatch` of `ci` on `main`**), and it closes only when every job that was failing has *actually reported success again*. It tracks **which jobs** are outstanding rather than one red/green bit, because CI path-filters by area: an api-only push skips the whole desktop matrix, and a naive alarm would read that skip as "nothing failed" and close itself while `main` was still broken. A **skipped** job is not evidence of anything and never clears the alarm. Logic and its self-test live in `.github/scripts/ci_alarm.py` (`--self-test` runs anywhere, and runs in CI on every `main` push). The repo has no branch protection available on this plan, so nothing prevents a red commit landing — the issue is the only alarm. While one is open, treat every branch's CI result as unreadable: a real failure cannot be distinguished from the standing one.
 - Design-doc validators live in `scripts/` (`validate_prd.py`, `validate_goal_contract.py`, `validate_delivery_plan.py`) — run the matching one after editing those artefacts.
-- **`cargo test --workspace` fail-fasts** (no `--no-fail-fast` anywhere), and so does `make ci` — each recipe line aborts the target. A failure in the `--workspace` line means the feature-gated suites, operator check, headless webview check and Flutter gate never ran at all. A green `--workspace` after a fix is therefore not evidence the *later* crates passed: re-verify the specific crate too.
+- **Masking still exists locally, but less of it than it used to.** Every `cargo test` line in `make ci` and in CI now carries `--no-fail-fast`, so a failure in one crate no longer hides the *other crates'* test results (measured on the real ubuntu CI run: **51 of 138 test suites** sit at or after the failing binary and never report at all without the flag — do not go looking for a second *failing* binary, there is exactly one). What remains is **line-level**: `make ci` still aborts the target at the first failing recipe line, so a clippy failure there still means the feature-gated suites, operator check, headless webview check and Flutter gate never ran at all. CI no longer has that property — its steps after Clippy run under `if: ${{ !cancelled() }}`. So a green `make ci` line is evidence about that line only; after fixing a failure, re-run the whole target rather than assuming the later gates were reached. Closing the line-level gap is tracked as 86ak5rjh7.
 - **Run one `make ci` at a time in this checkout.** Concurrent Flutter runs race on `implementation/mobile/selahcue_controller/ios/Flutter/ephemeral/Packages`, which `generatePluginsSwiftPackage` deletes and recreates on every invocation. Two signatures — `Waiting for another flutter command to release the startup lock…` followed by a delete failure, and `FileSystemException: Deletion failed, OS Error: Directory not empty, errno = 66` — are **false reds** (never false greens) and pass on retry with no code change. Check for other active sessions and serialise instead of re-diagnosing them.
 - **The checkout is shared**: one worktree on `main`, several agent sessions at once, large uncommitted WIP. Check `ListAgents` and declare your file footprint to peers before starting; never commit, stage, stash or revert another session's work; never `cargo clean` or clear target-dir locks to escape a transient failure.
 

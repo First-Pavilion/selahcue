@@ -245,7 +245,29 @@ mobile: ## Run the Flutter controller on this Mac (pair it with a running `make 
 mobile-test: ## Analyze + unit-test the Flutter controller
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 
-ci: ## Run the CI gate locally (same gates as .github/workflows/ci.yml, minus the CI-only audit)
+# Mirrors the Rust/Flutter gates in .github/workflows/ci.yml. It does NOT cover
+# everything CI runs -- see the "Not covered here" list below and in CLAUDE.md.
+#
+# The FIRST line is load-bearing: it asserts the running toolchain is the one
+# rust-toolchain.toml pins, which is the same assertion CI makes. Without it this
+# target could pass on one compiler while CI failed on another -- which is exactly
+# how `main` went nine days without a green run while this printed ALL GREEN (86ak5rc9c).
+#
+# Not covered here (CI-only): cargo audit / cargo deny (supply chain), the
+# Playwright WebKit engine smoke, launch-smoke + `make nfr`, the Android APK
+# compile-check, and the `api (django)` and `marketing (vue spa)` jobs entirely.
+# Run those areas' own tooling before pushing changes to them.
+#
+# One masking difference from CI, deliberate and not yet closed: CI now runs the
+# steps after Clippy under `if: !cancelled()`, so one failing gate no longer hides
+# the rest. Make still aborts the target at the first failing recipe line, so a
+# clippy failure here still stops you seeing the test results. The test commands
+# below carry --no-fail-fast (measured: it surfaces a second failing test binary
+# that would otherwise be hidden), but line-level aborts remain. Tracked on
+# 86ak5rjh7 -- fixing it means restructuring this target, which is not a change to
+# smuggle into a toolchain fix.
+ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that this does not)
+	sh scripts/check_toolchain.sh
 	cd $(DESKTOP) && $(CARGO) fmt --check
 	cd $(OPERATOR) && $(CARGO) fmt --check
 	$(CARGO) clippy $(WS) --workspace --all-targets -- -D warnings
@@ -253,19 +275,19 @@ ci: ## Run the CI gate locally (same gates as .github/workflows/ci.yml, minus th
 	$(CARGO) clippy $(WS) -p selahcue-app --features server --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-scripture --features download --all-targets -- -D warnings
 	$(CARGO) clippy $(OP) --all-targets -- -D warnings
-	$(CARGO) test $(WS) --workspace
+	$(CARGO) test $(WS) --workspace --no-fail-fast
 	sh scripts/import_guards.sh
-	$(CARGO) test $(WS) -p selahcue-lan --features server
-	$(CARGO) test $(WS) -p selahcue-app --features server
-	$(CARGO) test $(WS) -p selahcue-data --features encryption
-	$(CARGO) test $(WS) -p selahcue-desktop --features encryption
-	$(CARGO) test $(WS) -p selahcue-scripture --features download
+	$(CARGO) test $(WS) -p selahcue-lan --features server --no-fail-fast
+	$(CARGO) test $(WS) -p selahcue-app --features server --no-fail-fast
+	$(CARGO) test $(WS) -p selahcue-data --features encryption --no-fail-fast
+	$(CARGO) test $(WS) -p selahcue-desktop --features encryption --no-fail-fast
+	$(CARGO) test $(WS) -p selahcue-scripture --features download --no-fail-fast
 	$(CARGO) check $(OP)
-	$(CARGO) test $(OP)
+	$(CARGO) test $(OP) --no-fail-fast
 	python3 scripts/operator_headless.py
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 	@echo ""
-	@echo "== local CI gate: ALL GREEN =="
+	@echo "== local Rust/Flutter gate: ALL GREEN (see the ci: header for CI-only gates) =="
 
 nfr: ## Measure the walking-skeleton NFRs (idle memory / cold start) on a release build
 	sh scripts/measure_nfr.sh

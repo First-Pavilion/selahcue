@@ -2555,7 +2555,9 @@ fn has_pixel(c: &LiveController, rgb: (u8, u8, u8)) -> bool {
     c.presenter()
         .live_output()
         .bytes()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|px| {
             let d = |a: u8, b: u8| (a as i32 - b as i32).pow(2);
             d(px[0], rgb.0) + d(px[1], rgb.1) + d(px[2], rgb.2) < 900
@@ -2818,7 +2820,9 @@ fn a_custom_theme_with_elements_applies_recovers_and_is_bounded() {
         c.presenter()
             .live_output()
             .bytes()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|p| p[0] > 200 && p[1] < 60 && p[2] < 60)
     };
     assert!(
@@ -2896,7 +2900,9 @@ fn a_custom_theme_with_an_ellipse_element_applies_and_recovers() {
     let (w, h) = (out.width(), out.height());
     assert!(
         out.bytes()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|p| p[0] > 200 && p[1] < 60 && p[2] < 60),
         "the ellipse fill renders on the live output"
     );
@@ -2961,7 +2967,9 @@ fn a_custom_theme_with_an_image_element_applies_recovers_and_is_bounded() {
         c.presenter()
             .live_output()
             .bytes()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|p| p[0] == 64 && p[1] == 54 && p[2] == 74)
     };
     assert!(
@@ -3618,7 +3626,9 @@ fn disabling_a_screen_blacks_its_frame_and_reenabling_restores() {
     // RGB-black test (BLACK is opaque — the alpha byte is 255, so check the RGB triplets).
     let rgb_black = |fb: &selahcue_present::FrameBuffer| {
         fb.bytes()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|px| px[0] == 0 && px[1] == 0 && px[2] == 0)
     };
     let mut c = controller_live();
@@ -3626,7 +3636,9 @@ fn disabling_a_screen_blacks_its_frame_and_reenabling_restores() {
     let themed = c.compose_screen("lower-third").unwrap().bytes().to_vec();
     assert!(
         themed
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|px| px[0] != 0 || px[1] != 0 || px[2] != 0),
         "the themed lower-third frame has visible (non-black) content"
     );

@@ -549,7 +549,7 @@ impl FrameBuffer {
             return 0.0;
         }
         let mut sum = 0.0;
-        for px in self.pixels.chunks_exact(4) {
+        for px in self.pixels.as_chunks::<4>().0 {
             sum += Rgba {
                 r: px[0],
                 g: px[1],
@@ -608,7 +608,7 @@ impl FrameBuffer {
             return 0.0;
         }
         let mut sum = 0.0;
-        for px in self.pixels.chunks_exact(4) {
+        for px in self.pixels.as_chunks::<4>().0 {
             let r = px[0] as f64 / 255.0;
             let g = px[1] as f64 / 255.0;
             let b = px[2] as f64 / 255.0;

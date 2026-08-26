@@ -53,7 +53,12 @@ pub fn to_text(bytes: &[u8]) -> DecodedText {
 
 /// Transcode a UTF-16 payload, counting unpaired surrogates as replacements.
 fn utf16(rest: &[u8], read: fn([u8; 2]) -> u16) -> DecodedText {
-    let units: Vec<u16> = rest.chunks_exact(2).map(|c| read([c[0], c[1]])).collect();
+    let units: Vec<u16> = rest
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| read([c[0], c[1]]))
+        .collect();
     let mut text = String::with_capacity(units.len());
     let mut replacements = 0usize;
     for r in char::decode_utf16(units) {
