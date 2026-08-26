@@ -202,12 +202,18 @@ def count_customers(actor: ActorContext | None, *, search: str | None = None) ->
 # ---------------------------------------------------------------------------
 # Traditional email/password customer authentication (DEC-007 / ADR-0023).
 #
-# Every credential follows the shipped hashed-credential convention: make_password
-# hash + HMAC-SHA256(SECRET_KEY) fingerprint. Passwords are LOW-entropy → always
-# verified with check_password (PBKDF2). Session / email-verify / reset tokens are
-# HIGH-entropy → resolved by fingerprint + verified with hmac.compare_digest (the
-# authenticate_device_token latency optimisation). No path reveals whether an email
-# or token exists (no-oracle discipline).
+# Every credential is stored as an at-rest hash + an HMAC-SHA256(SECRET_KEY) fingerprint.
+# WHICH hash depends on the entropy of what is being stored, and that is the whole rule:
+#   - Passwords are LOW-entropy → make_password / check_password (PBKDF2), unconditionally.
+#   - Session tokens likewise keep make_password (ADR-0023; not in DEC-013's scope).
+#   - Email-verify / reset tokens are HIGH-entropy (secrets.token_urlsafe(32) = 256 bits) →
+#     a keyed HMAC under a distinct label (`_credential_token_hash`, DEC-013). Stretching a
+#     256-bit CSPRNG secret compensates for a deficit that does not exist, and a PBKDF2
+#     column is offline-testable from a DB leak in a way a keyed one is not.
+# High-entropy tokens are resolved by fingerprint and confirmed with hmac.compare_digest (the
+# authenticate_device_token latency optimisation). No path reveals whether an email or token
+# exists (no-oracle discipline) — see `_pad_to_floor`, which is what equalises the branches
+# now that no branch runs a dummy PBKDF2 to match another one'"'"'s cost.
 # ---------------------------------------------------------------------------
 
 # Config (overridable via settings; documented in deployments.md). Read at import.
@@ -447,6 +453,28 @@ def _fingerprint(value: str) -> str:
     return hmac.new(settings.SECRET_KEY.encode("utf-8"), value.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def _credential_token_hash(value: str) -> str:
+    """At-rest hash for a CredentialToken (DEC-013 / ADR-0023).
+
+    NOT `make_password`. Key stretching buys exactly one thing — time against guessing a
+    LOW-entropy secret — and there is no such deficit here: `_generate_token` is
+    `secrets.token_urlsafe(32)`, 256 bits of CSPRNG output, so a PBKDF2 column costs ~110ms
+    per mint to slow an attacker who was never going to finish the first place.
+
+    It also costs security, which is the part that decided this. A PBKDF2 column stores its
+    salt beside the hash and is therefore offline-testable from a DB leak alone; a keyed HMAC
+    is not testable at all without SECRET_KEY, which a DB leak does not contain. Same pepper
+    as `_fingerprint`, under a DISTINCT LABEL so the two columns are not the same value —
+    `token_fingerprint` resolves the row and this confirms it, and a column that merely
+    repeated the lookup key would confirm nothing.
+
+    The column stays (no migration, and ADR-0023's `DeviceToken` clone keeps its shape); only
+    what goes in it changes. It is write-only for CredentialToken — verification is by
+    fingerprint plus `hmac.compare_digest` — so nothing reads this back with `check_password`.
+    """
+    return _fingerprint(f"credential-token-hash:{value}")
+
+
 def _normalize_email(raw: str) -> str:
     return (raw or "").strip().lower()
 
@@ -491,7 +519,7 @@ def _mint_credential_token(user: CustomerUser, purpose: str, ttl: timedelta) -> 
     token = CredentialToken(
         customer_user=user,
         purpose=purpose,
-        token_hash=make_password(raw),
+        token_hash=_credential_token_hash(raw),
         token_fingerprint=_fingerprint(raw),
         masked_token=masked,
         expires_at=djtz.now() + ttl,
@@ -876,21 +904,23 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
                 and user.status == CustomerUserStatus.INVITED
             )
             if not eligible:
-                # Defence in depth for a misconfigured floor (ACCOUNT_RESEND_MIN_SECONDS=0):
-                # run the same PBKDF2 the minting branch runs, mirroring _DUMMY_PASSWORD_HASH
-                # on the login path, so the branches stay comparable even unpadded.
-                make_password("selahcue-resend-timing-equalizer-not-a-real-token")
+                # No equaliser here any more, and its removal is REQUIRED rather than tidy.
+                # It existed to burn the same PBKDF2 the minting branch burned; DEC-013 took
+                # PBKDF2 out of the mint, so keeping it would have inverted the very oracle it
+                # was written to close — the eligible branch would finish in ~1.4ms while this
+                # one burned ~450ms, and a FAST response would mean "this account exists".
+                # Equalisation is the floor's job (`_pad_to_floor`), which pads every branch
+                # that finishes inside it; both branches now do, by a wide margin.
                 return AcceptedResult(accepted=True)
 
             # The limiter failed open and this call's claim on the fallback ceiling was
             # refused: skip the send. The MINT is skipped with it, on purpose — superseding a
             # live link and then not delivering its replacement would leave this caller worse
-            # off than if they had never asked, trading a working link for nothing. Same
-            # equaliser as the branch above, because this branch now does the same amount of
-            # nothing.
+            # off than if they had never asked, trading a working link for nothing. Like the
+            # branch above it carries no dummy PBKDF2: see there for why removing it was
+            # required by DEC-013 rather than merely tidy.
             if not degraded_send_allowed:
                 _report_degraded_send_skipped()
-                make_password("selahcue-resend-timing-equalizer-not-a-real-token")
                 return AcceptedResult(accepted=True)
 
             # Supersede any live link, so the previous email stops working the moment a new
@@ -1106,9 +1136,10 @@ def request_password_reset(email: str) -> AcceptedResult:
                 lambda: get_email_sender().send_password_reset(reset_user, reset_token)
             )
         else:
-            # Equalise timing with the token-minting branch (which runs a PBKDF2 make_password), so
-            # the response time does not reveal whether the email exists.
-            make_password("selahcue-reset-timing-equalizer-not-a-real-token")
+            # Deliberately empty: the minting branch no longer runs a PBKDF2 (DEC-013), so a
+            # dummy one here would make the NON-EXISTENT-account branch the expensive one and
+            # invert the oracle. The constant-time floor equalises both.
+            pass
     return AcceptedResult(accepted=True)
 
 
