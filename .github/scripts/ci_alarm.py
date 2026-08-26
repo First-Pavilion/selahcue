@@ -348,17 +348,29 @@ def main() -> int:
         lines.append(f"| `{job}` | {results.get(job) or 'not run'} |")
     lines += [
         "",
-        f"Latest commit: `{sha}` · Run: {run_url}",
+        f"Latest commit: `{sha}` · **[Open the failing run]({run_url})**",
         "",
-        "A job leaves this list only by actually reporting success. A **skipped** job "
-        "(CI path-filters by area) is not evidence of anything and does not clear it.",
+        "### What to do",
+        "",
+        "1. Open the run above and read the failing step in each job listed.",
+        "2. Fix forward, or revert the commit that broke it. Either is fine — leaving "
+        "`main` red is not, because it makes every other branch's CI unreadable.",
+        "3. Nothing to close by hand. **This issue closes itself** on the first run where "
+        "every job above reports success.",
+        "",
+        "### Why a job might be listed as `skipped`",
+        "",
+        "CI path-filters by area, so a push that touches only one part of the repo does not "
+        "run the others. A job leaves this list **only by actually reporting success** — a "
+        "skipped job is not evidence about that job and never clears it. So a job can sit "
+        "here as `skipped` because nothing has re-tested it since it broke.",
         "",
         "While this issue is open, treat every branch's CI result as unreadable: a real "
         "failure cannot be told apart from this standing one.",
         "",
-        "Please do not edit the line below — the alarm reads it to know what is still "
+        "<sub>Please do not edit the line below — the alarm reads it to know what is still "
         "outstanding. If it goes missing the alarm falls back to assuming everything is "
-        "broken until a fully green run proves otherwise.",
+        "broken until a fully green run proves otherwise.</sub>",
         "",
         render_marker(new_outstanding),
     ]

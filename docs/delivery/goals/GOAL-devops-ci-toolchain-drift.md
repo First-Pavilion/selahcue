@@ -6,7 +6,7 @@
 - Parent goal ID: BUILD-selahcue
 - Title: `main`'s pipeline is green again, and the local gate and CI provably compile with the same pinned Rust toolchain
 - Role: devops-engineer
-- Status: GATE_REVIEW (all four reviewers pass; awaiting merge)
+- Status: VERIFIED_COMPLETE (merged as 569b391; all criteria PASS)
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ak5rc9c
 - Created: 2026-08-25
@@ -94,7 +94,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-019 | yes | That check detects the shipped defect, and actionlint does not | restore `issues: write`-only on `ci-alarm`; run both | check exits 1 naming the job; actionlint exits 0 | recorded terminal output | PASS |
 | C-020 | yes | Every job that can fail on `main` is inside the alarm's `needs` | compare `jobs:` keys with `ci-alarm.needs` | only `ci-alarm` itself absent | `.github/workflows/ci.yml` | PASS |
 | C-021 | yes | Placeholder staging cannot truncate an existing file | run the `stage()` helper over a non-empty file | contents preserved; missing file created at 0 bytes | recorded terminal output | PASS |
-| C-022 | no | The alarm's GitHub WRITE path works end to end | one `workflow_dispatch` of `ci` on `main` after merge | an issue is created and then closed | ClickUp 86ak5rc9c | PENDING |
+| C-022 | no | The alarm's GitHub WRITE path works end to end | the post-merge push to `main` (run 32933626119), then verified against the repo rather than the log | issue created with the `ci-red` label and a correct marker; `issues: write` accepted despite the repo default being read-only | GitHub issue #6; `gh api .../labels`; marker `<!-- ci-red-outstanding: api,rust -->` | PASS |
 | C-039 | yes | The alarm job executes at all — condition, permissions, checkout, self-test | `workflow_dispatch` of `ci` on the branch (run 32900486643) | job conclusion `success`; checkout and self-test steps pass | GitHub run 32900486643 job 97978166110 | PASS |
 | C-040 | yes | `always()` keeps the alarm running when its dependencies fail | same run, with `api` and `rust` already failed | alarm still executes rather than being skipped | same job log | PASS |
 | C-041 | yes | The reconcile produces the right verdict from real `needs` data | read the job's output | `newly failed: ['api', 'rust']`, marker `api,rust` | same job log | PASS |
@@ -239,6 +239,17 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - **What it does NOT prove, stated so C-022 is not quietly closed:** no write was executed. `checkout` exercises `contents: read`; `issues: write` is granted but untested. The failure mode "the job cannot run" is closed; the failure mode "the write is refused" is not. C-022 stays PENDING for the post-merge dispatch on `main`.
 - Decision: complete
 
+### Iteration 12 — the alarm fired for real on `main`, and C-022 closes
+
+- Target criterion: C-022, and the org-level workflow-permissions unknown that could not be read with this token
+- Hypothesis: the merge of PR #2 is itself a push to `main`, so it would exercise the write path without needing a separate dispatch — and with `main` genuinely red on two jobs, it would be a live test rather than a rehearsal.
+- Change or investigation: watched run `32933626119` (event `push`, ref `main`). No change made; this was verification.
+- Verifier executed: read the alarm job's log, then verified **against the repository** — `gh issue view 6`, `gh api .../labels`, and re-parsing the live issue body with the shipped `parse_marker`/`outstanding_from`.
+- Result: job conclusion `success`, no `DRY-RUN` lines (correctly false on `main`), `newly failed: ['api', 'rust']`, `opened a new ci-red issue`. Repository afterwards: **issue #6 open**, authored by `app/github-actions`, labelled `ci-red`; the **label was created** (`color=B60205`); marker `<!-- ci-red-outstanding: api,rust -->`. Feeding the live body back through the shipped code returns `trusted=True`, `outstanding=['api','rust']`, and closes if both recover.
+- New evidence: **the org-level workflow-permissions unknown is resolved.** `issues: write` was accepted even though the repository default is read-only, confirming a job-level `permissions` block adds scopes rather than being capped by the default. That was the one input the security review could not inspect (403, needs `admin:org`), and it resolved on the same run as the write path — as predicted.
+- Also verified: the alarm round-trips **its own** live artefact, not a fixture. That is the property the whole marker design rests on and it had only ever been tested against synthetic bodies.
+- Decision: complete
+
 ## Risks and rollback
 
 - Risks: the pin is a deliberate lag — new compiler and clippy releases stop arriving automatically, so the canary must actually be watched. Landing the pin will move every developer and every in-flight worktree to 1.98.0 on their next `cargo` invocation, which may surface new lints in their unmerged work.
@@ -255,6 +266,6 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/GOAL-devops-ci-toolchain-drift.md`
 - Validator result: see the run recorded on ClickUp 86ak5rc9c
 - Independent verification result: PASS — Cody, Vera, Sana and Quinn have all cleared the branch; every blocking finding remediated and re-checked
-- Terminal state: GATE_REVIEW
-- Remaining failed or blocked criteria: C-022 only (post-merge proof of the alarm's GitHub WRITE path; its execution path is now proven by run 32900486643) — non-mandatory, and unprovable pre-merge by design, since DRY_RUN withholds writes precisely so a branch cannot touch the real issue. To be closed on the first `workflow_dispatch` after merge, which also resolves the org-level workflow-permissions unknown. Owner acceptance of the collaborator-editable marker/label residual is flagged on 86ak5rc9c and is the owner's to give.
+- Terminal state: VERIFIED_COMPLETE
+- Remaining failed or blocked criteria: **none**. C-022 closed by run 32933626119 (issue #6), which also resolved the org-level workflow-permissions unknown. Owner acceptance of the collaborator-editable marker/label residual remains flagged on 86ak5rc9c and is the owner's to give. — non-mandatory, and unprovable pre-merge by design, since DRY_RUN withholds writes precisely so a branch cannot touch the real issue. To be closed on the first `workflow_dispatch` after merge, which also resolves the org-level workflow-permissions unknown. Owner acceptance of the collaborator-editable marker/label residual is flagged on 86ak5rc9c and is the owner's to give.
 - ClickUp final evidence comment: posted on 86ak5rc9c
