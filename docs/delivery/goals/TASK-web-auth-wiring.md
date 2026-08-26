@@ -126,10 +126,14 @@ the first four were blind to, after they had all been mutation-verified. Known l
   is "how many quanta" plus a 120ms grace) and is wider than any useful threshold.
   Observed spreads on CORRECT code, across machine loads 5.85→41: 321ms, and independently
   29/7/23ms and 0/4/2ms.
-- **The deterministic timing control covers three files.** `tests/authViews.test.ts` refuses
-  timers and address inspection in `SignInView`, `SignUpView` and `ForgotPasswordView`
-  only. A timer added to `account.ts`, `graphql.ts`, `sessionStore.ts`, `AuthBanner.vue` or
-  `AuthShell.vue` is **not** covered by it.
+- **The deterministic timing control covers the auth path, not the whole app.**
+  `tests/authViews.test.ts` refuses timers and address inspection across the three views
+  plus `account.ts`, `session.ts`, `sessionStore.ts`, `signupPolicy.ts`, `redirect.ts`,
+  `AuthShell.vue`, `AuthBanner.vue` and `StatusDisc.vue`. `graphql.ts` is exempt from the
+  blanket ban because its two `setTimeout` calls are the request and bootstrap deadlines;
+  it instead has to prove every timer is armed from a deadline constant, and that it
+  contains no reference to an email address at all. Anything outside that list — a new
+  component, a new module — is not covered until it is added.
 - **The strongest guarantee on timing is structural, not a test.** The server equalises the
   branches itself — `check_password` against `_DUMMY_PASSWORD_HASH` on the unknown-email
   path, and a dummy-PBKDF2 pad in `request_password_reset` — and its responses to the two

@@ -13,10 +13,32 @@ import assert from 'node:assert/strict'
 import test, { describe } from 'node:test'
 import { readFileSync } from 'node:fs'
 
-const VIEWS = ['SignInView.vue', 'SignUpView.vue', 'ForgotPasswordView.vue'] as const
+const VIEWS = ['views/SignInView.vue', 'views/SignUpView.vue', 'views/ForgotPasswordView.vue'] as const
 
-function source(view: string): string {
-  return readFileSync(new URL(`../src/views/${view}`, import.meta.url), 'utf8')
+/**
+ * Everything else on the auth path where a timer would be just as effective an oracle.
+ *
+ * Quinn's LOW-2: once this file became the named control for the timing channel, covering
+ * only three view files left a hole the size of the rest of the feature — a delay added
+ * to `account.ts` or `sessionStore.ts` sits directly in the request path and is invisible
+ * to a control that reads the views.
+ *
+ * `graphql.ts` is deliberately NOT in this list: it uses `setTimeout` legitimately, for
+ * the request and bootstrap deadlines. It gets its own, stronger assertion below.
+ */
+const AUTH_PATH_MODULES = [
+  'lib/api/account.ts',
+  'lib/auth/session.ts',
+  'lib/auth/sessionStore.ts',
+  'lib/auth/signupPolicy.ts',
+  'lib/auth/redirect.ts',
+  'components/auth/AuthShell.vue',
+  'components/auth/AuthBanner.vue',
+  'components/auth/StatusDisc.vue',
+] as const
+
+function source(relative: string): string {
+  return readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8')
 }
 
 /**
@@ -46,10 +68,19 @@ function codeOnly(view: string): string {
  * close to empty and every one of them would pass while checking nothing. This asserts
  * the stripped text still contains the view's real machinery.
  */
-function codeIsIntact(view: string, code: string): void {
-  assert.ok(code.includes('<template>'), `${view}: stripping removed the template`)
-  assert.ok(code.includes('async function'), `${view}: stripping removed the script`)
-  assert.ok(code.length > 1500, `${view}: stripping left only ${code.length} chars`)
+function codeIsIntact(name: string, code: string): void {
+  if (name.endsWith('.vue')) {
+    // A component's proof of life is its template. `AuthShell.vue` is pure markup — its
+    // `<script setup>` holds nothing but the comment explaining the design — so requiring
+    // a declaration there would fail on a file that is entirely correct.
+    assert.ok(code.includes('<template>'), `${name}: stripping removed the template`)
+  } else {
+    assert.ok(
+      /\b(function|const|export)\b/.test(code),
+      `${name}: stripping removed the script`,
+    )
+  }
+  assert.ok(code.length > 150, `${name}: stripping left only ${code.length} chars`)
 }
 
 describe('no auth view can fake, delay or vary an outcome', () => {
@@ -64,7 +95,7 @@ describe('no auth view can fake, delay or vary an outcome', () => {
     // Scoped to these three. `VerifyView.vue` legitimately uses one to hold its spinner
     // for a 300ms minimum (design §4.1); that is a display floor applied to every
     // outcome equally, not an outcome being simulated.
-    for (const view of VIEWS) {
+    for (const view of [...VIEWS, ...AUTH_PATH_MODULES]) {
       const text = codeOnly(view)
       codeIsIntact(view, text)
       for (const timer of ['setTimeout', 'setInterval', 'requestIdleCallback']) {
@@ -140,5 +171,42 @@ describe('no auth view can fake, delay or vary an outcome', () => {
         `${view} imports no API wrapper — check this test still points at a real view`,
       )
     }
+  })
+})
+
+describe('the transport seam', () => {
+  const TRANSPORT = 'lib/api/graphql.ts'
+
+  test('its timers are deadlines, not delays', () => {
+    // `graphql.ts` is the one module on this path that legitimately uses `setTimeout`:
+    // the request deadline and the CSRF bootstrap deadline. It cannot join the blanket
+    // ban, so it gets the assertion that actually matters — every timer here is armed
+    // from a module CONSTANT, never from anything a caller supplied.
+    const text = codeOnly(TRANSPORT)
+    codeIsIntact(TRANSPORT, text)
+
+    // To end of LINE, not a balanced-paren match and not a fixed character window.
+    //
+    // `[^)]*` stops at the arrow function's own closing paren, so every timer reads as
+    // `setTimeout((` and the delay is never examined. A fixed window overshoots the other
+    // way: it can reach a deadline constant on a NEIGHBOURING line and pass a timer that
+    // has nothing to do with one. Both real call sites are single-line, and if one is ever
+    // wrapped the count assertion below fails loudly rather than the check going quiet.
+    const timers = text.match(/setTimeout\([^\n]*/g) ?? []
+    assert.equal(timers.length, 2, `expected exactly the two deadlines, found ${timers.length}`)
+    for (const timer of timers) {
+      assert.ok(
+        /DEFAULT_TIMEOUT_MS|CSRF_BOOTSTRAP_TIMEOUT_MS|options\.timeoutMs/.test(timer),
+        `a timer armed from something other than a deadline constant: ${timer.slice(0, 90)}`,
+      )
+    }
+  })
+
+  test('it knows nothing about email addresses', () => {
+    // The strongest control available for a generic transport: it cannot branch on
+    // registration status because it has no concept of an address to branch on. If this
+    // ever fails, something has taught the transport layer who the user is.
+    const text = codeOnly(TRANSPORT)
+    assert.ok(!/\bemail\b/i.test(text), 'the transport seam references an email address')
   })
 })
