@@ -6,11 +6,11 @@
 - Parent goal ID: NONE
 - Title: `api (django)` runs clean — the two erroring resend tests and the constant-time probe
 - Role: backend-engineer
-- Status: GATE_REVIEW
+- Status: GATE_REVIEW (review round 1 remediated)
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ak643rc (defects 2 and 3) and https://app.clickup.com/t/86ak5rnrr
 - Created: 2026-08-25
-- Updated: 2026-08-25
+- Updated: 2026-08-26
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -23,8 +23,15 @@ contention — while still going red when a real timing difference is introduced
 
 ## Baseline
 
-Verified at `607a7b5` with a Python 3.14 venv rebuilt from `pyproject.toml` (the documented
-`/private/tmp/selahcue-api-venv` no longer exists):
+Verified at `607a7b5` with a Python 3.14 venv rebuilt from `pyproject.toml` into the
+worktree (`.venv-api`).
+
+**Do not use `/private/tmp/selahcue-api-venv`.** It was absent when this work started and has
+since been recreated by another session. Its editable install maps to
+`scph-wt-86ak5mn00/implementation/api`, but `pytest.ini` sets `pythonpath = .`, so running
+pytest from your own `implementation/api` silently gives you your own code while any other
+working directory gives you 86ak5mn00's. It is right often enough to be trusted and wrong
+often enough to mislead. Verify with `inspect.getfile(services)`, not `selahcue_api.__file__`.
 
 - `pytest tests/test_resend_verification.py -q` → `20 passed, 2 errors`, both errors
   `AttributeError: module 'selahcue_api.apps.accounts.services' has no attribute
@@ -95,6 +102,12 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-010 | yes | CI's other api gates pass | `manage.py check`; `makemigrations --check --noinput` | both exit 0 | `gate-check.txt`, `gate-migrations.txt` | PASS |
 | C-011 | yes | The floor the probe uses cannot silently drift again | probe asserts `PRODUCTION_FLOOR == RESEND_MIN_SECONDS_DEFAULT` | assertion present and green | `test_resend_verification.py` | PASS |
 | C-012 | yes | Independent review (Cody, Sana, Vera, Quinn + Codex pairs) | review pipeline | no blocking findings | ClickUp | PENDING |
+| C-013 | yes | The degraded ceiling is spent whether or not the account exists | `pytest -k spent_whether_or_not` | passes | `post-blocker.txt` | PASS |
+| C-014 | yes | Re-keying the ceiling to eligibility turns C-013 red | `mutate3.py G` | that test FAILS, siblings running | `m3-G-*.txt` | PASS |
+| C-015 | yes | A healthy limiter never engages the degraded ceiling | `pytest -k healthy_limiter_never` | passes | `f2-suite.txt` | PASS |
+| C-016 | yes | A fail-open misreported on a healthy limiter turns C-015 red | `mutate3.py E` (`guards.py` returns True) | that test FAILS | `m3-E-*.txt` | PASS |
+| C-017 | yes | The shipped ceiling setting and module default cannot drift | `mutate3.py F` (delete the setting) | collection fails loudly | `m3-F-*.txt` | PASS |
+| C-018 | yes | A host that slows after calibration skips, not fails | forced fast-then-slow eligible branch | SKIPPED naming both costs | `m3-H.txt` | PASS |
 
 ## Verification plan
 
@@ -141,6 +154,26 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
   resolving sub-millisecond, so the 66 ms was real work.
 - Decision: iterate — calibrate the floor to the host.
 
+### Iteration 5 — review round 1 (Cody)
+
+- Target criterion: C-013..C-018
+- Hypothesis (his, confirmed): charging the fallback ceiling only to calls that actually send
+  makes its depletion an account-existence oracle, readable from the attacker's own inbox.
+- Change or investigation: wrote the regression test FIRST and confirmed it failed against my
+  own code — two non-sending probes spent 0 of a 2-unit ceiling, so the eligible address still
+  sent. Moved the claim beside the three budgets it stands in for, before the address is
+  looked up.
+- Verifier executed: `mutate3.py` G (re-key to eligibility), E (healthy limiter reports a
+  fail-open), F (delete the shipped setting), H (host slows after calibration).
+- Result: all caught. G reds only the new oracle test; E reds the new healthy-limiter control;
+  F fails collection; H skips with both costs named.
+- New evidence: my `MUT-D` did land in `services.py`, not the harness — but in the INELIGIBLE
+  branch, which is not the calibration source, so it is not absorbed. Cody's ~500ms delay went
+  into the ELIGIBLE branch, which recalibration does absorb. Re-ran as D2: the probe passes and
+  `test_the_eligible_branch_costs_well_under_the_constant_time_floor` catches it — exactly the
+  division of labour the probe's KNOWN LIMIT documents.
+- Decision: handoff — back to review.
+
 ### Iteration 4
 
 - Target criterion: C-008
@@ -154,8 +187,11 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 ## Risks and rollback
 
 - Risks: the degraded ceiling is per-worker, so N workers give N× the limit; stated in the
-  setting's comment and in the warning it emits. The probe can skip on a saturated host; it
-  cannot skip on a single-branch regression, which is the case that matters.
+  setting's comment and in the warning it emits. Charging it unconditionally means a probe
+  flood can starve legitimate resends during an outage — the deliberate trade for closing the
+  existence oracle, and the same one the global budget already makes. The probe can skip when
+  the host slows after calibration; it cannot skip on a regression, because a regression is
+  present at calibration too and so is already inside the floor.
 - Rollback or recovery: three files, one commit, revertable in isolation.
 
 ## Pause and escalation conditions

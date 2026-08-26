@@ -47,6 +47,10 @@ pytestmark = pytest.mark.django_db
 # Captured at IMPORT, before the autouse `_no_constant_time_floor` fixture zeroes the setting
 # for every test in this module. This is the floor a deployment actually runs with.
 PRODUCTION_FLOOR = settings.ACCOUNT_RESEND_MIN_SECONDS
+# Captured at import for the same reason and pinned by the same kind of assertion: this pair
+# is a settings value shadowing a module fallback, which is exactly the shape that drifted
+# apart and produced the timing bug this file also fixes.
+PRODUCTION_DEGRADED_CEILING = settings.SELAHCUE_RESEND_DEGRADED_SEND_CEILING
 
 
 RESEND = """
@@ -302,10 +306,14 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
       exists for.
     * `min(medians)` BELOW the floor: the padding did not run. The equalisation is gone, not
       merely degraded.
-    * SKIPPED, "every case outgrew the floor": the host became materially slower between
-      calibration and measurement (a parallel build, a throttled runner). Nothing is claimed
-      about the code either way. Note this cannot hide a regression in ONE branch: that leaves
-      the other two padded, so it fails on spread instead of skipping.
+    * SKIPPED, "the host slowed after calibration": before reporting a spread the probe
+      re-measures the very branch it calibrated from. If that branch now costs more than the
+      whole floor, the host is demonstrably slower than when the floor was provisioned, the
+      padding was defeated by the machine rather than by the code, and nothing is claimed
+      either way. This is a measurement of the confounder, not an inference from the three
+      cases, which matters: the realistic degradation signature is the ELIGIBLE branch
+      outgrowing the floor alone, and an earlier version that required all three to outgrow
+      turned exactly that case into a false red.
 
     KNOWN LIMIT, stated so nobody re-derives it: because the floor is calibrated from the
     eligible branch, a change that makes that branch MORE expensive raises the floor with it
@@ -342,6 +350,7 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
             _make_user(f"v{i}@timing.example", verified=True, tag=f"t-v{i}")
         for i in range(calibration_samples):
             _make_user(f"cal{i}@timing.example", tag=f"t-cal{i}")
+            _make_user(f"recal{i}@timing.example", tag=f"t-recal{i}")
 
         # A plain post, NOT `post_account`: under `transaction=True` the on_commit callback
         # already fired inside the service, and wrapping the call in captureOnCommitCallbacks
@@ -400,7 +409,7 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
 
         medians = {case: statistics.median(values) for case, values in timings.items()}
         report = {c: round(v * 1000, 1) for c, v in medians.items()}
-        outgrew = {c: m for c, m in medians.items() if m > floor * PROBE_FLOOR_FIT_TOLERANCE}
+        outgrew = sorted(c for c, m in medians.items() if m > floor * PROBE_FLOOR_FIT_TOLERANCE)
         # NULL CONTROL, free and measured in the same run under the same load: `unknown` and
         # `verified` are not merely similar, they are the SAME code path — both land in the
         # `not eligible` branch. Whatever separates their medians is therefore instrument
@@ -411,25 +420,39 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
         # which is how we know that 66ms was work and not weather.
         instrument_noise = abs(medians["unknown"] - medians["verified"])
 
-        # Every case past the floor means the padding was defeated across the board, i.e. the
-        # host slowed down after calibration. Nothing can be concluded about the code, and
-        # saying so is more honest than either a red or a green. One case past the floor is NOT
-        # this: it leaves the others padded and falls through to the spread assertion below.
-        if len(outgrew) == len(medians):
-            pytest.skip(
-                f"host slowed after calibration: every case outgrew the {floor * 1000:.0f}ms "
-                f"floor ({report}), so the padding equalised nothing and this run cannot say "
-                f"whether the three cases are distinguishable. Not a claim about the code."
-            )
-
         # Guards the equalisation from being satisfied by doing no real work at all: if the
-        # padding is gone, every case returns in its own time, which is BELOW the floor.
+        # padding is gone, every case returns in its own time, which is BELOW the floor. Host
+        # slowness can never cause this — it only ever makes calls longer — so this is checked
+        # first and is never excused by the recalibration below.
         assert min(medians.values()) >= floor, (
             f"the constant-time floor did not pad these calls at all — the fastest case "
             f"returned in {min(medians.values()) * 1000:.1f}ms against a {floor * 1000:.0f}ms "
             f"floor ({report}). The equalisation is absent, not merely degraded."
         )
         spread = max(medians.values()) - min(medians.values())
+
+        # About to report an oracle — so first rule out the one benign explanation, by
+        # measuring it rather than inferring it. The floor was provisioned from the eligible
+        # branch BEFORE the probe ran; if the host slowed down in between, that branch outgrows
+        # the floor and the padding stops equalising, which is indistinguishable from a leak
+        # when you only look at the three cases. Re-measuring the same branch settles it: a
+        # branch that now costs more than the entire floor means the machine moved, not the
+        # code. `min` of the fresh samples against the `max` the floor was built from, so only
+        # a real, sustained slowdown counts — not one unlucky sample.
+        if spread >= PROBE_SPREAD_BUDGET_SECONDS:
+            settings.ACCOUNT_RESEND_MIN_SECONDS = 0.0
+            recalibrated = min(
+                timed_resend(f"recal{i}@timing.example") for i in range(calibration_samples)
+            )
+            if recalibrated > slowest_branch * PROBE_FLOOR_MULTIPLE:
+                pytest.skip(
+                    f"host slowed after calibration: the branch the {floor * 1000:.0f}ms floor "
+                    f"was provisioned from cost {slowest_branch * 1000:.0f}ms then and "
+                    f"{recalibrated * 1000:.0f}ms now, so it no longer fits inside its own "
+                    f"floor and the padding was defeated by the machine, not by the code. "
+                    f"Measured {report}, outgrown by {outgrew or 'none'}. Nothing is claimed "
+                    f"about the code either way; re-run on a quieter host."
+                )
         assert spread < PROBE_SPREAD_BUDGET_SECONDS, (
             f"response time distinguishes the three cases (spread {spread * 1000:.1f}ms "
             f"against a {PROBE_SPREAD_BUDGET_SECONDS * 1000:.0f}ms budget): {report}, at a "
@@ -438,9 +461,9 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
             f"instrument noise — compare it against the spread before reading anything into "
             f"the number"
             + (
-                f". {sorted(outgrew)} outgrew the floor, so the branch is doing more work than "
-                f"the floor can hide — raise ACCOUNT_RESEND_MIN_SECONDS or make the branch "
-                f"cheaper."
+                f". {outgrew} outgrew the floor while the host stayed the speed it was "
+                f"calibrated at, so that branch is doing more work than the floor can hide — "
+                f"raise ACCOUNT_RESEND_MIN_SECONDS or make the branch cheaper."
                 if outgrew
                 else ". Every case sat at the floor, so this is a real difference introduced "
                 "inside the padded window."
@@ -667,6 +690,103 @@ def test_a_skipped_send_does_not_destroy_the_users_existing_link(settings, limit
     live.refresh_from_db()
     assert live.consumed_at is None, "the user's working link must survive a skipped resend"
     assert CredentialToken.objects.filter(customer_user=user).count() == 1, "nothing was minted"
+
+
+def test_the_degraded_ceiling_is_spent_whether_or_not_the_account_exists(settings, limiter_down):
+    """The fallback ceiling must not become an account-existence oracle.
+
+    While the store is down this ceiling is the only thing rationing mail, and it is SHARED
+    across callers. If it were charged only to calls that actually send, an attacker holding
+    one unverified account of their own could read one bit of state off any address: probe the
+    target once, then spend the rest of the ceiling on their own address and count what
+    arrives. A target that was eligible consumed a unit; a target that was not, did not. One
+    request per target, no guessing.
+
+    `resend_email_verification`'s own docstring already forbids exactly this for the three
+    real budgets — "a limiter that only bit for real accounts would itself be the oracle this
+    function exists to avoid" — so the fallback that stands in for them has to behave the same
+    way. It costs something real: during an outage a flood of probes can starve legitimate
+    resends. That is the trade the global budget already makes, and it is the cheaper side.
+    """
+    settings.SELAHCUE_RESEND_DEGRADED_SEND_CEILING = (2, 60)
+    captured = CapturingSender()
+    services.set_email_sender(captured)
+    try:
+        _make_user("real@oracle.example", tag="oracle-real")
+
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            # Two addresses that can never send: one unknown, one already verified. If the
+            # ceiling only bit for real accounts these would cost nothing at all.
+            _make_user("done@oracle.example", verified=True, tag="oracle-done")
+            for address in ("ghost@oracle.example", "done@oracle.example"):
+                assert services.resend_email_verification(
+                    services.ResendVerificationData(email=address, client_ip="10.0.0.9")
+                ).accepted is True
+
+            # The ceiling is now spent, so the one address that COULD send must not.
+            assert services.resend_email_verification(
+                services.ResendVerificationData(
+                    email="real@oracle.example", client_ip="10.0.0.9"
+                )
+            ).accepted is True
+
+        assert captured.verify_tokens == [], (
+            "two non-sending probes did not spend the degraded ceiling, so its depletion "
+            "tracks whether an address was eligible — an account-existence oracle readable "
+            "from the attacker's own inbox"
+        )
+    finally:
+        services.set_email_sender(services.EmailSender())
+
+
+def test_a_healthy_limiter_never_engages_the_degraded_ceiling(settings, sender):
+    """The fallback must stay out of the way while the store is UP.
+
+    This is the negative half of the two tests above, and without it they are satisfied by a
+    fallback that is ALWAYS on. If `enforce_budget_reporting_outage` ever reported a fail-open
+    against a healthy limiter — a wrong return, a swapped enum member, an inverted check —
+    every resend in normal operation would be rationed by this per-worker fallback instead of
+    the real budgets, silently capping ALL verification mail at the fallback's rate with no
+    error raised and nothing logged. Both outage tests run with the store down, so they pass
+    either way and cannot see it.
+
+    The ceiling here is set to 1: if the degraded path engaged at all, only the first of the
+    three sends would leave.
+    """
+    settings.SELAHCUE_RESEND_DEGRADED_SEND_CEILING = (1, 3600)
+    settings.SELAHCUE_THROTTLE_RESEND_ADDRESS = (10, 900)
+    services._reset_degraded_send_window()
+
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        for i in range(3):
+            _make_user(f"healthy{i}@limiter.example", tag=f"h{i}")
+            assert services.resend_email_verification(
+                services.ResendVerificationData(
+                    email=f"healthy{i}@limiter.example", client_ip="10.0.0.8"
+                )
+            ).accepted is True
+
+    assert len(sender.verify_tokens) == 3, (
+        f"the degraded ceiling engaged while the limiter was HEALTHY: only "
+        f"{len(sender.verify_tokens)} of 3 sends left. A fail-open misreported on a working "
+        f"store would cap all resend mail at the fallback ceiling in normal operation."
+    )
+
+
+def test_the_degraded_ceiling_setting_and_module_default_have_not_drifted():
+    """The shipped setting and the module fallback must agree.
+
+    Same guard as the floor's, for the same reason and after the same accident: this file's
+    timing probe went wrong because a settings value and a module default were allowed to
+    drift while a test pinned the stale one. `getattr(settings, ..., DEFAULT)` means a
+    deployment that never sets the setting silently runs the module value, so the two being
+    different is a difference nobody would see.
+    """
+    assert PRODUCTION_DEGRADED_CEILING == services.RESEND_DEGRADED_SEND_CEILING, (
+        "settings.SELAHCUE_RESEND_DEGRADED_SEND_CEILING and "
+        "services.RESEND_DEGRADED_SEND_CEILING have drifted; the fallback must not be "
+        "quietly different from the shipped ceiling"
+    )
 
 
 # --- AC4: the previous token dies -------------------------------------------------------

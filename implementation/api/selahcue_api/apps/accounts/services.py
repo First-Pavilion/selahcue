@@ -308,6 +308,12 @@ RESEND_GLOBAL_BUDGET = (500, 3600)
 # ceiling. A caller whose send is skipped is left strictly no worse off than before it asked:
 # the mint is skipped with it, so an existing link is neither superseded nor replaced.
 #
+# The ceiling is charged to EVERY call during an outage, not only to the ones that would send.
+# Charging only senders would ration mail more efficiently and would also turn the ceiling
+# into an account-existence oracle: it is shared, an attacker can watch it drain through their
+# own inbox, and a unit that is spent only for real accounts reports exactly the thing this
+# endpoint refuses to report. The three budgets above are unconditional for that same reason.
+#
 # PROCESS-LOCAL is the design and the limitation, in one. The shared store is precisely what
 # is broken, so the fallback cannot use it; with N web workers the effective ceiling is N x
 # the limit. It is a bound on catastrophe during an outage, not a budget — hence a default
@@ -349,9 +355,14 @@ def _claim_degraded_send() -> bool:
     """Claim one unit of the degraded ceiling. False means: do not send, and do not mint.
 
     A fixed window on `time.monotonic()` — the same shape as the store-backed limiter, so the
-    degraded path is not a second rate limiter with its own semantics to reason about. It is
-    claimed only by a call that would ACTUALLY send, so the ceiling bounds mail rather than
-    being spent by probes for addresses that have nothing to resend.
+    degraded path is not a second rate limiter with its own semantics to reason about.
+
+    Charged on EVERY call during an outage, including calls for addresses that could never
+    send. Charging only senders would be cheaper and is wrong: the ceiling is shared, and an
+    attacker can watch it drain through their own inbox, so a ceiling that only bit for real
+    accounts would leak whether an address has a verification pending — one probe, one bit.
+    That is the defect `resend_email_verification`'s docstring already rules out for the three
+    real budgets, and this stands in for them.
     """
     limit, window = _degraded_send_ceiling()
     global _degraded_window_started, _degraded_window_sends
@@ -837,6 +848,20 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
     limiter_degraded |= enforce_budget_reporting_outage(
         "resend_verify_addr", fingerprint, "SELAHCUE_THROTTLE_RESEND_ADDRESS", RESEND_ADDRESS_BUDGET
     )
+    # The fallback ceiling is spent HERE — beside the three budgets it stands in for, before
+    # anything has looked the address up, and therefore whether or not the account exists.
+    # That last part is the whole point: the ceiling is shared and an attacker can watch it
+    # drain through their own inbox, so charging only the calls that really send would make
+    # its depletion a readout of whether a probed address had a verification pending. One
+    # request per target, one bit each time. The three budgets above are spent unconditionally
+    # for exactly this reason and this must match them.
+    #
+    # It is not free: while the store is down, a flood of probes can now starve legitimate
+    # resends. That is the same cost the global budget already accepts, and it is the cheaper
+    # side of the trade — a delayed verification email against a working enumeration oracle.
+    degraded_send_allowed = True
+    if limiter_degraded:
+        degraded_send_allowed = _claim_degraded_send()
 
     try:
         now = djtz.now()
@@ -857,12 +882,13 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
                 make_password("selahcue-resend-timing-equalizer-not-a-real-token")
                 return AcceptedResult(accepted=True)
 
-            # The limiter failed open and the fallback ceiling is spent: skip the send. The
-            # MINT is skipped with it, on purpose — superseding a live link and then not
-            # delivering its replacement would leave this caller worse off than if they had
-            # never asked, trading a working link for nothing. Same equaliser as the branch
-            # above, because this branch now does the same amount of nothing.
-            if limiter_degraded and not _claim_degraded_send():
+            # The limiter failed open and this call's claim on the fallback ceiling was
+            # refused: skip the send. The MINT is skipped with it, on purpose — superseding a
+            # live link and then not delivering its replacement would leave this caller worse
+            # off than if they had never asked, trading a working link for nothing. Same
+            # equaliser as the branch above, because this branch now does the same amount of
+            # nothing.
+            if not degraded_send_allowed:
                 _report_degraded_send_skipped()
                 make_password("selahcue-resend-timing-equalizer-not-a-real-token")
                 return AcceptedResult(accepted=True)
