@@ -933,24 +933,59 @@ def test_the_degraded_ceiling_is_spent_whether_or_not_the_account_exists(setting
     services.set_email_sender(captured)
     try:
         _make_user("real@oracle.example", tag="oracle-real")
+        _make_user("done@oracle.example", verified=True, tag="oracle-done")
 
+        # POSITIVE CONTROL, and THE WINDOW IS PINNED HERE rather than in the `limiter_down`
+        # fixture. Both halves of that are load-bearing, and neither is defensive tidiness:
+        #
+        # The contract below is a pure negative — "nothing was sent". A ceiling that arrives
+        # already drained satisfies it for free, and then the test passes whether or not the
+        # non-sending probes were charged, which is the whole property it exists to pin. The
+        # window is process-global module state, so "already drained" is not hypothetical: any
+        # earlier test in the file that leaves it spent has that effect. It was reachable by
+        # deleting ONE line from a fixture that does not mention this test — at which point the
+        # account-existence oracle this guards against reappeared with the whole file green,
+        # 25 passed, exit 0. Verified before this rework, and again after it.
+        #
+        # So the premise is established here, in the test, at the point it is relied on: with a
+        # fresh window the eligible address really does send. That makes the negative below
+        # mean "refused because the probes spent the ceiling" instead of the untestable
+        # "refused, for some reason, possibly that the mechanism is dead".
+        services._reset_degraded_send_window()
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            assert services.resend_email_verification(
+                services.ResendVerificationData(
+                    email="real@oracle.example", client_ip="10.0.0.9"
+                )
+            ).accepted is True
+        assert len(captured.verify_tokens) == 1, (
+            f"the positive control did not send ({len(captured.verify_tokens)} sends): with a "
+            f"fresh ceiling an eligible address must still be delivered to during an outage. "
+            f"Either the ceiling arrived already spent or the degraded path refuses "
+            f"everything — either way the negative assertion below is satisfied for free and "
+            f"the account-existence property it names went unexercised"
+        )
+
+        # Now the actual question, from a window pinned the same way for the same reason.
+        services._reset_degraded_send_window()
+        sends_before = len(captured.verify_tokens)
         with TestCase.captureOnCommitCallbacks(execute=True):
             # Two addresses that can never send: one unknown, one already verified. If the
             # ceiling only bit for real accounts these would cost nothing at all.
-            _make_user("done@oracle.example", verified=True, tag="oracle-done")
             for address in ("ghost@oracle.example", "done@oracle.example"):
                 assert services.resend_email_verification(
                     services.ResendVerificationData(email=address, client_ip="10.0.0.9")
                 ).accepted is True
 
-            # The ceiling is now spent, so the one address that COULD send must not.
+            # The ceiling is now spent, so the one address that COULD send must not — and the
+            # control above has already established that it otherwise would.
             assert services.resend_email_verification(
                 services.ResendVerificationData(
                     email="real@oracle.example", client_ip="10.0.0.9"
                 )
             ).accepted is True
 
-        assert captured.verify_tokens == [], (
+        assert captured.verify_tokens[sends_before:] == [], (
             "two non-sending probes did not spend the degraded ceiling, so its depletion "
             "tracks whether an address was eligible — an account-existence oracle readable "
             "from the attacker's own inbox"
