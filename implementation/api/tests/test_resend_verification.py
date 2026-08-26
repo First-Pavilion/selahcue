@@ -1028,6 +1028,178 @@ def test_a_healthy_limiter_never_engages_the_degraded_ceiling(settings, sender):
     )
 
 
+# --- a PARTIAL outage: three budgets, three keys, three independent failures -------------
+class _SelectivelyBrokenStore:
+    """Down for ONE scope, healthy for the others.
+
+    `_BrokenStore` above fails every key at once, which is the easy case and not the likely
+    one. The three budgets are three different keys, and a real store fails per key: a hot
+    shard, one evicted slot, a key whose value went unparseable. Every test on this path used
+    the all-or-nothing store, so nothing here had ever seen a partial outage.
+    """
+
+    def __init__(self, broken_scope):
+        self.broken_scope = broken_scope
+        self.counts = {}
+
+    def incr_with_expiry(self, key, window_seconds):
+        if key.startswith(f"throttle:{self.broken_scope}:"):
+            raise RuntimeError(f"redis is down for {self.broken_scope}")
+        self.counts[key] = self.counts.get(key, 0) + 1
+        return self.counts[key]
+
+    def spent(self, scope):
+        return sum(n for key, n in self.counts.items() if key.startswith(f"throttle:{scope}:"))
+
+
+@pytest.fixture
+def partial_outage(monkeypatch):
+    """Install a store that is down for exactly one of the three resend scopes."""
+    from selahcue_api.apps.throttling import guards
+
+    def _install(broken_scope):
+        store = _SelectivelyBrokenStore(broken_scope)
+        monkeypatch.setattr(guards, "CacheStore", lambda _cache: store)
+        services._reset_floor_overrun_reporting()
+        services._reset_degraded_send_window()
+        return store
+
+    return _install
+
+
+@pytest.mark.parametrize(
+    "broken_scope", ["resend_verify", "resend_verify_ip", "resend_verify_addr"]
+)
+def test_an_outage_on_any_one_of_the_three_budgets_degrades_the_send(
+    settings, partial_outage, broken_scope
+):
+    """Each budget's fail-open must be reported, not just the first one's.
+
+    `limiter_degraded` accumulates with `|=` across three separate statements precisely so
+    that a fail-open ANYWHERE is carried to the send path. Collapse it to one budget — keep
+    the global and drop the other two, an entirely natural simplification — and an outage
+    confined to the per-address or per-IP key stops degrading the send while still failing
+    open. The endpoint then has no ceiling at all for that key, which is the unmetered,
+    unauthenticated send path this whole mechanism exists to prevent.
+
+    Nothing covered this: every other test on this path uses a store that fails all three keys
+    at once, and under that store keeping only the global budget passes everything.
+    """
+    store = partial_outage(broken_scope)
+    # Exhausted on arrival, so "was the outage noticed?" is the only question left: a noticed
+    # outage sends nothing, an unnoticed one sends normally.
+    settings.SELAHCUE_RESEND_DEGRADED_SEND_CEILING = (0, 60)
+    captured = CapturingSender()
+    services.set_email_sender(captured)
+    try:
+        _make_user(f"partial-{broken_scope}@degrade.example", tag=f"p-{broken_scope}")
+
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            assert services.resend_email_verification(
+                services.ResendVerificationData(
+                    email=f"partial-{broken_scope}@degrade.example", client_ip="10.0.0.7"
+                )
+            ).accepted is True
+
+        # The hit first: prove this call really did reach the store for the scopes that were
+        # UP, so a red below means "the outage was not noticed" and not "the store was never
+        # consulted and nothing was exercised".
+        healthy = [s for s in ("resend_verify", "resend_verify_ip", "resend_verify_addr")
+                   if s != broken_scope]
+        for scope in healthy:
+            assert store.spent(scope) == 1, (
+                f"{scope} was not spent, so this call did not exercise the three-budget path "
+                f"at all and the outage assertion below pins nothing"
+            )
+
+        assert captured.verify_tokens == [], (
+            f"an outage confined to the {broken_scope} budget failed open without degrading "
+            f"the send, so that budget bounded nothing while it was down. An unauthenticated "
+            f"mail endpoint had no ceiling on that key for the length of the outage"
+        )
+    finally:
+        services.set_email_sender(services.EmailSender())
+
+
+def test_a_degraded_budget_does_not_stop_the_later_budgets_being_spent(settings, partial_outage):
+    """The accumulation must never short-circuit — the code comment forbids `or` and nothing
+    checked it.
+
+    `a or b or c` stops evaluating at the first truthy operand. Since a fail-open returns True,
+    writing the accumulation that way means an outage on the FIRST budget silently stops the
+    per-IP and per-address budgets being spent at all — while their store is perfectly
+    healthy. The endpoint would then be rate-limited by nothing but a global key that is
+    already down, and one address could be flooded without limit.
+
+    This is invisible to every other test here: with the all-or-nothing store there are no
+    later budgets left to skip, so `or` and `|=` behave identically and both pass.
+
+    Only the GLOBAL store is broken. The per-address budget is healthy, small, and must still
+    bite.
+    """
+    store = partial_outage("resend_verify")
+    settings.SELAHCUE_THROTTLE_RESEND_ADDRESS = (2, 900)
+    # Generous: this test is about the budgets being SPENT, not about the fallback ceiling.
+    settings.SELAHCUE_RESEND_DEGRADED_SEND_CEILING = (100, 3600)
+    _make_user("shortcircuit@partial.example", tag="short-circuit")
+
+    def call():
+        return services.resend_email_verification(
+            services.ResendVerificationData(
+                email="shortcircuit@partial.example", client_ip="10.0.0.6"
+            )
+        )
+
+    for _ in range(2):
+        assert call().accepted is True
+
+    # The hit, before the contract: the per-address budget must actually have been reached.
+    # Under `or` this reads 0 and the RATE_LIMITED below never arrives.
+    assert store.spent("resend_verify_addr") == 2, (
+        f"the per-address budget was spent {store.spent('resend_verify_addr')} times across "
+        f"two calls: an outage on the global budget short-circuited the accumulation, so the "
+        f"later budgets were never spent and the address key bounded nothing while its own "
+        f"store was healthy"
+    )
+
+    with pytest.raises(SafeAPIError) as exhausted:
+        call()
+    assert exhausted.value.code is ErrorCode.RATE_LIMITED, (
+        "a healthy per-address budget must still refuse past its limit while a different "
+        "budget's store is down"
+    )
+
+
+def test_the_degraded_window_rolls_over_so_one_outage_does_not_stop_mail_for_good(settings):
+    """The ceiling is a fixed window and must actually roll.
+
+    Drop the rollover branch and the ceiling is spent once per PROCESS, not once per window:
+    the first N sends of the first outage exhaust it and this worker sends no verification
+    mail again until it is restarted — including long after the store has recovered, because
+    nothing on the healthy path ever resets it. That is a permanent, silent loss of a
+    self-service recovery route, and it survives the outage that caused it.
+    """
+    settings.SELAHCUE_RESEND_DEGRADED_SEND_CEILING = (1, 0.05)
+    services._reset_degraded_send_window()
+
+    assert services._claim_degraded_send() is True, (
+        "the first claim in a fresh window was refused, so the ceiling is dead rather than "
+        "bounding and the rollover below would prove nothing"
+    )
+    assert services._claim_degraded_send() is False, (
+        "a second claim inside the same window was granted against a ceiling of 1 — the "
+        "window is not bounding anything"
+    )
+
+    time.sleep(0.08)  # comfortably past the 50ms window
+
+    assert services._claim_degraded_send() is True, (
+        "the window never rolled over: the ceiling is spent once per process, so this worker "
+        "would send no verification mail again until restarted — long after the outage that "
+        "spent it had ended"
+    )
+
+
 def test_the_degraded_ceiling_setting_and_module_default_have_not_drifted():
     """The shipped setting and the module fallback must agree.
 
