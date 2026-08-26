@@ -348,14 +348,30 @@ jobs:
       # all. The manifest and cargo-config routes are closed by scripts/import_guards.sh;
       # the environment route cannot be closed from inside the repository.
       #
-      # THE COMPLETE CONTROL is to scan the shipped release binary for the 32 dev key bytes
-      # and fail if present -- entity-level, and immune to every route including a future
-      # runtime loader. It needs something to actually link the crate first, which nothing
-      # does yet (`cargo tree -e normal -p selahcue-desktop` finds no selahcue-licensing).
-      # Recorded on 86ak5mn1d / 86ak5mn1t, which is where linking happens.
+      # THE COMPLETE CONTROL is the byte scan, and it now runs below -- see "Dev key absent
+      # from the release artefact". It was previously deferred here on the belief that it
+      # "needs something to link the crate first". That was wrong: `cargo build -p
+      # selahcue-licensing --release` emits an rlib today and the scan takes seconds.
       - name: Test (licensing crate in RELEASE — the dev-key exclusion only holds here)
         if: ${{ !cancelled() }}
         run: cargo test -p selahcue-licensing --release --no-fail-fast
+      # `-D warnings` in release too. Without it this job passed while warning on every run:
+      # `bundled()`'s `let mut store` is only mutated inside the debug-only cfg block, so
+      # release warned `unused_mut` -- the compiler correctly observing that nothing mutates
+      # it, which is exactly the property release is supposed to have.
+      - name: Clippy (licensing crate in RELEASE)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p selahcue-licensing --release --all-targets -- -D warnings
+      # THE gate on the development entitlement key. Everything above asks a question ABOUT
+      # the source or the configuration and can be defeated by a spelling nobody enumerated;
+      # this asks whether the key bytes are in the artefact, which closes every route at once
+      # -- profile tables (including the inline `[profile] release = { .. }` form), the legacy
+      # `.cargo/config` filename, a valueless `-C debug-assertions`, a config in a parent
+      # directory or $CARGO_HOME, RUSTFLAGS in the environment, and any future runtime loader.
+      - name: Dev key absent from the release artefact (effect-level gate)
+        if: ${{ !cancelled() }}
+        working-directory: ${{ github.workspace }}
+        run: sh scripts/dev_key_not_in_release.sh
       - name: Import structural guards (no network, no filesystem, pinned decoder)
         if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}

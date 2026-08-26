@@ -293,6 +293,7 @@ pub struct SignedFacts {
     license_expires_at_unix: i64,
     issued_at_unix: i64,
     degraded: Option<bool>,
+    grant_count: usize,
 }
 
 impl SignedFacts {
@@ -305,13 +306,29 @@ impl SignedFacts {
         license_expires_at_unix: i64,
         issued_at_unix: i64,
         degraded: Option<bool>,
+        grant_count: usize,
     ) -> Self {
         SignedFacts {
             expires_at_unix,
             license_expires_at_unix,
             issued_at_unix,
             degraded,
+            grant_count,
         }
+    }
+
+    /// How many grant dimensions the payload carried.
+    ///
+    /// A degraded issuance carries **zero**: `resolve_entitlement`'s failure path returns
+    /// `values={}`. Combined with this crate's own rule that an absent grant is
+    /// [`Allowance::Denied`], caching such a manifest denies every dimension.
+    pub fn grant_count(&self) -> usize {
+        self.grant_count
+    }
+
+    /// Whether the payload carried any grants at all.
+    pub fn carries_grants(&self) -> bool {
+        self.grant_count > 0
     }
 
     /// The **licence** expiry — never clamped, whatever happened server-side.
@@ -376,6 +393,18 @@ pub enum KeepReason {
         cached_issued_at_unix: i64,
         incoming_issued_at_unix: i64,
     },
+    /// The incoming manifest is a **degraded** issuance and the cache carries grants.
+    ///
+    /// A degraded manifest carries none — `resolve_entitlement`'s failure path returns
+    /// `values={}` — and this crate's own rule is that an absent grant is denied. So caching
+    /// one over a grant-bearing manifest **denies every dimension** until it expires.
+    ///
+    /// Expiry alone did not catch this: whenever the cache had less time left than the
+    /// degraded artefact's TTL, the "does not shorten" branch returned `Replace` before
+    /// degradation was ever consulted. Bounded by the 900s clamp, but a customer losing every
+    /// feature for a quarter of an hour because a server had a bad minute is precisely the
+    /// shape this policy exists to prevent.
+    DegradedWouldDropGrants { cached_grant_count: usize },
     /// The incoming manifest expires sooner than the cached one, and the server did not say
     /// the shortening was deliberate. Accepting it would let a transient server fault
     /// collapse a customer's offline window.
@@ -395,7 +424,10 @@ pub enum KeepReason {
 /// 1. **Never go backwards.** An older `issued_at` is refused outright — that is a replay,
 ///    whatever else it says, and it is checked first precisely so a replayed manifest cannot
 ///    talk its way past rule 2 with its own signed `degraded: false`.
-/// 2. **A degraded issuance may not shorten.** A genuine licence change may, and must —
+/// 2. **A degraded issuance never replaces a grant-bearing cache**, whatever its expiry. It
+///    carries no grants, and an absent grant is denied here, so caching one would deny every
+///    dimension until it expired.
+/// 3. **A degraded issuance may not shorten.** A genuine licence change may, and must —
 ///    refusing it would pin the whole entitlement, generous grants included, with no way
 ///    back. Degradation is read from [`SignedFacts::is_degraded`], which derives it from the
 ///    two signed expiries when the server publishes no explicit flag.
@@ -420,7 +452,17 @@ pub fn decide_cache_replacement(
         });
     }
 
-    // Rule 2 — never shorten without the server saying so.
+    // Rule 2 — a degraded issuance never replaces a grant-bearing cache, WHATEVER its expiry.
+    // Checked before the expiry comparison because a degraded artefact can easily outlive a
+    // nearly-expired cache, and the expiry branch would then accept it and silently drop
+    // every grant.
+    if incoming.is_degraded() && cached.carries_grants() {
+        return CacheDecision::KeepCached(KeepReason::DegradedWouldDropGrants {
+            cached_grant_count: cached.grant_count,
+        });
+    }
+
+    // Rule 3 — never shorten without the server saying so.
     if incoming.expires_at_unix >= cached.expires_at_unix {
         return CacheDecision::Replace;
     }

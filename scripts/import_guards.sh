@@ -202,10 +202,15 @@ grep -q '"crates/selahcue-import"' "$DESKTOP/Cargo.toml" \
 # Reproduced before writing this guard: `cargo test -p selahcue-licensing --release` exited 0
 # with the override in place.
 #
-# This closes the manifest route. It does NOT close `RUSTFLAGS=-C debug-assertions=on` in a
-# caller's environment -- nothing in-repo can. The complete control is to scan the SHIPPED
-# release binary for the 32 dev key bytes and fail if present; that becomes possible once
-# something actually links the crate (86ak5mn1d / 86ak5mn1t) and is recorded there.
+# THIS IS NOT THE GATE. It is a better error message for the ordinary cases. Review found
+# four more routes it misses -- `[profile]` with an inline `release = { .. }` table (which
+# never matches a line-leading `[profile.` header), the legacy `.cargo/config` filename, a
+# valueless `-C debug-assertions`, and a config in a parent directory or $CARGO_HOME -- and
+# it can never see RUSTFLAGS in the environment. Each fix here narrows the gap by one
+# spelling; none closes it, because this matches TEXT.
+#
+# The gate is scripts/dev_key_not_in_release.sh, which scans the emitted release rlib for the
+# key bytes and so closes every one of those routes at once.
 echo ">> checking no release-inheriting profile re-enables debug-assertions"
 for manifest in "$DESKTOP/Cargo.toml" "$DESKTOP/crates/selahcue-operator/Cargo.toml"; do
   [ -f "$manifest" ] || fail "expected manifest $manifest is missing — repoint this guard"
@@ -219,8 +224,16 @@ for manifest in "$DESKTOP/Cargo.toml" "$DESKTOP/crates/selahcue-operator/Cargo.t
       benign = (name == "dev" || name == "test")
       next
     }
-    inprofile && !benign && /debug[-_]assertions[[:space:]]*=[[:space:]]*true/ {
-      print "[" section "] " $0
+    {
+      # Strip trailing comments BEFORE matching. Without this a manifest could not document
+      # that the setting is deliberately unset -- `# debug-assertions = true` tripped the
+      # guard. Fails safe, but it is the exact mirror of the comment-defeat defect this
+      # whole area exists to fix, so it is fixed on both sides.
+      line = $0
+      sub(/#.*$/, "", line)
+    }
+    inprofile && !benign && line ~ /debug[-_]assertions[[:space:]]*=[[:space:]]*true/ {
+      print "[" section "] " line
     }
   ' "$manifest")
   if [ -n "$OFFENDER" ]; then

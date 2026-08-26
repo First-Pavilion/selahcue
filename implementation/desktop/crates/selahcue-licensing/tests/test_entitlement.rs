@@ -161,24 +161,26 @@ const CACHED_LONG_EXPIRY: i64 = T0 + 2 * YEAR;
 
 /// The cached artefact: issued at T0, valid two years, artefact == licence (not degraded).
 fn cached() -> SignedFacts {
-    SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY, CACHED_LONG_EXPIRY, T0, None)
+    SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY, CACHED_LONG_EXPIRY, T0, None, 4)
 }
 
 /// A GENUINE shortening: the licence itself now ends sooner and the artefact matches it.
 /// Nothing was clamped, so this is not a degraded issuance.
 fn genuine_shortening(expiry: i64) -> SignedFacts {
-    SignedFacts::from_verified_payload(expiry, expiry, T0 + 3600, None)
+    SignedFacts::from_verified_payload(expiry, expiry, T0 + 3600, None, 4)
 }
 
 /// A degraded artefact: issued later, but clamped to the 900s TTL.
 fn degraded_refresh(degraded: Option<bool>) -> SignedFacts {
     // The licence still runs two years; only the ARTEFACT is clamped. That pair —
     // `expires_at < license_expires_at` — is the degraded signature.
+    // Degraded issuances carry ZERO grants (`resolve_entitlement` returns `values={}`).
     SignedFacts::from_verified_payload(
         T0 + 3600 + DEGRADED_MANIFEST_TTL_SECONDS,
         CACHED_LONG_EXPIRY,
         T0 + 3600,
         degraded,
+        0,
     )
 }
 
@@ -203,8 +205,20 @@ fn a_degraded_manifest_never_evicts_a_longer_cached_entitlement() {
     assert!(incoming.expires_at_unix() < cached().expires_at_unix());
     assert!(incoming.issued_at_unix() > cached().issued_at_unix());
 
+    // The grant rule now fires first, and should: losing every dimension is the worse harm.
     assert_eq!(
         decide_cache_replacement(Some(cached()), incoming),
+        CacheDecision::KeepCached(KeepReason::DegradedWouldDropGrants {
+            cached_grant_count: 4,
+        })
+    );
+
+    // With a GRANTLESS cache there are no grants to protect, so the shortening rule is what
+    // refuses it — proving that branch is still reachable rather than shadowed for good.
+    let grantless_cache =
+        SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY, CACHED_LONG_EXPIRY, T0, None, 0);
+    assert_eq!(
+        decide_cache_replacement(Some(grantless_cache), incoming),
         CacheDecision::KeepCached(KeepReason::WouldShortenEntitlement {
             cached_expires_at_unix: CACHED_LONG_EXPIRY,
             incoming_expires_at_unix: incoming.expires_at_unix(),
@@ -236,6 +250,7 @@ fn degradation_is_derived_from_the_two_signed_expiries_when_no_flag_is_published
         CACHED_LONG_EXPIRY,
         T0 + 3600,
         Some(false),
+        4,
     );
     assert!(!clamped_but_declared_fine.is_degraded());
 }
@@ -269,6 +284,7 @@ fn an_explicit_not_degraded_may_shorten_because_that_is_a_real_licence_change() 
         T0 + 30 * 24 * 60 * 60,
         T0 + 3600,
         Some(false),
+        4,
     );
     assert_eq!(
         decide_cache_replacement(Some(cached()), downgrade),
@@ -284,9 +300,15 @@ fn a_longer_or_equal_manifest_always_replaces() {
         CACHED_LONG_EXPIRY + YEAR,
         T0 + 3600,
         None,
+        4,
     );
-    let equal =
-        SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY, CACHED_LONG_EXPIRY, T0 + 3600, None);
+    let equal = SignedFacts::from_verified_payload(
+        CACHED_LONG_EXPIRY,
+        CACHED_LONG_EXPIRY,
+        T0 + 3600,
+        None,
+        4,
+    );
     assert_eq!(
         decide_cache_replacement(Some(cached()), longer),
         CacheDecision::Replace
@@ -296,16 +318,85 @@ fn a_longer_or_equal_manifest_always_replaces() {
         CacheDecision::Replace,
         "an equal window is a refresh, not a shortening"
     );
+    // This case previously asserted "even a degraded manifest may replace when it does not
+    // shorten" — which encoded the very gap this rule closes. A degraded issuance carries no
+    // grants, so replacing a grant-bearing cache with one denies every dimension no matter
+    // how far out it expires.
     let longer_but_degraded = SignedFacts::from_verified_payload(
         CACHED_LONG_EXPIRY + YEAR,
-        CACHED_LONG_EXPIRY + YEAR,
+        CACHED_LONG_EXPIRY + YEAR + YEAR,
         T0 + 3600,
-        Some(true),
+        None,
+        0,
     );
+    assert!(longer_but_degraded.is_degraded());
+    assert!(longer_but_degraded.expires_at_unix() > cached().expires_at_unix());
     assert_eq!(
         decide_cache_replacement(Some(cached()), longer_but_degraded),
+        CacheDecision::KeepCached(KeepReason::DegradedWouldDropGrants {
+            cached_grant_count: 4,
+        }),
+        "a longer window does not license dropping every grant"
+    );
+
+    // ...but with nothing to protect, a degraded manifest replaces normally.
+    let grantless_cache =
+        SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY, CACHED_LONG_EXPIRY, T0, None, 0);
+    assert_eq!(
+        decide_cache_replacement(Some(grantless_cache), longer_but_degraded),
+        CacheDecision::Replace
+    );
+}
+
+#[test]
+fn a_nearly_expired_grant_bearing_cache_is_not_wiped_by_a_degraded_refresh() {
+    // The exact probe from review: whenever the cache has less time left than the degraded
+    // artefact's TTL, the "does not shorten" branch used to return Replace before degradation
+    // was consulted — landing a zero-grant manifest that denied every dimension for up to 900
+    // seconds. Bounded, and still the shape this policy exists to prevent.
+    let nearly_expired = SignedFacts::from_verified_payload(T0 + 60, T0 + 60, T0 - 100, None, 4);
+    let degraded = degraded_refresh(None);
+
+    // Positive controls: the refresh really is longer AND really is degraded, so this is the
+    // branch that used to return Replace.
+    assert!(degraded.expires_at_unix() > nearly_expired.expires_at_unix());
+    assert!(degraded.is_degraded());
+    assert!(nearly_expired.carries_grants());
+
+    assert_eq!(
+        decide_cache_replacement(Some(nearly_expired), degraded),
+        CacheDecision::KeepCached(KeepReason::DegradedWouldDropGrants {
+            cached_grant_count: 4,
+        }),
+        "a degraded refresh must not wipe grants just because the cache is nearly expired"
+    );
+}
+
+#[test]
+fn a_licence_ending_inside_the_ttl_window_reads_as_healthy_and_that_edge_is_pinned() {
+    // The edge the module docs describe in prose and nothing tested. When the licence ends
+    // inside the 900s window, `min()` picks the LICENCE expiry, so the two signed expiries
+    // come out equal and a genuinely degraded issuance reports `is_degraded() == false`.
+    //
+    // It is benign — shortening to the licence's own end is correct, and the grant rule is
+    // what still protects the dimensions — but it is real, reachable, and now pinned so it
+    // cannot be discovered as a surprise.
+    let licence_ends_soon = T0 + 300; // inside DEGRADED_MANIFEST_TTL_SECONDS
+    assert!(licence_ends_soon - T0 < DEGRADED_MANIFEST_TTL_SECONDS);
+
+    let clamped_to_licence =
+        SignedFacts::from_verified_payload(licence_ends_soon, licence_ends_soon, T0, None, 0);
+    assert!(
+        !clamped_to_licence.is_degraded(),
+        "equal expiries read as healthy — this is the documented incompleteness of deriving \
+         degradation from the expiry pair"
+    );
+
+    // And it is safe: the grant rule still refuses to drop a grant-bearing cache.
+    assert_eq!(
+        decide_cache_replacement(Some(cached()), clamped_to_licence),
         CacheDecision::Replace,
-        "even a degraded manifest may replace when it does not shorten"
+        "a zero-grant but HEALTHY manifest is a real licence state, not a degraded one"
     );
 }
 
@@ -321,6 +412,7 @@ fn a_manifest_issued_earlier_than_the_cached_one_is_refused_as_a_replay() {
         CACHED_LONG_EXPIRY + YEAR,
         T0 - 1,
         None,
+        4,
     );
 
     // Positive control: it is LONGER, so rule 2 would happily accept it. Only rule 1 refuses.
@@ -342,7 +434,7 @@ fn a_replay_cannot_talk_its_way_past_the_shortening_rule_with_a_signed_not_degra
     // forged — but a genuine old manifest that legitimately carried `degraded: false` can be
     // replayed. If the shortening rule ran first, that replay would be accepted.
     let old_but_not_degraded =
-        SignedFacts::from_verified_payload(T0 + 60, T0 + 60, T0 - 5000, Some(false));
+        SignedFacts::from_verified_payload(T0 + 60, T0 + 60, T0 - 5000, Some(false), 4);
     assert_eq!(
         decide_cache_replacement(Some(cached()), old_but_not_degraded),
         CacheDecision::KeepCached(KeepReason::StaleIssuance {
@@ -362,6 +454,7 @@ fn a_manifest_re_issued_at_the_same_instant_is_still_accepted() {
         CACHED_LONG_EXPIRY + YEAR,
         T0,
         None,
+        4,
     );
     assert_eq!(
         decide_cache_replacement(Some(cached()), same_instant),

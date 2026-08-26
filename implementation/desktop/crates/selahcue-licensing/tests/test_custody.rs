@@ -642,10 +642,29 @@ fn crate_src_dir() -> PathBuf {
 
 #[test]
 fn no_filesystem_primitive_is_reachable_from_this_crate() {
-    // "Never in a plaintext file" is enforced by making a file unnameable from this crate's
-    // own code, in the spirit of `scripts/import_guards.sh` §14. Inspecting a running
-    // install would only ever prove the token was absent on the day the test ran; this
-    // proves the code has no way to put it there.
+    // A lexical scan of THIS crate's own `src/` for an enumerated set of spellings, in the
+    // spirit of `scripts/import_guards.sh` §14. Worth having: it catches the plain forms,
+    // and inspecting a running install would only ever prove the token was absent on the day
+    // the test ran.
+    //
+    // What it does NOT do — stated here because an earlier version of this comment claimed
+    // it "proves the code has no way to put it there", and the same false claim in
+    // `trust.rs` was a review finding. Security review demonstrated three compiling loaders
+    // that pass this guard green: `use std::{env as source};` (the brace breaks the
+    // substring), `std :: env :: var(..)` (whitespace does the same), and a helper placed in
+    // the path dependency `selahcue-cloud` and called from here, which names no forbidden
+    // token in this crate's `src/` at all. No name-scan can close that: reachability is
+    // transitive through the dependency graph and the spellings are unbounded. Widening the
+    // list moves the boundary; it never closes it.
+    //
+    // The test's NAME overstates for the same reason — "reachable" implies transitivity this
+    // cannot see. It is kept as-is deliberately, so the review trail that cites it stays
+    // legible; renaming it to something like `..._is_named_in_this_crates_own_source` is
+    // worth doing in the ticket that next touches this file.
+    //
+    // The real guarantee is effect-level and recorded where it belongs: byte-scan the
+    // shipped release artefact (see `TrustedKeys::bundled`, an obligation on 86ak5mn1d /
+    // 86ak5mn1t).
     //
     // Comment lines are filtered out because the module docs deliberately NAME these
     // primitives to explain why they are absent, and a guard silenced by deleting a comment

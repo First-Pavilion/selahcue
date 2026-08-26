@@ -173,10 +173,27 @@ because the seed is public by design. Therefore:
 > customers, not to beta testers, not as a "quick build" for support.**
 
 Release builds do not trust the development key: both the key bytes and their insertion into
-the trusted set are `#[cfg(debug_assertions)]`. That gate is enforced two ways, because a
-guard that reads source text can be defeated by a comment that preserves the text while
-removing the effect: a source guard in the crate's tests, and — decisively — a
-release-profile CI job (`Test (licensing crate in RELEASE ...)`) that runs the runtime
-exclusion assertion in the only profile where it means anything.
+the trusted set are `#[cfg(debug_assertions)]`.
+
+**The gate that enforces this is `scripts/dev_key_not_in_release.sh`** — it builds the crate
+in both profiles and fails if the key bytes appear in the release rlib, using the debug rlib
+as a live positive control. It runs in `make ci` and in CI. **If you are changing packaging,
+that is the check that must keep running**; a build path that skips it is unprotected
+regardless of what the source says.
+
+Two weaker controls sit alongside it and are deliberately *not* the gate. Both ask questions
+*about* the source or the configuration, and review defeated each in turn:
+
+- a source guard reading the `#[cfg]` text — defeated by leaving the gate in a comment;
+- a release-profile test asserting `cfg!(debug_assertions)` — defeated by turning that very
+  cfg back on via a profile table, a cargo config, or `RUSTFLAGS`, which is precisely the
+  question it asks;
+- a profile scan over manifests — defeated by an inline `[profile] release = { .. }` table,
+  the legacy `.cargo/config` filename, a valueless `-C debug-assertions`, and configs outside
+  the repository.
+
+They are kept because they name the specific cause for ordinary mistakes. Only the byte scan
+answers the question that matters — *are the key bytes in the thing we ship* — and it is the
+only one immune to a spelling nobody enumerated.
 
 Related: `86ak5mn11`, DEC-011, FR-518.

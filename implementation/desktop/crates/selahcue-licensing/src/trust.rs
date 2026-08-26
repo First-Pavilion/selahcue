@@ -166,7 +166,7 @@ impl TrustedKeys {
     /// an empty store therefore fails closed on *verification* without ever failing
     /// closed on *presentation*.
     pub fn bundled() -> Self {
-        let mut store = Self::new();
+        let store = Self::new();
 
         // --- development entitlement key (debug builds ONLY) -----------------------------
         // `make launch` must not demand activation, and the owner will opt into QAing
@@ -177,25 +177,37 @@ impl TrustedKeys {
         // branch that skips verification is the highest-value target in the product and
         // means the path we ship is not the path anyone develops against.
         //
-        // OBLIGATION ON WHOEVER FIRST LINKS THIS CRATE (86ak5mn1d / 86ak5mn1t):
-        // add a build step that scans the shipped RELEASE binary for these 32 bytes and
-        // fails if they are present. That is the only complete control. Everything below is
-        // partial: the `cfg` gates can be removed (caught by the source guard), a release
-        // profile can turn `debug_assertions` back on (caught by scripts/import_guards.sh),
-        // and `RUSTFLAGS=-C debug-assertions=on` can do the same from the environment
-        // (caught by nothing in-repo). A byte scan of the artefact answers the question that
-        // actually matters -- does the thing we ship contain this key -- and is immune to
-        // all three, plus any future runtime loader.
+        // THE GATE IS `scripts/dev_key_not_in_release.sh`, which runs in `make ci` and CI.
+        // It builds this crate in both profiles and fails if these 32 bytes appear in the
+        // release rlib, with the debug rlib as a live positive control.
+        //
+        // It exists because everything else here is partial. The `cfg` gates can be removed
+        // (caught by the source guard), a release profile can turn `debug_assertions` back on
+        // (import_guards.sh catches the common spellings and misses several), and RUSTFLAGS
+        // can do the same from the environment where nothing in-repo can see it. Asking what
+        // is IN THE ARTEFACT closes all of those at once, plus any future runtime loader.
+        //
+        // It was deferred once on the belief that it needed something to link the crate
+        // first. That was wrong -- `cargo build -p selahcue-licensing --release` emits an
+        // rlib today -- and the deferral is recorded here because it cost several rounds of
+        // enumerating spellings that a five-second scan made unnecessary.
         //
         // The `cfg` is the control. A release build must not trust this key: its seed is
         // committed in `dev-signing-key.NOT-A-SECRET`, so anyone at all can sign with it.
         // `the_development_key_is_gated_on_debug_assertions` fails if this gate is removed.
+        // Shadowed rather than declared `mut` up front: in a release build the block below
+        // is compiled out, so a `let mut` there is an unused-mut warning on every release
+        // build. Silencing that with `#[allow(unused_mut)]` would have hidden a real signal —
+        // the warning is the compiler saying "nothing mutates this here", which is exactly
+        // the property the release profile is supposed to have.
         #[cfg(debug_assertions)]
-        {
+        let store = {
+            let mut store = store;
             if let Ok(id) = store.insert(DEV_PUBLIC_KEY) {
                 debug_assert_eq!(id, Self::DEV_KEY_ID, "dev key_id drifted from its bytes");
             }
-        }
+            store
+        };
 
         store
     }
@@ -210,9 +222,29 @@ impl TrustedKeys {
     /// re-creates by the back door exactly the bypass that `bundled`'s `cfg` gate exists to
     /// prevent.
     ///
-    /// That is structural rather than advisory here — `no_filesystem_primitive_is_reachable_from_this_crate`
-    /// fails the build if anything in `src/` so much as names `std::fs`, `std::env` or
-    /// `File::open`, so a config loader cannot be written in this crate without tripping it.
+    /// **That rule is enforced by review, not by the build.** An earlier version of this
+    /// paragraph claimed the opposite — that a config loader "cannot be written in this crate
+    /// without tripping" `no_filesystem_primitive_is_reachable_from_this_crate`. It can.
+    /// Security review demonstrated three compiling loaders that pass that guard green:
+    /// `use std::{env as source};` (the brace puts `{` between `std::` and `env`, so the
+    /// scanned substring never appears), `std :: env :: var(..)` (whitespace around `::`
+    /// does the same), and — the one no amount of spelling-chasing reaches — a helper placed
+    /// in the path dependency `selahcue-cloud` and called as `selahcue_cloud::read_env()`,
+    /// which names no forbidden token in this crate's `src/` at all.
+    ///
+    /// What that guard actually is: a **lexical scan of this crate's own `src/` for an
+    /// enumerated set of spellings**. It catches the plain forms, which is worth having and
+    /// is why it stays. It cannot catch aliased or whitespace-separated paths, and it cannot
+    /// see through the dependency graph — and no name-scan ever will, because reachability
+    /// is transitive and the spellings are unbounded. Widening the list only moves the
+    /// boundary; it never closes it.
+    ///
+    /// The real guarantee is effect-level and is the same one [`TrustedKeys::bundled`]
+    /// records twenty lines above: **byte-scan the shipped release artefact** for the dev key
+    /// and fail if it is present. That answers the question that matters — what is in the
+    /// thing we ship — and is immune to spelling, to aliasing, to the dependency graph, and
+    /// to a runtime loader. It is recorded as an obligation on 86ak5mn1d / 86ak5mn1t,
+    /// because it needs something to actually link this crate first, and nothing does yet.
     ///
     /// Idempotent for the *same key material*: re-adding a key already present succeeds
     /// and consumes no extra slot, so a loader that runs twice cannot exhaust the cap.

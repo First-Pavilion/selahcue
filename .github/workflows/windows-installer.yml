@@ -21,10 +21,16 @@
 # is `--release`, which is what makes that safe -- it is a property to preserve, not a
 # coincidence to rely on. If you are here to add or change a build step, keep `--release`.
 #
-# The code-side control is `#[cfg(debug_assertions)]` on both the key bytes and the
-# insertion in `TrustedKeys::bundled`, enforced by `the_development_key_is_gated_on_debug_assertions`
-# and -- because a source guard can be defeated by a comment -- by the runtime
-# release-profile job `Test (licensing crate in RELEASE ...)` in ci.yml.
+# THE CHECK THAT ENFORCES THIS is `scripts/dev_key_not_in_release.sh` (run by ci.yml and
+# `make ci`): it builds the crate in both profiles and fails if the dev key bytes appear in
+# the release rlib, with the debug rlib as a live positive control.
+#
+# It is not wired into THIS workflow, because nothing here links selahcue-licensing yet. The
+# moment a bundled binary does -- which is the whole direction of travel for 86ak5mn1d /
+# 86ak5mn1t -- add that script as a step here and scan the BUNDLED artefact, not just the
+# rlib. Source-level controls (`#[cfg(debug_assertions)]`, the source guard, the profile
+# scan) are kept for better error messages but every one of them has been defeated in review
+# by a spelling nobody enumerated; do not rely on them here.
 # ---------------------------------------------------------------------------------------
 name: windows-installer
 
