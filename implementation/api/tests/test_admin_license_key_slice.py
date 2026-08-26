@@ -29,7 +29,6 @@ CREATE_CUSTOMER_MUTATION = """
           country
           timezone
           plan
-          seatLimit
           deviceLimit
         }
       }
@@ -71,7 +70,6 @@ def create_customer_input(idempotency_key="customer-create-0001", **overrides):
         "timezone": "Africa/Lagos",
         "status": "PROSPECT",
         "plan": "TRIAL",
-        "seatLimit": 5,
         "deviceLimit": 3,
     }
     payload.update(overrides)
@@ -89,7 +87,6 @@ def generate_key_input(customer_id, idempotency_key="license-generate-0001", **o
         "startsAt": starts_at.isoformat().replace("+00:00", "Z"),
         "expiresAt": expires_at.isoformat().replace("+00:00", "Z"),
         "timezone": "Africa/Lagos",
-        "seatLimit": 5,
         "deviceLimit": 3,
         "territory": "NG",
         "reason": "Prospect requested a thirty day pilot.",
@@ -337,7 +334,6 @@ def test_license_key_generation_rejects_unsafe_requests_without_committing(clien
             "input": generate_key_input(
                 customer["id"],
                 "license-generate-zero-limits",
-                seatLimit=0,
                 deviceLimit=0,
             )
         },
@@ -428,7 +424,6 @@ def test_license_key_generation_rolls_back_when_audit_write_fails(monkeypatch):
         country="NG",
         timezone="Africa/Lagos",
         plan="TRIAL",
-        seat_limit=5,
         device_limit=3,
         created_by_actor_id="staff_ops_1",
         idempotency_key="customer-rollback-0001",
@@ -457,7 +452,6 @@ def test_license_key_generation_rolls_back_when_audit_write_fails(monkeypatch):
                 starts_at=starts_at,
                 expires_at=starts_at + timedelta(days=30),
                 timezone="Africa/Lagos",
-                seat_limit=5,
                 device_limit=3,
                 territory="NG",
                 reason="Prospect requested a thirty day pilot.",

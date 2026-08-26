@@ -323,7 +323,7 @@ def test_logout_revokes_session_but_never_touches_device_tokens(client, sender):
         key_prefix="SC-X", key_suffix="ZZZZ", masked_key="SC-X...ZZZZ",
         secret_hash="x", secret_fingerprint="devfp", feature_scope="core", territory="GLOBAL",
         starts_at=timezone.now() - timezone.timedelta(days=1), expires_at=timezone.now() + timezone.timedelta(days=30),
-        timezone="UTC", seat_limit=1, device_limit=1,
+        timezone="UTC", device_limit=1,
         generated_by_actor_id="staff", generated_reason="test fixture", idempotency_key="lk-1",
     )
     dev = Device.objects.create(
@@ -439,7 +439,7 @@ def active_license_key(org, *, device_limit=2):
         key_prefix="SC-LK", key_suffix="ZZZZ", masked_key="SC-LK...ZZZZ",
         secret_hash="x", secret_fingerprint=f"lkfp-{org.id}", feature_scope="core", territory="GLOBAL",
         starts_at=timezone.now() - timezone.timedelta(days=1), expires_at=timezone.now() + timezone.timedelta(days=30),
-        timezone="UTC", seat_limit=5, device_limit=device_limit,
+        timezone="UTC", device_limit=device_limit,
         generated_by_actor_id="staff", generated_reason="test fixture", idempotency_key=f"lk-{org.id}",
     )
 

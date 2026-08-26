@@ -53,7 +53,6 @@ class CreateCustomerData:
     timezone: str
     status: str = CustomerStatus.PROSPECT
     plan: str = "TRIAL"
-    seat_limit: int = 1
     device_limit: int = 1
     billing_contact_email: str = ""
     internal_notes: str = ""
@@ -90,7 +89,7 @@ def _unique_slug(name: str) -> str:
 def create_customer(actor: ActorContext | None, data: CreateCustomerData) -> CreateCustomerResult:
     staff = require_staff_permission(actor, StaffPermission.MANAGE_CUSTOMERS)
     idempotency_key = validate_idempotency_key(data.idempotency_key)
-    if data.seat_limit < 1 or data.device_limit < 1:
+    if data.device_limit < 1:
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
 
     with transaction.atomic():
@@ -115,7 +114,6 @@ def create_customer(actor: ActorContext | None, data: CreateCustomerData) -> Cre
             country=data.country.strip().upper(),
             timezone=data.timezone.strip() or "UTC",
             plan=data.plan.strip().upper() or "TRIAL",
-            seat_limit=data.seat_limit,
             device_limit=data.device_limit,
             internal_notes=data.internal_notes.strip(),
             created_by_actor_id=staff.actor_id,
@@ -150,7 +148,6 @@ def create_customer(actor: ActorContext | None, data: CreateCustomerData) -> Cre
                 "country": customer.country,
                 "timezone": customer.timezone,
                 "plan": customer.plan,
-                "seat_limit": customer.seat_limit,
                 "device_limit": customer.device_limit,
             },
         )
@@ -510,7 +507,6 @@ def register_customer_user(data: RegisterCustomerUserData) -> AcceptedResult:
                 country=country,
                 timezone=data.timezone.strip() or "UTC",
                 plan="TRIAL",
-                seat_limit=1,
                 device_limit=1,
                 created_by_actor_id=self_actor,
                 idempotency_key=idempotency_key,

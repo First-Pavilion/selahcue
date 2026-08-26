@@ -46,7 +46,6 @@ class AppLicenseKey(models.Model):
     expires_at = models.DateTimeField()
     timezone = models.CharField(max_length=64, default="UTC")
     feature_scope = models.CharField(max_length=64)
-    seat_limit = models.PositiveIntegerField(default=1)
     device_limit = models.PositiveIntegerField(default=1)
     territory = models.CharField(max_length=32, blank=True)
     generated_by_actor_id = models.CharField(max_length=128)

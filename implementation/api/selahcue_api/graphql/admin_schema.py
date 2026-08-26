@@ -38,7 +38,6 @@ class AdminCreateCustomerInput:
     timezone: str
     status: str = "PROSPECT"
     plan: str = "TRIAL"
-    seat_limit: int = 1
     device_limit: int = 1
     billing_contact_email: str = ""
     internal_notes: str = ""
@@ -53,7 +52,6 @@ class AdminGenerateLicenseKeyInput:
     starts_at: datetime
     expires_at: datetime
     timezone: str
-    seat_limit: int
     device_limit: int
     territory: str
     reason: str
@@ -93,7 +91,6 @@ class AdminCustomer:
     country: str
     timezone: str
     plan: str
-    seat_limit: int
     device_limit: int
 
     @strawberry.field
@@ -136,7 +133,6 @@ def customer_to_type(customer: CustomerOrg) -> AdminCustomer:
         country=customer.country,
         timezone=customer.timezone,
         plan=customer.plan,
-        seat_limit=customer.seat_limit,
         device_limit=customer.device_limit,
         _model=customer,
     )
@@ -200,7 +196,6 @@ class AdminMutation:
                 timezone=input.timezone,
                 status=input.status,
                 plan=input.plan,
-                seat_limit=input.seat_limit,
                 device_limit=input.device_limit,
                 internal_notes=input.internal_notes,
             ),
@@ -226,7 +221,6 @@ class AdminMutation:
                 starts_at=input.starts_at,
                 expires_at=input.expires_at,
                 timezone=input.timezone,
-                seat_limit=input.seat_limit,
                 device_limit=input.device_limit,
                 territory=input.territory,
                 reason=input.reason,

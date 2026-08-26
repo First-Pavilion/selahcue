@@ -39,7 +39,6 @@ class GenerateLicenseKeyData:
     starts_at: datetime
     expires_at: datetime
     timezone: str
-    seat_limit: int
     device_limit: int
     territory: str
     reason: str
@@ -108,7 +107,7 @@ def generate_license_key(
     expires_at = _coerce_datetime(data.expires_at)
     if expires_at <= starts_at:
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
-    if data.seat_limit < 1 or data.device_limit < 1:
+    if data.device_limit < 1:
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
 
     with transaction.atomic():
@@ -142,7 +141,6 @@ def generate_license_key(
             expires_at=expires_at,
             timezone=data.timezone.strip() or "UTC",
             feature_scope=data.feature_scope.strip().upper(),
-            seat_limit=data.seat_limit,
             device_limit=data.device_limit,
             territory=data.territory.strip().upper(),
             generated_by_actor_id=staff.actor_id,
@@ -183,7 +181,6 @@ def generate_license_key(
                 "feature_scope": license_key.feature_scope,
                 "starts_at": license_key.starts_at.isoformat(),
                 "expires_at": license_key.expires_at.isoformat(),
-                "seat_limit": license_key.seat_limit,
                 "device_limit": license_key.device_limit,
                 "territory": license_key.territory,
             },
