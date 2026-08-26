@@ -686,3 +686,23 @@ Whole-codebase performance review — PASS with approved exceptions; idle-RSS/co
 **Owner decisions outstanding (blocking):** KJV vs FR-025/OD-24 (`86ajxvvek`) · video/audio in MVP, DEC-003 vs FR-067/068/073 (`86ajpzhbg`) · commercial model (pricing/plans/payment provider/affiliate terms) · licensed-translation route + budget (`86ajpzb09`) · hosted AI cloud build/buy/defer (`86ajy04hz`) · 7-role RBAC now or ship on 4 (`86ajxuf81`).
 
 **Next:** Platform PRD (`86ak0qn63`) → desktop activation/entitlement client (`86ajy7anx`) → the MVP feature-debt track, then the comprehensive test programme (`86ajq67q2`).
+
+---
+
+## CI integrity — toolchain drift + a pipeline that could not raise its voice (2026-08-25)
+
+**`86ak5rc9c`** (Bug, urgent). `main` had **no green CI run between 2026-08-16 and 2026-08-25**. Five consecutive failed runs, `rust` red on ubuntu, macOS and Windows, under completely stationary code.
+
+**Cause.** Rust **1.98.0** shipped 2026-08-18 with `clippy::chunks_exact_to_as_chunks`. CI installed the toolchain via `dtolnay/rust-toolchain@stable` — whatever is newest stable at run time — while developers ran whatever they had (1.97.1). No `rust-toolchain.toml` existed, so the two agreed only by coincidence. With `-D warnings`, a new lint became a hard failure. `make ci` went on printing ALL GREEN throughout.
+
+**A second, distinct cause, already fixed.** `E0063: missing field 'overrun_secs'` at `selahcue-present/tests/test_present.rs:369` — `7369f61` added the field to `TimerView` and updated two test files but not that one; `f73e9b9` fixed it. It surfaced only in `launch-smoke`, because the `rust` job fail-fasts at clippy before `cargo test`. **A standing red masked a genuine regression for two runs.**
+
+**Scope was larger than the failure log showed.** CI named five lint sites; that was only the prefix clippy reached before aborting on `selahcue-engine`'s library. The real count was **16 across four crates** — the rest sat in test targets and in `selahcue-import`, all of which depend on the engine and so could not be compiled at all. Fail-fast masking, twice in one incident.
+
+**Fixed.** All 16 converted to `as_chunks::<N>()` with no suppressions; rasterizer output proven bit-identical (pixels + exact `f64` bits of luminance/redness/tile stats/SSIM) with a mutation-tested probe, and the ADR-0015 parity oracle re-verified. `rust-toolchain.toml` pins the compiler and `scripts/check_toolchain.sh` — run first by **both** `make ci` and every Rust CI job — asserts it, so local/CI agreement is checked rather than claimed. A weekly non-blocking `rust-canary` workflow lints against floating stable (workspace **and** the out-of-workspace `selahcue-operator` root) and files an issue when a future release would break us. A failed `main` run now opens a `ci-red` issue that tracks **which jobs** are outstanding and closes only when each has actually reported success again — a skipped job never clears it. `actionlint` now gates the workflows. The steps after Clippy run under `if: !cancelled()`, and the test commands carry `--no-fail-fast`, so one broken gate no longer hides the rest.
+
+**Corrected claims.** `CLAUDE.md` said `make ci` was "the local mirror of its gates". It never was: it runs one OS where CI runs three, a different GPU backend, and neither the `api (django)` nor `marketing (vue spa)` job. That is now stated plainly. Build Control's "3-OS CI matrix green" line needs the owner's update once this merges.
+
+**One more found by opening the PR.** The first PR raised since August produced a red pipeline in 20 seconds: `dorny/paths-filter` calls the GitHub API on a `pull_request` event and needs `pull-requests: read`, which the repository default does not grant. The only previous PR run (`30718327254`, 2026-08-01) had died the same way in 17s and nobody noticed, because work is pushed straight to `main` where that code path never executes. Fixed on the same branch. Same shape as the incident above: a gate failing for months somewhere nobody was looking.
+
+**Follow-up `86ak5rjh7`** (Bug, high): close the local/CI coverage gap — `api` and `marketing` have no local gate at all; `make ci` cannot run in a fresh worktree (CI stages Tauri sidecar placeholders and `make ci` does not, and the `: >` staging pattern would silently truncate an owner-supplied NDI dll); `selahcue-stt` is linted by **nothing** and already violates its own `unwrap_used` policy; and `make ci` still aborts at the first failing recipe line where CI no longer does.

@@ -1,0 +1,188 @@
+# Rust toolchain canary — the counterweight to pinning.
+#
+# rust-toolchain.toml pins the compiler so `make ci` and `ci.yml` agree by construction.
+# The cost of that pin is a deliberate lag: new compiler and clippy releases no longer
+# reach us on their own, so a lint that would catch a real bug arrives only when someone
+# bumps the pin. This workflow pays that cost down. It runs the same lint gates against
+# FLOATING stable on a schedule and tells us what the next bump will break -- as a
+# warning, never as a block.
+#
+# It is a SEPARATE workflow on purpose: nothing here can ever fail a push, a pull request,
+# or `main`. That is the whole trade-off — currency without fragility. If this goes red,
+# `main` is still fine; someone just has work to do before the next bump.
+#
+# Background: stable moved 1.97.1 -> 1.98.0 on 2026-08-18, the new lint
+# `clippy::chunks_exact_to_as_chunks` met `-D warnings`, and `main` went nine days without a
+# green run with nobody notified. ClickUp 86ak5rc9c.
+name: rust-canary
+
+on:
+  schedule:
+    # Mondays 06:00 UTC — a fresh result waiting at the start of the week. Rust ships
+    # a stable release every six weeks, so weekly is comfortably ahead of it.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+# Never race two canaries; the newer result is the one worth having.
+concurrency:
+  group: rust-canary
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    name: clippy on floating stable
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      CARGO_TERM_COLOR: always
+      # THE LOAD-BEARING LINE. rust-toolchain.toml would otherwise pin this job to the
+      # very version we are trying to look past, and the canary would silently test
+      # nothing at all. RUSTUP_TOOLCHAIN outranks rust-toolchain.toml in rustup's
+      # resolution order, so this is what makes the job float on purpose.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # This job holds `issues: write` AND runs full-workspace clippy on a
+          # deliberately FLOATING toolchain -- which executes every dependency's
+          # build.rs and proc-macros against a freshly resolved graph. Without this,
+          # checkout writes the token into .git/config where any of that code could
+          # read it and use `issues: write` to close or vandalise the ci-red issue,
+          # i.e. make the alarm lie. GH_TOKEN is step-scoped to Report, so this costs
+          # nothing functionally.
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      # Deps for BOTH the workspace (winit/wgpu) and the operator shell (Tauri v2
+      # webview). The canary must cover every root `make ci` and the CI matrix lint,
+      # or a new lint firing only in selahcue-operator leaves the canary green while
+      # the eventual bump still breaks CI -- a canary with a blind spot is worse than
+      # none, because it is trusted.
+      - name: Linux system deps (winit/wgpu + Tauri v2 webview)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxkbcommon-dev libwayland-dev \
+            libvulkan1 mesa-vulkan-drivers libdbus-1-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Record both versions
+        id: versions
+        run: |
+          set -euo pipefail
+          floating="$(rustc --version | awk '{print $2}')"
+          pinned="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p' rust-toolchain.toml)"
+          echo "floating=$floating" >> "$GITHUB_OUTPUT"
+          echo "pinned=$pinned"     >> "$GITHUB_OUTPUT"
+          echo "pinned: $pinned | latest stable: $floating"
+          if [ "$floating" = "$pinned" ]; then
+            echo "The pin is already current — this run only re-confirms it."
+          fi
+
+      # continue-on-error so a red canary still reaches the reporting step below
+      # instead of aborting the job and telling nobody.
+      # tauri-build checks the sidecar/resource paths exist before compiling. Staged
+      # here for the same reason the operator CI job stages them: this compile-CHECKS
+      # the operator, it does not bundle it.
+      - name: Stage Tauri sidecar/resource placeholders (compile-check only)
+        working-directory: implementation/desktop/crates/selahcue-operator
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p binaries
+          # CREATE-ONLY -- see the same note in ci.yml. `: >` truncates, and one of these
+          # names is the owner-supplied NDI dll. 86ak5rjh7.
+          stage() { [ -e "$1" ] || : > "$1"; }
+          stage "binaries/selahcue-output-${triple}"
+          stage "binaries/Processing.NDI.Lib.x64.dll"
+
+      # continue-on-error so a red canary still reaches the reporting step below
+      # instead of aborting the job and telling nobody.
+      #
+      # `|| fail=1` per gate rather than `set -e`: the point of a canary is the FULL
+      # list of what the next release breaks, so the bump can be costed in one go.
+      # Stopping at the first failure would make it take as many weeks as there are
+      # broken crates to learn the whole answer.
+      - name: Lint gates on floating stable
+        id: gates
+        continue-on-error: true
+        run: |
+          set -x
+          fail=0
+          cd implementation/desktop
+          cargo fmt --check || fail=1
+          cargo clippy --workspace --all-targets -- -D warnings || fail=1
+          cargo clippy -p selahcue-lan --features server --all-targets -- -D warnings || fail=1
+          cargo clippy -p selahcue-app --features server --all-targets -- -D warnings || fail=1
+          cargo clippy -p selahcue-scripture --features download --all-targets -- -D warnings || fail=1
+          # selahcue-operator is its own root, invisible to `--workspace`, and BOTH the
+          # CI operator job and `make ci` lint it with -D warnings. Without it here, a
+          # new lint firing only in the operator would leave the canary green and the
+          # bump would still break CI.
+          cd crates/selahcue-operator
+          cargo fmt --check || fail=1
+          cargo clippy --all-targets -- -D warnings || fail=1
+          # selahcue-stt is deliberately NOT linted here. It is the other out-of-workspace
+          # root, but NO gate lints it -- not CI, not `make ci` -- and it currently fails
+          # its own declared `unwrap_used` policy under -D warnings (3 errors in
+          # src/engine.rs on the pinned toolchain). Linting it here would make the canary
+          # permanently red for something no toolchain bump can fix, which would train
+          # people to ignore it. The canary's job is to predict what a bump does to the
+          # gates we ACTUALLY run. That selahcue-stt sits outside every gate is a real
+          # coverage hole -- tracked on 86ak5rjh7, not papered over here.
+          exit $fail
+
+      - name: Report
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULT: ${{ steps.gates.outcome }}
+          FLOATING: ${{ steps.versions.outputs.floating }}
+          PINNED: ${{ steps.versions.outputs.pinned }}
+        run: |
+          set -euo pipefail
+          gh label create rust-canary --color FBCA04 \
+            --description "A newer stable Rust would break our gates" --force >/dev/null 2>&1 || true
+
+          existing="$(gh issue list --repo "$REPO" --label rust-canary --state open \
+                        --limit 1 --json number --jq '.[0].number // empty')"
+
+          if [ "$RESULT" = "success" ]; then
+            echo "Gates pass on stable $FLOATING (pinned: $PINNED)."
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --repo "$REPO" --reason completed \
+                --comment "Gates now pass on stable \`$FLOATING\`. Bumping rust-toolchain.toml from \`$PINNED\` to \`$FLOATING\` should be clean. Run: $RUN_URL"
+            fi
+            exit 0
+          fi
+
+          {
+            echo "The lint gates **fail** on the current stable Rust."
+            echo
+            echo "| | version |"
+            echo "|---|---|"
+            echo "| pinned (\`rust-toolchain.toml\`) | \`$PINNED\` |"
+            echo "| latest stable | \`$FLOATING\` |"
+            echo
+            echo "Run (job log has the exact lints): $RUN_URL"
+            echo
+            echo "**\`main\` is not affected** — the pipeline gates on \`$PINNED\` and is unchanged."
+            echo "This is advance notice, not an outage."
+            echo
+            echo "To clear it: fix what the new release flags, then bump \`channel\` in"
+            echo "\`rust-toolchain.toml\` to \`$FLOATING\` in the same merge request."
+          } > body.md
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body-file body.md
+          else
+            gh issue create --repo "$REPO" --label rust-canary \
+              --title "A newer stable Rust ($FLOATING) breaks the lint gates" --body-file body.md
+          fi
