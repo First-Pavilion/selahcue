@@ -6,11 +6,15 @@
 - Parent goal ID: NONE
 - Title: `api (django)` runs clean — the two erroring resend tests and the constant-time probe
 - Role: backend-engineer
-- Status: GATE_REVIEW (review round 1 remediated)
+- Status: GATE_REVIEW (review round 2 remediated — Quinn's findings + DEC-013)
 - Execution engine: goal
-- ClickUp task: https://app.clickup.com/t/86ak643rc (defects 2 and 3) and https://app.clickup.com/t/86ak5rnrr
+- ClickUp task: https://app.clickup.com/t/86ak69tdz (defects 2 and 3, split out of the
+  86ak643rc umbrella), https://app.clickup.com/t/86ak66r5c (DEC-013 implementation) and
+  https://app.clickup.com/t/86ak5rnrr (probe false-reds). One branch for all three: they
+  touch the same three equalisers and the same probe, so splitting them would put two
+  PRs in a race on one file.
 - Created: 2026-08-25
-- Updated: 2026-08-26
+- Updated: 2026-08-26 (rework round 2)
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -62,11 +66,12 @@ often enough to mislead. Verify with `inspect.getfile(services)`, not `selahcue_
 
 ### Non-goals
 
-- `test_the_eligible_branch_costs_well_under_the_constant_time_floor`. It fails on CI because
-  the eligible branch's own work (458–469 ms) exceeds the shipped 400 ms floor on that
-  hardware. That is a real production finding about floor sizing, and every remedy (raise the
-  floor and pay the thread-parking cost; drop PBKDF2 from a 256-bit token mint) is a
-  security/architecture decision. Escalated, not decided here.
+- ~~`test_the_eligible_branch_costs_well_under_the_constant_time_floor`~~ — **NO LONGER A
+  NON-GOAL.** It was escalated from here because every remedy was a security decision. That
+  decision has since landed as **DEC-013 (Remedy B)** on `86ak66r5c`: drop PBKDF2 from the
+  credential-token mint, keep the column, and remove all three dummy timing equalisers in the
+  same commit. The remedy is implemented on this branch, so AC-1 is now in scope and
+  meetable. The floor is NOT raised.
 - Defect 1 of `86ak643rc` (the ubuntu serif font test) — owned elsewhere.
 
 ### Constraints
@@ -108,6 +113,17 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-016 | yes | A fail-open misreported on a healthy limiter turns C-015 red | `mutate3.py E` (`guards.py` returns True) | that test FAILS | `m3-E-*.txt` | PASS |
 | C-017 | yes | The shipped ceiling setting and module default cannot drift | `mutate3.py F` (delete the setting) | collection fails loudly | `m3-F-*.txt` | PASS |
 | C-018 | yes | A host that slows after calibration skips, not fails | forced fast-then-slow eligible branch | SKIPPED naming both costs | `m3-H.txt` | PASS |
+| C-019 | yes | The oracle test cannot be disarmed by deleting the fixture's window reset | oracle bug applied, fixture line deleted | that test FAILS (was `25 passed, exit 0`) | `F1_E3_bug_fixture_deleted.txt` | PASS |
+| C-020 | yes | A dead degraded mechanism is distinguishable from a refusal | `_claim_degraded_send` forced True, then forced False | RED both ways; False fires the positive control | `F1_E4a/E4b.txt` | PASS |
+| C-021 | yes | A PARTIAL limiter outage degrades the send | one scope's store broken, other two healthy, x3 scopes | all three parametrisations pass; collapsing the accumulation to one budget turns them red | `F3_M3a_single_budget.txt` | PASS |
+| C-022 | yes | The accumulation does not short-circuit | swap the bitwise-or accumulation for `or` | 3 tests FAIL incl. the dedicated one | `F3_M3b_or_shortcircuit.txt` | PASS |
+| C-023 | yes | The degraded fixed window rolls over | delete the rollover branch | that test FAILS | `F3_M3c_no_rollover.txt` | PASS |
+| C-024 | yes | The probe's verdict and its diagnosis are on one basis | `pytest -k same_basis_it_judges_it` (4 floors) | passes; restoring the `floor * 1.10` ratio reds 3 of 4 | `M1.txt` | PASS |
+| C-025 | yes | One calibration spike cannot set the probe's floor | `pytest -k one_calibration_spike` | passes, with a slow-host positive control | `F3_clean.txt` | PASS |
+| C-026 | yes | DEC-013: the eligible branch fits the shipped 400 ms floor | `pytest -k costs_well_under_the_constant_time_floor` | exits 0; 0.59 ms measured, x674 headroom, floor unchanged | `FINAL_ac1.txt` | PASS |
+| C-027 | yes | DEC-013 did not INVERT the existence oracle | both branches measured unpadded, 9 samples | `eligible - unknown = +0.43 ms`, still positive; all 3 inside the floor | `inversion.py` output | PASS |
+| C-028 | yes | The repaired probe still goes RED on a real asymmetry | inject ~500 ms into the not-eligible branch; separately neutralise `_pad_to_floor` | RED both ways, naming `['unknown','verified']` | `T1_inversion_big.txt`, `T2_no_padding.txt` | PASS |
+| C-029 | no | The `threading.Lock` on the ceiling is covered by a test | 32 threads x 40 claims, `setswitchinterval(1e-6)`, 10 trials each way | NOT MET BY DESIGN — 0/10 overspent with AND without the lock, so any test here would be vacuous | `lockprobe.py` output | NOT_APPLICABLE |
 
 ## Verification plan
 
@@ -196,8 +212,12 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 ## Pause and escalation conditions
 
-- Sizing the shipped constant-time floor, or removing PBKDF2 from the token mint — owner:
-  Security Reviewer / Architect. Raised as a follow-up rather than decided here.
+- ~~Sizing the shipped constant-time floor, or removing PBKDF2 from the token mint~~ —
+  RESOLVED. Sana ruled, owner approved: DEC-013 / Remedy B, recorded on `86ak66r5c` and
+  implemented here. The floor is unchanged; PBKDF2 leaves the credential-token mint only.
+- Still open, flagged not fixed: `DeviceToken.token_hash` (`devices/services.py`) has the same
+  write-only `make_password` pattern. No constant-time floor sits on that path, so there is no
+  oracle to invert and it is out of scope here.
 
 ## Final evaluation
 
@@ -205,5 +225,5 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Validator result: see handoff comment
 - Independent verification result: PENDING (C-012)
 - Terminal state: GATE_REVIEW
-- Remaining failed or blocked criteria: C-012 (review pipeline)
-- ClickUp final evidence comment: posted on 86ak643rc and 86ak5rnrr
+- Remaining failed or blocked criteria: C-012 (review pipeline — Quinn re-check outstanding)
+- ClickUp final evidence comment: posted on 86ak69tdz, 86ak66r5c and 86ak5rnrr
