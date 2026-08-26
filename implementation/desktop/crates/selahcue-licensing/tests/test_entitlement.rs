@@ -7,7 +7,7 @@
 
 use selahcue_licensing::entitlement::{
     decide_cache_replacement, Allowance, CacheDecision, GrantScalar, Grants, KeepReason,
-    SignedFacts, DEGRADED_MANIFEST_TTL_SECONDS,
+    SignedFacts, DEGRADED_MANIFEST_TTL_SECONDS, MAX_GRANT_DIMENSIONS,
 };
 
 // The server's clamp, pinned. If it ever grew to something near a licence window, the
@@ -159,15 +159,24 @@ const YEAR: i64 = 365 * 24 * 60 * 60;
 const T0: i64 = 1_800_000_000;
 const CACHED_LONG_EXPIRY: i64 = T0 + 2 * YEAR;
 
-/// The cached artefact: issued at T0, valid two years.
+/// The cached artefact: issued at T0, valid two years, artefact == licence (not degraded).
 fn cached() -> SignedFacts {
-    SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY, T0, None)
+    SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY, CACHED_LONG_EXPIRY, T0, None)
+}
+
+/// A GENUINE shortening: the licence itself now ends sooner and the artefact matches it.
+/// Nothing was clamped, so this is not a degraded issuance.
+fn genuine_shortening(expiry: i64) -> SignedFacts {
+    SignedFacts::from_verified_payload(expiry, expiry, T0 + 3600, None)
 }
 
 /// A degraded artefact: issued later, but clamped to the 900s TTL.
 fn degraded_refresh(degraded: Option<bool>) -> SignedFacts {
+    // The licence still runs two years; only the ARTEFACT is clamped. That pair —
+    // `expires_at < license_expires_at` — is the degraded signature.
     SignedFacts::from_verified_payload(
         T0 + 3600 + DEGRADED_MANIFEST_TTL_SECONDS,
+        CACHED_LONG_EXPIRY,
         T0 + 3600,
         degraded,
     )
@@ -204,15 +213,50 @@ fn a_degraded_manifest_never_evicts_a_longer_cached_entitlement() {
 }
 
 #[test]
-fn the_flag_being_absent_is_treated_as_degraded_because_the_server_does_not_publish_it() {
-    // Today `degraded` reaches the audit record and a log line but NOT the signed payload,
-    // so the client always sees `None`. Guessing "not degraded" would cost a church its
-    // offline window over a server blip; guessing "degraded" defers an honest downgrade to
-    // the next refresh, which the issued_at rule bounds.
+fn degradation_is_derived_from_the_two_signed_expiries_when_no_flag_is_published() {
+    // The premise an earlier version of this module denied. `expires_at` is narrowed below
+    // `license_expires_at` ONLY in the degraded branch, so the pair is the signal — no API
+    // change and no guessing required.
+    assert!(
+        degraded_refresh(None).is_degraded(),
+        "a clamped artefact under a longer licence IS the degraded signature"
+    );
+    assert!(
+        !cached().is_degraded(),
+        "artefact expiry == licence expiry is a normal issuance"
+    );
+    assert!(
+        !genuine_shortening(T0 + 30 * 24 * 60 * 60).is_degraded(),
+        "a licence that genuinely ends sooner is not a degraded issuance"
+    );
+
+    // An explicit signed flag still wins, so publishing it later changes nothing here.
+    let clamped_but_declared_fine = SignedFacts::from_verified_payload(
+        T0 + 3600 + DEGRADED_MANIFEST_TTL_SECONDS,
+        CACHED_LONG_EXPIRY,
+        T0 + 3600,
+        Some(false),
+    );
+    assert!(!clamped_but_declared_fine.is_degraded());
+}
+
+#[test]
+fn a_genuine_expiry_shortening_lands_instead_of_pinning_the_entitlement_for_good() {
+    // THE bug the blunt rule caused. A shorter-term renewal, a plan term change or an expiry
+    // correction was refused PERMANENTLY — no retry, reactivation or operator action would
+    // land it — and because the whole manifest was refused, the older and more GENEROUS
+    // grants persisted with it. It did not defer an expiry change; it pinned the entitlement.
+    let renewal = genuine_shortening(T0 + 30 * 24 * 60 * 60);
+
+    // Positive controls: this really shortens, really is newer, and really is not degraded.
+    assert!(renewal.expires_at_unix() < cached().expires_at_unix());
+    assert!(renewal.issued_at_unix() > cached().issued_at_unix());
+    assert!(!renewal.is_degraded());
+
     assert_eq!(
-        decide_cache_replacement(Some(cached()), degraded_refresh(None)),
-        decide_cache_replacement(Some(cached()), degraded_refresh(Some(true))),
-        "an unstated flag must behave exactly as a stated `degraded`"
+        decide_cache_replacement(Some(cached()), renewal),
+        CacheDecision::Replace,
+        "a genuine licence change must land, or the entitlement is pinned with no way back"
     );
 }
 
@@ -220,8 +264,12 @@ fn the_flag_being_absent_is_treated_as_degraded_because_the_server_does_not_publ
 fn an_explicit_not_degraded_may_shorten_because_that_is_a_real_licence_change() {
     // The narrowing this API is shaped for: once the server publishes the flag inside the
     // signature, a genuine downgrade gets through with no change here.
-    let downgrade =
-        SignedFacts::from_verified_payload(T0 + 30 * 24 * 60 * 60, T0 + 3600, Some(false));
+    let downgrade = SignedFacts::from_verified_payload(
+        T0 + 30 * 24 * 60 * 60,
+        T0 + 30 * 24 * 60 * 60,
+        T0 + 3600,
+        Some(false),
+    );
     assert_eq!(
         decide_cache_replacement(Some(cached()), downgrade),
         CacheDecision::Replace
@@ -231,8 +279,14 @@ fn an_explicit_not_degraded_may_shorten_because_that_is_a_real_licence_change() 
 #[test]
 fn a_longer_or_equal_manifest_always_replaces() {
     // Positive control for the rule as a whole: it must not be a blanket refusal to cache.
-    let longer = SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY + YEAR, T0 + 3600, None);
-    let equal = SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY, T0 + 3600, None);
+    let longer = SignedFacts::from_verified_payload(
+        CACHED_LONG_EXPIRY + YEAR,
+        CACHED_LONG_EXPIRY + YEAR,
+        T0 + 3600,
+        None,
+    );
+    let equal =
+        SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY, CACHED_LONG_EXPIRY, T0 + 3600, None);
     assert_eq!(
         decide_cache_replacement(Some(cached()), longer),
         CacheDecision::Replace
@@ -242,8 +296,12 @@ fn a_longer_or_equal_manifest_always_replaces() {
         CacheDecision::Replace,
         "an equal window is a refresh, not a shortening"
     );
-    let longer_but_degraded =
-        SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY + YEAR, T0 + 3600, Some(true));
+    let longer_but_degraded = SignedFacts::from_verified_payload(
+        CACHED_LONG_EXPIRY + YEAR,
+        CACHED_LONG_EXPIRY + YEAR,
+        T0 + 3600,
+        Some(true),
+    );
     assert_eq!(
         decide_cache_replacement(Some(cached()), longer_but_degraded),
         CacheDecision::Replace,
@@ -258,7 +316,12 @@ fn a_manifest_issued_earlier_than_the_cached_one_is_refused_as_a_replay() {
     // A correctly-signed manifest is still replayable: capture one, serve it later. Without
     // this the newest artefact does not necessarily win, and whoever answers the refresh
     // chooses which past entitlement the client holds.
-    let replayed = SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY + YEAR, T0 - 1, None);
+    let replayed = SignedFacts::from_verified_payload(
+        CACHED_LONG_EXPIRY + YEAR,
+        CACHED_LONG_EXPIRY + YEAR,
+        T0 - 1,
+        None,
+    );
 
     // Positive control: it is LONGER, so rule 2 would happily accept it. Only rule 1 refuses.
     assert!(replayed.expires_at_unix() > cached().expires_at_unix());
@@ -278,7 +341,8 @@ fn a_replay_cannot_talk_its_way_past_the_shortening_rule_with_a_signed_not_degra
     // Why rule 1 is checked FIRST. `degraded` is inside the signature, so it cannot be
     // forged — but a genuine old manifest that legitimately carried `degraded: false` can be
     // replayed. If the shortening rule ran first, that replay would be accepted.
-    let old_but_not_degraded = SignedFacts::from_verified_payload(T0 + 60, T0 - 5000, Some(false));
+    let old_but_not_degraded =
+        SignedFacts::from_verified_payload(T0 + 60, T0 + 60, T0 - 5000, Some(false));
     assert_eq!(
         decide_cache_replacement(Some(cached()), old_but_not_degraded),
         CacheDecision::KeepCached(KeepReason::StaleIssuance {
@@ -293,7 +357,12 @@ fn a_replay_cannot_talk_its_way_past_the_shortening_rule_with_a_signed_not_degra
 fn a_manifest_re_issued_at_the_same_instant_is_still_accepted() {
     // Equal issuance is a re-issue, not a replay — refusing it would wedge a client whose
     // server re-signs within the same second.
-    let same_instant = SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY + YEAR, T0, None);
+    let same_instant = SignedFacts::from_verified_payload(
+        CACHED_LONG_EXPIRY + YEAR,
+        CACHED_LONG_EXPIRY + YEAR,
+        T0,
+        None,
+    );
     assert_eq!(
         decide_cache_replacement(Some(cached()), same_instant),
         CacheDecision::Replace
@@ -345,5 +414,55 @@ fn a_true_flag_has_no_ceiling_which_numeric_enforcement_must_not_read_as_unlimit
         g.allowance("stage_display"),
         Allowance::Unlimited,
         "the variants stay distinguishable even though their ceilings collide"
+    );
+}
+
+// --- the grant map is bounded, like its sibling trust store -----------------------------
+
+const _: () = assert!(MAX_GRANT_DIMENSIONS >= 8 && MAX_GRANT_DIMENSIONS <= 1024);
+
+#[test]
+fn the_grant_map_is_bounded_and_an_over_cap_manifest_is_refused() {
+    // `Grants` is fed straight from the payload and, in 86ak5mn1d, decoded BEFORE the
+    // signature is checked — so for that window its size is an attacker's choice. Its
+    // sibling `TrustedKeys` has been cap-pinned since it was written; this had no bound.
+    let within: String = (0..MAX_GRANT_DIMENSIONS)
+        .map(|i| format!("\"d{i}\": true"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let at_cap: Grants = serde_json::from_str(&format!("{{{within}}}")).unwrap();
+
+    // Positive control FIRST: exactly at the cap parses and every key is retrievable, so the
+    // refusal below is a boundary and not a blanket rejection.
+    assert_eq!(at_cap.len(), MAX_GRANT_DIMENSIONS);
+    assert_eq!(at_cap.allowance("d0"), Allowance::Flag(true));
+    assert_eq!(
+        at_cap.allowance(&format!("d{}", MAX_GRANT_DIMENSIONS - 1)),
+        Allowance::Flag(true)
+    );
+
+    let over: String = (0..MAX_GRANT_DIMENSIONS + 1)
+        .map(|i| format!("\"d{i}\": true"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let refused = serde_json::from_str::<Grants>(&format!("{{{over}}}"));
+    assert!(
+        refused.is_err(),
+        "a manifest carrying more than {MAX_GRANT_DIMENSIONS} dimensions must be refused"
+    );
+    assert!(
+        refused.unwrap_err().to_string().contains("grant"),
+        "the refusal should say what was refused"
+    );
+}
+
+#[test]
+fn the_cap_is_cross_pinned_to_the_servers_own_bound() {
+    // The server asserts MAX_GRANT_DIMENSIONS = 64 (apps/catalogue/models.py:90 on
+    // origin/feat/86ak10abc-product-catalogue). A client cap BELOW it would refuse manifests
+    // the server considers valid.
+    assert_eq!(
+        MAX_GRANT_DIMENSIONS, 64,
+        "cross-pinned to the server's MAX_GRANT_DIMENSIONS; change both together"
     );
 }

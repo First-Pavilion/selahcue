@@ -658,6 +658,16 @@ fn no_filesystem_primitive_is_reachable_from_this_crate() {
         "fs::read",
         "std::process",
         "Command::new",
+        // Environment access, added after review found `trust.rs` CLAIMING this guard
+        // covered it when it did not. The claim was not idle: an env-var trusted-key loader
+        // would defeat the release exclusion **at runtime, inside a release binary, with no
+        // `cfg` involved at all** — the `#[cfg(debug_assertions)]` gates would be perfectly
+        // intact and perfectly irrelevant. A no-op today because `src/` is otherwise
+        // env-free, which is exactly when it is cheapest to close.
+        "std::env",
+        "env::var",
+        "env!(",
+        "option_env!(",
     ];
 
     let mut sources = Vec::new();

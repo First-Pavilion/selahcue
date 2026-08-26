@@ -335,12 +335,24 @@ jobs:
       # so anyone can mint a manifest against a debug build. Release builds must not trust
       # it, and `#[cfg(debug_assertions)]` is what stops them.
       #
-      # Nothing else here can catch that gate being removed. The workspace test above is
-      # debug-only, and the --release steps elsewhere build crates that do not link
-      # licensing -- so commenting the gates out (a plausible refactor, or a malicious
-      # commit) shipped the public-seed key into release binaries with an all-green CI. The
-      # crate is small; this costs seconds and is the only place the release branch of
-      # `the_development_key_is_trusted_in_this_build_iff_it_is_a_debug_build` ever runs.
+      # WHAT THIS STEP DOES CLOSE: removal of the `#[cfg(debug_assertions)]` gates, and a
+      # second ungated insertion in `bundled()` (E0425 in release). The workspace test above
+      # is debug-only and the other --release steps build crates that do not link licensing,
+      # so without this those routes shipped the public-seed key with an all-green CI.
+      #
+      # WHAT IT DOES NOT CLOSE, stated plainly because an overclaim here is worse than a
+      # gap: the test is `if cfg!(debug_assertions) { present } else { absent }`, which asks
+      # the profile a question and checks the answer against itself. `[profile.release]
+      # debug-assertions = true` -- or RUSTFLAGS -- makes that cfg TRUE under --release, so
+      # this step passes green in BOTH profiles while the key ships, with no source edit at
+      # all. The manifest and cargo-config routes are closed by scripts/import_guards.sh;
+      # the environment route cannot be closed from inside the repository.
+      #
+      # THE COMPLETE CONTROL is to scan the shipped release binary for the 32 dev key bytes
+      # and fail if present -- entity-level, and immune to every route including a future
+      # runtime loader. It needs something to actually link the crate first, which nothing
+      # does yet (`cargo tree -e normal -p selahcue-desktop` finds no selahcue-licensing).
+      # Recorded on 86ak5mn1d / 86ak5mn1t, which is where linking happens.
       - name: Test (licensing crate in RELEASE — the dev-key exclusion only holds here)
         if: ${{ !cancelled() }}
         run: cargo test -p selahcue-licensing --release --no-fail-fast

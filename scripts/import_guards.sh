@@ -185,6 +185,60 @@ echo ">> checking selahcue-import is covered by the workspace test run"
 grep -q '"crates/selahcue-import"' "$DESKTOP/Cargo.toml" \
   || fail "selahcue-import is not a workspace member — its hostile-input battery would not run in CI"
 
+# --- no release-inheriting profile turns debug-assertions back on ------------------------
+# `selahcue-licensing` trusts a DEVELOPMENT entitlement key under `#[cfg(debug_assertions)]`,
+# and its seed is committed, so a release build that trusts it hands out unlimited
+# entitlement to anyone.
+#
+# The crate's release-profile test asserts `if cfg!(debug_assertions) { present } else {
+# absent }`. That asks the profile a question and checks the answer against itself -- it
+# restates the `#[cfg]` attribute rather than checking the property that matters. Adding
+#
+#     [profile.release]
+#     debug-assertions = true
+#
+# makes `cfg!(debug_assertions)` TRUE under `--release`, so the test passes green in BOTH
+# profiles while the dev key ships in the release artefact. No source edit required.
+# Reproduced before writing this guard: `cargo test -p selahcue-licensing --release` exited 0
+# with the override in place.
+#
+# This closes the manifest route. It does NOT close `RUSTFLAGS=-C debug-assertions=on` in a
+# caller's environment -- nothing in-repo can. The complete control is to scan the SHIPPED
+# release binary for the 32 dev key bytes and fail if present; that becomes possible once
+# something actually links the crate (86ak5mn1d / 86ak5mn1t) and is recorded there.
+echo ">> checking no release-inheriting profile re-enables debug-assertions"
+for manifest in "$DESKTOP/Cargo.toml" "$DESKTOP/crates/selahcue-operator/Cargo.toml"; do
+  [ -f "$manifest" ] || fail "expected manifest $manifest is missing — repoint this guard"
+  OFFENDER=$(awk '
+    /^[[:space:]]*\[/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section); sub(/\].*$/, "", section)
+      inprofile = (section ~ /^profile\./)
+      name = section; sub(/^profile\./, "", name); sub(/\..*$/, "", name)
+      # dev and test are debug profiles already; saying so there changes nothing.
+      benign = (name == "dev" || name == "test")
+      next
+    }
+    inprofile && !benign && /debug[-_]assertions[[:space:]]*=[[:space:]]*true/ {
+      print "[" section "] " $0
+    }
+  ' "$manifest")
+  if [ -n "$OFFENDER" ]; then
+    echo "$OFFENDER" >&2
+    fail "a release-inheriting profile in $manifest sets debug-assertions = true — that makes cfg!(debug_assertions) true under --release, so a release build would trust the committed development entitlement key"
+  fi
+done
+
+# The same switch can arrive through a committed cargo config rather than a manifest.
+echo ">> checking no committed cargo config forces debug-assertions on"
+CARGO_CONFIGS=$(find "$ROOT" -name 'config.toml' -path '*/.cargo/*' -not -path '*/target/*' 2>/dev/null || true)
+for cfg in $CARGO_CONFIGS; do
+  if grep -qE 'debug[-_]assertions(=|[[:space:]]*=)?[[:space:]]*(on|yes|true)' "$cfg"; then
+    grep -nE 'debug[-_]assertions' "$cfg" >&2
+    fail "$cfg forces debug-assertions on — see the reasoning above"
+  fi
+done
+
 # --- licensing is absent from the render / go-live / live-control closure (CON-P1/P2) -----
 # NFR-024 says no component failure may blank live output, and CON-P1/CON-P2 sharpen that:
 # no licensing state, response or outage may sit on the path that drives the screen. The way

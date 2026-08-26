@@ -41,7 +41,9 @@
 //! a manifest by design: when the catalogue cannot be read it still signs one — refusing
 //! would deny a live service over a server-side fault — but clamps it to
 //! [`DEGRADED_MANIFEST_TTL_SECONDS`] so a transient failure cannot be frozen into a
-//! multi-year offline credential (`apps/entitlements/services.py:122-133`).
+//! multi-year offline credential (`apps/entitlements/services.py:122-133` **on
+//! `origin/feat/86ak10abc-product-catalogue`** — on `main` that file is 101 lines and has
+//! no grants, no `degraded` and no clamp).
 //!
 //! That protection has a matching client obligation. If a desktop holding a multi-year
 //! cached entitlement replaces it with a valid 15-minute one, a brief server blip collapses
@@ -50,24 +52,44 @@
 //! that: **a shorter window never evicts a longer cached one.** Keep serving the cached
 //! grant and retry.
 //!
-//! ## The server does not currently tell us it was degraded — raised, not worked around
+//! ## The payload already tells us it was degraded — derived, not guessed
 //!
-//! `degraded` is real server-side, but it reaches only the **audit record** and a log line.
-//! The signed payload carries `grants`, `expires_at` and fourteen other fields and **no
-//! `degraded` flag** (`apps/entitlements/services.py:135-170`). So the client cannot
-//! distinguish "short because the catalogue failed" from "short because the licence really
-//! is short", and the rule here is correspondingly blunt: it refuses *any* shortening.
+//! An earlier version of this module said the client "cannot distinguish short-because-the-
+//! catalogue-failed from short-because-the-licence-is-short", and refused **all** shortening
+//! on that basis. That premise was wrong, and the rule built on it was harmful.
 //!
-//! The bluntness is the cost of the missing field, and it is deliberately visible rather
-//! than hidden — [`decide_cache_replacement`] already takes the flag as
-//! `Option<bool>`, so publishing it in the payload narrows this to exactly the intended
-//! rule with no change here: `Some(true)` keeps the cache, `Some(false)` allows a genuine
-//! licence shortening through, `None` (today) stays conservative.
+//! The signed payload carries **two** expiries:
+//!
+//! - `license_expires_at` — the true licence expiry, **never clamped**
+//! - `expires_at` — the artefact expiry, clamped **only** in the degraded branch
+//!   (`min(..., now + DEGRADED_MANIFEST_TTL_SECONDS)`, guarded by `if entitlement.degraded:`)
+//!
+//! So **`expires_at < license_expires_at` implies degraded.** Sound — nothing else narrows
+//! the artefact below the licence — and complete except when the licence itself ends inside
+//! the TTL window, where shortening is correct anyway. Both fields are on `main`
+//! (`apps/entitlements/services.py:71,78`, where they are equal because that revision has no
+//! degradation path) and on `origin/feat/86ak10abc-product-catalogue` (`:144,:169`), so the
+//! signal is stable and needs no API change.
+//!
+//! ### What refusing all shortening actually cost
+//!
+//! Not, as I first wrote, "a deferred downgrade". A **genuine** expiry shortening — a
+//! shorter-term renewal, a plan term change, an expiry correction — was refused
+//! **permanently and unrecoverably**: no retry, reactivation or operator action would land
+//! it. And because the *whole manifest* was refused, the older and more **generous grants**
+//! rode along and persisted with it. The rule did not defer an expiry change; it pinned the
+//! entire entitlement.
+//!
+//! [`SignedFacts::is_degraded`] therefore derives the answer from the two signed timestamps,
+//! and an explicit `degraded` field takes precedence if the server ever publishes one inside
+//! the signature. Either way the input is **signed payload bytes only** — never a header, a
+//! status code, or a field the view appends outside the envelope.
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-/// The server's clamp on a degraded manifest (`entitlements/services.py:83`). Mirrored for
+/// The server's clamp on a degraded manifest (`entitlements/services.py:83` on
+/// `origin/feat/86ak10abc-product-catalogue`; the clamp does not exist on `main` yet). Mirrored for
 /// documentation and tests; the client never assumes it, it reads `expires_at`.
 pub const DEGRADED_MANIFEST_TTL_SECONDS: i64 = 900;
 
@@ -145,12 +167,71 @@ impl Allowance {
 /// Keys come from catalogue rows, so a new dimension appears without a client code change.
 /// That is exactly why the *default* has to be safe: this client will routinely meet keys
 /// it has never heard of, and must meet unknown ones the same way it meets absent ones.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Grants(BTreeMap<String, Option<GrantScalar>>);
+
+/// The most grant dimensions this client will accept from one manifest.
+///
+/// Cross-pinned to the server's own bound (`apps/catalogue/models.py:90` on
+/// `origin/feat/86ak10abc-product-catalogue`, `MAX_GRANT_DIMENSIONS = 64`). The sibling
+/// [`crate::trust::TrustedKeys`] has carried a compile-pinned cap since it was written; this
+/// map is the same class of unbounded, wire-fed collection and had none.
+///
+/// It matters most in the window this crate does not own yet: 86ak5mn1d decodes the payload
+/// **before** the signature is checked, so for that moment the map's size is an attacker's
+/// choice rather than the server's.
+pub const MAX_GRANT_DIMENSIONS: usize = 64;
+
+// Pinned at compile time so the cap cannot drift below the dimensions the product actually
+// decides on, mirroring the server's own `assert MAX_GRANT_DIMENSIONS >= 8`.
+const _: () = assert!(
+    MAX_GRANT_DIMENSIONS >= 8,
+    "MAX_GRANT_DIMENSIONS must leave room for the decided dimensions"
+);
+
+impl<'de> Deserialize<'de> for Grants {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct BoundedGrants;
+
+        impl<'de> serde::de::Visitor<'de> for BoundedGrants {
+            type Value = Grants;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(f, "at most {MAX_GRANT_DIMENSIONS} grant dimensions")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut access: A,
+            ) -> Result<Grants, A::Error> {
+                let mut map = BTreeMap::new();
+                // Counted as entries arrive and refused on the one that crosses the cap, so
+                // an over-large document is abandoned mid-parse rather than allocated in
+                // full and measured afterwards. Checking `len()` after collecting would
+                // bound the value while leaving the *work* unbounded, which is the half that
+                // matters against untrusted input.
+                while let Some((key, value)) = access.next_entry::<String, Option<GrantScalar>>()? {
+                    if map.len() >= MAX_GRANT_DIMENSIONS {
+                        return Err(serde::de::Error::custom(format!(
+                            "manifest carries more than {MAX_GRANT_DIMENSIONS} grant \
+                             dimensions; refusing to decode the rest"
+                        )));
+                    }
+                    map.insert(key, value);
+                }
+                Ok(Grants(map))
+            }
+        }
+
+        deserializer.deserialize_map(BoundedGrants)
+    }
+}
 
 impl Grants {
     /// Build from decoded pairs. `None` is the wire's `null` — unlimited.
+    ///
+    /// In-process constructor: the cap is enforced where untrusted bytes enter, in
+    /// `Deserialize`. Callers building a map in memory are not the threat this bounds.
     pub fn from_pairs(pairs: impl IntoIterator<Item = (String, Option<GrantScalar>)>) -> Self {
         Grants(pairs.into_iter().collect())
     }
@@ -209,6 +290,7 @@ impl Grants {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignedFacts {
     expires_at_unix: i64,
+    license_expires_at_unix: i64,
     issued_at_unix: i64,
     degraded: Option<bool>,
 }
@@ -220,14 +302,32 @@ impl SignedFacts {
     /// payload today, since the server publishes it only to the audit record.
     pub fn from_verified_payload(
         expires_at_unix: i64,
+        license_expires_at_unix: i64,
         issued_at_unix: i64,
         degraded: Option<bool>,
     ) -> Self {
         SignedFacts {
             expires_at_unix,
+            license_expires_at_unix,
             issued_at_unix,
             degraded,
         }
+    }
+
+    /// The **licence** expiry — never clamped, whatever happened server-side.
+    pub fn license_expires_at_unix(&self) -> i64 {
+        self.license_expires_at_unix
+    }
+
+    /// Whether this issuance was degraded.
+    ///
+    /// An explicit signed `degraded` wins when present. Otherwise it is **derived**: the
+    /// artefact expiry is narrowed below the licence expiry only in the degraded branch, so
+    /// `expires_at < license_expires_at` is exactly that condition. See the module docs for
+    /// why this is sound, and for what the previous guess-nothing rule cost.
+    pub fn is_degraded(&self) -> bool {
+        self.degraded
+            .unwrap_or(self.expires_at_unix < self.license_expires_at_unix)
     }
 
     /// The **artefact** expiry — the clamped `expires_at`, not `license_expires_at`.
@@ -267,8 +367,11 @@ pub enum KeepReason {
     /// A correctly-signed manifest is still replayable: capture one, serve it later. Without
     /// this the newest artefact does not necessarily win, and an attacker who can answer the
     /// refresh gets to choose which past entitlement the client holds. It also bounds how
-    /// long an honest downgrade can be deferred — to the refresh cadence — because the
-    /// replacement carries a newer `issued_at`.
+    /// A newer-but-shorter honest manifest passes this rule and is judged by rule 2, so the
+    /// bound this provides is on REPLAY specifically, not on honest deferral. (An earlier
+    /// version of this comment claimed deferral was bounded "to the refresh cadence", which
+    /// was wrong: before degradation was derived rather than assumed, a refused shortening
+    /// persisted until the cached manifest expired.)
     StaleIssuance {
         cached_issued_at_unix: i64,
         incoming_issued_at_unix: i64,
@@ -292,13 +395,10 @@ pub enum KeepReason {
 /// 1. **Never go backwards.** An older `issued_at` is refused outright — that is a replay,
 ///    whatever else it says, and it is checked first precisely so a replayed manifest cannot
 ///    talk its way past rule 2 with its own signed `degraded: false`.
-/// 2. **Never shorten**, unless the server explicitly says the shortening is deliberate:
-///    - `Some(true)` — degraded: never allowed to shorten.
-///    - `Some(false)` — a genuine licence change: allowed.
-///    - `None` — the server did not say, which is every payload today. Treated as
-///      `Some(true)`, because guessing wrong the other way costs a church its offline window
-///      mid-service, while guessing this way only defers an honest downgrade to the next
-///      refresh.
+/// 2. **A degraded issuance may not shorten.** A genuine licence change may, and must —
+///    refusing it would pin the whole entitlement, generous grants included, with no way
+///    back. Degradation is read from [`SignedFacts::is_degraded`], which derives it from the
+///    two signed expiries when the server publishes no explicit flag.
 ///
 /// A revoked or expired licence is **not** affected by rule 2: the server issues no manifest
 /// at all for one (`POLICY_DENIED` on the issuance allow-list), so there is no shortened
@@ -324,7 +424,9 @@ pub fn decide_cache_replacement(
     if incoming.expires_at_unix >= cached.expires_at_unix {
         return CacheDecision::Replace;
     }
-    if incoming.degraded == Some(false) {
+    // It shortens. Only a DEGRADED issuance is refused; a genuine licence change must land,
+    // or the entitlement is pinned for good — grants and all.
+    if !incoming.is_degraded() {
         return CacheDecision::Replace;
     }
 

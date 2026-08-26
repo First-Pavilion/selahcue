@@ -177,6 +177,16 @@ impl TrustedKeys {
         // branch that skips verification is the highest-value target in the product and
         // means the path we ship is not the path anyone develops against.
         //
+        // OBLIGATION ON WHOEVER FIRST LINKS THIS CRATE (86ak5mn1d / 86ak5mn1t):
+        // add a build step that scans the shipped RELEASE binary for these 32 bytes and
+        // fails if they are present. That is the only complete control. Everything below is
+        // partial: the `cfg` gates can be removed (caught by the source guard), a release
+        // profile can turn `debug_assertions` back on (caught by scripts/import_guards.sh),
+        // and `RUSTFLAGS=-C debug-assertions=on` can do the same from the environment
+        // (caught by nothing in-repo). A byte scan of the artefact answers the question that
+        // actually matters -- does the thing we ship contain this key -- and is immune to
+        // all three, plus any future runtime loader.
+        //
         // The `cfg` is the control. A release build must not trust this key: its seed is
         // committed in `dev-signing-key.NOT-A-SECRET`, so anyone at all can sign with it.
         // `the_development_key_is_gated_on_debug_assertions` fails if this gate is removed.
