@@ -284,7 +284,17 @@ PROBE_FLOOR_FIT_TOLERANCE_SECONDS = PROBE_SPREAD_BUDGET_SECONDS
 # Sanity-checking `max` against the MEDIAN of the same samples separates the two: under a real
 # slowdown every sample moves together and `max ~= median`, so this does not bind; under a
 # spike it does.
-PROBE_CALIBRATION_SPIKE_RATIO = 2.0
+#
+# 1.5x, MEASURED rather than picked. An inflated floor does not only mis-diagnose reds — it
+# also blunts the probe, because padding legitimately hides any difference smaller than the
+# floor. Reintroducing a ~167ms asymmetry to confirm this probe still bites was NOT caught at
+# 2.0x: a calibration whose max was 1.88x its median (133.5ms against 70.9ms, on a loaded
+# host) passed the clamp untouched, provisioned a 200ms floor, and that floor then covered the
+# injected 167ms — honestly and correctly, which is the problem. The ratio has to sit below
+# the spikes actually observed here or the clamp is decorative. At 1.5x the floor is still
+# 2.25x the median branch cost (basis 1.5x, floor 1.5x of that), which covered the worst
+# calibration sample seen while developing this.
+PROBE_CALIBRATION_SPIKE_RATIO = 1.5
 # The null control (two cases that are the SAME code path) is this run's noise floor. A spread
 # that is not at least this multiple of it was not resolvable by this run, and the failure
 # message must say so rather than assert a real difference. WORDING only — never the verdict,
