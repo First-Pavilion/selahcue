@@ -285,15 +285,36 @@ PROBE_FLOOR_FIT_TOLERANCE_SECONDS = PROBE_SPREAD_BUDGET_SECONDS
 # slowdown every sample moves together and `max ~= median`, so this does not bind; under a
 # spike it does.
 #
-# 1.5x, MEASURED rather than picked. An inflated floor does not only mis-diagnose reds — it
-# also blunts the probe, because padding legitimately hides any difference smaller than the
-# floor. Reintroducing a ~167ms asymmetry to confirm this probe still bites was NOT caught at
-# 2.0x: a calibration whose max was 1.88x its median (133.5ms against 70.9ms, on a loaded
-# host) passed the clamp untouched, provisioned a 200ms floor, and that floor then covered the
-# injected 167ms — honestly and correctly, which is the problem. The ratio has to sit below
-# the spikes actually observed here or the clamp is decorative. At 1.5x the floor is still
-# 2.25x the median branch cost (basis 1.5x, floor 1.5x of that), which covered the worst
-# calibration sample seen while developing this.
+# 1.5x, MEASURED — and the measurement answers two separate questions.
+#
+# WHERE THE RATIO MUST SIT. There are two populations here and the clamp has to land in the
+# gap between them. Over 777 sliding calibration windows through the real endpoint at load
+# 7->26: honest windows, where the samples move together, sit at max/median <= 1.15 (p95);
+# true spikes run 1.5-2.6; the band between is nearly empty. So 1.5 binds on 1.6% of windows,
+# almost all of them genuine spikes — including the 1.88x case below — while 2.0 binds on
+# 0.36% and misses roughly 78% of the spikes the clamp exists for. Not knife-edge: anything in
+# ~1.3-1.6 behaves near-identically. Below ~1.2 it starts binding on HONEST windows (13.7% at
+# 1.1), which would cap the floor on a genuinely slow host and reintroduce the optimistic
+# floor `max` was chosen to avoid.
+#
+# WHY IT IS NOT TIDINESS. An inflated floor does not only mis-diagnose reds, it BLUNTS the
+# probe: padding legitimately hides any difference smaller than the floor. At 2.0 a real 1.88x
+# spike (133.5ms against a 70.9ms median, loaded host) passed the clamp untouched, provisioned
+# a 200ms floor, and that floor then covered a ~167ms asymmetry injected to confirm this probe
+# still bites — correctly, which is precisely the problem.
+#
+# WHAT 1.5 DOES AND DOES NOT BUY. It improves the WORST-CASE guaranteed-detection bound,
+# ~246ms -> ~194ms locally. It does NOT turn that 167ms case into a guaranteed catch: with the
+# clamp fully stretched the floor is ~160ms, and 167ms still slips under floor+budget about
+# 3-6% of the time. Said precisely because an earlier version of this comment implied
+# otherwise — a reader trusting "167ms is caught" would be reasoning from a number that only
+# holds 94-97% of the time.
+#
+# IT IS NOT A FALSE-RED SOURCE. 6,000 clean-code Monte-Carlo probe runs per ratio, replayed
+# from 1,554 real samples (iid and temporal-block): 0 false reds and 0 spurious skips, down to
+# R=1.3. The false-red precondition — a measurement median outrunning the clamped floor —
+# occurred in 0 of the 777 windows at every ratio. And it RECOVERS real findings: at 2.0,
+# 2.1-2.6% of genuine >=200ms oracles are excused as "host slowed" skips; at 1.5, 0.1-0.8%.
 PROBE_CALIBRATION_SPIKE_RATIO = 1.5
 # The null control (two cases that are the SAME code path) is this run's noise floor. A spread
 # that is not at least this multiple of it was not resolvable by this run, and the failure
@@ -392,6 +413,15 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
     and stays invisible here. That is deliberate — an adequate floor genuinely does hide it —
     and it is the sibling headroom test, which measures the same cost against the SHIPPED
     floor, that refuses to let the cost grow unnoticed.
+
+    A SECOND LIMIT, structural, and present at ANY calibration clamp ratio: the floor has to
+    cover this probe's own 60ms injected dispatch, so on fast hardware a cheap-branch
+    asymmetry under roughly 140-190ms sits inside the padding and is invisible by
+    construction. Demonstrated rather than assumed — +130ms injected into the unknown branch
+    PASSES while +500ms goes red. Sub-PBKDF2 resolution was never this probe's contract, and
+    tightening the clamp does not buy it. The realistic threat this is built for, a PBKDF2
+    reintroduced into one branch, costs 430-500ms on CI hardware and is caught there ~98% of
+    the time.
 
     `transaction=True` is LOAD-BEARING, not incidental. Every other test here runs inside
     django_db's outer atomic, where the real COMMIT never happens and `transaction.on_commit`
