@@ -259,12 +259,66 @@ assert PROBE_DISPATCH_SECONDS > PROBE_SPREAD_BUDGET_SECONDS, (
 # floor` requires of the shipped floor (work < floor * 2/3), so the probe asks the same
 # question of the host it is actually running on.
 PROBE_FLOOR_MULTIPLE = 1.5
-# A case whose median lands further than this past the floor was not padded — the host is
-# slower now than it was at calibration.
-PROBE_FLOOR_FIT_TOLERANCE = 1.10
+# A case whose median lands further than this past the floor was not padded by it.
+#
+# THE SAME ABSOLUTE QUANTITY AS THE SPREAD BUDGET, deliberately, and that identity is a fix
+# for a real defect rather than a tidy-up. This used to be a RATIO (`floor * 1.10`) while the
+# verdict below stayed ABSOLUTE (30ms). Two bases, and they agree only where 10% of the floor
+# happens to equal 30ms — i.e. at a ~300ms floor, which is about what a quiet dev machine
+# calibrates to. That is why it survived review: on the machine it was written on it was
+# right. At a 900ms floor the diagnosis is 3x looser than the verdict and at 1813ms it is 6x,
+# so a case could sit 150ms past the floor, blow the 30ms spread budget, and still be reported
+# as having "sat at the floor" — which sent two reviewers hunting a defect that was not there.
+#
+# Holding both to one number also makes the pair arithmetically consistent. `min(medians) >=
+# floor` is asserted before the spread is read, so a spread at or over budget forces
+# `max(medians) >= floor + budget`: whenever this test fails at least one case is provably NOT
+# sitting at the floor, and the probe can no longer claim otherwise.
+PROBE_FLOOR_FIT_TOLERANCE_SECONDS = PROBE_SPREAD_BUDGET_SECONDS
+# `max` is the right calibration statistic for a SUSTAINED slowdown and the wrong one for a
+# TRANSIENT spike — it cannot tell them apart, and one descheduled sample then sets the floor
+# for the whole run. Everything derived from `slowest_branch` inherits that spike, including
+# the recalibration escape hatch below, whose threshold is `slowest_branch *
+# PROBE_FLOOR_MULTIPLE` — so the one benign explanation for a red is hardest to reach exactly
+# when calibration was noisiest, i.e. exactly when it is most likely to be the true one.
+# Sanity-checking `max` against the MEDIAN of the same samples separates the two: under a real
+# slowdown every sample moves together and `max ~= median`, so this does not bind; under a
+# spike it does.
+PROBE_CALIBRATION_SPIKE_RATIO = 2.0
+# The null control (two cases that are the SAME code path) is this run's noise floor. A spread
+# that is not at least this multiple of it was not resolvable by this run, and the failure
+# message must say so rather than assert a real difference. WORDING only — never the verdict,
+# which stays absolute; see the null control's own comment for why it must never be able to
+# excuse a difference.
+PROBE_NOISE_RESOLVABLE_MULTIPLE = 3.0
 # Beyond this the probe would take minutes for one assertion. A host that slow is reported,
 # not measured.
 PROBE_MAX_FLOOR_SECONDS = 2.0
+
+
+def cases_outgrowing_floor(medians, floor):
+    """Which cases finished more than the spread budget past `floor`.
+
+    Extracted from the probe so the rule has ONE definition that a deterministic test can
+    exercise directly. The probe itself only reaches this line on a red, on a loaded host,
+    at whatever floor that host calibrated to — which is precisely how a diagnosis on the
+    wrong basis survived review for as long as it did.
+    """
+    return sorted(c for c, m in medians.items() if m - floor > PROBE_FLOOR_FIT_TOLERANCE_SECONDS)
+
+
+def calibration_basis(samples):
+    """`(basis, observed_slowest, typical, spiked)` — the branch cost to provision the floor
+    from, with the `max` sanity-checked against the median of the same samples.
+
+    Extracted for the same reason as `cases_outgrowing_floor`: the clamp only binds when a
+    calibration sample spikes, which no deterministic run reproduces, so without a helper the
+    only thing that ever exercises it is the flaky host it exists to protect against.
+    """
+    observed_slowest = max(samples)
+    typical = statistics.median(samples)
+    basis = min(observed_slowest, typical * PROBE_CALIBRATION_SPIKE_RATIO)
+    return basis, observed_slowest, typical, basis < observed_slowest
 
 
 @pytest.mark.django_db(transaction=True)
@@ -300,12 +354,20 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
     absolute budget above is therefore generous rather than lucky, and it stays absolute
     because that is the unit an attacker measures in.
 
-    HOW TO READ A RED HERE — none of these mean "re-run it":
-    * SPREAD OVER BUDGET while every case sat at the floor: a real, observable timing
-      difference has been introduced between the three cases. This is the finding the test
-      exists for.
+    HOW TO READ A RED HERE:
+    * SPREAD OVER BUDGET, one case sitting more than that same budget past the floor: the
+      padding is being OUTRUN — that branch does more work than the floor can hide. This is
+      the finding the test exists for, and the message names the branch.
     * `min(medians)` BELOW the floor: the padding did not run. The equalisation is gone, not
       merely degraded.
+    * SPREAD OVER BUDGET while the null control reads comparable noise: the run could not
+      resolve a difference that fine. The verdict still stands — the null control never
+      excuses a failure — but the message says so, and a repeat on a quiet host is what turns
+      it into a finding. This probe used to assert "a real difference introduced inside the
+      padded window" in exactly this situation, which is both unsound and, once the diagnosis
+      and the verdict are held to one basis, arithmetically impossible: `min(medians) >=
+      floor` plus an over-budget spread forces some case past the floor by at least the
+      budget. Two reviewers lost time to that sentence on unmodified code.
     * SKIPPED, "the host slowed after calibration": before reporting a spread the probe
       re-measures the very branch it calibrated from. If that branch now costs more than the
       whole floor, the host is demonstrably slower than when the floor was provisioned, the
@@ -377,10 +439,27 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
         # already gone by the time the probe runs: on a host degrading under parallel load,
         # `min` calibration produced floors the eligible branch then overran, which reads as
         # an oracle and is really just a floor provisioned from an optimistic sample.
+        #
+        # ...but the `max` is SANITY-CHECKED AGAINST THE MEDIAN of the same samples before it
+        # is trusted, because `max` cannot tell a sustained slowdown from one descheduled
+        # sample and the two want opposite treatment. Under a real slowdown the samples move
+        # together, `max ~= median`, and the clamp does not bind. Under a spike it binds, and
+        # it has to: an inflated floor propagates into every quantity derived from
+        # `slowest_branch`, and the one that matters is the recalibration escape hatch below
+        # — its threshold is `slowest_branch * PROBE_FLOOR_MULTIPLE`, so an inflated
+        # calibration makes the benign explanation for a red unreachable precisely on the
+        # noisy hosts where it is the true one. That is the mechanism behind the false reds
+        # this replaces, not a hypothetical.
         settings.ACCOUNT_RESEND_MIN_SECONDS = 0.0
-        slowest_branch = max(
+        calibration = [
             timed_resend(f"cal{i}@timing.example") for i in range(calibration_samples)
-        )
+        ]
+        (
+            slowest_branch,
+            observed_slowest,
+            typical_branch,
+            calibration_spiked,
+        ) = calibration_basis(calibration)
         floor = slowest_branch * PROBE_FLOOR_MULTIPLE
         if floor > PROBE_MAX_FLOOR_SECONDS:
             pytest.skip(
@@ -409,7 +488,10 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
 
         medians = {case: statistics.median(values) for case, values in timings.items()}
         report = {c: round(v * 1000, 1) for c, v in medians.items()}
-        outgrew = sorted(c for c, m in medians.items() if m > floor * PROBE_FLOOR_FIT_TOLERANCE)
+        # SAME BASIS AS THE VERDICT — an absolute margin, not a ratio of the floor. See the
+        # constant: a relative diagnosis under an absolute verdict is what let this probe
+        # report "every case sat at the floor" about a case sitting 150ms past it.
+        outgrew = cases_outgrowing_floor(medians, floor)
         # NULL CONTROL, free and measured in the same run under the same load: `unknown` and
         # `verified` are not merely similar, they are the SAME code path — both land in the
         # `not eligible` branch. Whatever separates their medians is therefore instrument
@@ -437,36 +519,80 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
         # the floor and the padding stops equalising, which is indistinguishable from a leak
         # when you only look at the three cases. Re-measuring the same branch settles it: a
         # branch that now costs more than the entire floor means the machine moved, not the
-        # code. `min` of the fresh samples against the `max` the floor was built from, so only
-        # a real, sustained slowdown counts — not one unlucky sample.
+        # code.
+        #
+        # LIKE FOR LIKE, and this is the second half of the false-red fix. This used to take
+        # `min` of the fresh samples and compare it against a `max`-derived threshold — "so
+        # only a real, sustained slowdown counts". That is two different statistics either
+        # side of one comparison, and both choices lean the same way: away from skipping.
+        # Under bursty load the fresh `min` catches whichever sample the scheduler happened to
+        # leave alone, so the branch reads fast even while its median has tripled, and the
+        # escape hatch cannot fire. Observed directly while reworking this probe: all three
+        # cases sat ~330ms past a 668ms floor — the padding plainly outrun by a host under
+        # load 23 — and the probe still reported an oracle. Recalibrating through the SAME
+        # `calibration_basis` makes it a comparison of the machine's honest worst case, then
+        # against now, and the clamp stops one stalled sample skipping the probe just as it
+        # stops one setting the floor.
+        #
+        # Note what this deliberately does NOT swallow: it re-measures the ELIGIBLE branch
+        # specifically, so a leak in a branch the floor was NOT calibrated from still fails
+        # loudly — including the Remedy B inversion signature, where the two `not eligible`
+        # branches are the expensive ones and the eligible branch stays fast. The case this
+        # does hand off is the eligible branch itself growing, which is the KNOWN LIMIT above
+        # and belongs to the sibling headroom test.
         if spread >= PROBE_SPREAD_BUDGET_SECONDS:
             settings.ACCOUNT_RESEND_MIN_SECONDS = 0.0
-            recalibrated = min(
-                timed_resend(f"recal{i}@timing.example") for i in range(calibration_samples)
+            recalibrated, recal_observed, recal_typical, recal_spiked = calibration_basis(
+                [timed_resend(f"recal{i}@timing.example") for i in range(calibration_samples)]
             )
             if recalibrated > slowest_branch * PROBE_FLOOR_MULTIPLE:
                 pytest.skip(
                     f"host slowed after calibration: the branch the {floor * 1000:.0f}ms floor "
                     f"was provisioned from cost {slowest_branch * 1000:.0f}ms then and "
-                    f"{recalibrated * 1000:.0f}ms now, so it no longer fits inside its own "
-                    f"floor and the padding was defeated by the machine, not by the code. "
+                    f"{recalibrated * 1000:.0f}ms now (median {recal_typical * 1000:.0f}ms, "
+                    f"slowest {recal_observed * 1000:.0f}ms"
+                    f"{', clamped' if recal_spiked else ''}), so it no longer fits inside its "
+                    f"own floor and the padding was defeated by the machine, not by the code. "
                     f"Measured {report}, outgrown by {outgrew or 'none'}. Nothing is claimed "
                     f"about the code either way; re-run on a quieter host."
                 )
         assert spread < PROBE_SPREAD_BUDGET_SECONDS, (
             f"response time distinguishes the three cases (spread {spread * 1000:.1f}ms "
             f"against a {PROBE_SPREAD_BUDGET_SECONDS * 1000:.0f}ms budget): {report}, at a "
-            f"calibrated {floor * 1000:.0f}ms floor. The two same-code-path cases (unknown "
-            f"vs verified) differed by {instrument_noise * 1000:.1f}ms, which is this run's "
-            f"instrument noise — compare it against the spread before reading anything into "
-            f"the number"
+            f"calibrated {floor * 1000:.0f}ms floor"
             + (
-                f". {outgrew} outgrew the floor while the host stayed the speed it was "
-                f"calibrated at, so that branch is doing more work than the floor can hide — "
-                f"raise ACCOUNT_RESEND_MIN_SECONDS or make the branch cheaper."
+                f" (clamped: calibration's slowest sample was {observed_slowest * 1000:.0f}ms "
+                f"against a {typical_branch * 1000:.0f}ms median, i.e. a spike rather than a "
+                f"slow host, so the floor was provisioned from the clamp)"
+                if calibration_spiked
+                else ""
+            )
+            + f". The two same-code-path cases (unknown vs verified) differed by "
+            f"{instrument_noise * 1000:.1f}ms, which is this run's instrument noise"
+            + (
+                f" — NOT FINER THAN the spread being reported "
+                f"(x{spread / instrument_noise:.1f}, under the "
+                f"x{PROBE_NOISE_RESOLVABLE_MULTIPLE:.0f} this probe needs to resolve one). "
+                f"This run could not tell this spread from weather, so read it as a noisy "
+                f"host first: re-run on a quiet machine and treat a repeat as the finding."
+                if instrument_noise > 0
+                and spread < instrument_noise * PROBE_NOISE_RESOLVABLE_MULTIPLE
+                else f", comfortably finer than the spread, so the spread is resolvable "
+                f"signal rather than weather."
+            )
+            + (
+                f" {outgrew} sat more than the same "
+                f"{PROBE_FLOOR_FIT_TOLERANCE_SECONDS * 1000:.0f}ms past the floor, so the "
+                f"floor is not covering that branch's work. That is the padding being "
+                f"OUTRUN, which is not the same finding as a leak inside it: either the host "
+                f"slowed since calibration (the recalibration check above says it did not) "
+                f"or that branch now does more work than the floor can hide — raise "
+                f"ACCOUNT_RESEND_MIN_SECONDS or make the branch cheaper."
                 if outgrew
-                else ". Every case sat at the floor, so this is a real difference introduced "
-                "inside the padded window."
+                else " No case sat more than the budget past the floor, which cannot happen "
+                "alongside an over-budget spread once `min(medians) >= floor` has been "
+                "asserted: treat this as a defect in the probe's own arithmetic, not as a "
+                "finding about the service."
             )
         )
         # The sending path really ran: `samples` probe sends plus the calibration sends. A
@@ -474,6 +600,100 @@ def test_response_timing_does_not_distinguish_the_three_cases(client, settings):
         assert len(slow.verify_tokens) == samples + calibration_samples
     finally:
         services.set_email_sender(services.EmailSender())
+
+
+# The floors two reviewers actually calibrated to on loaded hosts, plus the ~300ms a quiet dev
+# machine reaches. 300ms is the ONLY one where a 10%-of-floor diagnosis and a 30ms verdict
+# agree, which is exactly why the defect below survived being written, reviewed and run.
+@pytest.mark.parametrize("floor", [0.300, 0.900, 1.640, 1.813])
+def test_the_probe_diagnoses_an_over_budget_spread_on_the_same_basis_it_judges_it(floor):
+    """The probe's verdict is ABSOLUTE (30ms of spread). Its diagnosis — "did this case sit at
+    the floor, or outgrow it?" — must be the same quantity, or the two disagree and the probe
+    reports something untrue about its own numbers.
+
+    THE DEFECT THIS PINS, which shipped and cost two reviewers real time: the diagnosis was
+    `median > floor * 1.10`, a RATIO. Against a 30ms absolute verdict the two coincide only
+    near a 300ms floor. At the 1640ms floor one reviewer's loaded host calibrated to, a case
+    could sit 150ms past the floor — five times the entire spread budget — and still be
+    classified as having "sat at the floor", at which point the probe asserted the difference
+    was "a real difference introduced inside the padded window". It was not: the padding was
+    being outrun. One reviewer went hunting a service defect that did not exist.
+
+    WHY A SEPARATE TEST. The probe reaches that classification only on a red, only on a loaded
+    host, at whatever floor that host happened to calibrate to. Nothing deterministic ever
+    executed it, so the basis mismatch was invisible to the suite — the probe was green on the
+    machine where the two bases agree. This runs the same rule directly, at the floors real
+    hosts produce, with no timing involved at all.
+    """
+    budget = PROBE_SPREAD_BUDGET_SECONDS
+    # The tightest legal shape at the moment of failure: the fastest case sits exactly on the
+    # floor (`min(medians) >= floor` is asserted before the spread is read) and the spread has
+    # just crossed the budget. Some case is therefore a full budget past the floor.
+    medians = {"unknown": floor, "verified": floor, "unverified": floor + budget * 1.001}
+    spread = max(medians.values()) - min(medians.values())
+    assert spread >= budget, "premise: this fixture must be a FAILING spread, or it pins nothing"
+
+    outgrew = cases_outgrowing_floor(medians, floor)
+    assert outgrew == ["unverified"], (
+        f"at a {floor * 1000:.0f}ms floor the probe judged a {spread * 1000:.1f}ms spread to "
+        f"be over its {budget * 1000:.0f}ms budget, yet its diagnosis did not name the case "
+        f"sitting that same {budget * 1000:.0f}ms past the floor (got {outgrew}). Verdict and "
+        f"diagnosis are on different bases, so the failure message will claim the difference "
+        f"arose INSIDE the padded window when the padding was in fact outrun."
+    )
+
+    # POSITIVE CONTROL. Without this the assertion above is satisfied by a rule that flags
+    # every case unconditionally — "outgrew" would be indistinguishable from a dead rule that
+    # always fires, and the message would misdiagnose in the opposite direction instead.
+    settled = {"unknown": floor, "verified": floor + budget * 0.4, "unverified": floor + budget * 0.9}
+    assert max(settled.values()) - min(settled.values()) < budget, (
+        "premise: this fixture must be a PASSING spread, or the control below proves nothing"
+    )
+    assert cases_outgrowing_floor(settled, floor) == [], (
+        f"at a {floor * 1000:.0f}ms floor three cases that all sat within the spread budget "
+        f"of the floor were reported as having outgrown it "
+        f"({cases_outgrowing_floor(settled, floor)}); the rule fires unconditionally and "
+        f"diagnoses nothing"
+    )
+
+
+def test_one_calibration_spike_cannot_set_the_probes_floor():
+    """`max` provisions the floor, and `max` cannot tell a slow host from one stalled sample.
+
+    WHY THIS MATTERS BEYOND AN OVER-SIZED FLOOR. The floor is only the first thing derived
+    from the calibration basis; the second is the recalibration escape hatch, which skips the
+    probe when the branch it calibrated from no longer fits inside its own floor. That
+    threshold is `basis * PROBE_FLOOR_MULTIPLE`. Inflate the basis with a spike and the escape
+    hatch rises with it, so the ONE benign explanation for a red becomes least reachable
+    exactly on the noisy hosts where it is most likely to be the true one. A performance
+    reviewer identified that as the mechanism behind the false reds on unmodified code.
+
+    The clamp must therefore bite on a spike and stay out of the way otherwise — a slow host
+    is a real measurement and must still raise the floor.
+    """
+    # A spike: three honest samples around 300ms, one stalled sample 4x that.
+    basis, observed, typical, spiked = calibration_basis([0.30, 0.31, 0.29, 1.20])
+    assert spiked, (
+        f"a 1200ms sample among ~300ms ones was accepted as the machine's honest worst case "
+        f"(basis {basis * 1000:.0f}ms, median {typical * 1000:.0f}ms); one stalled sample "
+        f"still sets the floor and inflates the recalibration escape hatch with it"
+    )
+    assert basis < observed, "the clamp reported itself as binding but did not lower the basis"
+    assert basis == pytest.approx(typical * PROBE_CALIBRATION_SPIKE_RATIO), (
+        "a bound basis must be the median-derived clamp, not some other number"
+    )
+
+    # POSITIVE CONTROL — a genuinely slow host, where every sample moved together. The clamp
+    # MUST NOT bind here: without this the assertions above are satisfied by a clamp that
+    # always fires, which would cap the floor on real slow hardware and reintroduce the
+    # optimistic-floor false red the `max` was chosen to prevent in the first place.
+    basis, observed, typical, spiked = calibration_basis([1.15, 1.20, 1.18, 1.22])
+    assert not spiked, (
+        f"four samples within 7% of each other were treated as a spike (basis "
+        f"{basis * 1000:.0f}ms vs observed {observed * 1000:.0f}ms); the clamp fires "
+        f"unconditionally and a genuinely slow host would be given a floor too low for it"
+    )
+    assert basis == observed == 1.22, "an unspiked calibration must keep its measured maximum"
 
 
 # --- the floor is a floor, not a ceiling ------------------------------------------------
