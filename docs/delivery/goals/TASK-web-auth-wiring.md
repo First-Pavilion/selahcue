@@ -110,7 +110,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-015 | yes | The headless suite did not shrink; its floor was raised to the new count | `npm run test:states` | exits 0, not 4 | floor 495 → 1384; 49 scenarios, 1384 checks | PASS |
 | C-016 | yes | No wait in the request path is unbounded — a hung CSRF bootstrap still resolves to an honest state | `npm test` | exits 0; the call settles within its own deadline and the mutation still runs | `tests/accountApi.test.ts`: `a hung bootstrap is bounded and the mutation still gets its answer` | PASS |
 | C-017 | yes | The enumeration probe gates five channels — copy, whole-page text, request sequence, colour, and DOM attributes — and each is mutation-verified to be the sole catcher of its own channel | `npm run test:states` | exits 0; 15 `PASS [enumeration]` lines | 3 groups × 5 gated facets; one mutation per group isolated exactly one facet | PASS |
-| C-018 | yes | The timing channel is covered by a deterministic control whose scope is stated, and the noisy measurement is reported rather than gated | `npm test` | exits 0; no timer, address inspection or address literal in the three views | `tests/authViews.test.ts` (mutation-verified, with an anti-vacuity guard and a positive control on its own regexes); `INFO [enumeration] … (elapsed)` printed each run | PASS |
+| C-018 | yes | The timing channel is covered by a deterministic control whose scope is stated, and the noisy measurement is reported rather than gated | `npm test` | exits 0; no timer, address inspection or address literal anywhere on the auth path, **including inside bound attributes** | `tests/authViews.test.ts` (mutation-verified, proportional anti-vacuity floor + per-export anchors, positive control on its own regexes); `INFO [enumeration] … (elapsed)` printed each run | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -134,6 +134,11 @@ the first four were blind to, after they had all been mutation-verified. Known l
   it instead has to prove every timer is armed from a deadline constant, and that it
   contains no reference to an email address at all. Anything outside that list — a new
   component, a new module — is not covered until it is added.
+- **The client does hold one piece of registration-adjacent knowledge: the address the
+  user typed.** That is precisely why the address-inspection ban is load-bearing rather
+  than decorative, and why a strip that blinded it to bound attributes was a real hole
+  rather than a cosmetic one. The bullet that used to sit here claimed the client held
+  nothing to branch on; that was wrong, and a one-line `:placeholder` proved it.
 - **The strongest guarantee on timing is structural, not a test.** The server equalises the
   branches itself — `check_password` against `_DUMMY_PASSWORD_HASH` on the unknown-email
   path, and a dummy-PBKDF2 pad in `request_password_reset` — and its responses to the two
@@ -254,6 +259,55 @@ the first four were blind to, after they had all been mutation-verified. Known l
   the first one that survived two rounds of my own mutation testing before an independent
   reviewer broke it. The lesson recorded in the contract is that mutation-verifying each
   facet proves each facet, and proves nothing about whether the SET is complete.
+- Decision: complete
+
+### Iteration 7 — code review (Cody): the guard set is the deliverable, and it had a hole
+
+- Target criterion: C-017, C-018, and two claims written in this contract that were false
+- Change or investigation:
+  - **HIGH-1, and it was mine twice over.** `SIGNED_ATTRS` omitted `placeholder`, and
+    `innerText` excludes attribute text — so attribute-borne TEXT was unsigned. Worse, the
+    strip I added to `authViews.test.ts` so the constant `placeholder="you@yourchurch.org"`
+    would not trip `fullAddress` had no leading boundary, so it also matched the BOUND form
+    `:placeholder="…"` and removed it before the ban could look inside. One line —
+    `:placeholder="email.startsWith('nobody') ? 'This address has no account' : '…'"` —
+    passed all fifteen facets and `npm test`, putting a sentence stating registration
+    status on screen. Signed `placeholder`/`title`/`alt`/`value` plus `document.title`
+    (which lives in `<head>`, outside the facet's walk), and narrowed the strip to static
+    placeholders only.
+  - **MEDIUM-1.** The `<ID>` collapse ran over every signed attribute including `class`,
+    and `/field-[a-z0-9]+/` matches `field-error` (red) and `field-hint` (muted) — both
+    shipping in `FormField.vue`. Identical copy in two different colours normalised to the
+    same string. Scoped the collapse to ID-referencing attributes only and anchored the
+    pattern to `FormField`'s generator shape (7-9 base36 characters), so a semantic class
+    name cannot match it even there.
+  - **MEDIUM-2.** The email mask was unanchored and greedy over `/` and `?`, so
+    `/signin?u=a@b.com` and `/support?u=a@b.com` both collapsed to `<EMAIL>` —
+    re-encoding the exact address-keyed-`href` leak the facet was created to catch.
+    Restricted the local part to characters that cannot appear in a path separator.
+  - **LOW-1 / LOW-2.** The transport's address test had no `codeIsIntact` call, and
+    `codeIsIntact`'s floor was ABSOLUTE (`length > 150` — 1.3% of `SignUpView.vue`), so it
+    could not notice an over-strip removing 95% of a file. Replaced with a proportional
+    floor (22%, against measured real ratios of 30.2%-65.8%) plus a per-export anchor, so
+    a deletion that takes out the top of a file is named rather than merely measured.
+  - **LOW-3.** Two comments overclaimed against the code directly beneath them: "every
+    timer is armed from a module CONSTANT" (the whitelist permits `options.timeoutMs`, and
+    one timer uses it) and "a transport that cannot name an address cannot branch on
+    registration status" (it receives the address in `variables` and the outcome in
+    `envelope.errors`, so it could branch on either without writing "email"). Both
+    corrected to what the assertions actually buy. The address-inspection ban now also
+    covers the auth-path modules, closing the `account.ts` gap.
+- Verifier executed: Cody's three mutations, one per equivalence group.
+- Result: all three FAIL, each caught by `attrs` alone — `placeholder=This address has no
+  account`, `href=/signin?u=<EMAIL>` versus `href=/support?u=<EMAIL>` with the path now
+  surviving the mask, and `field-error` versus `field-hint`. The placeholder leak was
+  caught independently by the un-blinded inspection ban in `npm test`. His comment-strip
+  regression is caught by the proportional floor at his exact number: 14.6% (2190/15041).
+  All mutants reverted; views byte-identical to the commit.
+- New evidence: this is the fourth guard on this branch that read broader than it was, and
+  the second where MY OWN accommodation created the hole — the placeholder strip was added
+  to stop a false positive and silently removed a true one. An exception carved into a
+  guard to make it pass is the thing to re-examine first.
 - Decision: complete
 
 ## Risks and rollback

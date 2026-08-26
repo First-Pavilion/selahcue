@@ -69,18 +69,46 @@ function codeOnly(view: string): string {
  * the stripped text still contains the view's real machinery.
  */
 function codeIsIntact(name: string, code: string): void {
+  const raw = source(name)
+
   if (name.endsWith('.vue')) {
     // A component's proof of life is its template. `AuthShell.vue` is pure markup — its
     // `<script setup>` holds nothing but the comment explaining the design — so requiring
     // a declaration there would fail on a file that is entirely correct.
     assert.ok(code.includes('<template>'), `${name}: stripping removed the template`)
-  } else {
-    assert.ok(
-      /\b(function|const|export)\b/.test(code),
-      `${name}: stripping removed the script`,
-    )
   }
-  assert.ok(code.length > 150, `${name}: stripping left only ${code.length} chars`)
+
+  /**
+   * PROPORTIONAL, not absolute.
+   *
+   * The floor used to be `length > 150`, which is 1.3% of `SignUpView.vue` — it could not
+   * notice an over-strip that removed 95% of a file, which is exactly the failure it was
+   * written to catch. Cody demonstrated a lazy→greedy comment-strip regression that left
+   * 2,190 of `graphql.ts`'s 15,041 raw characters (14.6%) with every assertion still
+   * passing.
+   *
+   * Measured ratios across the twelve guarded files run 30.2% (`sessionStore.ts`) to
+   * 65.8% (`SignUpView.vue`) — these files are heavily commented, which is why the
+   * absolute floor looked adequate. 22% sits below every real value and well above the
+   * 14.6% regression.
+   */
+  const ratio = code.length / raw.length
+  assert.ok(
+    ratio >= 0.22,
+    `${name}: stripping left ${(ratio * 100).toFixed(1)}% of the file ` +
+      `(${code.length}/${raw.length}) — the comment strip has over-matched`,
+  )
+
+  /**
+   * And an anchor per exported symbol, because a proportional floor still cannot say
+   * WHICH part went missing. Cody's regression lost "everything above `graphqlRequest`";
+   * every export declared in the raw file must survive the strip, so a deletion that
+   * takes out the top of a file is named rather than merely measured.
+   */
+  const exported = [...raw.matchAll(/export\s+(?:async\s+)?(?:function|const|class|interface|type)\s+(\w+)/g)]
+  for (const [, symbol] of exported) {
+    assert.ok(code.includes(symbol), `${name}: stripping removed the export \`${symbol}\``)
+  }
 }
 
 describe('no auth view can fake, delay or vary an outcome', () => {
@@ -124,8 +152,18 @@ describe('no auth view can fake, delay or vary an outcome', () => {
     const comparison = new RegExp(`\\b(?:${ADDRESS_REFS})(?:\\.value)?\\s*[=!]==?\\s*['"\`]`, 'i')
     const fullAddress = /@[\w.-]+\.(com|org|test|net)['"\`]/
 
-    for (const view of VIEWS) {
-      const text = codeOnly(view).replace(/placeholder="[^"]*"/g, '')
+    for (const view of [...VIEWS, ...AUTH_PATH_MODULES]) {
+      // STATIC placeholders only — note the required whitespace before the attribute name.
+      //
+      // This strip exists so the constant `placeholder="you@yourchurch.org"` does not trip
+      // `fullAddress`. The previous pattern had no leading boundary, so it also matched the
+      // BOUND form `:placeholder="…"` and removed it before the ban could look inside.
+      // Cody's one-line leak lived in exactly that blind spot:
+      //
+      //   :placeholder="email.startsWith('nobody') ? 'This address has no account' : '…'"
+      //
+      // A sentence stating registration status, on screen, invisible to every guard.
+      const text = codeOnly(view).replace(/(^|\s)placeholder="[^"]*"/g, '$1 ')
       codeIsIntact(view, text)
       assert.ok(!inspection.test(text), `${view} inspects an email address as a string`)
       assert.ok(!comparison.test(text), `${view} compares an email address to a literal`)
@@ -180,8 +218,14 @@ describe('the transport seam', () => {
   test('its timers are deadlines, not delays', () => {
     // `graphql.ts` is the one module on this path that legitimately uses `setTimeout`:
     // the request deadline and the CSRF bootstrap deadline. It cannot join the blanket
-    // ban, so it gets the assertion that actually matters — every timer here is armed
-    // from a module CONSTANT, never from anything a caller supplied.
+    // ban, so it gets the assertion that actually matters instead.
+    //
+    // PRECISELY WHAT THIS ASSERTS, because the comment used to overclaim: every timer is
+    // armed from a module constant OR from `options.timeoutMs`, the caller-supplied
+    // per-request deadline — which the whitelist below explicitly permits and which timer
+    // [1] actually uses. Saying "never from anything a caller supplied" was wrong about
+    // the code directly beneath it. What is excluded is a delay computed from anything
+    // else, which is the shape a timing oracle would take.
     const text = codeOnly(TRANSPORT)
     codeIsIntact(TRANSPORT, text)
 
@@ -202,11 +246,19 @@ describe('the transport seam', () => {
     }
   })
 
-  test('it knows nothing about email addresses', () => {
-    // The strongest control available for a generic transport: it cannot branch on
-    // registration status because it has no concept of an address to branch on. If this
-    // ever fails, something has taught the transport layer who the user is.
+  test('it never names an email address', () => {
+    // WHAT THIS DOES AND DOES NOT BUY — the earlier version of this comment oversold it.
+    //
+    // It does NOT prove the transport cannot branch on registration status.
+    // `graphqlRequest` is handed the address inside `variables` and the outcome inside
+    // `envelope.errors`, so it could branch on either without ever writing the word
+    // "email". The honest claim is narrower: it cannot branch on WHO THE USER IS BY NAME,
+    // and a generic transport that starts naming a domain concept is a signal worth
+    // catching early. Cheap, exact, and worth keeping for that — but the real guarantee
+    // on this channel is structural and lives in the API, not here: the server equalises
+    // the branches itself and never tells the client which one occurred.
     const text = codeOnly(TRANSPORT)
-    assert.ok(!/\bemail\b/i.test(text), 'the transport seam references an email address')
+    codeIsIntact(TRANSPORT, text)
+    assert.ok(!/\bemail\b/i.test(text), 'the transport seam names an email address')
   })
 })

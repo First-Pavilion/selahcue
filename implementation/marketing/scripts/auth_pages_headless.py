@@ -313,6 +313,49 @@ DRIVER = r"""
 
   function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
+  var SIGNED_ATTRS = [
+    'href', 'target', 'rel', 'disabled', 'type', 'name', 'role', 'class', 'checked',
+    'autocomplete', 'aria-invalid', 'aria-busy', 'aria-live', 'aria-pressed',
+    'aria-label', 'aria-hidden', 'aria-describedby', 'aria-current', 'tabindex',
+    // Attribute-borne TEXT. Added after Cody demonstrated the channel with one line:
+    //
+    //   :placeholder="email.startsWith('nobody') ? 'This address has no account' : '…'"
+    //
+    // `innerText` excludes attribute text, so `card` and `page` were blind to it, and
+    // `placeholder` was not signed here — so a sentence stating registration status, on
+    // screen, passed all fifteen facets. `title` and `alt` are the same shape and are
+    // signed for the same reason rather than waiting to be demonstrated separately.
+    'placeholder', 'title', 'alt', 'value'
+  ];
+
+  /**
+   * Attributes whose value is an ID REFERENCE, and therefore the only ones that may have
+   * generated ids collapsed out of them.
+   *
+   * MEDIUM-1: the collapse used to run over every signed attribute, `class` included, and
+   * `/field-[a-z0-9]+/` matches real semantic class names — `field-error` (red) and
+   * `field-hint` (muted) both ship in `FormField.vue`. So two branches differing only in
+   * those classes — identical copy, one red and one muted — normalised to the same string
+   * and passed. Scoped to the attributes that actually carry a generated id.
+   */
+  var ID_REF_ATTRS = { 'aria-describedby': 1, 'aria-labelledby': 1, 'aria-controls': 1 };
+
+  /**
+   * `FormField.vue`'s generator: `'field-' + Math.random().toString(36).substr(2, 9)`.
+   * Anchored to that shape — 7-9 base36 characters — rather than to any `field-` token,
+   * so `field-error` cannot match it even where the collapse does apply.
+   */
+  var GENERATED_ID = /field-[a-z0-9]{7,9}\b/g;
+
+  /**
+   * MEDIUM-2: the old mask was `[^\s@]+@[^\s@]+\.[^\s@]+`, which is unanchored and
+   * greedy over `/` and `?`, so `/signin?u=a@b.com` collapsed to `<EMAIL>` — erasing the
+   * DESTINATION along with the address and re-encoding the exact leak this facet was
+   * built to catch. The local part is restricted to characters that cannot appear in a
+   * path or query separator, so the surrounding URL survives.
+   */
+  var EMAIL_IN_VALUE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+
   /**
    * Record normalised text for cross-scenario comparison.
    *
@@ -323,7 +366,7 @@ DRIVER = r"""
    */
   function record(key, value) {
     var masked = String(value)
-      .replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, '<EMAIL>')
+      .replace(EMAIL_IN_VALUE, '<EMAIL>')
       .replace(/\s+/g, ' ')
       .trim();
     records.push(key + ' :: ' + masked);
@@ -414,12 +457,6 @@ DRIVER = r"""
    * field described? is that control disabled?) while discarding the randomness. Email
    * addresses are masked for the same reason the text facets mask them.
    */
-  var SIGNED_ATTRS = [
-    'href', 'target', 'rel', 'disabled', 'type', 'name', 'role', 'class', 'checked',
-    'autocomplete', 'aria-invalid', 'aria-busy', 'aria-live', 'aria-pressed',
-    'aria-label', 'aria-hidden', 'aria-describedby', 'aria-current', 'tabindex'
-  ];
-
   function attributeSignature() {
     var parts = [];
     var nodes = document.body ? document.body.querySelectorAll('*') : [];
@@ -432,13 +469,16 @@ DRIVER = r"""
       for (var a = 0; a < SIGNED_ATTRS.length; a += 1) {
         var attr = SIGNED_ATTRS[a];
         if (!node.hasAttribute(attr)) continue;
-        var value = String(node.getAttribute(attr))
-          .replace(/field-[a-z0-9]+/gi, '<ID>')
-          .replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, '<EMAIL>');
+        var value = String(node.getAttribute(attr));
+        if (ID_REF_ATTRS[attr]) value = value.replace(GENERATED_ID, '<ID>');
+        value = value.replace(EMAIL_IN_VALUE, '<EMAIL>');
         pairs.push(attr + '=' + value);
       }
       if (pairs.length) parts.push(node.tagName.toLowerCase() + '[' + pairs.join(',') + ']');
     }
+    // `document.title` lives in <head>, which this walk never reaches. Signed explicitly
+    // rather than left as the one attribute-borne string outside the facet's scope.
+    parts.push('title[' + String(document.title).replace(EMAIL_IN_VALUE, '<EMAIL>') + ']');
     return parts.join(' ');
   }
 
