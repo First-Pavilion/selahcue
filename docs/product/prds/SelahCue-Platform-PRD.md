@@ -154,6 +154,13 @@ This is the core deliverable. Product semantics for every status; the writer col
 
 **Legal transitions (exhaustive).** ISSUED→ACTIVATED (first activation) · ISSUED/ACTIVATED→EXPIRING (clock, FR-502) · EXPIRING→ACTIVATED (renewal, FR-509) · EXPIRING→EXPIRED (clock, FR-503) · EXPIRED→ACTIVATED (late renewal, FR-509; window per D1) · any non-terminal→SUSPENDED (FR-504) · SUSPENDED→its prior status (FR-510) · any→REVOKED (FR-505) · ACTIVATED/EXPIRING→CONVERTED (FR-506, D1) · EXPIRED/REVOKED/CONVERTED→ARCHIVED (FR-507). REVOKED and ARCHIVED are otherwise terminal. Any transition not listed is illegal and must be refused and audited.
 
+> **Implementation footnote (86ak5mn00, 2026-08-25) — how the two "any" clauses were read.** Read word for word, "any non-terminal→SUSPENDED" and "any→REVOKED" are wider than the terminality sentence that follows them, so the state machine had to settle two edges the list leaves ambiguous:
+>
+> - **`ARCHIVED→REVOKED` is refused** — the single departure from a literal reading. Terminality is taken as a by-name bound on a terminal status's *outbound* edges, which is how FR-505's own acceptance criterion already phrases it ("no mutation can leave REVOKED except ARCHIVED"). Granting ARCHIVED an outbound edge in the same breath as calling it terminal contradicts that, and ARCHIVED is never named as a *source* anywhere in §13. So REVOKED keeps exactly one exit (→ARCHIVED) and ARCHIVED is a sink.
+> - **`CONVERTED→SUSPENDED` is legal** — not a departure. CONVERTED is not named terminal, so the literal text grants it.
+>
+> Both are pinned in `implementation/api/tests/test_license_state_machine.py`, which transcribes this list literally and subtracts the one departure as a named exception, so any further divergence fails a test rather than accumulating quietly. **Product owner: confirm or correct the `ARCHIVED→REVOKED` refusal** — it is the only place the implementation knowingly narrows this list.
+
 ### EPIC-PL-A — Lifecycle writers (MVP)
 
 | ID | Requirement | Priority | Acceptance criteria | Trace |
