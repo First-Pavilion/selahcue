@@ -13,8 +13,11 @@ from __future__ import annotations
 
 from django.core.management.base import BaseCommand, CommandError
 
+from selahcue_api.apps.catalogue.management.commands._actor import (
+    default_idempotency_key,
+    staff_actor,
+)
 from selahcue_api.apps.catalogue.services import SetPlanGrantData, set_plan_grant
-from selahcue_api.graphql.context import ActorContext, ActorKind, StaffPermission
 from selahcue_api.graphql.errors import SafeAPIError
 
 
@@ -34,17 +37,12 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        idempotency_key = options["idempotency_key"] or (
-            f"cli-{options['plan']}-{options['dimension']}-{options['value']}"
-        )
-        actor = ActorContext(
-            kind=ActorKind.STAFF,
-            actor_id=options["actor"],
-            staff_permissions=frozenset({StaffPermission.GRANT_ENTITLEMENT}),
+        idempotency_key = options["idempotency_key"] or default_idempotency_key(
+            "cli-grant", options["plan"], options["dimension"], options["value"]
         )
         try:
             result = set_plan_grant(
-                actor,
+                staff_actor(options["actor"]),
                 SetPlanGrantData(
                     idempotency_key=idempotency_key,
                     plan_code=options["plan"],

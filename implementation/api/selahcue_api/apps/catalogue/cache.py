@@ -19,6 +19,11 @@ Two properties matter and they pull against each other:
 
 Deliberately per-process and in-memory: it holds resolved values only, is rebuilt from one
 query, and needs no cache backend to be correct.
+
+**Entries are shared across every tenant on a plan, so what goes in must be immutable.**
+Callers store a read-only mapping (`types.MappingProxyType`); a caller that then forgets to
+copy before applying one licence's overrides gets a `TypeError` instead of quietly writing
+that licence's entitlement into the entry every other org on the plan reads next.
 """
 
 from __future__ import annotations

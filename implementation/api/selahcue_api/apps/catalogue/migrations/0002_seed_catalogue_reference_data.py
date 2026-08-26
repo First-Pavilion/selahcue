@@ -12,8 +12,10 @@ hours to 8, is an UPDATE against a row. No code, no migration, no release (FR-54
 changes what a FRESH database gets while every already-migrated environment keeps the old
 row — the two silently diverge, and the difference shows up as a support ticket about a
 customer whose limits are wrong on one deployment only. Change the value the way an
-operator would: `manage.py set_plan_grant`, or an admin edit. This file describes the day
-the catalogue was created, not what it currently holds.
+operator would: `manage.py set_plan_grant`. (There is no Django admin in this project —
+`django.contrib.admin` is not installed and no `admin.py` exists — so the management
+commands in `apps/catalogue/management/commands/` are the operator surface.) This file
+describes the day the catalogue was created, not what it currently holds.
 
 **Dimension defaults are a deliberate, asymmetric safety policy.** A dimension's default
 applies when a plan declares no value for it — i.e. when a catalogue row is incomplete:
@@ -25,31 +27,39 @@ applies when a plan declares no value for it — i.e. when a catalogue row is in
     These cost money to serve; an unconfigured plan must not give them away.
 *   `watermark` defaults **on**, restrictive for the same reason — and a watermark degrades
     output, it never blanks it.
-*   `device_instances` defaults to **nothing at all** (empty). Absent and `unlimited` are
-    different states, and a plan that says nothing about seats must leave the key out of
-    the payload rather than publish a ceiling nobody chose. `AppLicenseKey.device_limit`
-    remains the number activation enforces and the one the manifest publishes.
+*   `device_instances` defaults to **nothing at all** (empty), and is additionally marked
+    `publish_in_manifest=False` so it never reaches the signed payload. Absent and
+    `unlimited` are different states, and more importantly nothing today reconciles a
+    plan's seat number with `AppLicenseKey.device_limit` — FR-516's write-back is specified
+    but not built. Publishing both would put two disagreeing seat numbers in one signed
+    artefact, and the payload has no way to mark one advisory. The ROW still exists, so
+    FR-516 and the portal can read it; only the wire is silent.
 """
 
 from django.db import migrations
 
-# (key, display_name, value_type, default_raw_value, sort_order, description)
+# (key, display_name, value_type, default_raw_value, publish_in_manifest, sort_order,
+#  description)
 DIMENSIONS = [
     (
         "device_instances",
         "Device instances (seats)",
         "INTEGER",
         "",
+        False,
         10,
         "Activated device instances a tier allows (DEC-004 AS-P8: a seat is a device "
-        "instance, not a separate licence key). Advisory: `AppLicenseKey.device_limit` is "
-        "what activation enforces, and FR-516's write-back is what keeps the two equal.",
+        "instance, not a separate licence key). NOT published to the manifest: "
+        "`AppLicenseKey.device_limit` is what activation enforces, and nothing reconciles "
+        "the two until FR-516's write-back is built. Kept as data for FR-516 and the "
+        "portal to read.",
     ),
     (
         "screen_outputs",
         "Screen / outputs",
         "INTEGER",
         "unlimited",
+        True,
         20,
         "Simultaneous screen outputs. What exactly counts as one output is AS-P9, still "
         "open in D1; the value is data, so closing AS-P9 changes rows, not code.",
@@ -59,6 +69,7 @@ DIMENSIONS = [
         "NDI outputs",
         "INTEGER",
         "0",
+        True,
         30,
         "Simultaneous NDI outputs. 0 means the feature is not granted.",
     ),
@@ -67,6 +78,7 @@ DIMENSIONS = [
         "Hosted STT minutes per period",
         "INTEGER",
         "0",
+        True,
         40,
         "Hosted speech-to-text minutes, pooled across the org's seats and reset each "
         "calendar month on the billing anniversary (AS-P6/AS-P7). Metering and the period "
@@ -78,6 +90,7 @@ DIMENSIONS = [
         "Watermark on output",
         "BOOLEAN",
         "true",
+        True,
         50,
         "True means output carries the SelahCue watermark.",
     ),
@@ -145,7 +158,15 @@ def seed(apps, _schema_editor):
     CatalogueRevision = apps.get_model("selahcue_catalogue", "CatalogueRevision")
 
     dimensions = {}
-    for key, display_name, value_type, default_raw, sort_order, description in DIMENSIONS:
+    for (
+        key,
+        display_name,
+        value_type,
+        default_raw,
+        publish_in_manifest,
+        sort_order,
+        description,
+    ) in DIMENSIONS:
         dimension, _created = GrantDimension.objects.get_or_create(
             key=key,
             defaults={
@@ -154,6 +175,7 @@ def seed(apps, _schema_editor):
                 "value_type": value_type,
                 "default_raw_value": default_raw,
                 "is_active": True,
+                "publish_in_manifest": publish_in_manifest,
                 "sort_order": sort_order,
             },
         )

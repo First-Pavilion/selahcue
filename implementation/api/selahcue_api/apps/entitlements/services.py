@@ -24,18 +24,33 @@ unmodified client already honours.
 else, because that is the number `activate_device` enforces. Two fields in one signed,
 offline-cached artefact disagreeing about the same quantity is worse than either being
 wrong: the client cannot tell which to trust, and the artefact outlives the disagreement.
+So the catalogue's own seat number is **not published at all** — its dimension carries
+`publish_in_manifest=False` — and it stays that way until something reconciles it with
+`device_limit`. There is no fourth grant state meaning "advisory, do not enforce", and a
+client cannot invent one, so silence is the only honest encoding.
+
 A dimension key absent from `grants` means the catalogue expresses nothing about it — the
 client applies its own default; `null` means granted without a ceiling. Those are three
 different states and the encoding keeps them apart.
+
+**A degraded read gets a short-lived manifest.** An unconfigured catalogue and a failed
+catalogue read both produce no grants, but only the first is a steady state. Minting the
+usual multi-year artefact from a transient error would let a two-second blip be honoured
+offline for the rest of the licence; a degraded manifest therefore expires in minutes and
+self-heals on the next refresh, and is audited so an operator can alert on it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
+
+import logging
 
 from django.utils import timezone
 
+from selahcue_api.apps.audit.models import AuditResult
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.catalogue.services import resolve_entitlement
 from selahcue_api.apps.devices.models import Device, DeviceStatus
@@ -57,7 +72,19 @@ from selahcue_api.graphql.redaction import assert_no_restricted_payload_fields
 # `grants` and `plan_display_label` were added under this rule and did NOT earn a bump.
 # `test_entitlement_manifest_grants.py` asserts the compatibility field by field, which is
 # what actually protects a deployed client — the number never did.
+logger = logging.getLogger(__name__)
+
 ENTITLEMENT_VERSION = 1
+
+# How long a manifest built from a FAILED catalogue read stays valid. Short on purpose:
+# long enough for the device to keep working through the incident (NFR-024 — never deny an
+# entitlement over server-side state), short enough that it self-heals on the next refresh
+# instead of freezing the blip into a multi-year offline credential.
+DEGRADED_MANIFEST_TTL_SECONDS = 900
+
+assert 0 < DEGRADED_MANIFEST_TTL_SECONDS < 86400, (
+    "a degraded manifest must outlive the incident but never approach a normal licence window"
+)
 
 
 @dataclass(frozen=True)
@@ -92,6 +119,20 @@ def build_entitlement_manifest(presented_token: str) -> EntitlementManifestResul
     # exactly the failure NFR-024 forbids.
     entitlement = resolve_entitlement(license_key)
 
+    # A degraded manifest still issues — refusing one would deny a live service over a
+    # server-side fault — but it must not outlive the fault.
+    artefact_expires_at = license_key.expires_at
+    if entitlement.degraded:
+        artefact_expires_at = min(
+            artefact_expires_at, now + timedelta(seconds=DEGRADED_MANIFEST_TTL_SECONDS)
+        )
+        logger.error(
+            "issuing a DEGRADED entitlement manifest for device %s: the catalogue could not "
+            "be read, so no grants are carried and the artefact expires in %ss",
+            device.device_public_id,
+            DEGRADED_MANIFEST_TTL_SECONDS,
+        )
+
     payload = {
         "entitlement_version": ENTITLEMENT_VERSION,
         "device_public_id": device.device_public_id,
@@ -107,20 +148,25 @@ def build_entitlement_manifest(presented_token: str) -> EntitlementManifestResul
         "plan_display_label": entitlement.plan_display_label,
         "territory": license_key.territory,
         "instances_used": instances_used,
-        # ALWAYS `device_limit` — the number `activate_device` actually enforces. The
-        # catalogue's view of a tier's seats travels in `grants` instead, and FR-516's
-        # write-back is what moves `device_limit` when a plan changes. Publishing a
-        # catalogue-derived number here would let one signed artefact promise seven seats
-        # while activation refuses the fourth, for the months that artefact stays cached.
+        # ALWAYS `device_limit` — the number `activate_device` actually enforces, and the
+        # ONLY seat number in this payload. The catalogue's `device_instances` grant is
+        # deliberately unpublished (`publish_in_manifest=False`) because nothing today
+        # reconciles it with this field: FR-516's write-back is specified but not built, so
+        # a licence on PLATINUM would otherwise carry "7 seats" beside an enforced 3 — one
+        # signed artefact promising seats the server refuses, for as long as it stays
+        # cached. Publish it only once a plan change actually moves `device_limit`.
         "instances_limit": license_key.device_limit,
         # The typed grant dimensions (FR-545). Keys come from catalogue rows, so a new
         # dimension appears here without a code change; a client reads the keys it knows
         # and applies its own default to anything absent, which is what makes a removed
         # grant degrade instead of failing.
-        "grants": entitlement.values,
+        # `dict(...)`, not the mapping itself: `published_values` is a read-only
+        # MappingProxyType (so a shared cache entry cannot be mutated) and `json.dumps`
+        # refuses one — the signer would raise at issuance rather than at import.
+        "grants": dict(entitlement.published_values),
         "issued_at": now.isoformat(),
         "not_before": license_key.starts_at.isoformat(),
-        "expires_at": license_key.expires_at.isoformat(),
+        "expires_at": artefact_expires_at.isoformat(),
     }
     # Run redaction HERE, on the mapping — this is the only layer where the payload is
     # still walkable. Against the envelope it would be theatre: the payload is by then an
@@ -136,7 +182,14 @@ def build_entitlement_manifest(presented_token: str) -> EntitlementManifestResul
         target_id=str(device.id),
         request_id=device.device_public_id,
         source_surface="desktop_v1",
-        after={"key_id": envelope["key_id"], "expires_at": payload["expires_at"]},
+        after={
+            "key_id": envelope["key_id"],
+            "expires_at": payload["expires_at"],
+            # Queryable, so a rise in degraded issuance is alertable rather than buried in
+            # a log line nobody greps for.
+            "degraded": entitlement.degraded,
+        },
+        result=AuditResult.FAILED if entitlement.degraded else AuditResult.SUCCESS,
     )
 
     return EntitlementManifestResult(

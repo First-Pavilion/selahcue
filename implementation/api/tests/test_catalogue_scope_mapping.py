@@ -57,13 +57,6 @@ PRE_CATALOGUE_LICENSES = [
 ]
 
 
-@pytest.fixture(autouse=True)
-def _cold_grant_cache():
-    GRANT_CACHE.clear()
-    yield
-    GRANT_CACHE.clear()
-
-
 def _migration():
     """The migration module, imported by name — its name starts with a digit, so this is
     `import_module` rather than an import statement."""

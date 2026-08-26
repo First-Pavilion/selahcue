@@ -44,10 +44,12 @@ from selahcue_api.apps.catalogue.models import (
 from selahcue_api.apps.catalogue.services import (
     DEFAULT_OVERRIDE_DAYS,
     SetLicenseGrantOverrideData,
+    SetLicensePlanAssignmentData,
     SetPlanGrantData,
     current_revision,
     resolve_entitlement,
     set_license_grant_override,
+    set_license_plan_assignment,
     set_plan_grant,
 )
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus, LicenseKeyType
@@ -68,15 +70,6 @@ SCREEN_KEY = "screen_outputs"
 NDI_KEY = "ndi_outputs"
 STT_KEY = "stt_minutes_per_period"
 WATERMARK_KEY = "watermark"
-
-
-@pytest.fixture(autouse=True)
-def _cold_grant_cache():
-    """The grant cache is a process-global; a neighbouring test's entries would otherwise
-    survive this test's database rollback and answer from a superseded world."""
-    GRANT_CACHE.clear()
-    yield
-    GRANT_CACHE.clear()
 
 
 def _org(tag):
@@ -135,7 +128,14 @@ def _staff(*permissions):
 
 
 def _assign(license_key, plan):
-    return LicensePlanAssignment.objects.create(license_key=license_key, plan=plan)
+    """Accountability columns supplied because the DATABASE requires them; the governed
+    path is `set_license_plan_assignment`, tested separately."""
+    return LicensePlanAssignment.objects.create(
+        license_key=license_key,
+        plan=plan,
+        assigned_by_actor_id="staff_ops_1",
+        reason="Catalogue slice tests.",
+    )
 
 
 def _override(license_key, dimension_key, raw_value, *, expires_at=None):
@@ -146,7 +146,7 @@ def _override(license_key, dimension_key, raw_value, *, expires_at=None):
         dimension=_dimension(dimension_key),
         raw_value=raw_value,
         granted_by_actor_id="staff_ops_1",
-        reason="Test override.",
+        reason="Test override for this case.",
         expires_at=expires_at,
     )
 
@@ -159,6 +159,40 @@ def _seeded_plan_names() -> set[str]:
         names.add(display_name.strip().casefold())
     names.discard("")
     return names
+
+
+# Modules that certainly contain branching logic. Naming them is the real breadth control:
+# a count can be cleared by empty files, but a named module either got scanned or did not.
+MUST_SCAN = frozenset(
+    {
+        "apps/catalogue/services.py",
+        "apps/catalogue/models.py",
+        "apps/catalogue/cache.py",
+        "apps/entitlements/services.py",
+        "apps/devices/services.py",
+        "apps/license_keys/services.py",
+        "graphql/admin_schema.py",
+        "platform/views.py",
+    }
+)
+
+
+def _is_substantive(path: Path) -> bool:
+    """Whether a module could actually host a tier-name branch.
+
+    `__init__.py`, migrations and `apps.py` are mostly empty or declarative, and there are
+    43 of them against 82 modules total — so a sweep that skipped every file able to contain
+    a branch would still clear a bare `scanned > 20`. Counting only modules with real
+    top-level definitions is what makes the count mean something.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except SyntaxError:  # pragma: no cover - a broken module is a different failure
+        return False
+    return any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.If))
+        for node in tree.body
+    )
 
 
 def _string_constants(path: Path) -> set[str]:
@@ -201,18 +235,31 @@ def test_no_plan_name_is_hardcoded_in_the_api_source():
     )
 
     offenders = []
-    scanned = 0
+    scanned = set()
     for path in sorted(API_ROOT.rglob("*.py")):
         if path == SEED_MIGRATION:
             continue
-        scanned += 1
+        scanned.add(path)
         for literal in plan_names & _string_constants(path):
             offenders.append(f"{path.relative_to(API_ROOT)}: {literal!r}")
 
-    # Second control, on the iteration rather than the scanner: a sweep that reaches almost
-    # no files reports "no offenders" for the wrong reason. The API has ~70 modules; 20 is
-    # a floor that a broken glob or an over-eager skip cannot clear.
-    assert scanned > 20, f"the sweep only visited {scanned} modules, so it proves nothing"
+    # Second control, on the ITERATION rather than the scanner: a sweep that reaches almost
+    # nothing reports "no offenders" for the wrong reason.
+    #
+    # Counted in modules that could actually hold a branch, not in files. Of 82 modules here,
+    # 43 are structurally empty — `__init__.py`, migrations, `apps.py` — so a skip that
+    # excluded every file capable of containing `plan.code == "PRO"` would still clear a
+    # plain file count. And named modules on top, because a count of any kind can be gamed
+    # by what it happens to include.
+    relative = {path.relative_to(API_ROOT).as_posix() for path in scanned}
+    missing = MUST_SCAN - relative
+    assert not missing, f"the sweep never visited these modules, so it proves nothing: {missing}"
+
+    substantive = sum(1 for path in scanned if _is_substantive(path))
+    assert substantive > 20, (
+        f"the sweep visited only {substantive} modules capable of holding a branch "
+        f"(of {len(scanned)} files), so it proves nothing"
+    )
 
     assert offenders == [], (
         "a plan name is hardcoded in the API source, which makes renaming a tier a code "
@@ -436,9 +483,14 @@ def test_unlimited_and_absent_are_different_states_with_different_encodings():
     assert SEAT_KEY not in resolved.values
 
 
-def test_a_plan_may_still_declare_unlimited_seats_and_it_is_representable():
-    """The seat dimension is an ordinary grant now, so `unlimited` means what it says
-    rather than silently meaning "defer to device_limit"."""
+def test_a_plan_may_declare_unlimited_seats_without_it_reaching_the_wire():
+    """`unlimited` means what it says SERVER-SIDE rather than silently meaning "defer to
+    device_limit" — and it still never reaches the signed payload.
+
+    This is the exact operator action that reproduced the original defect: `set_plan_grant
+    --plan PRO --dimension device_instances --value unlimited` used to emit
+    `grants.device_instances = null` (unlimited) beside `instances_limit = 3`. The value is
+    now resolved for FR-516 and the portal, and published to nobody."""
     plan = Plan.objects.get(code="PRO")
     PlanGrant.objects.filter(plan=plan, dimension=_dimension(SEAT_KEY)).update(
         raw_value="unlimited"
@@ -446,8 +498,12 @@ def test_a_plan_may_still_declare_unlimited_seats_and_it_is_representable():
     GRANT_CACHE.clear()
     key = _license_key(tag="unlimitedseats")
     _assign(key, plan)
-    values = resolve_entitlement(key).values
-    assert SEAT_KEY in values and values[SEAT_KEY] is None
+    resolved = resolve_entitlement(key)
+    assert SEAT_KEY in resolved.values and resolved.values[SEAT_KEY] is None
+    assert SEAT_KEY not in resolved.published_values, (
+        "the operator lever put an unlimited seat count on the wire beside the enforced "
+        "instances_limit — the original defect, reproduced through a pure data edit"
+    )
 
 
 # --- Bounds (repo bounded-memory rule) -----------------------------------------------------
@@ -881,3 +937,329 @@ def test_the_override_service_refuses_a_malformed_dimension_key(bad_key):
             ),
         )
     assert caught.value.code == ErrorCode.VALIDATION_FAILED
+
+
+# --- Cross-tenant isolation (the shared cache entry) ------------------------------------
+
+
+def test_one_licences_override_never_leaks_to_another_on_the_same_plan():
+    """The cache entry for a plan is PROCESS-GLOBAL and shared by every tenant on it.
+    Applying one licence's overrides into that entry, instead of into a copy, hands licence
+    A's exception to every other org on the plan — a cross-tenant entitlement leak."""
+    plan = Plan.objects.get(code="PRO")
+    org = _org("tenants")
+    tenant_a = _license_key(tag="tenanta", org=org)
+    tenant_b = _license_key(tag="tenantb", org=org)
+    _assign(tenant_a, plan)
+    _assign(tenant_b, plan)
+    _override(tenant_a, NDI_KEY, "99")
+
+    assert resolve_entitlement(tenant_a).values[NDI_KEY] == 99, (
+        "tenant A's override did not apply, so this test cannot detect it leaking"
+    )
+    assert resolve_entitlement(tenant_b).values[NDI_KEY] == 5, (
+        "tenant B inherited tenant A's per-licence override from the shared plan cache"
+    )
+    # Order-independent: resolving B first must not change the answer for A either.
+    GRANT_CACHE.clear()
+    assert resolve_entitlement(tenant_b).values[NDI_KEY] == 5
+    assert resolve_entitlement(tenant_a).values[NDI_KEY] == 99
+
+
+def test_the_shared_cache_entry_is_read_only():
+    """Structural, not disciplinary: a caller who forgets to copy gets a TypeError rather
+    than silently corrupting every other tenant's entitlement."""
+    from selahcue_api.apps.catalogue.services import _plan_grant_map
+
+    plan = Plan.objects.get(code="PRO")
+    grants = _plan_grant_map(plan, current_revision())
+    with pytest.raises(TypeError):
+        grants.values[NDI_KEY] = 99
+
+
+# --- Accountability is enforced by the database, not only by the service ------------------
+
+
+def test_a_bare_override_create_is_refused_without_an_actor_and_reason():
+    """The permission check, required reason and audit are worthless if the one path anybody
+    in a hurry takes — a shell `objects.create()` — walks straight past them."""
+    from django.db import IntegrityError, transaction
+
+    key = _license_key(tag="bareov")
+    for kwargs in (
+        {"granted_by_actor_id": "", "reason": "Long enough reason."},
+        {"granted_by_actor_id": "staff_ops_1", "reason": ""},
+        {"granted_by_actor_id": "staff_ops_1", "reason": "short"},
+    ):
+        with pytest.raises(IntegrityError):
+            with transaction.atomic():
+                LicenseGrantOverride.objects.create(
+                    license_key=key, dimension=_dimension(NDI_KEY), raw_value="3", **kwargs
+                )
+    assert LicenseGrantOverride.objects.count() == 0
+
+
+def test_a_bare_plan_assignment_create_is_refused_without_an_actor_and_reason():
+    """Moving a church between tiers must never be possible without a trace of who and why."""
+    from django.db import IntegrityError, transaction
+
+    key = _license_key(tag="bareassign")
+    plan = Plan.objects.get(code="PLATINUM")
+    for kwargs in (
+        {"assigned_by_actor_id": "", "reason": "Long enough reason."},
+        {"assigned_by_actor_id": "staff_ops_1", "reason": "short"},
+    ):
+        with pytest.raises(IntegrityError):
+            with transaction.atomic():
+                LicensePlanAssignment.objects.create(license_key=key, plan=plan, **kwargs)
+    assert LicensePlanAssignment.objects.filter(license_key=key).count() == 0
+
+
+def test_a_properly_attributed_write_is_still_accepted():
+    """Positive control: the constraints refuse anonymous writes, not all writes."""
+    key = _license_key(tag="attributed")
+    assignment = LicensePlanAssignment.objects.create(
+        license_key=key,
+        plan=Plan.objects.get(code="PRO"),
+        assigned_by_actor_id="staff_ops_1",
+        reason="Upgraded after the pilot concluded.",
+    )
+    assert LicensePlanAssignment.objects.filter(pk=assignment.pk).exists()
+
+
+# --- The governed assignment path ----------------------------------------------------------
+
+
+def test_set_license_plan_assignment_moves_the_plan_and_audits_it():
+    key = _license_key(tag="govassign")
+    before = AuditEvent.objects.filter(action="catalogue.license_plan_assigned").count()
+    result = set_license_plan_assignment(
+        _staff(StaffPermission.GRANT_ENTITLEMENT),
+        SetLicensePlanAssignmentData(
+            idempotency_key="catalogue-assign-1",
+            license_key_id=str(key.id),
+            plan_code="PLATINUM",
+            reason="Upgraded after the pilot concluded.",
+        ),
+    )
+    assert result.assignment.plan.code == "PLATINUM"
+    assert result.assignment.assigned_by_actor_id == "staff_ops_1"
+    assert AuditEvent.objects.filter(action="catalogue.license_plan_assigned").count() == before + 1
+    assert resolve_entitlement(key).values[SCREEN_KEY] == 10
+
+
+def test_set_license_plan_assignment_requires_the_entitlement_permission():
+    key = _license_key(tag="govassignperm")
+    data = SetLicensePlanAssignmentData(
+        idempotency_key="catalogue-assign-2",
+        license_key_id=str(key.id),
+        plan_code="PLATINUM",
+        reason="Attempted without the permission.",
+    )
+    with pytest.raises(SafeAPIError) as caught:
+        set_license_plan_assignment(_staff(StaffPermission.VIEW_CUSTOMERS), data)
+    assert caught.value.code == ErrorCode.PERMISSION_DENIED
+    assert LicensePlanAssignment.objects.filter(license_key=key).count() == 0
+
+
+def test_set_license_plan_assignment_replays_idempotently():
+    key = _license_key(tag="govassignreplay")
+    data = SetLicensePlanAssignmentData(
+        idempotency_key="catalogue-assign-3",
+        license_key_id=str(key.id),
+        plan_code="PLATINUM",
+        reason="Upgraded after the pilot concluded.",
+    )
+    actor = _staff(StaffPermission.GRANT_ENTITLEMENT)
+    set_license_plan_assignment(actor, data)
+    audited = AuditEvent.objects.filter(action="catalogue.license_plan_assigned").count()
+    second = set_license_plan_assignment(actor, data)
+
+    assert second.created is False
+    assert AuditEvent.objects.filter(action="catalogue.license_plan_assigned").count() == audited
+
+
+# --- Replaying an override must not extend its time-box ------------------------------------
+
+
+def test_replaying_an_override_neither_extends_the_window_nor_re_audits():
+    """The 90-day box is the point of the ceremony. A retried request that silently pushes
+    it out another 90 days undoes it, quietly, every time the caller retries."""
+    key = _license_key(tag="ovreplay")
+    _assign(key, Plan.objects.get(code="FREE"))
+    data = SetLicenseGrantOverrideData(
+        idempotency_key="catalogue-override-replay",
+        license_key_id=str(key.id),
+        dimension_key=NDI_KEY,
+        raw_value="3",
+        reason="Conference loan for the summer.",
+    )
+    actor = _staff(StaffPermission.GRANT_ENTITLEMENT)
+    first = set_license_grant_override(actor, data)
+    original_expiry = first.override.expires_at
+    audited = AuditEvent.objects.filter(action="catalogue.license_grant_override_set").count()
+
+    second = set_license_grant_override(actor, data)
+
+    assert second.created is False
+    second.override.refresh_from_db()
+    assert second.override.expires_at == original_expiry, (
+        "a replay pushed the expiry out, so retrying silently un-time-boxes the override"
+    )
+    assert (
+        AuditEvent.objects.filter(action="catalogue.license_grant_override_set").count() == audited
+    ), "a replay wrote a second audit event"
+
+
+def test_a_genuinely_new_request_does_re_box_the_override():
+    """Positive control: a DIFFERENT idempotency key is a new decision and does move the
+    window — otherwise the replay guard above would be indistinguishable from a dead write."""
+    key = _license_key(tag="ovrebox")
+    _assign(key, Plan.objects.get(code="FREE"))
+    actor = _staff(StaffPermission.GRANT_ENTITLEMENT)
+    first = set_license_grant_override(
+        actor,
+        SetLicenseGrantOverrideData(
+            idempotency_key="catalogue-override-rebox-1",
+            license_key_id=str(key.id),
+            dimension_key=NDI_KEY,
+            raw_value="3",
+            reason="Conference loan for the summer.",
+        ),
+    )
+    LicenseGrantOverride.objects.filter(pk=first.override.pk).update(
+        expires_at=timezone.now() + timedelta(days=1)
+    )
+    second = set_license_grant_override(
+        actor,
+        SetLicenseGrantOverrideData(
+            idempotency_key="catalogue-override-rebox-2",
+            license_key_id=str(key.id),
+            dimension_key=NDI_KEY,
+            raw_value="4",
+            reason="Loan extended to the winter conference.",
+        ),
+    )
+    assert second.override.raw_value == "4"
+    assert second.override.expires_at > timezone.now() + timedelta(days=2)
+
+
+# --- Scope aliases must be reachable ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_scope", ["church", "Church", ""])
+def test_an_unreachable_scope_alias_is_refused(bad_scope):
+    """Resolution upper-cases before lookup, so a lower-case row is never consulted — and
+    `unique=True` on the raw value lets it sit silently beside the live one."""
+    from django.db import IntegrityError, transaction
+
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            PlanScopeAlias.objects.create(
+                feature_scope=bad_scope, plan=Plan.objects.get(code="PRO")
+            )
+
+
+def test_an_upper_case_scope_alias_is_accepted_and_consulted():
+    """Positive control for the constraint above."""
+    PlanScopeAlias.objects.create(feature_scope="CHURCH", plan=Plan.objects.get(code="PRO"))
+    key = _license_key(tag="aliasok", feature_scope="church")
+    assert resolve_entitlement(key).values[SCREEN_KEY] == 5
+
+
+# --- Value coercion edges ---------------------------------------------------------------------
+
+
+def test_a_negative_integer_is_refused_rather_than_carried_into_a_manifest():
+    """A negative cap is meaningless and a client cannot act on it sensibly; degrade to the
+    dimension's default instead of signing it."""
+    plan = Plan.objects.get(code="PRO")
+    key = _license_key(tag="negative")
+    _assign(key, plan)
+    grant = PlanGrant.objects.get(plan=plan, dimension=_dimension(NDI_KEY))
+    grant.raw_value = "-5"
+    grant.save(update_fields=["raw_value", "updated_at"])
+
+    assert resolve_entitlement(key).values[NDI_KEY] == 0
+    # Positive control: a non-negative value in the same field is still honoured.
+    grant.raw_value = "6"
+    grant.save(update_fields=["raw_value", "updated_at"])
+    assert resolve_entitlement(key).values[NDI_KEY] == 6
+
+
+def test_which_overrides_survive_is_decided_by_the_data_not_the_row_order():
+    """A licence can carry more override rows than the dimension cap admits.
+
+    If the query selected broadly and discarded afterwards, the slice could be filled
+    entirely with rows destined for the bin — silently dropping the overrides that DO apply,
+    differently on different backends. The applicable ones are therefore selected in SQL, so
+    the outcome is a function of the data.
+
+    `sort_order` here is the INVERSE of insertion order, so a selection that fell back to
+    primary-key order would keep a different set — which is what makes this able to fail.
+    """
+    key = _license_key(tag="ovorder")
+    _assign(key, Plan.objects.get(code="PRO"))
+    seeded = GrantDimension.objects.filter(is_active=True).count()
+    extra = MAX_GRANT_DIMENSIONS + 20
+
+    dimensions = []
+    for index in range(extra):
+        dimension = GrantDimension.objects.create(
+            key=f"ord_{index:03d}",
+            display_name=f"Ord {index}",
+            value_type=GrantValueType.INTEGER,
+            default_raw_value="",
+            # Inverse of creation order: the LAST row created sorts first.
+            sort_order=2000 + (extra - index),
+        )
+        _override(key, dimension.key, str(index + 1))
+        dimensions.append(dimension)
+
+    values = resolve_entitlement(key).values
+    # The active-dimension cap is filled by sort order, so the lowest-sorted extras are in
+    # and the highest-sorted are out. Under primary-key order these would be reversed.
+    by_sort = sorted(dimensions, key=lambda d: (d.sort_order, d.key))
+    admitted = MAX_GRANT_DIMENSIONS - seeded
+    assert by_sort[0].key in values, "selection did not honour sort_order"
+    assert by_sort[-1].key not in values, "selection did not honour sort_order"
+    # Every override that survived is one the plan map actually knows about.
+    assert sum(1 for d in dimensions if d.key in values) == admitted
+
+    GRANT_CACHE.clear()
+    assert resolve_entitlement(key).values == values, (
+        "two resolutions of the same licence disagreed"
+    )
+
+
+def test_overrides_cannot_push_the_merged_map_past_the_stated_cap():
+    """The plan map is capped at MAX_GRANT_DIMENSIONS and so is the override slice, so a
+    naive merge reaches 2x the cap while claiming to be bounded by it. Bounded either way,
+    but the number must be the number the bound says — otherwise the cap documents nothing.
+    """
+    key = _license_key(tag="mergecap")
+    _assign(key, Plan.objects.get(code="PRO"))
+    existing = GrantDimension.objects.filter(is_active=True).count()
+
+    created = []
+    for index in range(MAX_GRANT_DIMENSIONS + 10):
+        dimension = GrantDimension.objects.create(
+            key=f"merge_{index:03d}",
+            display_name=f"Merge {index}",
+            value_type=GrantValueType.INTEGER,
+            default_raw_value="",
+            sort_order=3000 + index,
+        )
+        _override(key, dimension.key, str(index + 1))
+        created.append(dimension)
+
+    values = resolve_entitlement(key).values
+    assert len(values) <= MAX_GRANT_DIMENSIONS, (
+        f"the merged map holds {len(values)} grants against a stated cap of "
+        f"{MAX_GRANT_DIMENSIONS}; plan grants and overrides were each capped but their "
+        "union was not"
+    )
+    # Positive control: overrides inside the cap DO still apply, so the bound is not being
+    # met by discarding every override.
+    assert existing < MAX_GRANT_DIMENSIONS
+    assert any(dimension.key in values for dimension in created)

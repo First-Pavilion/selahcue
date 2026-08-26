@@ -26,12 +26,20 @@ And a licence reaches a plan, most specific first:
 against a tier name — that is precisely FR-545. So a dimension key is a stable identifier
 in the same sense a JSON field name is; a plan code is not, and must never be branched on.
 
-**The catalogue does not publish seat caps to the manifest.** `AppLicenseKey.device_limit`
-is the number activation actually enforces, and it is the only number the manifest reports
-as `instances_limit`. A plan's `device_instances` grant is the catalogue's view of what a
-tier *should* allow; FR-516's write-back is what makes a plan change move `device_limit`,
-so the two agree by construction rather than by coincidence. A signed, offline-cached
-artefact must never carry two fields that disagree about the same quantity.
+**The catalogue does not publish seat caps to the manifest at all.**
+`AppLicenseKey.device_limit` is the number activation enforces and the only seat number the
+manifest reports (`instances_limit`). A plan's `device_instances` grant is the catalogue's
+view of what a tier *should* allow — a number nothing reconciles with `device_limit` today,
+because FR-516's write-back **is not built**: `device_limit` is written only at issuance.
+Publishing both would put two disagreeing numbers for one quantity inside a signed artefact
+cached offline for the licence's lifetime, and nothing in the payload distinguishes an
+advisory value from an enforceable one — there is no fourth grant state meaning "do not
+enforce this".
+
+So `device_instances` carries `publish_in_manifest=False`: the row stays (FR-516 will read
+it, and the portal can show it) and it does not reach the wire until something makes the
+two numbers agree. That is a per-dimension DATA flag rather than a key named in code, so
+the day the write-back lands this becomes a row edit.
 """
 
 from __future__ import annotations
@@ -89,6 +97,36 @@ assert MAX_GRANT_DIMENSIONS >= 8, "MAX_GRANT_DIMENSIONS must leave room for the 
 
 def is_reserved_grant_key(key: str) -> bool:
     return str(key).lower().startswith(RESERVED_GRANT_KEY_PREFIXES)
+
+
+# Minimum reason length, mirroring `graphql.context.require_reason`. Deliberately duplicated
+# at the database: a service-layer rule the database does not also hold binds only the
+# callers that remember to go through the service.
+MIN_REASON_LENGTH = 8
+
+assert MIN_REASON_LENGTH >= 2, "a floor below 2 would make the reason constraint decorative"
+
+
+def accountability_constraints(prefix: str, *, actor_field: str) -> list:
+    """Who did it and why, enforced by the DATABASE rather than by the service alone.
+
+    The same argument already made for dimension keys: a validator binds only callers that
+    remember `full_clean()`, and a service binds only callers that remember to use it. These
+    rows change what a paying customer is entitled to, so a bare `objects.create()` from a
+    shell must be refused too — otherwise the permission check, the required reason and the
+    audit event are ceremony that the one path anybody in a hurry takes walks straight past.
+    """
+    return [
+        models.CheckConstraint(
+            condition=~models.Q(**{actor_field: ""}),
+            name=f"{prefix}_actor_required",
+        ),
+        models.CheckConstraint(
+            # Unanchored search: at least MIN_REASON_LENGTH characters on some line.
+            condition=models.Q(reason__regex=r".{%d,}" % MIN_REASON_LENGTH),
+            name=f"{prefix}_reason_required",
+        ),
+    ]
 
 
 class Plan(models.Model):
@@ -149,6 +187,12 @@ class GrantDimension(models.Model):
     value_type = models.CharField(max_length=16, choices=GrantValueType.choices)
     default_raw_value = models.CharField(max_length=64, blank=True)
     is_active = models.BooleanField(default=True)
+    # Whether this dimension reaches the SIGNED entitlement manifest. False for a value the
+    # server resolves but the client must not act on — because something else is the
+    # enforced number for that quantity, or because no enforcement path exists yet. A
+    # published grant carries no "advisory" marker and a client cannot infer one, so the
+    # only honest way to say "do not enforce this" is not to publish it.
+    publish_in_manifest = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -210,6 +254,19 @@ class PlanScopeAlias(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        constraints = [
+            # Resolution upper-cases a licence's `feature_scope` before looking it up, so a
+            # row stored in any other casing is silently DEAD — never consulted, while
+            # `unique=True` on the raw value happily lets it sit beside the live one. Refuse
+            # the unreachable row rather than leave an operator wondering why their mapping
+            # does nothing.
+            models.CheckConstraint(
+                condition=~models.Q(feature_scope__regex=r"[a-z]") & ~models.Q(feature_scope=""),
+                name="catalogue_scope_alias_is_upper_case",
+            ),
+        ]
+
     def __str__(self) -> str:
         return f"{self.feature_scope} -> {self.plan.code}"
 
@@ -227,10 +284,17 @@ class LicensePlanAssignment(models.Model):
         related_name="catalogue_plan_assignment",
     )
     plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="license_assignments")
-    assigned_by_actor_id = models.CharField(max_length=128, blank=True)
-    reason = models.TextField(blank=True)
+    assigned_by_actor_id = models.CharField(max_length=128)
+    reason = models.TextField()
+    # Last idempotency key applied, so a replay is a no-op rather than a duplicate audit.
+    idempotency_key = models.CharField(max_length=128, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = accountability_constraints(
+            "catalogue_plan_assignment", actor_field="assigned_by_actor_id"
+        )
 
     def __str__(self) -> str:
         return f"license {self.license_key_id} -> {self.plan.code}"
@@ -257,6 +321,9 @@ class LicenseGrantOverride(models.Model):
     reason = models.TextField()
     # NULL = never expires (deliberate, and the exception rather than the rule).
     expires_at = models.DateTimeField(null=True, blank=True)
+    # Last idempotency key applied, so a replay is a no-op rather than a silent extension
+    # of the expiry window plus a duplicate audit event.
+    idempotency_key = models.CharField(max_length=128, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -265,6 +332,9 @@ class LicenseGrantOverride(models.Model):
             models.UniqueConstraint(
                 fields=["license_key", "dimension"],
                 name="uniq_catalogue_license_grant_override",
+            ),
+            *accountability_constraints(
+                "catalogue_grant_override", actor_field="granted_by_actor_id"
             ),
         ]
         indexes = [

@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from django.core.exceptions import ValidationError
@@ -65,6 +66,20 @@ _UNSET = _Unset()
 
 
 @dataclass(frozen=True)
+class CachedGrants:
+    """One plan's resolved grants, as an IMMUTABLE value shared across every tenant on it."""
+
+    values: Mapping[str, Any]
+    # Keys whose dimension carries `publish_in_manifest`.
+    published: frozenset
+    # Every active dimension key inside `MAX_GRANT_DIMENSIONS`, whether or not it resolved
+    # to a value. Overrides are restricted to these, so the merged map cannot exceed the
+    # cap — without it, a plan's 64 grants plus a licence's 64 overrides make 128 against a
+    # stated bound of 64, and the number is then not what the bound says it is.
+    known: frozenset
+
+
+@dataclass(frozen=True)
 class ResolvedEntitlement:
     """What a licence actually grants, as typed values.
 
@@ -89,6 +104,14 @@ class ResolvedEntitlement:
     values: Mapping[str, Any]
     # Display only. FR-545: a client must never branch on this, and nothing here does.
     plan_display_label: str
+    # The subset of `values` whose dimensions are flagged for the signed manifest. A value
+    # the server resolves but the client must not act on never appears here — the payload
+    # has no way to mark a grant "advisory", so the only safe way to say it is silence.
+    published_values: Mapping[str, Any] = MappingProxyType({})
+    # True when resolution FAILED rather than found nothing. An unconfigured catalogue and
+    # a transient database error both yield no grants, but only one of them should let a
+    # two-year signed artefact be minted from it.
+    degraded: bool = False
 
 
 def current_revision() -> int:
@@ -154,8 +177,8 @@ def _active_dimensions() -> list[GrantDimension]:
     return dimensions
 
 
-def _plan_grant_map(plan: Plan, revision: int) -> Mapping[str, Any]:
-    """`{dimension key: typed value}` for a plan, cached per catalogue revision.
+def _plan_grant_map(plan: Plan, revision: int) -> CachedGrants:
+    """One plan's `CachedGrants`, cached per catalogue revision.
 
     The revision is passed in rather than read here, so one resolution costs exactly one
     revision read however many times this is consulted.
@@ -193,8 +216,20 @@ def _plan_grant_map(plan: Plan, revision: int) -> Mapping[str, Any]:
             continue
         values[dimension.key] = value
 
-    GRANT_CACHE.put(plan.pk, revision, values)
-    return values
+    # Read-only on the way in: the entry is shared by every tenant on this plan, and a
+    # caller that forgets to copy before applying one licence's overrides must fail loudly
+    # rather than leak that licence's entitlement to the others.
+    grants = CachedGrants(
+        values=MappingProxyType(values),
+        published=frozenset(
+            dimension.key
+            for dimension in dimensions
+            if dimension.publish_in_manifest and dimension.key in values
+        ),
+        known=frozenset(dimension.key for dimension in dimensions),
+    )
+    GRANT_CACHE.put(plan.pk, revision, grants)
+    return grants
 
 
 def resolve_plan_for_license(license_key) -> Plan | None:
@@ -220,39 +255,69 @@ def resolve_entitlement(license_key) -> ResolvedEntitlement:
     Degrades rather than raises: an empty catalogue yields an empty `values` map and the
     caller keeps whatever it already had (which is how "no loss of current entitlement"
     holds even before migration 0002 has run).
+
+    An empty result is NOT self-explaining, so `degraded` says which kind it is. "The
+    catalogue is unconfigured" is a steady state the caller can trust; "the read blew up"
+    is a transient one, and minting a two-year offline artefact from it would honour a
+    two-second blip for the life of the licence.
     """
-    empty = ResolvedEntitlement(plan=None, values={}, plan_display_label="")
+    unconfigured = ResolvedEntitlement(plan=None, values={}, plan_display_label="")
+    failed = ResolvedEntitlement(plan=None, values={}, plan_display_label="", degraded=True)
     try:
         plan = resolve_plan_for_license(license_key)
     except Exception:  # pragma: no cover - defensive; never deny a manifest over catalogue state
-        logger.exception("catalogue plan resolution failed; issuing without grants")
-        return empty
+        logger.exception("catalogue plan resolution failed; issuing a degraded entitlement")
+        return failed
 
     if plan is None:
-        return empty
+        return unconfigured
 
     try:
-        values = dict(_plan_grant_map(plan, current_revision()))
+        grants = _plan_grant_map(plan, current_revision())
+        # COPY, always. `grants.values` is the read-only entry shared by every tenant on
+        # this plan; the overrides below are one licence's. Writing them into the shared
+        # entry would hand licence A's exception to every other org on the same plan —
+        # a cross-tenant entitlement leak, from one missing `dict(...)`.
+        values = dict(grants.values)
+        published = set(grants.published)
 
         # Per-licence deviations, applied last. Bounded by the dimension cap: a licence
         # cannot carry more overrides than there are dimensions it can override.
+        # Restricted to the dimensions in this plan's map, IN SQL. This is the single
+        # enforcement point for three separate properties, which is why it is not duplicated
+        # in Python afterwards:
+        #
+        #   * ORDER INDEPENDENCE — selecting broadly and discarding afterwards would make
+        #     the outcome depend on row order: a licence with more override rows than the
+        #     cap could have its slice filled entirely with rows destined for the bin,
+        #     silently dropping the overrides that did apply.
+        #   * THE MERGED BOUND — `known` holds at most `MAX_GRANT_DIMENSIONS` keys and the
+        #     unique (licence, dimension) constraint allows one override each, so the merged
+        #     map cannot exceed the cap the plan map already obeys.
+        #   * RESTRICTED KEYS — `known` comes from `_active_dimensions`, which drops keys
+        #     colliding with a restricted payload field, so an override cannot smuggle one
+        #     into the signed payload and deny this licence its manifest.
         overrides = (
-            LicenseGrantOverride.objects.filter(license_key=license_key, dimension__is_active=True)
+            LicenseGrantOverride.objects.filter(
+                license_key=license_key,
+                dimension__is_active=True,
+                dimension__key__in=grants.known,
+            )
             .filter(
                 models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=timezone.now())
             )
             .select_related("dimension")
-            # Ordered before slicing: an unordered slice would make WHICH override the cap
-            # drops depend on the backend's row order, so the same licence could resolve
-            # differently on two servers.
-            .order_by("dimension__sort_order", "dimension__key")[:MAX_GRANT_DIMENSIONS]
         )
+        # No `order_by` and no slice: `known` holds at most `MAX_GRANT_DIMENSIONS` keys and
+        # the unique (licence, dimension) constraint allows one override per key, so this
+        # returns a bounded set whose MEMBERSHIP does not depend on ordering. Adding either
+        # would be a guard no mutation can reach — indistinguishable from a broken one.
         for override in overrides:
             dimension = override.dimension
-            if is_restricted_payload_field(dimension.key):
-                # Same reasoning as `_active_dimensions`: a grant key must never be able to
-                # trip the payload redaction guard and deny the manifest.
-                continue
+            # No `known` re-check here on purpose. The queryset above already restricts to
+            # `grants.known`, and a second, redundant guard in Python would make BOTH
+            # untestable: remove either one and the other silently covers for it, so neither
+            # can be shown to work. One enforcement point, in SQL, that a mutation can reach.
             value = coerce_grant_value(dimension.value_type, override.raw_value)
             if value is _UNSET:
                 logger.warning(
@@ -261,14 +326,32 @@ def resolve_entitlement(license_key) -> ResolvedEntitlement:
                 )
                 continue
             values[dimension.key] = value
+            # Publishability is a property of the DIMENSION, never of one customer's
+            # exception — but an override can be the first thing to give a publishable
+            # dimension a value at all (when the plan declares none and the dimension has
+            # no default), and that value must still reach the client. So recompute both
+            # directions rather than only guarding one: `add` when the override supplies
+            # the first value for a publishable dimension, `discard` so an override can
+            # never push an unpublishable one onto the wire.
+            if dimension.publish_in_manifest:
+                published.add(dimension.key)
+            else:
+                published.discard(dimension.key)
     except Exception:  # pragma: no cover - defensive
-        logger.exception("catalogue grant resolution failed; issuing without grants")
-        return empty
+        logger.exception("catalogue grant resolution failed; issuing a degraded entitlement")
+        return failed
 
+    # The merged map is bounded by the same cap as the plan map, not by cap + overrides.
+    assert len(values) <= MAX_GRANT_DIMENSIONS, (
+        f"resolved {len(values)} grants against a cap of {MAX_GRANT_DIMENSIONS}"
+    )
     return ResolvedEntitlement(
         plan=plan,
         values=values,
         plan_display_label=plan.display_name,
+        published_values=MappingProxyType(
+            {key: value for key, value in values.items() if key in published}
+        ),
     )
 
 
@@ -450,17 +533,28 @@ def set_license_grant_override(
         ).first()
         previous = existing.raw_value if existing is not None else None
 
+        if existing is not None and existing.idempotency_key == idempotency_key:
+            # Idempotent replay. Returning early is not a nicety here: re-saving would push
+            # `expires_at` another 90 days into the future and write a second audit event,
+            # so a retried request would silently extend the very time-box the ceremony
+            # exists to impose.
+            return SetLicenseGrantOverrideResult(
+                override=existing, created=False, previous_raw_value=previous
+            )
+
         if existing is not None:
             existing.raw_value = raw_value
             existing.granted_by_actor_id = staff.actor_id
             existing.reason = reason
             existing.expires_at = expires_at
+            existing.idempotency_key = idempotency_key
             existing.save(
                 update_fields=[
                     "raw_value",
                     "granted_by_actor_id",
                     "reason",
                     "expires_at",
+                    "idempotency_key",
                     "updated_at",
                 ]
             )
@@ -475,6 +569,7 @@ def set_license_grant_override(
                         granted_by_actor_id=staff.actor_id,
                         reason=reason,
                         expires_at=expires_at,
+                        idempotency_key=idempotency_key,
                     )
                 created = True
             except IntegrityError:
@@ -489,12 +584,14 @@ def set_license_grant_override(
                 override.granted_by_actor_id = staff.actor_id
                 override.reason = reason
                 override.expires_at = expires_at
+                override.idempotency_key = idempotency_key
                 override.save(
                     update_fields=[
                         "raw_value",
                         "granted_by_actor_id",
                         "reason",
                         "expires_at",
+                        "idempotency_key",
                         "updated_at",
                     ]
                 )
@@ -525,3 +622,114 @@ def _license_key_model():
     from selahcue_api.apps.license_keys.models import AppLicenseKey
 
     return AppLicenseKey
+
+
+@dataclass(frozen=True)
+class SetLicensePlanAssignmentData:
+    idempotency_key: str
+    license_key_id: str
+    plan_code: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class SetLicensePlanAssignmentResult:
+    assignment: LicensePlanAssignment
+    created: bool
+    previous_plan_code: str | None
+
+
+def set_license_plan_assignment(
+    actor: ActorContext | None, data: SetLicensePlanAssignmentData
+) -> SetLicensePlanAssignmentResult:
+    """Place one licence on a plan — the governed path for the operator lever.
+
+    Moving a church from one tier to another changes what it is entitled to and what it
+    will be billed for. Without this, the only way to do it was a bare `objects.create()`
+    that recorded neither who did it nor why.
+    """
+    staff = require_staff_permission(actor, StaffPermission.GRANT_ENTITLEMENT)
+    idempotency_key = validate_idempotency_key(data.idempotency_key)
+    reason = require_reason(data.reason)
+    plan_code = (data.plan_code or "").strip()
+    if not plan_code:
+        raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+
+    with transaction.atomic():
+        plan = Plan.objects.filter(code=plan_code).first()
+        license_key = _license_key_model().objects.filter(id=data.license_key_id).first()
+        if plan is None or license_key is None:
+            raise SafeAPIError(ErrorCode.NOT_FOUND)
+
+        existing = LicensePlanAssignment.objects.select_related("plan").filter(
+            license_key=license_key
+        ).first()
+        previous = existing.plan.code if existing is not None else None
+
+        if existing is not None and existing.idempotency_key == idempotency_key:
+            return SetLicensePlanAssignmentResult(
+                assignment=existing, created=False, previous_plan_code=previous
+            )
+
+        if existing is not None:
+            existing.plan = plan
+            existing.assigned_by_actor_id = staff.actor_id
+            existing.reason = reason
+            existing.idempotency_key = idempotency_key
+            existing.save(
+                update_fields=[
+                    "plan",
+                    "assigned_by_actor_id",
+                    "reason",
+                    "idempotency_key",
+                    "updated_at",
+                ]
+            )
+            assignment, created = existing, False
+        else:
+            try:
+                with transaction.atomic():
+                    assignment = LicensePlanAssignment.objects.create(
+                        license_key=license_key,
+                        plan=plan,
+                        assigned_by_actor_id=staff.actor_id,
+                        reason=reason,
+                        idempotency_key=idempotency_key,
+                    )
+                created = True
+            except IntegrityError:
+                # A racing writer won the one-to-one on the licence.
+                assignment = LicensePlanAssignment.objects.select_related("plan").filter(
+                    license_key=license_key
+                ).first()
+                if assignment is None:
+                    raise SafeAPIError(ErrorCode.CONFLICT) from None
+                previous = assignment.plan.code
+                assignment.plan = plan
+                assignment.assigned_by_actor_id = staff.actor_id
+                assignment.reason = reason
+                assignment.idempotency_key = idempotency_key
+                assignment.save(
+                    update_fields=[
+                        "plan",
+                        "assigned_by_actor_id",
+                        "reason",
+                        "idempotency_key",
+                        "updated_at",
+                    ]
+                )
+                created = False
+
+        record_audit_event(
+            staff,
+            action="catalogue.license_plan_assigned",
+            target_type="catalogue_license_plan_assignment",
+            target_id=str(assignment.pk),
+            request_id=idempotency_key,
+            reason=reason,
+            before={"plan_code": previous} if previous is not None else None,
+            after={"license_key_id": str(license_key.id), "plan_code": plan.code},
+        )
+        return SetLicensePlanAssignmentResult(
+            assignment=assignment, created=created, previous_plan_code=previous
+        )
