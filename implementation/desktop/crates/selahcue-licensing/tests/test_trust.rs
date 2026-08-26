@@ -419,19 +419,83 @@ fn the_development_key_is_trusted_in_this_build_iff_it_is_a_debug_build() {
     }
 }
 
-#[test]
-fn the_development_key_is_gated_on_debug_assertions() {
-    // The runtime test above can only exercise the profile it is compiled in, and `cargo
-    // test` is a debug build — so on its own it would never see the release branch. This
-    // reads the source and fails if the gate is removed, which makes the control bite in an
-    // ordinary debug run.
-    //
-    // Two things must be gated: the key BYTES (so a release binary does not carry them) and
-    // the INSERTION (so a release build does not trust them). Removing either is the defect.
-    let source = std::fs::read_to_string(
+/// `src/trust.rs` with every comment removed.
+///
+/// Stripping comments is the whole point. The first version of the guard below searched the
+/// raw text, so deleting both `#[cfg(debug_assertions)]` gates while leaving
+/// `// was: #[cfg(debug_assertions)]` behind kept it green — the `rfind` matched the gate
+/// text inside the comment. A release build would then have trusted a key whose seed is
+/// committed in this repository, with the whole debug suite passing.
+///
+/// The general lesson, worth stating where the next person writing a source guard will see
+/// it: **a guard that inspects source TEXT is defeated by anything that preserves the text
+/// while removing its effect** — a comment, a string literal, `#[cfg(any())]`, or moving the
+/// code somewhere that never runs. Assert the effect where you can; the effect assertion
+/// here is `the_development_key_is_trusted_in_this_build_iff_it_is_a_debug_build`, which
+/// only exercises the release branch under `cargo test --release`, so CI now runs exactly
+/// that (`ci.yml`, "Test (licensing crate in RELEASE ...)").
+fn trust_rs_without_comments() -> String {
+    let raw = std::fs::read_to_string(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/trust.rs"),
     )
     .unwrap();
+
+    // Strip /* ... */ first, then // to end-of-line.
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw.as_str();
+    while let Some(open) = rest.find("/*") {
+        out.push_str(&rest[..open]);
+        match rest[open..].find("*/") {
+            Some(close) => rest = &rest[open + close + 2..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+
+    out.lines()
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_comment_stripper_actually_removes_gate_text() {
+    // Positive control for the stripper itself. If it ever stopped removing comments, the
+    // guard below would silently return to matching commented-out gates — the exact defect
+    // it was written to close — and would still pass.
+    let stripped = trust_rs_without_comments();
+    assert!(
+        stripped.contains("const DEV_PUBLIC_KEY"),
+        "the stripper removed real code, not just comments"
+    );
+
+    let sample =
+        "let a = 1; // #[cfg(debug_assertions)]\n/* #[cfg(debug_assertions)] */ let b = 2;";
+    let stripped_sample: String = sample
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !stripped_sample.contains("// #[cfg"),
+        "line comments must be removed before the gate search"
+    );
+}
+
+#[test]
+fn the_development_key_is_gated_on_debug_assertions() {
+    // The runtime test can only exercise the profile it is compiled in, and `cargo test` is
+    // a debug build — so on its own it never sees the release branch. This reads the source
+    // (comments stripped) and fails if either gate is removed, so the control also bites in
+    // an ordinary debug run.
+    //
+    // Two things must be gated: the key BYTES (so a release binary does not carry them) and
+    // the INSERTION (so a release build does not trust them). Removing either is the defect.
+    let source = trust_rs_without_comments();
+    let gate = "#[cfg(debug_assertions)]";
 
     // Positive control: we really read trust.rs, so the assertions below are not vacuous.
     assert!(
@@ -439,7 +503,6 @@ fn the_development_key_is_gated_on_debug_assertions() {
         "did not read trust.rs, or the dev key was renamed — repoint this guard, never drop it"
     );
 
-    let gate = "#[cfg(debug_assertions)]";
     let bytes_at = source
         .find("const DEV_PUBLIC_KEY")
         .expect("DEV_PUBLIC_KEY declaration not found");
@@ -459,10 +522,9 @@ fn the_development_key_is_gated_on_debug_assertions() {
         .find("store.insert(DEV_PUBLIC_KEY)")
         .expect("the dev key insertion was not found in bundled()");
     assert!(
-        source[..insert_at].rfind(gate).is_some_and(|g| {
-            // The gate must be the nearest one before the insertion, inside bundled().
-            !source[g..insert_at].contains("fn ")
-        }),
+        source[..insert_at]
+            .rfind(gate)
+            .is_some_and(|g| !source[g..insert_at].contains("fn ")),
         "the dev key insertion in bundled() is not inside a {gate} block — a RELEASE build \
          would trust a key whose seed is committed in the repository"
     );

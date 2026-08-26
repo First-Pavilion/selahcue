@@ -5,6 +5,14 @@
 //! free to get wrong, landed in the same spirit as the trusted-key *set*: cheap now,
 //! expensive to retrofit, and dangerous if guessed.
 //!
+//! # Bound the payload BEFORE decoding it
+//!
+//! [`Grants`] is an unbounded map read straight from the payload, and it is only safe once
+//! the signature has been checked — a trusted signature is what makes its size the server's
+//! problem rather than an attacker's. Whoever fetches the manifest (86ak5mn1d) must cap the
+//! accepted response size **before** decode, not after. This pairs with the same gap on the
+//! shared transport, which reads whole bodies with no byte cap.
+//!
 //! # (a) An absent grant fails restrictive, never permissive
 //!
 //! The catalogue treats **absent**, **null** and **a value** as three distinct states
@@ -109,6 +117,18 @@ impl Allowance {
     ///
     /// `Denied` is `Some(0)`, not `None` — reading "no opinion" as "no limit" is precisely
     /// the inversion this module exists to prevent.
+    ///
+    /// # Two traps for whoever writes enforcement (86ak5mn1t)
+    ///
+    /// **A ceiling can be negative.** An operator can type `-3` into the catalogue, so this
+    /// returns `Some(-3)`. Enforcement must therefore **compare, never subtract**:
+    /// `used < ceiling` is safe, `remaining = ceiling - used` yields a negative "remaining"
+    /// that an unsigned cast turns into a very large allowance.
+    ///
+    /// **`Flag(true)` has no ceiling**, so this returns `None` for it — the same value
+    /// `Unlimited` returns. Numeric enforcement meeting a dimension the catalogue happens to
+    /// have typed as a bool must read that restrictively rather than as "no limit"; check
+    /// [`Self::permits_any`] and the variant, not the ceiling alone.
     pub fn ceiling(&self) -> Option<i64> {
         match self {
             Allowance::Denied => Some(0),
@@ -171,10 +191,69 @@ impl Grants {
     }
 }
 
+/// Facts this policy needs, taken from a **verified** manifest payload.
+///
+/// # Every field here must come from inside the signature
+///
+/// This is the contract, and it is the difference between a control and a decoration.
+/// `expires_at`, `issued_at` and `degraded` are all signed payload fields. **None of them
+/// may ever be populated from transport metadata** — not an HTTP header, not a status code,
+/// not a sibling field the view appends outside the envelope (`surface`/`operation` are
+/// exactly that shape). A man-in-the-middle who replays a captured degraded manifest and
+/// attaches a forged "not degraded" marker outside the signature would otherwise collapse a
+/// customer's offline window on demand.
+///
+/// The fields are private and there is one constructor, named for the contract, so every
+/// construction site reads `from_verified_payload` and a reviewer can grep for all of them.
+/// The verifier that produces these values is 86ak5mn1d.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignedFacts {
+    expires_at_unix: i64,
+    issued_at_unix: i64,
+    degraded: Option<bool>,
+}
+
+impl SignedFacts {
+    /// Build from values read out of a payload whose signature has been verified.
+    ///
+    /// `degraded` is `None` when the payload does not carry the field — which is every
+    /// payload today, since the server publishes it only to the audit record.
+    pub fn from_verified_payload(
+        expires_at_unix: i64,
+        issued_at_unix: i64,
+        degraded: Option<bool>,
+    ) -> Self {
+        SignedFacts {
+            expires_at_unix,
+            issued_at_unix,
+            degraded,
+        }
+    }
+
+    /// The **artefact** expiry — the clamped `expires_at`, not `license_expires_at`.
+    ///
+    /// The payload carries both and only this one reflects the degraded clamp. Feeding the
+    /// licence expiry here would defeat the whole rule: a degraded manifest would look
+    /// multi-year and replace a good cache.
+    pub fn expires_at_unix(&self) -> i64 {
+        self.expires_at_unix
+    }
+
+    /// When the server issued this artefact.
+    pub fn issued_at_unix(&self) -> i64 {
+        self.issued_at_unix
+    }
+
+    /// The server's own word on whether this issuance was degraded, when it says.
+    pub fn degraded(&self) -> Option<bool> {
+        self.degraded
+    }
+}
+
 /// What to do with a freshly verified manifest, given what is already cached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CacheDecision {
-    /// Store it: nothing cached, or it does not shorten the entitlement.
+    /// Store it: nothing cached, or it neither goes backwards nor shortens.
     Replace,
     /// Keep the cached entitlement and retry later.
     KeepCached(KeepReason),
@@ -183,8 +262,19 @@ pub enum CacheDecision {
 /// Why a verified manifest was not allowed to replace the cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeepReason {
+    /// The incoming manifest was **issued earlier** than the cached one.
+    ///
+    /// A correctly-signed manifest is still replayable: capture one, serve it later. Without
+    /// this the newest artefact does not necessarily win, and an attacker who can answer the
+    /// refresh gets to choose which past entitlement the client holds. It also bounds how
+    /// long an honest downgrade can be deferred — to the refresh cadence — because the
+    /// replacement carries a newer `issued_at`.
+    StaleIssuance {
+        cached_issued_at_unix: i64,
+        incoming_issued_at_unix: i64,
+    },
     /// The incoming manifest expires sooner than the cached one, and the server did not say
-    /// it was a deliberate shortening. Accepting it would let a transient server fault
+    /// the shortening was deliberate. Accepting it would let a transient server fault
     /// collapse a customer's offline window.
     WouldShortenEntitlement {
         cached_expires_at_unix: i64,
@@ -194,38 +284,52 @@ pub enum KeepReason {
 
 /// Decide whether a verified manifest may replace the cached one.
 ///
-/// Pure, and takes instants rather than parsing timestamps: time-dependent behaviour in
-/// this workspace is driven by injected values, and parsing the payload belongs to the
-/// ticket that decodes it (86ak5mn1d).
+/// Pure, and takes instants rather than parsing timestamps: time-dependent behaviour in this
+/// workspace is driven by injected values, and decoding the payload belongs to 86ak5mn1d.
 ///
-/// `incoming_degraded` is the server's own word for it:
+/// Two rules, in order:
 ///
-/// - `Some(true)` — degraded: never allowed to shorten the cache.
-/// - `Some(false)` — a genuine, deliberate change: allowed to shorten.
-/// - `None` — **the server did not say**, which is the situation today because the flag is
-///   not in the signed payload. Treated as `Some(true)`, because guessing wrong in the
-///   other direction costs a church its offline window mid-service.
+/// 1. **Never go backwards.** An older `issued_at` is refused outright — that is a replay,
+///    whatever else it says, and it is checked first precisely so a replayed manifest cannot
+///    talk its way past rule 2 with its own signed `degraded: false`.
+/// 2. **Never shorten**, unless the server explicitly says the shortening is deliberate:
+///    - `Some(true)` — degraded: never allowed to shorten.
+///    - `Some(false)` — a genuine licence change: allowed.
+///    - `None` — the server did not say, which is every payload today. Treated as
+///      `Some(true)`, because guessing wrong the other way costs a church its offline window
+///      mid-service, while guessing this way only defers an honest downgrade to the next
+///      refresh.
+///
+/// A revoked or expired licence is **not** affected by rule 2: the server issues no manifest
+/// at all for one (`POLICY_DENIED` on the issuance allow-list), so there is no shortened
+/// artefact to refuse. Issuance is the enforcement point; there is no revocation list.
 pub fn decide_cache_replacement(
-    cached_expires_at_unix: Option<i64>,
-    incoming_expires_at_unix: i64,
-    incoming_degraded: Option<bool>,
+    cached: Option<SignedFacts>,
+    incoming: SignedFacts,
 ) -> CacheDecision {
-    let Some(cached) = cached_expires_at_unix else {
-        // Nothing cached: anything verified is an improvement on nothing.
+    let Some(cached) = cached else {
+        // Nothing cached: anything verified beats nothing.
         return CacheDecision::Replace;
     };
 
-    if incoming_expires_at_unix >= cached {
-        return CacheDecision::Replace;
+    // Rule 1 — replay defence, checked before anything the incoming manifest asserts.
+    if incoming.issued_at_unix < cached.issued_at_unix {
+        return CacheDecision::KeepCached(KeepReason::StaleIssuance {
+            cached_issued_at_unix: cached.issued_at_unix,
+            incoming_issued_at_unix: incoming.issued_at_unix,
+        });
     }
 
-    // It shortens. Only an explicit "not degraded" from the server permits that.
-    if incoming_degraded == Some(false) {
+    // Rule 2 — never shorten without the server saying so.
+    if incoming.expires_at_unix >= cached.expires_at_unix {
+        return CacheDecision::Replace;
+    }
+    if incoming.degraded == Some(false) {
         return CacheDecision::Replace;
     }
 
     CacheDecision::KeepCached(KeepReason::WouldShortenEntitlement {
-        cached_expires_at_unix: cached,
-        incoming_expires_at_unix,
+        cached_expires_at_unix: cached.expires_at_unix,
+        incoming_expires_at_unix: incoming.expires_at_unix,
     })
 }

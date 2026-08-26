@@ -154,3 +154,29 @@ In every branch the invariant holds — **no install or update without a verifie
 **Assets / boundaries:** A10 (software update artifacts), TB6 (update/distribution boundary), A9 (local AI models — FR-156 extension), A11/A5 (backups/keys — kept out of update artifacts).
 
 **Related ADRs:** ADR-0008 (LAN protocol/security — sibling supply-chain/security posture; T14 cross-referenced there), ADR-0009 (Flutter controller — the store-distributed mobile artifact carrying FR-176 disclosures), ADR-0005 / ADR-0006 (media/codec + HW-decode path patched via this channel — CON-4/FR-073), ADR-0013 (NDI — a capability that store sandboxes would constrain, reinforcing the self-hosted desktop choice), ADR-0011 (observability — redacted diagnostics carry no keys/secrets), ADR-0001 (Rust core / cargo per-OS packaging). Full architecture context: `ARCHITECTURE.md` §14 (Packaging & updates), §11 (Security).
+
+## Amendment (2026-08-26) — debug builds must never be distributed
+
+`selahcue-licensing` debug builds deliberately trust a **development** entitlement signing
+key whose private seed is committed to the repository
+(`implementation/desktop/crates/selahcue-licensing/dev-signing-key.NOT-A-SECRET`). This is
+the chosen answer to "`make launch` must not demand activation": the development path
+**mints** a dev-signed manifest and runs real signature, expiry and cache verification,
+rather than adding a bypass branch. A bypass would be the highest-value target in the
+product — anything that flips it hands out unlimited entitlement — and it would mean the
+path we ship is not the path anyone develops against.
+
+The cost is that **anyone at all can mint an unlimited entitlement against a debug build**,
+because the seed is public by design. Therefore:
+
+> **No debug build of the desktop application may be distributed, to anyone, ever — not to
+> customers, not to beta testers, not as a "quick build" for support.**
+
+Release builds do not trust the development key: both the key bytes and their insertion into
+the trusted set are `#[cfg(debug_assertions)]`. That gate is enforced two ways, because a
+guard that reads source text can be defeated by a comment that preserves the text while
+removing the effect: a source guard in the crate's tests, and — decisively — a
+release-profile CI job (`Test (licensing crate in RELEASE ...)`) that runs the runtime
+exclusion assertion in the only profile where it means anything.
+
+Related: `86ak5mn11`, DEC-011, FR-518.

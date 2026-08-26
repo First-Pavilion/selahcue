@@ -88,6 +88,7 @@ pub use custody::{DeviceCredentials, ACCOUNT_SESSION_NAME, DEVICE_TOKEN_NAME, KE
 pub use device::{DeviceIdentity, IdempotencyKey};
 pub use entitlement::{
     decide_cache_replacement, Allowance, CacheDecision, GrantScalar, Grants, KeepReason,
+    SignedFacts,
 };
 pub use error::ActivationFailure;
 pub use script::{RecordedRequest, ScriptedTransport};

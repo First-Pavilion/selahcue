@@ -330,6 +330,20 @@ jobs:
       # no-I/O rule + the ADR-0025 decoder pin). These are one-line checks only because the
       # importer is its own crate; inside the operator, whose graph legitimately contains a TLS
       # stack, the no-network property would not even be stateable.
+      # THE release-profile gate for the licensing crate. Debug builds deliberately trust a
+      # development entitlement key whose seed is COMMITTED (dev-signing-key.NOT-A-SECRET),
+      # so anyone can mint a manifest against a debug build. Release builds must not trust
+      # it, and `#[cfg(debug_assertions)]` is what stops them.
+      #
+      # Nothing else here can catch that gate being removed. The workspace test above is
+      # debug-only, and the --release steps elsewhere build crates that do not link
+      # licensing -- so commenting the gates out (a plausible refactor, or a malicious
+      # commit) shipped the public-seed key into release binaries with an all-green CI. The
+      # crate is small; this costs seconds and is the only place the release branch of
+      # `the_development_key_is_trusted_in_this_build_iff_it_is_a_debug_build` ever runs.
+      - name: Test (licensing crate in RELEASE — the dev-key exclusion only holds here)
+        if: ${{ !cancelled() }}
+        run: cargo test -p selahcue-licensing --release --no-fail-fast
       - name: Import structural guards (no network, no filesystem, pinned decoder)
         if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}

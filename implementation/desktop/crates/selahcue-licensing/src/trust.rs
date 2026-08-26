@@ -192,6 +192,18 @@ impl TrustedKeys {
 
     /// Add a key, deriving its id. Returns the id.
     ///
+    /// # The trusted set must never become loadable from configuration
+    ///
+    /// This is `pub` so the bundled set can be built and so tests can exercise the bounds.
+    /// It must **not** grow a caller that reads keys from a file, an environment variable or
+    /// a config value: a trust store an operator can append to is not a trust store, and it
+    /// re-creates by the back door exactly the bypass that `bundled`'s `cfg` gate exists to
+    /// prevent.
+    ///
+    /// That is structural rather than advisory here — `no_filesystem_primitive_is_reachable_from_this_crate`
+    /// fails the build if anything in `src/` so much as names `std::fs`, `std::env` or
+    /// `File::open`, so a config loader cannot be written in this crate without tripping it.
+    ///
     /// Idempotent for the *same key material*: re-adding a key already present succeeds
     /// and consumes no extra slot, so a loader that runs twice cannot exhaust the cap.
     ///

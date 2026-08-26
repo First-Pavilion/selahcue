@@ -7,7 +7,7 @@
 
 use selahcue_licensing::entitlement::{
     decide_cache_replacement, Allowance, CacheDecision, GrantScalar, Grants, KeepReason,
-    DEGRADED_MANIFEST_TTL_SECONDS,
+    SignedFacts, DEGRADED_MANIFEST_TTL_SECONDS,
 };
 
 // The server's clamp, pinned. If it ever grew to something near a licence window, the
@@ -156,84 +156,194 @@ fn a_dimension_this_build_has_never_heard_of_is_denied_not_assumed() {
 // --- (b) a valid degraded manifest must not evict a longer cached one -------------------
 
 const YEAR: i64 = 365 * 24 * 60 * 60;
-const CACHED_LONG: i64 = 1_800_000_000 + 2 * YEAR;
+const T0: i64 = 1_800_000_000;
+const CACHED_LONG_EXPIRY: i64 = T0 + 2 * YEAR;
+
+/// The cached artefact: issued at T0, valid two years.
+fn cached() -> SignedFacts {
+    SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY, T0, None)
+}
+
+/// A degraded artefact: issued later, but clamped to the 900s TTL.
+fn degraded_refresh(degraded: Option<bool>) -> SignedFacts {
+    SignedFacts::from_verified_payload(
+        T0 + 3600 + DEGRADED_MANIFEST_TTL_SECONDS,
+        T0 + 3600,
+        degraded,
+    )
+}
 
 #[test]
 fn nothing_cached_means_anything_verified_is_an_improvement() {
     assert_eq!(
-        decide_cache_replacement(None, 1_800_000_000 + DEGRADED_MANIFEST_TTL_SECONDS, None),
+        decide_cache_replacement(None, degraded_refresh(None)),
         CacheDecision::Replace
     );
 }
 
 #[test]
 fn a_degraded_manifest_never_evicts_a_longer_cached_entitlement() {
-    // THE rule. The server clamps a degraded manifest to 900s so a transient fault cannot
-    // be frozen into a multi-year credential. That protection is only half the mechanism:
-    // if the client caches the 900s artefact over a multi-year one, a brief server blip
-    // collapses a church's offline entitlement to fifteen minutes, mid-service.
-    let incoming = 1_800_000_000 + DEGRADED_MANIFEST_TTL_SECONDS;
+    // THE rule. The server clamps a degraded manifest to 900s so a transient fault cannot be
+    // frozen into a multi-year credential. That is only half the mechanism: if the client
+    // caches the 900s artefact over a multi-year one, a brief server blip collapses a
+    // church's offline entitlement to fifteen minutes, mid-service.
+    let incoming = degraded_refresh(Some(true));
 
-    // Positive control: this really is a shortening, or the assertion below is vacuous.
-    assert!(
-        incoming < CACHED_LONG,
-        "fixture must actually shorten the window"
+    // Positive controls: this really is a shortening, and it is NOT a replay — so the
+    // refusal below is rule 2 doing the work, not rule 1.
+    assert!(incoming.expires_at_unix() < cached().expires_at_unix());
+    assert!(incoming.issued_at_unix() > cached().issued_at_unix());
+
+    assert_eq!(
+        decide_cache_replacement(Some(cached()), incoming),
+        CacheDecision::KeepCached(KeepReason::WouldShortenEntitlement {
+            cached_expires_at_unix: CACHED_LONG_EXPIRY,
+            incoming_expires_at_unix: incoming.expires_at_unix(),
+        })
     );
-
-    for flag in [Some(true), None] {
-        assert_eq!(
-            decide_cache_replacement(Some(CACHED_LONG), incoming, flag),
-            CacheDecision::KeepCached(KeepReason::WouldShortenEntitlement {
-                cached_expires_at_unix: CACHED_LONG,
-                incoming_expires_at_unix: incoming,
-            }),
-            "a shortening manifest with degraded={flag:?} must not evict the cache"
-        );
-    }
 }
 
 #[test]
 fn the_flag_being_absent_is_treated_as_degraded_because_the_server_does_not_publish_it() {
     // Today `degraded` reaches the audit record and a log line but NOT the signed payload,
     // so the client always sees `None`. Guessing "not degraded" would cost a church its
-    // offline window over a server blip; guessing "degraded" costs a delayed legitimate
-    // shortening, which the next successful refresh corrects.
-    let incoming = 1_800_000_000 + DEGRADED_MANIFEST_TTL_SECONDS;
+    // offline window over a server blip; guessing "degraded" defers an honest downgrade to
+    // the next refresh, which the issued_at rule bounds.
     assert_eq!(
-        decide_cache_replacement(Some(CACHED_LONG), incoming, None),
-        decide_cache_replacement(Some(CACHED_LONG), incoming, Some(true)),
+        decide_cache_replacement(Some(cached()), degraded_refresh(None)),
+        decide_cache_replacement(Some(cached()), degraded_refresh(Some(true))),
         "an unstated flag must behave exactly as a stated `degraded`"
     );
 }
 
 #[test]
 fn an_explicit_not_degraded_may_shorten_because_that_is_a_real_licence_change() {
-    // The narrowing this API is shaped for: once the server publishes the flag, a genuine
-    // downgrade gets through without any change here.
-    let incoming = 1_800_000_000 + 30 * 24 * 60 * 60;
+    // The narrowing this API is shaped for: once the server publishes the flag inside the
+    // signature, a genuine downgrade gets through with no change here.
+    let downgrade =
+        SignedFacts::from_verified_payload(T0 + 30 * 24 * 60 * 60, T0 + 3600, Some(false));
     assert_eq!(
-        decide_cache_replacement(Some(CACHED_LONG), incoming, Some(false)),
-        CacheDecision::Replace,
-        "a deliberate, server-declared shortening is a real licence change"
+        decide_cache_replacement(Some(cached()), downgrade),
+        CacheDecision::Replace
     );
 }
 
 #[test]
 fn a_longer_or_equal_manifest_always_replaces() {
     // Positive control for the rule as a whole: it must not be a blanket refusal to cache.
-    let longer = CACHED_LONG + YEAR;
+    let longer = SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY + YEAR, T0 + 3600, None);
+    let equal = SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY, T0 + 3600, None);
     assert_eq!(
-        decide_cache_replacement(Some(CACHED_LONG), longer, None),
+        decide_cache_replacement(Some(cached()), longer),
         CacheDecision::Replace
     );
     assert_eq!(
-        decide_cache_replacement(Some(CACHED_LONG), CACHED_LONG, None),
+        decide_cache_replacement(Some(cached()), equal),
         CacheDecision::Replace,
         "an equal window is a refresh, not a shortening"
     );
+    let longer_but_degraded =
+        SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY + YEAR, T0 + 3600, Some(true));
     assert_eq!(
-        decide_cache_replacement(Some(CACHED_LONG), longer, Some(true)),
+        decide_cache_replacement(Some(cached()), longer_but_degraded),
         CacheDecision::Replace,
         "even a degraded manifest may replace when it does not shorten"
+    );
+}
+
+// --- (b2) issued_at monotonicity: an older manifest never wins -------------------------
+
+#[test]
+fn a_manifest_issued_earlier_than_the_cached_one_is_refused_as_a_replay() {
+    // A correctly-signed manifest is still replayable: capture one, serve it later. Without
+    // this the newest artefact does not necessarily win, and whoever answers the refresh
+    // chooses which past entitlement the client holds.
+    let replayed = SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY + YEAR, T0 - 1, None);
+
+    // Positive control: it is LONGER, so rule 2 would happily accept it. Only rule 1 refuses.
+    assert!(replayed.expires_at_unix() > cached().expires_at_unix());
+
+    assert_eq!(
+        decide_cache_replacement(Some(cached()), replayed),
+        CacheDecision::KeepCached(KeepReason::StaleIssuance {
+            cached_issued_at_unix: T0,
+            incoming_issued_at_unix: T0 - 1,
+        }),
+        "an older issuance must be refused even when it offers a longer window"
+    );
+}
+
+#[test]
+fn a_replay_cannot_talk_its_way_past_the_shortening_rule_with_a_signed_not_degraded() {
+    // Why rule 1 is checked FIRST. `degraded` is inside the signature, so it cannot be
+    // forged — but a genuine old manifest that legitimately carried `degraded: false` can be
+    // replayed. If the shortening rule ran first, that replay would be accepted.
+    let old_but_not_degraded = SignedFacts::from_verified_payload(T0 + 60, T0 - 5000, Some(false));
+    assert_eq!(
+        decide_cache_replacement(Some(cached()), old_but_not_degraded),
+        CacheDecision::KeepCached(KeepReason::StaleIssuance {
+            cached_issued_at_unix: T0,
+            incoming_issued_at_unix: T0 - 5000,
+        }),
+        "replay defence must run before anything the incoming manifest asserts"
+    );
+}
+
+#[test]
+fn a_manifest_re_issued_at_the_same_instant_is_still_accepted() {
+    // Equal issuance is a re-issue, not a replay — refusing it would wedge a client whose
+    // server re-signs within the same second.
+    let same_instant = SignedFacts::from_verified_payload(CACHED_LONG_EXPIRY + YEAR, T0, None);
+    assert_eq!(
+        decide_cache_replacement(Some(cached()), same_instant),
+        CacheDecision::Replace
+    );
+}
+
+#[test]
+fn the_artefact_expiry_is_what_the_rule_reads_not_the_licence_expiry() {
+    // The payload carries `expires_at` (clamped) AND `license_expires_at` (not). Feeding the
+    // licence expiry in would make a degraded manifest look multi-year and defeat the rule
+    // entirely — so the accessor is named for the artefact and documented as such.
+    let degraded = degraded_refresh(Some(true));
+    assert_eq!(
+        degraded.expires_at_unix(),
+        T0 + 3600 + DEGRADED_MANIFEST_TTL_SECONDS,
+        "the clamped artefact expiry is what this policy reads"
+    );
+    assert!(
+        degraded.expires_at_unix() - degraded.issued_at_unix() <= DEGRADED_MANIFEST_TTL_SECONDS,
+        "a degraded artefact must live no longer than the server's clamp"
+    );
+}
+
+// --- traps for the enforcement ticket, pinned so they cannot be discovered the hard way ---
+
+#[test]
+fn a_negative_ceiling_survives_intact_so_enforcement_must_compare_not_subtract() {
+    // An operator can type -3 into the catalogue. `Some(-3)` is the honest reading, and it is
+    // pinned here because the dangerous alternative is silent: `remaining = ceiling - used`
+    // yields a negative, and an unsigned cast turns that into a very large allowance.
+    let g = Grants::from_pairs([("saved_themes".to_string(), Some(GrantScalar::Count(-3)))]);
+    assert_eq!(g.allowance("saved_themes"), Allowance::Count(-3));
+    assert_eq!(g.allowance("saved_themes").ceiling(), Some(-3));
+    assert!(
+        !g.allowance("saved_themes").permits_any(),
+        "a negative ceiling must not read as permitting anything"
+    );
+}
+
+#[test]
+fn a_true_flag_has_no_ceiling_which_numeric_enforcement_must_not_read_as_unlimited() {
+    // `Flag(true).ceiling()` is None — the same value `Unlimited` gives. A numeric check
+    // meeting a bool-typed dimension therefore cannot distinguish them by ceiling alone and
+    // must consult the variant.
+    let g = Grants::from_pairs([("stage_display".to_string(), Some(GrantScalar::Flag(true)))]);
+    assert_eq!(g.allowance("stage_display").ceiling(), None);
+    assert_eq!(Allowance::Unlimited.ceiling(), None);
+    assert_ne!(
+        g.allowance("stage_display"),
+        Allowance::Unlimited,
+        "the variants stay distinguishable even though their ceilings collide"
     );
 }
