@@ -107,22 +107,23 @@ pub fn system_font_families() -> Vec<String> {
 /// dead code — the honest guarantee is "a readable platform font", not "always Noto Sans".)
 fn build_system_fs() -> FontSystem {
     let mut db = cosmic_text::fontdb::Database::new();
+    // Bundled Noto Sans first, for the same reason as Inter below: a bundled face loaded BEFORE
+    // `load_system_fonts()` wins the family-name tie-break, so `Family::Name("Noto Sans")` gets
+    // the face we ship rather than a machine-installed one. For Noto Sans specifically this
+    // currently makes no measurable difference — the bundled file is a Latin subset of the same
+    // design, so either face yields the same advances at weight 400 (measured against
+    // `fonts-noto-core` in a container). That is a property of Noto Sans, not of this function:
+    // see the Inter note below, where it does NOT hold.
     db.load_font_data(FONT_BYTES.to_vec());
     // Bundled Inter Regular + Bold (loaded before the system fonts so `Family::Name("Inter")`
     // resolves to the bundled faces, not a machine-installed Inter) — the stage/confidence
     // typeface. Both weights are bundled so `(Inter, 700)` has an exact face and never falls
-    // back to a system monospace once system fonts are in the DB.
+    // back to a system monospace once system fonts are in the DB. Unlike Noto Sans above, the
+    // ORDER IS LOAD-BEARING here and nothing tests it: a machine-installed Inter may be v3 or
+    // v4, and Inter 4.0 changed default metrics, so if a system Inter won the tie-break the
+    // stage/confidence advances would move on that host alone.
     db.load_font_data(INTER_BYTES.to_vec());
     db.load_font_data(INTER_BOLD_BYTES.to_vec());
-    // ORDER IS LOAD-BEARING, and a test in ANOTHER CRATE depends on it. The bundled faces go in
-    // before the system fonts because cosmic-text breaks family-name ties on `fontdb::ID`
-    // insertion order: whichever face was loaded first wins. That is what makes
-    // `Family::Name("Noto Sans")` resolve to the BUNDLED face even on a machine that also has a
-    // system Noto Sans installed — which the second positive control in `installed_serif`
-    // (selahcue-present/tests/test_measure.rs) relies on to isolate its `distinct` condition.
-    // Swap these two lines and that control starts failing, on hosts with a system Noto Sans
-    // only, from a crate that never mentions this function. Note no CI runner currently has a
-    // system Noto Sans, so nothing here would catch the swap — this comment is the guard.
     db.load_system_fonts();
     FontSystem::new_with_locale_and_db("en-US".to_string(), db)
 }
