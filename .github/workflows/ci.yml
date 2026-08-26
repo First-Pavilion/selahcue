@@ -229,6 +229,67 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libx11-dev libxkbcommon-dev libwayland-dev \
             libvulkan1 mesa-vulkan-drivers libdbus-1-dev
+      # A real serif face, so the typography tests can do real work (86ak643rc).
+      #
+      # `themes_differing_only_in_typography_never_share_a_measurement` (selahcue-present)
+      # needs one INSTALLED face that shapes differently from the BUNDLED Noto Sans, or its
+      # serif comparisons cannot tell a font-blind cache key from a correct one. On Linux an
+      # unresolved family name falls back to that same bundled face — see
+      # `a_missing_font_falls_back_readably_and_deterministically` in selahcue-engine — so
+      # with no real serif installed the test cannot pass. That is why it went red on this
+      # runner and only this runner.
+      #
+      # WHAT THIS BUYS, PRECISELY -- it matters if anyone weighs dropping the pinned package.
+      # It RESTORES a layer of checking; it is NOT what holds the font/weight cache-key
+      # contract up. That contract is carried by `every_shaping_attribute_is_part_of_the_cache_key`,
+      # which compares KEYS rather than frames and deliberately uses an uninstalled family, so
+      # it needs no font at all. Measured on a bare ubuntu:24.04 with zero fonts installed:
+      # that test PASSES unmutated, and still goes RED when `font` is dropped from
+      # `measure::Key` (7 passed/1 failed unmutated; 6 passed/2 failed mutated). So a runner
+      # without a serif still guards the contract -- what it loses is the LAYOUT-level check,
+      # and it loses it LOUDLY: the typography test fails naming every face it looked for.
+      #
+      # WHY THE PACKAGE IS DECLARED HERE AT ALL. fonts-liberation is already on the
+      # ubuntu-latest image, but only as an undocumented transitive dependency (of Chrome) --
+      # the published ubuntu-24.04 software manifest lists just fonts-noto-color-emoji under
+      # fonts. Resting a gate on a package nobody declared is the fragile inheritance this
+      # step removes. Declaring it is the point.
+      #
+      # WHY THE VERSION IS *NOT* PINNED -- this was pinned to =1:2.1.5-3 and the pin was wrong.
+      # Measured in containers:
+      #   ubuntu:24.04  candidate 1:2.1.5-3       LiberationSerif-Regular.ttf sha256 705903ae...
+      #   ubuntu:26.04  candidate 1:2.1.5-3build1 LiberationSerif-Regular.ttf sha256 350f4ffd...
+      # `ubuntu-26.04` is already a preview runner label and GitHub migrates `-latest` gradually
+      # over 1-2 months, so during that window the SAME commit can land on either image and the
+      # 26.04 half dies with "E: Version '1:2.1.5-3' for 'fonts-liberation' was not found".
+      # That reads as a flake on `main` and blocks everyone, not just this branch -- a bigger
+      # failure than the drift the pin was meant to prevent. Note also the two packages ship
+      # DIFFERENT BYTES, so the version string was never pinning the face the test measures; it
+      # pinned a packaging label that merely correlates with one.
+      #
+      # WHAT IS PINNED INSTEAD: the property, asserted at the point of use. The `test -f` below
+      # is the real contract -- a serif face present at a path fontdb scans -- and the test
+      # itself independently proves that face RESOLVES and DIFFERS from the bundled Noto Sans,
+      # failing with a diagnostic that names every candidate if it does not. An assertion about
+      # the thing we need beats a version string that stands in for it.
+      #
+      # Rejected alternatives: pinning the .ttf's sha256 (tighter than the version pin and
+      # dated the same way -- it would fail on a face that works perfectly); vendoring the .ttf
+      # (the path under test is specifically "a font the OS provides", and it would still need
+      # a copy-into-/usr/share/fonts step here, plus a binary asset and a licence file).
+      # Pinning the runner image to `ubuntu-24.04` in the matrix would ALSO fix this and is
+      # arguably better -- but it is a matrix-wide reproducibility decision affecting every job
+      # and OS, with its own EOL/security-update cost, so it belongs in its own change and not
+      # smuggled in under a font fix.
+      - name: Linux fonts (a real serif face for the typography tests)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends fonts-liberation
+          # Assert the file LANDED -- fail here, not 20 minutes later inside a test. This is
+          # one layer of the contract, not all of it: it proves a serif face exists at a path
+          # fontdb scans, NOT that fontdb resolves it or that it measures differently from the
+          # bundled face. Those two are asserted at runtime by `verdict()` in installed_serif.
+          test -f /usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf
       # From the first GATE step onward, `!cancelled()`. Setup steps above deliberately
       # keep the default `success()`: if checkout, the toolchain install or the pin
       # assertion fails, every downstream result is meaningless or measured on the wrong

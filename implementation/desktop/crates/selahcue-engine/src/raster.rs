@@ -114,6 +114,15 @@ fn build_system_fs() -> FontSystem {
     // back to a system monospace once system fonts are in the DB.
     db.load_font_data(INTER_BYTES.to_vec());
     db.load_font_data(INTER_BOLD_BYTES.to_vec());
+    // ORDER IS LOAD-BEARING, and a test in ANOTHER CRATE depends on it. The bundled faces go in
+    // before the system fonts because cosmic-text breaks family-name ties on `fontdb::ID`
+    // insertion order: whichever face was loaded first wins. That is what makes
+    // `Family::Name("Noto Sans")` resolve to the BUNDLED face even on a machine that also has a
+    // system Noto Sans installed — which the second positive control in `installed_serif`
+    // (selahcue-present/tests/test_measure.rs) relies on to isolate its `distinct` condition.
+    // Swap these two lines and that control starts failing, on hosts with a system Noto Sans
+    // only, from a crate that never mentions this function. Note no CI runner currently has a
+    // system Noto Sans, so nothing here would catch the swap — this comment is the guard.
     db.load_system_fonts();
     FontSystem::new_with_locale_and_db("en-US".to_string(), db)
 }
