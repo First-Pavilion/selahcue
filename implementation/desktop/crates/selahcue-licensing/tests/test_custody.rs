@@ -26,7 +26,7 @@ use selahcue_licensing::{
 use std::path::PathBuf;
 
 /// Number of `.rs` modules in `src/`. Pinned so a sweep cannot silently cover less.
-const EXPECTED_SRC_MODULES: usize = 8;
+const EXPECTED_SRC_MODULES: usize = 9;
 
 /// Number of formatted renderings the credential sweep covers. Pinned so an entry cannot
 /// quietly disappear from it.

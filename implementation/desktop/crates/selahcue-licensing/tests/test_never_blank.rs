@@ -23,7 +23,7 @@ use selahcue_licensing::{
 use std::path::PathBuf;
 
 /// Number of `.rs` modules in `src/`. Pinned so a scan cannot silently cover less.
-const EXPECTED_SRC_MODULES: usize = 8;
+const EXPECTED_SRC_MODULES: usize = 9;
 
 // ---------------------------------------------------------------------------
 // Structural: licensing is not on the render / go-live / live-control path

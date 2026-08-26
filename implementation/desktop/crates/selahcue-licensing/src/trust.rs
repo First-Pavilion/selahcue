@@ -60,6 +60,16 @@ const _: () = assert!(
     "FR-518/DEC-011: the entitlement trust store must be a SET (>= 2 keys), never a single key"
 );
 
+/// The development entitlement signing key's PUBLIC half — **debug builds only**.
+///
+/// Derived from the deliberately-public seed in `dev-signing-key.NOT-A-SECRET`. Compiled
+/// out of release builds entirely, so a release binary cannot trust it even by accident.
+#[cfg(debug_assertions)]
+const DEV_PUBLIC_KEY: [u8; PUBLIC_KEY_BYTES] = [
+    122, 63, 108, 222, 26, 234, 144, 88, 16, 53, 82, 180, 127, 244, 213, 16, 86, 6, 76, 132, 249,
+    209, 18, 122, 21, 96, 175, 100, 231, 174, 33, 129,
+];
+
 /// A raw Ed25519 public key together with its derived id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustedKey {
@@ -138,6 +148,13 @@ impl TrustedKeys {
         }
     }
 
+    /// `key_id` of the **development** entitlement signing key (`f5194d13`).
+    ///
+    /// Always compiled, in every profile, because it is a public identifier and the
+    /// release-exclusion test has to be able to name the entity it asserts is absent.
+    /// Compiling the id is not what makes a build trust the key — [`Self::bundled`] is.
+    pub const DEV_KEY_ID: &'static str = "f5194d13";
+
     /// The keys compiled into this build.
     ///
     /// **Currently empty, and honestly so.** The production entitlement signing key is an
@@ -149,7 +166,28 @@ impl TrustedKeys {
     /// an empty store therefore fails closed on *verification* without ever failing
     /// closed on *presentation*.
     pub fn bundled() -> Self {
-        Self::new()
+        let mut store = Self::new();
+
+        // --- development entitlement key (debug builds ONLY) -----------------------------
+        // `make launch` must not demand activation, and the owner will opt into QAing
+        // enforcement deliberately. The mechanism is to MINT, not to bypass: a debug build
+        // additionally trusts the development key below, `make` mints a manifest signed by
+        // its (deliberately public) seed, and real verification runs — real signature
+        // check, real expiry, real cache behaviour. There is no bypass branch, because a
+        // branch that skips verification is the highest-value target in the product and
+        // means the path we ship is not the path anyone develops against.
+        //
+        // The `cfg` is the control. A release build must not trust this key: its seed is
+        // committed in `dev-signing-key.NOT-A-SECRET`, so anyone at all can sign with it.
+        // `the_development_key_is_gated_on_debug_assertions` fails if this gate is removed.
+        #[cfg(debug_assertions)]
+        {
+            if let Ok(id) = store.insert(DEV_PUBLIC_KEY) {
+                debug_assert_eq!(id, Self::DEV_KEY_ID, "dev key_id drifted from its bytes");
+            }
+        }
+
+        store
     }
 
     /// Add a key, deriving its id. Returns the id.

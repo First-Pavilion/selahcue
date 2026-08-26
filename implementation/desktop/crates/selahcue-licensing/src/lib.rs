@@ -75,6 +75,7 @@ pub mod client;
 pub mod contract;
 pub mod custody;
 pub mod device;
+pub mod entitlement;
 pub mod error;
 pub mod script;
 pub mod trust;
@@ -85,6 +86,9 @@ pub use client::{
 pub use contract::{EntitlementEnvelope, ErrorCode};
 pub use custody::{DeviceCredentials, ACCOUNT_SESSION_NAME, DEVICE_TOKEN_NAME, KEYRING_SERVICE};
 pub use device::{DeviceIdentity, IdempotencyKey};
+pub use entitlement::{
+    decide_cache_replacement, Allowance, CacheDecision, GrantScalar, Grants, KeepReason,
+};
 pub use error::ActivationFailure;
 pub use script::{RecordedRequest, ScriptedTransport};
 pub use trust::{TrustedKey, TrustedKeys, MAX_TRUSTED_KEYS};
