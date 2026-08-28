@@ -211,9 +211,15 @@ def count_customers(actor: ActorContext | None, *, search: str | None = None) ->
 #     256-bit CSPRNG secret compensates for a deficit that does not exist, and a PBKDF2
 #     column is offline-testable from a DB leak in a way a keyed one is not.
 # High-entropy tokens are resolved by fingerprint and confirmed with hmac.compare_digest (the
-# authenticate_device_token latency optimisation). No path reveals whether an email or token
-# exists (no-oracle discipline) — see `_pad_to_floor`, which is what equalises the branches
-# now that no branch runs a dummy PBKDF2 to match another one'"'"'s cost.
+# authenticate_device_token latency optimisation).
+#
+# THE NO-ORACLE DISCIPLINE IS NOT UNIFORM ACROSS THESE PATHS. Do not read the rule above as a
+# guarantee that none of them leaks existence. `_pad_to_floor` equalises exactly ONE endpoint,
+# `resend_email_verification`, its only caller. `request_password_reset` is unpadded,
+# unauthenticated and unthrottled, and since no branch there runs a dummy PBKDF2 any more,
+# nothing equalises its branches at all — the measured residual is ~2x remote. The numbers and
+# the reasoning are in that function's own comment. Padding and rate-limiting it is a separate,
+# deliberately deferred decision.
 # ---------------------------------------------------------------------------
 
 # Config (overridable via settings; documented in deployments.md). Read at import.
