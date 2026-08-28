@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import logging
 import secrets
+import threading
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -31,7 +32,10 @@ from selahcue_api.apps.accounts.models import (
 from selahcue_api.apps.audit.services import record_audit_event
 # Safe at module scope: `throttling.guards` depends only on the cache, the pure limiter and
 # the error enum — nothing in accounts — so this cannot close an import cycle.
-from selahcue_api.apps.throttling.guards import enforce_budget
+from selahcue_api.apps.throttling.guards import (
+    enforce_budget,
+    enforce_budget_reporting_outage,
+)
 from selahcue_api.graphql.context import (
     ActorContext,
     ActorKind,
@@ -198,12 +202,24 @@ def count_customers(actor: ActorContext | None, *, search: str | None = None) ->
 # ---------------------------------------------------------------------------
 # Traditional email/password customer authentication (DEC-007 / ADR-0023).
 #
-# Every credential follows the shipped hashed-credential convention: make_password
-# hash + HMAC-SHA256(SECRET_KEY) fingerprint. Passwords are LOW-entropy → always
-# verified with check_password (PBKDF2). Session / email-verify / reset tokens are
-# HIGH-entropy → resolved by fingerprint + verified with hmac.compare_digest (the
-# authenticate_device_token latency optimisation). No path reveals whether an email
-# or token exists (no-oracle discipline).
+# Every credential is stored as an at-rest hash + an HMAC-SHA256(SECRET_KEY) fingerprint.
+# WHICH hash depends on the entropy of what is being stored, and that is the whole rule:
+#   - Passwords are LOW-entropy → make_password / check_password (PBKDF2), unconditionally.
+#   - Session tokens likewise keep make_password (ADR-0023; not in DEC-013's scope).
+#   - Email-verify / reset tokens are HIGH-entropy (secrets.token_urlsafe(32) = 256 bits) →
+#     a keyed HMAC under a distinct label (`_credential_token_hash`, DEC-013). Stretching a
+#     256-bit CSPRNG secret compensates for a deficit that does not exist, and a PBKDF2
+#     column is offline-testable from a DB leak in a way a keyed one is not.
+# High-entropy tokens are resolved by fingerprint and confirmed with hmac.compare_digest (the
+# authenticate_device_token latency optimisation).
+#
+# THE NO-ORACLE DISCIPLINE IS NOT UNIFORM ACROSS THESE PATHS. Do not read the rule above as a
+# guarantee that none of them leaks existence. `_pad_to_floor` equalises exactly ONE endpoint,
+# `resend_email_verification`, its only caller. `request_password_reset` is unpadded,
+# unauthenticated and unthrottled, and since no branch there runs a dummy PBKDF2 any more,
+# nothing equalises its branches at all — the measured residual is ~2x remote. The numbers and
+# the reasoning are in that function's own comment. Padding and rate-limiting it is a separate,
+# deliberately deferred decision.
 # ---------------------------------------------------------------------------
 
 # Config (overridable via settings; documented in deployments.md). Read at import.
@@ -290,6 +306,117 @@ RESEND_ADDRESS_BUDGET = (3, 900)
 RESEND_IP_BUDGET = (10, 3600)
 RESEND_GLOBAL_BUDGET = (500, 3600)
 
+# --- sending while the limiter is down ---------------------------------------------------
+# All three budgets above FAIL OPEN. That is right for the RESPONSE — refusing because the
+# limiter is unreachable would turn an outage into a second outage, and a refusal is
+# structurally distinct from `accepted:true`, so failing closed here would hand back exactly
+# the enumeration oracle this endpoint is built to deny. It is wrong for the SEND: while the
+# store is down, "inside your budget" and "we could not check" are the same answer, so an
+# unauthenticated mail-sending endpoint would have NO ceiling at all for as long as Redis is
+# out. That is mailbox flooding and unmetered provider spend, i.e. both of the things the
+# three budgets exist to stop, available to anyone who notices the outage.
+#
+# So the response is unchanged and the SEND degrades instead, under this process-local
+# ceiling. A caller whose send is skipped is left strictly no worse off than before it asked:
+# the mint is skipped with it, so an existing link is neither superseded nor replaced.
+#
+# The ceiling is charged to EVERY call during an outage, not only to the ones that would send.
+# Charging only senders would ration mail more efficiently and would also turn the ceiling
+# into an account-existence oracle: it is shared, an attacker can watch it drain through their
+# own inbox, and a unit that is spent only for real accounts reports exactly the thing this
+# endpoint refuses to report. The three budgets above are unconditional for that same reason.
+#
+# PROCESS-LOCAL is the design and the limitation, in one. The shared store is precisely what
+# is broken, so the fallback cannot use it; with N web workers the effective ceiling is N x
+# the limit. It is a bound on catastrophe during an outage, not a budget — hence a default
+# well under the (500, 3600) global one it stands in for.
+#
+# Memory is three module-level scalars, deliberately NOT a per-address or per-IP map: a map
+# here would be keyed by attacker-chosen values on an unauthenticated endpoint, which is the
+# unbounded growth the repo forbids, and it would grow fastest exactly during the flood.
+RESEND_DEGRADED_SEND_CEILING = (20, 3600)
+_DEGRADED_SEND_LOG_INTERVAL_SECONDS = 60.0
+# A lock, where the log suppressors above accept a benign race. Those cost at most a spare
+# log line; this is a CEILING, and the flood it bounds is concurrent by definition, so an
+# unsynchronised read-modify-write would let it be overspent by however many workers raced.
+_degraded_send_lock = threading.Lock()
+_degraded_window_started = float("-inf")
+_degraded_window_sends = 0
+_last_degraded_send_log = float("-inf")
+
+
+def _degraded_send_ceiling() -> tuple[int, float]:
+    """(limit, window_seconds) for the degraded ceiling, read per call like the floor."""
+    limit, window = getattr(
+        settings, "SELAHCUE_RESEND_DEGRADED_SEND_CEILING", RESEND_DEGRADED_SEND_CEILING
+    )
+    return int(limit), float(window)
+
+
+def _reset_degraded_send_window() -> None:
+    """Test seam: forget the current window and the last report, so a test can observe the
+    first skip and the first warning deterministically without waiting out either interval."""
+    global _degraded_window_started, _degraded_window_sends, _last_degraded_send_log
+    with _degraded_send_lock:
+        _degraded_window_started = float("-inf")
+        _degraded_window_sends = 0
+    _last_degraded_send_log = float("-inf")
+
+
+def _claim_degraded_send() -> bool:
+    """Claim one unit of the degraded ceiling. False means: do not send, and do not mint.
+
+    A fixed window on `time.monotonic()` — the same shape as the store-backed limiter, so the
+    degraded path is not a second rate limiter with its own semantics to reason about.
+
+    Charged on EVERY call during an outage, including calls for addresses that could never
+    send. Charging only senders would be cheaper and is wrong: the ceiling is shared, and an
+    attacker can watch it drain through their own inbox, so a ceiling that only bit for real
+    accounts would leak whether an address has a verification pending — one probe, one bit.
+    That is the defect `resend_email_verification`'s docstring already rules out for the three
+    real budgets, and this stands in for them.
+    """
+    limit, window = _degraded_send_ceiling()
+    global _degraded_window_started, _degraded_window_sends
+    now = time.monotonic()
+    with _degraded_send_lock:
+        if now - _degraded_window_started >= window:
+            _degraded_window_started = now
+            _degraded_window_sends = 0
+        if _degraded_window_sends >= limit:
+            return False
+        _degraded_window_sends += 1
+        return True
+
+
+def _report_degraded_send_skipped() -> None:
+    """Warn — at most once per interval — that mail is being dropped, and why.
+
+    Rate limited for the same reason every other report on this path is: one line per dropped
+    send at flood rate is the unbounded logging the repo forbids. The throttle store logs its
+    own fail-open; this line carries the part that one cannot know, which is that the
+    fail-open has started COSTING something.
+    """
+    global _last_degraded_send_log
+    now = time.monotonic()
+    if now - _last_degraded_send_log < _DEGRADED_SEND_LOG_INTERVAL_SECONDS:
+        return
+    _last_degraded_send_log = now
+    limit, window = _degraded_send_ceiling()
+    logger.warning(
+        "resend-verification skipped a send: limiter unavailable, so all three budgets "
+        "failed open and the process-local fallback ceiling (%d per %.0fs, PER WORKER) is "
+        "spent. Callers still receive the normal accepted:true — the response must not "
+        "reveal the outage — and no link was superseded, so an existing one still works. "
+        "The remedy is to restore the rate-limit store; raising "
+        "SELAHCUE_RESEND_DEGRADED_SEND_CEILING only buys more unmetered mail while it is "
+        "down. Further reports suppressed for %.0fs.",
+        limit,
+        window,
+        _DEGRADED_SEND_LOG_INTERVAL_SECONDS,
+    )
+
+
 # A fixed hash to run check_password against on unknown-email login, so the unknown-email and
 # wrong-password paths take the same PBKDF2 time (no timing oracle on account existence).
 _DUMMY_PASSWORD_HASH = make_password("selahcue-timing-equalizer-not-a-real-password")
@@ -330,6 +457,28 @@ def set_email_sender(sender: EmailSender) -> None:
 def _fingerprint(value: str) -> str:
     # Same HMAC pepper (SECRET_KEY) as the device/license slices.
     return hmac.new(settings.SECRET_KEY.encode("utf-8"), value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _credential_token_hash(value: str) -> str:
+    """At-rest hash for a CredentialToken (DEC-013 / ADR-0023).
+
+    NOT `make_password`. Key stretching buys exactly one thing — time against guessing a
+    LOW-entropy secret — and there is no such deficit here: `_generate_token` is
+    `secrets.token_urlsafe(32)`, 256 bits of CSPRNG output, so a PBKDF2 column costs ~110ms
+    per mint to slow an attacker who was never going to finish the first place.
+
+    It also costs security, which is the part that decided this. A PBKDF2 column stores its
+    salt beside the hash and is therefore offline-testable from a DB leak alone; a keyed HMAC
+    is not testable at all without SECRET_KEY, which a DB leak does not contain. Same pepper
+    as `_fingerprint`, under a DISTINCT LABEL so the two columns are not the same value —
+    `token_fingerprint` resolves the row and this confirms it, and a column that merely
+    repeated the lookup key would confirm nothing.
+
+    The column stays (no migration, and ADR-0023's `DeviceToken` clone keeps its shape); only
+    what goes in it changes. It is write-only for CredentialToken — verification is by
+    fingerprint plus `hmac.compare_digest` — so nothing reads this back with `check_password`.
+    """
+    return _fingerprint(f"credential-token-hash:{value}")
 
 
 def _normalize_email(raw: str) -> str:
@@ -376,7 +525,7 @@ def _mint_credential_token(user: CustomerUser, purpose: str, ttl: timedelta) -> 
     token = CredentialToken(
         customer_user=user,
         purpose=purpose,
-        token_hash=make_password(raw),
+        token_hash=_credential_token_hash(raw),
         token_fingerprint=_fingerprint(raw),
         masked_token=masked,
         expires_at=djtz.now() + ttl,
@@ -692,6 +841,11 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
     flooding), the source IP (spraying distinct addresses), and a global ceiling (total send
     cost). The address budget is spent whether or not the account exists — a limiter that
     only bit for real accounts would itself be the oracle this function exists to avoid.
+
+    All three FAIL OPEN when the limiter store is down, which would otherwise leave this
+    endpoint's send path unbounded for the length of the outage. It does not: an outage
+    degrades the SEND under `_claim_degraded_send`, never the response. See the ceiling's
+    comment for why that asymmetry is the only safe one here.
     """
     started = time.monotonic()
     normalized = _require_valid_email(data.email)
@@ -702,7 +856,13 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
     # Redis keys. Rate-limited calls are NOT padded — a RATE_LIMITED response is already
     # structurally distinct from accepted:true, so its timing reveals nothing further, and
     # padding a rejection would hand an attacker a way to tie up threads.
-    enforce_budget("resend_verify", "global", "SELAHCUE_THROTTLE_RESEND_GLOBAL", RESEND_GLOBAL_BUDGET)
+    # `enforce_budget_reporting_outage`, not `enforce_budget`: a fail-open still permits the
+    # call (see below), but the send path needs to KNOW it was a fail-open rather than a real
+    # allow. `|=` and three separate statements, never `or`: short-circuiting would stop
+    # spending the later budgets, and every one of them must be spent on every call.
+    limiter_degraded = enforce_budget_reporting_outage(
+        "resend_verify", "global", "SELAHCUE_THROTTLE_RESEND_GLOBAL", RESEND_GLOBAL_BUDGET
+    )
     # The per-IP budget is ALWAYS spent. It used to be conditional (`if data.client_ip`), which
     # made it fail open: `client_ip()` itself never returns empty (it falls back to "unknown"),
     # so the only way to get here without an address is the transport failing to supply a
@@ -713,13 +873,29 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
     # unmetered send path.
     if not data.client_ip:
         _report_unresolved_client_ip()
-    enforce_budget(
+    limiter_degraded |= enforce_budget_reporting_outage(
         "resend_verify_ip",
         data.client_ip or UNRESOLVED_CLIENT_IP,
         "SELAHCUE_THROTTLE_RESEND_IP",
         RESEND_IP_BUDGET,
     )
-    enforce_budget("resend_verify_addr", fingerprint, "SELAHCUE_THROTTLE_RESEND_ADDRESS", RESEND_ADDRESS_BUDGET)
+    limiter_degraded |= enforce_budget_reporting_outage(
+        "resend_verify_addr", fingerprint, "SELAHCUE_THROTTLE_RESEND_ADDRESS", RESEND_ADDRESS_BUDGET
+    )
+    # The fallback ceiling is spent HERE — beside the three budgets it stands in for, before
+    # anything has looked the address up, and therefore whether or not the account exists.
+    # That last part is the whole point: the ceiling is shared and an attacker can watch it
+    # drain through their own inbox, so charging only the calls that really send would make
+    # its depletion a readout of whether a probed address had a verification pending. One
+    # request per target, one bit each time. The three budgets above are spent unconditionally
+    # for exactly this reason and this must match them.
+    #
+    # It is not free: while the store is down, a flood of probes can now starve legitimate
+    # resends. That is the same cost the global budget already accepts, and it is the cheaper
+    # side of the trade — a delayed verification email against a working enumeration oracle.
+    degraded_send_allowed = True
+    if limiter_degraded:
+        degraded_send_allowed = _claim_degraded_send()
 
     try:
         now = djtz.now()
@@ -734,10 +910,23 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
                 and user.status == CustomerUserStatus.INVITED
             )
             if not eligible:
-                # Defence in depth for a misconfigured floor (ACCOUNT_RESEND_MIN_SECONDS=0):
-                # run the same PBKDF2 the minting branch runs, mirroring _DUMMY_PASSWORD_HASH
-                # on the login path, so the branches stay comparable even unpadded.
-                make_password("selahcue-resend-timing-equalizer-not-a-real-token")
+                # No equaliser here any more, and its removal is REQUIRED rather than tidy.
+                # It existed to burn the same PBKDF2 the minting branch burned; DEC-013 took
+                # PBKDF2 out of the mint, so keeping it would have inverted the very oracle it
+                # was written to close — the eligible branch would finish in ~1.4ms while this
+                # one burned ~450ms, and a FAST response would mean "this account exists".
+                # Equalisation is the floor's job (`_pad_to_floor`), which pads every branch
+                # that finishes inside it; both branches now do, by a wide margin.
+                return AcceptedResult(accepted=True)
+
+            # The limiter failed open and this call's claim on the fallback ceiling was
+            # refused: skip the send. The MINT is skipped with it, on purpose — superseding a
+            # live link and then not delivering its replacement would leave this caller worse
+            # off than if they had never asked, trading a working link for nothing. Like the
+            # branch above it carries no dummy PBKDF2: see there for why removing it was
+            # required by DEC-013 rather than merely tidy.
+            if not degraded_send_allowed:
+                _report_degraded_send_skipped()
                 return AcceptedResult(accepted=True)
 
             # Supersede any live link, so the previous email stops working the moment a new
@@ -953,9 +1142,25 @@ def request_password_reset(email: str) -> AcceptedResult:
                 lambda: get_email_sender().send_password_reset(reset_user, reset_token)
             )
         else:
-            # Equalise timing with the token-minting branch (which runs a PBKDF2 make_password), so
-            # the response time does not reveal whether the email exists.
-            make_password("selahcue-reset-timing-equalizer-not-a-real-token")
+            # Deliberately empty: the minting branch no longer runs a PBKDF2 (DEC-013), so a
+            # dummy one here would make the NON-EXISTENT-account branch the expensive one and
+            # invert the oracle.
+            #
+            # NO FLOOR APPLIES ON THIS PATH. `_pad_to_floor` is called only from
+            # `resend_email_verification`; `request_password_reset` is unpadded,
+            # unauthenticated and has no rate limiting at all, so nothing here equalises the
+            # two branches. What used to obscure the gap was the minting branch's own PBKDF2
+            # noise, never a constant-time guarantee. Measured, removing that PBKDF2 moved the
+            # branch gap from +2.66ms (sd 83ms) to +0.437ms (sd 0.27ms): absolutely smaller,
+            # but far cheaper to sample now that the noise hiding it shrank with it. Modelled
+            # against network jitter that is roughly a 2x reduction in remote attack cost — a
+            # modest regression of a PRE-EXISTING oracle, not a new one — and it collapses
+            # further for a co-located attacker. Signup is unaffected: its password PBKDF2
+            # runs before the branch.
+            #
+            # Whether to pad and rate-limit this path is a separate decision, tracked as a
+            # follow-up ticket. Deliberately NOT done here.
+            pass
     return AcceptedResult(accepted=True)
 
 
