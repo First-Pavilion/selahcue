@@ -672,9 +672,11 @@ fn no_filesystem_primitive_is_reachable_from_this_crate() {
     // release" and is blind to "a release binary OBTAINS the key at runtime" — which is
     // precisely the threat this guard names above and also cannot catch. Handing that threat
     // on to the byte scan as "the real guarantee" is what turned two honest admissions into
-    // a false claim: security review built the loader that BOTH of them miss (key derived
-    // from the seed file's own decimal form, env read placed in `selahcue-cloud`, behind a
-    // runtime trigger) and every control in the repository passed it green.
+    // a false claim: QA built the loader that BOTH of them miss (key derived from the seed
+    // file's own decimal form, env read placed in `selahcue-cloud`, behind a runtime trigger)
+    // and every control in the repository passed it green. The three env-spelling
+    // counterexamples named above are security review's — two separate demonstrations, kept
+    // apart so the review trail stays traceable.
     //
     // What actually holds this line is the review rule in `TrustedKeys::insert`: no config
     // loader in this crate. That is enforced by a reviewer, deliberately — writing one is a

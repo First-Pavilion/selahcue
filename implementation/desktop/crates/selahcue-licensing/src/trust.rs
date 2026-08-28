@@ -258,9 +258,12 @@ impl TrustedKeys {
     /// rlib for the literal key bytes, so it settles *"is the key compiled into release"* and
     /// cannot see *"does a release binary obtain the key at runtime"*. A loader that derives
     /// the bytes — from the decimal form the seed file itself publishes, for instance —
-    /// leaves it nothing to find. Security review built that loader, put the env read in the
-    /// path dependency `selahcue-cloud` so the guard above is blind too, and every control in
-    /// the repository passed it green.
+    /// leaves it nothing to find. **QA** built that loader — key parsed from the decimal form
+    /// the seed file itself publishes, env read placed in the path dependency
+    /// `selahcue-cloud` so the guard above is blind too, behind a runtime trigger so the
+    /// compile-time `cfg` still matches — and every control in the repository passed it
+    /// green. (The three env counterexamples credited above are security review's; these are
+    /// two different demonstrations and the trail is easier to follow if they stay apart.)
     ///
     /// **No gate closes that, and none is being added.** Handing the runtime-loader threat on
     /// to the byte scan is what turned two honest admissions into a false guarantee, so it is

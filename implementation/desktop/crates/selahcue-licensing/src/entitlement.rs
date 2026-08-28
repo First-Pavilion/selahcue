@@ -464,12 +464,36 @@ pub enum KeepReason {
 /// [`SignedFacts::carries_grants`] — and spends only an explicit signed `degraded: false` as
 /// permission to drop.
 ///
-/// **The residual, stated rather than papered over:** while no server publishes the
-/// `degraded` field, a *genuine* zero-grant licence is also refused, because on the wire it
-/// is identical to a degraded issuance. That defers such a licence; it does not extend
-/// anything, since the cached artefact keeps its own expiry. The clean fix is server-side —
-/// publish `degraded` inside the signature, which [`SignedFacts::is_degraded`] already
-/// prefers over the derived signal.
+/// # The residual, with its actual cost
+///
+/// While no server publishes the `degraded` field, a *genuine* zero-grant licence is refused
+/// too, because on the wire it is identical to a degraded issuance. An earlier version of
+/// this paragraph said that "defers such a licence; it does not extend anything, since the
+/// cached artefact keeps its own expiry". **That is only true when the offered manifest is no
+/// longer than the cache**, and the test written to demonstrate it used equal expiries on
+/// both sides — the one case where the claim holds. It is false in general.
+///
+/// Rule 2 runs *before* the expiry comparison, so a zero-grant **renewal that extends the
+/// licence** is refused entirely and the client keeps the shorter window. QA measured a kept
+/// window of 2 592 000s against an offered 63 072 000s: **700 days forgone**, with a valid
+/// signed manifest refused. When the cache then expires the client has nothing.
+///
+/// **And the refusal does not clear on its own.** Every honest refresh carrying the same
+/// zero-grant shape is refused the same way — QA measured 12 of 12 successive refreshes
+/// refused — so the deferral is bounded by the cached artefact's own expiry, not by the
+/// refresh cadence. No retry, reactivation or operator action lands such a manifest. That is
+/// the same shape the module docs call harmful about the **previous** rule, which pinned the
+/// entitlement over expiry; this rule has its own version of it over grants. The difference
+/// is the direction of failure, not the presence of the trap.
+///
+/// This is a deliberate consequence of refusing drops without signed permission, and it is
+/// fail-closed — the client keeps capability it was legitimately granted rather than losing
+/// every dimension to a server's bad minute. It is recorded here rather than fixed here.
+///
+/// The clean fix is server-side: publish `degraded` inside the signature, which
+/// [`SignedFacts::is_degraded`] already prefers over the derived signal. **No server does
+/// today**, so the recovery path for everything above depends on a change that does not yet
+/// exist.
 ///
 /// A revoked or expired licence is **not** affected by rule 2: the server issues no manifest
 /// at all for one (`POLICY_DENIED` on the issuance allow-list), so there is no shortened
@@ -509,8 +533,10 @@ pub fn decide_cache_replacement(
     // to the licence's own end is correct anyway; for grant loss that reasoning does not hold.
     //
     // The escape hatch is the server's own signed word, not the derived signal: only an
-    // explicit `degraded: false` INSIDE the signature sanctions dropping grants. See the
-    // module docs, "The residual case", for what that costs while no server publishes it.
+    // explicit `degraded: false` INSIDE the signature sanctions dropping grants. What that
+    // costs while no server publishes the field — including a longer zero-grant renewal being
+    // refused outright, and the refusal not clearing on retry — is on this function's own doc
+    // comment, under "The residual, with its actual cost".
     let would_drop_grants = cached.carries_grants() && !incoming.carries_grants();
     let server_signed_that_the_drop_is_genuine = incoming.degraded == Some(false);
     if would_drop_grants && !server_signed_that_the_drop_is_genuine {

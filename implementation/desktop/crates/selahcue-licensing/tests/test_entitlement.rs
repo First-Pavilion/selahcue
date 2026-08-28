@@ -424,9 +424,13 @@ fn only_a_signed_not_degraded_lets_a_zero_grant_manifest_replace_a_grant_bearing
     // The residual, written as a test rather than papered over. While the server publishes no
     // `degraded` field — which is every payload today — a GENUINE zero-grant licence cannot
     // replace a grant-bearing cache: on the wire it is indistinguishable from a degraded
-    // issuance, and rule 2 resolves that ambiguity in favour of keeping the grants. The
-    // refusal DEFERS and does not extend anything: the cached artefact keeps its own expiry,
-    // so the customer's offline window is unchanged either way.
+    // issuance, and rule 2 resolves that ambiguity in favour of keeping the grants.
+    //
+    // NOTE the expiries below are EQUAL on both sides, which makes this the case where the
+    // refusal genuinely costs nothing. That is not the general case, and an earlier revision
+    // of this file claimed it was — asserting "the refusal does not extend anything" from
+    // these premises alone. What it actually costs is measured in
+    // `a_refused_zero_grant_renewal_forfeits_a_longer_window_and_never_clears`.
     //
     // The recovery path is the server signing the field, which `SignedFacts` already prefers
     // over the derived signal. This is the positive control for that hatch — without it the
@@ -463,6 +467,96 @@ fn only_a_signed_not_degraded_lets_a_zero_grant_manifest_replace_a_grant_bearing
         }),
         "with no signed word, an empty grant map is read as the degraded signature it almost \
          always is"
+    );
+}
+
+#[test]
+fn a_refused_zero_grant_renewal_forfeits_a_longer_window_and_never_clears() {
+    // What the residual ACTUALLY costs, measured rather than asserted in prose. Rule 2 runs
+    // before the expiry comparison, so a zero-grant manifest that would EXTEND the licence is
+    // refused just as firmly as one that would shorten it. The sibling test above holds the
+    // expiries equal, which is exactly the case where the refusal is free; this is the case
+    // where it is not, and it is the reason the "does not extend anything" claim was wrong.
+    //
+    // This pins a DELIBERATE, fail-closed consequence — keeping capability that was
+    // legitimately granted beats losing every dimension to a server's bad minute — not a
+    // behaviour anyone is happy with. It is here so the cost is visible and so a future
+    // server-side `degraded` flag has something to measure itself against. See
+    // `decide_cache_replacement`'s doc comment, "The residual, with its actual cost".
+    const THIRTY_DAYS: i64 = 30 * 24 * 60 * 60; // 2_592_000
+    const TWO_YEARS: i64 = 2 * YEAR; //          63_072_000
+
+    let short_cache =
+        SignedFacts::from_verified_payload(T0 + THIRTY_DAYS, T0 + THIRTY_DAYS, T0, None, 4);
+    let longer_zero_grant_renewal =
+        SignedFacts::from_verified_payload(T0 + TWO_YEARS, T0 + TWO_YEARS, T0 + 3600, None, 0);
+
+    // Premises, so this cannot pass for the wrong reason: the offer really is LONGER, really
+    // carries no grants, really is not a replay, and really is unexplained by the server.
+    assert!(
+        longer_zero_grant_renewal.expires_at_unix() > short_cache.expires_at_unix(),
+        "the offer must extend the window, or this measures nothing"
+    );
+    assert!(!longer_zero_grant_renewal.carries_grants());
+    assert!(short_cache.carries_grants());
+    assert!(longer_zero_grant_renewal.issued_at_unix() > short_cache.issued_at_unix());
+    assert_eq!(longer_zero_grant_renewal.degraded(), None);
+
+    assert_eq!(
+        decide_cache_replacement(Some(short_cache), longer_zero_grant_renewal),
+        CacheDecision::KeepCached(KeepReason::DegradedWouldDropGrants {
+            cached_grant_count: 4,
+        }),
+        "a longer window does not buy the right to drop every grant"
+    );
+
+    // The cost, stated as a number rather than a shrug.
+    let forgone = longer_zero_grant_renewal.expires_at_unix() - short_cache.expires_at_unix();
+    assert_eq!(
+        forgone,
+        700 * 24 * 60 * 60,
+        "kept={}s vs offered={}s — the refusal forfeits {} days of offline window",
+        THIRTY_DAYS,
+        TWO_YEARS,
+        forgone / (24 * 60 * 60)
+    );
+
+    // AND IT DOES NOT CLEAR. Every honest refresh of the same shape is refused identically,
+    // so the deferral is bounded by the CACHE's own expiry, not by the refresh cadence. This
+    // is the same trap the module docs describe as harmful about the previous rule — which
+    // pinned the entitlement over expiry — now reachable over grants instead. The recovery
+    // path is a signed `degraded`, which no server publishes today.
+    for refresh in 1..=12 {
+        let retry = SignedFacts::from_verified_payload(
+            T0 + TWO_YEARS,
+            T0 + TWO_YEARS,
+            T0 + 3600 * refresh,
+            None,
+            0,
+        );
+        assert_eq!(
+            decide_cache_replacement(Some(short_cache), retry),
+            CacheDecision::KeepCached(KeepReason::DegradedWouldDropGrants {
+                cached_grant_count: 4,
+            }),
+            "refresh {refresh} of 12 must be refused too — retrying is not the recovery path"
+        );
+    }
+
+    // Positive control for the whole test: the SAME renewal lands the moment the server signs
+    // that the drop is deliberate. Without this, "refused" above would be indistinguishable
+    // from a rule that refuses everything.
+    let signed_renewal = SignedFacts::from_verified_payload(
+        T0 + TWO_YEARS,
+        T0 + TWO_YEARS,
+        T0 + 3600,
+        Some(false),
+        0,
+    );
+    assert_eq!(
+        decide_cache_replacement(Some(short_cache), signed_renewal),
+        CacheDecision::Replace,
+        "the server-side flag is the recovery path, and it works — it is just not published yet"
     );
 }
 

@@ -209,8 +209,23 @@ grep -q '"crates/selahcue-import"' "$DESKTOP/Cargo.toml" \
 # it can never see RUSTFLAGS in the environment. Each fix here narrows the gap by one
 # spelling; none closes it, because this matches TEXT.
 #
-# The gate is scripts/dev_key_not_in_release.sh, which scans the emitted release rlib for the
-# key bytes and so closes every one of those routes at once.
+# The effect-level gate is scripts/dev_key_not_in_release.sh, which scans the emitted release
+# rlib for the key bytes and so closes every one of the CONFIGURATION routes above at once.
+#
+# It is not a superset of everything, and this is the last place that said so without saying
+# what it misses. It searches for the LITERAL key bytes, so it settles "is the key compiled
+# into release" and is blind to "does a release binary obtain the key at runtime" -- a loader
+# that derives the bytes leaves it nothing to find. The release `iff` test in CI is what
+# catches that one, so the two are complementary and neither is redundant:
+#
+#   route                                          | byte scan | release iff test
+#   -----------------------------------------------+-----------+------------------
+#   profile table / cargo config / RUSTFLAGS       | KILL      | miss
+#   runtime loader, non-literal key                | miss      | KILL
+#   ...the same loader behind a runtime trigger    | miss      | miss
+#
+# The bottom row is closed by neither, deliberately: "no config loader in this crate" is a
+# review-enforced rule (selahcue-licensing/src/trust.rs, `TrustedKeys::insert`), not a gate.
 echo ">> checking no release-inheriting profile re-enables debug-assertions"
 for manifest in "$DESKTOP/Cargo.toml" "$DESKTOP/crates/selahcue-operator/Cargo.toml"; do
   [ -f "$manifest" ] || fail "expected manifest $manifest is missing — repoint this guard"
