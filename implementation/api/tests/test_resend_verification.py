@@ -290,12 +290,23 @@ PROBE_FLOOR_FIT_TOLERANCE_SECONDS = PROBE_SPREAD_BUDGET_SECONDS
 # WHERE THE RATIO MUST SIT. There are two populations here and the clamp has to land in the
 # gap between them. Over 777 sliding calibration windows through the real endpoint at load
 # 7->26: honest windows, where the samples move together, sit at max/median <= 1.15 (p95);
-# true spikes run 1.5-2.6; the band between is nearly empty. So 1.5 binds on 1.6% of windows,
-# almost all of them genuine spikes — including the 1.88x case below — while 2.0 binds on
-# 0.36% and misses roughly 78% of the spikes the clamp exists for. Not knife-edge: anything in
-# ~1.3-1.6 behaves near-identically. Below ~1.2 it starts binding on HONEST windows (13.7% at
-# 1.1), which would cap the floor on a genuinely slow host and reintroduce the optimistic
-# floor `max` was chosen to avoid.
+# true spikes run 1.5-2.6; the band between is nearly empty. So 1.5 binds on 1.6% of those
+# WARM-STREAM windows, almost all of them genuine spikes — including the 1.88x case below —
+# while 2.0 binds on 0.36% and misses roughly 78% of the spikes the clamp exists for. Not
+# knife-edge: anything in ~1.3-1.6 behaves near-identically. Below ~1.2 it starts binding on
+# HONEST windows (13.7% at 1.1), which would cap the floor on a genuinely slow host and
+# reintroduce the optimistic floor `max` was chosen to avoid.
+#
+# THAT 1.6% IS THE WARM-STREAM RATE, NOT THE PROBE'S. Those 777 windows are cut from an
+# already-running stream, so none of them contains a cold start. The probe's own calibration
+# does not begin warm: its FIRST sample pays warm-up, and it was the largest sample of the run
+# in 30 of 30 runs measured. In the probe's real usage the clamp therefore BINDS ON MOST RUNS
+# (~90%), not on 1.6% of them. That is the clamp working as intended — a cold first sample is
+# exactly the transient `max` cannot tell apart from a sustained slowdown — but read the 1.6%
+# as "this hardly ever engages" and you would be wrong about which path is normally live.
+# Discarding the warm-up sample is the real fix. It is deliberately NOT done here: performance
+# has certified the current probe end-to-end, and changing what it measures would invalidate
+# that certification. Tracked as a follow-up ticket.
 #
 # WHY IT IS NOT TIDINESS. An inflated floor does not only mis-diagnose reds, it BLUNTS the
 # probe: padding legitimately hides any difference smaller than the floor. At 2.0 a real 1.88x

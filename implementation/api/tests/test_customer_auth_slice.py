@@ -278,6 +278,60 @@ def test_raw_verify_token_never_stored_plaintext(client, sender):
     assert ct.masked_token != raw
 
 
+def test_credential_token_hash_is_per_token_and_distinct_from_the_fingerprint():
+    """WHAT THIS PINS: the DEC-013 cheap-hash mint itself — `_credential_token_hash`.
+
+    MUST FAIL if either control it names is removed:
+      1. returning a CONSTANT for every token (the hash stops depending on the token);
+      2. dropping the DISTINCT LABEL so `token_hash` is an exact copy of `token_fingerprint`
+         — the precise thing the function's own docstring says must not happen ("a column
+         that merely repeated the lookup key would confirm nothing").
+
+    The pre-existing row assertions nearby (`raw not in token_hash`) survive BOTH mutations:
+    a constant contains no raw token, and neither does the fingerprint. Hence this test.
+
+    Pure: HMAC over SECRET_KEY, no DB, so no `django_db` marker is needed.
+    """
+    token_a = "SC-EVF-" + "a" * 32
+    token_b = "SC-EVF-" + "b" * 32
+    assert token_a != token_b, "the two sample tokens must differ or nothing below is a test"
+
+    hash_a = services._credential_token_hash(token_a)
+    hash_b = services._credential_token_hash(token_b)
+    fingerprint_a = services._fingerprint(token_a)
+    fingerprint_b = services._fingerprint(token_b)
+
+    # POSITIVE CONTROL, asserted BEFORE the contract. Without it, "the values differ" is
+    # indistinguishable from a DEAD mechanism: a function returning fresh randomness per call
+    # would satisfy every distinctness assertion below while hashing nothing.
+    assert hash_a == services._credential_token_hash(token_a), (
+        "_credential_token_hash is not deterministic, so the distinctness contracts below "
+        "were not exercised — they would also pass for a function returning fresh randomness"
+    )
+    assert len(hash_a) == 64 and set(hash_a) <= set("0123456789abcdef"), (
+        f"_credential_token_hash no longer returns an HMAC-SHA256 hex digest ({hash_a!r}), so "
+        "the shape this column is specified to hold was not exercised"
+    )
+    # The comparison below is only meaningful while `_fingerprint` is itself token-dependent.
+    assert fingerprint_a != fingerprint_b, (
+        "_fingerprint is not input-dependent, so 'token_hash differs from token_fingerprint' "
+        "was not exercised against a live lookup key"
+    )
+
+    # CONTRACT 1 — dies if the hash is a constant.
+    assert hash_a != hash_b, (
+        "_credential_token_hash returned the same digest for two DIFFERENT tokens: the "
+        "at-rest hash no longer depends on the token it is supposed to confirm"
+    )
+
+    # CONTRACT 2 — dies if the distinct label is dropped.
+    assert hash_a != fingerprint_a and hash_b != fingerprint_b, (
+        "_credential_token_hash produced the same value as _fingerprint for the same token: "
+        "the DEC-013 distinct label is gone, so token_hash is an exact copy of the lookup "
+        "key token_fingerprint and confirms nothing"
+    )
+
+
 # --- AUTH-4: login / session / logout / refresh ---------------------------
 @pytest.mark.django_db
 def test_login_unknown_email_and_wrong_password_are_identical(client, sender):

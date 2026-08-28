@@ -1138,7 +1138,22 @@ def request_password_reset(email: str) -> AcceptedResult:
         else:
             # Deliberately empty: the minting branch no longer runs a PBKDF2 (DEC-013), so a
             # dummy one here would make the NON-EXISTENT-account branch the expensive one and
-            # invert the oracle. The constant-time floor equalises both.
+            # invert the oracle.
+            #
+            # NO FLOOR APPLIES ON THIS PATH. `_pad_to_floor` is called only from
+            # `resend_email_verification`; `request_password_reset` is unpadded,
+            # unauthenticated and has no rate limiting at all, so nothing here equalises the
+            # two branches. What used to obscure the gap was the minting branch's own PBKDF2
+            # noise, never a constant-time guarantee. Measured, removing that PBKDF2 moved the
+            # branch gap from +2.66ms (sd 83ms) to +0.437ms (sd 0.27ms): absolutely smaller,
+            # but far cheaper to sample now that the noise hiding it shrank with it. Modelled
+            # against network jitter that is roughly a 2x reduction in remote attack cost — a
+            # modest regression of a PRE-EXISTING oracle, not a new one — and it collapses
+            # further for a co-located attacker. Signup is unaffected: its password PBKDF2
+            # runs before the branch.
+            #
+            # Whether to pad and rate-limit this path is a separate decision, tracked as a
+            # follow-up ticket. Deliberately NOT done here.
             pass
     return AcceptedResult(accepted=True)
 
