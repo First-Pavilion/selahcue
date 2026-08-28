@@ -50,6 +50,7 @@ from selahcue_api.apps.catalogue.services import (
     SetPlanGrantData,
     current_revision,
     resolve_entitlement,
+    resolve_plan_for_license,
     set_license_grant_override,
     set_license_plan_assignment,
     set_plan_grant,
@@ -1362,6 +1363,74 @@ def test_set_license_plan_assignment_replays_idempotently():
 
     assert second.created is False
     assert AuditEvent.objects.filter(action="catalogue.license_plan_assigned").count() == audited
+
+
+# --- The fallback is not assignable either --------------------------------------------------
+#
+# Moving a licence ONTO the fallback grants it the catalogue's most permissive values for
+# the rest of its life, signed and cached offline — identical in effect to issuing onto it.
+# Closing only the issuance door would leave the same hole open one function away.
+
+
+def test_assigning_a_licence_to_the_designated_fallback_is_refused():
+    key = _license_key(tag="govassignfallback")
+    fallback = Plan.objects.get(is_fallback=True)
+    before = LicensePlanAssignment.objects.filter(license_key=key).count()
+
+    with pytest.raises(SafeAPIError) as caught:
+        set_license_plan_assignment(
+            _staff(StaffPermission.GRANT_ENTITLEMENT),
+            SetLicensePlanAssignmentData(
+                idempotency_key="catalogue-assign-fallback",
+                license_key_id=str(key.id),
+                plan_code=fallback.code,
+                reason="Attempted move onto the pre-catalogue plan.",
+            ),
+        )
+
+    assert caught.value.code == ErrorCode.POLICY_DENIED
+    assert "fallback" in str(caught.value).lower()
+    # The ENTITY: no assignment row was written, and none was left half-written.
+    assert LicensePlanAssignment.objects.filter(license_key=key).count() == before
+    assert not LicensePlanAssignment.objects.filter(license_key=key, plan=fallback).exists()
+
+
+def test_assigning_a_licence_to_a_sellable_plan_still_works():
+    """POSITIVE CONTROL for the refusal above — otherwise a `set_license_plan_assignment`
+    that refuses everything would satisfy it just as well."""
+    key = _license_key(tag="govassignsellable")
+    plan = Plan.objects.get(code="PLATINUM")
+    assert plan.is_fallback is False, "premise: PLATINUM is the fallback, so this proves nothing"
+
+    result = set_license_plan_assignment(
+        _staff(StaffPermission.GRANT_ENTITLEMENT),
+        SetLicensePlanAssignmentData(
+            idempotency_key="catalogue-assign-sellable",
+            license_key_id=str(key.id),
+            plan_code=plan.code,
+            reason="Upgraded after the pilot concluded.",
+        ),
+    )
+
+    assert result.assignment.plan.code == "PLATINUM"
+    assert LicensePlanAssignment.objects.filter(license_key=key, plan=plan).exists()
+
+
+def test_the_assignment_refusal_leaves_resolution_and_the_fallback_untouched():
+    """DEC-014 refuses WRITING an assignment to the fallback. It must not change READING
+    one: a licence with no assignment still falls through to the fallback, which is what
+    keeps pre-catalogue licences whole. Restoring fallback behaviour means deleting the
+    assignment row, not assigning the fallback."""
+    key = _license_key(tag="govassignresolve")
+    fallback = Plan.objects.get(is_fallback=True)
+    assert not LicensePlanAssignment.objects.filter(license_key=key).exists(), (
+        "premise: this licence carries an assignment, so it is not exercising the fallthrough"
+    )
+
+    assert resolve_plan_for_license(key).pk == fallback.pk, (
+        "a licence with no assignment stopped reaching the fallback — the refusal changed "
+        "resolution, which it must not"
+    )
 
 
 # --- Replaying an override must not extend its time-box ------------------------------------

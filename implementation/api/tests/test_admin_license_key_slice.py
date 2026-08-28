@@ -86,9 +86,9 @@ def generate_key_input(customer_id, idempotency_key="license-generate-0001", **o
         "customerId": str(customer_id),
         "keyType": "TRIAL",
         "featureScope": "CHURCH",
-        # DEC-014: issuance names a plan. LEGACY is the plan this licence previously
-        # reached through the fallback, so naming it changes nothing this file asserts.
-        "planCode": "LEGACY",
+        # DEC-014: issuance names a plan, and refuses the catalogue's designated fallback —
+        # so this names a sellable plan. Nothing this file asserts depends on which.
+        "planCode": "PRO",
         "startsAt": starts_at.isoformat().replace("+00:00", "Z"),
         "expiresAt": expires_at.isoformat().replace("+00:00", "Z"),
         "timezone": "Africa/Lagos",
@@ -457,7 +457,7 @@ def test_license_key_generation_rolls_back_when_audit_write_fails(monkeypatch):
                 customer_id=str(customer.id),
                 key_type="TRIAL",
                 feature_scope="CHURCH",
-                plan_code="LEGACY",
+                plan_code="PRO",
                 starts_at=starts_at,
                 expires_at=starts_at + timedelta(days=30),
                 timezone="Africa/Lagos",

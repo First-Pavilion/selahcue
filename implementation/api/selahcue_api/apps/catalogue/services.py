@@ -719,6 +719,41 @@ def set_license_plan_assignment(
         if plan is None or license_key is None:
             raise SafeAPIError(ErrorCode.NOT_FOUND)
 
+        # The same refusal as issuance (DEC-014), for the same reason. Moving a licence ONTO
+        # the fallback grants it the catalogue's most permissive values for the rest of its
+        # life, signed and cached offline — identical in effect to issuing onto it, so
+        # closing only the issuance door would leave the hole open one function away. The
+        # governed path carries a permission, a reason and an audit row, but ceremony does
+        # not stop a typo: that is the argument already written beside
+        # `accountability_constraints`, applied here.
+        #
+        # This does NOT touch resolution. A licence with no assignment still falls back
+        # exactly as it did (`resolve_plan_for_license`), which is what keeps pre-catalogue
+        # licences whole — the refusal is on writing an assignment, not on reading one.
+        # Restoring a licence to fallback behaviour therefore means DELETING its assignment
+        # row, not assigning the fallback: a deliberate data repair rather than a routine
+        # operator lever, which is the right weight for an action that grants unlimited
+        # everything.
+        if plan.is_fallback:
+            logger.warning(
+                "refused to assign licence %s to plan %r (%s): it is the catalogue's "
+                "designated fallback (is_fallback=True) and grants the catalogue's most "
+                "permissive values. To restore fallback behaviour, delete the licence's "
+                "assignment row so resolution falls through. Requested by actor %s.",
+                data.license_key_id,
+                plan.code,
+                plan.display_name,
+                staff.actor_id,
+            )
+            raise SafeAPIError(
+                ErrorCode.POLICY_DENIED,
+                f"Plan {plan.code!r} ({plan.display_name}) is the catalogue's designated "
+                "fallback, not a sellable tier. Assigning a licence to it would grant the "
+                "catalogue's most permissive values for the rest of the licence's life, "
+                "cached offline until it expires. Assign the plan the customer is actually "
+                "on; to restore pre-catalogue behaviour, remove the assignment instead.",
+            )
+
         existing = LicensePlanAssignment.objects.select_related("plan").filter(
             license_key=license_key
         ).first()

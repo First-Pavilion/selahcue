@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone as dt_timezone
@@ -24,6 +25,7 @@ from selahcue_api.graphql.context import (
 )
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
+logger = logging.getLogger(__name__)
 
 KEY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 KEY_BODY_GROUPS = 8
@@ -163,6 +165,52 @@ def generate_license_key(
                 ErrorCode.NOT_FOUND,
                 f"No catalogue plan has the code {plan_code!r}. Issue the licence on a plan "
                 "that exists, or add the plan to the catalogue first.",
+            )
+
+        # DEC-014, second half: the fallback cannot be sold ON PURPOSE either.
+        #
+        # The check above closed the SILENT path onto the fallback. This closes the
+        # deliberate one. The designated fallback is a no-regression bridge — its display
+        # name is literally "Legacy (pre-catalogue)" — and it is the most permissive plan in
+        # the catalogue. A typo or a copied admin call that names it grants unlimited
+        # outputs, unlimited NDI and no watermark for the licence's ENTIRE LIFE, signed and
+        # cached offline until expiry, with no revocation list to take it back.
+        #
+        # Keyed on `is_fallback`, never on the code: which plan is the fallback is DATA
+        # (FR-544/DEC-008), so designating a different one moves this refusal with it and
+        # no tier name is hardcoded here — the invariant `test_product_catalogue_slice.py`
+        # sweeps the source for.
+        #
+        # POLICY_DENIED rather than VALIDATION_FAILED: the request is well formed and the
+        # plan really exists, so this is policy refusing a legal request — the same shape as
+        # the archived-customer refusal above. It also happens to be the more useful code
+        # through GraphQL, where `SAFE_MESSAGES` discards this message: the caller at least
+        # gets "The current policy does not allow this action." instead of "The request is
+        # invalid.", which is the difference between a hint and nothing.
+        if plan.is_fallback:
+            # The specific reason has to survive somewhere an operator will actually look,
+            # because the GraphQL caller will never see it. Audit rows in this service are
+            # written on success only — deliberately, and the code review confirmed that —
+            # so a refusal has no audit row to carry it. The log is the diagnosis surface.
+            logger.warning(
+                "refused to issue a licence for customer %s on plan %r (%s): it is the "
+                "catalogue's designated fallback (is_fallback=True), which exists to "
+                "preserve what pre-catalogue licences already had and grants the "
+                "catalogue's most permissive values. Issue on a sellable plan. "
+                "Requested by actor %s.",
+                data.customer_id,
+                plan.code,
+                plan.display_name,
+                staff.actor_id,
+            )
+            raise SafeAPIError(
+                ErrorCode.POLICY_DENIED,
+                f"Plan {plan.code!r} ({plan.display_name}) is the catalogue's designated "
+                "fallback, not a sellable tier. It exists to preserve what licences issued "
+                "before the catalogue already had, so it carries the most permissive grants "
+                "in the catalogue — a licence issued on it would keep them for its whole "
+                "life, cached offline until it expires. Issue this licence on the plan the "
+                "customer is actually buying.",
             )
 
         full_key = _generate_full_key(key_type)

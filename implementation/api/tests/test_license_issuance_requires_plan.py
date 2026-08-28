@@ -262,6 +262,147 @@ def test_a_novel_feature_scope_cannot_silently_reach_the_fallback():
     assert resolved_plan.pk != fallback.pk, "the named plan resolved to the fallback anyway"
 
 
+# --- The fallback cannot be sold ON PURPOSE either -------------------------------------------
+#
+# The refusals above close the SILENT path onto the fallback. These close the deliberate
+# one. The fallback is a no-regression bridge — display name "Legacy (pre-catalogue)" — and
+# the most permissive plan in the catalogue, so a licence knowingly issued on it carries
+# unlimited outputs, unlimited NDI and no watermark for its whole life, signed and cached
+# offline until expiry, with no revocation list to take it back.
+
+
+def test_issuing_on_the_designated_fallback_is_refused_and_creates_nothing():
+    fallback = _assert_fallback_is_the_permissive_one("premise-sold-fallback")
+    customer = _org("sold-fallback")
+    before_keys = set(AppLicenseKey.objects.values_list("id", flat=True))
+    before_assignments = LicensePlanAssignment.objects.count()
+
+    with pytest.raises(SafeAPIError) as caught:
+        generate_license_key(
+            _actor(), _issue_data(customer, tag="sold-fallback", plan_code=fallback.code)
+        )
+
+    assert caught.value.extensions["code"] == ErrorCode.POLICY_DENIED.value, (
+        "a well-formed request naming a real plan that policy forbids is a POLICY_DENIED, "
+        f"not {caught.value.extensions['code']!r} — the code is what a caller branches on"
+    )
+    # The ENTITY, not a proxy: no row for this customer, and no new row anywhere.
+    assert not AppLicenseKey.objects.filter(customer=customer).exists(), (
+        "a licence was created on the fallback plan despite the refusal"
+    )
+    assert set(AppLicenseKey.objects.values_list("id", flat=True)) == before_keys
+    assert LicensePlanAssignment.objects.count() == before_assignments
+
+
+def test_the_fallback_refusal_names_why_rather_than_only_refusing():
+    """The message must say WHY, so the reason exists somewhere to be read.
+
+    Asserted on the SERVICE, for the same reason as the missing-plan refusal above: the
+    admin GraphQL view replaces every message with a canned one per error code, so this text
+    does not reach a GraphQL caller — see the note in the pull request. What that caller does
+    get is POLICY_DENIED rather than VALIDATION_FAILED, which is at least a different and
+    more accurate hint; the full reason reaches the operator through the log, asserted below.
+    """
+    fallback = _assert_fallback_is_the_permissive_one("premise-fallback-msg")
+    customer = _org("fallback-msg")
+
+    with pytest.raises(SafeAPIError) as caught:
+        generate_license_key(
+            _actor(), _issue_data(customer, tag="fallback-msg", plan_code=fallback.code)
+        )
+
+    message = str(caught.value)
+    assert "fallback" in message.lower(), (
+        f"the refusal does not say the plan is the fallback: {message!r}"
+    )
+    assert fallback.code in message, (
+        f"the refusal does not name the plan it refused: {message!r}"
+    )
+
+
+def test_the_fallback_refusal_reaches_the_log_where_an_operator_will_look(caplog):
+    """`SAFE_MESSAGES` discards the reason for the GraphQL caller, and this service writes
+    audit rows on SUCCESS only — deliberately, and consistently with every other refusal in
+    it. So the log is the only diagnosis surface a refusal has, and it has to carry the
+    reason rather than just the fact."""
+    fallback = _assert_fallback_is_the_permissive_one("premise-fallback-log")
+    customer = _org("fallback-log")
+
+    with caplog.at_level("WARNING", logger="selahcue_api.apps.license_keys.services"):
+        with pytest.raises(SafeAPIError):
+            generate_license_key(
+                _actor(), _issue_data(customer, tag="fallback-log", plan_code=fallback.code)
+            )
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert logged, "the refusal logged nothing at all, so it is undiagnosable in production"
+    assert "is_fallback=True" in logged, (
+        f"the log does not say WHY the plan was refused: {logged!r}"
+    )
+    assert fallback.code in logged, f"the log does not name the plan refused: {logged!r}"
+
+
+def test_a_non_fallback_plan_still_issues(caplog):
+    """POSITIVE CONTROL. Without this, a refusal that refuses EVERYTHING — or an issuance
+    path broken outright — is indistinguishable from the control this file names."""
+    named = Plan.objects.get(code=NAMED_PLAN_CODE)
+    assert named.is_fallback is False, (
+        f"premise: {NAMED_PLAN_CODE!r} is now the fallback, so this control proves nothing"
+    )
+    customer = _org("not-fallback")
+
+    with caplog.at_level("WARNING", logger="selahcue_api.apps.license_keys.services"):
+        result = generate_license_key(
+            _actor(), _issue_data(customer, tag="not-fallback", plan_code=NAMED_PLAN_CODE)
+        )
+
+    assert result.created is True
+    assert result.full_key is not None
+    assignment = LicensePlanAssignment.objects.get(license_key=result.license_key)
+    assert assignment.plan.code == NAMED_PLAN_CODE
+    assert not caplog.records, (
+        f"a healthy issuance logged a refusal warning: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+def test_the_refusal_follows_the_is_fallback_FLAG_not_the_plan_code():
+    """Which plan is the fallback is DATA (FR-544/DEC-008), so the refusal must move with
+    the flag. A refusal keyed on the literal 'LEGACY' would pass every test above and still
+    be the hardcoded-tier-name defect this whole app exists to avoid.
+
+    Designating a different fallback must therefore refuse THAT plan and release the old one.
+    """
+    old_fallback = Plan.objects.get(is_fallback=True)
+    new_fallback = Plan.objects.get(code=NAMED_PLAN_CODE)
+    assert old_fallback.code != new_fallback.code
+
+    # One fallback at a time — `uniq_catalogue_fallback_plan` is a partial unique index.
+    old_fallback.is_fallback = False
+    old_fallback.save(update_fields=["is_fallback"])
+    new_fallback.is_fallback = True
+    new_fallback.save(update_fields=["is_fallback"])
+
+    # The newly designated fallback is now refused...
+    with pytest.raises(SafeAPIError) as caught:
+        generate_license_key(
+            _actor(),
+            _issue_data(_org("moved-refused"), tag="moved-refused", plan_code=new_fallback.code),
+        )
+    assert caught.value.extensions["code"] == ErrorCode.POLICY_DENIED.value, (
+        f"{new_fallback.code!r} is now the fallback but issuance still allowed it — the "
+        "refusal is keyed on a hardcoded plan code, not on is_fallback"
+    )
+
+    # ...and the plan that used to be the fallback is now issuable.
+    result = generate_license_key(
+        _actor(),
+        _issue_data(_org("moved-allowed"), tag="moved-allowed", plan_code=old_fallback.code),
+    )
+    assert result.created is True, (
+        f"{old_fallback.code!r} is no longer the fallback but issuance still refused it"
+    )
+
+
 # --- What issuance now writes ----------------------------------------------------------------
 
 

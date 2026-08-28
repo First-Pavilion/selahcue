@@ -138,7 +138,7 @@ def _seed_license_key(*, tag, device_limit=3, feature_scope="CHURCH"):
             customer_id=str(customer.id),
             key_type="TRIAL",
             feature_scope=feature_scope,
-            plan_code="LEGACY",
+            plan_code="PRO",
             starts_at=now,
             expires_at=now + timedelta(days=30),
             timezone="Africa/Lagos",
