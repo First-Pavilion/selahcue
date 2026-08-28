@@ -12,12 +12,22 @@ grants. Shell access is already game-over under the documented trust model, so t
 consistency rather than new protection — but the inconsistency was in the direction of the
 higher-blast-radius table, which is the wrong way round.
 
-**Three operations, in this order, and the order is the point.** Adding a column and
-constraining it in one step fails against a table that already has rows: the seeded plans
-and grants from 0002 would be checked against a constraint they cannot yet satisfy. So the
-columns land nullable-in-effect (a blank default), the existing rows are backfilled, and
-only then is the constraint applied. That is also what makes this safe against live data:
-at no point is there a window where a row exists that the schema forbids.
+**Add the columns, then backfill — and constrain in 0005, a SEPARATE migration.** Adding a
+column and constraining it in one step fails against a table that already has rows: the
+seeded plans and grants from 0002 would be checked against a constraint they cannot yet
+satisfy. So the columns land nullable-in-effect (a blank default) and the existing rows are
+backfilled here. At no point is there a window where a row exists that the schema forbids.
+
+**Why the constraints are not also in this file.** They were, and it does not work on
+Postgres. `PlanGrant` has foreign keys, so the backfill `UPDATE` below queues deferred FK
+trigger events, and Postgres refuses `ALTER TABLE ... ADD CONSTRAINT` on a table with any
+pending — `cannot ALTER TABLE "selahcue_catalogue_plangrant" because it has pending trigger
+events`. A migration is one transaction, so the queue is still there when the ALTER runs.
+SQLite has no deferred trigger queue and applies the identical migration happily, which is
+why this reached CI: it is invisible to any verification run on the bundled SQLite, and
+only CI (and production) run Postgres. Splitting the ALTERs into 0005 puts them in their own
+transaction, after this one has committed and the queue has drained. Do not merge 0005 back
+into this file.
 """
 
 from django.db import migrations, models
@@ -27,14 +37,14 @@ from django.db import migrations, models
 # it is greppable in a way "system" is not.
 SEED_ACTOR_ID = "migration_0002_seed_catalogue_reference_data"
 
-# Must clear `MIN_REASON_LENGTH` (8) or the constraint this migration adds would reject the
-# very rows it just backfilled.
+# Must clear `MIN_REASON_LENGTH` (8) or the constraint 0005 adds would reject the very rows
+# this migration just backfilled.
 SEED_REASON = (
     "Catalogue reference data seeded by migration 0002 from the DEC-008 tier table, "
     "before these accountability columns existed."
 )
 
-assert len(SEED_REASON) >= 8, "the backfilled reason must satisfy the constraint added below"
+assert len(SEED_REASON) >= 8, "the backfilled reason must satisfy the constraint 0005 adds"
 
 
 def backfill_accountability(apps, schema_editor):
@@ -89,32 +99,4 @@ class Migration(migrations.Migration):
             preserve_default=False,
         ),
         migrations.RunPython(backfill_accountability, unbackfill),
-        migrations.AddConstraint(
-            model_name="plan",
-            constraint=models.CheckConstraint(
-                condition=~models.Q(changed_by_actor_id=""),
-                name="catalogue_plan_actor_required",
-            ),
-        ),
-        migrations.AddConstraint(
-            model_name="plan",
-            constraint=models.CheckConstraint(
-                condition=models.Q(reason__regex=r".{8,}"),
-                name="catalogue_plan_reason_required",
-            ),
-        ),
-        migrations.AddConstraint(
-            model_name="plangrant",
-            constraint=models.CheckConstraint(
-                condition=~models.Q(changed_by_actor_id=""),
-                name="catalogue_plan_grant_actor_required",
-            ),
-        ),
-        migrations.AddConstraint(
-            model_name="plangrant",
-            constraint=models.CheckConstraint(
-                condition=models.Q(reason__regex=r".{8,}"),
-                name="catalogue_plan_grant_reason_required",
-            ),
-        ),
     ]
