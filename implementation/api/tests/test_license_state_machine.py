@@ -104,6 +104,11 @@ def _seed_license_key(*, tag: str) -> AppLicenseKey:
             customer_id=str(customer.id),
             key_type="TRIAL",
             feature_scope="CHURCH",
+            # DEC-014 made the catalogue plan part of issuing a licence. LEGACY is the plan
+            # whose grants freeze pre-catalogue behaviour, which is what every other lifecycle
+            # seeder in this suite uses — the lifecycle is what these tests exercise, and the
+            # plan must not change what any of them assert.
+            plan_code="LEGACY",
             starts_at=now,
             expires_at=now + timedelta(days=30),
             timezone="Africa/Lagos",
