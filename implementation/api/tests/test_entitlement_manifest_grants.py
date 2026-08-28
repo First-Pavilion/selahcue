@@ -43,6 +43,15 @@ TEST_SEED_B64 = base64.b64encode(bytes(range(32))).decode("ascii")
 
 pytestmark = pytest.mark.django_db
 
+# The DATABASE requires an actor and a reason on `Plan` and `PlanGrant` rows (migration
+# 0004), exactly as it already did on assignments and overrides — a bare `objects.create()`
+# is refused. Supplied here so these tests exercise the rows, not the constraint.
+ACCOUNTABLE = {
+    "changed_by_actor_id": "staff_ops_1",
+    "reason": "Catalogue tests: fixture row.",
+}
+
+
 SEAT_KEY = "device_instances"
 SCREEN_KEY = "screen_outputs"
 NDI_KEY = "ndi_outputs"
@@ -129,6 +138,7 @@ def _seed_license_key(*, tag, device_limit=3, feature_scope="CHURCH"):
             customer_id=str(customer.id),
             key_type="TRIAL",
             feature_scope=feature_scope,
+            plan_code="LEGACY",
             starts_at=now,
             expires_at=now + timedelta(days=30),
             timezone="Africa/Lagos",
@@ -230,7 +240,9 @@ def test_a_tier_that_did_not_exist_when_the_client_shipped_is_carried_verbatim(a
     """A brand-new tier introduced as data. Nothing in the manifest path enumerates tiers,
     so an unmodified client receives its values and honours them."""
     _device, token, key = activated
-    plan = Plan.objects.create(code="OBSIDIAN", display_name="Obsidian", sort_order=99)
+    plan = Plan.objects.create(
+        code="OBSIDIAN", display_name="Obsidian", sort_order=99, **ACCOUNTABLE
+    )
     for dimension_key, raw_value in (
         (SEAT_KEY, "12"),
         (SCREEN_KEY, "14"),
@@ -239,7 +251,10 @@ def test_a_tier_that_did_not_exist_when_the_client_shipped_is_carried_verbatim(a
         (WATERMARK_KEY, "false"),
     ):
         PlanGrant.objects.create(
-            plan=plan, dimension=GrantDimension.objects.get(key=dimension_key), raw_value=raw_value
+            plan=plan,
+            dimension=GrantDimension.objects.get(key=dimension_key),
+            raw_value=raw_value,
+            **ACCOUNTABLE,
         )
     LicensePlanAssignment.objects.update_or_create(
         license_key=key,
@@ -425,7 +440,9 @@ def test_a_dimension_named_like_a_restricted_field_cannot_deny_the_manifest(acti
         default_raw_value="1",
         sort_order=98,
     )
-    PlanGrant.objects.create(plan=Plan.objects.get(code="PRO"), dimension=hostile, raw_value="1")
+    PlanGrant.objects.create(
+        plan=Plan.objects.get(code="PRO"), dimension=hostile, raw_value="1", **ACCOUNTABLE
+    )
 
     payload = _payload(token)
     assert "signing_key" not in payload["grants"]

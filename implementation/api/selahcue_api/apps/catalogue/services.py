@@ -260,6 +260,24 @@ def resolve_entitlement(license_key) -> ResolvedEntitlement:
     catalogue is unconfigured" is a steady state the caller can trust; "the read blew up"
     is a transient one, and minting a two-year offline artefact from it would honour a
     two-second blip for the life of the licence.
+
+    **An unconfigured catalogue keeps emitting no grants, and that is the right default.**
+    Absence already has exactly one meaning on the wire — "the catalogue expresses nothing
+    about this dimension; apply your own default" — which is precisely true of a database
+    where the catalogue has never been seeded, and it is what makes "no loss of current
+    entitlement" hold before migration 0002 runs. Encoding it as anything else would
+    invent a fourth grant state the payload has no room for.
+
+    The two states are also already distinguishable to a client without a new field: a
+    degraded manifest is clamped to a short TTL, so `expires_at < license_expires_at`
+    implies degraded, while an unconfigured one carries the licence's own expiry. (The one
+    case they converge is a licence expiring within the degraded TTL, where the clamp is a
+    no-op — a manifest with minutes left to live either way.)
+
+    What was genuinely missing is on the SERVER, not the wire: a failed read is logged and
+    audited, so an operator can alert on it, while an unconfigured catalogue was completely
+    silent. If migration 0002 never ran in an environment, every manifest would issue with
+    zero grants and nothing anywhere would say so. Hence the warning below.
     """
     unconfigured = ResolvedEntitlement(plan=None, values={}, plan_display_label="")
     failed = ResolvedEntitlement(plan=None, values={}, plan_display_label="", degraded=True)
@@ -270,6 +288,18 @@ def resolve_entitlement(license_key) -> ResolvedEntitlement:
         return failed
 
     if plan is None:
+        # Not `degraded`: nothing failed, and clamping the manifest here would shorten every
+        # artefact in an environment whose catalogue is simply not seeded yet. But it must
+        # not be silent either — reaching this line at all means no assignment, no scope
+        # alias and no fallback plan exists, which after DEC-014 means the catalogue's own
+        # seed data is missing rather than that this one licence was missed.
+        logger.warning(
+            "catalogue resolved no plan for licence %s; issuing an entitlement with NO "
+            "grants. Nothing failed — the catalogue has no assignment, no matching scope "
+            "alias and no fallback plan, so it is unseeded. Check that the catalogue "
+            "migrations ran in this environment.",
+            getattr(license_key, "id", "<unknown>"),
+        )
         return unconfigured
 
     try:
@@ -337,14 +367,28 @@ def resolve_entitlement(license_key) -> ResolvedEntitlement:
                 published.add(dimension.key)
             else:
                 published.discard(dimension.key)
+
+        # The merged map is bounded by the same cap as the plan map, not by cap + overrides.
+        #
+        # INSIDE the try deliberately. This module is contracted never to raise on the
+        # issuance path (NFR-024), and this assert was the one statement on that path that
+        # could — turning a broken invariant into a DENIED manifest, which is precisely the
+        # failure the degrade-never-raise design exists to prevent. Inside, a violated
+        # invariant takes the degraded path instead: the licence still gets a manifest, that
+        # manifest is short-lived, and it is logged and audited so an operator sees it.
+        #
+        # It stays an `assert` rather than a raised error because it restates a property the
+        # SQL above already guarantees (overrides are restricted to `known`), so it is a
+        # development tripwire, not a runtime control. Under `python -O` it vanishes
+        # entirely — also non-raising, so the contract holds either way. The bound itself is
+        # covered by a real test with a positive control, never by this line.
+        assert len(values) <= MAX_GRANT_DIMENSIONS, (
+            f"resolved {len(values)} grants against a cap of {MAX_GRANT_DIMENSIONS}"
+        )
     except Exception:  # pragma: no cover - defensive
         logger.exception("catalogue grant resolution failed; issuing a degraded entitlement")
         return failed
 
-    # The merged map is bounded by the same cap as the plan map, not by cap + overrides.
-    assert len(values) <= MAX_GRANT_DIMENSIONS, (
-        f"resolved {len(values)} grants against a cap of {MAX_GRANT_DIMENSIONS}"
-    )
     return ResolvedEntitlement(
         plan=plan,
         values=values,
@@ -437,13 +481,23 @@ def set_plan_grant(actor: ActorContext | None, data: SetPlanGrantData) -> SetPla
 
         if existing is not None:
             existing.raw_value = raw_value
-            existing.save(update_fields=["raw_value", "updated_at"])
+            # Who changed it and why travel WITH the value. A stale actor beside a fresh
+            # number would name the wrong person for the change that is actually live.
+            existing.changed_by_actor_id = staff.actor_id
+            existing.reason = reason
+            existing.save(
+                update_fields=["raw_value", "changed_by_actor_id", "reason", "updated_at"]
+            )
             grant, created = existing, False
         else:
             try:
                 with transaction.atomic():
                     grant = PlanGrant.objects.create(
-                        plan=plan, dimension=dimension, raw_value=raw_value
+                        plan=plan,
+                        dimension=dimension,
+                        raw_value=raw_value,
+                        changed_by_actor_id=staff.actor_id,
+                        reason=reason,
                     )
                 created = True
             except IntegrityError:
@@ -454,7 +508,11 @@ def set_plan_grant(actor: ActorContext | None, data: SetPlanGrantData) -> SetPla
                     raise SafeAPIError(ErrorCode.CONFLICT) from None
                 previous = grant.raw_value
                 grant.raw_value = raw_value
-                grant.save(update_fields=["raw_value", "updated_at"])
+                grant.changed_by_actor_id = staff.actor_id
+                grant.reason = reason
+                grant.save(
+                    update_fields=["raw_value", "changed_by_actor_id", "reason", "updated_at"]
+                )
                 created = False
 
         record_audit_event(

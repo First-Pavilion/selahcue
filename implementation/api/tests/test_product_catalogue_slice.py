@@ -16,8 +16,10 @@ shipped slices each build their own rather than sharing a conftest.py — follow
 from __future__ import annotations
 
 import ast
+import logging
 from datetime import timedelta
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 from django.utils import timezone
@@ -57,6 +59,15 @@ from selahcue_api.graphql.context import ActorContext, ActorKind, StaffPermissio
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
 pytestmark = pytest.mark.django_db
+
+# The DATABASE requires an actor and a reason on `Plan` and `PlanGrant` rows (migration
+# 0004), exactly as it already did on assignments and overrides — a bare `objects.create()`
+# is refused. Supplied here so these tests exercise the rows, not the constraint.
+ACCOUNTABLE = {
+    "changed_by_actor_id": "staff_ops_1",
+    "reason": "Catalogue tests: fixture row.",
+}
+
 
 API_ROOT = Path(selahcue_api.__file__).resolve().parent
 SEED_MIGRATION = (
@@ -339,10 +350,17 @@ def test_the_decided_tier_table_is_expressible_and_seeded(code, expected):
 def test_a_brand_new_tier_is_honoured_with_no_code_change():
     """A tier that did not exist when this code was written resolves correctly, which is
     only possible if nothing enumerates tiers."""
-    plan = Plan.objects.create(code="RUBY", display_name="Ruby", sort_order=40)
+    plan = Plan.objects.create(
+        code="RUBY", display_name="Ruby", sort_order=40, **ACCOUNTABLE
+    )
     novel = {SEAT_KEY: "11", SCREEN_KEY: "13", NDI_KEY: "17", STT_KEY: "1999", WATERMARK_KEY: "false"}
     for dimension_key, raw_value in novel.items():
-        PlanGrant.objects.create(plan=plan, dimension=_dimension(dimension_key), raw_value=raw_value)
+        PlanGrant.objects.create(
+            plan=plan,
+            dimension=_dimension(dimension_key),
+            raw_value=raw_value,
+            **ACCOUNTABLE,
+        )
 
     key = _license_key(tag="ruby")
     _assign(key, plan)
@@ -401,7 +419,12 @@ def test_only_one_plan_may_be_the_fallback():
 
     with pytest.raises(IntegrityError):
         with transaction.atomic():
-            Plan.objects.create(code="SECOND-FALLBACK", display_name="Second", is_fallback=True)
+            Plan.objects.create(
+                code="SECOND-FALLBACK",
+                display_name="Second",
+                is_fallback=True,
+                **ACCOUNTABLE,
+            )
 
 
 # --- Safe degradation (NFR-024) ------------------------------------------------------------
@@ -419,6 +442,72 @@ def test_an_unseeded_catalogue_resolves_to_nothing_and_raises_nothing():
     resolved = resolve_entitlement(key)
     assert resolved.plan is None
     assert resolved.values == {}
+
+
+def test_an_unseeded_catalogue_says_so_in_the_log(caplog):
+    """Finding 5's actual gap: an unconfigured catalogue was completely SILENT.
+
+    The WIRE is deliberately unchanged, and no `degraded` field is added — see
+    `resolve_entitlement`'s docstring. Absence of a grant already means exactly one thing
+    ("the catalogue expresses nothing about this dimension; apply your own default"), which
+    is precisely true of a database where the catalogue was never seeded; encoding it
+    otherwise would invent a fourth grant state the payload has no room for. The degraded
+    case is already distinguishable on the wire without a new field, because a degraded
+    manifest is TTL-clamped and an unconfigured one keeps the licence's own expiry — pinned
+    by `test_an_unconfigured_catalogue_is_not_treated_as_a_failure` in the manifest slice.
+
+    What was genuinely missing is on the SERVER. If migration 0002 never ran in an
+    environment, every manifest would issue with zero grants and nothing anywhere would say
+    so. This is the line an operator can alert on.
+    """
+    key = _license_key(tag="unseededlog")
+    PlanScopeAlias.objects.all().delete()
+    LicensePlanAssignment.objects.all().delete()
+    PlanGrant.objects.all().delete()
+    Plan.objects.all().delete()
+    GrantDimension.objects.all().delete()
+
+    with caplog.at_level(logging.WARNING, logger=catalogue_services.logger.name):
+        resolved = resolve_entitlement(key)
+
+    # Steady state, NOT a failure: this must not start clamping every manifest in an
+    # environment whose catalogue is simply not seeded yet.
+    assert resolved.plan is None and resolved.degraded is False
+
+    reports = [r for r in caplog.records if "resolved no plan" in r.getMessage()]
+    assert reports, (
+        "an unseeded catalogue issued an entitlement with NO grants and logged nothing, so "
+        "a missing catalogue migration in an environment stays invisible — which is the "
+        "whole of what Finding 5 left open"
+    )
+    assert reports[0].levelno == logging.WARNING
+    assert str(key.id) in reports[0].getMessage(), (
+        "the warning does not name the licence, so an operator cannot tell which issuance "
+        f"it refers to: {reports[0].getMessage()!r}"
+    )
+
+
+def test_a_healthy_resolution_does_not_warn_positive_control(caplog):
+    """Positive control for the warning above.
+
+    A warning that fires on every resolution is not a signal, it is noise, and is strictly
+    worse than the silence it replaced — an operator who alerts on it would be paged for
+    every healthy manifest. It must fire ONLY when nothing resolved.
+    """
+    key = _license_key(tag="healthylog")
+    _assign(key, Plan.objects.get(code="PRO"))
+
+    with caplog.at_level(logging.WARNING, logger=catalogue_services.logger.name):
+        resolved = resolve_entitlement(key)
+
+    assert resolved.plan is not None, (
+        "the premise failed - nothing resolved, so 'it did not warn' proves nothing"
+    )
+    assert resolved.values[SCREEN_KEY] == 5
+    assert not [r for r in caplog.records if "resolved no plan" in r.getMessage()], (
+        "a perfectly healthy resolution logged the unseeded-catalogue warning, which makes "
+        "the warning useless for alerting"
+    )
 
 
 def test_an_unreadable_grant_value_degrades_to_the_dimension_default():
@@ -447,6 +536,102 @@ def test_a_deactivated_dimension_simply_disappears():
     assert resolved.values[SCREEN_KEY] == 5, "removing one grant must not disturb the others"
 
 
+# --- The cap assert, and where it sits (NFR-024) --------------------------------------------
+#
+# `assert len(values) <= MAX_GRANT_DIMENSIONS` is the ONE statement on the issuance path that
+# can raise, in a module contracted never to raise. Where it sits decides what a violated
+# invariant COSTS:
+#
+#   outside the try   AssertionError escapes `resolve_entitlement` and the licence is DENIED
+#                     its manifest — the exact failure the degrade-never-raise design exists
+#                     to prevent, and silently gone under `python -O`.
+#   inside the try    the violation takes the degraded path: a short-lived manifest, logged
+#                     and audited, and the device keeps running.
+#
+# The invariant cannot be violated through the database — the override queryset is restricted
+# to `grants.known` in SQL, so the merged map cannot exceed the cap. That is precisely why NO
+# ordinary test distinguishes the two placements, and why these two inject the violation
+# directly at `_plan_grant_map`, the seam the shipped degraded-read tests already use.
+
+
+def _cap_violating_grants(count):
+    """A plan map holding `count` keys, bypassing the SQL that makes that impossible."""
+    values = {f"synthetic_dimension_{index}": index for index in range(count)}
+    assert len(values) == count, "the synthetic keys collided; this map is not the size it says"
+    return catalogue_services.CachedGrants(
+        values=MappingProxyType(values),
+        published=frozenset(),
+        known=frozenset(values),
+    )
+
+
+def test_a_violated_grant_cap_degrades_instead_of_raising(monkeypatch, caplog):
+    """A broken invariant must cost a short manifest, never the manifest itself."""
+    key = _license_key(tag="capviolation")
+    _assign(key, Plan.objects.get(code="PRO"))
+    monkeypatch.setattr(
+        catalogue_services,
+        "_plan_grant_map",
+        lambda *args, **kwargs: _cap_violating_grants(MAX_GRANT_DIMENSIONS + 1),
+    )
+
+    with caplog.at_level(logging.ERROR, logger=catalogue_services.logger.name):
+        # Outside the try, this line RAISES and the test dies here rather than failing.
+        resolved = resolve_entitlement(key)
+
+    # The MECHANISM, asserted before the contract. The injected map is hand-built, so
+    # "degraded" has to be shown to come from the cap assert firing and being CAUGHT —
+    # otherwise a fake that upset resolution some other way would satisfy the contract
+    # below while the assert went untouched.
+    caught = [
+        record
+        for record in caplog.records
+        if record.exc_info and record.exc_info[0] is AssertionError
+    ]
+    assert caught, (
+        "no AssertionError was caught inside `resolve_entitlement`, so the grant-cap assert "
+        "never fired and this test exercises nothing about where it sits"
+    )
+    assert f"against a cap of {MAX_GRANT_DIMENSIONS}" in str(caught[0].exc_info[1]), (
+        "an AssertionError was caught, but not the grant-cap one this test is named for: "
+        f"{caught[0].exc_info[1]!r}"
+    )
+
+    # The contract.
+    assert resolved.degraded is True, (
+        "a violated grant cap did not produce a DEGRADED entitlement, so the manifest minted "
+        "from it would carry the full licence window"
+    )
+    assert resolved.values == {}
+    assert resolved.plan is None
+
+
+def test_a_grant_map_exactly_AT_the_cap_still_resolves_positive_control(monkeypatch):
+    """Positive control for the injection above, one key smaller.
+
+    Without it, `test_a_violated_grant_cap_degrades_instead_of_raising` proves only that
+    `_cap_violating_grants` degrades resolution — which a map that was malformed in some
+    unrelated way would do just as well. Exactly AT the cap the same construction resolves
+    cleanly, so the one thing that differs between the two is the bound.
+    """
+    key = _license_key(tag="capexact")
+    _assign(key, Plan.objects.get(code="PRO"))
+    monkeypatch.setattr(
+        catalogue_services,
+        "_plan_grant_map",
+        lambda *args, **kwargs: _cap_violating_grants(MAX_GRANT_DIMENSIONS),
+    )
+
+    resolved = resolve_entitlement(key)
+
+    assert resolved.degraded is False, (
+        "the hand-built grant map degrades resolution even INSIDE the cap, so the test above "
+        "is not measuring the cap at all"
+    )
+    assert len(resolved.values) == MAX_GRANT_DIMENSIONS
+    assert resolved.plan is not None and resolved.plan.code == "PRO"
+
+
 def test_a_dimension_named_like_a_restricted_field_is_refused_a_place_in_the_payload():
     """`assert_no_restricted_payload_fields` raises on such a key. If one reached the
     manifest payload, a single catalogue row would deny every device on the estate."""
@@ -458,7 +643,7 @@ def test_a_dimension_named_like_a_restricted_field_is_refused_a_place_in_the_pay
         default_raw_value="1",
         sort_order=99,
     )
-    PlanGrant.objects.create(plan=plan, dimension=hostile, raw_value="1")
+    PlanGrant.objects.create(plan=plan, dimension=hostile, raw_value="1", **ACCOUNTABLE)
     key = _license_key(tag="hostile")
     _assign(key, plan)
 
@@ -537,8 +722,12 @@ def test_the_grant_cache_is_bounded_by_entry_count():
     licenses = []
     plans = []
     for index in range(MAX_CACHE_ENTRIES + 1):
-        plan = Plan.objects.create(code=f"BOUND-{index}", display_name=f"Bound {index}")
-        PlanGrant.objects.create(plan=plan, dimension=dimension, raw_value=str(index + 1))
+        plan = Plan.objects.create(
+            code=f"BOUND-{index}", display_name=f"Bound {index}", **ACCOUNTABLE
+        )
+        PlanGrant.objects.create(
+            plan=plan, dimension=dimension, raw_value=str(index + 1), **ACCOUNTABLE
+        )
         key = _license_key(tag=f"bound{index}", org=org)
         _assign(key, plan)
         plans.append(plan)
@@ -580,7 +769,7 @@ def test_one_cache_entry_cannot_hold_unboundedly_many_dimensions():
             default_raw_value="1",
             sort_order=1000 + index,
         )
-        PlanGrant.objects.create(plan=plan, dimension=dimension, raw_value="1")
+        PlanGrant.objects.create(plan=plan, dimension=dimension, raw_value="1", **ACCOUNTABLE)
         created.append(dimension)
 
     key = _license_key(tag="dimcap")
@@ -1025,6 +1214,92 @@ def test_a_properly_attributed_write_is_still_accepted():
         reason="Upgraded after the pilot concluded.",
     )
     assert LicensePlanAssignment.objects.filter(pk=assignment.pk).exists()
+
+
+def test_a_bare_plan_grant_create_is_refused_without_an_actor_and_reason():
+    """One row here changes the allowance for EVERY tenant on the plan.
+
+    The override above is a single customer's exception and already carried this. A plan
+    grant is the wholesale version of the same act, so it cannot be the one that a shell can
+    write anonymously.
+    """
+    from django.db import IntegrityError, transaction
+
+    plan = Plan.objects.get(code="PLATINUM")
+    dimension = _dimension(NDI_KEY)
+    PlanGrant.objects.filter(plan=plan, dimension=dimension).delete()
+    for kwargs in (
+        {"changed_by_actor_id": "", "reason": "Long enough reason."},
+        {"changed_by_actor_id": "staff_ops_1", "reason": ""},
+        {"changed_by_actor_id": "staff_ops_1", "reason": "short"},
+    ):
+        with pytest.raises(IntegrityError):
+            with transaction.atomic():
+                PlanGrant.objects.create(
+                    plan=plan, dimension=dimension, raw_value="99", **kwargs
+                )
+    # The ENTITY: no row for this (plan, dimension) exists, not merely "some count".
+    assert not PlanGrant.objects.filter(plan=plan, dimension=dimension).exists()
+
+
+def test_a_bare_plan_create_is_refused_without_an_actor_and_reason():
+    """`is_fallback` decides what every unassigned licence in the system grants."""
+    from django.db import IntegrityError, transaction
+
+    for kwargs in (
+        {"changed_by_actor_id": "", "reason": "Long enough reason."},
+        {"changed_by_actor_id": "staff_ops_1", "reason": ""},
+        {"changed_by_actor_id": "staff_ops_1", "reason": "short"},
+    ):
+        with pytest.raises(IntegrityError):
+            with transaction.atomic():
+                Plan.objects.create(code="ANONYMOUS", display_name="Anonymous", **kwargs)
+    assert not Plan.objects.filter(code="ANONYMOUS").exists()
+
+
+def test_an_attributed_plan_and_plan_grant_write_is_still_accepted():
+    """Positive control for BOTH new constraints.
+
+    Without it, "refused" is indistinguishable from a table that rejects every write — and
+    the two tests above would pass just as well against a broken model.
+    """
+    plan = Plan.objects.create(
+        code="ATTRIBUTED",
+        display_name="Attributed",
+        changed_by_actor_id="staff_ops_1",
+        reason="Created for the accountability positive control.",
+    )
+    grant = PlanGrant.objects.create(
+        plan=plan,
+        dimension=_dimension(NDI_KEY),
+        raw_value="4",
+        changed_by_actor_id="staff_ops_1",
+        reason="Created for the accountability positive control.",
+    )
+    assert Plan.objects.filter(pk=plan.pk).exists()
+    assert PlanGrant.objects.filter(pk=grant.pk).exists()
+    # And the row is actually usable, not merely insertable.
+    key = _license_key(tag="attrgrant")
+    _assign(key, plan)
+    assert resolve_entitlement(key).values[NDI_KEY] == 4
+
+
+def test_the_governed_plan_grant_path_records_who_changed_it():
+    """`set_plan_grant` must SUPPLY what the constraint demands, not be blocked by it."""
+    actor = _staff(StaffPermission.GRANT_ENTITLEMENT)
+    result = set_plan_grant(
+        actor,
+        SetPlanGrantData(
+            idempotency_key="plangrant-accountability-0001",
+            plan_code="PRO",
+            dimension_key=NDI_KEY,
+            raw_value="6",
+            reason="Pro NDI allowance raised for the season.",
+        ),
+    )
+    result.grant.refresh_from_db()
+    assert result.grant.changed_by_actor_id == actor.actor_id
+    assert "Pro NDI allowance raised" in result.grant.reason
 
 
 # --- The governed assignment path ----------------------------------------------------------

@@ -36,6 +36,12 @@ class GenerateLicenseKeyData:
     customer_id: str
     key_type: str
     feature_scope: str
+    # The catalogue plan this licence is sold on (DEC-014). REQUIRED, and deliberately a
+    # field with no default: a licence issued without one used to fall through to the
+    # catalogue's fallback plan, which is the most permissive in the catalogue. Giving this
+    # a default would restore that path for every caller that forgets it, which is exactly
+    # the failure mode DEC-014 closes.
+    plan_code: str
     starts_at: datetime
     expires_at: datetime
     timezone: str
@@ -111,6 +117,25 @@ def generate_license_key(
     if data.seat_limit < 1 or data.device_limit < 1:
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
 
+    # DEC-014. Naming a plan is now part of issuing a licence.
+    #
+    # `resolve_plan_for_license` tries the assignment, then a legacy scope alias, then the
+    # designated fallback — and the fallback is the most permissive plan in the catalogue
+    # (unlimited screens, unlimited NDI, no watermark), because its job is to freeze what
+    # pre-catalogue licences already had. `feature_scope` is free staff text, so before this
+    # every licence typed with a scope nobody had aliased landed on that fallback silently,
+    # was signed, and was cached offline until expiry. Refusing here is the whole fix: the
+    # fallback stays exactly as it is for the rows that legitimately need it, and no NEW row
+    # can reach it by accident.
+    plan_code = (data.plan_code or "").strip()
+    if not plan_code:
+        raise SafeAPIError(
+            ErrorCode.VALIDATION_FAILED,
+            "This licence needs a plan. Choose the catalogue plan it is sold on and pass "
+            "its code as `plan_code` — a licence issued without one would silently receive "
+            "the catalogue's most permissive grants.",
+        )
+
     with transaction.atomic():
         existing = (
             AppLicenseKey.objects.select_related("customer")
@@ -126,6 +151,19 @@ def generate_license_key(
             raise SafeAPIError(ErrorCode.NOT_FOUND) from error
         if customer.status == CustomerStatus.ARCHIVED:
             raise SafeAPIError(ErrorCode.POLICY_DENIED)
+
+        # Imported here, not at module scope: `catalogue` already reaches back into this app
+        # (`catalogue.services._license_key_model`), and a module-level import in this
+        # direction would close that loop.
+        from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
+
+        plan = Plan.objects.filter(code=plan_code).first()
+        if plan is None:
+            raise SafeAPIError(
+                ErrorCode.NOT_FOUND,
+                f"No catalogue plan has the code {plan_code!r}. Issue the licence on a plan "
+                "that exists, or add the plan to the catalogue first.",
+            )
 
         full_key = _generate_full_key(key_type)
         prefix, suffix, masked_key = _mask(full_key)
@@ -166,6 +204,20 @@ def generate_license_key(
             if existing is not None:
                 return GenerateLicenseKeyResult(license_key=existing, full_key=None, created=False)
             raise _validation_error()
+
+        # Bind the licence to the plan in the SAME transaction as the licence itself, so a
+        # licence can never exist without one. An assignment is what `resolve_plan_for_license`
+        # consults first, so this — not `feature_scope` — is what the licence now grants.
+        # The accountability columns are the issuing staff's own: whoever issued the licence
+        # is who chose the plan, and the database refuses the row without them.
+        LicensePlanAssignment.objects.create(
+            license_key=license_key,
+            plan=plan,
+            assigned_by_actor_id=staff.actor_id,
+            reason=reason,
+            idempotency_key=idempotency_key,
+        )
+
         record_audit_event(
             staff,
             action="license_key.generated",
@@ -181,6 +233,9 @@ def generate_license_key(
                 "key_suffix": license_key.key_suffix,
                 "masked_key": license_key.masked_key,
                 "feature_scope": license_key.feature_scope,
+                # What the licence actually grants, beside the label that no longer decides
+                # it — so the audit row says which plan was chosen at issuance.
+                "plan_code": plan.code,
                 "starts_at": license_key.starts_at.isoformat(),
                 "expires_at": license_key.expires_at.isoformat(),
                 "seat_limit": license_key.seat_limit,

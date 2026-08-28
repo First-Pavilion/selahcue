@@ -149,6 +149,12 @@ class Plan(models.Model):
     # The plan used when a licence resolves to nothing else. Exactly one row may carry it.
     is_fallback = models.BooleanField(default=False)
     sort_order = models.PositiveIntegerField(default=0)
+    # Who last changed this row and why — see `accountability_constraints`. A plan is what
+    # a licence is sold on, and `is_fallback` in particular decides what every unassigned
+    # licence in the system grants, so a row appearing with nobody's name against it is
+    # exactly the case the constraint exists to refuse.
+    changed_by_actor_id = models.CharField(max_length=128)
+    reason = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -161,6 +167,7 @@ class Plan(models.Model):
                 condition=models.Q(is_fallback=True),
                 name="uniq_catalogue_fallback_plan",
             ),
+            *accountability_constraints("catalogue_plan", actor_field="changed_by_actor_id"),
         ]
         indexes = [
             models.Index(fields=["sort_order"]),
@@ -225,12 +232,21 @@ class PlanGrant(models.Model):
     plan = models.ForeignKey(Plan, on_delete=models.CASCADE, related_name="grants")
     dimension = models.ForeignKey(GrantDimension, on_delete=models.CASCADE, related_name="grants")
     raw_value = models.CharField(max_length=64)
+    # The same accountability the per-licence override already carries, and on stronger
+    # grounds: an override changes ONE customer's entitlement, while one row here changes
+    # the allowance for EVERY tenant on the plan. `set_plan_grant` supplies both; the
+    # constraints are what bind a writer who never goes through it.
+    changed_by_actor_id = models.CharField(max_length=128)
+    reason = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["plan", "dimension"], name="uniq_catalogue_plan_grant"),
+            *accountability_constraints(
+                "catalogue_plan_grant", actor_field="changed_by_actor_id"
+            ),
         ]
         indexes = [
             models.Index(fields=["plan"]),
