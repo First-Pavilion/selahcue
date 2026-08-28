@@ -378,25 +378,91 @@ fn a_licence_ending_inside_the_ttl_window_reads_as_healthy_and_that_edge_is_pinn
     // inside the 900s window, `min()` picks the LICENCE expiry, so the two signed expiries
     // come out equal and a genuinely degraded issuance reports `is_degraded() == false`.
     //
-    // It is benign — shortening to the licence's own end is correct, and the grant rule is
-    // what still protects the dimensions — but it is real, reachable, and now pinned so it
-    // cannot be discovered as a surprise.
+    // It is NOT benign, and an earlier revision of this test said it was: it asserted
+    // `Replace` directly beneath a comment claiming "the grant rule still refuses to drop a
+    // grant-bearing cache". Rule 2 keyed on `is_degraded()` then, so it did no such thing —
+    // this IS the grant-loss path, and the test certified it as safe while pinning it in
+    // place. The incompleteness was only ever reasoned about for rule 3, where shortening to
+    // the licence's own end is correct anyway; for grant loss that reasoning does not hold.
+    // Rule 2 now keys on the entity, and this is the case that separates the two.
     let licence_ends_soon = T0 + 300; // inside DEGRADED_MANIFEST_TTL_SECONDS
     assert!(licence_ends_soon - T0 < DEGRADED_MANIFEST_TTL_SECONDS);
 
     let clamped_to_licence =
         SignedFacts::from_verified_payload(licence_ends_soon, licence_ends_soon, T0, None, 0);
+
+    // The proxy really is blind here. That incompleteness is real, and it stays pinned.
     assert!(
         !clamped_to_licence.is_degraded(),
         "equal expiries read as healthy — this is the documented incompleteness of deriving \
          degradation from the expiry pair"
     );
 
-    // And it is safe: the grant rule still refuses to drop a grant-bearing cache.
+    // Premises, asserted so this cannot pass for a reason other than the one it names: there
+    // really are grants to lose, the incoming manifest really carries none, and the server
+    // has NOT signed that the drop is deliberate.
+    assert!(
+        cached().carries_grants(),
+        "nothing to protect means nothing exercised"
+    );
+    assert!(!clamped_to_licence.carries_grants());
+    assert_eq!(clamped_to_licence.degraded(), None);
+
+    // The entity catches what the proxy missed.
     assert_eq!(
         decide_cache_replacement(Some(cached()), clamped_to_licence),
+        CacheDecision::KeepCached(KeepReason::DegradedWouldDropGrants {
+            cached_grant_count: 4,
+        }),
+        "a zero-grant manifest must not wipe a grant-bearing cache merely because the expiry \
+         pair cannot tell a degraded issuance from a licence that ends inside the TTL window"
+    );
+}
+
+#[test]
+fn only_a_signed_not_degraded_lets_a_zero_grant_manifest_replace_a_grant_bearing_cache() {
+    // The residual, written as a test rather than papered over. While the server publishes no
+    // `degraded` field — which is every payload today — a GENUINE zero-grant licence cannot
+    // replace a grant-bearing cache: on the wire it is indistinguishable from a degraded
+    // issuance, and rule 2 resolves that ambiguity in favour of keeping the grants. The
+    // refusal DEFERS and does not extend anything: the cached artefact keeps its own expiry,
+    // so the customer's offline window is unchanged either way.
+    //
+    // The recovery path is the server signing the field, which `SignedFacts` already prefers
+    // over the derived signal. This is the positive control for that hatch — without it the
+    // rule would be indistinguishable from a blanket refusal to ever drop a grant, and
+    // "refused" would not be evidence of anything.
+    let genuine_zero_grant = SignedFacts::from_verified_payload(
+        CACHED_LONG_EXPIRY,
+        CACHED_LONG_EXPIRY,
+        T0 + 3600,
+        Some(false),
+        0,
+    );
+    assert!(cached().carries_grants());
+    assert!(!genuine_zero_grant.carries_grants());
+    assert_eq!(
+        decide_cache_replacement(Some(cached()), genuine_zero_grant),
         CacheDecision::Replace,
-        "a zero-grant but HEALTHY manifest is a real licence state, not a degraded one"
+        "an explicit signed `degraded: false` is the server saying the drop is deliberate"
+    );
+
+    // The SAME facts minus the signed word are refused. The pair is what proves the hatch is
+    // what does the work here, rather than the expiry or the issuance time — both identical.
+    let unexplained = SignedFacts::from_verified_payload(
+        CACHED_LONG_EXPIRY,
+        CACHED_LONG_EXPIRY,
+        T0 + 3600,
+        None,
+        0,
+    );
+    assert_eq!(
+        decide_cache_replacement(Some(cached()), unexplained),
+        CacheDecision::KeepCached(KeepReason::DegradedWouldDropGrants {
+            cached_grant_count: 4,
+        }),
+        "with no signed word, an empty grant map is read as the degraded signature it almost \
+         always is"
     );
 }
 

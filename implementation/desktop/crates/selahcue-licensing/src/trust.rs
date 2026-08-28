@@ -177,15 +177,22 @@ impl TrustedKeys {
         // branch that skips verification is the highest-value target in the product and
         // means the path we ship is not the path anyone develops against.
         //
-        // THE GATE IS `scripts/dev_key_not_in_release.sh`, which runs in `make ci` and CI.
-        // It builds this crate in both profiles and fails if these 32 bytes appear in the
-        // release rlib, with the debug rlib as a live positive control.
+        // THE EFFECT-LEVEL GATE IS `scripts/dev_key_not_in_release.sh`, which runs in
+        // `make ci` and CI. It builds this crate in both profiles and fails if these 32 bytes
+        // appear in the release rlib, with the debug rlib as a live positive control.
         //
         // It exists because everything else here is partial. The `cfg` gates can be removed
         // (caught by the source guard), a release profile can turn `debug_assertions` back on
         // (import_guards.sh catches the common spellings and misses several), and RUSTFLAGS
         // can do the same from the environment where nothing in-repo can see it. Asking what
-        // is IN THE ARTEFACT closes all of those at once, plus any future runtime loader.
+        // is IN THE ARTEFACT closes all of those CONFIGURATION routes at once.
+        //
+        // It does NOT close a runtime loader, and this comment used to say it did. The scan
+        // searches for the literal key bytes, so it settles "is the key compiled into
+        // release" and is blind to "does a release binary obtain the key at runtime" — a
+        // loader that derives the bytes leaves it nothing to find. The release `iff` test in
+        // CI is what catches that one, so the two controls are COMPLEMENTARY and neither is
+        // redundant; the route table is in `scripts/dev_key_not_in_release.sh`.
         //
         // It was deferred once on the belief that it needed something to link the crate
         // first. That was wrong -- `cargo build -p selahcue-licensing --release` emits an
@@ -239,12 +246,28 @@ impl TrustedKeys {
     /// is transitive and the spellings are unbounded. Widening the list only moves the
     /// boundary; it never closes it.
     ///
-    /// The real guarantee is effect-level and is the same one [`TrustedKeys::bundled`]
-    /// records twenty lines above: **byte-scan the shipped release artefact** for the dev key
-    /// and fail if it is present. That answers the question that matters — what is in the
-    /// thing we ship — and is immune to spelling, to aliasing, to the dependency graph, and
-    /// to a runtime loader. It is recorded as an obligation on 86ak5mn1d / 86ak5mn1t,
-    /// because it needs something to actually link this crate first, and nothing does yet.
+    /// The effect-level control is the one [`TrustedKeys::bundled`] records twenty lines
+    /// above: **byte-scan the shipped release artefact** for the dev key and fail if it is
+    /// present — `scripts/dev_key_not_in_release.sh`. It **ships and runs today**, in
+    /// `make ci` and in CI. This paragraph previously called it an obligation deferred onto
+    /// 86ak5mn1d / 86ak5mn1t "because it needs something to actually link this crate first";
+    /// that is the belief `bundled()` calls wrong, and the scan has run at every commit since.
+    ///
+    /// It is immune to spelling, to aliasing and to the dependency graph. It is **not** immune
+    /// to a runtime loader, and this paragraph claimed it was. The scan searches the emitted
+    /// rlib for the literal key bytes, so it settles *"is the key compiled into release"* and
+    /// cannot see *"does a release binary obtain the key at runtime"*. A loader that derives
+    /// the bytes — from the decimal form the seed file itself publishes, for instance —
+    /// leaves it nothing to find. Security review built that loader, put the env read in the
+    /// path dependency `selahcue-cloud` so the guard above is blind too, and every control in
+    /// the repository passed it green.
+    ///
+    /// **No gate closes that, and none is being added.** Handing the runtime-loader threat on
+    /// to the byte scan is what turned two honest admissions into a false guarantee, so it is
+    /// not handed on: the rule at the top of this comment is enforced by REVIEW, deliberately.
+    /// Writing a config loader here is a considered act rather than a slip, and the honest
+    /// position is that this paragraph tells a reviewer what to look for instead of pretending
+    /// a scan will catch it.
     ///
     /// Idempotent for the *same key material*: re-adding a key already present succeeds
     /// and consumes no extra slot, so a loader that runs twice cannot exhaust the cap.

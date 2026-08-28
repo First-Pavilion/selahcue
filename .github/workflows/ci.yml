@@ -348,10 +348,26 @@ jobs:
       # all. The manifest and cargo-config routes are closed by scripts/import_guards.sh;
       # the environment route cannot be closed from inside the repository.
       #
-      # THE COMPLETE CONTROL is the byte scan, and it now runs below -- see "Dev key absent
-      # from the release artefact". It was previously deferred here on the belief that it
-      # "needs something to link the crate first". That was wrong: `cargo build -p
-      # selahcue-licensing --release` emits an rlib today and the scan takes seconds.
+      # WHAT ONLY THIS STEP CLOSES -- do not delete it as redundant. An earlier revision
+      # called the byte scan below "THE COMPLETE CONTROL", which it is not. The scan looks
+      # for the LITERAL key bytes in the release rlib, so a runtime loader that derives the
+      # key rather than embedding it is invisible to it, while this test still catches it:
+      # the key would be in `TrustedKeys::bundled()` in a release build and the assertion of
+      # absence would fail. The two controls are complementary --
+      #
+      #   route                                        | byte scan | this iff test
+      #   ---------------------------------------------+-----------+---------------
+      #   profile table / cargo config / RUSTFLAGS     | KILL      | miss
+      #   runtime loader, non-literal key              | miss      | KILL
+      #   ...the same loader behind a runtime trigger  | miss      | miss
+      #
+      # -- and the bottom row is closed by neither. That is deliberate: "no config loader in
+      # this crate" is a review-enforced rule, not a gate. See scripts/dev_key_not_in_release.sh.
+      #
+      # The byte scan runs below -- see "Dev key absent from the release artefact". It was
+      # previously deferred here on the belief that it "needs something to link the crate
+      # first". That was wrong: `cargo build -p selahcue-licensing --release` emits an rlib
+      # today and the scan takes seconds.
       - name: Test (licensing crate in RELEASE — the dev-key exclusion only holds here)
         if: ${{ !cancelled() }}
         run: cargo test -p selahcue-licensing --release --no-fail-fast
@@ -362,12 +378,17 @@ jobs:
       - name: Clippy (licensing crate in RELEASE)
         if: ${{ !cancelled() }}
         run: cargo clippy -p selahcue-licensing --release --all-targets -- -D warnings
-      # THE gate on the development entitlement key. Everything above asks a question ABOUT
-      # the source or the configuration and can be defeated by a spelling nobody enumerated;
-      # this asks whether the key bytes are in the artefact, which closes every route at once
-      # -- profile tables (including the inline `[profile] release = { .. }` form), the legacy
-      # `.cargo/config` filename, a valueless `-C debug-assertions`, a config in a parent
-      # directory or $CARGO_HOME, RUSTFLAGS in the environment, and any future runtime loader.
+      # The effect-level gate on the development entitlement key. Everything above asks a
+      # question ABOUT the source or the configuration and can be defeated by a spelling
+      # nobody enumerated; this asks whether the key bytes are in the artefact, which closes
+      # every CONFIGURATION route at once -- profile tables (including the inline
+      # `[profile] release = { .. }` form), the legacy `.cargo/config` filename, a valueless
+      # `-C debug-assertions`, a config in a parent directory or $CARGO_HOME, and RUSTFLAGS in
+      # the environment.
+      #
+      # It does NOT close a runtime loader: it searches for the literal key bytes, so a loader
+      # that derives them leaves nothing to find. The release test above is what catches that,
+      # which is why both steps exist and neither is redundant. Route table in the script.
       - name: Dev key absent from the release artefact (effect-level gate)
         if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}

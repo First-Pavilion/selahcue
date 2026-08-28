@@ -34,7 +34,7 @@
 //! no API here that yields [`Allowance::Unlimited`] for one**. That is the control: not a
 //! default someone chose well, but a permissive default that cannot be written.
 //!
-//! # (b) A valid degraded manifest must not evict a longer cached one
+//! # (b) A valid degraded manifest must not evict a longer cached one, nor strip its grants
 //!
 //! FR-518's keep-the-previous-cache rule covers manifests that fail *verification*. It does
 //! not cover one that verifies perfectly and is simply **shorter**. The server issues such
@@ -66,7 +66,16 @@
 //!
 //! So **`expires_at < license_expires_at` implies degraded.** Sound — nothing else narrows
 //! the artefact below the licence — and complete except when the licence itself ends inside
-//! the TTL window, where shortening is correct anyway. Both fields are on `main`
+//! the TTL window, where the clamp picks the licence expiry and the pair comes out equal.
+//!
+//! **That blind spot is one-sided, and it is only harmless for one of the two rules.** A
+//! derived `false` means *no evidence of degradation*, not *healthy*. For the shortening rule
+//! it costs nothing: the only thing it lets through is shortening to the licence's own end,
+//! which is correct anyway. For **grant loss** the same reasoning does not hold — a degraded,
+//! zero-grant issuance inside the licence tail reads healthy and would wipe every dimension.
+//! So the grant rule keys on the grant map itself rather than on this predicate; see
+//! [`decide_cache_replacement`], including what that costs a genuine zero-grant licence while
+//! no server publishes the explicit flag. Both fields are on `main`
 //! (`apps/entitlements/services.py:71,78`, where they are equal because that revision has no
 //! degradation path) and on `origin/feat/86ak10abc-product-catalogue` (`:144,:169`), so the
 //! signal is stable and needs no API change.
@@ -393,7 +402,8 @@ pub enum KeepReason {
         cached_issued_at_unix: i64,
         incoming_issued_at_unix: i64,
     },
-    /// The incoming manifest is a **degraded** issuance and the cache carries grants.
+    /// The incoming manifest **carries no grants** while the cache does, and the server did
+    /// not sign that the drop is deliberate.
     ///
     /// A degraded manifest carries none — `resolve_entitlement`'s failure path returns
     /// `values={}` — and this crate's own rule is that an absent grant is denied. So caching
@@ -404,6 +414,12 @@ pub enum KeepReason {
     /// degradation was ever consulted. Bounded by the 900s clamp, but a customer losing every
     /// feature for a quarter of an hour because a server had a bad minute is precisely the
     /// shape this policy exists to prevent.
+    ///
+    /// **Nor did `is_degraded()` catch it**, which is why this rule keys on the empty grant
+    /// map rather than on degradation. That predicate is one-sided — see
+    /// [`decide_cache_replacement`] — and a degraded issuance inside the licence tail reads
+    /// healthy through it. The grant map is the entity; degradation is only ever the reason
+    /// one is empty.
     DegradedWouldDropGrants { cached_grant_count: usize },
     /// The incoming manifest expires sooner than the cached one, and the server did not say
     /// the shortening was deliberate. Accepting it would let a transient server fault
@@ -424,13 +440,36 @@ pub enum KeepReason {
 /// 1. **Never go backwards.** An older `issued_at` is refused outright — that is a replay,
 ///    whatever else it says, and it is checked first precisely so a replayed manifest cannot
 ///    talk its way past rule 2 with its own signed `degraded: false`.
-/// 2. **A degraded issuance never replaces a grant-bearing cache**, whatever its expiry. It
-///    carries no grants, and an absent grant is denied here, so caching one would deny every
-///    dimension until it expired.
+/// 2. **A replacement never drops grants** unless the server signs that the drop is
+///    deliberate. An empty grant map over a grant-bearing cache denies every dimension until
+///    it expires, whatever the incoming expiry says.
 /// 3. **A degraded issuance may not shorten.** A genuine licence change may, and must —
 ///    refusing it would pin the whole entitlement, generous grants included, with no way
 ///    back. Degradation is read from [`SignedFacts::is_degraded`], which derives it from the
 ///    two signed expiries when the server publishes no explicit flag.
+///
+/// # Why rule 2 reads the grant map and rule 3 reads degradation
+///
+/// [`SignedFacts::is_degraded`]'s derived form is **sound but incomplete**: `expires_at <
+/// license_expires_at` implies degraded, but the converse fails whenever the licence ends
+/// inside the TTL window, where the server's `min()` picks the licence expiry and the two
+/// timestamps come out equal. `is_degraded() == false` therefore means *no evidence of
+/// degradation*, never *known healthy*.
+///
+/// That is tolerable for rule 3, where the blind spot only ever permits shortening to the
+/// licence's own end — correct anyway. It is **not** tolerable for rule 2, where the harm is
+/// grant loss: a degraded, zero-grant issuance inside the licence tail reads healthy, and
+/// keying rule 2 on that proxy let it through to rule 3 and deny every dimension. So rule 2
+/// keys on the entity that is at stake and sits on the same struct —
+/// [`SignedFacts::carries_grants`] — and spends only an explicit signed `degraded: false` as
+/// permission to drop.
+///
+/// **The residual, stated rather than papered over:** while no server publishes the
+/// `degraded` field, a *genuine* zero-grant licence is also refused, because on the wire it
+/// is identical to a degraded issuance. That defers such a licence; it does not extend
+/// anything, since the cached artefact keeps its own expiry. The clean fix is server-side —
+/// publish `degraded` inside the signature, which [`SignedFacts::is_degraded`] already
+/// prefers over the derived signal.
 ///
 /// A revoked or expired licence is **not** affected by rule 2: the server issues no manifest
 /// at all for one (`POLICY_DENIED` on the issuance allow-list), so there is no shortened
@@ -452,11 +491,29 @@ pub fn decide_cache_replacement(
         });
     }
 
-    // Rule 2 — a degraded issuance never replaces a grant-bearing cache, WHATEVER its expiry.
+    // Rule 2 — GRANT LOSS. Keyed on the entity that is actually at stake, and it sits right
+    // here on the facts: would this replacement drop the grants the client is holding?
     // Checked before the expiry comparison because a degraded artefact can easily outlive a
     // nearly-expired cache, and the expiry branch would then accept it and silently drop
     // every grant.
-    if incoming.is_degraded() && cached.carries_grants() {
+    //
+    // This deliberately does NOT key on `is_degraded()`, which is a PROXY for the harm and a
+    // one-sided one. The derived form is SOUND but INCOMPLETE: `expires_at <
+    // license_expires_at` implies degraded, but the converse does not hold, because a licence
+    // ending inside the TTL window makes the server's `min()` pick the licence expiry and the
+    // two signed timestamps come out equal. So `is_degraded() == false` means "no evidence of
+    // degradation", NEVER "known healthy" — and it must not be spent as a licence to drop
+    // grants. Keyed on the proxy, a genuinely degraded zero-grant issuance inside the licence
+    // tail read healthy, fell through to rule 3, replaced the cache and denied every
+    // dimension. The incompleteness was only ever reasoned about for rule 3, where shortening
+    // to the licence's own end is correct anyway; for grant loss that reasoning does not hold.
+    //
+    // The escape hatch is the server's own signed word, not the derived signal: only an
+    // explicit `degraded: false` INSIDE the signature sanctions dropping grants. See the
+    // module docs, "The residual case", for what that costs while no server publishes it.
+    let would_drop_grants = cached.carries_grants() && !incoming.carries_grants();
+    let server_signed_that_the_drop_is_genuine = incoming.degraded == Some(false);
+    if would_drop_grants && !server_signed_that_the_drop_is_genuine {
         return CacheDecision::KeepCached(KeepReason::DegradedWouldDropGrants {
             cached_grant_count: cached.grant_count,
         });

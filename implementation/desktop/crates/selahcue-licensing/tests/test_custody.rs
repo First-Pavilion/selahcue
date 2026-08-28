@@ -662,9 +662,23 @@ fn no_filesystem_primitive_is_reachable_from_this_crate() {
     // legible; renaming it to something like `..._is_named_in_this_crates_own_source` is
     // worth doing in the ticket that next touches this file.
     //
-    // The real guarantee is effect-level and recorded where it belongs: byte-scan the
-    // shipped release artefact (see `TrustedKeys::bundled`, an obligation on 86ak5mn1d /
-    // 86ak5mn1t).
+    // The effect-level control is the byte scan of the shipped release artefact —
+    // `scripts/dev_key_not_in_release.sh`, which ships and RUNS TODAY in `make ci` and CI.
+    // An earlier version of this comment called it an obligation deferred onto 86ak5mn1d /
+    // 86ak5mn1t; it has not been one for some time, and `TrustedKeys::bundled` says so.
+    //
+    // It is NOT a superset of this guard and must not be cited as one. It searches the
+    // release rlib for the LITERAL key bytes, so it closes "the dev key is COMPILED INTO
+    // release" and is blind to "a release binary OBTAINS the key at runtime" — which is
+    // precisely the threat this guard names above and also cannot catch. Handing that threat
+    // on to the byte scan as "the real guarantee" is what turned two honest admissions into
+    // a false claim: security review built the loader that BOTH of them miss (key derived
+    // from the seed file's own decimal form, env read placed in `selahcue-cloud`, behind a
+    // runtime trigger) and every control in the repository passed it green.
+    //
+    // What actually holds this line is the review rule in `TrustedKeys::insert`: no config
+    // loader in this crate. That is enforced by a reviewer, deliberately — writing one is a
+    // considered act, not a slip, and no name-scan or byte-scan is going to catch it.
     //
     // Comment lines are filtered out because the module docs deliberately NAME these
     // primitives to explain why they are absent, and a guard silenced by deleting a comment
