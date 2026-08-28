@@ -1072,10 +1072,20 @@ def test_an_override_requires_the_entitlement_permission_and_a_reason():
 )
 def test_the_database_refuses_a_malformed_dimension_key(bad_key):
     """A key that ships in a signed manifest is permanent, and the field is operator-settable
-    free text. The constraint binds every writer, including a shell that skips the service."""
-    from django.db import IntegrityError, transaction
+    free text. The constraint binds every writer, including a shell that skips the service.
 
-    with pytest.raises(IntegrityError):
+    Both engines refuse every key here, but not always by the same mechanism, so the
+    assertion is on the refusal rather than on one exception class. `GRANT_KEY_PATTERN`
+    bounds length itself (`{0,63}` after the leading letter), so the over-long key violates
+    the CHECK constraint — which is what fires on SQLite, as `IntegrityError`. Postgres
+    never reaches the check: `key` is `varchar(64)`, and the column width is enforced first,
+    raising `DataError` (`StringDataRightTruncation`) at the INSERT. Asserting only
+    `IntegrityError` therefore passed on the bundled SQLite and failed on the Postgres that
+    CI and production run.
+    """
+    from django.db import DataError, IntegrityError, transaction
+
+    with pytest.raises((IntegrityError, DataError)):
         with transaction.atomic():
             GrantDimension.objects.create(
                 key=bad_key,
