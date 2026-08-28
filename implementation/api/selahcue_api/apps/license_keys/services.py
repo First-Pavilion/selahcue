@@ -19,6 +19,7 @@ from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatu
 from selahcue_api.graphql.context import (
     ActorContext,
     StaffPermission,
+    has_control_characters,
     require_reason,
     require_staff_permission,
     validate_idempotency_key,
@@ -119,6 +120,23 @@ def generate_license_key(
     if data.seat_limit < 1 or data.device_limit < 1:
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
 
+    # These three are stored verbatim on the licence, and `feature_scope` travels on into the
+    # SIGNED entitlement manifest as a display label — cached offline until the licence
+    # expires. A control character in any of them is refused here rather than at the database,
+    # where Postgres raises an unmapped `DataError` and SQLite silently stores the byte. See
+    # `CONTROL_CHARACTERS_RE`. `reason` is covered by `require_reason` above; `plan_code` is
+    # handled at its lookup below, where the answer must match an unknown code instead.
+    for field_name, field_value in (
+        ("feature_scope", data.feature_scope),
+        ("territory", data.territory),
+        ("timezone", data.timezone),
+    ):
+        if has_control_characters(field_value or ""):
+            raise SafeAPIError(
+                ErrorCode.VALIDATION_FAILED,
+                f"`{field_name}` contains a control character. Supply it as plain text.",
+            )
+
     # DEC-014. Naming a plan is now part of issuing a licence.
     #
     # `resolve_plan_for_license` tries the assignment, then a legacy scope alias, then the
@@ -159,7 +177,23 @@ def generate_license_key(
         # direction would close that loop.
         from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
 
-        plan = Plan.objects.filter(code=plan_code).first()
+        # A control character cannot name a plan, so this takes the SAME refusal an ordinary
+        # unknown code takes rather than inventing a third outcome. Skipping the query is the
+        # whole fix: on Postgres `filter(code="PRO\x00")` raises an unmapped `DataError` that
+        # escapes as a masked generic failure, while on SQLite the identical call already
+        # returns None and lands exactly here. This makes Postgres agree with SQLite, which is
+        # the behaviour that was already correct.
+        if has_control_characters(plan_code):
+            logger.warning(
+                "refused to issue a licence for customer %s: plan_code contains a control "
+                "character, so it cannot name a catalogue plan. Refused as an unknown plan. "
+                "Requested by actor %s.",
+                data.customer_id,
+                staff.actor_id,
+            )
+            plan = None
+        else:
+            plan = Plan.objects.filter(code=plan_code).first()
         if plan is None:
             raise SafeAPIError(
                 ErrorCode.NOT_FOUND,

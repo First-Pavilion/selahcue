@@ -42,6 +42,7 @@ from selahcue_api.apps.catalogue.models import (
 from selahcue_api.graphql.context import (
     ActorContext,
     StaffPermission,
+    has_control_characters,
     require_reason,
     require_staff_permission,
     validate_idempotency_key,
@@ -462,6 +463,24 @@ def set_plan_grant(actor: ActorContext | None, data: SetPlanGrantData) -> SetPla
     if not plan_code or not dimension_key or not raw_value:
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
 
+    # Neither a plan code nor a dimension key can contain a control character, so a value that
+    # does takes the SAME NOT_FOUND an unknown code takes. Skipping the query is the fix:
+    # Postgres raises an unmapped `DataError` on `filter(code="PRO\x00")` while SQLite already
+    # returns None and lands on that refusal. See `CONTROL_CHARACTERS_RE`.
+    unlookupable = [
+        name
+        for name, value in (("plan_code", plan_code), ("dimension_key", dimension_key))
+        if has_control_characters(value)
+    ]
+    if unlookupable:
+        logger.warning(
+            "refused a plan-grant write: %s contains a control character and cannot name a "
+            "catalogue row. Refused as not found. Requested by actor %s.",
+            " and ".join(unlookupable),
+            staff.actor_id,
+        )
+        raise SafeAPIError(ErrorCode.NOT_FOUND)
+
     with transaction.atomic():
         plan = Plan.objects.filter(code=plan_code).first()
         dimension = GrantDimension.objects.filter(key=dimension_key).first()
@@ -712,6 +731,16 @@ def set_license_plan_assignment(
     plan_code = (data.plan_code or "").strip()
     if not plan_code:
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+
+    # Same refusal as an unknown plan code, for the reason above.
+    if has_control_characters(plan_code):
+        logger.warning(
+            "refused to assign licence %s: plan_code contains a control character, so it "
+            "cannot name a catalogue plan. Refused as not found. Requested by actor %s.",
+            data.license_key_id,
+            staff.actor_id,
+        )
+        raise SafeAPIError(ErrorCode.NOT_FOUND)
 
     with transaction.atomic():
         plan = Plan.objects.filter(code=plan_code).first()
