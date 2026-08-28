@@ -42,11 +42,10 @@ self-heals on the next refresh, and is audited so an operator can alert on it.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
-
-import logging
 
 from django.utils import timezone
 
@@ -63,6 +62,8 @@ from selahcue_api.graphql.context import ActorContext, ActorKind
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 from selahcue_api.graphql.redaction import assert_no_restricted_payload_fields
 
+logger = logging.getLogger(__name__)
+
 # **Bump rule.** Increment this ONLY when a client that ignores unknown keys and applies
 # its own default to missing ones would behave INCORRECTLY against the new payload — a
 # field removed, renamed, retyped, or given a different meaning. Adding a key is not such
@@ -72,8 +73,6 @@ from selahcue_api.graphql.redaction import assert_no_restricted_payload_fields
 # `grants` and `plan_display_label` were added under this rule and did NOT earn a bump.
 # `test_entitlement_manifest_grants.py` asserts the compatibility field by field, which is
 # what actually protects a deployed client — the number never did.
-logger = logging.getLogger(__name__)
-
 ENTITLEMENT_VERSION = 1
 
 # How long a manifest built from a FAILED catalogue read stays valid. Short on purpose:

@@ -44,8 +44,12 @@ the day the write-back lands this becomes a row edit.
 
 from __future__ import annotations
 
+import inspect
+
 from django.core.validators import RegexValidator
 from django.db import models
+
+from selahcue_api.graphql.context import require_reason
 
 # Dimension keys travel into a SIGNED payload, and a signed manifest is cached offline for
 # the licence's lifetime — so once a key ships it is effectively permanent. The field is
@@ -106,6 +110,26 @@ MIN_REASON_LENGTH = 8
 
 assert MIN_REASON_LENGTH >= 2, "a floor below 2 would make the reason constraint decorative"
 
+# Pinned at IMPORT time, beside the constant it constrains, because the duplication above is
+# only safe while the SERVICE floor is at least as high as the DATABASE one. Drop
+# `require_reason`'s default below this and the service starts accepting a reason the
+# database refuses: `LicensePlanAssignment.objects.create()` then raises an uncaught
+# `IntegrityError`, which `safe_graphql_error` flattens to VALIDATION_FAILED — so a
+# server-side constraint mismatch reaches the caller as "The request is invalid.", unlogged
+# and unaudited, and indistinguishable from ordinary bad input.
+#
+# Deliberately `>=` and not `==`: a service floor ABOVE this one is safe, and leaves the
+# database the backstop it is meant to be. The `>= 2` assert above pins nothing about the
+# mirror — only comparing the two values does.
+_REQUIRE_REASON_MIN_LENGTH = inspect.signature(require_reason).parameters["min_length"].default
+
+assert _REQUIRE_REASON_MIN_LENGTH >= MIN_REASON_LENGTH, (
+    f"graphql.context.require_reason now defaults to min_length={_REQUIRE_REASON_MIN_LENGTH}, "
+    f"below MIN_REASON_LENGTH={MIN_REASON_LENGTH}: the service would accept a reason the "
+    "database check constraint refuses, and the caller would see 'The request is invalid.' "
+    "for a server-side mismatch"
+)
+
 
 def accountability_constraints(prefix: str, *, actor_field: str) -> list:
     """Who did it and why, enforced by the DATABASE rather than by the service alone.
@@ -122,7 +146,21 @@ def accountability_constraints(prefix: str, *, actor_field: str) -> list:
             name=f"{prefix}_actor_required",
         ),
         models.CheckConstraint(
-            # Unanchored search: at least MIN_REASON_LENGTH characters on some line.
+            # At least MIN_REASON_LENGTH characters, unanchored — but the two engines do
+            # NOT agree on what `.` matches, and PRODUCTION is the Postgres reading.
+            # Postgres `~` matches a newline with `.`, so here it means "at least
+            # MIN_REASON_LENGTH characters ANYWHERE". Django's SQLite `REGEXP` is
+            # `re.search` with no DOTALL, so `.` stops at a newline and it means "that many
+            # on some single line". Measured: E'a\nb\nc\nd\ne\nf\ng\nh' is accepted by
+            # Postgres and refused by SQLite.
+            #
+            # Nothing reaches that gap through the service: `require_reason` collapses all
+            # whitespace to single spaces, so a multi-line reason cannot arrive. The gap is
+            # open only to the bare `objects.create()` this constraint exists to bind — and
+            # there the looser Postgres reading is still a floor, not a hole.
+            #
+            # It is a LENGTH floor and nothing more, on both engines: eight spaces satisfies
+            # it. Meaningfulness is the service's job, not the database's.
             condition=models.Q(reason__regex=r".{%d,}" % MIN_REASON_LENGTH),
             name=f"{prefix}_reason_required",
         ),
