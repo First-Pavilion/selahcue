@@ -6325,6 +6325,22 @@
         // The total must describe the items actually being rendered. A header reading 99999s over
         // rows summing 600s is precisely the §9 MAJOR. Sections carry no duration, so this holds
         // under either reading of the question above.
+        // WHY the two totals agree, and what silently breaks if that changes.
+        //
+        // This recomputation sums planned_secs over EVERY item it was sent, sections included.
+        // The host's planned_total_secs EXCLUDES sections, because a divider is not part of the
+        // run sheet. Those are different definitions, and they agree for exactly one reason: the
+        // host will not let a section hold a duration at all — ServicePlan::set_item_planned_secs
+        // refuses it (PlanError::NotApplicable) and from_parts strips any an older build stored.
+        //
+        // So this is not 'sections happen to carry no duration'. It is a guarantee another crate
+        // makes, in another language, landed in another pull request. If that guard is ever
+        // relaxed, the sums diverge, this check returns false, and planSummaryOf falls back to
+        // the local computation below — QUIETLY. The panel keeps rendering plausible numbers that
+        // are no longer the host's, with nothing thrown and no test failing. The tripwire on the
+        // other side is a_section_with_a_duration_would_break_the_operators_summary_validation_seam
+        // in selahcue-core/tests/test_plan.rs, and the mirror of this note is on
+        // ServicePlan::planned_total. Change either definition and both must move.
         let localTotal = 0;
         items.forEach((x) => { if (planHasDuration(x)) localTotal += x.planned_secs; });
         if (sum.planned_total_secs !== localTotal) return false;

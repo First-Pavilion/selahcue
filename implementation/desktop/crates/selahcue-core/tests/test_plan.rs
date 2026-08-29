@@ -1128,3 +1128,69 @@ fn a_scripture_reference_is_sanitized_on_the_way_in_not_only_on_encode() {
         other => panic!("expected a scripture link, got {other:?}"),
     }
 }
+
+#[test]
+fn a_section_with_a_duration_would_break_the_operators_summary_validation_seam() {
+    // TRIPWIRE for a coupling that spans two crates, two languages and two pull requests.
+    //
+    // The operator console does not trust the host's summary on sight: `planSummaryIsSound` in
+    // `selahcue-operator/dist/app.js` recomputes `planned_total_secs` from the rows it was sent
+    // and rejects the whole summary if the two disagree. Its recomputation sums `planned_secs`
+    // over EVERY item, sections included. `ServicePlan::planned_total` EXCLUDES sections. Two
+    // different definitions that agree for exactly one reason: a section cannot hold a duration.
+    //
+    // Relax that guard and nothing fails loudly. The console stops trusting a correct summary
+    // and silently falls back to computing its own, so the panel keeps showing plausible numbers
+    // that are no longer the host's — no panic, no error, no red test. This test exists to make
+    // that day loud instead.
+    //
+    // It is CONDITIONAL on purpose. The state it guards is unconstructible today, which is the
+    // whole point of the guard; asserting it directly would be a test that can only ever pass.
+    // So it asks the domain whether the state has become reachable, and only then asserts the
+    // invariant the seam depends on. Today the `Err` arm runs and carries a positive control, so
+    // it is not vacuous; the day the guard is relaxed, the `Ok` arm opens and the assert fires.
+    let mut plan = ServicePlan::new("Sunday");
+    let song = plan.add_item(ItemKind::Song, "Opening Song");
+    let divider = plan.add_item(ItemKind::Section, "SERMON");
+    plan.set_item_planned_secs(song, Some(300)).unwrap();
+
+    match plan.set_item_planned_secs(divider, Some(600)) {
+        Err(PlanError::NotApplicable(id)) => {
+            assert_eq!(id, divider, "the refusal must name the divider it refused");
+            // POSITIVE CONTROL: the same call on a real item must still succeed. Without this,
+            // a setter that had been broken into always returning Err would satisfy the arm
+            // above and this test would vouch for a guard that no longer guards anything.
+            assert!(
+                plan.set_item_planned_secs(song, Some(301)).is_ok(),
+                "positive control: the setter must still work on a non-divider, or the Err arm \
+                 above proves nothing about dividers specifically"
+            );
+            // And the premise the seam actually rests on: with the guard intact, our total and
+            // the operator's all-items recomputation are the same number.
+            let ours = plan.planned_total().secs;
+            let as_the_operator_recomputes_it: u32 =
+                plan.items().iter().filter_map(|i| i.planned_secs).sum();
+            assert_eq!(
+                ours, as_the_operator_recomputes_it,
+                "with no section able to hold a duration, the two definitions must coincide"
+            );
+        }
+        Err(other) => panic!("expected NotApplicable for a divider, got {other:?}"),
+        Ok(()) => {
+            // The guard has been relaxed. The cross-language seam now depends on these agreeing.
+            let ours = plan.planned_total().secs;
+            let as_the_operator_recomputes_it: u32 =
+                plan.items().iter().filter_map(|i| i.planned_secs).sum();
+            assert_eq!(
+                ours, as_the_operator_recomputes_it,
+                "a section can now carry a duration, so ServicePlan::planned_total ({ours}) no \
+                 longer matches the all-items sum the operator console recomputes \
+                 ({as_the_operator_recomputes_it}). planSummaryIsSound in \
+                 selahcue-operator/dist/app.js will reject this summary and the Plan Summary \
+                 panel will silently fall back to its own local computation. Either keep \
+                 durations off dividers, or change that validator to exclude them too — the two \
+                 definitions must move together."
+            );
+        }
+    }
+}

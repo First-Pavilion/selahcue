@@ -747,6 +747,37 @@ impl ServicePlan {
 
     /// Refuse to put schedulable data on an inert divider. Clearing (`setting_a_value ==
     /// false`) is always allowed, so a legacy item can be cleaned up rather than being stuck.
+    ///
+    /// # What this covers, and what it does not
+    ///
+    /// It guards the three fields the SUMMARY reads — `owner`, `planned_secs` and `content` —
+    /// because the invariant it exists to protect is that a summary can never contradict the
+    /// rows beside it (`missing: 0` next to a row whose link says `"missing"`, `assigned: 0`
+    /// next to a row showing an owner). [`ServicePlan::from_parts`] sweeps the same three on the
+    /// load path, since rehydration is the one route that bypasses the setters.
+    ///
+    /// It does **not** cover `stanzas`. A divider can carry stanza content, on both paths:
+    /// over the wire via `AddItem { kind: "section", content: Some(..) }`, which writes through
+    /// `get_mut` rather than a setter, and across a save/reload, because the `from_parts` sweep
+    /// clears the other three and not this one. Going live on such an item presents its body
+    /// text.
+    ///
+    /// That is deliberately left open rather than overlooked. `stanzas` feeds **no** summary
+    /// metric, so it cannot break the invariant above; and a divider was already presentable
+    /// before any of this — nothing in staging or Go Live inspects `ItemKind`, and `item_slide`
+    /// renders a title slide for any item. So the question "may a section present body text?"
+    /// is a product decision about whether a divider is inert *by type*, not a defect in this
+    /// guard. Tracked as `86ak8dm3f`.
+    ///
+    /// Note also that `get_mut` and `PlanItem`'s public fields bypass this guard for the other
+    /// three fields just as readily; the coverage is uniform, not lopsided. Sealing that means
+    /// routing the two `selahcue-app` writes (`controller.rs` `AddItem` and `RenameItem`)
+    /// through setters first — `get_mut` cannot simply be narrowed to `pub(crate)`, because
+    /// those callers live in a different crate and it would not compile.
+    ///
+    /// Worth knowing when that is scoped: `stanzas` and `title` are bounded only by the 64 KiB
+    /// LAN frame cap and [`MAX_PLAN_ITEMS`], so a hostile authenticated Operator has roughly a
+    /// 31 MiB worst case, against the 120 characters a link label is held to.
     fn refuse_on_divider(&self, id: ItemId, setting_a_value: bool) -> Result<(), PlanError> {
         match self.get(id) {
             Some(item) if setting_a_value && item.kind == ItemKind::Section => {
@@ -792,6 +823,25 @@ impl ServicePlan {
     /// Both come out of ONE pass deliberately. A completeness flag derived separately from the
     /// sum it describes drifts the moment either side changes, and the drift is silent — a
     /// total that reads as the whole service when it is really a floor.
+    ///
+    /// # This total is load-bearing for the operator console, in a way nothing here enforces
+    ///
+    /// The operator console does not trust this number on sight. `planSummaryIsSound` in
+    /// `selahcue-operator/dist/app.js` RECOMPUTES it from the rows it was sent and rejects the
+    /// whole summary when the two disagree. Its recomputation sums `planned_secs` over **every**
+    /// item, sections included; this one **excludes** sections (the settled rule that a divider
+    /// is not part of the run sheet).
+    ///
+    /// The two therefore agree for exactly one reason: **a section can never hold a duration.**
+    /// [`ServicePlan::set_item_planned_secs`] refuses to set one and [`ServicePlan::from_parts`]
+    /// strips any an older build stored. Relax either and the sums diverge.
+    ///
+    /// What makes that worth a comment is the failure mode. Nothing breaks loudly: the console
+    /// simply stops trusting a correct summary and silently falls back to computing its own,
+    /// so the Plan Summary panel keeps rendering plausible numbers that are no longer the
+    /// host's. No panic, no error, no failing test. `a_section_with_a_duration_would_break_the_
+    /// operators_summary_validation_seam` in `tests/test_plan.rs` is the tripwire; the mirror
+    /// of this note sits beside the check in `app.js`. The two must move together.
     pub fn planned_total(&self) -> PlannedTotal {
         let mut t = PlannedTotal::default();
         for item in &self.items {
@@ -834,6 +884,11 @@ impl ServicePlan {
             .into_iter()
             .map(|mut it| {
                 if it.kind == ItemKind::Section {
+                    // The same three fields `refuse_on_divider` guards on the command path, and
+                    // for the same reason: these are what the summary reads. `stanzas` is
+                    // deliberately NOT swept here — see that method's doc. Keep the two lists
+                    // identical: a sweep that covers fewer fields than the setters refuse would
+                    // let a save/reload reintroduce exactly what an edit is not allowed to set.
                     it.owner = None;
                     it.planned_secs = None;
                     it.content = None;

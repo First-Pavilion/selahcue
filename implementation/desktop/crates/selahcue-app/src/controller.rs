@@ -2072,6 +2072,18 @@ impl LiveController {
 
     /// A serializable snapshot for the operator UI: the plan with per-item Live/Preview
     /// flags, plus the current live/staged indices and blackout state.
+    ///
+    /// # Cadence assumption
+    ///
+    /// This is built **per poll and per action — never per frame.** Its dominant cost is link
+    /// resolution: one scripture parse, and a corpus lookup, for every linked item in the plan.
+    /// That is fine at the rate the operator console asks for state and after each command, and
+    /// far too heavy for the render loop.
+    ///
+    /// Nothing in the type system enforces that. If a future caller reaches for this from a
+    /// frame callback, the cost does not announce itself — it shows up as a frame-rate drop
+    /// under a plan with many scripture links, which is the hardest kind of regression to trace
+    /// back to its cause. Cache the view or resolve links ahead of time instead.
     pub fn operator_view(&self) -> OperatorView {
         // Resolve each item's link ONCE per build and share it with the summary below.
         // Resolving twice doubles this function's dominant cost — a scripture parse per linked
