@@ -2,7 +2,10 @@
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_core::plan::{ItemContent, ItemId, ItemKind, PlanError, PlanItem, ServicePlan};
+use selahcue_core::plan::{
+    ItemContent, ItemId, ItemKind, LinkResolution, PlanError, PlanItem, ServicePlan, VerseNumbers,
+    MAX_LINK_LABEL_LEN,
+};
 
 #[test]
 fn add_assigns_unique_increasing_ids() {
@@ -176,6 +179,7 @@ fn slide_count_is_one_for_a_scripture_linked_item_even_with_stanzas() {
             reference: "John 3:16".into(),
             translation: None,
             verses_per_slide: None,
+            verse_numbers: None,
         });
     }
     // A scripture link renders one passage slide, so it counts as one regardless of the stanzas
@@ -191,12 +195,14 @@ fn scripture_encode_neutralizes_control_chars_and_cannot_hijack_fields() {
         reference: "Romans 8:28\tKJV".into(),
         translation: None,
         verses_per_slide: None,
+        verse_numbers: None,
     };
     match ItemContent::decode(&malicious.encode()).unwrap() {
         ItemContent::Scripture {
             reference,
             translation,
             verses_per_slide,
+            verse_numbers: _,
         } => {
             assert!(!reference.contains('\t'), "tab neutralized: {reference:?}");
             assert_eq!(
@@ -247,16 +253,19 @@ fn item_content_codec_round_trips_every_variant() {
             reference: "Romans 8:28-30".into(),
             translation: Some("WEB".into()),
             verses_per_slide: Some(2),
+            verse_numbers: None,
         },
         // Optional sub-fields absent — still lossless.
         ItemContent::Scripture {
             reference: "John 3:16".into(),
             translation: None,
             verses_per_slide: None,
+            verse_numbers: None,
         },
         ItemContent::Deck {
             deck_id: 42,
             slide_count: None,
+            label: None,
         },
         ItemContent::Media { media_id: 7 },
     ];
@@ -279,6 +288,7 @@ fn set_item_content_links_and_blank_scripture_ref_unlinks() {
         reference: "Romans 8:28-30".into(),
         translation: Some("WEB".into()),
         verses_per_slide: Some(2),
+        verse_numbers: None,
     };
     p.set_item_content(s, Some(link.clone())).unwrap();
     assert_eq!(p.get(s).unwrap().content.as_ref(), Some(&link));
@@ -290,6 +300,7 @@ fn set_item_content_links_and_blank_scripture_ref_unlinks() {
             reference: "   ".into(),
             translation: None,
             verses_per_slide: None,
+            verse_numbers: None,
         }),
     )
     .unwrap();
@@ -301,6 +312,7 @@ fn set_item_content_links_and_blank_scripture_ref_unlinks() {
         Some(ItemContent::Deck {
             deck_id: 5,
             slide_count: None,
+            label: None,
         }),
     )
     .unwrap();
@@ -322,6 +334,7 @@ fn unresolved_content_flags_missing_decks_media_and_bad_refs() {
             reference: "Romans 8:28".into(),
             translation: None,
             verses_per_slide: None,
+            verse_numbers: None,
         }),
     )
     .unwrap();
@@ -332,6 +345,7 @@ fn unresolved_content_flags_missing_decks_media_and_bad_refs() {
             reference: "Not a reference".into(),
             translation: None,
             verses_per_slide: None,
+            verse_numbers: None,
         }),
     )
     .unwrap();
@@ -341,6 +355,7 @@ fn unresolved_content_flags_missing_decks_media_and_bad_refs() {
         Some(ItemContent::Deck {
             deck_id: 1,
             slide_count: None,
+            label: None,
         }),
     )
     .unwrap();
@@ -350,6 +365,7 @@ fn unresolved_content_flags_missing_decks_media_and_bad_refs() {
         Some(ItemContent::Deck {
             deck_id: 99,
             slide_count: None,
+            label: None,
         }),
     )
     .unwrap();
@@ -387,4 +403,240 @@ fn set_item_owner_and_planned_secs_assign_clear_and_normalize() {
         p.set_item_planned_secs(ItemId(999), Some(1)),
         Err(PlanError::NotFound(ItemId(999)))
     );
+}
+
+// --- Link resolution: the three states, and the one that must never collapse -----------
+
+/// Pin the premise at compile time: a cap small enough that the truncation test below actually
+/// exercises truncation, and large enough that a real deck name is untouched. If someone raises
+/// this to a huge value the test would silently stop testing anything, so fail the build instead.
+const _: () = assert!(MAX_LINK_LABEL_LEN >= 16 && MAX_LINK_LABEL_LEN <= 4096);
+
+#[test]
+fn resolve_distinguishes_unknown_from_resolved_for_a_caller_that_cannot_check() {
+    let deck = ItemContent::Deck {
+        deck_id: 17,
+        slide_count: None,
+        label: None,
+    };
+    let media = ItemContent::Media { media_id: 4 };
+
+    // The SAME link yields all three states, driven only by what the probe can answer. That is
+    // what makes this bite: a `from_probe` that folded `None` into `Resolved` (the natural
+    // bool-shaped mistake) passes an "is it Missing?" test and fails this one.
+    assert_eq!(
+        deck.resolve(|_| Some(true), |_| Some(true)),
+        LinkResolution::Resolved,
+        "a probe that says the deck exists must resolve"
+    );
+    assert_eq!(
+        deck.resolve(|_| Some(false), |_| Some(false)),
+        LinkResolution::Missing,
+        "a probe that says the deck is gone must report missing"
+    );
+    assert_eq!(
+        deck.resolve(|_| None, |_| None),
+        LinkResolution::Unknown,
+        "a caller that cannot see the deck library must report unknown"
+    );
+    // Stated separately and deliberately: `Unknown` collapsing into `Resolved` is the failure
+    // that renders to an operator as "fine", so assert that specific confusion cannot happen.
+    assert_ne!(
+        deck.resolve(|_| None, |_| None),
+        LinkResolution::Resolved,
+        "unknown must never be reported as resolved — that is absent-equals-fine"
+    );
+    assert_eq!(media.resolve(|_| None, |_| None), LinkResolution::Unknown);
+
+    // Scripture is answerable by a pure parse, so it is never Unknown, whatever the probes say.
+    let good = ItemContent::Scripture {
+        reference: "Romans 8:28-30".into(),
+        translation: None,
+        verses_per_slide: None,
+        verse_numbers: None,
+    };
+    let bad = ItemContent::Scripture {
+        reference: "Not a reference".into(),
+        translation: None,
+        verses_per_slide: None,
+        verse_numbers: None,
+    };
+    assert_eq!(good.resolve(|_| None, |_| None), LinkResolution::Resolved);
+    assert_eq!(bad.resolve(|_| None, |_| None), LinkResolution::Missing);
+}
+
+#[test]
+fn link_resolution_tags_are_distinct_and_stable() {
+    // The wire maps these tags directly, so a collision would silently merge two states.
+    assert_eq!(LinkResolution::Resolved.as_tag(), "resolved");
+    assert_eq!(LinkResolution::Missing.as_tag(), "missing");
+    assert_eq!(LinkResolution::Unknown.as_tag(), "unknown");
+}
+
+// --- Deck label: captured, bounded, and not silently dropped ---------------------------
+
+#[test]
+fn deck_label_is_bounded_by_character_and_a_normal_name_is_kept_verbatim() {
+    // Pin the premise inside the test too, so changing the cap cannot quietly make this vacuous.
+    const _: () = assert!(MAX_LINK_LABEL_LEN >= 16);
+
+    let mut p = ServicePlan::new("Sunday");
+    let d = p.add_item(ItemKind::SlideGroup, "Sermon");
+
+    // POSITIVE CONTROL first. Without it, "the label was shortened" is indistinguishable from
+    // "labels are dropped/blanked entirely", and the cap below would pass against a dead field.
+    let real_name = "Sunday Service \u{2014} Aug 4";
+    p.set_item_content(
+        d,
+        Some(ItemContent::Deck {
+            deck_id: 17,
+            slide_count: Some(24),
+            label: Some(real_name.into()),
+        }),
+    )
+    .unwrap();
+    match p.get(d).unwrap().content.as_ref() {
+        Some(ItemContent::Deck { label, deck_id, .. }) => {
+            assert_eq!(*deck_id, 17);
+            assert_eq!(
+                label.as_deref(),
+                Some(real_name),
+                "a normal deck name must survive verbatim — otherwise the cap test below is \
+                 asserting against a field that never holds anything"
+            );
+        }
+        other => panic!("expected a deck link, got {other:?}"),
+    }
+
+    // Now the cap. Multi-byte on purpose: truncating by BYTE would either panic on a char
+    // boundary or corrupt the name, so this also pins that the bound is by character.
+    let hostile: String = "\u{00e9}".repeat(MAX_LINK_LABEL_LEN * 4);
+    p.set_item_content(
+        d,
+        Some(ItemContent::Deck {
+            deck_id: 17,
+            slide_count: None,
+            label: Some(hostile),
+        }),
+    )
+    .unwrap();
+    match p.get(d).unwrap().content.as_ref() {
+        Some(ItemContent::Deck { label, .. }) => {
+            let stored = label.as_deref().expect("the link must still carry a label");
+            // Assert the ENTITY — the stored label's own character count — not a proxy such as
+            // "the plan is smaller than N bytes", which a dropped field would also satisfy.
+            assert_eq!(
+                stored.chars().count(),
+                MAX_LINK_LABEL_LEN,
+                "an over-long label must be bounded to exactly the cap, in characters"
+            );
+            assert!(
+                stored.chars().all(|c| c == '\u{00e9}'),
+                "truncation must not corrupt multi-byte characters: {stored:?}"
+            );
+        }
+        other => panic!("expected a deck link, got {other:?}"),
+    }
+
+    // And the bound survives the persistence round-trip, so a hand-edited row cannot reintroduce
+    // an unbounded label on load.
+    let huge = format!("deck\t17\t\t{}", "x".repeat(MAX_LINK_LABEL_LEN * 10));
+    match ItemContent::decode(&huge) {
+        Some(ItemContent::Deck { label, .. }) => assert_eq!(
+            label.as_deref().map(|l| l.chars().count()),
+            Some(MAX_LINK_LABEL_LEN),
+            "decode must re-bound a label that was never written through set_item_content"
+        ),
+        other => panic!("expected a deck link, got {other:?}"),
+    }
+}
+
+// --- Codec back-compat for both new fields ---------------------------------------------
+
+#[test]
+fn legacy_encoded_links_decode_with_the_new_fields_unset() {
+    // Rows written before verse-numbers / labels existed must still load, unlinked-free.
+    assert_eq!(
+        ItemContent::decode("scripture\tRomans 8:28\tWEB\t2"),
+        Some(ItemContent::Scripture {
+            reference: "Romans 8:28".into(),
+            translation: Some("WEB".into()),
+            verses_per_slide: Some(2),
+            verse_numbers: None,
+        }),
+        "a pre-verse-numbers scripture row loads with the mode unset"
+    );
+    assert_eq!(
+        ItemContent::decode("deck\t17"),
+        Some(ItemContent::Deck {
+            deck_id: 17,
+            slide_count: None,
+            label: None,
+        }),
+        "the oldest deck row (id only) still loads"
+    );
+    assert_eq!(
+        ItemContent::decode("deck\t17\t24"),
+        Some(ItemContent::Deck {
+            deck_id: 17,
+            slide_count: Some(24),
+            label: None,
+        }),
+        "a pre-label deck row loads with the label unset"
+    );
+    // An unknown mode degrades to unset rather than failing the whole link — the passage still
+    // displays, which is the point of the link.
+    assert_eq!(
+        ItemContent::decode("scripture\tJohn 3:16\t\t\tsideways"),
+        Some(ItemContent::Scripture {
+            reference: "John 3:16".into(),
+            translation: None,
+            verses_per_slide: None,
+            verse_numbers: None,
+        })
+    );
+}
+
+#[test]
+fn verse_numbers_round_trip_through_the_codec_and_tags() {
+    for mode in [
+        VerseNumbers::Superscript,
+        VerseNumbers::Inline,
+        VerseNumbers::Hidden,
+    ] {
+        assert_eq!(VerseNumbers::from_tag(mode.as_tag()), Some(mode));
+        let c = ItemContent::Scripture {
+            reference: "Romans 8:28".into(),
+            translation: None,
+            verses_per_slide: None,
+            verse_numbers: Some(mode),
+        };
+        assert_eq!(ItemContent::decode(&c.encode()), Some(c.clone()), "{c:?}");
+    }
+    assert_eq!(VerseNumbers::from_tag("sideways"), None);
+}
+
+#[test]
+fn a_label_containing_a_tab_cannot_hijack_the_codec_fields() {
+    // Same class of attack the scripture reference test already covers: the label is the LAST
+    // deck field, so a tab in it would append phantom fields on decode.
+    let c = ItemContent::Deck {
+        deck_id: 17,
+        slide_count: Some(24),
+        label: Some("Sunday\tService".into()),
+    };
+    match ItemContent::decode(&c.encode()) {
+        Some(ItemContent::Deck {
+            label,
+            deck_id,
+            slide_count,
+        }) => {
+            assert_eq!(deck_id, 17);
+            assert_eq!(slide_count, Some(24));
+            let l = label.expect("label survives");
+            assert!(!l.contains('\t'), "tab neutralized: {l:?}");
+            assert_eq!(l, "Sunday Service");
+        }
+        other => panic!("expected a deck link, got {other:?}"),
+    }
 }

@@ -528,6 +528,58 @@ pub struct ContentLinkView {
     /// its real slide count + stage a specific within-item slide (the Live Console slide picker).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slide_count: Option<u32>,
+    /// Scripture link: how verse numbers render — `"superscript"` | `"inline"` | `"hidden"`.
+    /// Absent = the plan default. Absent for deck/media.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verse_numbers: Option<String>,
+    /// Whether the link RESOLVES, as far as the layer that built this view could tell:
+    /// `"missing"` = checked and gone, `"unknown"` = **not checked**, absent = checked and fine.
+    ///
+    /// `"unknown"` is not a hedge, it is the honest answer for deck and media links coming from
+    /// the host: decks are operator-owned by design and the host has no deck store, so it
+    /// cannot answer. A client must render `"unknown"` as *not yet known* and let the layer
+    /// that owns the library (the operator) supply the verdict — never as "fine". This mirrors
+    /// [`OperatorStateView::output_health`], where `None` likewise means "not reported", not
+    /// "healthy". Absent-equals-fine is the failure this field exists to prevent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// The link target's LAST KNOWN GOOD display name (e.g. a deck's title), written when the
+    /// link is made and rewritten on every successful resolve. It is what lets a missing link
+    /// be described by name once the library row is gone and the id resolves to nothing.
+    /// Absent = no name was ever captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// Plan-level roll-up for the builder's right-hand Plan Summary panel and the run-sheet
+/// header (FR-004). Every count is derived from the same items the view already carries, so
+/// it never disagrees with them.
+///
+/// `missing` and `unknown` are deliberately SEPARATE totals rather than one "problem" count.
+/// The host can only resolve scripture links, so folding decks and media into `missing` would
+/// overstate what it knows, and folding them into a clean bill would understate it. `unknown`
+/// is the count the operator still has to resolve against its own library.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PlanSummaryView {
+    /// Total items in the run sheet.
+    pub items: u32,
+    pub songs: u32,
+    pub scripture: u32,
+    /// Slide-group items — "Presentation" in the UI.
+    pub presentations: u32,
+    pub media: u32,
+    pub announcements: u32,
+    pub timers: u32,
+    /// Non-triggerable dividers.
+    pub sections: u32,
+    /// Items with an owner assigned (FR-004).
+    pub assigned: u32,
+    /// Items whose link was CHECKED and does not resolve.
+    pub missing: u32,
+    /// Items whose link could NOT be checked by the layer that built this view.
+    pub unknown: u32,
+    /// Sum of every item's planned duration, saturating.
+    pub planned_total_secs: u32,
 }
 
 /// One plan item as the operator UI renders it — the wire form of an item view.
@@ -705,6 +757,11 @@ pub struct OperatorStateView {
     /// The host's session-recovery state. `None` = this host does not report it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionHealthView>,
+    /// Plan-level roll-up (counts, assigned, planned total) for the Plan Summary panel.
+    /// `None` = this host does not report it; omitted on the wire then, so the pinned v2
+    /// fixtures stay byte-identical and an older client is unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<PlanSummaryView>,
 }
 
 /// The live output's fault/recovery health, as the operator UI renders it (NFR-024).

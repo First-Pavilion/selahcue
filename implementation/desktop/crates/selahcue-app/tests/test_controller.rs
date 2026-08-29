@@ -1256,6 +1256,7 @@ fn select_slide_stages_a_real_deck_presentation_slide_and_reports_the_staged_cur
         Some(ItemContent::Deck {
             deck_id: 7,
             slide_count: Some(6),
+            label: None,
         }),
     )
     .unwrap();
@@ -1317,6 +1318,7 @@ fn select_slide_stages_a_real_deck_presentation_slide_and_reports_the_staged_cur
             Some(ItemContent::Deck {
                 deck_id: 9,
                 slide_count: None,
+                label: None,
             }),
         )
         .unwrap();
@@ -4545,6 +4547,9 @@ fn a_scripture_linked_item_stages_its_verses_and_surfaces_the_link() {
         verses_per_slide: Some(2),
         id: None,
         slide_count: None,
+        verse_numbers: None,
+        status: None,
+        label: None,
     };
     let reply = c.apply(&Command::SetItemContent {
         item_id: scr,
@@ -4597,6 +4602,9 @@ fn a_scripture_linked_item_stages_its_verses_and_surfaces_the_link() {
             verses_per_slide: None,
             id: Some(17),
             slide_count: None,
+            verse_numbers: None,
+            status: None,
+            label: None,
         }),
     });
     assert!(matches!(deck, ControllerReply::Ack));
@@ -4850,4 +4858,217 @@ fn live_generation_covers_every_output_changing_command_class() {
          (they run per-poll/per-frame — a bump here defeats the NDI cache)"
     );
     let _ = ids;
+}
+
+// --- Design 2.0 Service Plan builder: honest link status + plan summary -----------------
+
+/// A plan holding one of every link condition the builder has to render.
+fn plan_with_every_link_condition() -> LiveController {
+    let mut plan = ServicePlan::new("Sunday");
+    let good = plan.add_item(ItemKind::Scripture, "Romans 8:28-30");
+    let bad = plan.add_item(ItemKind::Scripture, "Broken ref");
+    let deck = plan.add_item(ItemKind::SlideGroup, "Sermon: The Waiting");
+    let media = plan.add_item(ItemKind::Media, "Testimony Video");
+    let song = plan.add_item(ItemKind::Song, "Opening Song");
+    plan.set_item_content(
+        good,
+        Some(ItemContent::Scripture {
+            reference: "Romans 8:28-30".into(),
+            translation: Some("WEB".into()),
+            verses_per_slide: Some(2),
+            verse_numbers: Some(selahcue_core::plan::VerseNumbers::Superscript),
+        }),
+    )
+    .unwrap();
+    // Set through the DOMAIN, not the wire: `SetItemContent` rejects an unparseable reference,
+    // so this is the realistic path — a plan persisted when the reference still parsed.
+    plan.set_item_content(
+        bad,
+        Some(ItemContent::Scripture {
+            reference: "Not a reference".into(),
+            translation: None,
+            verses_per_slide: None,
+            verse_numbers: None,
+        }),
+    )
+    .unwrap();
+    plan.set_item_content(
+        deck,
+        Some(ItemContent::Deck {
+            deck_id: 17,
+            slide_count: Some(24),
+            label: Some("Sunday Service \u{2014} Aug 4".into()),
+        }),
+    )
+    .unwrap();
+    plan.set_item_content(media, Some(ItemContent::Media { media_id: 4 }))
+        .unwrap();
+    plan.set_item_planned_secs(good, Some(120)).unwrap();
+    plan.set_item_planned_secs(deck, Some(2100)).unwrap();
+    plan.set_item_owner(good, Some("Scripture op".into()))
+        .unwrap();
+    plan.set_item_owner(deck, Some("Pastor".into())).unwrap();
+    let _ = song;
+    LiveController::new(plan, 320, 180, Theme::dark())
+}
+
+#[test]
+fn operator_view_reports_unknown_for_operator_owned_links_and_never_calls_them_healthy() {
+    let c = plan_with_every_link_condition();
+    let items = c.operator_view().items;
+
+    // Scripture is the one thing the host can resolve — a pure parse — so it answers for real.
+    assert_eq!(
+        items[0].link.as_ref().unwrap().status,
+        None,
+        "a resolvable passage carries no status: absent IS the resolved case"
+    );
+    assert_eq!(
+        items[1].link.as_ref().unwrap().status.as_deref(),
+        Some("missing"),
+        "a reference that no longer parses is confirmed missing"
+    );
+
+    // Decks and media are operator-owned; the host has no store for either. It must say so
+    // rather than guess in either direction.
+    for (i, what) in [(2usize, "deck"), (3usize, "media")] {
+        let link = items[i].link.as_ref().unwrap();
+        assert_eq!(
+            link.status.as_deref(),
+            Some("unknown"),
+            "the host cannot see the {what} library, so it must report unknown"
+        );
+        // Stated as its own assertion because this is the failure that matters: `None` would
+        // render to an operator as a healthy link the host never actually checked.
+        assert_ne!(
+            link.status, None,
+            "an unchecked {what} link must never be reported as healthy"
+        );
+    }
+
+    // An unlinked item is not a problem and carries no link at all — distinct from a link
+    // that is present but unresolvable.
+    assert!(
+        items[4].link.is_none(),
+        "an unlinked item has no link object, which is not the same as a missing one"
+    );
+
+    // The captured deck name rides along, which is what makes "X was deleted" renderable.
+    assert_eq!(
+        items[2].link.as_ref().unwrap().label.as_deref(),
+        Some("Sunday Service \u{2014} Aug 4")
+    );
+    assert_eq!(
+        items[0].link.as_ref().unwrap().verse_numbers.as_deref(),
+        Some("superscript")
+    );
+}
+
+#[test]
+fn plan_summary_counts_the_run_sheet_and_keeps_missing_apart_from_unknown() {
+    let c = plan_with_every_link_condition();
+    let s = c
+        .operator_view()
+        .summary
+        .expect("this host reports a summary");
+
+    assert_eq!(s.items, 5);
+    assert_eq!(s.scripture, 2);
+    assert_eq!(s.presentations, 1, "a slide-group item is a Presentation");
+    assert_eq!(s.media, 1);
+    assert_eq!(s.songs, 1);
+    assert_eq!(
+        s.assigned, 2,
+        "only the two items given an owner count as assigned"
+    );
+    assert_eq!(s.planned_total_secs, 2220);
+
+    // The whole point of two totals. If these were folded into one number, the panel would
+    // report two healthy decks as broken, or two unchecked links as verified.
+    assert_eq!(
+        s.missing, 1,
+        "only the unparseable reference is CONFIRMED missing"
+    );
+    assert_eq!(
+        s.unknown, 2,
+        "the deck and the media link are unchecked, not healthy and not missing"
+    );
+}
+
+#[test]
+fn a_deck_label_is_captured_when_linked_and_refreshed_when_the_link_is_set_again() {
+    let mut plan = ServicePlan::new("Sunday");
+    let d = plan.add_item(ItemKind::SlideGroup, "Sermon");
+    let mut c = LiveController::new(plan, 320, 180, Theme::dark());
+    let deck_link = |label: &str| ContentLinkView {
+        kind: "deck".into(),
+        reference: None,
+        translation: None,
+        verses_per_slide: None,
+        id: Some(17),
+        slide_count: Some(24),
+        verse_numbers: None,
+        status: None,
+        label: Some(label.into()),
+    };
+
+    // Captured at link time.
+    assert!(matches!(
+        c.apply(&Command::SetItemContent {
+            item_id: d.0,
+            link: Some(deck_link("Sunday Service \u{2014} Aug 4")),
+        }),
+        ControllerReply::Ack
+    ));
+    assert_eq!(
+        c.operator_view().items[0]
+            .link
+            .as_ref()
+            .unwrap()
+            .label
+            .as_deref(),
+        Some("Sunday Service \u{2014} Aug 4")
+    );
+
+    // Refreshed when the link is set again with the deck's current name — this is how a RENAME
+    // is recorded, and why capture-once would leave a confidently wrong name on screen.
+    assert!(matches!(
+        c.apply(&Command::SetItemContent {
+            item_id: d.0,
+            link: Some(deck_link("Sunday Service \u{2014} Aug 11")),
+        }),
+        ControllerReply::Ack
+    ));
+    assert_eq!(
+        c.operator_view().items[0]
+            .link
+            .as_ref()
+            .unwrap()
+            .label
+            .as_deref(),
+        Some("Sunday Service \u{2014} Aug 11"),
+        "a re-link with a fresh name overwrites the stale one"
+    );
+}
+
+#[test]
+fn an_unresolvable_link_degrades_to_a_titled_slide_and_never_blanks_live() {
+    // NFR-024 / FR-007: missing content must degrade, never blank or block. The audience sees a
+    // safe placeholder — which is exactly what the design promises the operator.
+    let mut c = plan_with_every_link_condition();
+    for (idx, what) in [
+        (1usize, "an unparseable scripture reference"),
+        (2usize, "a deck link the host cannot resolve"),
+    ] {
+        let id = c.operator_view().items[idx].id;
+        assert!(matches!(
+            c.apply(&Command::SelectItem { item_id: id }),
+            ControllerReply::Ack
+        ));
+        assert!(matches!(c.apply(&Command::GoLive), ControllerReply::Ack));
+        assert!(
+            !live_is_black(&c),
+            "{what} must degrade to a readable slide, never blank the audience output"
+        );
+    }
 }

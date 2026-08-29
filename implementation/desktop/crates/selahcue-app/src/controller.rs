@@ -12,8 +12,8 @@ use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{
     Command, ContentLinkView, DenyReason, DetectionView, DisplayView, OutputConfigView,
-    OutputHealthView, OutputStatusView, SavedThemeView, ScaleFit, ScreenThemeView, ScreenView,
-    ServerMessage, SessionHealthView, StorageHealthView, ThumbView, TimerSnapshot,
+    OutputHealthView, OutputStatusView, PlanSummaryView, SavedThemeView, ScaleFit, ScreenThemeView,
+    ScreenView, ServerMessage, SessionHealthView, StorageHealthView, ThumbView, TimerSnapshot,
     TranscriptSegmentView, VerseView, MAX_FRAME_RATE, MAX_NDI_NAME_LEN, MAX_OUTPUT_DELAY_MS,
     MIN_FRAME_RATE,
 };
@@ -578,13 +578,35 @@ fn output_health_view(h: selahcue_present::OutputHealth) -> OutputHealthView {
     }
 }
 
-fn content_link_view(c: &selahcue_core::plan::ItemContent) -> ContentLinkView {
-    use selahcue_core::plan::ItemContent;
+/// Whether a link resolves **from this host's point of view**.
+///
+/// The host can always answer for scripture, because resolving it is a pure parse. It can
+/// never answer for a deck or a media asset: both libraries are operator-owned by design and
+/// this process has no store for either, so it reports
+/// [`Unknown`](selahcue_core::plan::LinkResolution::Unknown) rather than guessing. Reporting
+/// `Resolved` there would be a fabrication, and reporting `Missing` would flag every healthy
+/// deck in the plan.
+fn host_resolution(c: &selahcue_core::plan::ItemContent) -> selahcue_core::plan::LinkResolution {
+    c.resolve(|_| None, |_| None)
+}
+
+/// Map a domain link to its wire form. `resolution` is supplied by the caller because the
+/// answer depends on WHICH layer is asking — the host cannot see the deck library, an
+/// operator-side caller can.
+fn content_link_view(
+    c: &selahcue_core::plan::ItemContent,
+    resolution: selahcue_core::plan::LinkResolution,
+) -> ContentLinkView {
+    use selahcue_core::plan::{ItemContent, LinkResolution};
+    // `Resolved` is the absent case on the wire, so a healthy link stays byte-identical to a
+    // pre-status host's frame.
+    let status = (resolution != LinkResolution::Resolved).then(|| resolution.as_tag().to_string());
     match c {
         ItemContent::Scripture {
             reference,
             translation,
             verses_per_slide,
+            verse_numbers,
         } => ContentLinkView {
             kind: "scripture".to_string(),
             reference: Some(reference.clone()),
@@ -592,10 +614,14 @@ fn content_link_view(c: &selahcue_core::plan::ItemContent) -> ContentLinkView {
             verses_per_slide: *verses_per_slide,
             id: None,
             slide_count: None,
+            verse_numbers: verse_numbers.map(|n| n.as_tag().to_string()),
+            status,
+            label: None,
         },
         ItemContent::Deck {
             deck_id,
             slide_count,
+            label,
         } => ContentLinkView {
             kind: "deck".to_string(),
             reference: None,
@@ -603,6 +629,9 @@ fn content_link_view(c: &selahcue_core::plan::ItemContent) -> ContentLinkView {
             verses_per_slide: None,
             id: Some(*deck_id),
             slide_count: *slide_count,
+            verse_numbers: None,
+            status,
+            label: label.clone(),
         },
         ItemContent::Media { media_id } => ContentLinkView {
             kind: "media".to_string(),
@@ -611,6 +640,9 @@ fn content_link_view(c: &selahcue_core::plan::ItemContent) -> ContentLinkView {
             verses_per_slide: None,
             id: Some(*media_id),
             slide_count: None,
+            verse_numbers: None,
+            status,
+            label: None,
         },
     }
 }
@@ -631,11 +663,20 @@ fn item_content_from_link(link: &ContentLinkView) -> Option<selahcue_core::plan:
                 reference,
                 translation: link.translation.clone(),
                 verses_per_slide: link.verses_per_slide,
+                // An unrecognised mode degrades to the plan default rather than rejecting the
+                // link — the passage still displays, which is the point of the link.
+                verse_numbers: link
+                    .verse_numbers
+                    .as_deref()
+                    .and_then(selahcue_core::plan::VerseNumbers::from_tag),
             })
         }
         "deck" => Some(ItemContent::Deck {
             deck_id: link.id?,
             slide_count: link.slide_count,
+            // The caller supplies the deck's name; the domain bounds its length. Sending the
+            // link again with a fresh label is how a rename is recorded — no extra command.
+            label: link.label.clone(),
         }),
         "media" => Some(ItemContent::Media { media_id: link.id? }),
         _ => None,
@@ -1943,6 +1984,48 @@ impl LiveController {
         self.blackout
     }
 
+    /// The plan-level roll-up behind the builder's Plan Summary panel and run-sheet header
+    /// (FR-004).
+    ///
+    /// `missing` counts ONLY the links this host actually resolved, which today means
+    /// scripture. Every deck and media link lands in `unknown` instead, because the host has
+    /// no store for either library. Keeping those two totals apart is the whole point: folding
+    /// `unknown` into `missing` would flag every healthy deck in the plan, and folding it into
+    /// the clean count would report a plan verified that nothing ever checked.
+    fn plan_summary(&self) -> Option<PlanSummaryView> {
+        use selahcue_core::plan::{ItemKind, LinkResolution};
+        let mut sum = PlanSummaryView {
+            planned_total_secs: self.plan.planned_total_secs(),
+            ..Default::default()
+        };
+        for item in self.plan.items() {
+            // Saturating throughout: MAX_PLAN_ITEMS puts these far below u32, so this can
+            // never actually bite — it just means a pathological plan cannot panic a release
+            // build or wrap to a smaller count in a debug one.
+            sum.items = sum.items.saturating_add(1);
+            let bucket = match item.kind {
+                ItemKind::Song => &mut sum.songs,
+                ItemKind::Scripture => &mut sum.scripture,
+                ItemKind::SlideGroup => &mut sum.presentations,
+                ItemKind::Media => &mut sum.media,
+                ItemKind::Announcement => &mut sum.announcements,
+                ItemKind::Timer => &mut sum.timers,
+                ItemKind::Section => &mut sum.sections,
+            };
+            *bucket = bucket.saturating_add(1);
+            if item.owner.is_some() {
+                sum.assigned = sum.assigned.saturating_add(1);
+            }
+            match item.content.as_ref().map(host_resolution) {
+                Some(LinkResolution::Missing) => sum.missing = sum.missing.saturating_add(1),
+                Some(LinkResolution::Unknown) => sum.unknown = sum.unknown.saturating_add(1),
+                // An unlinked item is not a problem, and a resolved one is not either.
+                Some(LinkResolution::Resolved) | None => {}
+            }
+        }
+        Some(sum)
+    }
+
     /// A serializable snapshot for the operator UI: the plan with per-item Live/Preview
     /// flags, plus the current live/staged indices and blackout state.
     pub fn operator_view(&self) -> OperatorView {
@@ -1979,16 +2062,21 @@ impl LiveController {
                 theme: item.theme.clone(),
                 // The linked content (scripture/deck/media), so the operator UI shows
                 // link status (ADR-0020 follow-up). `None` = an unlinked item.
-                link: item.content.as_ref().map(content_link_view),
+                link: item
+                    .content
+                    .as_ref()
+                    .map(|c| content_link_view(c, host_resolution(c))),
                 // Owner + planned duration for the run-sheet row (FR-004); `None` passes through
                 // untouched so unassigned/unplanned items stay byte-stable on the wire.
                 owner: item.owner.clone(),
                 planned_secs: item.planned_secs,
             })
             .collect();
+        let summary = self.plan_summary();
         OperatorView {
             plan_name: self.plan.name.clone(),
             items,
+            summary,
             live_index: self.live_idx,
             staged_index: self.staged_idx,
             blackout: self.blackout,

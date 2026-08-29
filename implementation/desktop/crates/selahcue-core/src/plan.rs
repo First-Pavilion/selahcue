@@ -58,6 +58,92 @@ pub struct Stanza {
     pub lines: Vec<String>,
 }
 
+/// How verse numbers are rendered on a scripture slide (FR-029 · Design 2.0 inspector,
+/// "Verse numbers" — Superscript / Inline / Hidden). `None` on a link = the plan default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerseNumbers {
+    /// Raised, smaller than the verse text (the default typographic convention).
+    Superscript,
+    /// Full-size, on the same baseline as the verse text.
+    Inline,
+    /// Not rendered at all.
+    Hidden,
+}
+
+impl VerseNumbers {
+    /// Stable string tag for persistence/serialization (not the display label).
+    pub fn as_tag(&self) -> &'static str {
+        match self {
+            VerseNumbers::Superscript => "superscript",
+            VerseNumbers::Inline => "inline",
+            VerseNumbers::Hidden => "hidden",
+        }
+    }
+
+    /// Inverse of [`VerseNumbers::as_tag`]. Returns `None` for an unknown tag.
+    pub fn from_tag(tag: &str) -> Option<VerseNumbers> {
+        Some(match tag {
+            "superscript" => VerseNumbers::Superscript,
+            "inline" => VerseNumbers::Inline,
+            "hidden" => VerseNumbers::Hidden,
+            _ => return None,
+        })
+    }
+}
+
+/// Whether a plan item's linked content resolves — **as far as the layer doing the asking
+/// can tell**. The third state is the point of this type.
+///
+/// Decks and media are **operator-owned by design**: the host has no deck store and
+/// `selahcue-app` does not depend on `selahcue-data`, so the host structurally cannot answer
+/// "does deck 17 still exist?". A two-state answer would force it to say `false` — "not
+/// missing" — for a link it never checked, and a UI reading that as "fine" is exactly the
+/// absent-equals-fine failure this model exists to prevent. [`Unknown`] lets the host decline
+/// to answer, so the operator's local resolution stays authoritative for decks and media
+/// while the host stays authoritative for scripture (which it can always parse).
+///
+/// [`Unknown`]: LinkResolution::Unknown
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkResolution {
+    /// Checked, and the link resolves.
+    Resolved,
+    /// Checked, and the link does **not** resolve — the passage no longer parses, or the
+    /// deck/media asset is gone.
+    Missing,
+    /// **Not** checked: the asking layer cannot see the library this link points into.
+    /// Never conflate this with [`Resolved`](LinkResolution::Resolved).
+    Unknown,
+}
+
+impl LinkResolution {
+    /// Interpret an existence probe: `Some(true)`/`Some(false)` = checked, `None` = the
+    /// probing layer cannot answer.
+    pub fn from_probe(probe: Option<bool>) -> LinkResolution {
+        match probe {
+            Some(true) => LinkResolution::Resolved,
+            Some(false) => LinkResolution::Missing,
+            None => LinkResolution::Unknown,
+        }
+    }
+
+    /// Stable string tag (not the display label).
+    pub fn as_tag(&self) -> &'static str {
+        match self {
+            LinkResolution::Resolved => "resolved",
+            LinkResolution::Missing => "missing",
+            LinkResolution::Unknown => "unknown",
+        }
+    }
+}
+
+/// Hard cap on a link's stored display label, in CHARACTERS (no-leak rule). A label is a
+/// human-facing deck name echoed into the run sheet, so a real one is a few dozen characters;
+/// this only stops a buggy/hostile `SetItemContent` (or a hand-edited database row) from
+/// parking an unbounded string on each of up to [`MAX_PLAN_ITEMS`] items. Over-long labels are
+/// TRUNCATED rather than rejected: the label is decoration, and refusing to link a deck because
+/// its name is long would be a worse failure than shortening the name.
+pub const MAX_LINK_LABEL_LEN: usize = 120;
+
 /// A content reference linked to a plan item — the passage a Scripture item shows,
 /// the deck a Presentation (slide-group) item shows, or the asset a Media item
 /// shows (FR-002 · ADR-0020 follow-up). `None` on a [`PlanItem`] = today's
@@ -71,21 +157,30 @@ pub struct Stanza {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ItemContent {
     /// A linked scripture passage: the canonical reference (e.g. `"Romans 8:28-30"`),
-    /// an optional bundled-translation code (`None` = the plan's default), and an
-    /// optional verses-per-slide override (FR-026 · FR-029).
+    /// an optional bundled-translation code (`None` = the plan's default), an optional
+    /// verses-per-slide override, and an optional verse-numbers mode (FR-026 · FR-029).
     Scripture {
         reference: String,
         translation: Option<String>,
         verses_per_slide: Option<u16>,
+        verse_numbers: Option<VerseNumbers>,
     },
     /// A linked presentation deck by its library id (maps to `present::DeckId`).
     /// `slide_count` is the deck's slide count as known by the deck-owning operator at link time
     /// (the host has no deck store, so it cannot derive it) — `None` for a legacy link or before
     /// the operator syncs it. It lets a deck presentation report its true slide count / stage a
     /// specific within-item slide (the Live Console slide picker) rather than collapsing to one slide.
+    ///
+    /// `label` is the deck's **last known good** display name, capped at
+    /// [`MAX_LINK_LABEL_LEN`]. It is written when the link is made and rewritten every time the
+    /// link resolves successfully, so it is accurate while the deck exists and is the last
+    /// name the deck had once it does not. Without it a deleted deck can only be described by
+    /// its id — the design calls for "\u{201c}Sunday Service \u{2014} Aug 4\u{201d} was deleted from the library",
+    /// and once the library row is gone no layer can turn the id back into that name.
     Deck {
         deck_id: u64,
         slide_count: Option<u32>,
+        label: Option<String>,
     },
     /// A linked media asset by its library id (maps to `core::media::MediaId`).
     Media { media_id: u64 },
@@ -103,6 +198,14 @@ fn sanitize_field(s: &str) -> String {
         .collect()
 }
 
+/// [`sanitize_field`] a display label AND bound it to [`MAX_LINK_LABEL_LEN`] characters.
+/// Truncation is by CHARACTER, never by byte, so a multi-byte name can never be cut mid-scalar
+/// (which would not round-trip). Applied on the way in and again on decode, so neither a hostile
+/// wire value nor a hand-edited database row can park an unbounded string on a plan item.
+fn sanitize_label(s: &str) -> String {
+    sanitize_field(s).chars().take(MAX_LINK_LABEL_LEN).collect()
+}
+
 impl ItemContent {
     /// Serialize to a stable, reversible, single-line string for persistence
     /// (the data layer stores this opaque value in one column — keeping the codec
@@ -114,21 +217,25 @@ impl ItemContent {
                 reference,
                 translation,
                 verses_per_slide,
+                verse_numbers,
             } => format!(
-                "scripture\t{}\t{}\t{}",
+                "scripture\t{}\t{}\t{}\t{}",
                 sanitize_field(reference),
                 translation
                     .as_deref()
                     .map(sanitize_field)
                     .unwrap_or_default(),
                 verses_per_slide.map(|v| v.to_string()).unwrap_or_default(),
+                verse_numbers.map(|n| n.as_tag()).unwrap_or_default(),
             ),
             ItemContent::Deck {
                 deck_id,
                 slide_count,
+                label,
             } => format!(
-                "deck\t{deck_id}\t{}",
-                slide_count.map(|c| c.to_string()).unwrap_or_default()
+                "deck\t{deck_id}\t{}\t{}",
+                slide_count.map(|c| c.to_string()).unwrap_or_default(),
+                label.as_deref().map(sanitize_label).unwrap_or_default(),
             ),
             ItemContent::Media { media_id } => format!("media\t{media_id}"),
         }
@@ -147,10 +254,18 @@ impl ItemContent {
                     .next()
                     .filter(|v| !v.is_empty())
                     .and_then(|v| v.parse().ok());
+                // Back-compat: a pre-verse-numbers `scripture\t{ref}\t{tr}\t{vps}` (no fifth
+                // field) decodes to `None`, and an unknown tag also decodes to `None` rather
+                // than failing the whole link.
+                let verse_numbers = parts
+                    .next()
+                    .filter(|n| !n.is_empty())
+                    .and_then(VerseNumbers::from_tag);
                 Some(ItemContent::Scripture {
                     reference,
                     translation,
                     verses_per_slide,
+                    verse_numbers,
                 })
             }
             "deck" => Some(ItemContent::Deck {
@@ -160,11 +275,34 @@ impl ItemContent {
                     .next()
                     .filter(|c| !c.is_empty())
                     .and_then(|c| c.parse().ok()),
+                // Back-compat: a pre-label `deck\t{id}\t{n}` (no fourth field) decodes to
+                // `None`. Re-bounded here so a hand-edited row cannot smuggle in a huge label.
+                label: parts.next().filter(|l| !l.is_empty()).map(sanitize_label),
             }),
             "media" => Some(ItemContent::Media {
                 media_id: parts.next()?.parse().ok()?,
             }),
             _ => None,
+        }
+    }
+
+    /// Whether this link resolves, from the point of view of the caller's libraries.
+    ///
+    /// `deck_exists` / `media_exists` return `Some(true)`/`Some(false)` when the caller CAN
+    /// check, and **`None` when it cannot** — which is the host's situation for both, since
+    /// decks and media are operator-owned and the host has no store for either. Scripture is
+    /// always answerable here, because resolving it is a pure parse.
+    pub fn resolve(
+        &self,
+        deck_exists: impl Fn(u64) -> Option<bool>,
+        media_exists: impl Fn(u64) -> Option<bool>,
+    ) -> LinkResolution {
+        match self {
+            ItemContent::Scripture { reference, .. } => {
+                LinkResolution::from_probe(Some(crate::scripture::parse_one(reference).is_ok()))
+            }
+            ItemContent::Deck { deck_id, .. } => LinkResolution::from_probe(deck_exists(*deck_id)),
+            ItemContent::Media { media_id } => LinkResolution::from_probe(media_exists(*media_id)),
         }
     }
 }
@@ -376,7 +514,21 @@ impl ServicePlan {
         content: Option<ItemContent>,
     ) -> Result<(), PlanError> {
         let normalized = match content {
-            Some(ItemContent::Scripture { reference, .. }) if reference.trim().is_empty() => None,
+            // A blank reference is not a link, so the item cannot be left half-linked.
+            Some(ItemContent::Scripture { ref reference, .. }) if reference.trim().is_empty() => {
+                None
+            }
+            // Bound the display label on the way IN, so the in-memory plan — not just its
+            // persisted form — can never hold an unbounded string.
+            Some(ItemContent::Deck {
+                deck_id,
+                slide_count,
+                label,
+            }) => Some(ItemContent::Deck {
+                deck_id,
+                slide_count,
+                label: label.map(|l| sanitize_label(&l)),
+            }),
             other => other,
         };
         match self.get_mut(id) {
@@ -427,15 +579,16 @@ impl ServicePlan {
         deck_exists: impl Fn(u64) -> bool,
         media_exists: impl Fn(u64) -> bool,
     ) -> Vec<ItemId> {
+        // One resolution rule, shared with [`ItemContent::resolve`]: a caller that CAN answer
+        // both probes (this signature's `bool`) never sees `Unknown`, so "not resolved" and
+        // "missing" coincide here — which is exactly what this method has always meant.
         self.items
             .iter()
-            .filter(|it| match &it.content {
-                Some(ItemContent::Scripture { reference, .. }) => {
-                    crate::scripture::parse_one(reference).is_err()
-                }
-                Some(ItemContent::Deck { deck_id, .. }) => !deck_exists(*deck_id),
-                Some(ItemContent::Media { media_id }) => !media_exists(*media_id),
-                None => false,
+            .filter(|it| {
+                it.content.as_ref().is_some_and(|c| {
+                    c.resolve(|id| Some(deck_exists(id)), |id| Some(media_exists(id)))
+                        == LinkResolution::Missing
+                })
             })
             .map(|it| it.id)
             .collect()

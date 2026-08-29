@@ -470,6 +470,7 @@ fn transcript_and_detection_view_fields_are_additive() {
             translation: String::new(),
             source_segment: None,
         }],
+        summary: None,
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -705,6 +706,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         storage: None,
         session: None,
         detections: vec![],
+        summary: None,
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -748,6 +750,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         }),
         storage: None,
         session: None,
+        summary: None,
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: held }).unwrap(),
@@ -789,6 +792,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         }),
         storage: None,
         session: None,
+        summary: None,
     };
     let healthy_json = to_json(&ServerMessage::OperatorState { view: healthy }).unwrap();
     assert_eq!(
@@ -846,6 +850,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         storage: None,
         session: None,
         detections: vec![],
+        summary: None,
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -893,6 +898,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         storage: None,
         session: None,
         detections: vec![],
+        summary: None,
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: themed }).unwrap(),
@@ -931,6 +937,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         storage: None,
         session: None,
         detections: vec![],
+        summary: None,
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: library }).unwrap(),
@@ -975,6 +982,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         storage: None,
         session: None,
         detections: vec![],
+        summary: None,
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: screens }).unwrap(),
@@ -1209,6 +1217,9 @@ fn plan_item_view_carries_a_content_link_additively() {
             verses_per_slide: Some(2),
             id: None,
             slide_count: None,
+            verse_numbers: None,
+            status: None,
+            label: None,
         }),
         owner: None,
         planned_secs: None,
@@ -1229,6 +1240,9 @@ fn plan_item_view_carries_a_content_link_additively() {
         verses_per_slide: None,
         id: Some(17),
         slide_count: None,
+        verse_numbers: None,
+        status: None,
+        label: None,
     };
     assert_eq!(to_json(&deck).unwrap(), r#"{"kind":"deck","id":17}"#);
 }
@@ -1289,6 +1303,9 @@ fn set_item_content_command_round_trips_and_clears() {
             verses_per_slide: None,
             id: Some(17),
             slide_count: None,
+            verse_numbers: None,
+            status: None,
+            label: None,
         }),
     };
     assert_eq!(
@@ -1487,4 +1504,112 @@ fn remote_device_management_wire_is_stable() {
     );
     assert_eq!(from_json::<ServerMessage>(&nj).unwrap(), no_uri, "{nj}");
     assert_eq!(VERSION, 2);
+}
+
+// --- Design 2.0 Service Plan builder: link status, label, verse numbers, plan summary ---
+
+#[test]
+fn new_content_link_fields_are_omitted_when_unset_and_round_trip_when_set() {
+    use selahcue_lan::protocol::ContentLinkView;
+    // A healthy deck link is byte-identical to a pre-status host's frame. This is the whole
+    // reason `resolved` is the ABSENT case: the common frame must not grow a key.
+    let healthy = ContentLinkView {
+        kind: "deck".into(),
+        reference: None,
+        translation: None,
+        verses_per_slide: None,
+        id: Some(17),
+        slide_count: None,
+        verse_numbers: None,
+        status: None,
+        label: None,
+    };
+    assert_eq!(to_json(&healthy).unwrap(), r#"{"kind":"deck","id":17}"#);
+
+    // A missing deck carries its status AND the name it had when it still existed — without
+    // the label there is nothing to put in "X was deleted from the library".
+    let gone = ContentLinkView {
+        kind: "deck".into(),
+        reference: None,
+        translation: None,
+        verses_per_slide: None,
+        id: Some(17),
+        slide_count: Some(24),
+        verse_numbers: None,
+        status: Some("missing".into()),
+        label: Some("Sunday Service \u{2014} Aug 4".into()),
+    };
+    let json = to_json(&gone).unwrap();
+    assert_eq!(
+        json,
+        r#"{"kind":"deck","id":17,"slide_count":24,"status":"missing","label":"Sunday Service — Aug 4"}"#
+    );
+    assert_eq!(from_json::<ContentLinkView>(&json).unwrap(), gone);
+
+    // `unknown` is a distinct value on the wire, not a synonym for absent. A client that
+    // treated the two alike would render an unchecked deck as healthy.
+    let unchecked = ContentLinkView {
+        status: Some("unknown".into()),
+        ..gone.clone()
+    };
+    assert_ne!(
+        to_json(&unchecked).unwrap(),
+        to_json(&healthy).unwrap(),
+        "an unchecked link must not serialize like a healthy one"
+    );
+    assert!(to_json(&unchecked)
+        .unwrap()
+        .contains(r#""status":"unknown""#));
+
+    // Scripture carries the verse-numbers mode.
+    let scr = ContentLinkView {
+        kind: "scripture".into(),
+        reference: Some("Romans 8:28-30".into()),
+        translation: Some("WEB".into()),
+        verses_per_slide: Some(2),
+        id: None,
+        slide_count: None,
+        verse_numbers: Some("superscript".into()),
+        status: None,
+        label: None,
+    };
+    let sj = to_json(&scr).unwrap();
+    assert_eq!(
+        sj,
+        r#"{"kind":"scripture","reference":"Romans 8:28-30","translation":"WEB","verses_per_slide":2,"verse_numbers":"superscript"}"#
+    );
+    assert_eq!(from_json::<ContentLinkView>(&sj).unwrap(), scr);
+}
+
+#[test]
+fn plan_summary_is_omitted_when_absent_and_keeps_missing_and_unknown_apart() {
+    use selahcue_lan::protocol::PlanSummaryView;
+    let s = PlanSummaryView {
+        items: 6,
+        songs: 2,
+        scripture: 1,
+        presentations: 1,
+        media: 1,
+        announcements: 1,
+        timers: 0,
+        sections: 0,
+        assigned: 6,
+        missing: 1,
+        unknown: 2,
+        planned_total_secs: 3192,
+    };
+    let json = to_json(&s).unwrap();
+    assert_eq!(from_json::<PlanSummaryView>(&json).unwrap(), s);
+    // The two problem totals are separate keys. Collapsing them into one "problems" number
+    // would report decks the host never checked as confirmed-missing.
+    assert!(json.contains(r#""missing":1"#), "{json}");
+    assert!(json.contains(r#""unknown":2"#), "{json}");
+
+    // An older host omits the whole object rather than sending a zeroed one — a zeroed summary
+    // would read as "checked, nothing wrong", which is a different claim from "not reported".
+    let default_state = to_json(&PlanSummaryView::default()).unwrap();
+    assert!(
+        default_state.contains(r#""items":0"#),
+        "a present-but-empty summary is still explicit: {default_state}"
+    );
 }

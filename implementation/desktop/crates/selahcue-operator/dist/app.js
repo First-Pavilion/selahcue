@@ -6483,8 +6483,11 @@
           err.hidden = true;
           setBusy(true);
           // Keep the modal OPEN until the host confirms. set_item_content rejects an unparseable
-          // reference / unknown deck and leaves the plan unchanged, so closing optimistically would
-          // hide the failure. Close only on success; on rejection re-enable + surface an inline
+          // reference (and a malformed link — unknown kind, blank reference, missing id) and leaves
+          // the plan unchanged, so closing optimistically would hide the failure. It does NOT
+          // reject an unknown DECK: the host has no deck store, so any deck id is accepted and the
+          // link comes back with status "unknown" for this side to resolve against the library.
+          // Close only on success; on rejection re-enable + surface an inline
           // error. The returned OperatorView refreshes the console AND (if open) the builder — a
           // plan edit that never changes Live.
           invoke("set_item_content", { itemId: item.id, link })
