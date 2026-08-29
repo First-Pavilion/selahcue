@@ -715,16 +715,22 @@ fn inert_section_dividers_never_make_a_total_partial() {
         "a plan whose only duration-less rows are section dividers is COMPLETE"
     );
 
-    // A divider is excluded from the roll-up ENTIRELY, so even a duration set on one does not
-    // reach the total. Otherwise `counted` could exceed the plan's item count and the UI would
-    // render "7 of 6".
-    p.set_item_planned_secs(s1, Some(60)).unwrap();
+    // A divider cannot be given a duration at all, so the roll-up can never disagree with a
+    // value sitting on a row. Refused rather than stored-and-ignored: a stored value would be
+    // invisible to the totals while still riding on the item view.
+    assert_eq!(
+        p.set_item_planned_secs(s1, Some(60)),
+        Err(PlanError::NotApplicable(s1)),
+        "a divider is not schedulable, so setting a duration on one is refused"
+    );
     let t = p.planned_total();
     assert_eq!(
         t.secs, 300,
-        "a divider contributes no duration even when one has been set on it"
+        "and the total is untouched by the refused edit"
     );
-    assert_eq!(t.counted, 1, "and it is not counted as a contributing item");
+    assert_eq!(t.counted, 1);
+    // Clearing is still allowed, so a legacy item can always be cleaned up.
+    assert_eq!(p.set_item_planned_secs(s1, None), Ok(()));
 }
 
 #[test]
@@ -944,5 +950,181 @@ fn a_deck_relink_without_a_name_keeps_the_last_known_good_one() {
             );
         }
         other => panic!("expected a deck link, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_divider_cannot_carry_an_owner_a_duration_or_a_link() {
+    // Excluding dividers from the summary is only half the invariant: if a divider could still
+    // HOLD these, one frame would report `missing: 0` beside a row whose own link said
+    // "missing", and `assigned` would disagree with a visible owner. Refuse at the source.
+    // (Code review, PR #13.)
+    let mut p = ServicePlan::new("Sunday");
+    let divider = p.add_item(ItemKind::Section, "GATHERING");
+    let song = p.add_item(ItemKind::Song, "Opening");
+
+    assert_eq!(
+        p.set_item_owner(divider, Some("Pastor".into())),
+        Err(PlanError::NotApplicable(divider))
+    );
+    assert_eq!(
+        p.set_item_planned_secs(divider, Some(600)),
+        Err(PlanError::NotApplicable(divider))
+    );
+    assert_eq!(
+        p.set_item_content(
+            divider,
+            Some(ItemContent::Scripture {
+                reference: "Jude 2:1".into(),
+                translation: None,
+                verses_per_slide: None,
+                verse_numbers: None,
+            })
+        ),
+        Err(PlanError::NotApplicable(divider))
+    );
+    let d = p.get(divider).unwrap();
+    assert!(d.owner.is_none() && d.planned_secs.is_none() && d.content.is_none());
+
+    // POSITIVE CONTROL: the very same calls succeed on a real item, so the refusals above are
+    // about the divider and not about a setter that has stopped working.
+    assert_eq!(p.set_item_owner(song, Some("Worship".into())), Ok(()));
+    assert_eq!(p.set_item_planned_secs(song, Some(300)), Ok(()));
+    assert_eq!(
+        p.set_item_content(
+            song,
+            Some(ItemContent::Deck {
+                deck_id: 17,
+                slide_count: None,
+                label: Some("Deck".into()),
+            })
+        ),
+        Ok(())
+    );
+
+    // Clearing a divider is always permitted — otherwise a legacy row could never be tidied.
+    assert_eq!(p.set_item_owner(divider, None), Ok(()));
+    assert_eq!(p.set_item_content(divider, None), Ok(()));
+}
+
+#[test]
+fn rehydration_strips_data_an_older_build_stored_on_a_divider() {
+    // The setters refuse it now, but rehydration is the one path that bypasses them — and a
+    // database written before the guard existed is exactly where such a row comes from. The
+    // invariant has to hold for DATA, not only for edits.
+    let contaminated = PlanItem {
+        id: ItemId(1),
+        kind: ItemKind::Section,
+        title: "GATHERING".into(),
+        planned_secs: Some(600),
+        owner: Some("Pastor".into()),
+        stanzas: Vec::new(),
+        theme: None,
+        content: Some(ItemContent::Scripture {
+            reference: "Jude 2:1".into(),
+            translation: None,
+            verses_per_slide: None,
+            verse_numbers: None,
+        }),
+    };
+    let real = PlanItem {
+        id: ItemId(2),
+        kind: ItemKind::Song,
+        title: "Opening".into(),
+        planned_secs: Some(300),
+        owner: Some("Worship".into()),
+        stanzas: Vec::new(),
+        theme: None,
+        content: None,
+    };
+    let p = ServicePlan::from_parts("Sunday", vec![contaminated, real], 3);
+
+    let d = p.get(ItemId(1)).unwrap();
+    assert_eq!(d.owner, None, "a divider's stored owner is swept on load");
+    assert_eq!(d.planned_secs, None);
+    assert_eq!(d.content, None);
+    assert_eq!(
+        d.title, "GATHERING",
+        "but the divider itself survives intact"
+    );
+
+    // POSITIVE CONTROL: a real item's data is untouched by the sweep.
+    let r = p.get(ItemId(2)).unwrap();
+    assert_eq!(r.owner.as_deref(), Some("Worship"));
+    assert_eq!(r.planned_secs, Some(300));
+
+    // And the roll-up now matches what the rows actually show.
+    let t = p.planned_total();
+    assert_eq!(t.secs, 300);
+    assert_eq!(t.counted, 1);
+    assert!(!t.is_partial());
+}
+
+#[test]
+fn a_blank_or_invisible_only_label_is_treated_as_absent() {
+    // Keying the carry-forward on `Option` alone stored `Some("")` and `Some("   ")` as real
+    // names, which rendered as `⚠ "" is missing`. Worse, the invisible-character filter turns a
+    // hostile all-zero-width label into exactly that. Blank means absent here, as it already
+    // does for owners, scripture references and themes. (Code review, PR #13.)
+    let mut p = ServicePlan::new("Sunday");
+    let d = p.add_item(ItemKind::SlideGroup, "Sermon");
+    let deck = |label: Option<&str>| {
+        Some(ItemContent::Deck {
+            deck_id: 17,
+            slide_count: None,
+            label: label.map(str::to_string),
+        })
+    };
+    p.set_item_content(d, deck(Some("Sunday Service"))).unwrap();
+
+    for blank in ["", "   ", "\u{200B}\u{200B}\u{FEFF}"] {
+        p.set_item_content(d, deck(Some(blank))).unwrap();
+        match p.get(d).unwrap().content.as_ref() {
+            Some(ItemContent::Deck { label, .. }) => assert_eq!(
+                label.as_deref(),
+                Some("Sunday Service"),
+                "a blank label ({blank:?}) is nothing new to say, so the real name survives"
+            ),
+            other => panic!("expected a deck link, got {other:?}"),
+        }
+    }
+
+    // POSITIVE CONTROL: a real name still replaces it, so the guard has not frozen the field.
+    p.set_item_content(d, deck(Some("Renamed"))).unwrap();
+    match p.get(d).unwrap().content.as_ref() {
+        Some(ItemContent::Deck { label, .. }) => assert_eq!(label.as_deref(), Some("Renamed")),
+        other => panic!("expected a deck link, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_scripture_reference_is_sanitized_on_the_way_in_not_only_on_encode() {
+    // Sanitizing only inside `encode` let a right-to-left override ride the WIRE into the run
+    // sheet while never reaching disk, because the controller stores what it validated.
+    let mut p = ServicePlan::new("Sunday");
+    let s = p.add_item(ItemKind::Scripture, "Romans");
+    p.set_item_content(
+        s,
+        Some(ItemContent::Scripture {
+            reference: "Romans\u{202E} 8:28".into(),
+            translation: Some("WE\u{200B}B".into()),
+            verses_per_slide: None,
+            verse_numbers: None,
+        }),
+    )
+    .unwrap();
+    match p.get(s).unwrap().content.as_ref() {
+        Some(ItemContent::Scripture {
+            reference,
+            translation,
+            ..
+        }) => {
+            assert_eq!(
+                reference, "Romans 8:28",
+                "stored clean, not merely encoded clean"
+            );
+            assert_eq!(translation.as_deref(), Some("WEB"));
+        }
+        other => panic!("expected a scripture link, got {other:?}"),
     }
 }

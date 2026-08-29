@@ -5279,3 +5279,104 @@ fn the_plan_summary_reproduces_the_designs_own_numbers() {
         "a contributing count above the item count would render as '7 of 6'"
     );
 }
+
+#[test]
+fn a_divider_cannot_make_the_summary_contradict_the_rows_it_describes() {
+    // Excluding dividers from the summary was only half the invariant. While a divider could
+    // still HOLD an owner, a duration or a link, one frame reported `missing: 0` beside a row
+    // whose own link said "missing" — the "plan reported verified that nothing ever checked"
+    // failure `plan_summary`'s doc names. Reachable from any EditPlan peer. (Code review, PR #13.)
+    let mut plan = ServicePlan::new("Sunday");
+    let song = plan.add_item(ItemKind::Song, "Opening");
+    let divider = plan.add_item(ItemKind::Section, "GATHERING");
+    plan.set_item_planned_secs(song, Some(300)).unwrap();
+    let mut c = LiveController::new(plan, 320, 180, Theme::dark());
+
+    // Every command that could contaminate a divider is refused at the wire, with the plan
+    // unchanged — not silently acked, which would leave the operator believing it had worked.
+    for (what, cmd) in [
+        (
+            "owner",
+            Command::SetItemOwner {
+                item_id: divider.0,
+                owner: Some("Pastor".into()),
+            },
+        ),
+        (
+            "duration",
+            Command::SetItemDuration {
+                item_id: divider.0,
+                secs: Some(600),
+            },
+        ),
+        (
+            "content link",
+            Command::SetItemContent {
+                item_id: divider.0,
+                link: Some(ContentLinkView {
+                    kind: "scripture".into(),
+                    reference: Some("Jude 2:1".into()),
+                    translation: None,
+                    verses_per_slide: None,
+                    id: None,
+                    slide_count: None,
+                    verse_numbers: None,
+                    status: None,
+                    label: None,
+                }),
+            },
+        ),
+    ] {
+        assert!(
+            matches!(c.apply(&cmd), ControllerReply::Deny(DenyReason::BadRequest)),
+            "setting {what} on an inert divider must be refused, not quietly accepted"
+        );
+    }
+
+    let view = c.operator_view();
+    let s = view.summary.expect("this host reports a summary");
+    let row = &view.items[1];
+    assert_eq!(row.kind, "section");
+    assert!(row.owner.is_none(), "the refused edit left nothing behind");
+    assert!(row.planned_secs.is_none());
+    assert!(row.link.is_none());
+
+    // The cross-field assertion, stated over the WHOLE frame rather than one row: the summary's
+    // problem count must equal the number of rows actually reporting a problem. This is what
+    // Cody's probe violated, and it holds no matter which row carries what.
+    let rows_missing = view
+        .items
+        .iter()
+        .filter(|i| {
+            i.link
+                .as_ref()
+                .and_then(|l| l.status.as_deref())
+                .is_some_and(|st| st == "missing")
+        })
+        .count();
+    assert_eq!(
+        rows_missing, s.missing as usize,
+        "the summary must agree with the rows it summarises"
+    );
+    let rows_owned = view.items.iter().filter(|i| i.owner.is_some()).count();
+    assert_eq!(
+        rows_owned, s.assigned as usize,
+        "assigned must agree with the rows that visibly show an owner"
+    );
+    assert_eq!(s.items, 1, "the divider is not an item");
+    assert_eq!(s.sections, 1);
+    assert_eq!(s.planned_total_secs, 300);
+    assert!(!s.partial);
+
+    // POSITIVE CONTROL: the same three commands succeed on a real item, so the refusals above
+    // are about dividers and not about commands that have stopped working entirely.
+    assert!(matches!(
+        c.apply(&Command::SetItemOwner {
+            item_id: song.0,
+            owner: Some("Worship".into()),
+        }),
+        ControllerReply::Ack
+    ));
+    let s = c.operator_view().summary.unwrap();
+    assert_eq!(s.assigned, 1, "a real item can still be assigned");
+}

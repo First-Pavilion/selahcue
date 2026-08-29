@@ -564,13 +564,27 @@ pub struct ContentLinkView {
 /// The host can only resolve scripture links, so folding decks and media into `missing` would
 /// overstate what it knows, and folding them into a clean bill would understate it. `unknown`
 /// is the count the operator still has to resolve against its own library.
+///
+/// **A `section` divider is not an item.** Every count and total here describes the
+/// TRIGGERABLE run sheet: dividers are excluded from `items`, `assigned`, `missing`,
+/// `unknown`, `planned_total_secs`, `planned_items` and `partial`, and reported only by
+/// `sections`. The design draws it that way — node 608:875 reads "6 items" and
+/// "Assigned 6 / 6" over six rows and three dividers. A divider is an inert label that never
+/// fires, so it is not staffable and not schedulable; counting one in the assigned denominator
+/// would make a fully staffed plan read as incomplete forever.
+///
+/// This is an invariant, not a filter applied on the way out: the domain REFUSES to put an
+/// owner, a duration or a content link on a divider (`PlanError::NotApplicable`), and strips
+/// any that an older build stored. So no frame can report `missing: 0` beside a row whose own
+/// link says `"missing"`.
 /// `serde(default)` on the container, matching every other view in this file: a field added
 /// here later must not make an older host's frame unparseable to a newer client, which would
 /// take the whole `OperatorStateView` down with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct PlanSummaryView {
-    /// Total items in the run sheet.
+    /// Total TRIGGERABLE items — `section` dividers are **not** counted here (see the type
+    /// doc). `items` is the denominator the UI renders `assigned` against.
     pub items: u32,
     pub songs: u32,
     pub scripture: u32,
@@ -579,13 +593,15 @@ pub struct PlanSummaryView {
     pub media: u32,
     pub announcements: u32,
     pub timers: u32,
-    /// Non-triggerable dividers.
+    /// Non-triggerable dividers. Reported separately and deliberately EXCLUDED from `items`,
+    /// so `songs + scripture + presentations + media + announcements + timers == items`.
     pub sections: u32,
-    /// Items with an owner assigned (FR-004).
+    /// Triggerable items with an owner assigned (FR-004). Never exceeds `items`: a divider
+    /// cannot be given an owner, so it can neither be assigned nor inflate the denominator.
     pub assigned: u32,
-    /// Items whose link was CHECKED and does not resolve.
+    /// Triggerable items whose link was CHECKED and does not resolve.
     pub missing: u32,
-    /// Items whose link could NOT be checked by the layer that built this view.
+    /// Triggerable items whose link could NOT be checked by the layer that built this view.
     pub unknown: u32,
     /// Sum of every item's planned duration, saturating. **Read `partial` before displaying
     /// this**: on its own it cannot say whether it covers the whole plan.

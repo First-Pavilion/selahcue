@@ -593,6 +593,9 @@ fn host_resolution(c: &selahcue_core::plan::ItemContent) -> selahcue_core::plan:
         // verses", not merely "the reference is well-formed". Parsing alone accepts "Jude 2:1"
         // and "Romans 99:1", which present nothing.
         |reference, translation| {
+            // `resolve` only consults this probe once the reference has parsed, so this cannot
+            // fail in practice; `None` (= Unknown) is the honest answer if that ever changes,
+            // rather than claiming the passage is missing.
             let parsed = selahcue_core::scripture::parse_one(reference).ok()?;
             let t = translation
                 .and_then(selahcue_scripture::Translation::from_code)
@@ -671,7 +674,10 @@ fn item_content_from_link(link: &ContentLinkView) -> Option<selahcue_core::plan:
     use selahcue_core::plan::ItemContent;
     match link.kind.as_str() {
         "scripture" => {
-            let reference = link.reference.clone()?;
+            // Clean BEFORE the parse check in `set_item_content`, so the reference that is
+            // validated is byte-for-byte the one that gets stored. Sanitizing afterwards could
+            // change a string that had already been accepted.
+            let reference = selahcue_core::plan::sanitize_text(&link.reference.clone()?);
             if reference.trim().is_empty() {
                 return None;
             }
@@ -3148,7 +3154,15 @@ impl LiveController {
                 Some(c)
             }
         };
-        let _ = self.plan.set_item_content(ItemId(item_id), content);
+        // Propagated, not dropped: a divider refuses a content link, and silently acking a
+        // refused edit would leave the operator believing the link had been made.
+        if self
+            .plan
+            .set_item_content(ItemId(item_id), content)
+            .is_err()
+        {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
         // The link lives ONLY in the plan (not the session snapshot), so mark the plan
         // dirty — otherwise the desktop never persists it and it is lost on restart.
         self.plan_dirty = true;

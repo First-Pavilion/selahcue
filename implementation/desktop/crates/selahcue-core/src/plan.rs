@@ -235,6 +235,14 @@ fn is_invisible_formatting(c: char) -> bool {
 /// Truncation is by CHARACTER, never by byte, so a multi-byte name can never be cut mid-scalar
 /// (which would not round-trip). Applied on the way in and again on decode, so neither a hostile
 /// wire value nor a hand-edited database row can park an unbounded string on a plan item.
+/// Public form of [`sanitize_field`], for callers that must clean untrusted text BEFORE
+/// validating it — the controller parses a scripture reference and stores what it parsed, so
+/// sanitizing only on `encode` would let a bidi override ride on the wire and into the run
+/// sheet while never reaching persistence. One implementation, so the two cannot drift.
+pub fn sanitize_text(s: &str) -> String {
+    sanitize_field(s)
+}
+
 fn sanitize_label(s: &str) -> String {
     sanitize_field(s).chars().take(MAX_LINK_LABEL_LEN).collect()
 }
@@ -487,6 +495,16 @@ pub enum PlanError {
     NotFound(ItemId),
     /// A move referenced an out-of-bounds index.
     IndexOutOfBounds,
+    /// The item's KIND cannot carry the value being set — today, only that an
+    /// [`ItemKind::Section`] divider cannot be given an owner, a planned duration or a content
+    /// link. A divider is an inert label that never fires, so it is not staffable, not
+    /// schedulable and presents nothing.
+    ///
+    /// Refused rather than stored-and-ignored on purpose. Every summary metric excludes
+    /// dividers, so a stored value would be invisible to the totals while still riding on the
+    /// item view — producing one frame that reports `missing: 0` beside a row whose own link
+    /// says `"missing"`. A contradiction inside a single frame is worse than a rejected edit.
+    NotApplicable(ItemId),
 }
 
 impl ServicePlan {
@@ -590,10 +608,30 @@ impl ServicePlan {
         id: ItemId,
         content: Option<ItemContent>,
     ) -> Result<(), PlanError> {
+        self.refuse_on_divider(id, content.is_some())?;
         let normalized = match content {
-            // A blank reference is not a link, so the item cannot be left half-linked.
-            Some(ItemContent::Scripture { ref reference, .. }) if reference.trim().is_empty() => {
-                None
+            // Clean the reference and translation on the way IN, not only on `encode`. The
+            // controller validates the parse and stores what it validated, so sanitizing at the
+            // persistence boundary alone let a bidi override ride the wire into the run sheet
+            // while never reaching disk. A blank reference is not a link, so the item cannot be
+            // left half-linked.
+            Some(ItemContent::Scripture {
+                reference,
+                translation,
+                verses_per_slide,
+                verse_numbers,
+            }) => {
+                let reference = sanitize_field(&reference);
+                if reference.trim().is_empty() {
+                    None
+                } else {
+                    Some(ItemContent::Scripture {
+                        reference,
+                        translation: translation.map(|t| sanitize_field(&t)),
+                        verses_per_slide,
+                        verse_numbers,
+                    })
+                }
             }
             // Bound the display label on the way IN, so the in-memory plan — not just its
             // persisted form — can never hold an unbounded string.
@@ -608,8 +646,15 @@ impl ServicePlan {
                 // count, say) destroys the very name a deleted deck needs to be described by.
                 // A relink to a DIFFERENT deck drops it: it is no longer that deck's name.
                 let carried = match label {
-                    Some(l) => Some(sanitize_label(&l)),
-                    None => self.get(id).and_then(|it| match &it.content {
+                    // Blank is ABSENT, as it is for `set_item_owner`, a scripture reference and
+                    // `set_item_theme`. Keying on `Option` alone stored `Some("")` and
+                    // `Some("   ")` as real names — and the invisible-character filter turns a
+                    // hostile all-zero-width label into `Some("")` too, which then rendered as
+                    // `⚠ "" is missing`.
+                    Some(l) if !sanitize_label(&l).trim().is_empty() => Some(sanitize_label(&l)),
+                    // Falls through to the carry-forward below, so a blank update is treated as
+                    // "nothing new to say" rather than as an erase.
+                    Some(_) | None => self.get(id).and_then(|it| match &it.content {
                         Some(ItemContent::Deck {
                             deck_id: prev_id,
                             label: prev_label,
@@ -638,6 +683,7 @@ impl ServicePlan {
     /// Set (or clear, with `None`) an item's responsible owner/role (FR-004). A blank string is
     /// treated as unassigned (`None`). Returns `NotFound` if no item has that id.
     pub fn set_item_owner(&mut self, id: ItemId, owner: Option<String>) -> Result<(), PlanError> {
+        self.refuse_on_divider(id, owner.is_some())?;
         match self.get_mut(id) {
             Some(item) => {
                 item.owner = owner.filter(|o| !o.trim().is_empty());
@@ -654,6 +700,7 @@ impl ServicePlan {
         id: ItemId,
         secs: Option<u32>,
     ) -> Result<(), PlanError> {
+        self.refuse_on_divider(id, secs.is_some())?;
         match self.get_mut(id) {
             Some(item) => {
                 item.planned_secs = secs;
@@ -691,6 +738,18 @@ impl ServicePlan {
             })
             .map(|it| it.id)
             .collect()
+    }
+
+    /// Refuse to put schedulable data on an inert divider. Clearing (`setting_a_value ==
+    /// false`) is always allowed, so a legacy item can be cleaned up rather than being stuck.
+    fn refuse_on_divider(&self, id: ItemId, setting_a_value: bool) -> Result<(), PlanError> {
+        match self.get(id) {
+            Some(item) if setting_a_value && item.kind == ItemKind::Section => {
+                Err(PlanError::NotApplicable(id))
+            }
+            // A missing id is reported by the caller's own `NotFound` path, so it passes here.
+            _ => Ok(()),
+        }
     }
 
     /// Read access to an item by id.
@@ -762,6 +821,21 @@ impl ServicePlan {
     /// it is clamped up to `max(item id) + 1` if a smaller value is passed.
     pub fn from_parts(name: impl Into<String>, items: Vec<PlanItem>, next_id: u64) -> Self {
         let min_next = items.iter().map(|i| i.id.0).max().map_or(1, |m| m + 1);
+        // Sweep anything a pre-guard build (or a hand-edited row) stored on a divider. The
+        // setters refuse it now, but rehydration is the one path that bypasses them, and the
+        // invariant has to hold for data as well as for edits — otherwise the summary silently
+        // disagrees with a row it is looking straight at.
+        let items: Vec<PlanItem> = items
+            .into_iter()
+            .map(|mut it| {
+                if it.kind == ItemKind::Section {
+                    it.owner = None;
+                    it.planned_secs = None;
+                    it.content = None;
+                }
+                it
+            })
+            .collect();
         ServicePlan {
             name: name.into(),
             items,
