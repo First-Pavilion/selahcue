@@ -50,6 +50,11 @@ class AdminGenerateLicenseKeyInput:
     customer_id: strawberry.ID
     key_type: str
     feature_scope: str
+    # Required by the schema, so the surface DOCUMENTS that a licence is issued on a plan
+    # rather than leaving a staff caller to discover it from a refusal (DEC-014). The
+    # service refuses an empty or unknown code as well, because it has callers that never
+    # come through GraphQL — management commands, tests, and any future admin surface.
+    plan_code: str
     starts_at: datetime
     expires_at: datetime
     timezone: str
@@ -223,6 +228,7 @@ class AdminMutation:
                 customer_id=str(input.customer_id),
                 key_type=input.key_type,
                 feature_scope=input.feature_scope,
+                plan_code=input.plan_code,
                 starts_at=input.starts_at,
                 expires_at=input.expires_at,
                 timezone=input.timezone,

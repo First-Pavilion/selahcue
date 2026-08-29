@@ -470,6 +470,12 @@ fn transcript_and_detection_view_fields_are_additive() {
             translation: String::new(),
             source_segment: None,
         }],
+        summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -705,6 +711,12 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         storage: None,
         session: None,
         detections: vec![],
+        summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -748,6 +760,12 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         }),
         storage: None,
         session: None,
+        summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: held }).unwrap(),
@@ -789,6 +807,12 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         }),
         storage: None,
         session: None,
+        summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     let healthy_json = to_json(&ServerMessage::OperatorState { view: healthy }).unwrap();
     assert_eq!(
@@ -846,6 +870,12 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         storage: None,
         session: None,
         detections: vec![],
+        summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -893,6 +923,12 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         storage: None,
         session: None,
         detections: vec![],
+        summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: themed }).unwrap(),
@@ -931,6 +967,12 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         storage: None,
         session: None,
         detections: vec![],
+        summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: library }).unwrap(),
@@ -975,6 +1017,12 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         storage: None,
         session: None,
         detections: vec![],
+        summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: screens }).unwrap(),
@@ -1209,6 +1257,9 @@ fn plan_item_view_carries_a_content_link_additively() {
             verses_per_slide: Some(2),
             id: None,
             slide_count: None,
+            verse_numbers: None,
+            status: None,
+            label: None,
         }),
         owner: None,
         planned_secs: None,
@@ -1229,6 +1280,9 @@ fn plan_item_view_carries_a_content_link_additively() {
         verses_per_slide: None,
         id: Some(17),
         slide_count: None,
+        verse_numbers: None,
+        status: None,
+        label: None,
     };
     assert_eq!(to_json(&deck).unwrap(), r#"{"kind":"deck","id":17}"#);
 }
@@ -1289,6 +1343,9 @@ fn set_item_content_command_round_trips_and_clears() {
             verses_per_slide: None,
             id: Some(17),
             slide_count: None,
+            verse_numbers: None,
+            status: None,
+            label: None,
         }),
     };
     assert_eq!(
@@ -1487,4 +1544,265 @@ fn remote_device_management_wire_is_stable() {
     );
     assert_eq!(from_json::<ServerMessage>(&nj).unwrap(), no_uri, "{nj}");
     assert_eq!(VERSION, 2);
+}
+
+// --- Design 2.0 Service Plan builder: link status, label, verse numbers, plan summary ---
+
+#[test]
+fn new_content_link_fields_are_omitted_when_unset_and_round_trip_when_set() {
+    use selahcue_lan::protocol::ContentLinkView;
+    // A healthy deck link is byte-identical to a pre-status host's frame. This is the whole
+    // reason `resolved` is the ABSENT case: the common frame must not grow a key.
+    let healthy = ContentLinkView {
+        kind: "deck".into(),
+        reference: None,
+        translation: None,
+        verses_per_slide: None,
+        id: Some(17),
+        slide_count: None,
+        verse_numbers: None,
+        status: None,
+        label: None,
+    };
+    assert_eq!(to_json(&healthy).unwrap(), r#"{"kind":"deck","id":17}"#);
+
+    // A missing deck carries its status AND the name it had when it still existed — without
+    // the label there is nothing to put in "X was deleted from the library".
+    let gone = ContentLinkView {
+        kind: "deck".into(),
+        reference: None,
+        translation: None,
+        verses_per_slide: None,
+        id: Some(17),
+        slide_count: Some(24),
+        verse_numbers: None,
+        status: Some("missing".into()),
+        label: Some("Sunday Service \u{2014} Aug 4".into()),
+    };
+    let json = to_json(&gone).unwrap();
+    assert_eq!(
+        json,
+        r#"{"kind":"deck","id":17,"slide_count":24,"status":"missing","label":"Sunday Service — Aug 4"}"#
+    );
+    assert_eq!(from_json::<ContentLinkView>(&json).unwrap(), gone);
+
+    // `unknown` is a distinct value on the wire, not a synonym for absent. A client that
+    // treated the two alike would render an unchecked deck as healthy.
+    let unchecked = ContentLinkView {
+        status: Some("unknown".into()),
+        ..gone.clone()
+    };
+    assert_ne!(
+        to_json(&unchecked).unwrap(),
+        to_json(&healthy).unwrap(),
+        "an unchecked link must not serialize like a healthy one"
+    );
+    assert!(to_json(&unchecked)
+        .unwrap()
+        .contains(r#""status":"unknown""#));
+
+    // Scripture carries the verse-numbers mode.
+    let scr = ContentLinkView {
+        kind: "scripture".into(),
+        reference: Some("Romans 8:28-30".into()),
+        translation: Some("WEB".into()),
+        verses_per_slide: Some(2),
+        id: None,
+        slide_count: None,
+        verse_numbers: Some("superscript".into()),
+        status: None,
+        label: None,
+    };
+    let sj = to_json(&scr).unwrap();
+    assert_eq!(
+        sj,
+        r#"{"kind":"scripture","reference":"Romans 8:28-30","translation":"WEB","verses_per_slide":2,"verse_numbers":"superscript"}"#
+    );
+    assert_eq!(from_json::<ContentLinkView>(&sj).unwrap(), scr);
+}
+
+#[test]
+fn plan_summary_is_omitted_when_absent_and_keeps_missing_and_unknown_apart() {
+    use selahcue_lan::protocol::PlanSummaryView;
+    let s = PlanSummaryView {
+        items: 6,
+        songs: 2,
+        scripture: 1,
+        presentations: 1,
+        media: 1,
+        announcements: 1,
+        timers: 0,
+        sections: 0,
+        assigned: 6,
+        missing: 1,
+        unknown: 2,
+        planned_total_secs: 3192,
+        planned_items: 5,
+        partial: true,
+    };
+    let json = to_json(&s).unwrap();
+    assert_eq!(from_json::<PlanSummaryView>(&json).unwrap(), s);
+    // The two problem totals are separate keys. Collapsing them into one "problems" number
+    // would report decks the host never checked as confirmed-missing.
+    assert!(json.contains(r#""missing":1"#), "{json}");
+    assert!(json.contains(r#""unknown":2"#), "{json}");
+
+    // The completeness flag rides WITH the total. A client rendering `planned_total_secs`
+    // without it shows a floor as though it were the whole service.
+    assert!(json.contains(r#""partial":true"#), "{json}");
+    assert!(
+        json.contains(r#""planned_items":5"#),
+        "the contributing count travels with the total, so a client can say 5 of 6: {json}"
+    );
+
+    // A COMPLETE total omits the flag entirely (skip-if-false), which is also what an empty
+    // plan produces — nothing is missing from a total of nothing.
+    let complete = to_json(&PlanSummaryView {
+        partial: false,
+        ..s
+    })
+    .unwrap();
+    assert!(
+        !complete.contains("partial"),
+        "a complete total must not emit the key at all: {complete}"
+    );
+
+    // An older host omits the whole object rather than sending a zeroed one — a zeroed summary
+    // would read as "checked, nothing wrong", which is a different claim from "not reported".
+    let default_state = to_json(&PlanSummaryView::default()).unwrap();
+    assert!(
+        default_state.contains(r#""items":0"#),
+        "a present-but-empty summary is still explicit: {default_state}"
+    );
+}
+
+#[test]
+fn plan_publish_and_lifecycle_commands_have_a_pinned_wire_shape() {
+    // Pins the command names and field names the operator shell and any future cross-language
+    // client send for FR-006 / FR-005. Pinned from the day they ship rather than after something
+    // starts depending on them — the Dart client does not send these today, so nothing else would
+    // catch a rename.
+    use selahcue_lan::protocol::{to_json, ImportItemView};
+
+    assert_eq!(
+        to_json(&Command::PublishPlan).unwrap(),
+        r#"{"cmd":"publish_plan"}"#
+    );
+    assert_eq!(
+        to_json(&Command::NewPlan {
+            name: "Sunday 2nd Service".into()
+        })
+        .unwrap(),
+        r#"{"cmd":"new_plan","name":"Sunday 2nd Service"}"#
+    );
+    assert_eq!(
+        to_json(&Command::TemplatePlan {
+            template: "sunday-morning".into(),
+            name: "Sunday 2nd Service".into()
+        })
+        .unwrap(),
+        r#"{"cmd":"template_plan","template":"sunday-morning","name":"Sunday 2nd Service"}"#
+    );
+    assert_eq!(
+        to_json(&Command::DuplicatePlan {
+            name: "Sunday (copy)".into()
+        })
+        .unwrap(),
+        r#"{"cmd":"duplicate_plan","name":"Sunday (copy)"}"#
+    );
+    // A minimal import row omits the two optional fields entirely (skip-if-none), so the common
+    // frame stays compact.
+    assert_eq!(
+        to_json(&Command::ImportPlan {
+            name: "Imported".into(),
+            items: vec![ImportItemView {
+                kind: "song".into(),
+                title: "Opening".into(),
+                owner: None,
+                planned_secs: None,
+            }]
+        })
+        .unwrap(),
+        r#"{"cmd":"import_plan","name":"Imported","items":[{"kind":"song","title":"Opening"}]}"#
+    );
+    // With them present they append LAST, in declaration order.
+    assert_eq!(
+        to_json(&Command::ImportPlan {
+            name: "Imported".into(),
+            items: vec![ImportItemView {
+                kind: "song".into(),
+                title: "Opening".into(),
+                owner: Some("Ada".into()),
+                planned_secs: Some(300),
+            }]
+        })
+        .unwrap(),
+        r#"{"cmd":"import_plan","name":"Imported","items":[{"kind":"song","title":"Opening","owner":"Ada","planned_secs":300}]}"#
+    );
+}
+
+#[test]
+fn the_publish_viewer_and_template_view_fields_have_a_pinned_wire_shape() {
+    // The fixture in `wire_fixtures_are_stable_for_cross_language_clients` is the proof that
+    // these fields are ADDITIVE: it still produces byte-identical JSON with all three absent.
+    // This pins the POPULATED shape, so the field names a client reads are contract-locked now
+    // rather than after a client starts depending on them.
+    use selahcue_lan::protocol::{to_json, PlanTemplateView, PublishStateView, ViewerView};
+    use selahcue_lan::Role;
+
+    // A view-only session: `can_edit` is reported as the HOST's verdict, so no client has to
+    // re-derive it from `role`.
+    assert_eq!(
+        to_json(&ViewerView::for_role(Role::Viewer)).unwrap(),
+        r#"{"role":"viewer","can_edit":false}"#
+    );
+    assert_eq!(
+        to_json(&ViewerView::for_role(Role::Operator)).unwrap(),
+        r#"{"role":"operator","can_edit":true}"#
+    );
+
+    // A draft: never published, so no baseline, no version, and — critically — no badge.
+    assert_eq!(
+        to_json(&PublishStateView {
+            revision: 3,
+            published_revision: None,
+            version: 0,
+            changed: false,
+        })
+        .unwrap(),
+        r#"{"revision":3}"#
+    );
+    // Published and since edited: the badge state the "Plan updated · Review changes" frame reads.
+    assert_eq!(
+        to_json(&PublishStateView {
+            revision: 7,
+            published_revision: Some(5),
+            version: 4,
+            changed: true,
+        })
+        .unwrap(),
+        r#"{"revision":7,"published_revision":5,"version":4,"changed":true}"#
+    );
+    // Touched but not different — revisions apart, no badge. A client must render this as
+    // published-and-clean, not as a change to review.
+    assert_eq!(
+        to_json(&PublishStateView {
+            revision: 7,
+            published_revision: Some(5),
+            version: 4,
+            changed: false,
+        })
+        .unwrap(),
+        r#"{"revision":7,"published_revision":5,"version":4}"#
+    );
+
+    assert_eq!(
+        to_json(&PlanTemplateView {
+            id: "sunday-morning".into(),
+            name: "Sunday Morning".into(),
+            items: 5,
+        })
+        .unwrap(),
+        r#"{"id":"sunday-morning","name":"Sunday Morning","items":5}"#
+    );
 }

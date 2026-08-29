@@ -5764,7 +5764,10 @@
       // Poll so a running countdown ticks in the UI (the host advances it each frame).
       setInterval(async () => {
         try {
-          render(await invoke("view"));
+          const polled = await invoke("view");
+          render(polled);
+          planSyncPublishFromPoll(polled);
+          planSyncViewerFromPoll(polled);
           setConn(true);
         } catch (e) {
           // The link (or a render) just failed, so render() did NOT run and syncRecovery() was
@@ -6131,6 +6134,19 @@
 
       // === Presentations Library (view mode of the Presentation surface) ==========================
       // A text-input modal (role=dialog) for New / Rename — reuses the confirm modal chrome + trap.
+      // A focus-trapped name prompt. Three optional hooks were added for the plan-lifecycle
+      // dialogs (86ak8467m) so those reuse THIS dialog rather than growing a second one:
+      //
+      //   opts.describe  — a sentence under the title, wired into the dialog's accessible
+      //                    description, for a dialog whose consequence is not obvious from
+      //                    its title alone.
+      //   opts.body(el)  — extra content ABOVE the name field (a template list, a run-sheet
+      //                    textarea). The caller keeps its own state in its own closure.
+      //   opts.validate(v) — returns the REASON v is unacceptable, or null when it is fine.
+      //                    A rejected value is shown inline and never submitted.
+      //
+      // Every existing caller passes none of them and is unaffected. The Tab trap now walks the
+      // dialog's live focusables instead of a hard-coded triple, because opts.body may add some.
       function pmPrompt(opts) {
         if (document.querySelector(".pm-confirm-back")) return;
         const prevFocus = document.activeElement;
@@ -6138,23 +6154,83 @@
         const dlg = document.createElement("div"); dlg.className = "pm-confirm"; dlg.setAttribute("role", "dialog"); dlg.setAttribute("aria-modal", "true");
         dlg.setAttribute("aria-labelledby", "pm-prompt-title");
         const h = document.createElement("h2"); h.className = "pm-confirm-title"; h.id = "pm-prompt-title"; h.textContent = opts.title || "Name"; dlg.appendChild(h);
+        let describedBy = "";
+        if (opts.describe) {
+          const d = document.createElement("p"); d.className = "pm-confirm-body"; d.id = "pm-prompt-describe"; d.textContent = opts.describe;
+          dlg.appendChild(d);
+          describedBy = "pm-prompt-describe";
+        }
+        // The consequence line, mirroring pmConfirm's. It MUST be in the accessible description
+        // and not merely drawn: a warning a screen reader never speaks is a warning that did not
+        // happen (WCAG 4.1.2), which is the same rule pmConfirm's `warning` already follows.
+        if (opts.warning) {
+          const w = document.createElement("p"); w.className = "pm-confirm-warn"; w.id = "pm-prompt-warn"; w.textContent = opts.warning;
+          dlg.appendChild(w);
+          describedBy = describedBy ? describedBy + " pm-prompt-warn" : "pm-prompt-warn";
+        }
+        if (describedBy) dlg.setAttribute("aria-describedby", describedBy);
         const field = document.createElement("div"); field.style.display = "flex"; field.style.flexDirection = "column"; field.style.gap = "6px";
         const lab = document.createElement("label"); lab.className = "pm-insp-lbl"; lab.textContent = opts.label || "Name"; lab.htmlFor = "pm-prompt-input";
         const input = document.createElement("input"); input.type = "text"; input.id = "pm-prompt-input"; input.className = "pm-insp-ctrl"; input.value = opts.value || ""; input.style.width = "100%"; input.style.maxWidth = "none"; input.setAttribute("aria-label", opts.label || "Name");
-        field.appendChild(lab); field.appendChild(input); dlg.appendChild(field);
+        // The field is built FIRST and handed to opts.body, so a caller that needs it (the
+        // template picker, whose radios follow the name) takes it directly rather than reaching
+        // back into the document by id after pmPrompt returns — which would have grabbed the
+        // WRONG input on the one path where this function early-returns (a dialog already open).
+        if (opts.body) { const extra = document.createElement("div"); extra.className = "pm-prompt-extra"; opts.body(extra, input); dlg.appendChild(extra); }
+        // role=alert, not a silent red line: a refusal the operator cannot hear is a dialog that
+        // appears to do nothing when they press Enter (WCAG 3.3.1).
+        const err = document.createElement("p"); err.className = "pm-prompt-err"; err.id = "pm-prompt-error"; err.setAttribute("role", "alert"); err.hidden = true;
+        field.appendChild(lab); field.appendChild(input); field.appendChild(err); dlg.appendChild(field);
         const row = document.createElement("div"); row.className = "pm-confirm-actions";
         const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "pm-btn-ghost"; cancel.textContent = "Cancel";
         const ok = document.createElement("button"); ok.type = "button"; ok.className = "pm-btn-primary"; ok.textContent = opts.confirmLabel || "OK";
         row.appendChild(cancel); row.appendChild(ok); dlg.appendChild(row);
         back.appendChild(dlg); document.body.appendChild(back);
         const close = () => { document.removeEventListener("keydown", onKey, true); back.remove(); if (prevFocus && prevFocus.focus) prevFocus.focus(); };
-        const submit = () => { const v = input.value; close(); if (opts.onConfirm) opts.onConfirm(v); };
+        // The field a refusal BLAMES has to be the field that is wrong. `validate` may return a
+        // plain string (the name is at fault) or `{ message, field }` naming another control —
+        // the import dialog's run-sheet textarea, whose problems were previously reported under
+        // the Service name, marking a perfectly good name aria-invalid and pulling focus off the
+        // textarea the operator had to fix (WCAG 3.3.1/3.3.2).
+        let invalidField = null;
+        const clearInvalid = () => {
+          if (!invalidField) return;
+          invalidField.removeAttribute("aria-invalid");
+          invalidField.removeAttribute("aria-describedby");
+          invalidField = null;
+        };
+        const submit = () => {
+          const v = input.value;
+          if (opts.validate) {
+            const why = opts.validate(v);
+            const message = why && typeof why === "object" ? why.message : why;
+            if (message) {
+              const target = (why && typeof why === "object" && why.field) || input;
+              err.textContent = message; err.hidden = false;
+              clearInvalid();
+              invalidField = target;
+              target.setAttribute("aria-invalid", "true");
+              target.setAttribute("aria-describedby", "pm-prompt-error");
+              target.focus();
+              return; // the dialog STAYS OPEN with the typed value intact
+            }
+            err.hidden = true; err.textContent = "";
+            clearInvalid();
+          }
+          close(); if (opts.onConfirm) opts.onConfirm(v);
+        };
         cancel.onclick = close; ok.onclick = submit;
-        back.onmousedown = (ev) => { if (ev.target === back) close(); };
+        // A stray click on the backdrop closes a NAME prompt harmlessly. It must not throw away
+        // a dialog the operator has typed into at length — a 60-line run sheet pasted into the
+        // import dialog is gone with no undo and no confirmation.
+        back.onmousedown = (ev) => { if (ev.target === back && !opts.body) close(); };
+        const focusables = () => Array.prototype.slice.call(
+          dlg.querySelectorAll("input, textarea, select, button, [href], [tabindex]:not([tabindex='-1'])")
+        ).filter((e) => !e.disabled && !e.hidden && e.getClientRects().length > 0);
         const onKey = (ev) => {
           if (ev.key === "Escape") { ev.preventDefault(); close(); }
           else if (ev.key === "Enter" && document.activeElement === input) { ev.preventDefault(); submit(); }
-          else if (ev.key === "Tab") { const els = [input, cancel, ok]; const i = els.indexOf(document.activeElement); ev.preventDefault(); const n = ev.shiftKey ? (i <= 0 ? els.length - 1 : i - 1) : (i >= els.length - 1 ? 0 : i + 1); els[n].focus(); }
+          else if (ev.key === "Tab") { const els = focusables(); if (!els.length) return; const i = els.indexOf(document.activeElement); ev.preventDefault(); const n = ev.shiftKey ? (i <= 0 ? els.length - 1 : i - 1) : (i >= els.length - 1 ? 0 : i + 1); els[n].focus(); }
         };
         document.addEventListener("keydown", onKey, true);
         input.focus(); input.select();
@@ -6168,7 +6244,12 @@
       async function planLoadDecks() {
         try {
           const r = await invoke("deck_list");
-          planDecks = (r && r.decks) || [];
+          // A response without a real decks ARRAY is UNKNOWN, not "loaded and empty". `|| []`
+          // here defeated the catch branch below: a host that answers deck_list with null (an
+          // older host, or one where the command is not implemented) read as an empty library,
+          // so EVERY deck-linked item was flagged "⚠ presentation missing" and counted in the
+          // Plan Summary. Only a genuine array means the library was actually read.
+          planDecks = r && Array.isArray(r.decks) ? r.decks : null;
         } catch (e) {
           console.error(e);
           // Load FAILED — stay UNRESOLVED (null), not empty. planLinkChip only shows "⚠ missing"
@@ -6190,6 +6271,471 @@
         if (sel && sel.options.length) return Array.from(sel.options).map((o) => o.value);
         return ["KJV", "WEB"];
       }
+      // A visually-hidden prefix, so a bare value in a dense row ("Worship", "5:00") still reads
+      // as what it IS to a screen reader. The row is one option in a listbox, so an aria-label on
+      // a child <span> is unreliable; real text in the accessibility tree is not.
+      function srOnly(text) {
+        const s = document.createElement("span");
+        s.className = "sr-only";
+        s.textContent = text;
+        return s;
+      }
+      // The ONE predicate for "this item has a planned duration", used by the run-sheet row AND by
+      // planSummaryOf. A row and a total that disagree about what counts is the drift this whole
+      // surface was rejected for once; sharing the predicate makes disagreement impossible rather
+      // than merely tested-against. Absent = unset (renders "—", excluded from the sum, marks the
+      // total partial). An explicit 0 is SET, and renders 0:00.
+      // A single plan item longer than 24h is not a duration, it is corrupt or hostile input.
+      // isFinite alone is not a bound: 1e308 is finite and rendered "2.77e+304:58:56" as a total.
+      const PLAN_MAX_ITEM_SECS = 86400;
+      function planHasDuration(it) {
+        // Finite and non-negative: a LAN peer is untrusted, and a JSON-valid -1200 or 1e308 would
+        // otherwise render "-1:-15:00" / "Infinity:NaN:NaN" in the total (Sana S3). An out-of-range
+        // value is treated as UNSET rather than clamped — inventing a duration is worse than
+        // showing none.
+        return (
+          typeof it.planned_secs === "number" &&
+          isFinite(it.planned_secs) &&
+          it.planned_secs >= 0 &&
+          it.planned_secs <= PLAN_MAX_ITEM_SECS
+        );
+      }
+      // Spoken form for AT (UI-A1 §211): "eight colon zero zero" is not useful. The run-sheet row
+      // is role=option, so a descendant's aria-label feeds the option's accessible name — which is
+      // what a screen reader actually announces for the row.
+      function planSpokenDuration(secs) {
+        const h = Math.floor(secs / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        const sec = secs % 60;
+        const parts = [];
+        const unit = (n, one) => n + " " + one + (n === 1 ? "" : "s");
+        if (h) parts.push(unit(h, "hour"));
+        if (m) parts.push(unit(m, "minute"));
+        if (sec || !parts.length) parts.push(unit(sec, "second"));
+        return parts.join(" ");
+      }
+      // Row durations: m:ss under an hour (the design's 5:00 / 3:12), h:mm:ss at or above one, so a
+      // 65-minute item reads 1:05:00 and never "65:00" — which is indistinguishable from 65 seconds
+      // of m:ss at a glance and disagrees with how the total is formatted.
+      function planFmtDuration(secs) {
+        return secs >= 3600 ? planFmtTotal(secs) : fmtClock(secs);
+      }
+      // h:mm:ss for a plan total. fmtClock is m:ss, which would render a 53-minute plan as 53:12
+      // and a 65-minute one as 1:05 — indistinguishable from 1 minute 5 seconds.
+      function planFmtTotal(secs) {
+        const h = Math.floor(secs / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        return h + ":" + String(m).padStart(2, "0") + ":" + String(secs % 60).padStart(2, "0");
+      }
+      // Resolution state of a content link — the ONE place that decides it, so the run-sheet chip,
+      // the inspector deck card and the Plan Summary can never disagree. Three-state, because
+      // "could not check" is not "fine":
+      //   "missing"  - checked, and the content is gone   -> missing treatment
+      //   "unknown"  - nobody could check                 -> NOT resolved, never counted missing
+      //   "resolved" - it is there
+      // Decks are operator-owned by design: the host has no deck store and structurally cannot
+      // resolve a deck_id, so for a deck link LOCAL resolution stays authoritative whatever the
+      // host says. `status` is an additive field (86ajy0hw0), absent today; every branch below
+      // already holds without it and honours it the moment it lands.
+      function planLinkState(link) {
+        if (!link || typeof link !== "object") return "resolved";
+        // Decks are settled FIRST, before any host status. The operator owns the deck library and
+        // the host has no deck store, so when the library is loaded it is ground truth — a host
+        // "missing" for a deck the operator can see is stale, not authoritative. (Sana S1: this
+        // check used to sit after the status test, which inverted exactly that rule.)
+        if (link.kind === "deck") {
+          if (planDecks) return planDecks.some((d) => d && d.id === link.id) ? "resolved" : "missing";
+          // Library unavailable — no ground truth here, so defer to whatever the host could say.
+          return link.status === "missing" ? "missing" : "unknown";
+        }
+        if (link.status === "missing") return "missing";
+        if (link.status === "unknown") return "unknown";
+        return "resolved";
+      }
+      // Plan Summary figures (frame 608:875). Computed from the view we already hold, so the panel
+      // ships today. The backend `summary` object (86ajy0hw0) is additive and arrives on the same
+      // view; planRenderSummary reads ONE summary-shaped object either way, so adopting it is a
+      // change here and nowhere else.
+      // A plan longer than a week is corrupt, not a service. Bounds the host total the way
+      // PLAN_MAX_ITEM_SECS bounds a single item's duration.
+      const PLAN_MAX_TOTAL_SECS = 86400 * 7;
+      const PLAN_MAX_COUNT = 100000;
+      const SUMMARY_COUNTS = ["items", "songs", "scripture", "presentations", "media",
+                              "announcements", "timers", "sections", "assigned", "missing", "unknown"];
+      // Validate the host summary before trusting it, and fall back to the local computation on
+      // anything malformed.
+      //
+      // The pass-through crosses a TRUST BOUNDARY. Handing the host's object straight to the
+      // renderer silently inherited every defect the local path had already been hardened against:
+      // `{}` rendered "NaN:NaN:NaN", 1e308 rendered "2.77e+304:58:56" (the exact string
+      // PLAN_MAX_ITEM_SECS exists to prevent), and a total disagreeing with the rows beneath it is
+      // the §9 MAJOR the header total was added to fix. None of that needs an attacker — a host one
+      // release ahead or behind is enough.
+      //
+      // Falling back is always SAFE: the local computation is derived from the very items being
+      // rendered, and is separately tested. So this errs strict.
+      function planSummaryIsSound(sum, items) {
+        if (!sum || typeof sum !== "object") return false;
+        const count = (v) => typeof v === "number" && isFinite(v) && Number.isInteger(v) && v >= 0 && v <= PLAN_MAX_COUNT;
+        if (!(typeof sum.planned_total_secs === "number" && isFinite(sum.planned_total_secs) &&
+              Number.isInteger(sum.planned_total_secs) && sum.planned_total_secs >= 0 &&
+              sum.planned_total_secs <= PLAN_MAX_TOTAL_SECS)) return false;
+        for (let i = 0; i < SUMMARY_COUNTS.length; i++) if (!count(sum[SUMMARY_COUNTS[i]])) return false;
+        if (sum.partial !== undefined && typeof sum.partial !== "boolean") return false;
+        if (sum.planned_items !== undefined && !count(sum.planned_items)) return false;
+        if (sum.partial === true && sum.planned_items === undefined) return false;
+        if (sum.assigned > sum.items) return false;
+        if (sum.missing + sum.unknown > sum.items) return false;
+        // Every TRIGGERABLE item must land in exactly one per-kind line. Sections are excluded
+        // from `items` by the settled rule, so they are excluded here too.
+        const kinds = sum.songs + sum.scripture + sum.presentations + sum.media +
+                      sum.announcements + sum.timers;
+        if (kinds !== sum.items) return false;
+        // A subset can never exceed its whole. Backend caught the mirror of this in their own
+        // work: a duration set ON a section reached planned_items while the section was absent
+        // from items, so planned_items could exceed items and this panel would have rendered
+        // "7 of 6". Individually-correct fields that do not add up are what design QA rejected
+        // these frames for the first time round, so the seam checks the arithmetic, not just the
+        // field types.
+        if (sum.planned_items !== undefined && sum.planned_items > sum.items) return false;
+        // The total must describe the items actually being rendered. A header reading 99999s over
+        // rows summing 600s is precisely the §9 MAJOR. Sections carry no duration, so this holds
+        // under either reading of the question above.
+        // WHY the two totals agree, and what silently breaks if that changes.
+        //
+        // This recomputation sums planned_secs over EVERY item it was sent, sections included.
+        // The host's planned_total_secs EXCLUDES sections, because a divider is not part of the
+        // run sheet. Those are different definitions, and they agree for exactly one reason: the
+        // host will not let a section hold a duration at all — ServicePlan::set_item_planned_secs
+        // refuses it (PlanError::NotApplicable) and from_parts strips any an older build stored.
+        //
+        // So this is not 'sections happen to carry no duration'. It is a guarantee another crate
+        // makes, in another language, landed in another pull request. If that guard is ever
+        // relaxed, the sums diverge, this check returns false, and planSummaryOf falls back to
+        // the local computation below — QUIETLY. The panel keeps rendering plausible numbers that
+        // are no longer the host's, with nothing thrown and no test failing. The tripwire on the
+        // other side is a_section_with_a_duration_would_break_the_operators_summary_validation_seam
+        // in selahcue-core/tests/test_plan.rs, and the mirror of this note is on
+        // ServicePlan::planned_total. Change either definition and both must move.
+        let localTotal = 0;
+        items.forEach((x) => { if (planHasDuration(x)) localTotal += x.planned_secs; });
+        if (sum.planned_total_secs !== localTotal) return false;
+        return true;
+      }
+      function planSummaryOf(view) {
+        // PREFER THE HOST'S SUMMARY. ServicePlan::planned_total() returns the sum and `partial`
+        // from ONE pass, so the flag cannot drift from the number it describes — which is why it
+        // belongs there and not here. Absent today; this is the whole of the swap when PR #13
+        // lands, and until then the local computation below stands in.
+        //
+        // A consequence worth stating: because `partial` is CONSUMED and never computed here, the
+        // "inert sections never set partial" rule (spec §4.2 — unset children, not headers) is the
+        // host's to enforce and this client cannot diverge from it. The local fallback carries no
+        // partial flag at all, so it has no section rule to get wrong either.
+        if (planSummaryIsSound(view && view.summary, (view && view.items) || [])) return view.summary;
+        const all = (view && view.items) || [];
+        const by = (k) => all.filter((x) => x.kind === k).length;
+        // Every summary metric describes the TRIGGERABLE run sheet, so an inert `section` divider
+        // is excluded from all of them — items, assigned, the planned total, missing and unknown.
+        // Frame 608:875 is explicit: "6 items" and "Assigned 6 / 6" over six rows and THREE
+        // dividers, with no Sections line in the panel at all. The `sections` count is still
+        // reported below, so nothing is lost; it is simply no longer conflated with the run sheet.
+        const items = all.filter((x) => x.kind !== "section");
+        let total = 0;
+        let assigned = 0;
+        let missing = 0;
+        let unknown = 0;
+        items.forEach((x) => {
+          if (planHasDuration(x)) total += x.planned_secs;
+          if (x.owner) assigned += 1;
+          if (x.link) {
+            // missing and unknown are counted SEPARATELY and never merged. "The host could not
+            // check" is not "it is fine": the host structurally cannot resolve decks or media, so
+            // collapsing unknown into resolved is the failure this three-state field exists to
+            // prevent. Decks are settled locally by planLinkState; media has no library in any
+            // layer yet, so it stays unknown by design.
+            const st = planLinkState(x.link);
+            if (st === "missing") missing += 1;
+            else if (st === "unknown") unknown += 1;
+          }
+        });
+        // Field names deliberately mirror OperatorStateView.summary (86ajy0hw0) one-for-one, so
+        // adopting the host's summary is a swap of this function's body and nothing else.
+        // `partial`/`unplanned` are local additions the wire may not carry — see the PR.
+        return {
+          planned_total_secs: total,
+          items: items.length, // triggerable rows only — sections excluded
+          planned_items: items.filter(planHasDuration).length,
+          songs: by("song"),
+          scripture: by("scripture"),
+          presentations: by("slide_group"), // slide-group count, per the wire shape
+          media: by("media"),
+          announcements: by("announcement"),
+          timers: by("timer"),
+          sections: by("section"),
+          assigned: assigned,
+          missing: missing,
+          unknown: unknown,
+        };
+      }
+      // =======================================================================================
+      // PLAN LIFECYCLE (86ak8467m) — the host's viewer / publish / template state, and the five
+      // commands that act on it: publish_plan, new_plan, template_plan, duplicate_plan,
+      // import_plan. All five require the EXISTING EditPlan permission; no new permission is
+      // invented here, and none is enforced here either — the host's authorize() is the gate and
+      // this file only reports its verdict.
+      //
+      // Every reader below is a SINGLE DEFINITION consumed by the renderers, by the send sites,
+      // and by the gate's controls. That is deliberate: a control that re-derives a predicate
+      // beside the code under test passes while the real predicate is mutated away (86ak643rc).
+      // =======================================================================================
+
+      // The label bound the host enforces (`MAX_PLAN_LABEL_LEN` in selahcue-core::plan — one
+      // bound for a plan name, an item title and an owner, which is why it is not called a name).
+      const PLAN_NAME_MAX = 120;
+      // The run-sheet cap the untrusted ingress enforces (`MAX_PLAN_ITEMS`).
+      const PLAN_MAX_ITEMS = 500;
+      // How many starter templates the picker will render. A picker is a human-scale list that a
+      // coordinator SCANS — this build's host ships two — so the bound is generous by an order of
+      // magnitude and still nowhere near a number that could hang the console. A host reporting
+      // more than this is malformed, and a malformed list reads as no list rather than being
+      // silently truncated: quietly dropping templates the host offers is the same fabrication
+      // as inventing ones it does not.
+      const PLAN_TEMPLATES_MAX = 24;
+      // A template id is a wire tag ("sunday-morning"), never displayed.
+      const PLAN_TEMPLATE_ID_MAX = 64;
+
+      // The invisible characters the HOST refuses, and the ones it deliberately ADMITS.
+      //
+      // Two named sets rather than one regex, because the host has two and the distinction is the
+      // whole point of its rule (`is_display_hostile` / `is_admitted_invisible`, plan.rs). Mirrored
+      // as data so a reader can diff them against that file line by line.
+      //
+      //  - REFUSED: stateful direction controls, which reorder text BEYOND their own position (an
+      //    unterminated RLO reverses the rest of a rendered line — the Trojan-Source primitive),
+      //    and zero-orthography invisibles that belong to no script's spelling. Plus the Zl/Zp
+      //    line separators, which `\p{Cc}` does not cover and which render as a hard break inside
+      //    a single-line run-sheet label (`is_line_separator`).
+      //  - ADMITTED: the orthographic joiners and the stateless implicit bidi marks. These are
+      //    SPELLING. Sinhala "ශ්‍රී" (as in Sri Lanka) cannot be written without U+200D at all;
+      //    Persian and Urdu need U+200C for the plural suffix; and a family emoji is a ZWJ
+      //    sequence. Refusing them does not harden a name field, it stops entire writing systems
+      //    being typed into one — which is why the host, and now this client, admit them.
+      const PLAN_DISPLAY_HOSTILE = /[\u202A-\u202E\u2066-\u2069\u200B\u2060-\u2064\u206A-\u206F\uFFF9-\uFFFB\uFEFF\u2028\u2029]/;
+      // Everything that is neither whitespace nor an admitted invisible — the host's
+      // `has_visible_content`. A name of nothing but joiners renders as nothing and is refused.
+      const PLAN_VISIBLE_CONTENT = /[^\s\u200C\u200D\u200E\u200F\u061C]/u;
+
+      // Why v is unacceptable as a plan name or an imported item title, or null when it is fine.
+      //
+      // Mirrors `plan_label_valid` (selahcue-core/src/plan.rs), which is the single rule the host
+      // applies to a plan name, an item title AND an item owner — `valid_plan_label` in
+      // controller.rs calls it for all three. One rule here for the same reason: three copies
+      // drift apart and a reviewer then has to check three predicates instead of one.
+      //
+      // The HOST stays authoritative — this refuses EARLY so a typo shows up under the field
+      // instead of coming back as a Denied{bad_request} the operator cannot read, and every host
+      // rejection is still surfaced verbatim (planLifecycleFailed).
+      //
+      // Details that are easy to get wrong and were got wrong here first:
+      //
+      //  - COUNT SCALAR VALUES, not UTF-16 code units. The host counts `chars()`. `s.length`
+      //    counts code units, so a name written in an astral script would be refused by this
+      //    client at half the length the host allows — a client stricter than the host for a
+      //    reason the operator cannot see or fix.
+      //  - Test the CLASS, not a hand-listed set. `\p{Cc}` is exactly the Unicode general
+      //    category Rust's `char::is_control` tests. This repo has already shipped a guard that
+      //    refused NUL and let every other control character through (commit ee3646f swept it
+      //    across the class); repeating that in JS would be the same bug in a second language.
+      //  - DRIFT RUNS IN BOTH DIRECTIONS, and the stricter direction is the one that bites a
+      //    user. An earlier version of this function mirrored the host's first invisible rule
+      //    (`is_invisible_formatting`, 7a6e404) by refusing ALL Cf. The host then narrowed that
+      //    rule to a principle (352886d) and now admits the joiners; a client left behind would
+      //    have refused a Sinhala, Persian, Urdu, Devanagari or Malayalam service name, and every
+      //    family emoji, with a message the operator has no way to act on. Looser drift costs an
+      //    unreadable bad_request; stricter drift locks people out of naming their own service.
+      //
+      // Known, one-directional divergence that remains: JS `trim()` and Rust `str::trim` do not
+      // strip an identical set (U+0085 on one side, U+FEFF on the other). Both of those code
+      // points are refused above by the control-character and display-hostile tests before the
+      // difference can matter, so the two agree on every input either would accept.
+      function planNameProblem(v) {
+        const t = typeof v === "string" ? v.trim() : "";
+        if (!t) return "Enter a name.";
+        // Bound the string BEFORE materialising it. `Array.from` builds the whole scalar-value
+        // array to learn its length, so one wrong-clipboard paste — a log file, a minified
+        // bundle, one long JSON row — froze the console for 3.27s and spiked ~270MB of transient
+        // heap on Blink (measured through this dialog on f335a0d). The pre-check is EXACT, not a
+        // heuristic: a Unicode scalar value is at most two UTF-16 code units, so any string whose
+        // code-unit length exceeds 2 x the bound must exceed the bound in scalar values. No
+        // string that would have been accepted can be refused by it.
+        if (t.length > PLAN_NAME_MAX * 2) return "Use " + PLAN_NAME_MAX + " characters or fewer.";
+        if (Array.from(t).length > PLAN_NAME_MAX) return "Use " + PLAN_NAME_MAX + " characters or fewer.";
+        if (/\p{Cc}/u.test(t)) return "Remove control characters (such as tabs or line breaks) from the name.";
+        // Tested against the ORIGINAL string, not the trimmed one, and that difference is load
+        // bearing: JS `trim()` strips U+FEFF and Rust's does not, so "\uFEFFabc" would pass here
+        // and be refused there. None of the refused code points has the Unicode White_Space
+        // property, so Rust's `trim` can never remove one — checking the original is therefore
+        // exactly equivalent to checking Rust's trimmed form. (The control-character test above
+        // stays on the TRIMMED string for the mirror-image reason: Rust trims a leading newline
+        // as whitespace before testing, so testing the original there would refuse a name the
+        // host accepts.)
+        if (PLAN_DISPLAY_HOSTILE.test(v))
+          return "Remove invisible formatting characters (such as zero-width or text-direction marks) from the name.";
+        // `has_visible_content`, last because the more specific messages above are more useful.
+        // A name of nothing but joiners passes `trim()` and renders as nothing.
+        if (!PLAN_VISIBLE_CONTENT.test(t)) return "Enter a name.";
+        return null;
+      }
+
+      // The host's verdict on what this operator may do with the plan (`viewer` on the view).
+      //
+      // THREE STATES, NOT TWO. An absent `viewer` means THIS HOST DOES NOT REPORT IT — an older
+      // host, or a peer with no permission model to report — and that is emphatically NOT
+      // "view only". Painting a "View only" badge on an absent field is the fabrication this
+      // field exists to remove, and it is the same rule already carried by output_health,
+      // storage, session, summary and ContentLinkView.status.
+      //
+      // `can_edit` is the HOST'S OWN VERDICT, computed from the same authorize() choke point
+      // that enforces it, and it is CONSUMED here and never recomputed from `role`. The mobile
+      // client's transcribed rbac.dart permission table is precisely the drift this field
+      // removes, and that table has already diverged from the backend once in this project.
+      // A `viewer` object carrying no usable boolean says nothing, so it reads as unreported.
+      function planViewer(view) {
+        const v = view && view.viewer;
+        if (!v || typeof v !== "object") return { canEdit: null, role: null };
+        const canEdit = typeof v.can_edit === "boolean" ? v.can_edit : null;
+        // `role` is carried but deliberately NOT rendered and NOT branched on: it is the host's
+        // identity label, and the moment a control reads it the re-derivation this field exists
+        // to remove is back. (A `reported` boolean lived here too — a third name for
+        // `canEdit !== null` that nothing consumed — and is gone rather than left to rot.)
+        return { canEdit: canEdit, role: typeof v.role === "string" ? v.role : null };
+      }
+      // The question every editing control asks. Both of these consume planViewer().canEdit —
+      // the one verdict — so an unreported viewer shows the controls AND shows no badge, and
+      // neither answer can drift from the other.
+      function planCanEdit(view) { return planViewer(view).canEdit !== false; }
+      function planIsViewOnly(view) { return planViewer(view).canEdit === false; }
+
+      // The host's publish state for the open plan, or null when the host does not report it.
+      //
+      // Validated before use, exactly as the host summary is (planSummaryIsSound): a malformed
+      // object reads as UNREPORTED rather than being rendered, because a plausible-looking wrong
+      // revision printed on a run sheet is worse than no revision at all.
+      //
+      // `changed` is folded into the SAME expression as `published` here rather than being
+      // reported raw, because "changed" has no meaning without a baseline: with nothing
+      // published there is nothing to have changed FROM, so a badge there would be inventing
+      // state. Every consumer — the badge, the status line, the Publish button's description —
+      // reads THIS `changed`, so mutating the conjunction below moves all three at once.
+      // THE OBJECT OMITS ITS DEFAULTS. `PublishStateView` is `#[serde(default)]` with
+      // skip-if-none / skip-if-zero / skip-if-false, so only `revision` is always present and a
+      // fresh draft arrives as the whole object `{"revision":0}`:
+      //
+      //     missing `version`            = 0        (never published)
+      //     missing `published_revision` = null     (draft)
+      //     missing `changed`            = false
+      //
+      // Requiring `version` here — the first version of this function did — made every real
+      // draft read as UNREPORTED, so the panel said nothing at all about a plan it could have
+      // described correctly. Defaults are applied, then the RESULT is validated.
+      function planPublishState(view) {
+        const p = view && view.publish;
+        if (!p || typeof p !== "object") return null;
+        // These are ORDINALS, not counts, so they do not share PLAN_MAX_COUNT's bound. `revision`
+        // bumps on every plan edit, undo and redo; a long automated session could pass 100,000,
+        // and refusing it there would silently degrade the WHOLE lifecycle panel to "unreported"
+        // under a stated reason that was not true. They are only ever rendered as labels — never
+        // summed, subtracted or compared for the badge — so the only bound they need is the one
+        // past which a number stops being a number.
+        const n = (x) => typeof x === "number" && isFinite(x) && Number.isInteger(x) && x >= 0 && x <= Number.MAX_SAFE_INTEGER;
+        if (!n(p.revision)) return null; // the one field the host always sends
+        const version = p.version === undefined ? 0 : p.version;
+        if (!n(version)) return null;
+        const pr = p.published_revision;
+        const published = pr !== undefined && pr !== null;
+        if (published && !n(pr)) return null;
+        // `changed: null` is tolerated as false, exactly as `published_revision: null` is
+        // tolerated as "not published" four lines up. Neither can arrive from a serde host (both
+        // are skip-if-unset on the wire struct), so this is about the READER being internally
+        // consistent: silencing the whole panel over one null while accepting another beside it
+        // was an inconsistency the next reader would have had to explain.
+        if (p.changed !== undefined && p.changed !== null && typeof p.changed !== "boolean") return null;
+        return {
+          revision: p.revision,
+          version: version,
+          publishedRevision: published ? pr : null,
+          published: published,
+          // READ FROM `changed`, NEVER COMPUTED FROM THE REVISIONS. The counters say the
+          // document was TOUCHED; `changed` says it actually DIFFERS. An edit that is then
+          // undone moves `revision` past `published_revision` while restoring the content, so
+          // `revision !== published_revision` with `changed:false` is a normal, meaningful
+          // state — and a badge derived from the counters would sit over a plan identical to
+          // the published one, offering an operator nothing to review. The obvious
+          // implementation is the wrong one and it looks right in testing.
+          changed: published && p.changed === true,
+        };
+      }
+
+      // The starter templates THIS HOST offers, or null when it offers none.
+      //
+      // Reported by the host rather than transcribed here, for the same reason `themes` and
+      // `translations` are: a client carrying its own copy of the list drifts from the host's
+      // silently, the first time either side changes. `items` is a COUNT, not an array — the
+      // template's contents never cross the wire, only its size, so the picker says how big a
+      // skeleton it is about to create and nothing more.
+      function planTemplateList(view) {
+        const t = view && view.plan_templates;
+        if (!Array.isArray(t) || !t.length) return null;
+        // BOUNDED BEFORE IT IS READ, not after. The operator shell talks to a host over the LAN
+        // link, and `ControlClient` sets no `max_message_size` (client.rs:70) — so while the
+        // SERVER caps inbound frames at 64 KiB (server.rs:46), a reply travelling the other way
+        // may be up to tungstenite's 64 MiB default. Unbounded, this filter runs over every entry
+        // on EVERY plan render and the picker would then build a DOM row for each.
+        //
+        // The bound is on the ENTITY — the number of entries, and the length of each string that
+        // is rendered — not on a byte proxy, because a byte budget alone still admits
+        // unboundedly many tiny rows.
+        if (t.length > PLAN_TEMPLATES_MAX) return null;
+        const str = (v, max) => typeof v === "string" && v.length > 0 && v.length <= max;
+        const ok = t.filter(
+          (x) =>
+            x && typeof x === "object" &&
+            str(x.id, PLAN_TEMPLATE_ID_MAX) &&
+            str(x.name, PLAN_NAME_MAX) &&
+            typeof x.items === "number" && isFinite(x.items) &&
+            Number.isInteger(x.items) && x.items >= 0 && x.items <= PLAN_MAX_ITEMS
+        );
+        return ok.length ? ok : null;
+      }
+
+      // Does this host implement the plan-lifecycle COMMANDS?
+      //
+      // The signal is that it reports `publish`. Publication state and the commands that produce
+      // it are one capability landing as one wire addition, so a host that can describe the
+      // plan's publication is a host that can act on it.
+      //
+      // Why gate at all, when the frames simply draw the buttons: this shell talks to whichever
+      // host is on the other end — the in-process one, or a REMOTE output window that may be a
+      // different build entirely. A button wired to a command the host does not have is a
+      // control that looks live and fails on click, which is the exact failure the
+      // disabled-with-a-stated-reason treatment in this panel already exists to avoid. Asked
+      // once, here, and consumed by every lifecycle control.
+      // The title of whatever is on air right now, or null. Read from the HOST's own live_index
+      // / live_free_text, never inferred: `live_free_text` is a slide whose plan item is already
+      // gone, and it is exactly the case a naive `items[live_index]` lookup misses.
+      function planLiveItemTitle(view) {
+        if (!view) return null;
+        const items = Array.isArray(view.items) ? view.items : [];
+        const live = items.find((x) => x && x.is_live);
+        if (live && typeof live.title === "string" && live.title) return live.title;
+        if (typeof view.live_free_text === "string" && view.live_free_text) return view.live_free_text;
+        return null;
+      }
+      function planLifecycleAvailable(view) { return planPublishState(view) !== null; }
+      const PLAN_NO_LIFECYCLE_REASON =
+        "This host doesn't report plan publishing, so creating, duplicating, importing and publishing aren't available from here yet.";
+
       function planLinkChip(link) {
         const el = document.createElement("span");
         el.className = "link-chip link-" + link.kind;
@@ -6198,15 +6744,21 @@
             "✦ " + (link.reference || "scripture") + (link.translation ? " · " + link.translation : "");
         } else if (link.kind === "deck") {
           const name = planDeckName(link.id);
-          if (planDecks && !name) {
-            // The deck list is loaded and this id is gone → the plan item is missing content.
+          if (planLinkState(link) === "missing") {
             el.className = "link-chip link-missing";
             el.textContent = "⚠ presentation missing";
           } else {
             el.textContent = "▦ " + (name || "presentation");
           }
         } else if (link.kind === "media") {
-          el.textContent = "▷ media";
+          // The chip asks planLinkState like everything else, so a host-flagged missing medium is
+          // not drawn as a healthy one while the summary counts it missing (Sana S2).
+          if (planLinkState(link) === "missing") {
+            el.className = "link-chip link-missing";
+            el.textContent = "⚠ media missing";
+          } else {
+            el.textContent = "▷ media";
+          }
         } else {
           el.textContent = link.kind;
         }
@@ -6281,8 +6833,11 @@
           err.hidden = true;
           setBusy(true);
           // Keep the modal OPEN until the host confirms. set_item_content rejects an unparseable
-          // reference / unknown deck and leaves the plan unchanged, so closing optimistically would
-          // hide the failure. Close only on success; on rejection re-enable + surface an inline
+          // reference (and a malformed link — unknown kind, blank reference, missing id) and leaves
+          // the plan unchanged, so closing optimistically would hide the failure. It does NOT
+          // reject an unknown DECK: the host has no deck store, so any deck id is accepted and the
+          // link comes back with status "unknown" for this side to resolve against the library.
+          // Close only on success; on rejection re-enable + surface an inline
           // error. The returned OperatorView refreshes the console AND (if open) the builder — a
           // plan edit that never changes Live.
           invoke("set_item_content", { itemId: item.id, link })
@@ -6728,7 +7283,9 @@
             if (created) {
               // Carry the deck's slide count to the host (it owns no deck store) so the plan item
               // reports the real count + can stage a specific slide (LIVE-CONSOLE… spec §6).
-              commit({ kind: "deck", id: created.id, slide_count: created.slides }); // success → modal closes
+              // Send the deck's name as the link label too: once a deck is deleted, no layer can
+              // turn its id back into a name, so the plan item has to have kept one.
+              commit({ kind: "deck", id: created.id, slide_count: created.slides, label: created.name }); // success → modal closes
             } else {
               newCard.disabled = false;
               newBusy = false;
@@ -6745,7 +7302,7 @@
           if (selId != null) {
             // Carry the selected deck's slide count to the host (spec §6) so per-slide staging works.
             const d = (planDecks || []).find((x) => x.id === selId);
-            commit({ kind: "deck", id: selId, slide_count: d ? d.slides : undefined });
+            commit({ kind: "deck", id: selId, slide_count: d ? d.slides : undefined, label: d ? d.name : undefined });
           }
         };
         const foot = document.createElement("div");
@@ -6770,6 +7327,7 @@
         ["section", "Section"],
       ];
       let planSelectedId = null;
+      let planLastView = null; // last view rendered, for UI-only re-renders
       // After planRenderBuilder blanks + rebuilds the run sheet, keyboard focus would fall to
       // <body>; this records what the last user action should re-focus (the selected row, or a
       // moved row's ↑/↓ button) so focus survives the rebuild (WCAG 2.4.3). Null on a background
@@ -6779,14 +7337,108 @@
         const f = PLAN_ADD_KINDS.find((k) => k[0] === kind);
         return f ? f[1] : kind;
       }
+      // Loading (frame 611:350). planActivate runs on navigation to the surface, so this paints
+      // once per visit and the first planRenderBuilder replaces it — a mutation re-render never
+      // flashes it. The message is a role=status live region because the missing-content scan is
+      // the part an operator actually waits on, so it is announced and not merely drawn. The
+      // skeleton rows are aria-hidden: they are texture, and announcing four empty rows is noise.
+      function planRenderLoading() {
+        const list = document.getElementById("plan-b-list");
+        if (!list) return;
+        list.innerHTML = "";
+        const count = document.getElementById("plan-b-count");
+        if (count) count.textContent = "—"; // never a stale count while the real one is unknown
+        const totL = document.getElementById("plan-b-total");
+        if (totL) totL.textContent = ""; // ...and no stale total sitting beside the "—"
+        planBlankSummary("Opening plan…");
+        const st = document.createElement("p");
+        st.className = "plan-loading-msg";
+        st.setAttribute("role", "status");
+        st.textContent = "Opening plan… scanning for missing content.";
+        list.appendChild(st);
+        for (let i = 0; i < 4; i++) {
+          const sk = document.createElement("div");
+          sk.className = "plan-skel-row";
+          sk.setAttribute("aria-hidden", "true");
+          list.appendChild(sk);
+        }
+      }
+      // A failed open must not leave the skeleton up forever — an endless loading state is a lie
+      // about work still being in flight. This is the MINIMUM honest replacement; the designed
+      // error state (frame 612:124: non-blocking banner + Restore last autosave + integrity check)
+      // needs autosave-slot wire fields that do not exist yet and belongs to 86ak8467m.
+      function planRenderLoadFailed(e) {
+        console.error(e);
+        const list = document.getElementById("plan-b-list");
+        if (!list || !list.querySelector(".plan-skel-row")) return; // a view already painted; leave it
+        list.innerHTML = "";
+        const count = document.getElementById("plan-b-count");
+        if (count) count.textContent = "";
+        const totF = document.getElementById("plan-b-total");
+        if (totF) totF.textContent = "";
+        planBlankSummary("Plan figures unavailable — the plan could not be opened.");
+        // Quinn — the previous view's permission chrome outlived the plan it described. A "View
+        // only" badge over a surface whose plan could not be opened is a verdict this client does
+        // not have: the failure means the viewer field is UNKNOWN, and painting a restriction from
+        // an unknown is the exact fabrication the three-state rule on this surface exists to stop.
+        // Cleared to the unreported state, and the palette goes with it — there is no plan to add
+        // an item to, so an ADD ITEM column here is a control that looks live and cannot work.
+        planViewerSig = null; // ...and the next good poll re-baselines rather than reading as a change
+        planSyncPermission(null);
+        const palette = document.querySelector("#surface-plan .plan-palette");
+        if (palette) palette.style.display = "none";
+        const p = document.createElement("p");
+        p.className = "plan-load-failed";
+        p.setAttribute("role", "alert");
+        p.textContent = "Couldn't open the plan. Live output is unaffected — reopen this surface to retry.";
+        list.appendChild(p);
+      }
+      // Deselect back to the Plan Summary. Mirrors the Theme Designer's Escape-deselects pattern
+      // (tdSel keydown / empty-canvas click). Without this, planSelectedId is only ever SET by a
+      // gesture and cleared by deleting the item — so the summary, and the Publish / pre-service
+      // actions that live in it, become unreachable after the first row click.
+      function planDeselect() {
+        if (planSelectedId === null) return; // already on the summary — do not rebuild on every Escape
+        planSelectedId = null;
+        // Re-render from the view already in hand. Deselecting is a pure UI state change, so it
+        // must not cost a host round-trip (and must not race one in).
+        if (planLastView) planRenderBuilder(planLastView);
+      }
+      (function planWireDeselect() {
+        document.addEventListener("keydown", (ev) => {
+          if (ev.key !== "Escape" || planSelectedId === null) return;
+          const surf = document.getElementById("surface-plan");
+          if (!surf || !surf.classList.contains("active")) return;
+          if (document.querySelector(".pm-confirm-back")) return; // a dialog owns Escape
+          if (window.__cmdPalette && window.__cmdPalette.isOpen()) return;
+          if (isMenuOpen()) return;
+          const t = ev.target;
+          if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+          ev.preventDefault();
+          planDeselect();
+        });
+        // Clicking the empty area BELOW the rows also deselects (the pointer path), matching the
+        // Theme Designer's empty-canvas click.
+        document.addEventListener("click", (ev) => {
+          const list = document.getElementById("plan-b-list");
+          if (!list || ev.target !== list) return; // a row click bubbles with target = the row
+          planDeselect();
+        });
+      })();
       function planActivate() {
+        // A fresh visit must not inherit the last visit's outcome. "Plan published…" sitting
+        // under the header describes the plan as it was at that moment; after a few edits, or a
+        // trip to the console and back, it is a statement about a run sheet that has moved on.
+        planNotice("");
         planFocusAfterRender = null; // fresh navigation must not inherit a stale reorder intent
+        planSelectedId = null; // ...nor a stale selection: a fresh visit opens on the Plan Summary
         buildPlanPalette();
+        planRenderLoading();
         // Deck names/missing-status for link chips; then render with resolved names.
         planLoadDecks().then(() => {
-          if (document.getElementById("plan-b-list")) invoke("view").then(planRenderBuilder).catch(console.error);
+          if (document.getElementById("plan-b-list")) invoke("view").then(planRenderBuilder).catch(planRenderLoadFailed);
         });
-        invoke("view").then(planRenderBuilder).catch(console.error);
+        invoke("view").then(planRenderBuilder).catch(planRenderLoadFailed);
       }
       function buildPlanPalette() {
         const box = document.getElementById("plan-palette-btns");
@@ -6816,9 +7468,18 @@
       // Run a plan mutation, then refresh the builder from the returned view.
       async function planMutate(fn) {
         try {
+          // Any plan EDIT invalidates a lifecycle outcome message: "Plan published" is true of
+          // the run sheet that was published, not of the one now on screen.
+          planNotice("");
           planRenderBuilder(await fn());
         } catch (e) {
           console.error(e);
+          // ...and SAY so. A refused plan edit reached console.error and nothing else, so a host
+          // that rejected a rename, a reorder or an undo looked exactly like a control that did
+          // nothing — the failure this surface's disabled-with-a-reason treatment exists to
+          // avoid, arrived at through the success path instead.
+          const detail = e && e.message ? e.message : typeof e === "string" ? e : "";
+          planNotice("alert", "That change wasn't applied" + (detail ? " — " + detail : "") + ".");
           // The caller may have set a focus intent (e.g. a reorder) BEFORE the mutation; a rejected
           // mutation never re-renders, so clear it — otherwise a later background re-render would
           // consume the stale intent and steal focus onto an item the operator didn't just touch.
@@ -6840,6 +7501,13 @@
           if (isMenuOpen()) return;
           if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
           if (ev.key !== "z" && ev.key !== "Z") return;
+          // Undo and redo are plan EDITS, and this is the SECOND keyboard path that had to be
+          // gated on the host's verdict — the Alt+arrow reorder was the first, and a reviewer had
+          // to find each of them by mutation. Hiding the buttons while leaving a key combination
+          // live makes the restriction hold for the mouse and not for the keyboard, which is not
+          // a restriction. Read from the last view rendered: the same verdict every other control
+          // on this surface consumes.
+          if (!planCanEdit(planLastView)) return;
           const t = ev.target;
           if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
           ev.preventDefault();
@@ -6928,24 +7596,187 @@
         if (to === d.fromIndex) return; // no-op
         planReorderTo(d.itemId, to, planRunRows().length - 1);
       }
+      // Frame 612:342 — the permission state, applied to the surface chrome.
+      //
+      // The rule is HIDDEN, NOT GREYED (UX-STATE-MATRIX:111 — the persona pain is literally
+      // "seeing controls they can't use"), and hidden means gone from the tab order too. So the
+      // add-item column is taken out with an INLINE display:none rather than the `hidden`
+      // attribute: in this webview a class-level `display` rule silently defeats `hidden`, and an
+      // inline rule cannot be overridden by one. Controls this file builds itself (Publish, the
+      // reorder buttons, the inspector's actions) are simply not built at all.
+      //
+      // A "View only" badge is written ONLY on an explicit can_edit === false. An absent viewer
+      // field is the host declining to report, which is not a restriction, so nothing is drawn.
+      function planSyncPermission(view) {
+        const viewOnly = planIsViewOnly(view);
+        const slot = document.getElementById("plan-viewonly-slot");
+        if (slot) {
+          slot.innerHTML = "";
+          if (viewOnly) {
+            const badge = document.createElement("span");
+            badge.className = "plan-viewonly";
+            badge.id = "plan-viewonly";
+            // Text, not colour: the badge says what it is (WCAG 1.4.1). aria-disabled is on the
+            // badge rather than on removed controls — there are no disabled controls to mark.
+            // The text IS the signal. `aria-disabled` on a <span> is inert — it marks a WIDGET
+            // unavailable, and this is a label — so it was noise pretending to be an affordance.
+            badge.textContent = "View only";
+            slot.appendChild(badge);
+            const why = document.createElement("span");
+            why.className = "plan-viewonly-why";
+            why.id = "plan-viewonly-why";
+            why.textContent = "You can follow this plan. Your role can't change it.";
+            slot.appendChild(why);
+          }
+        }
+        const palette = document.querySelector("#surface-plan .plan-palette");
+        if (palette) palette.style.display = viewOnly ? "none" : "";
+        // ...and the GRID must lose the track with it. .plan-builder-grid declares three fixed
+        // tracks (220px | 1fr | 340px); taking the first child out of flow does not remove its
+        // track, it shifts every remaining child one place left — so the run sheet landed in the
+        // 220px column and rendered "G…", "We…" beside a 792px-wide inspector and an empty third
+        // track. Invisible to the Blink gate (which asserts elements, not track widths) and
+        // found by looking at a real WKWebView render.
+        const grid = document.querySelector("#surface-plan .plan-builder-grid");
+        if (grid) grid.classList.toggle("is-viewonly", viewOnly);
+        // The header's Open in Live is a pure surface switch, so it survives view-only — but it
+        // reads as the passive thing it is, per design-QA §9 on this frame.
+        const openLive = document.getElementById("plan-open-live");
+        if (openLive) {
+          openLive.textContent = viewOnly ? "Follow in Live ▶" : "Open in Live ▶";
+          openLive.className = viewOnly ? "pm-btn-ghost" : "pm-btn-primary";
+        }
+      }
+      // The change badge, refreshed from the 1 Hz poll.
+      //
+      // WHY IT NEEDS ONE. The builder is rendered only by planActivate and by the operator's own
+      // mutations, so `publish.changed` could only ever flip because THIS operator did something
+      // — and the state the badge exists to report is the other one: a paired controller edits
+      // the plan while the builder sits open. Without this the badge is correct and almost never
+      // arrives (found in QA review; the frame's own scenario was the one it could not show).
+      //
+      // Deliberately NARROW. It re-renders the summary panel and nothing else, and only when
+      // every one of these holds: the plan surface is showing, no item is selected (with one
+      // selected the panel is the item inspector and the badge is not on screen), no dialog is
+      // open, no lifecycle command is in flight, and the publish signature has ACTUALLY changed.
+      // A poll that rebuilt the run sheet would eat in-flight clicks — the same reason render()
+      // keys its own plan rebuild on a change signature.
+      let planPublishSig = null;
+      function planSyncPublishFromPoll(view) {
+        const surf = document.getElementById("surface-plan");
+        if (!surf || !surf.classList.contains("active")) return;
+        if (!planLastView || planSelectedId !== null) return;
+        if (document.querySelector(".pm-confirm-back")) return;
+        if (planLifecycleBusy) return;
+        const pub = planPublishState(view);
+        const sig = pub ? pub.revision + "/" + pub.publishedRevision + "/" + pub.version + "/" + pub.changed : "none";
+        if (sig === planPublishSig) return;
+        planPublishSig = sig;
+        planLastView = view;
+        planClearInspector(view);
+      }
+      // Quinn — the same finding as the badge, on the other field. `planSyncPermission` runs
+      // only from `planActivate` and after this operator's own mutation, so a role DEMOTION
+      // arriving from the host left every edit control up until the operator happened to do
+      // something — and then had each of them refused.
+      //
+      // This one rebuilds the WHOLE surface rather than the chrome alone, because the per-row
+      // reorder buttons and drag handles are built by planRenderBuilder, not by
+      // planSyncPermission: syncing the chrome only would have produced a surface wearing a
+      // "View only" badge with live ↑/↓ buttons under it, which is worse than either state.
+      //
+      // A rebuild eats a click that lands in the same frame, which is why the publish poll above
+      // refuses to do one. It is the right trade HERE and only here: this fires at most once per
+      // permission change, and at that instant every control it could interrupt is one the host
+      // is about to refuse anyway.
+      let planViewerSig = null;
+      function planViewerSignature(view) {
+        const v = planViewer(view);
+        return v.role + "/" + v.canEdit;
+      }
+      function planSyncViewerFromPoll(view) {
+        const surf = document.getElementById("surface-plan");
+        if (!surf || !surf.classList.contains("active")) return;
+        if (!planLastView) return;
+        if (document.querySelector(".pm-confirm-back")) return; // a dialog owns the surface
+        if (planLifecycleBusy) return;
+        const sig = planViewerSignature(view);
+        if (planViewerSig === null) { planViewerSig = sig; return; } // first sight is a baseline, not a change
+        if (sig === planViewerSig) return;
+        planViewerSig = sig;
+        planLastView = view;
+        planRenderBuilder(view);
+      }
       function planRenderBuilder(view) {
         const list = document.getElementById("plan-b-list");
         if (!list || !view) return; // not on the plan surface
+        planLastView = view; // so a pure UI change (deselect) can re-render without a round-trip
+        {
+          // Keep the poll's signature in step with whatever was just drawn, so it never
+          // re-renders over a state identical to the one on screen.
+          const pubNow = planPublishState(view);
+          planPublishSig = pubNow
+            ? pubNow.revision + "/" + pubNow.publishedRevision + "/" + pubNow.version + "/" + pubNow.changed
+            : "none";
+          planViewerSig = planViewerSignature(view);
+        }
+        planSyncPermission(view);
+        // Header counters. The planned total belongs HERE, next to the item count, because the pair
+        // is what a reader checks against the rows (section 9: "8 items · 1:12:00" over 6 rows
+        // summing 53:12 was the MAJOR). Empty collapses to the single AC-4 string "0 items · 0:00";
+        // populated splits into "N items" + a right-aligned "planned H:MM:SS" per frame 608:925.
         const count = document.getElementById("plan-b-count");
-        if (count) count.textContent = view.items.length + " items";
+        const total = document.getElementById("plan-b-total");
+        const hdr = planSummaryOf(view);
+        const planned = hdr.planned_total_secs;
+        // The header counts the same thing the panel does — TRIGGERABLE rows, sections excluded.
+        // Using view.items.length here read "9 items" beside a summary saying "Items 6": two
+        // headline numbers describing the same run sheet and disagreeing, which is the §9 MAJOR.
+        // The empty-CTA branch still keys off whether ANY row exists, so a plan of nothing but
+        // dividers renders its dividers rather than the "add your first item" state.
+        if (view.items.length) {
+          if (count) count.textContent = hdr.items + " items";
+          if (total) total.textContent = "planned " + planFmtTotal(planned);
+        } else {
+          if (count) count.textContent = "0 items · 0:00";
+          if (total) total.textContent = "";
+        }
         list.innerHTML = "";
         if (!view.items.length) {
-          // Empty state (handoff §5, frame 611:124): a centered CTA, not a bare line. Template /
-          // Duplicate / Import need backend commands outside this API, so they are shown as honest
-          // "coming soon" affordances rather than omitted (match-the-full-shell).
+          // Empty state (handoff §5, frame 611:124): a centered CTA, not a bare line. The four
+          // designed starts — Create · Template · Duplicate · Import (WORKFLOWS B1) — are built
+          // here, each either live or disabled WITH THE REASON IT CANNOT WORK. Nothing on this
+          // frame is a no-op.
+          const canEditEmpty = planCanEdit(view);
           const empty = document.createElement("div");
           empty.className = "plan-empty";
           const eh = document.createElement("h3");
           eh.className = "plan-empty-h";
-          eh.textContent = "Build your service plan";
-          const es = document.createElement("p");
-          es.className = "plan-empty-sub";
-          es.textContent = "Add songs, scriptures, and presentations to the run sheet, then link content to each item.";
+          // The COPY follows the permission too, not just the controls. "Build your service
+          // plan · Add songs, scriptures and presentations…" is an instruction, and telling
+          // someone to do a thing their role forbids is worse than showing them the button.
+          // UX-STATE-MATRIX's own view-only heading is "No service plan yet".
+          eh.textContent = canEditEmpty ? "Build your service plan" : "No service plan yet";
+          empty.appendChild(eh);
+          if (canEditEmpty) {
+            const es = document.createElement("p");
+            es.className = "plan-empty-sub";
+            es.textContent = "Add songs, scriptures, and presentations to the run sheet, then link content to each item.";
+            empty.appendChild(es);
+          } else {
+            // View-only on an empty plan: nothing to follow and nothing this operator may
+            // create, so the frame says so. No disabled buttons here — a permission is not a
+            // "coming soon", and four controls it would then have to explain away is exactly
+            // the "seeing controls they can't use" pain this frame exists to fix.
+            const ro = document.createElement("p");
+            ro.className = "plan-empty-note";
+            ro.id = "plan-empty-viewonly";
+            ro.textContent = "There's no plan to follow yet, and your role can't create one.";
+            empty.appendChild(ro);
+            list.appendChild(empty);
+            planClearInspector(view);
+            return;
+          }
           const ec = document.createElement("button");
           ec.type = "button";
           ec.id = "plan-empty-add";
@@ -6955,18 +7786,69 @@
             const first = document.querySelector("#plan-palette-btns .plan-palette-btn");
             if (first) first.focus();
           };
-          const el8 = document.createElement("p");
-          el8.className = "plan-empty-later";
-          el8.textContent = "Start from a template · Duplicate a past plan · Import — coming soon";
-          empty.appendChild(eh);
-          empty.appendChild(es);
           empty.appendChild(ec);
-          empty.appendChild(el8);
+
+          const acts = document.createElement("div");
+          acts.className = "plan-empty-acts";
+          const templates = planTemplateList(view);
+          const lifecycle = planLifecycleAvailable(view);
+          const mk = (id, label, onclick, reasonId) => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.id = id;
+            b.className = "pm-btn-ghost plan-empty-act";
+            b.textContent = label;
+            if (onclick) b.onclick = onclick;
+            else {
+              b.disabled = true;
+              b.setAttribute("aria-describedby", reasonId);
+            }
+            acts.appendChild(b);
+            return b;
+          };
+          mk("plan-empty-new", "Create a service…", lifecycle ? () => planNewPlan(planLastView) : null, "plan-empty-later");
+          // A template picker with no templates to pick is an empty dialog, so the control is
+          // disabled when the host reports none — the same three-state rule as everything else
+          // on this surface, applied to a list rather than a flag.
+          mk(
+            "plan-empty-template",
+            "Start from a template…",
+            lifecycle && templates ? () => planTemplatePlan(planLastView) : null,
+            templates || !lifecycle ? "plan-empty-later" : "plan-empty-no-templates"
+          );
+          // DISABLED BY DESIGN, not by dependency. `duplicate_plan` copies the plan that is OPEN,
+          // which is right for "duplicate this service" (it lives in the Plan Summary) and wrong
+          // for this frame: "Duplicate previous" wants a saved-plan LIBRARY to choose a past
+          // service from, and this build persists exactly one plan row. There is no library and
+          // no ticket for one, so the control states that instead of pretending.
+          mk("plan-empty-duplicate", "Duplicate previous…", null, "plan-empty-no-library");
+          mk("plan-empty-import", "Import a run sheet…", lifecycle ? () => planImportPlan(planLastView) : null, "plan-empty-later");
+          // FR-139's portable bundle is a DIFFERENT thing from the run-sheet import above: it
+          // carries items AND their media references. No such format exists in any layer, and
+          // letting the run-sheet import stand in for it would ship an "Import" that silently
+          // drops every operator's media.
+          mk("plan-empty-bundle", "Import a plan bundle…", null, "plan-empty-no-bundle");
+          empty.appendChild(acts);
+
+          const reason = (id, text) => {
+            const p = document.createElement("p");
+            p.className = "plan-empty-later";
+            p.id = id;
+            p.textContent = text;
+            empty.appendChild(p);
+          };
+          if (!lifecycle) reason("plan-empty-later", PLAN_NO_LIFECYCLE_REASON);
+          else if (!templates) reason("plan-empty-no-templates", "This host reported no usable starter templates.");
+          reason("plan-empty-no-library", "Duplicating a past service needs a saved-plan library. This build keeps one plan at a time.");
+          reason("plan-empty-no-bundle", "A plan bundle carries items and their media together. That file format doesn't exist yet — paste a run sheet instead.");
           list.appendChild(empty);
-          planClearInspector();
+          planClearInspector(view);
           return;
         }
         const last = view.items.length - 1;
+        // Asked ONCE for the whole run sheet, from the host's own verdict. Every reorder
+        // affordance below consumes THIS value; none of them re-reads the role.
+        const canEdit = planCanEdit(view);
         view.items.forEach((it, i) => {
           const row = document.createElement("div");
           row.className =
@@ -6993,45 +7875,87 @@
           if (it.link) main.appendChild(planLinkChip(it.link));
           // Drag handle (pointer reorder). aria-hidden — keyboard users reorder via Alt+↑/↓ (below),
           // so the glyph handle is a pointer affordance only and stays out of the tab order / AT tree.
-          const handle = document.createElement("span");
-          handle.className = "plan-b-handle";
-          handle.textContent = "⠿";
-          handle.setAttribute("aria-hidden", "true");
-          handle.title = "Drag to reorder";
-          handle.onpointerdown = (e) => planStartRowDrag(e, it.id, i, row);
-          handle.onclick = (e) => e.stopPropagation(); // a handle interaction must not select the row
-          row.appendChild(handle);
+          // Reordering is an EDIT, so view-only omits the handle rather than leaving a grab
+          // affordance that does nothing when grabbed.
+          if (canEdit) {
+            const handle = document.createElement("span");
+            handle.className = "plan-b-handle";
+            handle.textContent = "⠿";
+            handle.setAttribute("aria-hidden", "true");
+            handle.title = "Drag to reorder";
+            handle.onpointerdown = (e) => planStartRowDrag(e, it.id, i, row);
+            handle.onclick = (e) => e.stopPropagation(); // a handle interaction must not select the row
+            row.appendChild(handle);
+          }
+          // Per-type accent bar (handoff §3). Purely a scanning cue — the type BADGE inside .main
+          // carries the same information as text, so this is aria-hidden and never the only signal.
+          const accent = document.createElement("span");
+          accent.className = "plan-b-accent kind-" + it.kind;
+          accent.setAttribute("aria-hidden", "true");
+          row.appendChild(accent);
           row.appendChild(main);
           const tools = document.createElement("span");
           tools.className = "plan-b-tools";
-          const up = miniBtn(
-            "↑",
-            (e) => {
-              e.stopPropagation();
-              if (i > 0) {
-                planFocusAfterRender = { kind: "up", id: it.id };
-                planMutate(() => invoke("move_item", { itemId: it.id, to: i - 1 }));
-              }
-            },
-            "Move “" + it.title + "” up"
-          );
-          up.className = "plan-b-up";
-          up.disabled = i === 0;
-          const down = miniBtn(
-            "↓",
-            (e) => {
-              e.stopPropagation();
-              if (i < last) {
-                planFocusAfterRender = { kind: "down", id: it.id };
-                planMutate(() => invoke("move_item", { itemId: it.id, to: i + 1 }));
-              }
-            },
-            "Move “" + it.title + "” down"
-          );
-          down.className = "plan-b-down";
-          down.disabled = i === last;
-          tools.appendChild(up);
-          tools.appendChild(down);
+          let up = null;
+          let down = null;
+          if (canEdit) {
+            up = miniBtn(
+              "↑",
+              (e) => {
+                e.stopPropagation();
+                if (i > 0) {
+                  planFocusAfterRender = { kind: "up", id: it.id };
+                  planMutate(() => invoke("move_item", { itemId: it.id, to: i - 1 }));
+                }
+              },
+              "Move “" + it.title + "” up"
+            );
+            up.className = "plan-b-up";
+            up.disabled = i === 0;
+            down = miniBtn(
+              "↓",
+              (e) => {
+                e.stopPropagation();
+                if (i < last) {
+                  planFocusAfterRender = { kind: "down", id: it.id };
+                  planMutate(() => invoke("move_item", { itemId: it.id, to: i + 1 }));
+                }
+              },
+              "Move “" + it.title + "” down"
+            );
+            down.className = "plan-b-down";
+            down.disabled = i === last;
+          }
+          // Owner + planned duration (handoff §3, FR-004). Both have been on PlanItemView all
+          // along and were dropped on the floor here. Absent = unassigned / unplanned, so the
+          // element is omitted rather than padded with a placeholder dash that reads as data.
+          const meta = document.createElement("span");
+          meta.className = "plan-b-meta";
+          if (it.owner) {
+            const own = document.createElement("span");
+            own.className = "plan-b-owner";
+            own.appendChild(srOnly("Owner: "));
+            own.appendChild(document.createTextNode(it.owner));
+            meta.appendChild(own);
+          }
+          // Unset = the element is OMITTED (86ak846ft AC-1: "without a gap or placeholder text").
+          // UI-A1 FR-202 asks for a "—" placeholder instead; the two acceptance criteria conflict
+          // and DECISION 86ak84cth owns it. Current behaviour stands until that lands.
+          // aria-label carries the SPOKEN form (UI-A1 §211) — "five colon zero zero" is not useful.
+          // A section is inert: its duration is excluded from the plan total, so rendering one on
+          // the row would put a number in the column that the header total does not include.
+          if (planHasDuration(it) && it.kind !== "section") {
+            const dur = document.createElement("span");
+            dur.className = "plan-b-dur";
+            dur.textContent = planFmtDuration(it.planned_secs);
+            dur.setAttribute("aria-label", "Planned " + planSpokenDuration(it.planned_secs));
+            meta.appendChild(dur);
+          }
+          if (meta.childElementCount) row.appendChild(meta);
+          if (up && down) {
+            tools.appendChild(up);
+            tools.appendChild(down);
+          }
           row.appendChild(tools);
           if (it.is_live) row.appendChild(badge("live", "LIVE"));
           else if (it.is_staged) row.appendChild(badge("preview", "PREVIEW"));
@@ -7048,7 +7972,9 @@
               return;
             }
             // Alt+↑/↓ reorders the row (NFR-019 keyboard reorder); focus follows the moved row.
-            if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+            // Gated on the same verdict as the buttons: hiding the buttons while leaving the
+            // keyboard path live would make the restriction a lie for keyboard users only.
+            if (canEdit && e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
               e.preventDefault();
               planReorderTo(it.id, i + (e.key === "ArrowUp" ? -1 : 1), last);
             }
@@ -7067,14 +7993,604 @@
           }
         }
         const sel = view.items.find((x) => x.id === planSelectedId);
-        if (sel) planRenderInspector(sel);
-        else planClearInspector();
+        if (sel) planRenderInspector(sel, view);
+        else planClearInspector(view);
       }
-      function planClearInspector() {
+      // Right panel with NOTHING selected = Plan Summary (frame 608:875). Selecting an item swaps
+      // it for the item inspector; the heading swaps with it so the panel always says which one
+      // this is.
+      // The right panel swaps its ENTIRE subtree between PLAN SUMMARY and ITEM, so keyboard focus
+      // inside it would fall to <body> (WCAG 2.4.3). If the operator was focused in there, move
+      // focus to the panel itself — it is aria-labelledby the heading, so AT announces which panel
+      // they have landed in rather than going silent.
+      function planKeepPanelFocus(box, rebuild) {
+        const hadFocus = !!(box && box.contains(document.activeElement));
+        rebuild();
+        if (!hadFocus) return;
+        const panel = document.getElementById("plan-insp-panel");
+        if (panel && panel.focus) panel.focus();
+      }
+      // While the plan is loading — or after it failed to open — the right panel must NOT keep
+      // reporting the previous plan's figures beside a run sheet that says otherwise. Stale numbers
+      // next to "Couldn't open the plan" are worse than no numbers.
+      function planBlankSummary(msg) {
         const box = document.getElementById("plan-b-insp");
-        if (box)
-          box.innerHTML =
-            '<p class="coming-soon">Select an item to edit it and link its scripture or presentation.</p>';
+        if (!box) return;
+        planSetInspHeading("PLAN SUMMARY");
+        box.innerHTML = "";
+        const p = document.createElement("p");
+        p.className = "plan-sum-blank";
+        p.setAttribute("role", "status");
+        p.textContent = msg;
+        box.appendChild(p);
+      }
+      function planSetInspHeading(text) {
+        const h = document.getElementById("plan-insp-h");
+        if (h) h.textContent = text;
+      }
+      function planSumRow(label, value, opts) {
+        const row = document.createElement("div");
+        row.className = "plan-sum-row" + ((opts && opts.cls) ? " " + opts.cls : "");
+        const l = document.createElement("span");
+        l.className = "plan-sum-label";
+        l.textContent = label;
+        const v = document.createElement("span");
+        v.className = "plan-sum-value";
+        v.textContent = value;
+        row.appendChild(l);
+        row.appendChild(v);
+        return row;
+      }
+      // =======================================================================================
+      // PLAN LIFECYCLE — the send sites. One place per command, each reachable from exactly one
+      // control, each refusing to run twice and each reporting what the host actually said.
+      // =======================================================================================
+
+      // One lifecycle command in flight at a time. These commands REPLACE the plan; two of them
+      // racing would leave the operator looking at whichever view came back last with no way to
+      // tell which one they got.
+      let planLifecycleBusy = false;
+
+      // The plan surface's own feedback strip. The presentation surface's #pm-toast lives inside
+      // that surface's subtree, so it is not visible from here — this is the plan surface's
+      // equivalent, and it is REBUILT rather than re-texted on each call: a live region whose
+      // role changes between status and alert does not reliably re-announce, and "Published"
+      // arriving in the element that last said "Couldn't publish" is worth announcing.
+      function planNotice(kind, message) {
+        const slot = document.getElementById("plan-notice");
+        if (!slot) return;
+        slot.innerHTML = "";
+        if (!message) return;
+        const p = document.createElement("p");
+        p.className = "plan-notice plan-notice-" + kind;
+        p.setAttribute("role", kind === "alert" ? "alert" : "status");
+        p.textContent = message;
+        slot.appendChild(p);
+      }
+
+      // Run one lifecycle command and re-render from the view it returns.
+      //
+      // On failure the HOST'S OWN MESSAGE is shown. The five commands answer a bad name with
+      // Denied{bad_request}, and the operator needs to see which rule they broke — a generic
+      // "something went wrong" here would turn a fixable typo into an unexplained dead button.
+      // The selection is dropped first because every one of these commands can replace the whole
+      // run sheet: keeping a stale id would re-open an inspector onto an item that no longer
+      // exists.
+      // `replacesPlan` is spelled out at every call site rather than defaulted, because FOUR of
+      // the five commands replace the run sheet and ONE does not — and the one that does not is
+      // the one a shared loop silently gets wrong. `publish_plan` moves a marker; the plan, its
+      // item ids and the operator's selection all survive it, so clearing the selection there
+      // would throw them back to the Plan Summary for no reason they could name. The other four
+      // mint new ids, and keeping a stale one would re-open an inspector onto an item that no
+      // longer exists.
+      async function planLifecycleRun(what, replacesPlan, fn) {
+        if (planLifecycleBusy) {
+          // The panel's whole principle is that a control never looks live and silently does
+          // nothing. In this window five of them did — the second press was discarded with no
+          // notice, no error and nothing in the live region.
+          planNotice("status", "Still finishing the last change. Try again in a moment.");
+          return false;
+        }
+        planLifecycleBusy = true;
+        try {
+          const v = await fn();
+          if (!v || !Array.isArray(v.items)) throw new Error("the host did not return a plan");
+          if (replacesPlan) {
+            planSelectedId = null;
+            planFocusAfterRender = null;
+          }
+          planRenderBuilder(v);
+          return true;
+        } catch (e) {
+          console.error(e);
+          // A Tauri command declared `Result<_, String>` rejects with the bare STRING, not an
+          // Error, so both shapes are unwrapped. The host's own words are what make a refused
+          // name fixable.
+          const detail = e && e.message ? e.message : typeof e === "string" ? e : "";
+          planNotice("alert", "Couldn't " + what + (detail ? " — " + detail : "") + ".");
+          return false;
+        } finally {
+          planLifecycleBusy = false;
+        }
+      }
+
+      // --- publish_plan (frame 608:875, FR-006) ---------------------------------------------
+      //
+      // COPY NOTE. The shipped button reads "Publish to team", but SERVICE-PLAN-2.0-HANDOFF.md:105
+      // describes publish as a purely LOCAL builder-to-console hand-off, which is also FR-006's
+      // actual acceptance criterion ("operator opens identical ordered plan"). That conflict is
+      // the owner's to settle, so the designed label is left exactly as it is and every sentence
+      // written HERE is network-neutral: nothing below claims the plan was sent anywhere.
+      function planPublish(view) {
+        const pub = planPublishState(view);
+        // The same send-site guard the other four make. Unreachable today — view-only never
+        // renders this button — but an asymmetric guard across five sibling send sites is the
+        // shape a real hole hides in, and the cost of closing it is one clause.
+        if (!pub || !planCanEdit(view)) return;
+        planLifecycleRun("publish this plan", false, () => invoke("publish_plan")).then((ok) => {
+          if (ok) planNotice("status", "Plan published. The Live Console opens this run sheet for the service.");
+        });
+      }
+
+      // --- new_plan --------------------------------------------------------------------------
+      function planNewPlan(view) {
+        if (!planLifecycleAvailable(view) || !planCanEdit(view)) return;
+        pmPrompt({
+          title: "Create a service",
+          describe: "Starts an empty run sheet under this name. The plan currently open is replaced.",
+          label: "Service name",
+          value: "",
+          confirmLabel: "Create",
+          validate: planNameProblem,
+          onConfirm: (name) => {
+            planLifecycleRun("create the service", true, () => invoke("new_plan", { name: name.trim() })).then((ok) => {
+              if (ok) planNotice("status", "New service created. Add your first item to build the run sheet.");
+            });
+          },
+        });
+      }
+
+      // --- template_plan ---------------------------------------------------------------------
+      //
+      // The list comes from the HOST (`plan_templates`). The picker never invents an id the host
+      // cannot build from, and it reports each template's SIZE, which is the only thing about a
+      // template's contents that crosses the wire.
+      //
+      // The NAME FIELD IS NOT OPTIONAL CHROME. `TemplatePlan { template, name }` requires a
+      // valid non-blank name and the host does nothing to default it — a template's own name is
+      // display text, not a fallback — so a picker that only chose a template would be refused
+      // with Denied{bad_request} every time. It is seeded from the chosen template so the
+      // obvious gesture still works in one keystroke (UX-FLOWS Flow 1 step 1: pick a template,
+      // set the name).
+      function planTemplatePlan(view) {
+        const templates = planTemplateList(view);
+        if (!templates || !planLifecycleAvailable(view) || !planCanEdit(view)) return;
+        let chosen = templates[0];
+        let nameInput = null;
+        pmPrompt({
+          title: "Start from a template",
+          describe: "Creates a run sheet with the template's items already in order. Rename them, then link content to each one.",
+          label: "Service name",
+          value: templates[0].name,
+          confirmLabel: "Create",
+          body: (extra, input) => {
+            nameInput = input;
+            input.oninput = () => { input.dataset.touched = "1"; };
+            const group = document.createElement("div");
+            group.className = "plan-tpl-list";
+            group.setAttribute("role", "radiogroup");
+            group.setAttribute("aria-label", "Template");
+            templates.forEach((t, i) => {
+              const id = "plan-tpl-" + i;
+              const row = document.createElement("label");
+              row.className = "plan-tpl-row";
+              row.htmlFor = id;
+              const r = document.createElement("input");
+              r.type = "radio";
+              r.name = "plan-template";
+              r.id = id;
+              r.value = t.id;
+              r.checked = i === 0;
+              r.onchange = () => {
+                chosen = t;
+                // Follow the chosen template's name unless the operator has typed their own.
+                // Overwriting a typed name would silently discard what they meant to call it.
+                if (nameInput && !nameInput.dataset.touched) nameInput.value = t.name;
+              };
+              const txt = document.createElement("span");
+              txt.className = "plan-tpl-txt";
+              const nm = document.createElement("span");
+              nm.className = "plan-tpl-name";
+              nm.textContent = t.name;
+              const ct = document.createElement("span");
+              ct.className = "plan-tpl-count";
+              // `items` is a COUNT reported by the host, never a list rendered from the client.
+              ct.textContent = t.items + (t.items === 1 ? " item" : " items");
+              txt.appendChild(nm);
+              txt.appendChild(ct);
+              row.appendChild(r);
+              row.appendChild(txt);
+              group.appendChild(row);
+            });
+            extra.appendChild(group);
+          },
+          validate: (v) => planNameProblem(v),
+          onConfirm: (name) => {
+            planLifecycleRun("start from that template", true, () =>
+              invoke("template_plan", { template: chosen.id, name: name.trim() })
+            ).then((ok) => {
+              if (ok) planNotice("status", "Service created from “" + chosen.name + "”. Rename the items and link content to each one.");
+            });
+          },
+        });
+      }
+
+      // --- duplicate_plan (FR-005) ------------------------------------------------------------
+      //
+      // Copies the plan that is OPEN, under a new name. That is "duplicate this service", and it
+      // is why this control lives beside the open plan's summary rather than in the empty state:
+      // the empty state's designed "Duplicate previous" wants a saved-plan LIBRARY to pick from,
+      // and this build persists exactly one plan row. See the empty state for that affordance.
+      function planDuplicatePlan(view) {
+        if (!planLifecycleAvailable(view) || !planCanEdit(view)) return;
+        const base = view && typeof view.plan_name === "string" ? view.plan_name : "";
+        pmPrompt({
+          title: "Duplicate this service",
+          describe: "Copies the current run sheet under a new name. The copy is independent — editing it never changes the original.",
+          label: "New name",
+          // A DISTINCT default, deliberately. Duplicating under the CURRENT name is accepted by
+          // the host as a true no-op — it Acks and nothing changes — so an operator who presses
+          // Enter on a prefilled unchanged name would be told "Service duplicated" over a plan
+          // that had not moved. Prefilling "… (copy)" means the obvious gesture does the
+          // obvious thing, and the validator below covers the case where they type it back.
+          value: base ? base + " (copy)" : "",
+          confirmLabel: "Duplicate",
+          // A duplicate REPLACES the open run sheet with the copy, and it can be pressed
+          // mid-service. The audience is unaffected — the host carries the live slide across a
+          // plan swap — but an operator about to do this while something is on air deserves to
+          // be told which of those two things is true, rather than discovering it. Stated, not
+          // blocked: duplicating a service that is running is a legitimate thing to want.
+          warning: planLiveItemTitle(view)
+            ? "“" + planLiveItemTitle(view) + "” is LIVE. The copy replaces the run sheet you are editing; the audience output is unaffected."
+            : null,
+          validate: (v) => {
+            const why = planNameProblem(v);
+            if (why) return why;
+            // Refused HERE rather than sent. The host would accept it and do nothing, and this
+            // client cannot honestly report that outcome: "duplicated" would be false and
+            // silence would look like a broken button. Compared trimmed, because that is the
+            // form the host compares.
+            if (base && v.trim() === base.trim()) {
+              return "That is the current name. Give the copy a different one.";
+            }
+            return null;
+          },
+          onConfirm: (name) => {
+            planLifecycleRun("duplicate this service", true, () => invoke("duplicate_plan", { name: name.trim() })).then((ok) => {
+              if (ok) planNotice("status", "Service duplicated. You are now editing the copy.");
+            });
+          },
+        });
+      }
+
+      // --- import_plan -------------------------------------------------------------------------
+      //
+      // A RUN-SHEET ITEM LIST, and nothing more. `import_plan` carries kind + title (+ optional
+      // owner and duration) per item; CONTENT LINKS are set afterwards with the existing
+      // SetItemContent, so there is deliberately no link handling on this path.
+      //
+      // This is NOT FR-139. That requirement wants a portable bundle carrying items AND their
+      // media references; no such format exists in any layer, and the empty state offers it as a
+      // named, disabled affordance with that reason rather than letting this dialog stand in for
+      // it. Conflating the two would ship an "Import" that silently loses every operator's media.
+      //
+      // WHY EACH LINE MUST NAME ITS TYPE. The obvious kindness — treat a bare line as some
+      // default type — is the wrong one. Every default is wrong for most lines (a plan of
+      // announcements triggers nothing an operator wants; a plan of sections triggers nothing at
+      // all, because a section is inert), and a mis-typed item is silent: it looks imported and
+      // behaves wrongly on service day. An unrecognised line is reported by line number instead,
+      // with the accepted types listed in the dialog.
+      const PLAN_IMPORT_EXAMPLE = "Announcement: Welcome\nSong: Great Are You Lord\nScripture: Romans 8:28\nSection: Sermon\nSong: Closing Song";
+
+      // Parse pasted text into wire items. Returns { items, problems } — problems are stated per
+      // LINE so the operator can fix the paste rather than re-reading the whole thing.
+      //
+      // Kinds are matched against PLAN_ADD_KINDS, which is the same table the Add-item palette
+      // renders from and is the wire tag set. Both the display label ("Presentation") and the
+      // wire tag ("slide_group") are accepted, because the operator is reading labels on screen
+      // while the wire carries tags.
+      // Bounded in BOTH accumulators and in work done. The loop used to run to the end of the
+      // paste and only then compare `items.length` to the cap, so the exact count in the error
+      // message ("this paste has 1000000") was itself proof that the whole intermediate had been
+      // built — and `validate` re-runs the parse on every submit attempt. Stopping at the cap
+      // makes the cost a function of the CAP rather than of the clipboard, and "more than 500"
+      // is all the operator needs to know. `problems` is bounded for the same reason: only the
+      // first is ever shown.
+      const PLAN_IMPORT_MAX_PROBLEMS = 20;
+      function planParseRunSheet(text) {
+        const items = [];
+        const problems = [];
+        const note = (msg) => { if (problems.length < PLAN_IMPORT_MAX_PROBLEMS) problems.push(msg); };
+        const lines = String(text == null ? "" : text).split(/\r\n|\r|\n/);
+        for (let i = 0; i < lines.length; i++) {
+          if (items.length > PLAN_MAX_ITEMS) break; // one past the cap is enough to refuse it
+          const raw = lines[i];
+          if (!raw.trim()) continue; // blank lines are spacing in a pasted order of service
+          const at = raw.indexOf(":");
+          const label = at < 0 ? "" : raw.slice(0, at).trim().toLowerCase();
+          const match = at < 0 ? null : PLAN_ADD_KINDS.find((k) => k[0] === label || k[1].toLowerCase() === label);
+          if (!match) {
+            note("Line " + (i + 1) + ": start the line with a type, for example “Song: " + raw.trim().slice(0, 40) + "”.");
+            continue;
+          }
+          const title = raw.slice(at + 1).trim();
+          // Item titles cross the same untrusted boundary as the plan name and the host applies
+          // the same rule to them, so they are checked by the same function — not by a second,
+          // looser copy of it written for this path.
+          const why = planNameProblem(title);
+          if (why) {
+            note("Line " + (i + 1) + ": " + why.charAt(0).toLowerCase() + why.slice(1));
+            continue;
+          }
+          items.push({ kind: match[0], title: title });
+        }
+        if (items.length > PLAN_MAX_ITEMS) {
+          problems.push("A plan holds at most " + PLAN_MAX_ITEMS + " items; this paste has more.");
+        }
+        return { items: items, problems: problems };
+      }
+
+      function planImportPlan(view) {
+        if (!planLifecycleAvailable(view) || !planCanEdit(view)) return;
+        let area = null;
+        pmPrompt({
+          title: "Import a run sheet",
+          describe: "Paste one item per line, each starting with its type. Owners, durations and content links are set afterwards in the item inspector.",
+          label: "Service name",
+          value: "",
+          confirmLabel: "Import",
+          body: (extra) => {
+            const lab = document.createElement("label");
+            lab.className = "pm-insp-lbl";
+            lab.htmlFor = "plan-import-text";
+            lab.textContent = "Run sheet";
+            area = document.createElement("textarea");
+            area.id = "plan-import-text";
+            area.className = "pm-insp-ctrl plan-import-text";
+            area.rows = 8;
+            area.placeholder = PLAN_IMPORT_EXAMPLE;
+            area.setAttribute("aria-describedby", "plan-import-kinds");
+            const kinds = document.createElement("p");
+            kinds.id = "plan-import-kinds";
+            kinds.className = "plan-import-kinds";
+            kinds.textContent = "Types: " + PLAN_ADD_KINDS.map((k) => k[1]).join(" · ");
+            extra.appendChild(lab);
+            extra.appendChild(area);
+            extra.appendChild(kinds);
+          },
+          validate: (v) => {
+            const why = planNameProblem(v);
+            if (why) return why; // the NAME is at fault, so the name field is marked
+            // ...and everything below is a RUN-SHEET fault, so it is reported against the
+            // textarea. Blaming the name field for a bad paste marks a valid name invalid and
+            // moves focus away from the control the operator has to fix.
+            const parsed = planParseRunSheet(area ? area.value : "");
+            if (parsed.problems.length) return { message: parsed.problems[0], field: area };
+            if (!parsed.items.length)
+              return { message: "Paste at least one item, for example “Song: Great Are You Lord”.", field: area };
+            return null;
+          },
+          onConfirm: (name) => {
+            const parsed = planParseRunSheet(area ? area.value : "");
+            planLifecycleRun("import that run sheet", true, () =>
+              invoke("import_plan", { name: name.trim(), items: parsed.items })
+            ).then((ok) => {
+              if (ok)
+                planNotice(
+                  "status",
+                  "Imported " + parsed.items.length + (parsed.items.length === 1 ? " item" : " items") +
+                    ". Link content to each one to finish the plan."
+                );
+            });
+          },
+        });
+      }
+
+      // A control that cannot work yet: present, disabled, and pointing at the REASON. Never
+      // hidden (an operator looking for Publish must be able to find it and learn when it
+      // arrives) and never wired to a no-op (a control that looks live and silently does nothing
+      // is worse than one that says it is not ready).
+      function planDisabledAction(id, label, reasonId) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "pm-btn-ghost plan-sum-btn";
+        b.id = id;
+        b.textContent = label;
+        b.disabled = true;
+        b.setAttribute("aria-describedby", reasonId);
+        return b;
+      }
+      function planReasonNote(id, text, cls) {
+        const p = document.createElement("p");
+        p.className = cls || "plan-sum-later";
+        p.id = id;
+        p.textContent = text;
+        return p;
+      }
+
+      // ---------------------------------------------------------------------------------------
+      // SEAM — the Plan Summary's WRITE actions (86ak8467m owns these; 86ak846ft owns the panel).
+      // Frame 608:875 draws three: Run pre-service check, Publish to team, Open in Live. Only
+      // "Open in Live" is a pure surface switch and works today; the other two need the plan
+      // lifecycle backend (86ajy0hwg) that does not exist yet.
+      //
+      // They ship DISABLED with a stated reason rather than hidden — an operator looking for
+      // Publish should find it and learn when it arrives — and never wired to a no-op, because a
+      // control that looks live and silently does nothing is worse than one that says it is not
+      // ready. 86ak8467m enables them HERE, in this function, and must not rebuild the panel.
+      //
+      // 86ak8467m: Publish and Duplicate are now live WHEN THE HOST REPORTS THE CAPABILITY, and
+      // the panel carries the plan's publication state and the frame-612:1020 change badge. The
+      // pre-service check stays disabled — no command in this contract performs one.
+      // ---------------------------------------------------------------------------------------
+      function planSummaryActions(box, view) {
+        const canEdit = planCanEdit(view);
+        const pub = planPublishState(view);
+        const lifecycle = planLifecycleAvailable(view);
+
+        // --- Publication state + the change badge (frame 612:1020) ---------------------------
+        // Rendered only when the host REPORTS `publish`. With the field absent nothing may be
+        // said about publication at all: no version, no draft label, and above all no badge.
+        if (pub) {
+          const state = document.createElement("div");
+          state.className = "plan-pub" + (pub.changed ? " is-changed" : pub.published ? " is-published" : "");
+          const line = document.createElement("p");
+          line.className = "plan-pub-line";
+          line.id = "plan-pub-line";
+          // THE BADGE IS TESTED FIRST, and it consumes `pub.changed` — the one expression in
+          // which "published AND edited since" is defined (planPublishState). It deliberately
+          // does NOT re-derive `!pub.published` here.
+          //
+          // That ordering is load-bearing, and this is the second attempt at it. The first wrote
+          // `if (!pub.published) … else if (pub.changed)`, which reads identically and is not: it
+          // re-assembles the conjunction beside the code under test, so deleting `published &&`
+          // from planPublishState left the suite completely green (the mutation battery caught
+          // it; CLAUDE.md's 86ak643rc trap, exactly). With the badge consuming the predicate
+          // directly, breaking the predicate breaks the badge — which is the only way this rule
+          // is actually guarded.
+          if (pub.changed) {
+            const b = document.createElement("span");
+            b.className = "plan-pub-badge";
+            b.id = "plan-pub-changed";
+            b.textContent = "⟳ Plan updated";
+            state.appendChild(b);
+            line.textContent = "Edited since version " + pub.version + " was published.";
+          } else if (pub.published) {
+            line.textContent = "Published · version " + pub.version;
+          } else {
+            line.textContent = "Draft · not published yet";
+          }
+          state.appendChild(line);
+          box.appendChild(state);
+        }
+
+        // --- Pre-service check: still not built, still honest --------------------------------
+        const preNote = planReasonNote(
+          "plan-sum-precheck-later",
+          "The pre-service check isn't built yet."
+        );
+        const pre = planDisabledAction("plan-sum-precheck", "✓ Run pre-service check", "plan-sum-precheck-later");
+        box.appendChild(pre);
+        box.appendChild(preNote);
+
+        // --- Publish (frame 608:875, FR-006) -------------------------------------------------
+        // View-only HIDES it (UX-STATE-MATRIX:111 — hidden, not greyed, so it also leaves the
+        // tab order). Reported-but-unavailable DISABLES it with the reason.
+        if (canEdit) {
+          if (lifecycle && pub) {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "pm-btn-ghost plan-sum-btn";
+            b.id = "plan-sum-publish";
+            // The DESIGNED label, left exactly as drawn. Whether it should keep network-implying
+            // wording for a local hand-off is an open owner question (see planPublish).
+            b.textContent = "↑ Publish to team";
+            b.setAttribute(
+              "aria-describedby",
+              pub.changed ? "plan-pub-line" : "plan-sum-publish-hint"
+            );
+            b.onclick = () => planPublish(planLastView);
+            box.appendChild(b);
+            if (!pub.changed) {
+              box.appendChild(
+                planReasonNote(
+                  "plan-sum-publish-hint",
+                  pub.published
+                    ? "Publishing again hands the current run sheet to the Live Console."
+                    : "Publishing hands this run sheet to the Live Console for the service.",
+                  "plan-sum-hintline"
+                )
+              );
+            }
+            const dup = document.createElement("button");
+            dup.type = "button";
+            dup.className = "pm-btn-ghost plan-sum-btn";
+            dup.id = "plan-sum-duplicate";
+            dup.textContent = "⧉ Duplicate this service";
+            dup.onclick = () => planDuplicatePlan(planLastView);
+            box.appendChild(dup);
+          } else {
+            box.appendChild(planDisabledAction("plan-sum-publish", "↑ Publish to team", "plan-sum-later"));
+            box.appendChild(planDisabledAction("plan-sum-duplicate", "⧉ Duplicate this service", "plan-sum-later"));
+            box.appendChild(planReasonNote("plan-sum-later", PLAN_NO_LIFECYCLE_REASON));
+          }
+        }
+
+        // --- Open in Live: a pure surface switch, never a go-live ----------------------------
+        // Design-QA §9 rejected an enabled write-looking action on the view-only frame, so in
+        // view-only this reads as the passive thing it actually is. It still NAVIGATES: watching
+        // the console is exactly what a view-only operator is there to do, and taking that away
+        // would remove a capability the permission never restricted.
+        const live = document.createElement("button");
+        live.type = "button";
+        live.className = (canEdit ? "pm-btn-primary" : "pm-btn-ghost") + " plan-sum-btn";
+        live.id = "plan-sum-live";
+        live.textContent = canEdit ? "▶ Open in Live" : "▶ Follow in Live";
+        live.onclick = () => showSurface("console");
+        box.appendChild(live);
+      }
+      function planClearInspector(view) {
+        const box = document.getElementById("plan-b-insp");
+        if (!box) return;
+        planKeepPanelFocus(box, () => planRenderSummaryInto(box, view));
+      }
+      function planRenderSummaryInto(box, view) {
+        planSetInspHeading("PLAN SUMMARY");
+        box.innerHTML = "";
+        const sum = planSummaryOf(view);
+        const card = document.createElement("div");
+        card.className = "plan-sum-card";
+        // `partial` is read from the host summary, never computed here. It needs `planned_items`
+        // alongside it: ZERO is a legitimate duration meaning "instant" (spec §4.1), so a total of
+        // 0 does not imply nothing is set. With nothing planned at all the figure is meaningless
+        // and reads "—"; with something planned it is a real but incomplete sum.
+        const partial = sum.partial === true;
+        const nothingPlanned = partial && sum.planned_items === 0;
+        const totalText = (nothingPlanned ? "—" : planFmtTotal(sum.planned_total_secs)) + (partial ? " · partial" : "");
+        const totalRow = planSumRow("Total time", totalText, { cls: "plan-sum-total" + (partial ? " is-partial" : "") });
+        totalRow.querySelector(".plan-sum-value").setAttribute(
+          "aria-label",
+          (nothingPlanned ? "Total unknown" : "Total " + planSpokenDuration(sum.planned_total_secs)) +
+            (partial ? ", partial — some items have no duration set" : "")
+        );
+        card.appendChild(totalRow);
+        card.appendChild(planSumRow("Items", String(sum.items)));
+        card.appendChild(planSumRow("Songs", String(sum.songs)));
+        card.appendChild(planSumRow("Scripture", String(sum.scripture)));
+        card.appendChild(planSumRow("Presentations", String(sum.presentations)));
+        card.appendChild(planSumRow("Media", String(sum.media)));
+        card.appendChild(planSumRow("Announcements", String(sum.announcements)));
+        // Timers and Sections are rendered too, so the per-kind rows ALWAYS sum to Items. Omitting
+        // them (the demo plan in the frame has none) leaves a reader doing arithmetic that does not
+        // add up — the same class of defect design-QA §9 rejected these frames for.
+        card.appendChild(planSumRow("Timers", String(sum.timers)));
+        // No Sections row: frame 608:875 has none, and `items` excludes sections, so a Sections
+        // line here would make the per-kind rows stop summing to Items — the exact "figures that
+        // do not add up" defect. The count is still carried on the summary object for other uses.
+        // Missing content carries a ⚠ in the TEXT when non-zero, not just a colour — the count is
+        // the one figure here that means "something is broken" (WCAG 1.4.1).
+        card.appendChild(
+          planSumRow("Missing content", sum.missing ? "⚠ " + sum.missing : "0", sum.missing ? { cls: "plan-sum-warn" } : null)
+        );
+        card.appendChild(planSumRow("Assigned", sum.assigned + " / " + sum.items));
+        box.appendChild(card);
+
+        planSummaryActions(box, view);
+
+        const note = document.createElement("p");
+        note.className = "plan-sum-hint";
+        note.textContent = "Select an item to edit it and link its scripture or presentation.";
+        box.appendChild(note);
       }
       // A richer linked-deck card for the inspector (frame 608:124): name + slide count, resolved
       // from the loaded deck list; a deleted deck renders the missing treatment.
@@ -7082,14 +8598,18 @@
         const card = document.createElement("div");
         card.className = "plan-deck-card";
         const name = planDeckName(link.id);
-        if (planDecks && !name) {
+        if (planLinkState(link) === "missing") {
           card.classList.add("missing");
           const w = document.createElement("div");
           w.className = "plan-deck-card-name link-missing";
-          w.textContent = "⚠ presentation missing";
+          // The last known good name, captured when the link was made. The deck's library row
+          // is gone, so this is the only thing that can still say WHICH presentation vanished.
+          w.textContent = link.label ? "⚠ “" + link.label + "” is missing" : "⚠ presentation missing";
           const m = document.createElement("div");
           m.className = "plan-deck-card-meta";
-          m.textContent = "The linked deck was deleted from the library — relink it.";
+          m.textContent = link.label
+            ? "“" + link.label + "” was deleted from the library. Relink a deck or remove this item."
+            : "The linked deck was deleted from the library — relink it.";
           card.appendChild(w);
           card.appendChild(m);
           return card;
@@ -7105,9 +8625,18 @@
         card.appendChild(meta);
         return card;
       }
-      function planRenderInspector(it) {
+      function planRenderInspector(it, view) {
         const box = document.getElementById("plan-b-insp");
         if (!box) return;
+        planKeepPanelFocus(box, () => planRenderInspectorInto(box, it, view));
+      }
+      // The item inspector. Frame 612:342 calls for a READ-ONLY inspector under view-only: the
+      // item's facts still read, every control that would change them is absent. `view` may be
+      // undefined for a caller that has none, and planCanEdit answers "yes" to that — an absent
+      // verdict is not a restriction.
+      function planRenderInspectorInto(box, it, view) {
+        const canEdit = planCanEdit(view);
+        planSetInspHeading("ITEM");
         box.innerHTML = "";
         const kindRow = document.createElement("div");
         kindRow.className = "plan-insp-kind";
@@ -7119,24 +8648,34 @@
         const tl = document.createElement("label");
         tl.className = "pm-insp-lbl";
         tl.textContent = "Title";
-        tl.htmlFor = "plan-insp-title";
-        const ti = document.createElement("input");
-        ti.className = "pm-insp-ctrl";
-        ti.id = "plan-insp-title";
-        ti.type = "text";
-        ti.value = it.title;
-        ti.setAttribute("aria-label", "Item title");
-        ti.onkeydown = (e) => {
-          if (e.key === "Enter") {
-            const t = ti.value.trim();
-            if (t && t !== it.title) {
-              planFocusAfterRender = { kind: "row", id: it.id }; // keep focus on the item after the rebuild
-              planMutate(() => invoke("rename_item", { itemId: it.id, title: t }));
-            }
-          }
-        };
         box.appendChild(tl);
-        box.appendChild(ti);
+        if (canEdit) {
+          tl.htmlFor = "plan-insp-title";
+          const ti = document.createElement("input");
+          ti.className = "pm-insp-ctrl";
+          ti.id = "plan-insp-title";
+          ti.type = "text";
+          ti.value = it.title;
+          ti.setAttribute("aria-label", "Item title");
+          ti.onkeydown = (e) => {
+            if (e.key === "Enter") {
+              const t = ti.value.trim();
+              if (t && t !== it.title) {
+                planFocusAfterRender = { kind: "row", id: it.id }; // keep focus on the item after the rebuild
+                planMutate(() => invoke("rename_item", { itemId: it.id, title: t }));
+              }
+            }
+          };
+          box.appendChild(ti);
+        } else {
+          // STATIC TEXT, not a read-only input. A field that looks like a field and refuses to
+          // accept typing is the "controls they can't use" complaint in a different costume.
+          const tv = document.createElement("p");
+          tv.className = "plan-insp-ro";
+          tv.id = "plan-insp-title-ro";
+          tv.textContent = it.title;
+          box.appendChild(tv);
+        }
         if (it.kind === "scripture" || it.kind === "slide_group") {
           const ll = document.createElement("div");
           ll.className = "pm-insp-lbl";
@@ -7160,16 +8699,20 @@
           }
           const acts = document.createElement("div");
           acts.className = "plan-insp-actions";
-          const linkBtn = document.createElement("button");
-          linkBtn.type = "button";
-          linkBtn.className = "pm-btn-primary";
-          linkBtn.textContent = it.link
-            ? "Change…"
-            : it.kind === "scripture"
-            ? "Link a scripture…"
-            : "Link a presentation…";
-          linkBtn.onclick = () => openLinkModal(it);
-          acts.appendChild(linkBtn);
+          // Linking and unlinking are plan EDITS; only "Open in editor" below is navigation, and
+          // navigation is not what this permission restricts.
+          if (canEdit) {
+            const linkBtn = document.createElement("button");
+            linkBtn.type = "button";
+            linkBtn.className = "pm-btn-primary";
+            linkBtn.textContent = it.link
+              ? "Change…"
+              : it.kind === "scripture"
+              ? "Link a scripture…"
+              : "Link a presentation…";
+            linkBtn.onclick = () => openLinkModal(it);
+            acts.appendChild(linkBtn);
+          }
           // Open in editor: jump to the Presentation surface with this deck open (deck edits happen
           // there, not in the plan builder). Only for a resolvable deck link.
           if (isDeckLink && planDeckName(it.link.id)) {
@@ -7183,7 +8726,7 @@
             };
             acts.appendChild(openEd);
           }
-          if (it.link) {
+          if (it.link && canEdit) {
             const un = document.createElement("button");
             un.type = "button";
             un.className = "pm-btn-ghost";
@@ -7196,27 +8739,31 @@
           }
           box.appendChild(acts);
         }
-        const danger = document.createElement("div");
-        danger.className = "plan-insp-actions plan-insp-danger";
-        const del = document.createElement("button");
-        del.type = "button";
-        del.className = "pm-btn-danger";
-        del.textContent = "Remove item";
-        del.onclick = () =>
-          pmConfirm({
-            title: "Remove “" + it.title + "”?",
-            body: "Only this run-sheet item is removed — any linked scripture or presentation is untouched.",
-            confirmLabel: "Remove",
-            onConfirm: () => {
-              if (planSelectedId === it.id) planSelectedId = null;
-              planMutate(() => invoke("remove_item", { itemId: it.id }));
-            },
-          });
-        danger.appendChild(del);
-        box.appendChild(danger);
+        if (canEdit) {
+          const danger = document.createElement("div");
+          danger.className = "plan-insp-actions plan-insp-danger";
+          const del = document.createElement("button");
+          del.type = "button";
+          del.className = "pm-btn-danger";
+          del.textContent = "Remove item";
+          del.onclick = () =>
+            pmConfirm({
+              title: "Remove “" + it.title + "”?",
+              body: "Only this run-sheet item is removed — any linked scripture or presentation is untouched.",
+              confirmLabel: "Remove",
+              onConfirm: () => {
+                if (planSelectedId === it.id) planSelectedId = null;
+                planMutate(() => invoke("remove_item", { itemId: it.id }));
+              },
+            });
+          danger.appendChild(del);
+          box.appendChild(danger);
+        }
         const note = document.createElement("p");
         note.className = "plan-insp-note";
-        note.textContent = "🔒 Editing here never changes Live. Open in Live loads the plan into the console.";
+        note.textContent = canEdit
+          ? "🔒 Editing here never changes Live. Open in Live loads the plan into the console."
+          : "🔒 View only — you can read this item and follow the service. Your role can't change the plan.";
         box.appendChild(note);
       }
 
@@ -7644,7 +9191,7 @@
           try {
             // Carry the slide count to the host (it owns no deck store) so the row reports the real
             // count and can stage a specific slide — same contract as planDeckBody's commit().
-            await invoke("set_item_content", { itemId: item.id, link: { kind: "deck", id: deck.id, slide_count: deck.slides } });
+            await invoke("set_item_content", { itemId: item.id, link: { kind: "deck", id: deck.id, slide_count: deck.slides, label: deck.name } });
           } catch (e) {
             // The item landed but carries no deck reference. A plan row that lies about what it
             // holds is worse than no row on a Sunday morning, so roll it back instead of leaving

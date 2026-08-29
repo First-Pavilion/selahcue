@@ -251,6 +251,15 @@ SELAHCUE_THROTTLE_RESEND_ADDRESS = (3, 900)
 SELAHCUE_THROTTLE_RESEND_IP = (10, 3600)
 SELAHCUE_THROTTLE_RESEND_GLOBAL = (500, 3600)
 
+# All three of the above fail OPEN when the limiter store is unreachable, so while Redis is
+# down they bound nothing at all — and this endpoint sends mail without authentication. This
+# is the ceiling that stands in for them during an outage: a PER-WORKER, in-process fixed
+# window, because the shared store is exactly what is broken. With N workers the effective
+# limit is N x this. It is deliberately far below the global budget it replaces: an outage is
+# the wrong time to be generous, and a caller whose send is skipped keeps the link they
+# already had. See RESEND_DEGRADED_SEND_CEILING in apps/accounts/services.py.
+SELAHCUE_RESEND_DEGRADED_SEND_CEILING = (20, 3600)
+
 # --- Mail --------------------------------------------------------------------------------
 # Dev points at mailhog (compose service, port 1025) so the transactional templates
 # (docs/design/TRANSACTIONAL-EMAIL-spec.md) can be verified end to end before any provider

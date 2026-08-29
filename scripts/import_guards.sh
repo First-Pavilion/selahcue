@@ -185,6 +185,136 @@ echo ">> checking selahcue-import is covered by the workspace test run"
 grep -q '"crates/selahcue-import"' "$DESKTOP/Cargo.toml" \
   || fail "selahcue-import is not a workspace member — its hostile-input battery would not run in CI"
 
+# --- no release-inheriting profile turns debug-assertions back on ------------------------
+# `selahcue-licensing` trusts a DEVELOPMENT entitlement key under `#[cfg(debug_assertions)]`,
+# and its seed is committed, so a release build that trusts it hands out unlimited
+# entitlement to anyone.
+#
+# The crate's release-profile test asserts `if cfg!(debug_assertions) { present } else {
+# absent }`. That asks the profile a question and checks the answer against itself -- it
+# restates the `#[cfg]` attribute rather than checking the property that matters. Adding
+#
+#     [profile.release]
+#     debug-assertions = true
+#
+# makes `cfg!(debug_assertions)` TRUE under `--release`, so the test passes green in BOTH
+# profiles while the dev key ships in the release artefact. No source edit required.
+# Reproduced before writing this guard: `cargo test -p selahcue-licensing --release` exited 0
+# with the override in place.
+#
+# THIS IS NOT THE GATE. It is a better error message for the ordinary cases. Review found
+# four more routes it misses -- `[profile]` with an inline `release = { .. }` table (which
+# never matches a line-leading `[profile.` header), the legacy `.cargo/config` filename, a
+# valueless `-C debug-assertions`, and a config in a parent directory or $CARGO_HOME -- and
+# it can never see RUSTFLAGS in the environment. Each fix here narrows the gap by one
+# spelling; none closes it, because this matches TEXT.
+#
+# The effect-level gate is scripts/dev_key_not_in_release.sh, which scans the emitted release
+# rlib for the key bytes and so closes every one of the CONFIGURATION routes above at once.
+#
+# It is not a superset of everything, and this is the last place that said so without saying
+# what it misses. It searches for the LITERAL key bytes, so it settles "is the key compiled
+# into release" and is blind to "does a release binary obtain the key at runtime" -- a loader
+# that derives the bytes leaves it nothing to find. The release `iff` test in CI is what
+# catches that one, so the two are complementary and neither is redundant:
+#
+#   route                                          | byte scan | release iff test
+#   -----------------------------------------------+-----------+------------------
+#   profile table / cargo config / RUSTFLAGS       | KILL      | miss
+#   runtime loader, non-literal key                | miss      | KILL
+#   ...the same loader behind a runtime trigger    | miss      | miss
+#
+# The bottom row is closed by neither, deliberately: "no config loader in this crate" is a
+# review-enforced rule (selahcue-licensing/src/trust.rs, `TrustedKeys::insert`), not a gate.
+echo ">> checking no release-inheriting profile re-enables debug-assertions"
+for manifest in "$DESKTOP/Cargo.toml" "$DESKTOP/crates/selahcue-operator/Cargo.toml"; do
+  [ -f "$manifest" ] || fail "expected manifest $manifest is missing — repoint this guard"
+  OFFENDER=$(awk '
+    /^[[:space:]]*\[/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section); sub(/\].*$/, "", section)
+      inprofile = (section ~ /^profile\./)
+      name = section; sub(/^profile\./, "", name); sub(/\..*$/, "", name)
+      # dev and test are debug profiles already; saying so there changes nothing.
+      benign = (name == "dev" || name == "test")
+      next
+    }
+    {
+      # Strip trailing comments BEFORE matching. Without this a manifest could not document
+      # that the setting is deliberately unset -- `# debug-assertions = true` tripped the
+      # guard. Fails safe, but it is the exact mirror of the comment-defeat defect this
+      # whole area exists to fix, so it is fixed on both sides.
+      line = $0
+      sub(/#.*$/, "", line)
+    }
+    inprofile && !benign && line ~ /debug[-_]assertions[[:space:]]*=[[:space:]]*true/ {
+      print "[" section "] " line
+    }
+  ' "$manifest")
+  if [ -n "$OFFENDER" ]; then
+    echo "$OFFENDER" >&2
+    fail "a release-inheriting profile in $manifest sets debug-assertions = true — that makes cfg!(debug_assertions) true under --release, so a release build would trust the committed development entitlement key"
+  fi
+done
+
+# The same switch can arrive through a committed cargo config rather than a manifest.
+echo ">> checking no committed cargo config forces debug-assertions on"
+CARGO_CONFIGS=$(find "$ROOT" -name 'config.toml' -path '*/.cargo/*' -not -path '*/target/*' 2>/dev/null || true)
+for cfg in $CARGO_CONFIGS; do
+  if grep -qE 'debug[-_]assertions(=|[[:space:]]*=)?[[:space:]]*(on|yes|true)' "$cfg"; then
+    grep -nE 'debug[-_]assertions' "$cfg" >&2
+    fail "$cfg forces debug-assertions on — see the reasoning above"
+  fi
+done
+
+# --- licensing is absent from the render / go-live / live-control closure (CON-P1/P2) -----
+# NFR-024 says no component failure may blank live output, and CON-P1/CON-P2 sharpen that:
+# no licensing state, response or outage may sit on the path that drives the screen. The way
+# to make that structural is to ensure licensing code cannot be LINKED INTO the process at
+# all — transitively, not just as a direct dependency.
+#
+# This asks cargo rather than reading Cargo.toml. A hand-written TOML walk lived in the
+# crate's own test suite and was evadable by two ordinary declaration forms, both confirmed
+# to link licensing into `selahcue-output` while the guard passed:
+#
+#   [dependencies.selahcue-licensing]                              # name lives in the HEADER
+#   licensing = { package = "selahcue-licensing", path = "..." }   # key renamed
+#
+# Both matched on the KEY, not the package. `cargo tree` resolves real packages, so the
+# whole class goes away instead of two more spellings being special-cased. `-e normal`
+# excludes dev- and build-dependencies deliberately: the question is what ships inside the
+# running process.
+echo ">> checking selahcue-licensing is absent from the render/live-control closure (CON-P1/CON-P2)"
+for root in selahcue-desktop selahcue-app; do
+  LIVE_TREE=$("$CARGO" tree --manifest-path "$DESKTOP/Cargo.toml" -p "$root" -e normal --prefix none)
+  LIVE_PKGS=$(echo "$LIVE_TREE" | awk 'NF {print $1}' | sort -u)
+
+  # Positive control: a walk that silently returned nothing would otherwise "pass".
+  echo "$LIVE_PKGS" | grep -qx "selahcue-present" \
+    || fail "the dependency walk for $root did not reach selahcue-present, so it is not resolving the graph and the check below proves nothing"
+
+  if echo "$LIVE_PKGS" | grep -qx "selahcue-licensing"; then
+    "$CARGO" tree --manifest-path "$DESKTOP/Cargo.toml" -p "$root" -e normal -i selahcue-licensing >&2 || true
+    fail "selahcue-licensing is reachable from $root (see the inverted tree above). No licensing code may be linked into the render, go-live or live-control path — CON-P1/CON-P2, NFR-024/501/502"
+  fi
+done
+
+# --- selahcue-licensing is a workspace member, so the default test run covers it ----------
+# The licensing crate deliberately has NO Cargo features of its own: its network transport
+# and secret store are selahcue-cloud's feature-gated impls, injected by the shell. The
+# whole argument for that design is that 100% of its logic is therefore exercised by the
+# plain `cargo test --workspace` — which rests entirely on it BEING a workspace member.
+#
+# Drop the member line and `--workspace` silently stops running its tests while the gate
+# stays green: the never-blank closure guard, the credential-redaction sweep and the
+# trust-store bounds all quietly stop protecting anything. This cannot be checked from
+# inside the crate — `cargo test -p selahcue-licensing` fails to resolve the package, so a
+# test living there never runs to report it. Same reasoning as the selahcue-import check
+# above, and the same one-line fix.
+echo ">> checking selahcue-licensing is covered by the workspace test run"
+grep -q '"crates/selahcue-licensing"' "$DESKTOP/Cargo.toml" \
+  || fail "selahcue-licensing is not a workspace member — its activation, custody, trust-store and never-blank guards would not run in CI"
+
 # --- the JPEG decoder stays pinned, scalar-only and rayon-free ----------------------------
 # The determinism contract (ADR-0025 decision 3) is a property of the PIN, not of the format:
 # without `platform_independent` the crate does runtime SSSE3/NEON dispatch and the same binary

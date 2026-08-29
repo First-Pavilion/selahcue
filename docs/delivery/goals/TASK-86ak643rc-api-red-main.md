@@ -1,0 +1,229 @@
+# Goal Contract — TASK-86ak643rc-api-red-main
+
+## Identity
+
+- Goal ID: TASK-86ak643rc-api-red-main
+- Parent goal ID: NONE
+- Title: `api (django)` runs clean — the two erroring resend tests and the constant-time probe
+- Role: backend-engineer
+- Status: GATE_REVIEW (review round 2 remediated — Quinn's findings + DEC-013)
+- Execution engine: goal
+- ClickUp task: https://app.clickup.com/t/86ak69tdz (defects 2 and 3, split out of the
+  86ak643rc umbrella), https://app.clickup.com/t/86ak66r5c (DEC-013 implementation) and
+  https://app.clickup.com/t/86ak5rnrr (probe false-reds). One branch for all three: they
+  touch the same three equalisers and the same probe, so splitting them would put two
+  PRs in a race on one file.
+- Created: 2026-08-25
+- Updated: 2026-08-26 (rework round 2)
+- Maximum iterations: 8
+- Independent verification required: yes
+
+## Objective
+
+`implementation/api/tests/test_resend_verification.py` collects and runs with no
+`AttributeError`, the two limiter-outage tests exercise real behaviour rather than a stub,
+and the constant-time probe gives a trustworthy verdict on CI hardware and under local
+contention — while still going red when a real timing difference is introduced.
+
+## Baseline
+
+Verified at `607a7b5` with a Python 3.14 venv rebuilt from `pyproject.toml` into the
+worktree (`.venv-api`).
+
+**Do not use `/private/tmp/selahcue-api-venv`.** It was absent when this work started and has
+since been recreated by another session. Its editable install maps to
+`scph-wt-86ak5mn00/implementation/api`, but `pytest.ini` sets `pythonpath = .`, so running
+pytest from your own `implementation/api` silently gives you your own code while any other
+working directory gives you 86ak5mn00's. It is right often enough to be trusted and wrong
+often enough to mislead. Verify with `inspect.getfile(services)`, not `selahcue_api.__file__`.
+
+- `pytest tests/test_resend_verification.py -q` → `20 passed, 2 errors`, both errors
+  `AttributeError: module 'selahcue_api.apps.accounts.services' has no attribute
+  '_reset_degraded_send_window'`.
+- CI runs `31904270364` (2026-08-15) and `31968483487` (2026-08-16) both report
+  `2 failed, 188 passed, 2 errors`. The **second** failure,
+  `test_the_eligible_branch_costs_well_under_the_constant_time_floor`, appears in neither
+  ticket and is **not** in this goal's scope — see Non-goals.
+- `enforce_budget_reporting_outage` exists in `throttling/guards.py` with **zero** call sites.
+
+## Inputs and evidence sources
+
+- Commit `2c89159` and its message ("Its tests were not run here -- pytest is unavailable")
+- Commit `419d8a6`, which raised the floor `0.25 → 0.4` and left the probe on `0.25`
+- CI job logs for runs `31904270364` and `31968483487` (`gh run view --log`)
+- ClickUp `86ak643rc`, `86ak5rnrr`
+- `CLAUDE.md` bounded-memory and mutation-verification rules
+
+## Scope
+
+### In scope
+
+- A real degraded-send ceiling in `apps/accounts/services.py`, consuming the unused
+  `enforce_budget_reporting_outage` seam, plus its `_reset_degraded_send_window` test seam.
+- The `on_commit` harness defect in `test_a_limiter_outage_bounds_the_sending_...`.
+- Rewriting `test_response_timing_does_not_distinguish_the_three_cases` so its verdict does
+  not depend on the host's PBKDF2 speed.
+
+### Non-goals
+
+- ~~`test_the_eligible_branch_costs_well_under_the_constant_time_floor`~~ — **NO LONGER A
+  NON-GOAL.** It was escalated from here because every remedy was a security decision. That
+  decision has since landed as **DEC-013 (Remedy B)** on `86ak66r5c`: drop PBKDF2 from the
+  credential-token mint, keep the column, and remove all three dummy timing equalisers in the
+  same commit. The remedy is implemented on this branch, so AC-1 is now in scope and
+  meetable. The floor is NOT raised.
+- Defect 1 of `86ak643rc` (the ubuntu serif font test) — owned elsewhere.
+
+### Constraints
+
+- Do not weaken an assertion to make it pass; do not stub a helper to silence an error.
+- Bounded memory: no per-key map on an unauthenticated endpoint.
+- No PR (owner requires Cody/Sana/Vera/Quinn review first).
+
+### Assumptions and unknowns
+
+- ASSUMED: production hardware is faster than a 2-core GitHub runner, so the shipped 400 ms
+  floor is adequate there. Validation owner: Security Reviewer (Sana) via the escalation.
+
+## Dependencies and approvals
+
+- `86ak5rc9c` (toolchain fix) must land for CI to reach the api job at all — owner: DevOps.
+
+## Completion predicate
+
+All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
+
+| ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
+|---|---|---|---|---|---|---|
+| C-001 | yes | The file collects and runs with no `AttributeError` | `pytest tests/test_resend_verification.py -q` | exits 0, no errors | `gate-suite.txt` | PASS |
+| C-002 | yes | A limiter outage bounds sending without denying the response | same file, `-k limiter_outage` | passes; 2 of 5 sends leave; one report | `after-fix1.txt` | PASS |
+| C-003 | yes | A skipped send does not supersede an existing link | same file, `-k skipped_send` | passes; token count 1, `consumed_at is None` | `after-fix1.txt` | PASS |
+| C-004 | yes | Removing the degraded ceiling turns C-002/C-003 red | `mutate.py MUT-A` | both tests FAIL, siblings running | `mut-MUT-A-*.txt` | PASS |
+| C-005 | yes | Skipping the send but keeping the mint turns C-003 red | `mutate.py MUT-B` | `test_a_skipped_send_...` FAILS | `mut-MUT-B-*.txt` | PASS |
+| C-006 | yes | Deleting the constant-time padding turns the probe red | `mutate.py MUT-C` | probe FAILS, siblings running | `mut-MUT-C-*.txt` | PASS |
+| C-007 | yes | A deliberate delay in one of the three cases turns the probe red | `mutate.py MUT-D` | probe FAILS and is the ONLY new red | `mut-MUT-D-*.txt` | PASS |
+| C-008 | yes | The probe never reds under heavy contention | 6 reps at load 37–71 | 0 probe failures (pass or reasoned skip) | `hard-rep1..6.txt` | PASS |
+| C-009 | yes | The full api suite passes | `pytest tests -q` | exits 0 | `gate-suite.txt` | PASS |
+| C-010 | yes | CI's other api gates pass | `manage.py check`; `makemigrations --check --noinput` | both exit 0 | `gate-check.txt`, `gate-migrations.txt` | PASS |
+| C-011 | yes | The floor the probe uses cannot silently drift again | probe asserts `PRODUCTION_FLOOR == RESEND_MIN_SECONDS_DEFAULT` | assertion present and green | `test_resend_verification.py` | PASS |
+| C-012 | yes | Independent review (Cody, Sana, Vera, Quinn + Codex pairs) | review pipeline | no blocking findings | ClickUp | PENDING |
+| C-013 | yes | The degraded ceiling is spent whether or not the account exists | `pytest -k spent_whether_or_not` | passes | `post-blocker.txt` | PASS |
+| C-014 | yes | Re-keying the ceiling to eligibility turns C-013 red | `mutate3.py G` | that test FAILS, siblings running | `m3-G-*.txt` | PASS |
+| C-015 | yes | A healthy limiter never engages the degraded ceiling | `pytest -k healthy_limiter_never` | passes | `f2-suite.txt` | PASS |
+| C-016 | yes | A fail-open misreported on a healthy limiter turns C-015 red | `mutate3.py E` (`guards.py` returns True) | that test FAILS | `m3-E-*.txt` | PASS |
+| C-017 | yes | The shipped ceiling setting and module default cannot drift | `mutate3.py F` (delete the setting) | collection fails loudly | `m3-F-*.txt` | PASS |
+| C-018 | yes | A host that slows after calibration skips, not fails | forced fast-then-slow eligible branch | SKIPPED naming both costs | `m3-H.txt` | PASS |
+| C-019 | yes | The oracle test cannot be disarmed by deleting the fixture's window reset | oracle bug applied, fixture line deleted | that test FAILS (was `25 passed, exit 0`) | `F1_E3_bug_fixture_deleted.txt` | PASS |
+| C-020 | yes | A dead degraded mechanism is distinguishable from a refusal | `_claim_degraded_send` forced True, then forced False | RED both ways; False fires the positive control | `F1_E4a/E4b.txt` | PASS |
+| C-021 | yes | A PARTIAL limiter outage degrades the send | one scope's store broken, other two healthy, x3 scopes | all three parametrisations pass; collapsing the accumulation to one budget turns them red | `F3_M3a_single_budget.txt` | PASS |
+| C-022 | yes | The accumulation does not short-circuit | swap the bitwise-or accumulation for `or` | 3 tests FAIL incl. the dedicated one | `F3_M3b_or_shortcircuit.txt` | PASS |
+| C-023 | yes | The degraded fixed window rolls over | delete the rollover branch | that test FAILS | `F3_M3c_no_rollover.txt` | PASS |
+| C-024 | yes | The probe's verdict and its diagnosis are on one basis | `pytest -k same_basis_it_judges_it` (4 floors) | passes; restoring the `floor * 1.10` ratio reds 3 of 4 | `M1.txt` | PASS |
+| C-025 | yes | One calibration spike cannot set the probe's floor | `pytest -k one_calibration_spike` | passes, with a slow-host positive control | `F3_clean.txt` | PASS |
+| C-026 | yes | DEC-013: the eligible branch fits the shipped 400 ms floor | `pytest -k costs_well_under_the_constant_time_floor` | exits 0; 0.59 ms measured, x674 headroom, floor unchanged | `FINAL_ac1.txt` | PASS |
+| C-027 | yes | DEC-013 did not INVERT the existence oracle | both branches measured unpadded, 9 samples | `eligible - unknown = +0.43 ms`, still positive; all 3 inside the floor | `inversion.py` output | PASS |
+| C-028 | yes | The repaired probe still goes RED on a real asymmetry | inject ~500 ms into the not-eligible branch; separately neutralise `_pad_to_floor` | RED both ways, naming `['unknown','verified']` | `T1_inversion_big.txt`, `T2_no_padding.txt` | PASS |
+| C-029 | no | The `threading.Lock` on the ceiling is covered by a test | 32 threads x 40 claims, `setswitchinterval(1e-6)`, 10 trials each way | NOT MET BY DESIGN — 0/10 overspent with AND without the lock, so any test here would be vacuous | `lockprobe.py` output | NOT_APPLICABLE |
+
+## Verification plan
+
+- Focused verification: the two limiter-outage tests and the probe, always with siblings.
+- Broader regression verification: full `pytest tests -q`, plus `manage.py check` and
+  `makemigrations --check`, mirroring the `api (django)` job's three steps.
+- Independent verifier: Cody, Sana, Vera, Quinn (and their Codex counterparts).
+- Required environment: Python 3.14 venv built from `pyproject.toml`, matching CI.
+
+## Iteration ledger
+
+### Iteration 1
+
+- Target criterion: C-001..C-003
+- Hypothesis: `2c89159` shipped the throttling half and the test half of a feature and dropped
+  the consumer half in `accounts/services.py`.
+- Change or investigation: read `2c89159` in full; found `enforce_budget_reporting_outage`
+  with zero call sites and a commit message admitting its tests were never run.
+- Verifier executed: `grep -rn enforce_budget_reporting_outage`
+- Result: 0 call sites — the feature, not just the helper, is missing.
+- New evidence: the tests describe a coherent, well-motivated design; not speculative.
+- Decision: iterate — implement the degraded-send window.
+
+### Iteration 2
+
+- Target criterion: C-002
+- Hypothesis: the test also cannot pass as written, because it calls the service directly
+  under non-transactional `django_db`, where `on_commit` never fires.
+- Change or investigation: wrapped its calls in `TestCase.captureOnCommitCallbacks`.
+- Verifier executed: `pytest -k "limiter_outage or skipped_send"`
+- Result: 2 passed.
+- Decision: iterate — the timing probe.
+
+### Iteration 3
+
+- Target criterion: C-006..C-008
+- Hypothesis: the probe is not flaky; it hardcodes a floor (0.25) that `419d8a6` retired, and
+  on slow hardware no branch fits inside it, so the padding never runs.
+- Change or investigation: measured pre-padding work per branch; read both CI runs.
+- Verifier executed: instrumented probe; `gh run view --log`
+- Result: on CI every branch costs ~460 ms against a 250 ms floor; the 66–68 ms spread is the
+  probe's own injected 60 ms dispatch, unabsorbed. The assertion reduced to `66ms < 30ms`.
+- New evidence: the two same-code-path cases agreed to 0.0 ms and 0.7 ms — the instrument was
+  resolving sub-millisecond, so the 66 ms was real work.
+- Decision: iterate — calibrate the floor to the host.
+
+### Iteration 5 — review round 1 (Cody)
+
+- Target criterion: C-013..C-018
+- Hypothesis (his, confirmed): charging the fallback ceiling only to calls that actually send
+  makes its depletion an account-existence oracle, readable from the attacker's own inbox.
+- Change or investigation: wrote the regression test FIRST and confirmed it failed against my
+  own code — two non-sending probes spent 0 of a 2-unit ceiling, so the eligible address still
+  sent. Moved the claim beside the three budgets it stands in for, before the address is
+  looked up.
+- Verifier executed: `mutate3.py` G (re-key to eligibility), E (healthy limiter reports a
+  fail-open), F (delete the shipped setting), H (host slows after calibration).
+- Result: all caught. G reds only the new oracle test; E reds the new healthy-limiter control;
+  F fails collection; H skips with both costs named.
+- New evidence: my `MUT-D` did land in `services.py`, not the harness — but in the INELIGIBLE
+  branch, which is not the calibration source, so it is not absorbed. Cody's ~500ms delay went
+  into the ELIGIBLE branch, which recalibration does absorb. Re-ran as D2: the probe passes and
+  `test_the_eligible_branch_costs_well_under_the_constant_time_floor` catches it — exactly the
+  division of labour the probe's KNOWN LIMIT documents.
+- Decision: handoff — back to review.
+
+### Iteration 4
+
+- Target criterion: C-008
+- Hypothesis: `min()` calibration under-provisions a floor on a machine that keeps degrading.
+- Change or investigation: switched calibration to `max()` of 4 samples; added the null
+  control.
+- Verifier executed: 6 reps at load 37–71.
+- Result: 0 probe failures (previously 2 of 3 red at load 34–40).
+- Decision: complete — hand off to review.
+
+## Risks and rollback
+
+- Risks: the degraded ceiling is per-worker, so N workers give N× the limit; stated in the
+  setting's comment and in the warning it emits. Charging it unconditionally means a probe
+  flood can starve legitimate resends during an outage — the deliberate trade for closing the
+  existence oracle, and the same one the global budget already makes. The probe can skip when
+  the host slows after calibration; it cannot skip on a regression, because a regression is
+  present at calibration too and so is already inside the floor.
+- Rollback or recovery: three files, one commit, revertable in isolation.
+
+## Pause and escalation conditions
+
+- ~~Sizing the shipped constant-time floor, or removing PBKDF2 from the token mint~~ —
+  RESOLVED. Sana ruled, owner approved: DEC-013 / Remedy B, recorded on `86ak66r5c` and
+  implemented here. The floor is unchanged; PBKDF2 leaves the credential-token mint only.
+- Still open, flagged not fixed: `DeviceToken.token_hash` (`devices/services.py`) has the same
+  write-only `make_password` pattern. No constant-time floor sits on that path, so there is no
+  oracle to invert and it is out of scope here.
+
+## Final evaluation
+
+- Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ak643rc-api-red-main.md --completion`
+- Validator result: see handoff comment
+- Independent verification result: PENDING (C-012)
+- Terminal state: GATE_REVIEW
+- Remaining failed or blocked criteria: C-012 (review pipeline — Quinn re-check outstanding)
+- ClickUp final evidence comment: posted on 86ak69tdz, 86ak66r5c and 86ak5rnrr

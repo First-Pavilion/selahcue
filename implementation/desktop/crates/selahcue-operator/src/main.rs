@@ -20,7 +20,7 @@
 use selahcue_app::{LiveController, OperatorShell, OperatorView, RemoteOperator};
 use selahcue_core::detector::{detector_state, DetectorSignals, DetectorState};
 use selahcue_core::plan::{ItemKind, ServicePlan};
-use selahcue_lan::protocol::{ContentLinkView, ScaleFit};
+use selahcue_lan::protocol::{ContentLinkView, ImportItemView, ScaleFit};
 use selahcue_lan::CertPin;
 use selahcue_present::{FrameBuffer, Theme};
 use std::net::SocketAddr;
@@ -582,6 +582,66 @@ impl Backend {
                 .await
                 .map_err(|e| e.to_string()),
             Backend::Local(s) => Ok(s.resume_timer()),
+        }
+    }
+    // --- Plan publish / hand-off (FR-006) and the plan lifecycle actions (FR-005) ---
+    async fn publish_plan(&self) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .publish_plan()
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.publish_plan()),
+        }
+    }
+    async fn new_plan(&self, name: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .new_plan(&name)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.new_plan(&name)),
+        }
+    }
+    async fn template_plan(&self, template: String, name: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .template_plan(&template, &name)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.template_plan(&template, &name)),
+        }
+    }
+    async fn duplicate_plan(&self, name: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .duplicate_plan(&name)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.duplicate_plan(&name)),
+        }
+    }
+    async fn import_plan(
+        &self,
+        name: String,
+        items: Vec<ImportItemView>,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .import_plan(&name, items)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.import_plan(&name, items)),
         }
     }
     async fn add_item(
@@ -2067,6 +2127,39 @@ async fn add_item(
 ) -> Result<OperatorView, String> {
     state.backend.add_item(kind, title, content).await
 }
+// --- Plan publish / hand-off (FR-006) + the plan lifecycle actions (FR-005). Each returns the
+//     fresh view, like every other action, so the console re-renders from host truth in one
+//     round trip. Whether the surface OFFERS them is the shell's decision, driven by
+//     `view.viewer.can_edit`; the host refuses them regardless if the role does not hold
+//     `EditPlan`, so hiding a control is never what protects the plan. ---
+#[tauri::command]
+async fn publish_plan(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.publish_plan().await
+}
+#[tauri::command]
+async fn new_plan(name: String, state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.new_plan(name).await
+}
+#[tauri::command]
+async fn template_plan(
+    template: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.template_plan(template, name).await
+}
+#[tauri::command]
+async fn duplicate_plan(name: String, state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.duplicate_plan(name).await
+}
+#[tauri::command]
+async fn import_plan(
+    name: String,
+    items: Vec<ImportItemView>,
+    state: State<'_, AppState>,
+) -> Result<OperatorView, String> {
+    state.backend.import_plan(name, items).await
+}
 #[tauri::command]
 async fn remove_item(item_id: u64, state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.remove_item(item_id).await
@@ -3019,6 +3112,11 @@ fn main() {
             pause_timer,
             resume_timer,
             add_item,
+            publish_plan,
+            new_plan,
+            template_plan,
+            duplicate_plan,
+            import_plan,
             remove_item,
             move_item,
             plan_undo,

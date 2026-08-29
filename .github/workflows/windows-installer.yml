@@ -7,6 +7,31 @@
 #   * headers  -> committed under implementation/desktop/vendor/ndi/windows/include
 #   * runtime DLL -> fetched from the public NDI runtime redistributable (ndi.link/NDIRedistV6)
 #   * import .lib -> generated on the runner from the DLL's exports (dumpbin -> .def -> lib)
+# ---------------------------------------------------------------------------------------
+# RELEASE PROFILE ONLY — NEVER SHIP A DEBUG BUILD.
+#
+# Debug builds of `selahcue-licensing` deliberately trust a DEVELOPMENT entitlement signing
+# key whose private seed is COMMITTED to this repository
+# (implementation/desktop/crates/selahcue-licensing/dev-signing-key.NOT-A-SECRET). That is
+# by design: `make launch` must not demand activation, and the mechanism is to MINT a
+# dev-signed manifest and run real verification rather than to add a bypass branch.
+#
+# The consequence is that ANYONE can mint an unlimited entitlement against a debug build.
+# So a debug binary must never be distributed. Today every artefact this workflow produces
+# is `--release`, which is what makes that safe -- it is a property to preserve, not a
+# coincidence to rely on. If you are here to add or change a build step, keep `--release`.
+#
+# THE CHECK THAT ENFORCES THIS is `scripts/dev_key_not_in_release.sh` (run by ci.yml and
+# `make ci`): it builds the crate in both profiles and fails if the dev key bytes appear in
+# the release rlib, with the debug rlib as a live positive control.
+#
+# It is not wired into THIS workflow, because nothing here links selahcue-licensing yet. The
+# moment a bundled binary does -- which is the whole direction of travel for 86ak5mn1d /
+# 86ak5mn1t -- add that script as a step here and scan the BUNDLED artefact, not just the
+# rlib. Source-level controls (`#[cfg(debug_assertions)]`, the source guard, the profile
+# scan) are kept for better error messages but every one of them has been defeated in review
+# by a spelling nobody enumerated; do not rely on them here.
+# ---------------------------------------------------------------------------------------
 name: windows-installer
 
 on:

@@ -8,10 +8,12 @@
 
 use crate::controller::LiveController;
 use selahcue_lan::protocol::{
-    Command, ContentLinkView, DetectionView, OperatorStateView, OutputHealthView, PlanItemView,
-    SavedThemeView, ScaleFit, ScreenThemeView, ScreenView, SessionHealthView, StorageHealthView,
-    TimerSnapshot, TranscriptSegmentView,
+    Command, ContentLinkView, DetectionView, ImportItemView, OperatorStateView, OutputHealthView,
+    PlanItemView, PlanSummaryView, PlanTemplateView, PublishStateView, SavedThemeView, ScaleFit,
+    ScreenThemeView, ScreenView, SessionHealthView, StorageHealthView, TimerSnapshot,
+    TranscriptSegmentView, ViewerView,
 };
+use selahcue_lan::Role;
 use selahcue_present::FrameBuffer;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
@@ -63,6 +65,10 @@ pub struct ItemView {
 pub struct OperatorView {
     pub plan_name: String,
     pub items: Vec<ItemView>,
+    /// Plan-level roll-up for the Plan Summary panel (counts, assigned, planned total).
+    /// `None` = this backend does not report it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<PlanSummaryView>,
     /// Index into `items` currently on Live, if any.
     pub live_index: Option<usize>,
     /// Index into `items` currently staged in Preview, if any (`None` when Preview
@@ -124,6 +130,30 @@ pub struct OperatorView {
     pub storage: Option<StorageHealthView>,
     /// The host's session-recovery state. `None` = not reported by this host.
     pub session: Option<SessionHealthView>,
+    /// The plan's publish / hand-off state (FR-006) — the version label, the draft/published
+    /// distinction, and the "Plan updated · Review changes" badge. `None` = not reported.
+    pub publish: Option<PublishStateView>,
+    /// Who this view was built for and what they may do (FR-006 view-only). `None` = the layer
+    /// that built it does not know — which is NOT the same as "view only" and must never be
+    /// rendered as a restriction.
+    pub viewer: Option<ViewerView>,
+    /// The starter templates this host offers (FR-005), in picker order.
+    pub plan_templates: Vec<PlanTemplateView>,
+}
+
+/// Stamp a view built by the IN-PROCESS console with the console's own identity.
+///
+/// The Tauri operator shell drives this controller directly — it does not go through the LAN
+/// server, so no session and no `authorize()` call stands between it and the plan. Naming it
+/// `Operator` therefore records what is already true rather than granting anything: `server.rs`
+/// refuses to hand Operator to any remotely-paired device (`ApprovePairing`/`SetSessionRole`
+/// both clamp it) precisely so that the console remains the sole Operator.
+///
+/// `can_edit` still comes from [`ViewerView::for_role`] rather than being hardcoded to `true`,
+/// so if the Operator role ever loses plan-editing the console's own affordances follow.
+fn console_view(mut view: OperatorView) -> OperatorView {
+    view.viewer = Some(ViewerView::for_role(Role::Operator));
+    view
 }
 
 /// An ergonomic, UI-facing wrapper over the shared [`LiveController`]. Each action
@@ -159,7 +189,7 @@ impl OperatorShell {
             // here so timers advance in Local/demo mode (the remote path's host
             // ticks every frame; an extra tick is harmless there).
             c.tick(std::time::Instant::now());
-            c.operator_view()
+            console_view(c.operator_view())
         })
     }
 
@@ -167,7 +197,7 @@ impl OperatorShell {
     pub fn view(&self) -> OperatorView {
         self.with(|c| {
             c.tick(std::time::Instant::now());
-            c.operator_view()
+            console_view(c.operator_view())
         })
     }
 
@@ -298,13 +328,46 @@ impl OperatorShell {
         })
     }
 
+    /// Publish the plan — the coordinator→operator hand-off (FR-006). Marks the current
+    /// revision as published; changes nothing in Preview and nothing on Live.
+    pub fn publish_plan(&self) -> OperatorView {
+        self.act(&Command::PublishPlan)
+    }
+
+    /// Replace the plan with a fresh empty one called `name` ("Create" on the empty-plan frame).
+    pub fn new_plan(&self, name: &str) -> OperatorView {
+        self.act(&Command::NewPlan { name: name.into() })
+    }
+
+    /// Replace the plan with one built from a starter `template` (the ids the view reports in
+    /// `plan_templates`), called `name`.
+    pub fn template_plan(&self, template: &str, name: &str) -> OperatorView {
+        self.act(&Command::TemplatePlan {
+            template: template.into(),
+            name: name.into(),
+        })
+    }
+
+    /// Replace the plan with an independent copy of the CURRENT plan under `name` (FR-005).
+    pub fn duplicate_plan(&self, name: &str) -> OperatorView {
+        self.act(&Command::DuplicatePlan { name: name.into() })
+    }
+
+    /// Replace the plan with an imported run sheet. Refused whole if any row is invalid.
+    pub fn import_plan(&self, name: &str, items: Vec<ImportItemView>) -> OperatorView {
+        self.act(&Command::ImportPlan {
+            name: name.into(),
+            items,
+        })
+    }
+
     /// Undo the last Service-Plan edit (plan-editing · undo/redo). Restores the plan DOCUMENT
     /// only — never changes what is on the Live audience output. Returns the fresh view.
     pub fn plan_undo(&self) -> OperatorView {
         self.with(|c| {
             c.undo_plan();
             c.tick(std::time::Instant::now());
-            c.operator_view()
+            console_view(c.operator_view())
         })
     }
 
@@ -314,7 +377,7 @@ impl OperatorShell {
         self.with(|c| {
             c.redo_plan();
             c.tick(std::time::Instant::now());
-            c.operator_view()
+            console_view(c.operator_view())
         })
     }
 
@@ -617,6 +680,7 @@ impl From<OperatorView> for OperatorStateView {
         OperatorStateView {
             plan_name: v.plan_name,
             items: v.items.into_iter().map(Into::into).collect(),
+            summary: v.summary,
             live_index: v.live_index,
             staged_index: v.staged_index,
             blackout: v.blackout,
@@ -641,6 +705,9 @@ impl From<OperatorView> for OperatorStateView {
             output_health: v.output_health,
             storage: v.storage,
             session: v.session,
+            publish: v.publish,
+            viewer: v.viewer,
+            plan_templates: v.plan_templates,
         }
     }
 }
@@ -650,6 +717,7 @@ impl From<OperatorStateView> for OperatorView {
         OperatorView {
             plan_name: v.plan_name,
             items: v.items.into_iter().map(Into::into).collect(),
+            summary: v.summary,
             live_index: v.live_index,
             staged_index: v.staged_index,
             blackout: v.blackout,
@@ -674,6 +742,12 @@ impl From<OperatorStateView> for OperatorView {
             output_health: v.output_health,
             storage: v.storage,
             session: v.session,
+            publish: v.publish,
+            // Carried straight through from the wire: on the remote path the HOST stamped this
+            // with the authenticated session's role, and re-deriving it here from anything the
+            // client knows would replace the host's verdict with a guess.
+            viewer: v.viewer,
+            plan_templates: v.plan_templates,
         }
     }
 }
@@ -890,6 +964,54 @@ impl RemoteOperator {
 
     /// Append a plan item on the host (requires the Operator role).
     /// `content` is the optional plain-text stanza body for songs (S8-1).
+    /// Publish the plan on the HOST (FR-006). The host is authoritative for publish state, so
+    /// this goes over the wire like any other command rather than being tracked locally.
+    pub async fn publish_plan(&mut self) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::PublishPlan).await
+    }
+
+    /// Replace the host's plan with a fresh empty one called `name`.
+    pub async fn new_plan(
+        &mut self,
+        name: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::NewPlan { name: name.into() }).await
+    }
+
+    /// Replace the host's plan with one built from a starter `template`, called `name`.
+    pub async fn template_plan(
+        &mut self,
+        template: &str,
+        name: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::TemplatePlan {
+            template: template.into(),
+            name: name.into(),
+        })
+        .await
+    }
+
+    /// Replace the host's plan with an independent copy of it under `name` (FR-005).
+    pub async fn duplicate_plan(
+        &mut self,
+        name: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::DuplicatePlan { name: name.into() }).await
+    }
+
+    /// Replace the host's plan with an imported run sheet.
+    pub async fn import_plan(
+        &mut self,
+        name: &str,
+        items: Vec<ImportItemView>,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::ImportPlan {
+            name: name.into(),
+            items,
+        })
+        .await
+    }
+
     pub async fn add_item(
         &mut self,
         kind: &str,

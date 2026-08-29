@@ -706,3 +706,20 @@ Whole-codebase performance review — PASS with approved exceptions; idle-RSS/co
 **One more found by opening the PR.** The first PR raised since August produced a red pipeline in 20 seconds: `dorny/paths-filter` calls the GitHub API on a `pull_request` event and needs `pull-requests: read`, which the repository default does not grant. The only previous PR run (`30718327254`, 2026-08-01) had died the same way in 17s and nobody noticed, because work is pushed straight to `main` where that code path never executes. Fixed on the same branch. Same shape as the incident above: a gate failing for months somewhere nobody was looking.
 
 **Follow-up `86ak5rjh7`** (Bug, high): close the local/CI coverage gap — `api` and `marketing` have no local gate at all; `make ci` cannot run in a fresh worktree (CI stages Tauri sidecar placeholders and `make ci` does not, and the `: >` staging pattern would silently truncate an owner-supplied NDI dll); `selahcue-stt` is linted by **nothing** and already violates its own `unwrap_used` policy; and `make ci` still aborts at the first failing recipe line where CI no longer does.
+
+---
+
+## Desktop licensing client foundation (2026-08-25)
+
+First code closing the audit's finding (2) above — *"no desktop code references activation/entitlement/licence at all"*. New workspace crate `selahcue-licensing` (`86ak5mn11`, EPIC-PL-C): device activation over both shipped paths, device-token custody in the OS secret store, and the rotation-ready trusted-key **set** selected by `key_id` (FR-518 / DEC-011 pt 2). It obtains and stores credentials and gates nothing — enforcement is `86ak5mn1t`.
+
+- Goal Contract: `docs/delivery/goals/GOAL-desktop-licensing-client.md` (state `GATE_REVIEW`)
+- Branch `feat/86ak5mn11-desktop-licensing-client` → **PR #4** against `main` (not merged).
+- **All four reviewers cleared it** — Cody (code), Sana (security), Vera (performance), Quinn (QA). Every finding remediated and mutation-verified with a landing check, an exhibition probe and a clean baseline between mutations.
+- Rebased onto the `1.98.0` toolchain pin (`86ak5rc9c`) and re-gated on that compiler.
+
+**Two contract corrections worth carrying forward.** The two activation paths do **not** share a transport — the enrollment key goes to `POST /v1/activations`, the account path is the `activateDeviceWithSession` GraphQL mutation. And `NOT_FOUND` means *different things per path*: "no active plan" (A6) on the session path, "unrecognised key" (A4) on the key path. Classifying it one way told a signed-in admin whose plan had lapsed to check a key that path never uses.
+
+**Not claimed:** FR-517's first criterion is re-scoped, not passed (its evidence is a mocked transport and `86ak5t1gw` makes the real path unreachable); FR-518 is partially addressed — the key set only, the rest is `86ak5mn1d`; AC-5 was struck and raised as `86ak66uzg` rather than rewritten to match the server, because restating a product gap as a criterion would convert it into a specification. `C-014` and `C-015` stay open on owner decisions.
+
+**Blocking follow-ups raised:** `86ak5t1gw` (urgent, API) — Django CSRF rejects `/graphql/account`, so the *primary* activation path cannot authenticate against the deployed API; it fails closed and is documented as not-yet-reachable rather than described as shipped. `86ak5rjh7` (Otto) — `make ci` cannot run on a fresh clone without the Tauri sidecar placeholders. Still open for the owner: whether the API should carry a sub-code separating A5 (device limit) from A6 (expired) on the enrollment-key path, where the server currently returns an identical `POLICY_DENIED` for both.

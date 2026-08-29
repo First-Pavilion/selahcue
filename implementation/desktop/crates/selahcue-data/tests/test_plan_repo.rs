@@ -325,6 +325,7 @@ fn round_trips_a_linked_content_reference() {
             reference: "Romans 8:28-30".into(),
             translation: Some("WEB".into()),
             verses_per_slide: Some(2),
+            verse_numbers: None,
         }),
     )
     .unwrap();
@@ -333,6 +334,7 @@ fn round_trips_a_linked_content_reference() {
         Some(ItemContent::Deck {
             deck_id: 17,
             slide_count: None,
+            label: None,
         }),
     )
     .unwrap();
@@ -351,6 +353,7 @@ fn round_trips_a_linked_content_reference() {
             Some(ItemContent::Deck {
                 deck_id: 99,
                 slide_count: None,
+                label: None,
             }),
         )
         .unwrap();

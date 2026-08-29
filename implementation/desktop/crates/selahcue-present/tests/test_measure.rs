@@ -8,7 +8,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_engine::raster::measure_line_width;
+use selahcue_engine::raster::{measure_line_width, system_font_families};
 use selahcue_engine::scene::Frame;
 use selahcue_present::measure::{
     measure_cache_hits_for, measure_cache_len, measure_cache_stats, measure_word,
@@ -258,6 +258,292 @@ fn verse_frame(theme: &Theme, width: u32, height: u32) -> Frame {
     )
 }
 
+/// Serif families this test will accept, in preference order.
+///
+/// It needs ONE face that is genuinely INSTALLED on the host and shapes differently from the
+/// bundled Noto Sans. No single family name satisfies that on all three CI runners, so the
+/// test takes the first candidate that qualifies rather than hard-coding one:
+///
+/// | family             | macOS | Windows | ubuntu-latest                                      |
+/// |--------------------|-------|---------|----------------------------------------------------|
+/// | `Times New Roman`  | yes   | yes     | NO — a Microsoft core font, absent from the image  |
+/// | `Liberation Serif` | no    | no      | yes — from `fonts-liberation`, which ci.yml pins   |
+/// | `DejaVu Serif`     | no    | no      | common on other distros and on dev machines        |
+/// | `Georgia`          | yes   | yes     | no                                                 |
+const SERIF_CANDIDATES: [&str; 4] = [
+    "Times New Roman",
+    "Liberation Serif",
+    "DejaVu Serif",
+    "Georgia",
+];
+
+/// A family name no host can have installed. Measuring with it yields whatever THIS host
+/// falls back to for an unknown family — the reference a candidate must differ from to prove
+/// it actually resolved instead of silently falling back.
+const NO_SUCH_FAMILY: &str = "SelahCue No Such Family 8f3a1c";
+
+/// A SECOND impossible name, for the control that proves the `resolved` half of the selection
+/// predicate is alive. It must be a different string from [`NO_SUCH_FAMILY`]: feeding the
+/// predicate the very family the fallback reference was measured from reduces the check to
+/// `fallback != fallback`, which is false for reasons that have nothing to do with the control.
+/// Two distinct unknown families landing on the same fallback is the documented engine
+/// behaviour — see `a_missing_font_falls_back_readably_and_deterministically`.
+const ALSO_NO_SUCH_FAMILY: &str = "SelahCue Also No Such Family 5d2e9b";
+
+/// Byte equality usable in a `const` context — `str`'s own `==` is not const.
+const fn same_str(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// The decoy control's premise, pinned at COMPILE time. Collapsing the two sentinel names makes
+/// the control feed the predicate the very family `fallback` was measured from, which reduces it
+/// to `fallback != fallback` — always false, so the control passes for a reason that has nothing
+/// to do with what it is guarding. Silently green when it happened; a compile error now.
+const _: () = assert!(
+    !same_str(NO_SUCH_FAMILY, ALSO_NO_SUCH_FAMILY),
+    "NO_SUCH_FAMILY and ALSO_NO_SUCH_FAMILY must be DIFFERENT strings, or the decoy control \
+     below degrades to `fallback != fallback` and stops testing the selection predicate"
+);
+
+/// The BUNDLED family's own name — the input that isolates the OTHER half of the predicate.
+/// Requesting it measures identically to the default, because it names the default's own
+/// typeface. On macOS and Windows that makes `distinct` the only thing refusing it, which is
+/// what gives the second control below something to bite on. (On Linux the unknown-family
+/// fallback is this same face, so it is refused by `resolved` too and the control is merely
+/// redundant there — never wrong, just not the host that exercises it.)
+///
+/// THE PREMISE IS THE WEIGHT, NOT THE LOAD ORDER — measured, and it corrects what an earlier
+/// revision of this file and a comment in selahcue-engine both claimed. `fontdb`'s
+/// `find_best_match` filters candidates by EXACT weight (fontdb 0.16.2 step 4c) *before* the
+/// `fontdb::ID` insertion-order tie-break ever runs:
+///
+/// * At **400** the bundled Regular is an exact weight match and so is a system Noto Sans
+///   Regular, and the two are the same typeface — a Latin subset of it — so whichever wins the
+///   tie-break yields the SAME advances. Verified in a container with `fonts-noto-core`
+///   installed: identical widths whether the bundled faces are loaded before OR after
+///   `load_system_fonts()`. Insertion order is genuinely not load-bearing FOR THIS CONTROL —
+///   which is a fact about Noto Sans, NOT a general one about `build_system_fs`. It holds only
+///   because the bundled Latin subset and a system Noto Sans are the same design. The bundled
+///   Inter beside it has no such guarantee (Inter 4.0 changed default metrics), so for Inter the
+///   tie-break really does decide advances and nothing tests it. Do not generalise this line
+///   into a reason to reorder those loads.
+/// * At **700** there is no bundled Noto Sans Bold, so the weight filter eliminates the bundled
+///   Regular outright and a real system Bold wins. Measured: the widths then DIFFER from the
+///   default (`168.566` vs `159.667`), which would make `bundled_distinct` true and break the
+///   control.
+///
+/// So this control holds because [`Theme::classic`] uses weight 400. Move the default theme off
+/// 400 and the premise assertion below fires — which is the point of asserting it rather than
+/// documenting it.
+const BUNDLED_FAMILY: &str = "Noto Sans";
+
+/// Every word of [`VERSE`] shaped at one cell in one typography.
+fn verse_widths(font: Option<&FontName>, weight: u16) -> Vec<f32> {
+    VERSE
+        .split_whitespace()
+        .map(|w| measure_line_width(w, 40, font, weight))
+        .collect()
+}
+
+/// The first [`SERIF_CANDIDATES`] entry genuinely usable on this host, or a panic naming
+/// every candidate it looked for and what the host actually has.
+///
+/// TWO conditions, and the first is the one this test used to omit:
+///
+/// 1. **It RESOLVED** — its widths differ from the unknown-family fallback's. Without this,
+///    condition 2 is host-dependent in a way that inverts its meaning. On macOS an unknown
+///    family falls back to a system UI face that is NOT the bundled Noto Sans, so condition 2
+///    alone holds for *any* string: verified, the nonsense name [`NO_SUCH_FAMILY`] satisfies
+///    it, so the old check passed on macOS without the named face being installed at all. On
+///    Linux the same fallback IS the bundled Noto Sans, so condition 2 alone fails even on a
+///    host carrying perfectly good serif faces. That is exactly how this test came to be
+///    green on macOS and red on ubuntu (86ak643rc) while checking neither thing it claimed.
+/// 2. **It is DISTINGUISHABLE from the bundled default** — otherwise the serif frame
+///    comparisons below could not tell a font-blind cache key from a correct one.
+///
+/// This premise is STRICTER than the single assertion it replaces, not looser: the old form
+/// could not fail on macOS and could not pass on a Linux host regardless of its fonts.
+///
+/// WHAT A HOST WITHOUT A SERIF ACTUALLY LOSES. Not the font/weight contract — that is carried
+/// by [`every_shaping_attribute_is_part_of_the_cache_key`], which compares KEYS rather than
+/// frames and deliberately names an uninstalled family, so it holds on any host. Measured on a
+/// bare `ubuntu:24.04` with zero fonts: that test passes unmutated and still goes RED when
+/// `font` is dropped from `measure::Key`. What a serif-less host loses is the LAYOUT-level
+/// check below — the one that proves a font-blind key changes a composed frame and not merely
+/// a cache entry. Worth being exact about, because someone deciding whether to keep a
+/// version-pinned font package in CI should weigh "restores a layer" differently from "without
+/// this the test is meaningless". The panic below is what keeps that loss loud.
+fn installed_serif(plain: &Theme) -> FontName {
+    let unknown = FontName::new(NO_SUCH_FAMILY).expect("the sentinel name fits FontName::CAP");
+    let fallback = verse_widths(Some(&unknown), plain.weight);
+    let default = verse_widths(plain.font.as_ref(), plain.weight);
+
+    // The selection predicate, including THE COMBINATION, as one definition. Returning the
+    // two halves and letting each caller AND them itself is what made the first version of
+    // the control below dead: mutation-checked, dropping `resolved` from the loop left the
+    // control's own copy of the expression intact and the whole file stayed green. The
+    // verdict must be computed here, once, or the control is testing a different predicate
+    // than the one that selects the face.
+    let verdict = |family: &FontName| -> (bool, bool, bool) {
+        let widths = verse_widths(Some(family), plain.weight);
+        let resolved = widths != fallback;
+        let distinct = widths != default;
+        (resolved && distinct, resolved, distinct)
+    };
+
+    // POSITIVE CONTROL for the `resolved` half. `resolved` is a control this helper ADDS, and
+    // an unexercised control is indistinguishable from a dead one — the same bar this file
+    // sets for the cache tests, applied to the fix rather than only to the thing it fixes.
+    //
+    // On macOS and Windows an unknown family falls back to a system UI face (`.SF NS`, Segoe
+    // UI) which is NOT the bundled Noto Sans, so an uninstalled family SATISFIES `distinct`.
+    // There, `resolved` is the only thing standing between this helper and the vacuous state
+    // it exists to remove — delete `resolved` from the predicate and this assertion goes RED.
+    // On Linux the fallback IS the bundled face, so `distinct` already refuses the decoy and
+    // nothing here can bite; that is a property of the host, not a weakening, and the message
+    // reports which case ran so a green result is never mistaken for an exercised one.
+    let decoy = FontName::new(ALSO_NO_SUCH_FAMILY).expect("the sentinel name fits FontName::CAP");
+    let (decoy_accepted, decoy_resolved, decoy_distinct) = verdict(&decoy);
+    assert!(
+        !decoy_accepted,
+        "the uninstalled family {ALSO_NO_SUCH_FAMILY:?} SATISFIED the selection predicate \
+         (resolved={decoy_resolved}, differs_from_bundled={decoy_distinct}), so the serif \
+         chosen below could be a fallback face rather than an installed one — exactly the \
+         vacuous state this helper exists to prevent"
+    );
+
+    // POSITIVE CONTROL for the `distinct` half — the mirror of the one above, and it exists
+    // because mutation-checking the first one showed `distinct` sitting in exactly the
+    // unexercised position `resolved` had been in. A face that RESOLVES but measures the same
+    // as the bundled default must be refused, or the serif theme could be the default theme
+    // wearing another name and the frame comparisons below would compare a theme against
+    // itself. Drop `distinct` from the predicate above and this goes RED on macOS/Windows.
+    let bundled = FontName::new(BUNDLED_FAMILY).expect("the bundled family fits FontName::CAP");
+    let (bundled_accepted, bundled_resolved, bundled_distinct) = verdict(&bundled);
+    // THE CONTROL'S OWN PREMISE, asserted rather than merely printed. If BUNDLED_FAMILY stops
+    // naming the bundled face, this control silently becomes a second unknown-family decoy:
+    // refused by `resolved` instead of by `distinct`, so it no longer catches a predicate that
+    // has lost `distinct`. Compound-mutation-checked — that is exactly what happened.
+    //
+    // `!bundled_distinct` is the portable NECESSARY half of the premise, and it is deliberately
+    // NOT `bundled_resolved`: on Linux the unknown-family fallback IS the bundled face, so
+    // `bundled_resolved` is FALSE there and asserting it would fail the runner this whole ticket
+    // exists to fix.
+    //
+    // Be exact about what that does and does not buy, because the sufficient half CANNOT be
+    // asserted portably. The control is `!(resolved && distinct)`. What ARMS it is
+    // `bundled_resolved` — true on macOS/Windows, false on Linux — because with `distinct`
+    // dropped the control degrades to `!resolved`, which only fires where `resolved` is true.
+    // So on macOS/Windows this premise plus the control below kill both a non-resolving
+    // BUNDLED_FAMILY and a predicate that has lost `distinct`; on LINUX both survive, because
+    // there the bundled family is refused by `resolved` anyway and neither assertion can tell
+    // the difference. That is the best available rather than a gap being hidden: the guard bites
+    // exactly on the hosts where the control has power. The const doc on BUNDLED_FAMILY says the
+    // same thing from the other direction — keep the two consistent if either is edited.
+    //
+    // Point BUNDLED_FAMILY at a name that does not resolve and, on macOS/Windows, its widths
+    // become the system fallback's — which DO differ from the default — so this fires.
+    assert!(
+        !bundled_distinct,
+        "the control family {BUNDLED_FAMILY:?} no longer measures identically to the bundled \
+         default (resolved={bundled_resolved}, differs_from_bundled={bundled_distinct}), so it \
+         is refused by `resolved` rather than by `distinct` and has stopped guarding `distinct` \
+         at all"
+    );
+    assert!(
+        !bundled_accepted,
+        "the BUNDLED family {BUNDLED_FAMILY:?} SATISFIED the selection predicate \
+         (resolved={bundled_resolved}, differs_from_bundled={bundled_distinct}), so a face \
+         that measures identically to the default could be chosen as the serif and the frame \
+         comparisons below would compare a theme against itself"
+    );
+
+    let mut tried = String::new();
+    for name in SERIF_CANDIDATES {
+        // A name over `FontName::CAP` is a candidate that was looked for and could not even be
+        // asked about. Record it: the panic below promises "Candidates looked for", and a
+        // silent `continue` would quietly break that promise the day someone adds a long name.
+        let Some(family) = FontName::new(name) else {
+            tried.push_str(&format!(
+                "\n    {name:<17} REJECTED by FontName::new — over the {} byte cap, never queried",
+                FontName::CAP
+            ));
+            continue;
+        };
+        let (accepted, resolved, distinct) = verdict(&family);
+        if accepted {
+            return family;
+        }
+        tried.push_str(&format!(
+            "\n    {name:<17} resolved={resolved:<5} differs_from_bundled={distinct}"
+        ));
+    }
+
+    // Name what the host DOES have — and, more usefully, whether anything it already has would
+    // WORK. "Install a font" is the wrong advice on a machine that has a perfectly good serif
+    // under a name this list does not mention; there the one-line fix is to widen the list.
+    let families = system_font_families();
+    // Bound the WORK, not just the matches. `.take(5)` after the filter stops collecting once
+    // five qualify, but on a host where none does it would shape every word of VERSE against
+    // every installed family — several hundred on a desktop. This runs only on an already
+    // failing test, i.e. exactly when someone is waiting, so probe a bounded prefix and say
+    // so rather than being the slowest thing in the file.
+    const MAX_FAMILIES_PROBED: usize = 60;
+    // Skip the platform's HIDDEN faces BEFORE spending the probe budget. macOS enumerates
+    // dozens of dot-prefixed internal families (".Al Bayan PUA", ".Apple SD Gothic NeoI") and
+    // they sort first, so filtering them after the `take` spends the whole budget on faces that
+    // are then discarded — measured: the advice degraded to "install one" on a host that has
+    // Times New Roman, Georgia and PT Serif. They also satisfy both conditions, so leaving them
+    // in makes the message recommend a face the OS does not consider public. Filter first, then
+    // bound, so the budget is spent on families a person could actually be told to use.
+    let public: Vec<&String> = families
+        .iter()
+        .filter(|n| !n.starts_with('.'))
+        .take(MAX_FAMILIES_PROBED)
+        .collect();
+    let probed = public.len();
+    let usable_here: Vec<&String> = public
+        .into_iter()
+        .filter(|n| FontName::new(n).is_some_and(|f| verdict(&f).0))
+        .take(5)
+        .collect();
+    let advice = if usable_here.is_empty() {
+        "FIX: install a serif face. On a Linux CI runner that is `fonts-liberation` \
+         (Liberation Serif) — .github/workflows/ci.yml installs it for exactly this test, so \
+         if that step was dropped or the runner image changed, restore it."
+            .to_string()
+    } else {
+        format!(
+            "FIX (cheaper — nothing needs installing): of the first {probed} families on this \
+             host, {} ALREADY satisfy both conditions: {usable_here:?}. Add one to \
+             SERIF_CANDIDATES rather than installing anything.",
+            usable_here.len()
+        )
+    };
+    panic!(
+        "no usable serif face is installed on this host, so the serif frame comparisons in \
+         this test could not tell a font-blind cache key from a correct one.\n  \
+         Candidates looked for:{tried}\n  \
+         This host enumerates {} installed families (the first {probed} were probed).\n  \
+         {advice}\n  \
+         Do NOT relax the two conditions: they are what make the comparisons below mean \
+         anything. Note the cache-key contract itself is NOT at stake here — \
+         `every_shaping_attribute_is_part_of_the_cache_key` carries that on any host.",
+        families.len()
+    );
+}
+
 #[test]
 fn a_lookup_at_a_second_cell_is_never_answered_with_the_first_cells_width() {
     // THE BAR FOR THIS TEST: it must fail if the control it names — the `cell` inside
@@ -450,8 +736,12 @@ fn themes_differing_only_in_typography_never_share_a_measurement() {
         weight: 800,
         ..Theme::dark()
     };
+    // The serif face is CHOSEN, not assumed. `installed_serif` refuses to return one that is
+    // not genuinely installed AND genuinely distinguishable from the bundled default, and
+    // names what it looked for when it cannot find one. Its doc comment records why the old
+    // inline check here was satisfied on macOS by a face that was not installed at all.
     let serif = Theme {
-        font: FontName::new("Times New Roman"),
+        font: Some(installed_serif(&plain)),
         ..Theme::dark()
     };
 
@@ -474,10 +764,17 @@ fn themes_differing_only_in_typography_never_share_a_measurement() {
                 != measure_line_width(w, 40, plain.font.as_ref(), plain.weight)
         })
     };
+    // DO NOT TIDY THIS AWAY as a restatement of `installed_serif`. It reads like one and it is
+    // not: QA mutation-checked it (86ak643rc). Make the selection loop IGNORE its own predicate
+    // and return the first candidate regardless, and this line is the ONLY thing that fails —
+    // and it fails on LINUX specifically, the runner this ticket exists to fix. On macOS the
+    // same defect survives, because there the first candidate happens to be installed anyway.
+    // `installed_serif` guarantees the property at selection time; this asserts it at USE time,
+    // and only the second catches a selector that stopped honouring its own verdict.
     assert!(
         widths_move(&serif),
-        "the serif family shapes identically to the default on this host, so the serif \
-         frame comparisons below cannot tell a font-blind key from a correct one"
+        "the chosen serif face {:?} shapes identically to the bundled default after all",
+        serif.font
     );
     // The bundled face has ONE weight, so 800 is a synthetic embolden that moves no
     // advance: `measure_line_width` returns the same width at 400 and at 800 for every

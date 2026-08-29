@@ -65,6 +65,10 @@ def _seed_license_key(*, tag, device_limit=3, starts_at=None, expires_at=None):
             customer_id=str(customer.id),
             key_type="TRIAL",
             feature_scope="CHURCH",
+            # DEC-014 refuses issuance onto the catalogue's designated fallback, so this
+            # seeder names a sellable plan. The lifecycle/transport behaviour these tests
+            # assert does not depend on which plan it is.
+            plan_code="PRO",
             starts_at=starts_at or now,
             expires_at=expires_at or (now + timedelta(days=30)),
             timezone="Africa/Lagos",
@@ -165,7 +169,13 @@ def test_only_activatable_statuses_are_issued_a_manifest(activated, status):
     # Keep expires_at in the future so the device token stays live and auth still passes —
     # this is what makes the REVOKED case reachable at all.
     key.status = status
-    key.save(update_fields=["status", "updated_at"])
+    # A SUSPENDED licence must carry the status it came from (DEC-010); the
+    # `license_key_prior_status_iff_suspended` constraint refuses a SUSPENDED row without
+    # one, and refuses a stale one on every other status. The licence is ACTIVATED here.
+    key.prior_status = (
+        LicenseKeyStatus.ACTIVATED.value if status == LicenseKeyStatus.SUSPENDED else ""
+    )
+    key.save(update_fields=["status", "prior_status", "updated_at"])
 
     if status in {s.value for s in ACTIVATABLE_KEY_STATUSES}:
         assert build_entitlement_manifest(token).envelope["alg"] == "Ed25519"

@@ -29,6 +29,14 @@ class AppLicenseKey(models.Model):
     )
     key_type = models.CharField(max_length=32, choices=LicenseKeyType.choices)
     status = models.CharField(max_length=32, choices=LicenseKeyStatus.choices, default=LicenseKeyStatus.ISSUED)
+    # The status held immediately before a suspension, so reinstatement returns the licence
+    # where it actually came from instead of guessing ACTIVATED (DEC-010 / FR-504, FR-510).
+    # Blank at every other point in the lifecycle; the check constraint below makes that an
+    # invariant of the row rather than a convention of whoever writes it. Written and cleared
+    # only by `state_machine.apply_license_status_transition`.
+    prior_status = models.CharField(
+        max_length=32, choices=LicenseKeyStatus.choices, blank=True, default=""
+    )
     key_prefix = models.CharField(max_length=32)
     key_suffix = models.CharField(max_length=16)
     masked_key = models.CharField(max_length=64)
@@ -56,6 +64,19 @@ class AppLicenseKey(models.Model):
             models.CheckConstraint(
                 condition=models.Q(expires_at__gt=models.F("starts_at")),
                 name="license_key_expires_after_start",
+            ),
+            # DEC-010 calls the recorded prior status a schema implication, so it is enforced
+            # in the schema. A SUSPENDED row must carry the status it came from, and no other
+            # row may carry one — which also stops a stale value surviving a reinstatement and
+            # being read by the next suspension. Any write that sets SUSPENDED without the
+            # prior status in the SAME statement fails here, which is the point: it means the
+            # state machine was bypassed.
+            models.CheckConstraint(
+                condition=(
+                    (models.Q(status=LicenseKeyStatus.SUSPENDED) & ~models.Q(prior_status=""))
+                    | (~models.Q(status=LicenseKeyStatus.SUSPENDED) & models.Q(prior_status=""))
+                ),
+                name="license_key_prior_status_iff_suspended",
             ),
         ]
         indexes = [

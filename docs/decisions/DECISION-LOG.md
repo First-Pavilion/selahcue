@@ -4,6 +4,104 @@ Durable record of material product/scope/architecture decisions, with traceabili
 
 ---
 
+## DEC-016 — ProPresenter UI adoption posture: adopt/adapt/reject per the Operator UI PRD (PROPOSED)
+
+- **Date:** 2026-08-28
+- **Stage:** Owner-commissioned ProPresenter UI report + PRD (pre-ticket; Diego cuts ClickUp tickets only after the owner gate)
+- **Decided by:** PROPOSED by Product Manager (Priya) — **awaiting owner gate; no owner decision is recorded here**
+- **Type:** Product scope posture (operator console UI)
+- **Status:** PROPOSED
+
+**Proposal.** SelahCue selectively imports ProPresenter interaction patterns per `docs/product/prds/SelahCue-Operator-UI-PRD.md` §13: **8 adopt · 15 adapt · 14 reject · 5 already-ship**, grounded in the cited evidence report `docs/research/PROPRESENTER-UI-RESEARCH.md` (Rowan, 2026-08-28) and the owner's two annotated screenshots. First slice = the owner-flagged slide-grid view-density cluster + thumbnail-size slider, plan section groups + durations, attention badges, song group colours + hotkeys, and re-semanticised per-screen status.
+
+**Rejections that are already structurally decided elsewhere** (restated, not re-decided): click-to-live slide firing (violates the FR-012 staging invariant), audience rendering in the operator WebView (ADR-0002/0003), per-slide style painting (content⟂theme, THEME-MODEL spec), Looks/edge-blend/mirror screen types (NAV-IA §3 deferral stands).
+
+**Recorded facts from the research that future work must honour:**
+1. **Version house rule** — Renewed Vision abandoned `7.x`; current is **ProPresenter 21.4.2 (2026-07-01)**. Repo docs framed on "ProPresenter 7" (`COMPETITOR-MATRIX.md`, `LIBRARY-ORGANISATION-RESEARCH.md`) carry stale labels, and `renewedvision.com/propresenter7/whats-new7/` (cited five times in the matrix) is now HTTP 404. Write "ProPresenter (v21.x)" or "7.x-era", never bare "ProPresenter 7".
+2. **Colour-semantics guard** — ProPresenter's screen indicators use red=off; SelahCue's UX-CANONICAL uses red=live. No imported pattern may carry the reference product's colour semantics.
+3. **Evidence grades** — the stacked "Show" view, per-presentation header icon roster, countdown badges and preview audio meter are owner-screenshot-derived and vendor-undocumented; group hotkeys are Pro6-documented only. Each is adopted on SelahCue's own merits and designed from SelahCue's model, not cloned.
+
+**Open questions raised to the owner (PRD §28, not decided):** OQ-1 default density; OQ-2 arrangements priority; OQ-3 content-pack marketplace; OQ-4 audio bin; OQ-5 screen-status semantics; OQ-6 stacked-view default; OQ-7 hotkey assignment; **OQ-8 staging invariant vs the reference's click-to-live (recommend keeping the invariant); OQ-9 "Presenter One" identity (product not found; WorshipTools Presenter substituted).**
+
+**Reversibility.** Fully reversible pre-gate: the PRD is a draft, no tickets exist, no code is touched.
+
+---
+
+## DEC-015 — Development builds mint a dev-signed entitlement; `make` never requires activation
+
+- **Date:** 2026-08-26
+- **Stage:** Platform licensing implementation (EPIC-PL-C desktop enforcement client, [86ak5mn11](https://app.clickup.com/t/86ak5mn11))
+- **Decided by:** User (product owner)
+- **Type:** Developer experience + security boundary
+- **Status:** DECIDED
+
+**Decision.** `make launch`, `make output`, `make operator` and `make mobile` must run without activation or an account. The owner offered "bypass or mint"; **mint is taken**, realised through the key-set mechanism DEC-011 already requires:
+
+1. **Debug builds** carry a **dev public key** in the trusted key set alongside production's; **release builds must not**.
+2. `make` supplies an entitlement signed by the matching dev private key, carrying its own `key_id`.
+3. **No bypass branch exists in the enforcement path.** Signature verification, expiry handling and cache behaviour all run for real; only the trusted-key set differs by build profile.
+
+**User rationale.** "Running via `make` should either bypass license/account verification or mint a new license for now until when I want to QA it." Enforcement QA is to be opted into deliberately, later — development must not be gated on the licensing stack in the meantime.
+
+**Why mint rather than bypass.** A bypass is a branch that skips verification, and it is the highest-value target in the product: whatever flips it — an env var, a config file, a flag visible in `strings` — grants unlimited entitlement. It also means the shipped path is not the developed path, so the first real QA would be the first execution. Minting keeps one code path.
+
+**Required control.** A test asserting the dev `key_id` is **absent** from the trusted set under release configuration, with a **positive control** asserting it is present in debug — otherwise "absent" is indistinguishable from a mechanism that adds no keys at all. Mutation-verified per the repo bar (make the dev key unconditional → RED → restore, siblings running, never `--exact`). The dev **private** key is deliberately committed and named as non-production: a secret that is intentionally public cannot be mistaken for one that leaked.
+
+**Affected items.** `selahcue-licensing` trusted-key set and `key_id` handling; root `Makefile` run targets; the dev entitlement's grants stated explicitly rather than relying on client defaults (see DEC-014's restrictive-default requirement).
+
+**Reversibility.** Fully reversible — removing the dev key from the debug set restores unconditional production verification with no schema, wire or API change.
+
+---
+
+## DEC-014 — Entitlement fallback plan: gated before client enforcement, and new issuance must name a plan
+
+- **Date:** 2026-08-26
+- **Stage:** Platform licensing implementation (entitlement catalogue, [86ak10abc](https://app.clickup.com/t/86ak10abc)); raised as Finding F1 by independent security review
+- **Decided by:** User (product owner)
+- **Type:** Product + security posture (entitlement resolution)
+- **Status:** DECIDED
+
+**Decision.** Both halves adopted:
+
+1. **A hard gate:** plan assignment (or alias repointing) must be complete **before** the desktop enforcement client (EPIC-PL-C) ships, recorded as a blocking dependency on the enforcement work rather than only as a note on the catalogue ticket.
+2. **New issuance must name an explicit plan**, so licences stop inheriting `LEGACY`.
+
+**Supporting evidence.** Migration `0002` seeds `LEGACY` as the sole `is_fallback=True` plan with `screen_outputs: unlimited`, `ndi_outputs: unlimited`, `watermark: false`; migration `0003` maps every existing `feature_scope` to it; and `resolve_plan_for_license` (`catalogue/services.py:240-249`) routes any licence with no assignment and no alias there — **including every future licence issued with a novel scope**, since issuance takes `feature_scope` as free staff text and requires no plan. The fallback is therefore the most permissive plan in the catalogue.
+
+**Why this is a sequencing decision, not a bug.** It is a deliberate no-regression bridge: nothing enforces these limits client-side today, so the manifests issued during the bridge grant exactly what the client already does, and the one dimension with per-use serving cost (STT) is held at `0`. The risk is timing — the day enforcement begins honouring these values, every unassigned licence holds a signed better-than-Platinum entitlement **cached offline until licence expiry** (DEC-004), and Free orgs left on the fallback never show the FR-548 watermark.
+
+**Related client-side requirements** (cannot be enforced server-side; pinned on 86ak5mn11): an **absent** grant key must fall back to a **restrictive**, Free-shaped client default, since removing signed data is far cheaper for an attacker than forging it; and a **valid** degraded manifest (900 s expiry) must not evict a longer cached entitlement, which FR-518's keep-prior-cache rule does not currently cover.
+
+**Reversibility.** The gate is procedural. Requiring a plan at issuance is a validation change, reversible by relaxing it; existing licences are unaffected until assigned.
+
+---
+
+## DEC-013 — Password-reset / verification token mint drops PBKDF2 (`86ak66r5c`)
+
+- **Date:** 2026-08-26
+- **Stage:** Platform licensing / red-`main` remediation ([86ak66r5c](https://app.clickup.com/t/86ak66r5c))
+- **Decided by:** User (product owner), on unanimous review (security, performance, code)
+- **Type:** Security posture + performance
+- **Status:** DECIDED
+
+**Decision.** Remedy B, with three conditions **in a single commit**:
+
+1. The token mint stores a **cheap hash** instead of `make_password`. **The `token_hash` column is retained** — it is parked by documented convention (ADR-0023 specifies `CustomerSession` as a structural clone of `DeviceToken`), so there is no migration.
+2. The dummy timing equalisers are removed **with it**. **These line numbers are branch-relative.** On `fix/86ak643rc-api-red-main` (1169 lines) they are `apps/accounts/services.py:882`, `:893` and `:1111`; on `main` (1016 lines) there are only **two** equivalents — `:740` (resend) and `:958` (reset) — because the second resend equaliser exists only on the branch. Anyone applying this to a different base must re-locate them by the marker string `timing-equalizer-not-a-real-token`, not by line number.
+3. **ADR-0023 is amended at line 24**, where `CredentialToken` is described as "(same storage shape)" as `CustomerSession` and so inherits that entry's `token_hash = make_password(token)` claim. **Line 22 (`CustomerSession`) is unchanged by this decision, and line 20 (`CustomerUser.password_hash`) must not be swept up** — passwords keep PBKDF2.
+
+**Supporting evidence.** Key-stretching compensates for **low-entropy** secrets; these have no deficit to compensate — `_generate_token` is `secrets.token_urlsafe(32)`, 256 bits of CSPRNG output, and NIST SP 800-63B draws the same line. `token_hash` is **write-only**: production writes it at mint and never reads it, proved live by `tests/test_revocation_cascade.py:213,227` creating tokens with `token_hash="hash-{tag}"` — a value no hasher produced — while every authentication in that suite still works. The verification path is `token_fingerprint`, an **HMAC-SHA256 keyed by `SECRET_KEY`**: in a database-only leak an attacker cannot even *test* a candidate without that key, whereas the PBKDF2 column stores its salt beside the hash and is offline-testable from the DB alone. For this input class the keyed fast hash is **strictly stronger at rest** than the unkeyed slow one. Tokens live 1 hour (reset) / 24 hours (verify), single-use, with all sessions revoked on password change.
+
+**Why the equalisers move in the same commit.** The constant-time floor pads any branch finishing *under* it and only exposes one that *overruns*. Removing PBKDF2 from the mint alone drops that branch to ~1.4 ms (padded to the 400 ms floor) while the dummy branches keep burning ~450 ms — so the **non-existent-account** branches overrun and the existing-account ones do not, and a fast response comes to mean "account exists". The account-existence oracle would not merely survive: it would **return reversed**.
+
+**Measured effect.** Eligible branch 114.6 → **1.4 ms**, unknown 111.5 → **0.3 ms**; the existing 0.4 s floor retains **≥25× headroom** on the slowest observed runner; endpoint CPU −99%; caller latency and thread parking unchanged. Remedy A (raising the floor to 0.75–0.8 s) was rejected: it doubles caller latency, doubles the burst worker-pool saturation window, keeps the full CPU burn, and re-opens on every faster runner.
+
+**Explicitly unchanged — and note a grep finds four PBKDF2 sites, not three.** The login equaliser `_DUMMY_PASSWORD_HASH` — defined `main:295`, consumed by `check_password` at `main:792` (branch `:410`/`:945`) — and `password_hash` itself — passwords are low-entropy and keep PBKDF2 unconditionally. `AppLicenseKey.secret_hash` is out of scope: it **is** read back via `check_password`. `DeviceToken.token_hash` (`devices/services.py:150`) shares the write-only pattern but has no timing floor and therefore no oracle to invert; tracked separately.
+
+**Reversibility.** Reversible by restoring `make_password` at the mint **and** the three equalisers together. Reverting either alone reintroduces the inverted oracle.
+
+---
+
 ## DEC-012 — EXPIRED error code: split by surface — explicit on licence/entitlement, collapsed on auth tokens (D6)
 
 - **Date:** 2026-08-25
