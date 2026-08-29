@@ -6280,6 +6280,52 @@
       // ships today. The backend `summary` object (86ajy0hw0) is additive and arrives on the same
       // view; planRenderSummary reads ONE summary-shaped object either way, so adopting it is a
       // change here and nowhere else.
+      // A plan longer than a week is corrupt, not a service. Bounds the host total the way
+      // PLAN_MAX_ITEM_SECS bounds a single item's duration.
+      const PLAN_MAX_TOTAL_SECS = 86400 * 7;
+      const PLAN_MAX_COUNT = 100000;
+      const SUMMARY_COUNTS = ["items", "songs", "scripture", "presentations", "media",
+                              "announcements", "timers", "sections", "assigned", "missing", "unknown"];
+      // Validate the host summary before trusting it, and fall back to the local computation on
+      // anything malformed.
+      //
+      // The pass-through crosses a TRUST BOUNDARY. Handing the host's object straight to the
+      // renderer silently inherited every defect the local path had already been hardened against:
+      // `{}` rendered "NaN:NaN:NaN", 1e308 rendered "2.77e+304:58:56" (the exact string
+      // PLAN_MAX_ITEM_SECS exists to prevent), and a total disagreeing with the rows beneath it is
+      // the §9 MAJOR the header total was added to fix. None of that needs an attacker — a host one
+      // release ahead or behind is enough.
+      //
+      // Falling back is always SAFE: the local computation is derived from the very items being
+      // rendered, and is separately tested. So this errs strict.
+      function planSummaryIsSound(sum, items) {
+        if (!sum || typeof sum !== "object") return false;
+        const count = (v) => typeof v === "number" && isFinite(v) && Number.isInteger(v) && v >= 0 && v <= PLAN_MAX_COUNT;
+        if (!(typeof sum.planned_total_secs === "number" && isFinite(sum.planned_total_secs) &&
+              Number.isInteger(sum.planned_total_secs) && sum.planned_total_secs >= 0 &&
+              sum.planned_total_secs <= PLAN_MAX_TOTAL_SECS)) return false;
+        for (let i = 0; i < SUMMARY_COUNTS.length; i++) if (!count(sum[SUMMARY_COUNTS[i]])) return false;
+        if (sum.partial !== undefined && typeof sum.partial !== "boolean") return false;
+        if (sum.planned_items !== undefined && !count(sum.planned_items)) return false;
+        if (sum.partial === true && sum.planned_items === undefined) return false;
+        if (sum.assigned > sum.items) return false;
+        if (sum.missing + sum.unknown > sum.items) return false;
+        // Every item must land in exactly one per-kind line, or the panel shows figures that do not
+        // add up. Whether an inert `section` divider is itself an "item" is NOT settled (frame
+        // 608:875 counts 6 items over 3 dividers, and the same reasoning that excludes sections
+        // from `partial` may exclude them here), so BOTH readings are accepted — this guard is for
+        // garbage, and must not hard-code a decision nobody has made.
+        const kinds = sum.songs + sum.scripture + sum.presentations + sum.media +
+                      sum.announcements + sum.timers + sum.sections;
+        if (kinds !== sum.items && kinds - sum.sections !== sum.items) return false;
+        // The total must describe the items actually being rendered. A header reading 99999s over
+        // rows summing 600s is precisely the §9 MAJOR. Sections carry no duration, so this holds
+        // under either reading of the question above.
+        let localTotal = 0;
+        items.forEach((x) => { if (planHasDuration(x)) localTotal += x.planned_secs; });
+        if (sum.planned_total_secs !== localTotal) return false;
+        return true;
+      }
       function planSummaryOf(view) {
         // PREFER THE HOST'S SUMMARY. ServicePlan::planned_total() returns the sum and `partial`
         // from ONE pass, so the flag cannot drift from the number it describes — which is why it
@@ -6290,7 +6336,7 @@
         // "inert sections never set partial" rule (spec §4.2 — unset children, not headers) is the
         // host's to enforce and this client cannot diverge from it. The local fallback carries no
         // partial flag at all, so it has no section rule to get wrong either.
-        if (view && view.summary && typeof view.summary === "object") return view.summary;
+        if (planSummaryIsSound(view && view.summary, (view && view.items) || [])) return view.summary;
         const items = (view && view.items) || [];
         const by = (k) => items.filter((x) => x.kind === k).length;
         let total = 0;

@@ -46,7 +46,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # panel, the loading state, and the QA/security remediation. Set to the REAL observed count so
 # dropping even one trips exit 4. Sana S4: this floor had been left at 829 while the driver ran
 # more, which would have let every new check disappear without failing.)
-EXPECTED_MIN_CHECKS = 927
+EXPECTED_MIN_CHECKS = 939
 
 
 def find_chrome():
@@ -2918,11 +2918,21 @@ DRIVER = r"""
       // two headline numbers that can drift apart is precisely what was rejected.
       planSelectedId = null;
       planRenderBuilder(sumView);
-      ok(/planned/i.test(el("plan-b-total").textContent) && clockToSecs(el("plan-b-total").textContent) === rowDurationSum(),
-         "SP3 AC-22 (Quinn Q2): the run-sheet header shows the planned total and it equals the sum of the rendered rows' durations (header=\"" +
-         el("plan-b-total").textContent + "\" rows=" + rowDurationSum() + "s)");
-      ok(clockToSecs(el("plan-b-total").textContent) === clockToSecs(sumRowValue("Total time")),
-         "SP3 AC-22 (Quinn Q2): the header total and the Plan Summary total are the same figure");
+      // Q12: assert the RENDERED STRING, not its parse. clockToSecs reads "53:12" and "0:53:12"
+      // identically, so comparing parsed seconds let a regression from planFmtTotal to fmtClock
+      // pass every assertion here while the header and the summary visibly disagreed.
+      function fmtHMS(secs) {
+        var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), q = secs % 60;
+        return h + ":" + String(m).padStart(2, "0") + ":" + String(q).padStart(2, "0");
+      }
+      ok(sumRowValue("Total time") === fmtHMS(rowDurationSum()),
+         "SP3 AC-22 (Quinn Q2): the Plan Summary total is the h:mm:ss STRING for the rendered rows' durations (got \"" +
+         sumRowValue("Total time") + "\", expected \"" + fmtHMS(rowDurationSum()) + "\")");
+      ok(el("plan-b-total").textContent === "planned " + fmtHMS(rowDurationSum()),
+         "SP3 AC-22 (Quinn Q2): the run-sheet header renders exactly \"planned \" + that same string (got \"" +
+         el("plan-b-total").textContent + "\")");
+      ok(el("plan-b-total").textContent === "planned " + sumRowValue("Total time"),
+         "SP3 AC-22 (Quinn Q2): header and summary are the same STRING — m:ss vs h:mm:ss drift between them cannot hide behind a matching parse");
       // --- AC-4: the empty plan's counters, verbatim -------------------------------------------
       // AC-4 had no test at all, which is how the missing header total hid: with no total in the
       // header, the string AC-4 quotes could not be produced on any input.
@@ -2939,51 +2949,87 @@ DRIVER = r"""
       // --- host summary + `partial` (PR #13 contract, consumed not computed) -------------------
       // These drive the RENDERER with a synthetic host summary, so the consumption path is proven
       // against the agreed shape before the wire carries it — and so the swap cannot land wrong.
-      function withSummary(sum) {
+      // A host summary is only trusted when it DESCRIBES the items being rendered, so each of these
+      // pairs a summary with items it actually adds up over. (The first draft of this block used
+      // arbitrary figures and the new validator rejected every one of them — which is the guard
+      // working.)
+      function withSummary(items, sum) {
         planSelectedId = null;
-        planRenderBuilder({ plan_name:"HS", items: sumView.items, summary: sum });
+        planRenderBuilder({ plan_name:"HS", items: items, summary: sum });
         return sumRowValue("Total time");
       }
-      var BASE_SUM = { planned_total_secs:750, items:6, songs:2, scripture:1, presentations:1, media:1,
-                       announcements:1, timers:0, sections:0, assigned:5, missing:0, unknown:0 };
-      function sumWith(extra) {
-        var o = {}; Object.keys(BASE_SUM).forEach(function(k){ o[k] = BASE_SUM[k]; });
+      function hostSum(extra) {
+        var o = { planned_total_secs:0, items:0, songs:0, scripture:0, presentations:0, media:0,
+                  announcements:0, timers:0, sections:0, assigned:0, missing:0, unknown:0 };
         Object.keys(extra).forEach(function(k){ o[k] = extra[k]; });
         return o;
       }
-      // h:mm:ss, matching the design's own "0:53:12" and the format the rest of this panel uses —
-      // the contract note's "12:30 · partial" illustrates the semantic, not the formatting.
-      ok(withSummary(sumWith({ partial:true, planned_items:3 })) === "0:12:30 · partial",
+      var SONG = function(id, secs) {
+        var it = { id:id, kind:"song", title:"s"+id, is_live:false, is_staged:false };
+        if (secs !== null) it.planned_secs = secs;
+        return it;
+      };
+      ok(withSummary([SONG(301, 750), SONG(302, null)],
+                     hostSum({ planned_total_secs:750, items:2, songs:2, partial:true, planned_items:1 })) === "0:12:30 · partial",
          "SP3 AC-24: a partial total with something planned reads as a real but incomplete sum plus the marker (got \"" + sumRowValue("Total time") + "\")");
-      ok(withSummary(sumWith({ partial:true, planned_items:0 })) === "— · partial",
+      ok(withSummary([SONG(303, null), SONG(304, null)],
+                     hostSum({ planned_total_secs:0, items:2, songs:2, partial:true, planned_items:0 })) === "— · partial",
          "SP3 AC-24: with planned_items 0 the figure is meaningless and reads \"— · partial\" — zero is a legitimate duration meaning instant (spec §4.1), so a 0 total does NOT imply nothing is set");
-      ok(withSummary(sumWith({ partial:false, planned_items:6 })) === "0:12:30",
+      ok(withSummary([SONG(305, 750)], hostSum({ planned_total_secs:750, items:1, songs:1, partial:false, planned_items:1 })) === "0:12:30",
          "SP3 AC-24 (control): a complete total carries no marker — 'partial' is not stuck on");
-      var partialLabel = document.querySelector("#plan-b-insp .plan-sum-total .plan-sum-value").getAttribute("aria-label");
-      ok(!/partial/i.test(partialLabel),
+      ok(!/partial/i.test(document.querySelector("#plan-b-insp .plan-sum-total .plan-sum-value").getAttribute("aria-label")),
          "SP3 AC-24 (control): and the spoken form does not say partial either when it is complete");
-      withSummary(sumWith({ partial:true, planned_items:0 }));
+      withSummary([SONG(306, null)], hostSum({ planned_total_secs:0, items:1, songs:1, partial:true, planned_items:0 }));
       ok(/partial/i.test(document.querySelector("#plan-b-insp .plan-sum-total .plan-sum-value").getAttribute("aria-label")) &&
          !!document.querySelector("#plan-b-insp .plan-sum-total.is-partial"),
          "SP3 AC-24 a11y: 'partial' is spoken and marked, and the word is in the TEXT so it is not colour-only");
       // The "inert sections never set partial" rule (spec §4.2) is the HOST's to enforce, and this
       // client cannot diverge from it because it never computes the flag. A plan that is nothing
-      // but dividers, with the host reporting partial:false, must render no marker — the client
-      // must not second-guess it into one.
+      // but dividers, reported partial:false, must render no marker — the client must not
+      // second-guess it into one.
+      ok(withSummary([{id:201, kind:"section", title:"Gathering", is_live:false, is_staged:false},
+                      {id:202, kind:"section", title:"The Word",  is_live:false, is_staged:false}],
+                     hostSum({ planned_total_secs:0, items:2, sections:2, partial:false, planned_items:0 })) === "0:00:00" &&
+         !document.querySelector("#plan-b-insp .plan-sum-total.is-partial"),
+         "SP3 AC-24: a plan of inert section dividers is NOT marked partial — a warning that is always on is one coordinators learn to ignore");
+      // --- Q13: the pass-through crosses a trust boundary and must validate ---------------------
+      // None of these needs an attacker: a host one release ahead or behind produces them. Each
+      // must fall back to the local computation, which is derived from the rendered items.
+      var q13Items = [SONG(311, 300), SONG(312, 300)]; // local total 600 -> "0:10:00"
+      function malformed(sum, label) {
+        planSelectedId = null;
+        planRenderBuilder({ plan_name:"M", items:q13Items, summary:sum });
+        ok(sumRowValue("Total time") === "0:10:00" && sumRowValue("Items") === "2",
+           "SP3 AC-25 (Q13): " + label + " falls back to the local computation (got total \"" +
+           sumRowValue("Total time") + "\", Items \"" + sumRowValue("Items") + "\")");
+      }
+      malformed({}, "an empty summary object");
+      malformed(hostSum({ planned_total_secs:1e308, items:2, songs:2 }), "a non-finite-scale total (1e308 rendered 2.77e+304:58:56)");
+      malformed(hostSum({ planned_total_secs:-1200, items:2, songs:2 }), "a negative total (rendered -1:-20:00)");
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:5 }), "per-kind counts that do not add up to items");
+      malformed(hostSum({ planned_total_secs:99999, items:2, songs:2 }), "a total disagreeing with the rows beneath it (the §9 MAJOR)");
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:"2" }), "a count that is a string rather than a number");
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, partial:"yes" }), "a non-boolean partial");
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, partial:true }), "partial:true with no planned_items to disambiguate it");
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:9 }), "more assigned items than items");
+      // Control: a WELL-FORMED summary is still used. Without this the guard could pass by
+      // rejecting everything, which would silently disable PR #13 the day it merges.
       planSelectedId = null;
-      planRenderBuilder({ plan_name:"Sec", items:[
-        {id:201, kind:"section", title:"Gathering", is_live:false, is_staged:false},
-        {id:202, kind:"section", title:"The Word",  is_live:false, is_staged:false}
-      ], summary: sumWith({ items:2, songs:0, scripture:0, presentations:0, media:0, announcements:0,
-                            sections:2, assigned:0, planned_total_secs:0, partial:false, planned_items:0 }) });
-      ok(sumRowValue("Total time") === "0:00:00" && !document.querySelector("#plan-b-insp .plan-sum-total.is-partial"),
-         "SP3 AC-24: a plan of inert section dividers is NOT marked partial — a warning that is always on is one coordinators learn to ignore (got \"" + sumRowValue("Total time") + "\")");
-      // Control for the seam itself: with no host summary the local computation still stands in,
-      // so adding the pass-through has not quietly disabled today's path.
+      planRenderBuilder({ plan_name:"OK", items:q13Items,
+                          summary: hostSum({ planned_total_secs:600, items:2, songs:2, assigned:0, partial:true, planned_items:2 }) });
+      ok(sumRowValue("Total time") === "0:10:00 · partial",
+         "SP3 AC-25 (control): a sound host summary IS used — the guard rejects malformed input, not every input");
+      // ...and it is genuinely the HOST's object, not the local fallback coincidentally agreeing:
+      // the local computation cannot produce a partial marker at all.
+      ok(!!document.querySelector("#plan-b-insp .plan-sum-total.is-partial"),
+         "SP3 AC-25 (control): and the marker proves the host object was used — the local fallback carries no partial flag");
+      // Sections-not-items is UNSETTLED (frame 608:875 counts 6 items over 3 dividers), so the
+      // guard must accept both readings rather than hard-code a decision nobody has made.
       planSelectedId = null;
-      planRenderBuilder(sumView);
-      ok(sumRowValue("Items") === "6" && clockToSecs(sumRowValue("Total time")) === rowDurationSum(),
-         "SP3 AC-24 (control): with no host summary the local computation is still used and still agrees with the rows");
+      planRenderBuilder({ plan_name:"SX", items:[SONG(321, 600), {id:322, kind:"section", title:"D", is_live:false, is_staged:false}],
+                          summary: hostSum({ planned_total_secs:600, items:1, songs:1, sections:1 }) });
+      ok(sumRowValue("Items") === "1",
+         "SP3 AC-25: a host that excludes inert sections from `items` is accepted, not rejected — the guard is for garbage, not for an unsettled semantic");
       planSelectedId = null;
       planRenderBuilder(sumView);
       // --- missing-content count: three-state link status -------------------------------------
