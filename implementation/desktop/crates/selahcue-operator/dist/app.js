@@ -6310,14 +6310,18 @@
         if (sum.partial === true && sum.planned_items === undefined) return false;
         if (sum.assigned > sum.items) return false;
         if (sum.missing + sum.unknown > sum.items) return false;
-        // Every item must land in exactly one per-kind line, or the panel shows figures that do not
-        // add up. Whether an inert `section` divider is itself an "item" is NOT settled (frame
-        // 608:875 counts 6 items over 3 dividers, and the same reasoning that excludes sections
-        // from `partial` may exclude them here), so BOTH readings are accepted — this guard is for
-        // garbage, and must not hard-code a decision nobody has made.
+        // Every TRIGGERABLE item must land in exactly one per-kind line. Sections are excluded
+        // from `items` by the settled rule, so they are excluded here too.
         const kinds = sum.songs + sum.scripture + sum.presentations + sum.media +
-                      sum.announcements + sum.timers + sum.sections;
-        if (kinds !== sum.items && kinds - sum.sections !== sum.items) return false;
+                      sum.announcements + sum.timers;
+        if (kinds !== sum.items) return false;
+        // A subset can never exceed its whole. Backend caught the mirror of this in their own
+        // work: a duration set ON a section reached planned_items while the section was absent
+        // from items, so planned_items could exceed items and this panel would have rendered
+        // "7 of 6". Individually-correct fields that do not add up are what design QA rejected
+        // these frames for the first time round, so the seam checks the arithmetic, not just the
+        // field types.
+        if (sum.planned_items !== undefined && sum.planned_items > sum.items) return false;
         // The total must describe the items actually being rendered. A header reading 99999s over
         // rows summing 600s is precisely the §9 MAJOR. Sections carry no duration, so this holds
         // under either reading of the question above.
@@ -6337,8 +6341,14 @@
         // host's to enforce and this client cannot diverge from it. The local fallback carries no
         // partial flag at all, so it has no section rule to get wrong either.
         if (planSummaryIsSound(view && view.summary, (view && view.items) || [])) return view.summary;
-        const items = (view && view.items) || [];
-        const by = (k) => items.filter((x) => x.kind === k).length;
+        const all = (view && view.items) || [];
+        const by = (k) => all.filter((x) => x.kind === k).length;
+        // Every summary metric describes the TRIGGERABLE run sheet, so an inert `section` divider
+        // is excluded from all of them — items, assigned, the planned total, missing and unknown.
+        // Frame 608:875 is explicit: "6 items" and "Assigned 6 / 6" over six rows and THREE
+        // dividers, with no Sections line in the panel at all. The `sections` count is still
+        // reported below, so nothing is lost; it is simply no longer conflated with the run sheet.
+        const items = all.filter((x) => x.kind !== "section");
         let total = 0;
         let assigned = 0;
         let missing = 0;
@@ -6362,7 +6372,8 @@
         // `partial`/`unplanned` are local additions the wire may not carry — see the PR.
         return {
           planned_total_secs: total,
-          items: items.length,
+          items: items.length, // triggerable rows only — sections excluded
+          planned_items: items.filter(planHasDuration).length,
           songs: by("song"),
           scripture: by("scripture"),
           presentations: by("slide_group"), // slide-group count, per the wire shape
@@ -7337,7 +7348,9 @@
           // UI-A1 FR-202 asks for a "—" placeholder instead; the two acceptance criteria conflict
           // and DECISION 86ak84cth owns it. Current behaviour stands until that lands.
           // aria-label carries the SPOKEN form (UI-A1 §211) — "five colon zero zero" is not useful.
-          if (planHasDuration(it)) {
+          // A section is inert: its duration is excluded from the plan total, so rendering one on
+          // the row would put a number in the column that the header total does not include.
+          if (planHasDuration(it) && it.kind !== "section") {
             const dur = document.createElement("span");
             dur.className = "plan-b-dur";
             dur.textContent = planFmtDuration(it.planned_secs);
@@ -7512,7 +7525,9 @@
         // them (the demo plan in the frame has none) leaves a reader doing arithmetic that does not
         // add up — the same class of defect design-QA §9 rejected these frames for.
         card.appendChild(planSumRow("Timers", String(sum.timers)));
-        card.appendChild(planSumRow("Sections", String(sum.sections)));
+        // No Sections row: frame 608:875 has none, and `items` excludes sections, so a Sections
+        // line here would make the per-kind rows stop summing to Items — the exact "figures that
+        // do not add up" defect. The count is still carried on the summary object for other uses.
         // Missing content carries a ⚠ in the TEXT when non-zero, not just a colour — the count is
         // the one figure here that means "something is broken" (WCAG 1.4.1).
         card.appendChild(

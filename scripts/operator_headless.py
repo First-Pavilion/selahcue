@@ -46,7 +46,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # panel, the loading state, and the QA/security remediation. Set to the REAL observed count so
 # dropping even one trips exit 4. Sana S4: this floor had been left at 829 while the driver ran
 # more, which would have let every new check disappear without failing.)
-EXPECTED_MIN_CHECKS = 940
+EXPECTED_MIN_CHECKS = 943
 
 
 def find_chrome():
@@ -2873,12 +2873,16 @@ DRIVER = r"""
       // no timer and no section they never exercised the summation at all: the bug (two kinds
       // uncounted) and the check that should have caught it shared a blind spot. Deriving the
       // expectation also means an eighth ItemKind cannot slip past unnoticed.
+      // No `section` entry: the panel has no Sections row, because every summary metric describes
+      // the TRIGGERABLE run sheet and `items` excludes dividers (frame 608:875 — "6 items",
+      // "Assigned 6 / 6", six rows over three dividers).
       var KIND_ROWS = { song:"Songs", scripture:"Scripture", slide_group:"Presentations", media:"Media",
-                        announcement:"Announcements", timer:"Timers", section:"Sections" };
+                        announcement:"Announcements", timer:"Timers" };
       function assertKindCounts(view, label) {
         var expected = {}, unmapped = [];
         Object.keys(KIND_ROWS).forEach(function(k){ expected[k] = 0; });
-        view.items.forEach(function(it){
+        var triggerable = view.items.filter(function(it){ return it.kind !== "section"; });
+        triggerable.forEach(function(it){
           if (KIND_ROWS[it.kind] === undefined) unmapped.push(it.kind);
           else expected[it.kind] += 1;
         });
@@ -2892,8 +2896,11 @@ DRIVER = r"""
         });
         ok(wrong.length === 0,
            "SP3 AC-3 (" + label + "): each per-kind count matches the fixture (" + (wrong.join("; ") || "all match") + ")");
-        ok(shownTotal === view.items.length && String(shownTotal) === sumRowValue("Items"),
-           "SP3 AC-3 (" + label + "): the per-kind counts SUM to Items (" + shownTotal + " vs Items=" + sumRowValue("Items") + ", fixture=" + view.items.length + ")");
+        ok(shownTotal === triggerable.length && String(shownTotal) === sumRowValue("Items"),
+           "SP3 AC-3 (" + label + "): the per-kind counts SUM to Items, counting triggerable rows only (" + shownTotal +
+           " vs Items=" + sumRowValue("Items") + ", fixture=" + triggerable.length + " of " + view.items.length + " rows)");
+        ok(!sumRowValue("Sections"),
+           "SP3 AC-3 (" + label + "): the panel has NO Sections row — one would make the per-kind rows stop summing to Items");
       }
       assertKindCounts(sumView, "sumView");
       // A fixture carrying ALL seven ItemKind variants, so the summation is exercised across every
@@ -2989,7 +2996,7 @@ DRIVER = r"""
       // second-guess it into one.
       ok(withSummary([{id:201, kind:"section", title:"Gathering", is_live:false, is_staged:false},
                       {id:202, kind:"section", title:"The Word",  is_live:false, is_staged:false}],
-                     hostSum({ planned_total_secs:0, items:2, sections:2, partial:false, planned_items:0 })) === "0:00:00" &&
+                     hostSum({ planned_total_secs:0, items:0, sections:2, partial:false, planned_items:0 })) === "0:00:00" &&
          !document.querySelector("#plan-b-insp .plan-sum-total.is-partial"),
          "SP3 AC-24: a plan of inert section dividers is NOT marked partial — a warning that is always on is one coordinators learn to ignore");
       // --- Q13: the pass-through crosses a trust boundary and must validate ---------------------
@@ -3003,19 +3010,28 @@ DRIVER = r"""
       function malformed(sum, label) {
         planSelectedId = null;
         planRenderBuilder({ plan_name:"M", items:q13Items, summary:sum });
-        ok(sumRowValue("Total time") === "0:10:00" && sumRowValue("Items") === "2" && sumRowValue("Songs") === "2",
+        ok(sumRowValue("Total time") === "0:10:00" && sumRowValue("Items") === "2" &&
+           sumRowValue("Songs") === "2" && sumRowValue("Assigned") === "0 / 2",
            "SP3 AC-25 (Q13): " + label + " falls back to the local computation (got total \"" +
-           sumRowValue("Total time") + "\", Items \"" + sumRowValue("Items") + "\", Songs \"" + sumRowValue("Songs") + "\")");
+           sumRowValue("Total time") + "\", Items \"" + sumRowValue("Items") + "\", Songs \"" +
+           sumRowValue("Songs") + "\", Assigned \"" + sumRowValue("Assigned") + "\")");
       }
       malformed({}, "an empty summary object");
       malformed(hostSum({ planned_total_secs:1e308, items:2, songs:7 }), "a non-finite-scale total (1e308 rendered 2.77e+304:58:56)");
       malformed(hostSum({ planned_total_secs:-1200, items:2, songs:7 }), "a negative total (rendered -1:-20:00)");
       malformed(hostSum({ planned_total_secs:600, items:2, songs:7 }), "per-kind counts that do not add up to items");
       malformed(hostSum({ planned_total_secs:99999, items:2, songs:7 }), "a total disagreeing with the rows beneath it (the §9 MAJOR)");
-      malformed(hostSum({ planned_total_secs:600, items:2, songs:"7" }), "a count that is a string rather than a number");
-      malformed(hostSum({ planned_total_secs:600, items:9, songs:7, partial:"yes" }), "a non-boolean partial");
-      malformed(hostSum({ planned_total_secs:600, items:9, songs:7, partial:true }), "partial:true with no planned_items to disambiguate it");
-      malformed(hostSum({ planned_total_secs:600, items:2, songs:7, assigned:9 }), "more assigned items than items");
+      // Each of the remaining fixtures is otherwise WELL-FORMED, so exactly one check rejects it.
+      // Overlapping checks would mask a mutation of the one the case is meant to pin — which is
+      // how three of these survived the first round.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:"1" }), "a count that is a string rather than a number");
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, partial:"yes" }), "a non-boolean partial");
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, partial:true }), "partial:true with no planned_items to disambiguate it");
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:9 }), "more assigned items than items");
+      // Backend's own incoherence, mirrored: a duration set ON a section reached planned_items
+      // while the section was absent from items, so planned_items could exceed items and this
+      // panel would have rendered "7 of 6". A subset cannot exceed its whole.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, partial:true, planned_items:9 }), "planned_items exceeding items (\"7 of 6\")");
       // Isolates PLAN_MAX_TOTAL_SECS: eight items at the per-item cap sum to 691200s, so the total
       // AGREES with the rows and every other check passes — only the week-long bound rejects it.
       // A corrupt plan claiming eight days of runtime is the real shape of this.
@@ -3023,9 +3039,10 @@ DRIVER = r"""
       for (var hz = 0; hz < 8; hz++) hugeItems.push(SONG(400 + hz, 86400));
       planSelectedId = null;
       planRenderBuilder({ plan_name:"HUGE", items:hugeItems,
-                          summary: hostSum({ planned_total_secs:691200, items:8, songs:99 }) });
-      ok(sumRowValue("Songs") === "8",
-         "SP3 AC-25 (Q13): a total beyond the week-long bound is rejected even though it agrees with the rows — only the bound can catch this one (Songs=" + sumRowValue("Songs") + ")");
+                          summary: hostSum({ planned_total_secs:691200, items:8, songs:8, assigned:5 }) });
+      ok(sumRowValue("Assigned") === "0 / 8",
+         "SP3 AC-25 (Q13): a total beyond the week-long bound is rejected even though it agrees with the rows and every other field is sound — only the bound can catch this one (Assigned=" +
+         sumRowValue("Assigned") + ")");
       // Control: a WELL-FORMED summary is still used. Without this the guard could pass by
       // rejecting everything, which would silently disable PR #13 the day it merges.
       planSelectedId = null;
@@ -3043,7 +3060,7 @@ DRIVER = r"""
       planRenderBuilder({ plan_name:"SX", items:[SONG(321, 600), {id:322, kind:"section", title:"D", is_live:false, is_staged:false}],
                           summary: hostSum({ planned_total_secs:600, items:1, songs:1, sections:1 }) });
       ok(sumRowValue("Items") === "1",
-         "SP3 AC-25: a host that excludes inert sections from `items` is accepted, not rejected — the guard is for garbage, not for an unsettled semantic");
+         "SP3 AC-25: a host summary excluding inert sections from `items` is accepted — that is the settled rule, and the per-kind rows sum to it");
       planSelectedId = null;
       planRenderBuilder(sumView);
       // --- missing-content count: three-state link status -------------------------------------
@@ -3201,7 +3218,7 @@ DRIVER = r"""
       ] };
       planSelectedId = null;
       planRenderBuilder(kindsView);
-      var kindSum = ["Songs","Scripture","Presentations","Media","Announcements","Timers","Sections"]
+      var kindSum = ["Songs","Scripture","Presentations","Media","Announcements","Timers"]
         .reduce(function(a,k){ return a + Number(sumRowValue(k)); }, 0);
       ok(String(kindSum) === sumRowValue("Items"),
          "SP3 AC-11 (Quinn P1): the per-kind rows sum to Items for every kind, so a reader's arithmetic adds up (kinds=" + kindSum + " vs Items=" + sumRowValue("Items") + ")");
