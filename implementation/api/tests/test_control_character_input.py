@@ -64,6 +64,33 @@ NUL = "\x00"
 LK_LOGGER = "selahcue_api.apps.license_keys.services"
 CS_LOGGER = "selahcue_api.apps.catalogue.services"
 
+# The guard claims a character CLASS, so it is tested as one. Every case in this file used to
+# be NUL, which meant `CONTROL_CHARACTERS_RE` could be narrowed to `[\x00]` with the whole
+# suite still green on both engines — ESC, DEL, C1 CSI and SOH would then be STORED, and
+# `feature_scope` carries whatever is stored into the signed offline manifest. A control whose
+# claim is wider than its detection ships that narrowing silently.
+#
+# One representative per region of the class, each named so a failure says which one broke:
+CONTROL_CHARACTERS_UNDER_TEST = (
+    ("NUL", "\x00"),  # the C0 floor, and the only one Postgres names in its own error
+    ("SOH", "\x01"),  # ordinary C0, no special handling anywhere
+    ("ESC", "\x1b"),  # terminal escape — the one that matters if a value is ever echoed
+    ("DEL", "\x7f"),  # between the C0 and C1 blocks
+    ("CSI", "\x9b"),  # C1, the upper end of the class
+)
+
+# Pinned at IMPORT time. `require_reason` collapses whitespace BEFORE the guard runs, and
+# Python counts \x0b, \x0c, \x1c-\x1f and \x85 as whitespace — a `reason` case built from one
+# of those would have it stripped by the collapse, so no refusal would be raised and the case
+# would fail for a reason that has nothing to do with the guard. Everything above must survive
+# the collapse to reach it.
+for _name, _char in CONTROL_CHARACTERS_UNDER_TEST:
+    assert ("a" + _char + "b").split() == ["a" + _char + "b"], (
+        f"{_name} is whitespace to str.split(), so require_reason's collapse removes it before "
+        "the control-character guard runs and the `reason` case below tests nothing"
+    )
+    assert has_control_characters(_char), f"the guard does not consider {_name} a control character"
+
 # Pinned at IMPORT time: NUL is the character the whole file is about, and `str.split()` NOT
 # treating it as whitespace is the entire reason it survived `require_reason`'s collapse. If
 # Python ever changed that, the reason tests below would pass while testing nothing.
@@ -71,8 +98,6 @@ assert "x\x00y".split() == ["x\x00y"], (
     "str.split() now treats NUL as whitespace, so `require_reason`'s collapse would strip it "
     "and the reason cases in this file no longer reach the control-character guard"
 )
-assert has_control_characters(NUL), "the guard does not consider NUL a control character"
-
 
 def _staff(*permissions):
     return ActorContext(
@@ -160,23 +185,29 @@ def test_the_control_character_refusal_matches_an_ordinary_unknown_code():
 
 
 @pytest.mark.parametrize("field", ["reason", "feature_scope", "territory", "timezone"])
-def test_a_control_character_in_stored_text_is_refused_and_stores_nothing(field):
+@pytest.mark.parametrize("name,char", CONTROL_CHARACTERS_UNDER_TEST, ids=lambda v: v)
+def test_a_control_character_in_stored_text_is_refused_and_stores_nothing(field, name, char):
     """These reach the row verbatim, and `feature_scope` travels on into a SIGNED manifest
-    cached offline until the licence expires. On SQLite the NUL used to be stored silently."""
+    cached offline until the licence expires. On SQLite the byte used to be stored silently.
+
+    Swept across the character CLASS, not just NUL: `reason` goes through `require_reason`
+    while the other three go through the issuance loop, so this covers both guard sites for
+    every representative.
+    """
     before = set(AppLicenseKey.objects.values_list("id", flat=True))
     value = {
-        "reason": "An adequate reason" + NUL + " for this.",
-        "feature_scope": "CHURCH" + NUL,
-        "territory": "N" + NUL,
-        "timezone": "Africa/Lagos" + NUL,
+        "reason": "An adequate reason" + char + " for this.",
+        "feature_scope": "CHURCH" + char,
+        "territory": "N" + char,
+        "timezone": "Africa/Lagos" + char,
     }[field]
 
     with pytest.raises(SafeAPIError) as caught:
-        _issue(f"nul-{field}", **{field: value})
+        _issue(f"{name.lower()}-{field}", **{field: value})
 
     assert caught.value.extensions["code"] == ErrorCode.VALIDATION_FAILED.value
     assert set(AppLicenseKey.objects.values_list("id", flat=True)) == before, (
-        f"a licence was stored despite a control character in {field}"
+        f"a licence was stored despite {name} in {field}"
     )
 
 
@@ -232,18 +263,19 @@ def test_a_control_character_is_refused_when_assigning_a_plan(caplog):
 
 
 @pytest.mark.parametrize("field", ["plan_code", "dimension_key"])
-def test_a_control_character_is_refused_when_writing_a_plan_grant(field, caplog):
+@pytest.mark.parametrize("name,char", CONTROL_CHARACTERS_UNDER_TEST, ids=lambda v: v)
+def test_a_control_character_is_refused_when_writing_a_plan_grant(field, name, char, caplog):
     """`dimension_key` is looked up exactly as `plan_code` is, and had the identical defect."""
     before = PlanGrant.objects.count()
     fields = {"plan_code": "PRO", "dimension_key": "screen_outputs"}
-    fields[field] += NUL
+    fields[field] += char
 
     with caplog.at_level("WARNING", logger=CS_LOGGER):
         with pytest.raises(SafeAPIError) as caught:
             set_plan_grant(
                 _staff(StaffPermission.GRANT_ENTITLEMENT),
                 SetPlanGrantData(
-                    idempotency_key=f"control-grant-{field}",
+                    idempotency_key=f"control-grant-{name}-{field}",
                     raw_value="7",
                     reason="An adequate reason for this.",
                     **fields,
