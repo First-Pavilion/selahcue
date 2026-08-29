@@ -10,7 +10,7 @@
 - Execution engine: goal
 - ClickUp task: 86ak8467m (ClickUp MCP not connected this session — see "Dependencies and approvals")
 - Created: 2026-08-29
-- Updated: 2026-08-29 (rebased onto `ff85d65`, PR #14 merged; round-1 threads dispositioned)
+- Updated: 2026-08-29 (round 2: the two review findings that were checks-that-cannot-fail)
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -365,6 +365,46 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
     ran), so it could not have noticed thirteen of them disappearing.
 - Decision: handoff
 
+### Iteration 9 — review round 2: two checks that could not fail
+
+- Target criterion: C-013, C-014, C-016
+- Hypothesis: both remaining findings are the same defect in two places — a check whose
+  premise was never established, so it asserts a state something else already guaranteed.
+  Neither is a behavioural defect; both are checks that vouch for nothing.
+- Change or investigation: added `PL AC-40`'s missing premise (put an outcome back on screen
+  before the navigation, and say so, because the line above has just asserted the slot is
+  empty); replaced `PL AC-49`'s eleven-code-point sample with a sweep DERIVED from the host's
+  own ranges, read out of `plan.rs` by the harness the way the two integer constants already
+  are. Only `scripts/operator_headless.py` changed — no client behaviour was touched.
+- Verifier executed: `python3 scripts/operator_headless.py` under a four-mutation battery,
+  then `make ci`.
+- Result: gate **1121 checks, 0 FAIL**, exit 0 (floor raised 1119 -> 1121); `make ci`
+  ALL GREEN, exit 0. Every mutation caught by the check that NAMES it:
+
+  | Mutation | Before | After |
+  |---|---|---|
+  | delete `planNotice("")` from `planActivate` | 1119 checks, 0 FAIL, exit 0 | 1121 checks, 1 FAIL — `PL AC-40 (Cody L5)` fresh-visit line |
+  | delete the premise's own setup line | — | 1121 checks, 1 FAIL — `PL AC-40 (premise)` |
+  | narrow `\u202A-\u202E` to `[\u202A\u202E]` (drops U+202D LRO) | 1119 checks, 0 FAIL, exit 0 | 1121 checks, 1 FAIL — `PL AC-49`, naming U+202B U+202C U+202D |
+  | break the range parse so it yields the endpoints only | — | exit 3 at the harness floor; with the floor lowered, 1 FAIL — `PL AC-49 (premise)` |
+
+- New evidence:
+  - **A sample of a RANGE can only ever see its endpoints.** All eleven code points in the old
+    `hostileCps` were range endpoints, so hollowing a range out — dropping RLE, PDF and
+    U+202D LRO, the Trojan-Source primitive the host's rule exists for — left the gate at
+    1119 checks, 0 FAIL. That is the same shape of gap as the original defect (a sample of
+    five scripts, none of which needed a joiner). The set is now derived from the host's
+    ranges, so the mirror cannot drift range-interior.
+  - **The derived sweep needed its own premise, and the premise is not decorative.** With the
+    range parse broken the sweep still reported "missed 0 of 14" — a clean green over a
+    silently truncated set. Only the premise caught it. It is guarded twice: a hard failure in
+    the harness when fewer than 27 code points are derived, and the driver-side premise.
+  - **A control asserting a state its predecessor already established is invisible to a
+    battery.** `PL AC-40`'s third line passed under its own mutation because the second line
+    had just emptied the slot. Nothing distinguished "planActivate cleared it" from "it was
+    already clear" until an outcome was put back on screen first.
+- Decision: handoff (re-review)
+
 ## Round-1 thread disposition
 
 All 29 review threads on PR #15 were open and unresolved at rebase time. 24 are fixed, 2 were
@@ -401,8 +441,8 @@ product decision**:
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-fe-plan-lifecycle-86ak8467m.md --completion`
 - Validator result: (run at handoff)
 - Independent verification result: pending review pipeline
-- Evidence (rebased head, re-earned rather than carried): webview gate **1119 checks, 0 FAIL**,
-  exit 0 (baseline 963; floor raised 955 -> 1119); mutation battery, every mutation caught by
+- Evidence (round-2 head, re-earned rather than carried): webview gate **1121 checks, 0 FAIL**,
+  exit 0 (baseline 963; floor raised 955 -> 1121); mutation battery, every mutation caught by
   the check that NAMES it; WebKit boot smoke 5/0 FAIL; WebKit render probe **18 checks, 0 FAIL**
   across three consecutive runs, screenshots inspected; `make ci` **ALL GREEN**, exit 0. Four reviewers completed round 1; every blocking and medium finding is
   remediated, one is pushed back on with evidence, and the deliberate non-fixes are listed on the

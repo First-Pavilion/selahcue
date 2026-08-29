@@ -65,7 +65,12 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # A battery proves a check BITES; it cannot prove the check asserts the right thing. The one
 # defect this batch found in its own code — publish_plan sharing a helper with the four commands
 # that replace the plan — was invisible to it, because the test and the code agreed.)
-EXPECTED_MIN_CHECKS = 1119
+# (Raised 1119 -> 1121 with the two round-2 premises: PL AC-40's stale-notice premise, without
+# which the fresh-visit check could not tell 'planActivate cleared it' from 'it was already
+# clear' (Cody L5), and PL AC-49's derived-range premise, without which a sweep over an
+# empty list would report 'all clear' forever (Quinn Q-N1). The REAL observed count, so
+# dropping either trips exit 4.)
+EXPECTED_MIN_CHECKS = 1121
 
 
 def find_chrome():
@@ -155,11 +160,72 @@ if _MAX_PLAN_LABEL_LEN is None:
           "here; do not soften this to a null-tolerant check, which is how the previous "
           "rename went unnoticed")
     sys.exit(3)
+
+
+# Quinn Q-N1 — the client's PLAN_DISPLAY_HOSTILE regex is a hand-transcribed mirror of the
+# host's `is_display_hostile` + `is_line_separator`. It used to be checked against an ELEVEN
+# code-point sample typed out beside it, and every one of those eleven was a range ENDPOINT,
+# which is the same failure mode that let the original defect ship (a sample of five scripts,
+# none of which needed a joiner). Narrowing `\u202A-\u202E` to `[\u202A\u202E]` drops U+202D LRO,
+# a Trojan-Source primitive, and the sample could not see it: 1119 checks, 0 FAIL. So the ranges
+# are read out of plan.rs HERE and every code point inside them is swept, exactly as the two
+# integer constants above are read rather than retyped. A sample cannot see interior drift.
+def _rust_char_ranges(fn_name):
+    """Inclusive (lo, hi) code-point ranges matched by `fn <fn_name>(c: char) -> bool` in plan.rs.
+
+    Reads the `matches!` arms literally: `'\\u{202A}'..='\\u{202E}'` is a range and a bare
+    `'\\u{200B}'` is a one-code-point range. Returns None if the function cannot be found, which
+    the caller treats as a hard failure — a mirror check that silently sweeps nothing is worse
+    than no check, because it reports "all clear" forever.
+    """
+    try:
+        src = open(_PLAN_RS).read()
+    except OSError:
+        return None
+    m = re.search(r"fn " + fn_name + r"\(c: char\) -> bool \{(.*?)\n\}", src, re.S)
+    if not m:
+        return None
+    # The arms carry `// LRE, RLE, PDF, LRO, RLO`-style comments naming the characters; a comment
+    # must not be read as an arm.
+    body = re.sub(r"//[^\n]*", "", m.group(1))
+    pair = r"'\\u\{([0-9A-Fa-f]+)\}'\s*\.\.=\s*'\\u\{([0-9A-Fa-f]+)\}'"
+    ranges = [(int(lo, 16), int(hi, 16)) for lo, hi in re.findall(pair, body)]
+    # Whatever is left once the ranges are removed is a singleton arm.
+    for cp in re.findall(r"'\\u\{([0-9A-Fa-f]+)\}'", re.sub(pair, "", body)):
+        ranges.append((int(cp, 16), int(cp, 16)))
+    return sorted(ranges)
+
+
+_HOSTILE_RANGES = _rust_char_ranges("is_display_hostile")
+_SEPARATOR_RANGES = _rust_char_ranges("is_line_separator")
+if not _HOSTILE_RANGES or not _SEPARATOR_RANGES:
+    print("FAIL: could not read is_display_hostile / is_line_separator out of "
+          "selahcue-core/src/plan.rs — the client's PLAN_DISPLAY_HOSTILE mirrors both, and a "
+          "sweep derived from an empty range list would pass forever. If either was renamed or "
+          "restructured, follow it here; do not soften this to an empty-tolerant read")
+    sys.exit(3)
+_HOSTILE_CPS = sorted(
+    {cp for lo, hi in _HOSTILE_RANGES + _SEPARATOR_RANGES for cp in range(lo, hi + 1)}
+)
+# Floor, not an equality: the risk this guards is the range parse SHRINKING (a plan.rs refactor
+# the regexes above stop matching), which would make the sweep vacuous while it still says "0
+# missed". A host that legitimately narrows its rule lowers this deliberately, in review — the
+# same discipline as EXPECTED_MIN_CHECKS. Never lower it to make a red run green.
+_MIN_HOSTILE_CPS = 27
+if len(_HOSTILE_CPS) < _MIN_HOSTILE_CPS:
+    print("FAIL: only %d hostile code points were derived from plan.rs; expected >= %d. Either "
+          "the host narrowed its rule (lower this deliberately, and check the client followed) "
+          "or the range parse above stopped matching and the sweep has gone vacuous"
+          % (len(_HOSTILE_CPS), _MIN_HOSTILE_CPS))
+    sys.exit(3)
+
 RUST_CONSTS = (
     "<script>window.__RUST_MAX_PLAN_ITEMS = "
     + json.dumps(_MAX_PLAN_ITEMS)
     + "; window.__RUST_MAX_PLAN_LABEL_LEN = "
     + json.dumps(_MAX_PLAN_LABEL_LEN)
+    + "; window.__RUST_HOSTILE_CPS = "
+    + json.dumps(_HOSTILE_CPS)
     + ";</script>"
 )
 
@@ -4310,6 +4376,17 @@ DRIVER = r"""
       await sleep(20);
       ok(el("plan-notice").textContent === "",
          "PL AC-40 (Cody L5): a later plan EDIT clears it — \"Plan published\" is true of the run sheet that was published, not of the one now on screen");
+      // ...and the SAME control on the NAVIGATION path needs a premise of its own. The check
+      // immediately above has just asserted the slot is EMPTY, so without putting an outcome back
+      // on screen first, "a fresh visit does not inherit it" passes whether planActivate cleared
+      // it or not — nothing in the sequence distinguishes "planActivate cleared it" from "it was
+      // already clear". Deleting planNotice("") from planActivate left the whole gate green
+      // (Cody L5, re-review at e71be48). The clearing IS load-bearing: #plan-notice is a static
+      // element in index.html, not rebuilt by the render, so a stale outcome really does survive
+      // a navigation without it.
+      planNotice("status", "A stale outcome from the last visit");
+      ok(/stale outcome/.test(el("plan-notice").textContent),
+         "PL AC-40 (premise): an outcome really is on screen immediately before the navigation — without it the fresh-visit check below is vacuous and planActivate's clearing goes unexercised");
       planActivate();
       await sleep(80);
       ok(el("plan-notice").textContent === "",
@@ -4465,12 +4542,24 @@ DRIVER = r"""
       // family emoji. That is the direction this suite previously got wrong: it asserted U+200D
       // was refused, which was true of the host at 7a6e404 and false of the host at 352886d, so
       // after the host narrowed its rule the check went on vouching for a client defect.
-      var hostileCps = [0x200b, 0x202a, 0x202e, 0x2060, 0x2066, 0x2069, 0x206e, 0xfff9, 0xfeff, 0x2028, 0x2029];
+      //
+      // Quinn Q-N1 — the refused set is swept in FULL, every code point of it, and the set is
+      // DERIVED FROM THE HOST'S RANGES in plan.rs by the harness (window.__RUST_HOSTILE_CPS)
+      // rather than typed out here. It used to be an eleven-code-point sample, and every one of
+      // the eleven was a range ENDPOINT: narrowing this client's `\u202A-\u202E` to
+      // `[\u202A\u202E]` drops U+202D LRO — a Trojan-Source primitive — and the sample went on
+      // reporting 1119 checks, 0 FAIL. Sampling the endpoints of a range cannot see the range
+      // being hollowed out, which is the same shape of gap (a sample standing in for a class)
+      // that let the original defect ship.
+      var hostileCps = window.__RUST_HOSTILE_CPS || [];
+      ok(hostileCps.length >= 27,
+         "PL AC-49 (premise): the harness really did read the host's ranges out of plan.rs — a sweep over an empty or truncated list reports 'all clear' forever and the whole mirror goes unexercised (" + hostileCps.length + " code points)");
       var hostileMissed = hostileCps.filter(function (cp) {
-        return planNameProblem("Sunday" + String.fromCharCode(cp) + "Service") === null;
+        return planNameProblem("Sunday" + String.fromCodePoint(cp) + "Service") === null;
       });
       ok(hostileMissed.length === 0,
-         "PL AC-49 (Quinn Q7): every character the host's is_display_hostile / is_line_separator refuses is refused here too — missed " + hostileMissed.length + " of " + hostileCps.length);
+         "PL AC-49 (Quinn Q7): every character the host's is_display_hostile / is_line_separator refuses is refused here too — missed " + hostileMissed.length + " of " + hostileCps.length +
+         (hostileMissed.length ? ": " + hostileMissed.map(function (cp) { return "U+" + ("000" + cp.toString(16).toUpperCase()).slice(-4); }).join(" ") : ""));
       // The other direction. Each of these is asserted VALID by the host's own test file; a
       // client that refuses them stops entire writing systems being typed into a name field.
       var admitted = [
