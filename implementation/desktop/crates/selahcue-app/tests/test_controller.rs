@@ -5060,12 +5060,19 @@ fn a_deck_label_is_captured_when_linked_and_refreshed_when_the_link_is_set_again
 
 #[test]
 fn an_unresolvable_link_degrades_to_a_titled_slide_and_never_blanks_live() {
-    // NFR-024 / FR-007: missing content must degrade, never blank or block. The audience sees a
-    // safe placeholder — which is exactly what the design promises the operator.
+    // NFR-024 / FR-007: missing content must degrade, never blank or block.
     let mut c = plan_with_every_link_condition();
-    for (idx, what) in [
-        (1usize, "an unparseable scripture reference"),
-        (2usize, "a deck link the host cannot resolve"),
+    for (idx, what, expected) in [
+        (
+            1usize,
+            "an unparseable scripture reference",
+            "Not a reference",
+        ),
+        (
+            2usize,
+            "a deck link the host cannot resolve",
+            "Sermon: The Waiting",
+        ),
     ] {
         let id = c.operator_view().items[idx].id;
         assert!(matches!(
@@ -5073,11 +5080,38 @@ fn an_unresolvable_link_degrades_to_a_titled_slide_and_never_blanks_live() {
             ControllerReply::Ack
         ));
         assert!(matches!(c.apply(&Command::GoLive), ControllerReply::Ack));
+
+        // The DEGRADE half — the audience gets a readable placeholder naming the item.
+        // `!live_is_black` cannot see this on its own: the classic theme paints a near-black
+        // background, so a slide rendering NO text still measures far above the blank
+        // threshold and would satisfy it. Asserting the composed slide is what bites.
+        let slide = c
+            .presenter()
+            .live_slide()
+            .expect("something must be on air after Go Live");
+        assert_eq!(
+            slide.title, expected,
+            "{what} must degrade to a slide that still names the item"
+        );
+
+        // The NEVER-BLANK half.
         assert!(
             !live_is_black(&c),
-            "{what} must degrade to a readable slide, never blank the audience output"
+            "{what} must not blank the audience output"
         );
     }
+
+    // POSITIVE CONTROL for the blank oracle itself. Without this, `!live_is_black` above is
+    // satisfied by any painted background and proves nothing about blanking at all.
+    assert!(matches!(
+        c.apply(&Command::Blackout { on: true }),
+        ControllerReply::Ack
+    ));
+    assert!(
+        live_is_black(&c),
+        "the blank oracle must be able to detect a genuinely blank output, else the \
+         never-blank assertions above are vacuous"
+    );
 }
 
 #[test]
@@ -5098,4 +5132,71 @@ fn a_fully_planned_plan_reports_a_complete_total_on_the_wire() {
         !s.partial,
         "every item that can carry a duration has one — the section divider is not a gap"
     );
+}
+
+#[test]
+fn a_parseable_passage_that_names_no_verse_is_reported_missing_on_the_wire() {
+    // The host owns the scripture corpus, so this is the one link kind it answers for real —
+    // and it must answer with the same lookup the renderer uses. "Jude 2:1" PARSES (Jude has a
+    // single chapter), so it is accepted by SetItemContent and reaches the plan; a parse-only
+    // resolution rule then reported it healthy while it could not present a word.
+    // (Code review, PR #13.)
+    let mut plan = ServicePlan::new("Sunday");
+    let s = plan.add_item(ItemKind::Scripture, "Phantom");
+    let mut c = LiveController::new(plan, 320, 180, Theme::dark());
+    let link = |r: &str| ContentLinkView {
+        kind: "scripture".into(),
+        reference: Some(r.into()),
+        translation: None,
+        verses_per_slide: None,
+        id: None,
+        slide_count: None,
+        verse_numbers: None,
+        status: None,
+        label: None,
+    };
+
+    assert!(
+        matches!(
+            c.apply(&Command::SetItemContent {
+                item_id: s.0,
+                link: Some(link("Jude 2:1")),
+            }),
+            ControllerReply::Ack
+        ),
+        "premise: a well-formed reference is accepted, so this test exercises the gap between \
+         parsing and existing rather than a rejected command"
+    );
+    assert_eq!(
+        c.operator_view().items[0]
+            .link
+            .as_ref()
+            .unwrap()
+            .status
+            .as_deref(),
+        Some("missing"),
+        "a passage the corpus cannot produce must be reported missing, not healthy"
+    );
+    assert_eq!(
+        c.operator_view().summary.unwrap().missing,
+        1,
+        "and the Plan Summary must count it, rather than reporting a clean plan"
+    );
+
+    // POSITIVE CONTROL: a real passage on the same path is healthy, so "missing" above is a
+    // verdict about the passage and not a resolver that condemns everything.
+    assert!(matches!(
+        c.apply(&Command::SetItemContent {
+            item_id: s.0,
+            link: Some(link("Romans 8:28-30")),
+        }),
+        ControllerReply::Ack
+    ));
+    let view = c.operator_view();
+    assert_eq!(
+        view.items[0].link.as_ref().unwrap().status,
+        None,
+        "a passage that resolves carries no status at all"
+    );
+    assert_eq!(view.summary.unwrap().missing, 0);
 }

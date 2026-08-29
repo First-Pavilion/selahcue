@@ -144,6 +144,11 @@ impl LinkResolution {
 /// its name is long would be a worse failure than shortening the name.
 pub const MAX_LINK_LABEL_LEN: usize = 120;
 
+// Pinned beside the constant as well as in the tests: small enough that the truncation test
+// really truncates, large enough that a real deck name is never touched. Moving it past either
+// bound fails the build rather than quietly making the guard vacuous.
+const _: () = assert!(MAX_LINK_LABEL_LEN >= 16 && MAX_LINK_LABEL_LEN <= 4096);
+
 /// A content reference linked to a plan item — the passage a Scripture item shows,
 /// the deck a Presentation (slide-group) item shows, or the asset a Media item
 /// shows (FR-002 · ADR-0020 follow-up). `None` on a [`PlanItem`] = today's
@@ -159,6 +164,11 @@ pub enum ItemContent {
     /// A linked scripture passage: the canonical reference (e.g. `"Romans 8:28-30"`),
     /// an optional bundled-translation code (`None` = the plan's default), an optional
     /// verses-per-slide override, and an optional verse-numbers mode (FR-026 · FR-029).
+    ///
+    /// `verse_numbers` is **carried, not yet applied**: it round-trips through the wire and
+    /// persistence so the inspector can hold the coordinator's choice, but the host's slide
+    /// composition does not read it yet — `scripture_slide_in` still prefixes the verse number
+    /// on a multi-verse passage and omits it on a single one, whatever the mode says.
     Scripture {
         reference: String,
         translation: Option<String>,
@@ -172,9 +182,11 @@ pub enum ItemContent {
     /// specific within-item slide (the Live Console slide picker) rather than collapsing to one slide.
     ///
     /// `label` is the deck's **last known good** display name, capped at
-    /// [`MAX_LINK_LABEL_LEN`]. It is written when the link is made and rewritten every time the
-    /// link resolves successfully, so it is accurate while the deck exists and is the last
-    /// name the deck had once it does not. Without it a deleted deck can only be described by
+    /// [`MAX_LINK_LABEL_LEN`]. The deck-owning operator supplies it on every link and relink,
+    /// and an update that omits it leaves the stored name alone, so it stays accurate while the
+    /// deck exists and is the last name the deck had once it does not. A deck renamed IN PLACE
+    /// keeps the older name until the item is next linked — propagating a rename to every plan
+    /// that references the deck is not yet implemented. Without it a deleted deck can only be described by
     /// its id — the design calls for "\u{201c}Sunday Service \u{2014} Aug 4\u{201d} was deleted from the library",
     /// and once the library row is gone no layer can turn the id back into that name.
     Deck {
@@ -315,12 +327,29 @@ impl ItemContent {
     /// always answerable here, because resolving it is a pure parse.
     pub fn resolve(
         &self,
+        passage_exists: impl Fn(&str, Option<&str>) -> Option<bool>,
         deck_exists: impl Fn(u64) -> Option<bool>,
         media_exists: impl Fn(u64) -> Option<bool>,
     ) -> LinkResolution {
         match self {
-            ItemContent::Scripture { reference, .. } => {
-                LinkResolution::from_probe(Some(crate::scripture::parse_one(reference).is_ok()))
+            ItemContent::Scripture {
+                reference,
+                translation,
+                ..
+            } => {
+                // A reference that does not even parse is missing without asking anyone.
+                if crate::scripture::parse_one(reference).is_err() {
+                    return LinkResolution::Missing;
+                }
+                // Parsing is SYNTAX only. `parse_one` accepts "Jude 2:1" (Jude has one chapter)
+                // and "Romans 99:1" — well-formed references naming nothing. Whether a passage
+                // yields any verse is a corpus question this pure layer cannot answer, so it is
+                // probed exactly like a deck or a media asset. Treating "it parsed" as "it
+                // resolves" reported an unpresentable passage as healthy — the absent-equals-fine
+                // failure this type exists to prevent, on the one kind the host claims authority
+                // over. The renderer already knows the state exists: `scripture_slide_in` falls
+                // back to a bare title when the verse lookup comes back empty.
+                LinkResolution::from_probe(passage_exists(reference, translation.as_deref()))
             }
             ItemContent::Deck { deck_id, .. } => LinkResolution::from_probe(deck_exists(*deck_id)),
             ItemContent::Media { media_id } => LinkResolution::from_probe(media_exists(*media_id)),
@@ -570,11 +599,29 @@ impl ServicePlan {
                 deck_id,
                 slide_count,
                 label,
-            }) => Some(ItemContent::Deck {
-                deck_id,
-                slide_count,
-                label: label.map(|l| sanitize_label(&l)),
-            }),
+            }) => {
+                // "Last known good" only survives if an update that says NOTHING about the name
+                // leaves it alone. This is a full replace, so an absent label must mean "I have
+                // nothing new to say", not "forget it" — otherwise any re-link (syncing a slide
+                // count, say) destroys the very name a deleted deck needs to be described by.
+                // A relink to a DIFFERENT deck drops it: it is no longer that deck's name.
+                let carried = match label {
+                    Some(l) => Some(sanitize_label(&l)),
+                    None => self.get(id).and_then(|it| match &it.content {
+                        Some(ItemContent::Deck {
+                            deck_id: prev_id,
+                            label: prev_label,
+                            ..
+                        }) if *prev_id == deck_id => prev_label.clone(),
+                        _ => None,
+                    }),
+                };
+                Some(ItemContent::Deck {
+                    deck_id,
+                    slide_count,
+                    label: carried,
+                })
+            }
             other => other,
         };
         match self.get_mut(id) {
@@ -622,6 +669,7 @@ impl ServicePlan {
     /// is never flagged. Pure and total.
     pub fn unresolved_content(
         &self,
+        passage_exists: impl Fn(&str, Option<&str>) -> bool,
         deck_exists: impl Fn(u64) -> bool,
         media_exists: impl Fn(u64) -> bool,
     ) -> Vec<ItemId> {
@@ -632,8 +680,11 @@ impl ServicePlan {
             .iter()
             .filter(|it| {
                 it.content.as_ref().is_some_and(|c| {
-                    c.resolve(|id| Some(deck_exists(id)), |id| Some(media_exists(id)))
-                        == LinkResolution::Missing
+                    c.resolve(
+                        |r, t| Some(passage_exists(r, t)),
+                        |id| Some(deck_exists(id)),
+                        |id| Some(media_exists(id)),
+                    ) == LinkResolution::Missing
                 })
             })
             .map(|it| it.id)

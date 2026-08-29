@@ -375,7 +375,9 @@ fn unresolved_content_flags_missing_decks_media_and_bad_refs() {
     let _unlinked = p.add_item(ItemKind::Song, "Opening"); // never flagged
 
     // Only deck 1 exists; no media exists.
-    let missing = p.unresolved_content(|id| id == 1, |_| false);
+    // The passage probe answers "yes" for anything that parses; an unparseable reference is
+    // rejected inside `resolve` before the probe is consulted.
+    let missing = p.unresolved_content(|_r, _t| true, |id| id == 1, |_| false);
     assert_eq!(missing, vec![bad_scr, gone_deck, gone_media]);
 }
 
@@ -425,28 +427,31 @@ fn resolve_distinguishes_unknown_from_resolved_for_a_caller_that_cannot_check() 
     // what makes this bite: a `from_probe` that folded `None` into `Resolved` (the natural
     // bool-shaped mistake) passes an "is it Missing?" test and fails this one.
     assert_eq!(
-        deck.resolve(|_| Some(true), |_| Some(true)),
+        deck.resolve(|_, _| Some(true), |_| Some(true), |_| Some(true)),
         LinkResolution::Resolved,
         "a probe that says the deck exists must resolve"
     );
     assert_eq!(
-        deck.resolve(|_| Some(false), |_| Some(false)),
+        deck.resolve(|_, _| Some(true), |_| Some(false), |_| Some(false)),
         LinkResolution::Missing,
         "a probe that says the deck is gone must report missing"
     );
     assert_eq!(
-        deck.resolve(|_| None, |_| None),
+        deck.resolve(|_, _| Some(true), |_| None, |_| None),
         LinkResolution::Unknown,
         "a caller that cannot see the deck library must report unknown"
     );
     // Stated separately and deliberately: `Unknown` collapsing into `Resolved` is the failure
     // that renders to an operator as "fine", so assert that specific confusion cannot happen.
     assert_ne!(
-        deck.resolve(|_| None, |_| None),
+        deck.resolve(|_, _| Some(true), |_| None, |_| None),
         LinkResolution::Resolved,
         "unknown must never be reported as resolved — that is absent-equals-fine"
     );
-    assert_eq!(media.resolve(|_| None, |_| None), LinkResolution::Unknown);
+    assert_eq!(
+        media.resolve(|_, _| Some(true), |_| None, |_| None),
+        LinkResolution::Unknown
+    );
 
     // Scripture is answerable by a pure parse, so it is never Unknown, whatever the probes say.
     let good = ItemContent::Scripture {
@@ -461,8 +466,14 @@ fn resolve_distinguishes_unknown_from_resolved_for_a_caller_that_cannot_check() 
         verses_per_slide: None,
         verse_numbers: None,
     };
-    assert_eq!(good.resolve(|_| None, |_| None), LinkResolution::Resolved);
-    assert_eq!(bad.resolve(|_| None, |_| None), LinkResolution::Missing);
+    assert_eq!(
+        good.resolve(|_, _| Some(true), |_| None, |_| None),
+        LinkResolution::Resolved
+    );
+    assert_eq!(
+        bad.resolve(|_, _| Some(true), |_| None, |_| None),
+        LinkResolution::Missing
+    );
 }
 
 #[test]
@@ -786,6 +797,149 @@ fn a_label_cannot_smuggle_invisible_or_bidi_characters_into_the_run_sheet() {
     .unwrap();
     match p.get(d).unwrap().content.as_ref() {
         Some(ItemContent::Deck { label, .. }) => assert_eq!(label.as_deref(), Some(real)),
+        other => panic!("expected a deck link, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_reference_that_parses_but_names_no_verse_is_missing_not_resolved() {
+    // `parse_one` validates SYNTAX. "Jude 2:1" (Jude has a single chapter) and "Romans 99:1"
+    // are well-formed and name nothing, so a parse-only rule reported them as healthy — on the
+    // one content kind the host claims authority over, and no client can correct it downstream.
+    // (Code review, PR #13.)
+    let phantom = ItemContent::Scripture {
+        reference: "Jude 2:1".into(),
+        translation: None,
+        verses_per_slide: None,
+        verse_numbers: None,
+    };
+    assert!(
+        crate_parses("Jude 2:1"),
+        "premise: this reference really does parse, so the test is exercising the gap \
+         between parsing and existing rather than a parse failure"
+    );
+    assert_eq!(
+        phantom.resolve(|_, _| Some(false), |_| None, |_| None),
+        LinkResolution::Missing,
+        "a passage the corpus cannot produce is MISSING, never resolved"
+    );
+
+    // POSITIVE CONTROL: the same code path reports a real passage as resolved, so "missing"
+    // above is a verdict about the passage and not a probe that always refuses.
+    let real = ItemContent::Scripture {
+        reference: "Romans 8:28-30".into(),
+        translation: None,
+        verses_per_slide: None,
+        verse_numbers: None,
+    };
+    assert_eq!(
+        real.resolve(|_, _| Some(true), |_| None, |_| None),
+        LinkResolution::Resolved
+    );
+
+    // And a caller that cannot consult a corpus at all says so, rather than guessing.
+    assert_eq!(
+        real.resolve(|_, _| None, |_| None, |_| None),
+        LinkResolution::Unknown
+    );
+
+    // An unparseable reference never reaches the probe — it is missing on syntax alone.
+    let broken = ItemContent::Scripture {
+        reference: "Not a reference".into(),
+        translation: None,
+        verses_per_slide: None,
+        verse_numbers: None,
+    };
+    assert_eq!(
+        broken.resolve(
+            |_, _| panic!("the probe must not be consulted for an unparseable reference"),
+            |_| None,
+            |_| None
+        ),
+        LinkResolution::Missing
+    );
+}
+
+fn crate_parses(r: &str) -> bool {
+    selahcue_core::scripture::parse_one(r).is_ok()
+}
+
+#[test]
+fn a_deck_relink_without_a_name_keeps_the_last_known_good_one() {
+    // `set_item_content` is a full replace, so an absent label must mean "nothing new to say",
+    // not "forget it" — otherwise syncing a slide count destroys the very name a deleted deck
+    // needs to be described by. (Code review, PR #13.)
+    let mut p = ServicePlan::new("Sunday");
+    let d = p.add_item(ItemKind::SlideGroup, "Sermon");
+    p.set_item_content(
+        d,
+        Some(ItemContent::Deck {
+            deck_id: 17,
+            slide_count: Some(24),
+            label: Some("Sunday Service".into()),
+        }),
+    )
+    .unwrap();
+
+    // Same deck, no name supplied: the stored name survives.
+    p.set_item_content(
+        d,
+        Some(ItemContent::Deck {
+            deck_id: 17,
+            slide_count: Some(25),
+            label: None,
+        }),
+    )
+    .unwrap();
+    match p.get(d).unwrap().content.as_ref() {
+        Some(ItemContent::Deck {
+            label, slide_count, ..
+        }) => {
+            assert_eq!(*slide_count, Some(25), "the update itself still applied");
+            assert_eq!(
+                label.as_deref(),
+                Some("Sunday Service"),
+                "an update silent about the name must not erase it"
+            );
+        }
+        other => panic!("expected a deck link, got {other:?}"),
+    }
+
+    // A supplied name still wins — this is how a rename is recorded.
+    p.set_item_content(
+        d,
+        Some(ItemContent::Deck {
+            deck_id: 17,
+            slide_count: Some(25),
+            label: Some("Sunday Service — Aug 11".into()),
+        }),
+    )
+    .unwrap();
+    match p.get(d).unwrap().content.as_ref() {
+        Some(ItemContent::Deck { label, .. }) => {
+            assert_eq!(label.as_deref(), Some("Sunday Service — Aug 11"))
+        }
+        other => panic!("expected a deck link, got {other:?}"),
+    }
+
+    // Relinking to a DIFFERENT deck drops it: it is not that deck's name.
+    p.set_item_content(
+        d,
+        Some(ItemContent::Deck {
+            deck_id: 99,
+            slide_count: None,
+            label: None,
+        }),
+    )
+    .unwrap();
+    match p.get(d).unwrap().content.as_ref() {
+        Some(ItemContent::Deck { label, deck_id, .. }) => {
+            assert_eq!(*deck_id, 99);
+            assert_eq!(
+                *label, None,
+                "a different deck must not inherit the previous deck's name"
+            );
+        }
         other => panic!("expected a deck link, got {other:?}"),
     }
 }

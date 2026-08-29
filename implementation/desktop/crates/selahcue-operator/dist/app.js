@@ -6933,7 +6933,9 @@
             if (created) {
               // Carry the deck's slide count to the host (it owns no deck store) so the plan item
               // reports the real count + can stage a specific slide (LIVE-CONSOLE… spec §6).
-              commit({ kind: "deck", id: created.id, slide_count: created.slides }); // success → modal closes
+              // Send the deck's name as the link label too: once a deck is deleted, no layer can
+              // turn its id back into a name, so the plan item has to have kept one.
+              commit({ kind: "deck", id: created.id, slide_count: created.slides, label: created.name }); // success → modal closes
             } else {
               newCard.disabled = false;
               newBusy = false;
@@ -6950,7 +6952,7 @@
           if (selId != null) {
             // Carry the selected deck's slide count to the host (spec §6) so per-slide staging works.
             const d = (planDecks || []).find((x) => x.id === selId);
-            commit({ kind: "deck", id: selId, slide_count: d ? d.slides : undefined });
+            commit({ kind: "deck", id: selId, slide_count: d ? d.slides : undefined, label: d ? d.name : undefined });
           }
         };
         const foot = document.createElement("div");
@@ -7562,10 +7564,14 @@
           card.classList.add("missing");
           const w = document.createElement("div");
           w.className = "plan-deck-card-name link-missing";
-          w.textContent = "⚠ presentation missing";
+          // The last known good name, captured when the link was made. The deck's library row
+          // is gone, so this is the only thing that can still say WHICH presentation vanished.
+          w.textContent = link.label ? "⚠ “" + link.label + "” is missing" : "⚠ presentation missing";
           const m = document.createElement("div");
           m.className = "plan-deck-card-meta";
-          m.textContent = "The linked deck was deleted from the library — relink it.";
+          m.textContent = link.label
+            ? "“" + link.label + "” was deleted from the library. Relink a deck or remove this item."
+            : "The linked deck was deleted from the library — relink it.";
           card.appendChild(w);
           card.appendChild(m);
           return card;
@@ -8124,7 +8130,7 @@
           try {
             // Carry the slide count to the host (it owns no deck store) so the row reports the real
             // count and can stage a specific slide — same contract as planDeckBody's commit().
-            await invoke("set_item_content", { itemId: item.id, link: { kind: "deck", id: deck.id, slide_count: deck.slides } });
+            await invoke("set_item_content", { itemId: item.id, link: { kind: "deck", id: deck.id, slide_count: deck.slides, label: deck.name } });
           } catch (e) {
             // The item landed but carries no deck reference. A plan row that lies about what it
             // holds is worse than no row on a Sunday morning, so roll it back instead of leaving

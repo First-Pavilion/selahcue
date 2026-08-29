@@ -587,7 +587,23 @@ fn output_health_view(h: selahcue_present::OutputHealth) -> OutputHealthView {
 /// `Resolved` there would be a fabrication, and reporting `Missing` would flag every healthy
 /// deck in the plan.
 fn host_resolution(c: &selahcue_core::plan::ItemContent) -> selahcue_core::plan::LinkResolution {
-    c.resolve(|_| None, |_| None)
+    c.resolve(
+        // The host DOES own the bundled scripture corpus, so it answers this one for real — and
+        // with the SAME lookup the renderer uses, so "resolved" means "will actually present
+        // verses", not merely "the reference is well-formed". Parsing alone accepts "Jude 2:1"
+        // and "Romans 99:1", which present nothing.
+        |reference, translation| {
+            let parsed = selahcue_core::scripture::parse_one(reference).ok()?;
+            let t = translation
+                .and_then(selahcue_scripture::Translation::from_code)
+                .unwrap_or_default();
+            Some(!selahcue_scripture::verses_in(t, &parsed).is_empty())
+        },
+        // Decks and media are operator-owned and this process has no store for either, so it
+        // declines rather than guessing.
+        |_| None,
+        |_| None,
+    )
 }
 
 /// Map a domain link to its wire form. `resolution` is supplied by the caller because the
@@ -1995,7 +2011,7 @@ impl LiveController {
     fn plan_summary(
         &self,
         resolutions: &[Option<selahcue_core::plan::LinkResolution>],
-    ) -> Option<PlanSummaryView> {
+    ) -> PlanSummaryView {
         use selahcue_core::plan::{ItemKind, LinkResolution};
         // One roll-up, so the total and its completeness flag come from the same pass and can
         // never disagree (FR-202 · PLAN-SECTIONS-DURATIONS-spec §4.3).
@@ -2031,7 +2047,7 @@ impl LiveController {
                 Some(LinkResolution::Resolved) | None => {}
             }
         }
-        Some(sum)
+        sum
     }
 
     /// A serializable snapshot for the operator UI: the plan with per-item Live/Preview
@@ -2091,7 +2107,9 @@ impl LiveController {
                 planned_secs: item.planned_secs,
             })
             .collect();
-        let summary = self.plan_summary(&resolutions);
+        // Wrapped here, not returned as an `Option` from `plan_summary`: this host always
+        // reports a summary, and `None` on the wire means "this host does not report one".
+        let summary = Some(self.plan_summary(&resolutions));
         OperatorView {
             plan_name: self.plan.name.clone(),
             items,

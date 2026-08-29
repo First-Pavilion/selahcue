@@ -528,8 +528,12 @@ pub struct ContentLinkView {
     /// its real slide count + stage a specific within-item slide (the Live Console slide picker).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slide_count: Option<u32>,
-    /// Scripture link: how verse numbers render — `"superscript"` | `"inline"` | `"hidden"`.
+    /// Scripture link: the verse-numbers mode — `"superscript"` | `"inline"` | `"hidden"`.
     /// Absent = the plan default. Absent for deck/media.
+    ///
+    /// **Carried, not yet applied.** It round-trips so the inspector can hold the coordinator's
+    /// choice, but the host's slide composition does not read it yet; an unknown value degrades
+    /// to the default rather than rejecting the link.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verse_numbers: Option<String>,
     /// Whether the link RESOLVES, as far as the layer that built this view could tell:
@@ -543,10 +547,11 @@ pub struct ContentLinkView {
     /// "healthy". Absent-equals-fine is the failure this field exists to prevent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// The link target's LAST KNOWN GOOD display name (e.g. a deck's title), written when the
-    /// link is made and rewritten on every successful resolve. It is what lets a missing link
-    /// be described by name once the library row is gone and the id resolves to nothing.
-    /// Absent = no name was ever captured.
+    /// The link target's LAST KNOWN GOOD display name (e.g. a deck's title). The deck-owning
+    /// operator supplies it on every link and relink, and an update that omits it leaves the
+    /// stored name alone — so it is what lets a missing link be described by name once the
+    /// library row is gone and the id resolves to nothing. A deck renamed in place keeps the
+    /// older name until the item is next linked. Absent = no name was ever captured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
@@ -559,7 +564,11 @@ pub struct ContentLinkView {
 /// The host can only resolve scripture links, so folding decks and media into `missing` would
 /// overstate what it knows, and folding them into a clean bill would understate it. `unknown`
 /// is the count the operator still has to resolve against its own library.
+/// `serde(default)` on the container, matching every other view in this file: a field added
+/// here later must not make an older host's frame unparseable to a newer client, which would
+/// take the whole `OperatorStateView` down with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct PlanSummaryView {
     /// Total items in the run sheet.
     pub items: u32,
