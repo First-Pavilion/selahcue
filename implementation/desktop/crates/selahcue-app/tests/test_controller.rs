@@ -1256,6 +1256,7 @@ fn select_slide_stages_a_real_deck_presentation_slide_and_reports_the_staged_cur
         Some(ItemContent::Deck {
             deck_id: 7,
             slide_count: Some(6),
+            label: None,
         }),
     )
     .unwrap();
@@ -1317,6 +1318,7 @@ fn select_slide_stages_a_real_deck_presentation_slide_and_reports_the_staged_cur
             Some(ItemContent::Deck {
                 deck_id: 9,
                 slide_count: None,
+                label: None,
             }),
         )
         .unwrap();
@@ -4545,6 +4547,9 @@ fn a_scripture_linked_item_stages_its_verses_and_surfaces_the_link() {
         verses_per_slide: Some(2),
         id: None,
         slide_count: None,
+        verse_numbers: None,
+        status: None,
+        label: None,
     };
     let reply = c.apply(&Command::SetItemContent {
         item_id: scr,
@@ -4597,6 +4602,9 @@ fn a_scripture_linked_item_stages_its_verses_and_surfaces_the_link() {
             verses_per_slide: None,
             id: Some(17),
             slide_count: None,
+            verse_numbers: None,
+            status: None,
+            label: None,
         }),
     });
     assert!(matches!(deck, ControllerReply::Ack));
@@ -4850,4 +4858,605 @@ fn live_generation_covers_every_output_changing_command_class() {
          (they run per-poll/per-frame — a bump here defeats the NDI cache)"
     );
     let _ = ids;
+}
+
+// --- Design 2.0 Service Plan builder: honest link status + plan summary -----------------
+
+/// A plan holding one of every link condition the builder has to render.
+fn plan_with_every_link_condition() -> LiveController {
+    let mut plan = ServicePlan::new("Sunday");
+    let good = plan.add_item(ItemKind::Scripture, "Romans 8:28-30");
+    let bad = plan.add_item(ItemKind::Scripture, "Broken ref");
+    let deck = plan.add_item(ItemKind::SlideGroup, "Sermon: The Waiting");
+    let media = plan.add_item(ItemKind::Media, "Testimony Video");
+    let song = plan.add_item(ItemKind::Song, "Opening Song");
+    plan.set_item_content(
+        good,
+        Some(ItemContent::Scripture {
+            reference: "Romans 8:28-30".into(),
+            translation: Some("WEB".into()),
+            verses_per_slide: Some(2),
+            verse_numbers: Some(selahcue_core::plan::VerseNumbers::Superscript),
+        }),
+    )
+    .unwrap();
+    // Set through the DOMAIN, not the wire: `SetItemContent` rejects an unparseable reference,
+    // so this is the realistic path — a plan persisted when the reference still parsed.
+    plan.set_item_content(
+        bad,
+        Some(ItemContent::Scripture {
+            reference: "Not a reference".into(),
+            translation: None,
+            verses_per_slide: None,
+            verse_numbers: None,
+        }),
+    )
+    .unwrap();
+    plan.set_item_content(
+        deck,
+        Some(ItemContent::Deck {
+            deck_id: 17,
+            slide_count: Some(24),
+            label: Some("Sunday Service \u{2014} Aug 4".into()),
+        }),
+    )
+    .unwrap();
+    plan.set_item_content(media, Some(ItemContent::Media { media_id: 4 }))
+        .unwrap();
+    plan.set_item_planned_secs(good, Some(120)).unwrap();
+    plan.set_item_planned_secs(deck, Some(2100)).unwrap();
+    plan.set_item_owner(good, Some("Scripture op".into()))
+        .unwrap();
+    plan.set_item_owner(deck, Some("Pastor".into())).unwrap();
+    let _ = song;
+    LiveController::new(plan, 320, 180, Theme::dark())
+}
+
+#[test]
+fn operator_view_reports_unknown_for_operator_owned_links_and_never_calls_them_healthy() {
+    let c = plan_with_every_link_condition();
+    let items = c.operator_view().items;
+
+    // Scripture is the one thing the host can resolve — a pure parse — so it answers for real.
+    assert_eq!(
+        items[0].link.as_ref().unwrap().status,
+        None,
+        "a resolvable passage carries no status: absent IS the resolved case"
+    );
+    assert_eq!(
+        items[1].link.as_ref().unwrap().status.as_deref(),
+        Some("missing"),
+        "a reference that no longer parses is confirmed missing"
+    );
+
+    // Decks and media are operator-owned; the host has no store for either. It must say so
+    // rather than guess in either direction.
+    for (i, what) in [(2usize, "deck"), (3usize, "media")] {
+        let link = items[i].link.as_ref().unwrap();
+        assert_eq!(
+            link.status.as_deref(),
+            Some("unknown"),
+            "the host cannot see the {what} library, so it must report unknown"
+        );
+        // Stated as its own assertion because this is the failure that matters: `None` would
+        // render to an operator as a healthy link the host never actually checked.
+        assert_ne!(
+            link.status, None,
+            "an unchecked {what} link must never be reported as healthy"
+        );
+    }
+
+    // An unlinked item is not a problem and carries no link at all — distinct from a link
+    // that is present but unresolvable.
+    assert!(
+        items[4].link.is_none(),
+        "an unlinked item has no link object, which is not the same as a missing one"
+    );
+
+    // The captured deck name rides along, which is what makes "X was deleted" renderable.
+    assert_eq!(
+        items[2].link.as_ref().unwrap().label.as_deref(),
+        Some("Sunday Service \u{2014} Aug 4")
+    );
+    assert_eq!(
+        items[0].link.as_ref().unwrap().verse_numbers.as_deref(),
+        Some("superscript")
+    );
+}
+
+#[test]
+fn plan_summary_counts_the_run_sheet_and_keeps_missing_apart_from_unknown() {
+    let c = plan_with_every_link_condition();
+    let s = c
+        .operator_view()
+        .summary
+        .expect("this host reports a summary");
+
+    assert_eq!(s.items, 5);
+    assert_eq!(s.scripture, 2);
+    assert_eq!(s.presentations, 1, "a slide-group item is a Presentation");
+    assert_eq!(s.media, 1);
+    assert_eq!(s.songs, 1);
+    assert_eq!(
+        s.assigned, 2,
+        "only the two items given an owner count as assigned"
+    );
+    assert_eq!(s.planned_total_secs, 2220);
+    // Three of the five items carry no duration, so the total is a FLOOR and must say so —
+    // otherwise "planned 0:37:00" reads as the length of the whole service.
+    assert_eq!(s.planned_items, 2);
+    assert!(
+        s.partial,
+        "a total that omits three items must be marked partial on the wire"
+    );
+
+    // The whole point of two totals. If these were folded into one number, the panel would
+    // report two healthy decks as broken, or two unchecked links as verified.
+    assert_eq!(
+        s.missing, 1,
+        "only the unparseable reference is CONFIRMED missing"
+    );
+    assert_eq!(
+        s.unknown, 2,
+        "the deck and the media link are unchecked, not healthy and not missing"
+    );
+}
+
+#[test]
+fn a_deck_label_is_captured_when_linked_and_refreshed_when_the_link_is_set_again() {
+    let mut plan = ServicePlan::new("Sunday");
+    let d = plan.add_item(ItemKind::SlideGroup, "Sermon");
+    let mut c = LiveController::new(plan, 320, 180, Theme::dark());
+    let deck_link = |label: &str| ContentLinkView {
+        kind: "deck".into(),
+        reference: None,
+        translation: None,
+        verses_per_slide: None,
+        id: Some(17),
+        slide_count: Some(24),
+        verse_numbers: None,
+        status: None,
+        label: Some(label.into()),
+    };
+
+    // Captured at link time.
+    assert!(matches!(
+        c.apply(&Command::SetItemContent {
+            item_id: d.0,
+            link: Some(deck_link("Sunday Service \u{2014} Aug 4")),
+        }),
+        ControllerReply::Ack
+    ));
+    assert_eq!(
+        c.operator_view().items[0]
+            .link
+            .as_ref()
+            .unwrap()
+            .label
+            .as_deref(),
+        Some("Sunday Service \u{2014} Aug 4")
+    );
+
+    // Refreshed when the link is set again with the deck's current name — this is how a RENAME
+    // is recorded, and why capture-once would leave a confidently wrong name on screen.
+    assert!(matches!(
+        c.apply(&Command::SetItemContent {
+            item_id: d.0,
+            link: Some(deck_link("Sunday Service \u{2014} Aug 11")),
+        }),
+        ControllerReply::Ack
+    ));
+    assert_eq!(
+        c.operator_view().items[0]
+            .link
+            .as_ref()
+            .unwrap()
+            .label
+            .as_deref(),
+        Some("Sunday Service \u{2014} Aug 11"),
+        "a re-link with a fresh name overwrites the stale one"
+    );
+}
+
+#[test]
+fn an_unresolvable_link_degrades_to_a_titled_slide_and_never_blanks_live() {
+    // NFR-024 / FR-007: missing content must degrade, never blank or block.
+    let mut c = plan_with_every_link_condition();
+    for (idx, what, expected) in [
+        (
+            1usize,
+            "an unparseable scripture reference",
+            "Not a reference",
+        ),
+        (
+            2usize,
+            "a deck link the host cannot resolve",
+            "Sermon: The Waiting",
+        ),
+    ] {
+        let id = c.operator_view().items[idx].id;
+        assert!(matches!(
+            c.apply(&Command::SelectItem { item_id: id }),
+            ControllerReply::Ack
+        ));
+        assert!(matches!(c.apply(&Command::GoLive), ControllerReply::Ack));
+
+        // The DEGRADE half — the audience gets a readable placeholder naming the item.
+        // `!live_is_black` cannot see this on its own: the classic theme paints a near-black
+        // background, so a slide rendering NO text still measures far above the blank
+        // threshold and would satisfy it. Asserting the composed slide is what bites.
+        let slide = c
+            .presenter()
+            .live_slide()
+            .expect("something must be on air after Go Live");
+        assert_eq!(
+            slide.title, expected,
+            "{what} must degrade to a slide that still names the item"
+        );
+
+        // The NEVER-BLANK half.
+        assert!(
+            !live_is_black(&c),
+            "{what} must not blank the audience output"
+        );
+    }
+
+    // POSITIVE CONTROL for the blank oracle itself. Without this, `!live_is_black` above is
+    // satisfied by any painted background and proves nothing about blanking at all.
+    assert!(matches!(
+        c.apply(&Command::Blackout { on: true }),
+        ControllerReply::Ack
+    ));
+    assert!(
+        live_is_black(&c),
+        "the blank oracle must be able to detect a genuinely blank output, else the \
+         never-blank assertions above are vacuous"
+    );
+}
+
+#[test]
+fn a_fully_planned_plan_reports_a_complete_total_on_the_wire() {
+    // The positive control for `partial` at the wire boundary: were the flag always true, the
+    // assertion in the summary test above would still pass and mean nothing.
+    let mut plan = ServicePlan::new("Complete");
+    let a = plan.add_item(ItemKind::Song, "Opening");
+    let b = plan.add_item(ItemKind::Song, "Closing");
+    let _divider = plan.add_item(ItemKind::Section, "GATHERING");
+    plan.set_item_planned_secs(a, Some(300)).unwrap();
+    plan.set_item_planned_secs(b, Some(360)).unwrap();
+    let c = LiveController::new(plan, 320, 180, Theme::dark());
+    let s = c.operator_view().summary.unwrap();
+    assert_eq!(s.planned_total_secs, 660);
+    assert_eq!(s.planned_items, 2);
+    assert!(
+        !s.partial,
+        "every item that can carry a duration has one — the section divider is not a gap"
+    );
+}
+
+#[test]
+fn a_parseable_passage_that_names_no_verse_is_reported_missing_on_the_wire() {
+    // The host owns the scripture corpus, so this is the one link kind it answers for real —
+    // and it must answer with the same lookup the renderer uses. "Jude 2:1" PARSES (Jude has a
+    // single chapter), so it is accepted by SetItemContent and reaches the plan; a parse-only
+    // resolution rule then reported it healthy while it could not present a word.
+    // (Code review, PR #13.)
+    let mut plan = ServicePlan::new("Sunday");
+    let s = plan.add_item(ItemKind::Scripture, "Phantom");
+    let mut c = LiveController::new(plan, 320, 180, Theme::dark());
+    let link = |r: &str| ContentLinkView {
+        kind: "scripture".into(),
+        reference: Some(r.into()),
+        translation: None,
+        verses_per_slide: None,
+        id: None,
+        slide_count: None,
+        verse_numbers: None,
+        status: None,
+        label: None,
+    };
+
+    assert!(
+        matches!(
+            c.apply(&Command::SetItemContent {
+                item_id: s.0,
+                link: Some(link("Jude 2:1")),
+            }),
+            ControllerReply::Ack
+        ),
+        "premise: a well-formed reference is accepted, so this test exercises the gap between \
+         parsing and existing rather than a rejected command"
+    );
+    assert_eq!(
+        c.operator_view().items[0]
+            .link
+            .as_ref()
+            .unwrap()
+            .status
+            .as_deref(),
+        Some("missing"),
+        "a passage the corpus cannot produce must be reported missing, not healthy"
+    );
+    assert_eq!(
+        c.operator_view().summary.unwrap().missing,
+        1,
+        "and the Plan Summary must count it, rather than reporting a clean plan"
+    );
+
+    // POSITIVE CONTROL: a real passage on the same path is healthy, so "missing" above is a
+    // verdict about the passage and not a resolver that condemns everything.
+    assert!(matches!(
+        c.apply(&Command::SetItemContent {
+            item_id: s.0,
+            link: Some(link("Romans 8:28-30")),
+        }),
+        ControllerReply::Ack
+    ));
+    let view = c.operator_view();
+    assert_eq!(
+        view.items[0].link.as_ref().unwrap().status,
+        None,
+        "a passage that resolves carries no status at all"
+    );
+    assert_eq!(view.summary.unwrap().missing, 0);
+}
+
+#[test]
+fn the_plan_summary_reproduces_the_designs_own_numbers() {
+    // Node 608:875 (Plan Summary) draws a specific plan, and the whole panel has to add up:
+    // "6 items" over a run sheet of SIX rows and THREE section dividers, "Assigned 6 / 6",
+    // "Total time 0:53:12", "Missing content 0", and the per-kind rows summing to 6. A Section
+    // is not an item — this test is what pins that definition, because both an earlier design
+    // QA pass and two engineers reached it independently.
+    let mut plan = ServicePlan::new("Sunday Morning");
+    let add = |plan: &mut ServicePlan, kind, title: &str, owner: &str, secs| {
+        let id = plan.add_item(kind, title);
+        plan.set_item_owner(id, Some(owner.into())).unwrap();
+        plan.set_item_planned_secs(id, Some(secs)).unwrap();
+    };
+    plan.add_item(ItemKind::Section, "GATHERING");
+    add(&mut plan, ItemKind::Song, "Opening Song", "Worship", 300);
+    add(
+        &mut plan,
+        ItemKind::Announcement,
+        "Welcome & Announcements",
+        "Host",
+        120,
+    );
+    add(
+        &mut plan,
+        ItemKind::Scripture,
+        "Romans 8:28-30",
+        "Scripture op",
+        120,
+    );
+    plan.add_item(ItemKind::Section, "THE WORD");
+    add(
+        &mut plan,
+        ItemKind::SlideGroup,
+        "Sermon: The Waiting",
+        "Pastor",
+        2100,
+    );
+    add(&mut plan, ItemKind::Media, "Testimony Video", "Media", 192);
+    plan.add_item(ItemKind::Section, "RESPONSE");
+    add(&mut plan, ItemKind::Song, "Closing Song", "Worship", 360);
+
+    let c = LiveController::new(plan, 320, 180, Theme::dark());
+    let s = c.operator_view().summary.unwrap();
+
+    assert_eq!(s.items, 6, "three dividers are not items");
+    assert_eq!(s.sections, 3, "they are still counted, just not conflated");
+    assert_eq!(s.songs, 2);
+    assert_eq!(s.scripture, 1);
+    assert_eq!(s.presentations, 1);
+    assert_eq!(s.media, 1);
+    assert_eq!(s.announcements, 1);
+    assert_eq!(s.missing, 0, "Missing content 0");
+    assert_eq!(s.planned_total_secs, 3192, "Total time 0:53:12");
+    assert_eq!(
+        s.assigned, 6,
+        "Assigned 6 / 6 — a fully staffed plan must not read as short because of dividers"
+    );
+    assert!(
+        !s.partial,
+        "every item that can carry a duration has one, so the total is complete"
+    );
+
+    // The panel has to be internally consistent, not merely individually correct: the per-kind
+    // rows must account for exactly the item count, and no subset may exceed it.
+    assert_eq!(
+        s.songs + s.scripture + s.presentations + s.media + s.announcements + s.timers,
+        s.items,
+        "the per-kind rows must add up to Items, with sections outside that total"
+    );
+    assert!(
+        s.assigned <= s.items,
+        "assigned can never exceed the denominator"
+    );
+    assert!(
+        s.planned_items <= s.items,
+        "a contributing count above the item count would render as '7 of 6'"
+    );
+}
+
+#[test]
+fn a_divider_cannot_make_the_summary_contradict_the_rows_it_describes() {
+    // Excluding dividers from the summary was only half the invariant. While a divider could
+    // still HOLD an owner, a duration or a link, one frame reported `missing: 0` beside a row
+    // whose own link said "missing" — the "plan reported verified that nothing ever checked"
+    // failure `plan_summary`'s doc names. Reachable from any EditPlan peer. (Code review, PR #13.)
+    let mut plan = ServicePlan::new("Sunday");
+    let song = plan.add_item(ItemKind::Song, "Opening");
+    let divider = plan.add_item(ItemKind::Section, "GATHERING");
+    plan.set_item_planned_secs(song, Some(300)).unwrap();
+    let mut c = LiveController::new(plan, 320, 180, Theme::dark());
+
+    // Every command that could contaminate a divider is refused at the wire, with the plan
+    // unchanged — not silently acked, which would leave the operator believing it had worked.
+    for (what, cmd) in [
+        (
+            "owner",
+            Command::SetItemOwner {
+                item_id: divider.0,
+                owner: Some("Pastor".into()),
+            },
+        ),
+        (
+            "duration",
+            Command::SetItemDuration {
+                item_id: divider.0,
+                secs: Some(600),
+            },
+        ),
+        (
+            "content link",
+            Command::SetItemContent {
+                item_id: divider.0,
+                link: Some(ContentLinkView {
+                    kind: "scripture".into(),
+                    reference: Some("Jude 2:1".into()),
+                    translation: None,
+                    verses_per_slide: None,
+                    id: None,
+                    slide_count: None,
+                    verse_numbers: None,
+                    status: None,
+                    label: None,
+                }),
+            },
+        ),
+    ] {
+        assert!(
+            matches!(c.apply(&cmd), ControllerReply::Deny(DenyReason::BadRequest)),
+            "setting {what} on an inert divider must be refused, not quietly accepted"
+        );
+    }
+
+    let view = c.operator_view();
+    let s = view.summary.expect("this host reports a summary");
+    let row = &view.items[1];
+    assert_eq!(row.kind, "section");
+    assert!(row.owner.is_none(), "the refused edit left nothing behind");
+    assert!(row.planned_secs.is_none());
+    assert!(row.link.is_none());
+
+    // The cross-field assertion, stated over the WHOLE frame rather than one row: the summary's
+    // problem count must equal the number of rows actually reporting a problem. This is what
+    // Cody's probe violated, and it holds no matter which row carries what.
+    let rows_missing = view
+        .items
+        .iter()
+        .filter(|i| {
+            i.link
+                .as_ref()
+                .and_then(|l| l.status.as_deref())
+                .is_some_and(|st| st == "missing")
+        })
+        .count();
+    assert_eq!(
+        rows_missing, s.missing as usize,
+        "the summary must agree with the rows it summarises"
+    );
+    let rows_owned = view.items.iter().filter(|i| i.owner.is_some()).count();
+    assert_eq!(
+        rows_owned, s.assigned as usize,
+        "assigned must agree with the rows that visibly show an owner"
+    );
+    assert_eq!(s.items, 1, "the divider is not an item");
+    assert_eq!(s.sections, 1);
+    assert_eq!(s.planned_total_secs, 300);
+    assert!(!s.partial);
+
+    // POSITIVE CONTROL: the same three commands succeed on a real item, so the refusals above
+    // are about dividers and not about commands that have stopped working entirely.
+    assert!(matches!(
+        c.apply(&Command::SetItemOwner {
+            item_id: song.0,
+            owner: Some("Worship".into()),
+        }),
+        ControllerReply::Ack
+    ));
+    let s = c.operator_view().summary.unwrap();
+    assert_eq!(s.assigned, 1, "a real item can still be assigned");
+}
+
+#[test]
+fn an_invisible_character_in_a_wire_reference_is_cleaned_before_it_is_validated() {
+    // L6's CONTROLLER half. `item_content_from_link` runs `sanitize_text` on the inbound
+    // reference BEFORE `set_item_content` parses it, so the string that gets validated is
+    // byte-for-byte the string that gets stored. That ordering is not cosmetic — it is the
+    // difference between accepting this link and refusing it, and deleting the `sanitize_text`
+    // call left the entire `test_controller` suite at exit 0 before this test existed.
+    let (mut c, ids) = controller();
+    let scr = ids[1]; // the Scripture item
+
+    // PREMISE, pinned: the raw string must NOT parse. If a future parser learned to skip
+    // zero-width characters itself, this test would silently stop exercising the sanitize
+    // call, so assert the premise rather than assume it.
+    assert!(
+        selahcue_core::scripture::parse_one("Romans 8:2\u{200B}8").is_err(),
+        "premise: the raw reference must not parse, or this test proves nothing about cleaning"
+    );
+
+    let link = |reference: &str| ContentLinkView {
+        kind: "scripture".into(),
+        reference: Some(reference.into()),
+        translation: Some("WEB".into()),
+        verses_per_slide: None,
+        id: None,
+        slide_count: None,
+        verse_numbers: None,
+        status: None,
+        label: None,
+    };
+
+    // Cleaned on the way in, so it parses and is accepted.
+    let reply = c.apply(&Command::SetItemContent {
+        item_id: scr,
+        link: Some(link("Romans 8:2\u{200B}8")),
+    });
+    assert!(
+        matches!(reply, ControllerReply::Ack),
+        "a reference carrying an invisible character is cleaned, then accepted: {reply:?}"
+    );
+
+    // ...and what is STORED is the cleaned form. Without this the accept above could be
+    // satisfied by storing the raw string and parsing something else.
+    let stored = c.operator_view().items[1]
+        .link
+        .clone()
+        .expect("the item is linked")
+        .reference
+        .expect("a scripture link carries its reference");
+    assert_eq!(
+        stored, "Romans 8:28",
+        "the stored reference is the cleaned one, not the raw wire value"
+    );
+    assert!(
+        !stored.contains('\u{200B}'),
+        "no invisible character survives onto the wire or into persistence: {stored:?}"
+    );
+
+    // POSITIVE CONTROL: cleaning must not have REPLACED validation. A reference that is still
+    // unparseable after cleaning is refused — so the accept above is evidence that the parse
+    // ran and passed, not that the parse is dead.
+    let deny = c.apply(&Command::SetItemContent {
+        item_id: scr,
+        link: Some(link("Not a\u{200B} reference")),
+    });
+    assert!(
+        matches!(deny, ControllerReply::Deny(DenyReason::BadRequest)),
+        "cleaning is not a substitute for validating: {deny:?}"
+    );
+    assert_eq!(
+        c.operator_view().items[1]
+            .link
+            .as_ref()
+            .unwrap()
+            .reference
+            .as_deref(),
+        Some("Romans 8:28"),
+        "a refused edit leaves the prior link untouched"
+    );
 }

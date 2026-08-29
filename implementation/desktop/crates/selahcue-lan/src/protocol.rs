@@ -528,6 +528,106 @@ pub struct ContentLinkView {
     /// its real slide count + stage a specific within-item slide (the Live Console slide picker).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slide_count: Option<u32>,
+    /// Scripture link: the verse-numbers mode — `"superscript"` | `"inline"` | `"hidden"`.
+    /// Absent = the plan default. Absent for deck/media.
+    ///
+    /// **Carried, not yet applied.** It round-trips so the inspector can hold the coordinator's
+    /// choice, but the host's slide composition does not read it yet; an unknown value degrades
+    /// to the default rather than rejecting the link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verse_numbers: Option<String>,
+    /// Whether the link RESOLVES, as far as the layer that built this view could tell:
+    /// `"missing"` = checked and gone, `"unknown"` = **not checked**, absent = checked and fine.
+    ///
+    /// `"unknown"` is not a hedge, it is the honest answer for deck and media links coming from
+    /// the host: decks are operator-owned by design and the host has no deck store, so it
+    /// cannot answer. A client must render `"unknown"` as *not yet known* and let the layer
+    /// that owns the library (the operator) supply the verdict — never as "fine". This mirrors
+    /// [`OperatorStateView::output_health`], where `None` likewise means "not reported", not
+    /// "healthy". Absent-equals-fine is the failure this field exists to prevent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// The link target's LAST KNOWN GOOD display name (e.g. a deck's title). The deck-owning
+    /// operator supplies it on every link and relink, and an update that omits it leaves the
+    /// stored name alone — so it is what lets a missing link be described by name once the
+    /// library row is gone and the id resolves to nothing. A deck renamed in place keeps the
+    /// older name until the item is next linked. Absent = no name was ever captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// Plan-level roll-up for the builder's right-hand Plan Summary panel and the run-sheet
+/// header (FR-004). Every count is derived from the same items the view already carries, so
+/// it never disagrees with them.
+///
+/// `missing` and `unknown` are deliberately SEPARATE totals rather than one "problem" count.
+/// The host can only resolve scripture links, so folding decks and media into `missing` would
+/// overstate what it knows, and folding them into a clean bill would understate it. `unknown`
+/// is the count the operator still has to resolve against its own library.
+///
+/// **A `section` divider is not an item.** Every count and total here describes the
+/// TRIGGERABLE run sheet: dividers are excluded from `items`, `assigned`, `missing`,
+/// `unknown`, `planned_total_secs`, `planned_items` and `partial`, and reported only by
+/// `sections`. The design draws it that way — node 608:875 reads "6 items" and
+/// "Assigned 6 / 6" over six rows and three dividers. A divider is an inert label that never
+/// fires, so it is not staffable and not schedulable; counting one in the assigned denominator
+/// would make a fully staffed plan read as incomplete forever.
+///
+/// This is an invariant, not a filter applied on the way out: the domain REFUSES to put an
+/// owner, a duration or a content link on a divider (`PlanError::NotApplicable`), and strips
+/// any that an older build stored. So no frame can report `missing: 0` beside a row whose own
+/// link says `"missing"`.
+/// `serde(default)` on the container, matching every other view in this file: a field added
+/// here later must not make an older host's frame unparseable to a newer client, which would
+/// take the whole `OperatorStateView` down with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PlanSummaryView {
+    /// Total TRIGGERABLE items — `section` dividers are **not** counted here (see the type
+    /// doc). `items` is the denominator the UI renders `assigned` against.
+    pub items: u32,
+    pub songs: u32,
+    pub scripture: u32,
+    /// Slide-group items — "Presentation" in the UI.
+    pub presentations: u32,
+    pub media: u32,
+    pub announcements: u32,
+    pub timers: u32,
+    /// Non-triggerable dividers. Reported separately and deliberately EXCLUDED from `items`,
+    /// so `songs + scripture + presentations + media + announcements + timers == items`.
+    pub sections: u32,
+    /// Triggerable items with an owner assigned (FR-004). Never exceeds `items`: a divider
+    /// cannot be given an owner, so it can neither be assigned nor inflate the denominator.
+    pub assigned: u32,
+    /// Triggerable items whose link was CHECKED and does not resolve.
+    pub missing: u32,
+    /// Triggerable items whose link could NOT be checked by the layer that built this view.
+    pub unknown: u32,
+    /// Sum of every item's planned duration, saturating. **Read `partial` before displaying
+    /// this**: on its own it cannot say whether it covers the whole plan.
+    pub planned_total_secs: u32,
+    /// How many items carried a duration and so contributed to `planned_total_secs`.
+    ///
+    /// This separates the spec's two partial renderings: `0` with items present is "no
+    /// durations at all" (`— · partial`), a non-zero count is a real subtotal
+    /// (`12:30 · partial`). `planned_total_secs == 0` alone cannot tell them apart, because
+    /// zero is a legitimate duration meaning "instant" (PLAN-SECTIONS-DURATIONS-spec §4.1-4.2).
+    pub planned_items: u32,
+    /// Whether `planned_total_secs` OMITS at least one item that could have had a duration —
+    /// i.e. the total is a FLOOR for the service, not its length
+    /// (PLAN-SECTIONS-DURATIONS-spec §4.2 · FR-202).
+    ///
+    /// A client rendering the total without this shows a number that reads as confidently
+    /// precise while being wrong — the defect design-QA rejected these frames for once already
+    /// ("8 items · 1:12:00" over rows summing 53:12). Computed in the SAME pass as the sum
+    /// ([`selahcue_core::plan::ServicePlan::planned_total`]), because a separately-derived flag
+    /// drifts from the number it describes and the drift is silent.
+    ///
+    /// Inert `section` dividers never set it: carrying no duration is their normal state, so
+    /// counting them would mark every sectioned plan partial. Skip-if-false — a complete total
+    /// simply omits the key.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub partial: bool,
 }
 
 /// One plan item as the operator UI renders it — the wire form of an item view.
@@ -705,6 +805,11 @@ pub struct OperatorStateView {
     /// The host's session-recovery state. `None` = this host does not report it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionHealthView>,
+    /// Plan-level roll-up (counts, assigned, planned total) for the Plan Summary panel.
+    /// `None` = this host does not report it; omitted on the wire then, so the pinned v2
+    /// fixtures stay byte-identical and an older client is unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<PlanSummaryView>,
 }
 
 /// The live output's fault/recovery health, as the operator UI renders it (NFR-024).

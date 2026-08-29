@@ -6325,6 +6325,22 @@
         // The total must describe the items actually being rendered. A header reading 99999s over
         // rows summing 600s is precisely the §9 MAJOR. Sections carry no duration, so this holds
         // under either reading of the question above.
+        // WHY the two totals agree, and what silently breaks if that changes.
+        //
+        // This recomputation sums planned_secs over EVERY item it was sent, sections included.
+        // The host's planned_total_secs EXCLUDES sections, because a divider is not part of the
+        // run sheet. Those are different definitions, and they agree for exactly one reason: the
+        // host will not let a section hold a duration at all — ServicePlan::set_item_planned_secs
+        // refuses it (PlanError::NotApplicable) and from_parts strips any an older build stored.
+        //
+        // So this is not 'sections happen to carry no duration'. It is a guarantee another crate
+        // makes, in another language, landed in another pull request. If that guard is ever
+        // relaxed, the sums diverge, this check returns false, and planSummaryOf falls back to
+        // the local computation below — QUIETLY. The panel keeps rendering plausible numbers that
+        // are no longer the host's, with nothing thrown and no test failing. The tripwire on the
+        // other side is a_section_with_a_duration_would_break_the_operators_summary_validation_seam
+        // in selahcue-core/tests/test_plan.rs, and the mirror of this note is on
+        // ServicePlan::planned_total. Change either definition and both must move.
         let localTotal = 0;
         items.forEach((x) => { if (planHasDuration(x)) localTotal += x.planned_secs; });
         if (sum.planned_total_secs !== localTotal) return false;
@@ -6483,8 +6499,11 @@
           err.hidden = true;
           setBusy(true);
           // Keep the modal OPEN until the host confirms. set_item_content rejects an unparseable
-          // reference / unknown deck and leaves the plan unchanged, so closing optimistically would
-          // hide the failure. Close only on success; on rejection re-enable + surface an inline
+          // reference (and a malformed link — unknown kind, blank reference, missing id) and leaves
+          // the plan unchanged, so closing optimistically would hide the failure. It does NOT
+          // reject an unknown DECK: the host has no deck store, so any deck id is accepted and the
+          // link comes back with status "unknown" for this side to resolve against the library.
+          // Close only on success; on rejection re-enable + surface an inline
           // error. The returned OperatorView refreshes the console AND (if open) the builder — a
           // plan edit that never changes Live.
           invoke("set_item_content", { itemId: item.id, link })
@@ -6930,7 +6949,9 @@
             if (created) {
               // Carry the deck's slide count to the host (it owns no deck store) so the plan item
               // reports the real count + can stage a specific slide (LIVE-CONSOLE… spec §6).
-              commit({ kind: "deck", id: created.id, slide_count: created.slides }); // success → modal closes
+              // Send the deck's name as the link label too: once a deck is deleted, no layer can
+              // turn its id back into a name, so the plan item has to have kept one.
+              commit({ kind: "deck", id: created.id, slide_count: created.slides, label: created.name }); // success → modal closes
             } else {
               newCard.disabled = false;
               newBusy = false;
@@ -6947,7 +6968,7 @@
           if (selId != null) {
             // Carry the selected deck's slide count to the host (spec §6) so per-slide staging works.
             const d = (planDecks || []).find((x) => x.id === selId);
-            commit({ kind: "deck", id: selId, slide_count: d ? d.slides : undefined });
+            commit({ kind: "deck", id: selId, slide_count: d ? d.slides : undefined, label: d ? d.name : undefined });
           }
         };
         const foot = document.createElement("div");
@@ -7559,10 +7580,14 @@
           card.classList.add("missing");
           const w = document.createElement("div");
           w.className = "plan-deck-card-name link-missing";
-          w.textContent = "⚠ presentation missing";
+          // The last known good name, captured when the link was made. The deck's library row
+          // is gone, so this is the only thing that can still say WHICH presentation vanished.
+          w.textContent = link.label ? "⚠ “" + link.label + "” is missing" : "⚠ presentation missing";
           const m = document.createElement("div");
           m.className = "plan-deck-card-meta";
-          m.textContent = "The linked deck was deleted from the library — relink it.";
+          m.textContent = link.label
+            ? "“" + link.label + "” was deleted from the library. Relink a deck or remove this item."
+            : "The linked deck was deleted from the library — relink it.";
           card.appendChild(w);
           card.appendChild(m);
           return card;
@@ -8121,7 +8146,7 @@
           try {
             // Carry the slide count to the host (it owns no deck store) so the row reports the real
             // count and can stage a specific slide — same contract as planDeckBody's commit().
-            await invoke("set_item_content", { itemId: item.id, link: { kind: "deck", id: deck.id, slide_count: deck.slides } });
+            await invoke("set_item_content", { itemId: item.id, link: { kind: "deck", id: deck.id, slide_count: deck.slides, label: deck.name } });
           } catch (e) {
             // The item landed but carries no deck reference. A plan row that lies about what it
             // holds is worse than no row on a Sunday morning, so roll it back instead of leaving

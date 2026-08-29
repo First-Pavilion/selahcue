@@ -2683,9 +2683,16 @@ DRIVER = r"""
       linkFoot.click(); // CONFIRM
       await sleep(20);
       var sic2 = window.__calls.filter(function(c){return c.cmd==="set_item_content";});
-      ok(sic2.length > sicBeforeDeck && sic2[sic2.length-1].args.link && sic2[sic2.length-1].args.link.kind==="deck" &&
-         typeof sic2[sic2.length-1].args.link.id === "number",
-         "SP C-004: 'Link to item' sends set_item_content{link:{kind:deck,id}} (select-then-confirm)");
+      // The label conjunct is the WRITE half of B2. M4 covers only the read half (planDeckCard
+      // rendering a label it was handed), so dropping `label` from this send site left the gate
+      // green at 834 checks. Resolved by id rather than hardcoded, so it asserts "the selected
+      // deck's own name" instead of a string that happens to match.
+      var sicLink = sic2.length ? sic2[sic2.length-1].args.link : null;
+      var sicDeck = ((window.__LIB && window.__LIB.decks) || []).filter(function(d){ return sicLink && d.id === sicLink.id; })[0];
+      ok(sic2.length > sicBeforeDeck && sicLink && sicLink.kind==="deck" &&
+         typeof sicLink.id === "number" &&
+         !!sicDeck && sicLink.label === sicDeck.name,
+         "SP C-004: 'Link to item' sends set_item_content{link:{kind:deck,id,label}} — the label is the SELECTED deck's own name, which is the only thing that can name it once the library row is gone (select-then-confirm)");
       // SP2 New-presentation card: creates a deck (deck_new) and links it immediately.
       openLinkModal({ id: 12, kind: "slide_group", title: "Sermon Deck" });
       await sleep(40);
@@ -2694,9 +2701,15 @@ DRIVER = r"""
       lmN.querySelector(".pm-deck-new").click();
       await sleep(50); // deck_new → planLoadDecks → commit
       var sicN2 = window.__calls.filter(function(c){return c.cmd==="set_item_content";});
+      // The third and last deck-link send site. Resolved by id against the library the stub just
+      // pushed the new deck into, so it asserts the CREATED deck's own name rather than a literal.
+      var sicNLink = sicN2.length ? sicN2[sicN2.length-1].args.link : null;
+      var sicNDeck = ((window.__LIB && window.__LIB.decks) || []).filter(function(d){ return sicNLink && d.id === sicNLink.id; })[0];
       ok(window.__calls.some(function(c){return c.cmd==="deck_new";}) && sicN2.length > sicN &&
-         sicN2[sicN2.length-1].args.link && sicN2[sicN2.length-1].args.link.kind === "deck",
+         sicNLink && sicNLink.kind === "deck",
          "SP2 C-004: the New-presentation card creates + links a deck");
+      ok(!!sicNLink && !!sicNDeck && sicNLink.label === sicNDeck.name,
+         "SP2 C-004: the New-presentation card carries the created deck's OWN name as link.label (third of three send sites)");
       // SP2 fix: double-activating the New card creates exactly ONE deck (re-entrancy/disabled guard).
       openLinkModal({ id: 12, kind: "slide_group", title: "Sermon Deck" });
       await sleep(40);
@@ -2744,6 +2757,28 @@ DRIVER = r"""
       var deckCard = dinsp.querySelector(".plan-deck-card");
       ok(deckCard && /Grace That Feeds/.test(deckCard.textContent) && /slide/.test(deckCard.textContent),
          "SP2 C-005: a presentation-linked item shows a deck card (name + slide count)");
+      // --- Frame 611:1035 — a MISSING deck is named, which is the whole point of link.label ---
+      // The deck's library row is gone, so the id resolves to nothing; only the label captured
+      // at link time can say WHICH presentation vanished. Without this the card degrades to
+      // "presentation missing" and the design's "'X' was deleted from the library" is unbuildable.
+      var goneNamed = planDeckCard({ kind: "deck", id: 987654, label: "Sunday Service \u2014 Aug 4" });
+      ok(goneNamed.classList.contains("missing"),
+         "SP2 C-005: an unresolvable deck id renders the missing card");
+      ok(/Sunday Service \u2014 Aug 4/.test(goneNamed.textContent),
+         "SP2 C-005: the missing card NAMES the deleted deck from link.label, not just 'presentation missing'");
+      ok(/deleted from the library/i.test(goneNamed.textContent),
+         "SP2 C-005: and it says what happened to it, so the operator knows to relink rather than retry");
+      // CONTROL 1: without a label there is nothing to name, so it must fall back rather than
+      // render an empty quotation — otherwise the check above would pass on any card at all.
+      var goneAnon = planDeckCard({ kind: "deck", id: 987654 });
+      ok(goneAnon.classList.contains("missing") && /presentation missing/i.test(goneAnon.textContent)
+         && !/\u201c\u201d/.test(goneAnon.textContent),
+         "SP2 C-005 (control): a missing deck with no captured label degrades to the generic message, never an empty quotation");
+      // CONTROL 2: a PRESENT deck must not take the missing branch even when a stale label is
+      // attached — the live library name wins, so a rename can never render as a deletion.
+      var alive = planDeckCard({ kind: "deck", id: 2, label: "Some Old Name" });
+      ok(!alive.classList.contains("missing") && !/Some Old Name/.test(alive.textContent),
+         "SP2 C-005 (control): a resolvable deck ignores a stale label and shows the library name");
       var openEd = Array.prototype.filter.call(dinsp.querySelectorAll("button"), function(b){return b.textContent==="Open in editor";})[0];
       ok(!!openEd, "SP2 C-005: the deck inspector offers Open in editor");
       openEd.click();
@@ -3956,6 +3991,19 @@ DRIVER = r"""
          "PME-014: '▶ Present' is really PAINTED once a presentation is open (computed display " + getComputedStyle(wPres).display + ")");
       ok(getComputedStyle(wAtp).display !== "none" && wAtp.getClientRects().length > 0,
          "PME-015: 'Add to plan' is really painted once a presentation is open");
+      // B2 WRITE half, second send site. The driver asserted this button was painted but never
+      // CLICKED it, so dropping `label` from pmAddToPlan() left the gate green at 834 even after
+      // the link-modal site was pinned. The add_item/set_item_content stubs return an unmutated
+      // copy of V, so clicking here cannot disturb any other check.
+      var wAtpN = window.__calls.filter(function(c){ return c.cmd === "set_item_content"; }).length;
+      wAtp.click();
+      ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "set_item_content"; }).length > wAtpN; }),
+         "PME-015: 'Add to plan' links the open presentation to the plan item it just created (set_item_content)");
+      var atpCalls = window.__calls.filter(function(c){ return c.cmd === "set_item_content"; });
+      var atpLink = atpCalls.length ? atpCalls[atpCalls.length-1].args.link : null;
+      var atpDeck = ((window.__LIB && window.__LIB.decks) || []).filter(function(d){ return atpLink && d.id === atpLink.id; })[0];
+      ok(!!atpLink && atpLink.kind === "deck" && !!atpDeck && atpLink.label === atpDeck.name,
+         "PME-015: 'Add to plan' carries the open deck's OWN name as link.label, so a later deletion can still name it");
       ok(getComputedStyle(wPres).backgroundImage === "none",
          "PME-003: '▶ Present' uses the FLAT primary fill, never the frame's gradient (white on the frame's light stop is 3.78:1)");
       var wGlN = window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length;

@@ -9,8 +9,8 @@
 use crate::controller::LiveController;
 use selahcue_lan::protocol::{
     Command, ContentLinkView, DetectionView, OperatorStateView, OutputHealthView, PlanItemView,
-    SavedThemeView, ScaleFit, ScreenThemeView, ScreenView, SessionHealthView, StorageHealthView,
-    TimerSnapshot, TranscriptSegmentView,
+    PlanSummaryView, SavedThemeView, ScaleFit, ScreenThemeView, ScreenView, SessionHealthView,
+    StorageHealthView, TimerSnapshot, TranscriptSegmentView,
 };
 use selahcue_present::FrameBuffer;
 use serde::Serialize;
@@ -63,6 +63,10 @@ pub struct ItemView {
 pub struct OperatorView {
     pub plan_name: String,
     pub items: Vec<ItemView>,
+    /// Plan-level roll-up for the Plan Summary panel (counts, assigned, planned total).
+    /// `None` = this backend does not report it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<PlanSummaryView>,
     /// Index into `items` currently on Live, if any.
     pub live_index: Option<usize>,
     /// Index into `items` currently staged in Preview, if any (`None` when Preview
@@ -617,6 +621,7 @@ impl From<OperatorView> for OperatorStateView {
         OperatorStateView {
             plan_name: v.plan_name,
             items: v.items.into_iter().map(Into::into).collect(),
+            summary: v.summary,
             live_index: v.live_index,
             staged_index: v.staged_index,
             blackout: v.blackout,
@@ -650,6 +655,7 @@ impl From<OperatorStateView> for OperatorView {
         OperatorView {
             plan_name: v.plan_name,
             items: v.items.into_iter().map(Into::into).collect(),
+            summary: v.summary,
             live_index: v.live_index,
             staged_index: v.staged_index,
             blackout: v.blackout,
