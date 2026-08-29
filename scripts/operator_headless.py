@@ -46,7 +46,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # panel, the loading state, and the QA/security remediation. Set to the REAL observed count so
 # dropping even one trips exit 4. Sana S4: this floor had been left at 829 while the driver ran
 # more, which would have let every new check disappear without failing.)
-EXPECTED_MIN_CHECKS = 906
+EXPECTED_MIN_CHECKS = 910
 
 
 def find_chrome():
@@ -3166,6 +3166,41 @@ DRIVER = r"""
          "SP3 AC-16b: a rebuild under a focused panel control keeps focus in the panel rather than dropping it to <body> (activeElement=" + document.activeElement.tagName + ")");
       planSelectedId = null;
       planRenderBuilder(sumView);
+      // --- the Plan Summary must stay REACHABLE as it grows (WKWebView trap #2 family) ---------
+      // Adding the Timers/Sections rows pushed the panel's last element below the emergency
+      // footer. That is fine only because #surface-plan scrolls; if a future row made the panel
+      // taller than the scroll container allows, the bottom of the summary would be permanently
+      // obscured. Note the weaker check this replaces: the grid's own scrollHeight === clientHeight
+      // stayed equal the whole time the content was overflowing, so it proved nothing.
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      var surf = el("surface-plan");
+      var hint = document.querySelector("#plan-b-insp .plan-sum-hint");
+      ok(!!hint, "SP3 AC-21 (setup): the summary's last element exists");
+      // Self-referential to the SCROLL CONTAINER, not to the footer: the footer sits in different
+      // places under the gate's layout than in the real window, so a footer-relative assertion
+      // would measure the harness rather than the product.
+      // FORCE the overflow. At the gate's viewport the panel happens to fit, so the assertion
+      // would be trivially true and guard nothing (it survived an overflow-y:hidden mutation until
+      // this was added). Squeezing the surface reproduces the real-window condition, where the
+      // panel's last element sits below the fold.
+      var savedH = surf.style.height;
+      surf.style.height = "200px";
+      ok(hint.getBoundingClientRect().bottom > Math.round(surf.getBoundingClientRect().top + surf.clientHeight),
+         "SP3 AC-21 (premise): with the surface squeezed the summary really does overflow — otherwise the reachability check below proves nothing");
+      // The container must be USER-scrollable, not merely script-scrollable: overflow-y:hidden
+      // still honours a programmatic scrollTop, so scrolling in a test and finding the element
+      // proves nothing about whether an operator could ever reach it.
+      var ovf = getComputedStyle(surf).overflowY;
+      ok(ovf === "auto" || ovf === "scroll",
+         "SP3 AC-21: the plan surface is user-scrollable (overflow-y=" + ovf + "), so overflowing panel content is reachable by a person and not just by script");
+      surf.scrollTop = surf.scrollHeight;
+      var surfBottom = Math.round(surf.getBoundingClientRect().top + surf.clientHeight);
+      ok(Math.round(hint.getBoundingClientRect().bottom) <= surfBottom + 1,
+         "SP3 AC-21: the bottom of the Plan Summary can be scrolled into the surface's visible area — a taller panel must never become unreachable (hint=" +
+         Math.round(hint.getBoundingClientRect().bottom) + " surfaceBottom=" + surfBottom + ")");
+      surf.scrollTop = 0;
+      surf.style.height = savedH;
       // --- loading (frame 611:350) ------------------------------------------------------------
       planRenderLoading();
       ok(document.querySelectorAll("#plan-b-list .plan-skel-row").length > 0, "SP3 AC-7: opening the plan paints skeleton rows");
