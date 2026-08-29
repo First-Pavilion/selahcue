@@ -784,7 +784,9 @@ impl ServicePlan {
     /// before any of this — nothing in staging or Go Live inspects `ItemKind`, and `item_slide`
     /// renders a title slide for any item. So the question "may a section present body text?"
     /// is a product decision about whether a divider is inert *by type*, not a defect in this
-    /// guard. Tracked as `86ak8dm3f`.
+    /// guard. **It is not ticketed yet** — whoever acts on it should raise one. Stated that way
+    /// deliberately: an id written before the ticket exists is a guess, and a wrong id in a
+    /// source comment outlives the pull request that introduced it and reads as authoritative.
     ///
     /// Note also that `get_mut` and `PlanItem`'s public fields bypass this guard for the other
     /// three fields just as readily; the coverage is uniform, not lopsided. Sealing that means
