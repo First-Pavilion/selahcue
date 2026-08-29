@@ -138,9 +138,16 @@ fn publishing_sets_the_baseline_and_a_later_edit_raises_the_badge() {
 
 #[test]
 fn publishing_twice_over_never_raises_its_own_badge() {
-    // The control for `is_plan_edit` EXCLUDING PublishPlan. If publishing were treated as a plan
-    // edit it would bump the revision and take an undo snapshot, and the badge would come back on
-    // the moment it was cleared. Adding `Command::PublishPlan` to `is_plan_edit` fails this.
+    // Publish is idempotent as far as the operator is concerned: handing the same plan off
+    // again counts another version and still reports nothing to review.
+    //
+    // This test does NOT pin the `is_plan_edit` exclusion, and an earlier version of this comment
+    // wrongly claimed it did. Adding `Command::PublishPlan` to `is_plan_edit` leaves the entire
+    // `selahcue-app` suite green, because the block consuming that predicate also requires
+    // `self.plan != before` and publishing changes no item — the exclusion is subsumed and no
+    // input exists that only it rejects. What this test does pin is `refresh_published_delta`'s
+    // document comparison and the explicit clear in the publish handler (mutations M2 and M10
+    // both fail here), which is what the property actually rests on.
     let (mut c, _) = controller();
     for round in 1..=3u32 {
         assert_eq!(c.apply(&Command::PublishPlan), ControllerReply::Ack);
