@@ -944,21 +944,50 @@ impl ServicePlan {
 pub const MAX_PLAN_NAME_LEN: usize = 120;
 
 /// Whether `name` is acceptable as a service-plan name arriving from the untrusted wire:
-/// non-empty after trimming, within [`MAX_PLAN_NAME_LEN`] characters, and free of control
-/// characters.
+/// non-empty after trimming, within [`MAX_PLAN_NAME_LEN`] characters, and free of BOTH control
+/// characters and [`is_invisible_formatting`] characters.
 ///
-/// Rejects rather than silently repairing, the same choice the NDI source name makes: a caller
-/// that types a control character into a plan title has made a mistake worth reporting, and a
-/// name quietly rewritten between the request and the run sheet is a name the coordinator
-/// cannot search for later.
+/// # Both categories, because one is not enough
+///
+/// `char::is_control` tests the Cc category ONLY. Every character this file already classifies
+/// as display-spoofing — zero-width spaces and joiners, bidi overrides and isolates, the BOM —
+/// is Cf, so a rule built on `is_control` alone lets all of them through. That gap was real
+/// here: a right-to-left override made a plan name display as something other than what it is,
+/// and a "title" consisting solely of U+200B passed the non-blank check while rendering as
+/// empty. Both reach every paired device through the run sheet. Found by security review of
+/// PR #14, and the same class the PR #13 review found on link labels.
+///
+/// This consumes `is_invisible_formatting` rather than restating the character ranges, so the
+/// list has ONE definition. A second copy is the thing that drifts the next time a character is
+/// added to it.
+///
+/// # Refused here, dropped in the codec — deliberately different
+///
+/// [`sanitize_field`] REMOVES these characters, because the codec must be total: it processes
+/// values that are already stored and has nobody to report a failure to. This is untrusted
+/// INGRESS creating a new document, so it can do the more honest thing and refuse — the same
+/// choice the NDI source name makes. A name quietly rewritten between the request and the run
+/// sheet is a name the coordinator cannot search for later.
 ///
 /// Counted in CHARACTERS, not bytes — a bound in bytes would refuse a legitimate name in a
-/// non-Latin script at a third of the length a Latin one is allowed.
+/// non-Latin script at a third of the length a Latin one is allowed. Non-Latin names are
+/// otherwise untouched by this rule and there is a test saying so, because a spoofing guard that
+/// quietly excluded most of the world's scripts would be a worse bug than the one it fixes.
+///
+/// # Known cost: multi-person emoji are refused
+///
+/// U+200D (zero-width joiner) is what binds an emoji sequence together, so a plan named
+/// "Sunday 👨‍👩‍👧" is refused. That is a real usability cost and it is accepted deliberately:
+/// permitting U+200D is exactly the homograph hole this closes, and the alternative — silently
+/// dropping it, as the codec does — would mangle the sequence into three separate people
+/// without saying so. Single emoji carry no joiner and are unaffected.
 pub fn plan_name_valid(name: &str) -> bool {
     let trimmed = name.trim();
     !trimmed.is_empty()
         && trimmed.chars().count() <= MAX_PLAN_NAME_LEN
-        && !trimmed.chars().any(|c| c.is_control())
+        && !trimmed
+            .chars()
+            .any(|c| c.is_control() || is_invisible_formatting(c))
 }
 
 /// A named starter template — a run-sheet skeleton a coordinator begins a service from

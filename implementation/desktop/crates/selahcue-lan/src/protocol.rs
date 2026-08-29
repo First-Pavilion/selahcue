@@ -961,13 +961,18 @@ impl ViewerView {
 /// label, the draft/published distinction, and the "Plan updated · Review changes" badge, and
 /// nothing more.
 ///
-/// # Why a counter and not a copy of the plan
+/// # Why counters on the WIRE, and not the plan twice over
 ///
-/// Frame `612:1020` asks for a *badge* and a reload-vs-keep choice, not a diff. Keeping a
-/// second published copy of the plan to diff against would double the plan's memory for a
-/// feature nothing has asked for, so the host reports revisions and the client decides when to
-/// re-read. The host never force-refreshes anyone and never reorders the live run sheet — that
-/// is the whole point of the badge.
+/// Frame `612:1020` asks for a *badge* and a reload-vs-keep choice, not a diff. So this carries
+/// scalars and the client decides when to re-read; the host never force-refreshes anyone and
+/// never reorders the live run sheet, which is the whole point of the badge.
+///
+/// This is a statement about the WIRE only. It is not an argument that no published copy exists
+/// anywhere: the host keeps one, because `changed` reports whether the plan DIFFERS rather than
+/// whether it was touched, and only a document can answer that. See
+/// `LiveController::published_plan`, which prices that copy against the 60 undo snapshots it
+/// sits beside. What is avoided here is shipping a whole second plan to every client on every
+/// frame, which is a different cost from holding one in the host.
 ///
 /// # In-session only, this slice
 ///

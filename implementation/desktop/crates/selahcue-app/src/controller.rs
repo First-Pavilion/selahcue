@@ -171,16 +171,23 @@ pub struct LiveController {
     /// a counter would leave the operator staring at a "Plan updated · Review changes" badge
     /// over a plan identical to the one they published, with nothing to review.
     ///
-    /// The cost is one plan-sized clone against the [`MAX_PLAN_UNDO`] (60) that `plan_undo`
-    /// already holds — a 1/60 increase on an accepted bound, itself capped because the plan is
-    /// capped at `MAX_PLAN_ITEMS`.
+    /// The cost is one plan-sized clone beside the 60 that undo already holds. Undo and redo are
+    /// CONSERVED at [`MAX_PLAN_UNDO`] between them — an edit clears the redo branch, and
+    /// undo/redo move snapshots from one stack to the other rather than adding — so the worst
+    /// case is 60 snapshots plus the live plan, and this makes it 62: about a 1.6% increase on an
+    /// already-accepted bound. Itself capped, because the plan is capped at `MAX_PLAN_ITEMS`
+    /// (~210 KB at the item and name limits, measured).
     published_plan: Option<ServicePlan>,
     /// Whether the plan differs from [`published_plan`](Self::published_plan) right now.
     ///
     /// Recomputed when the document MOVES and when it is published — never while building a
-    /// view. The comparison is O(plan) and view building is per-frame, so deriving it on read
-    /// would put a deep compare of every item into the render path to answer a question that
-    /// can only change when someone edits.
+    /// view.
+    ///
+    /// Not because `operator_view` is the frame path; it is not (see its own doc — `tick` drives
+    /// frames, and the view is built once per `GetOperatorState` and per console action). The
+    /// reason is that this is O(plan) work whose answer can only change when someone edits, and
+    /// deriving it on read would repeat it for every poll of every connected client instead of
+    /// once per edit. Storing the verdict costs a `bool`.
     changed_since_publish: bool,
     /// How many times this plan has been published — the `v4 (published)` label. Saturating.
     publish_count: u32,

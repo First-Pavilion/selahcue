@@ -513,6 +513,33 @@ fn each_lifecycle_guard_refuses_an_input_only_it_rejects() {
                 items: over_cap,
             },
         ),
+        // The three below are one rule — invisible formatting (Cf) — reached on both the plan
+        // name and the item title. `char::is_control` is Cc only and lets every one of them
+        // through, which is the gap security review found. Each is otherwise well-formed:
+        // non-blank, in bounds, valid kind.
+        (
+            "right-to-left override in the plan name",
+            Command::NewPlan {
+                name: "Sun\u{202E}day".into(),
+            },
+        ),
+        (
+            "an item title that is only a zero-width space",
+            Command::ImportPlan {
+                name: "Valid Name".into(),
+                // Not blank by `trim` — U+200B is not White_Space — so the non-blank check
+                // passes it and only the invisible-formatting rule refuses it. It would render
+                // as an empty row.
+                items: vec![item("song", "\u{200B}")],
+            },
+        ),
+        (
+            "zero-width joiner homograph in an item title",
+            Command::ImportPlan {
+                name: "Valid Name".into(),
+                items: vec![item("song", "Open\u{200D}ing")],
+            },
+        ),
     ];
 
     for (label, command) in cases {
@@ -612,6 +639,28 @@ fn the_benign_counterpart_of_every_refused_case_still_works() {
             Command::ImportPlan {
                 name: "Valid Name".into(),
                 items: at_cap,
+            },
+        ),
+        // The spoofing rule must not have swept up legitimate international text. Without this,
+        // rejecting the three Cf cases above is indistinguishable from a rule that refuses
+        // anything non-ASCII — which would be a worse bug than the one it fixes.
+        (
+            "a non-Latin plan name",
+            Command::NewPlan {
+                name: "主日崇拜".into(),
+            },
+        ),
+        (
+            "an Arabic plan name with genuine right-to-left text",
+            Command::NewPlan {
+                name: "خدمة الأحد".into(),
+            },
+        ),
+        (
+            "a single emoji, which carries no joiner",
+            Command::ImportPlan {
+                name: "Valid Name".into(),
+                items: vec![item("song", "Opening 🎉")],
             },
         ),
     ];
