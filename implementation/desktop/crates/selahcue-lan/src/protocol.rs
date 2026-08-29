@@ -363,7 +363,7 @@ pub enum Command {
     /// recoverable only through plan undo.
     ///
     /// A blank, over-long or control-character `name` is rejected
-    /// ([`selahcue_core::plan::plan_name_valid`]). Never changes the live output: whatever is
+    /// ([`selahcue_core::plan::plan_label_valid`]). Never changes the live output: whatever is
     /// on air keeps airing as a free slide, exactly as removing the live item already does.
     NewPlan { name: String },
     /// Replace the plan with one built from the named starter template

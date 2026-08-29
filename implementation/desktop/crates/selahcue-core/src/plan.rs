@@ -339,13 +339,13 @@ fn is_line_separator(c: char) -> bool {
     matches!(c, '\u{2028}' | '\u{2029}')
 }
 
-/// Public form of [`sanitize_field`], for callers that must clean untrusted text BEFORE
+/// Public form of `sanitize_field`, for callers that must clean untrusted text BEFORE
 /// validating it — the controller parses a scripture reference and stores what it parsed, so
 /// sanitizing only on `encode` would let a bidi override ride on the wire and into the run
 /// sheet while never reaching persistence. One implementation, so the two cannot drift.
 ///
 /// Cleans ONLY -- it applies no length bound of any kind. A caller that also needs the value
-/// bounded wants [`sanitize_label`]; one that calls this is responsible for its own limit.
+/// bounded wants `sanitize_label`; one that calls this is responsible for its own limit.
 /// Saying so explicitly because this doc block and `sanitize_label`'s were previously
 /// transposed, leaving a public function documented as capping a length it never touched.
 pub fn sanitize_text(s: &str) -> String {
@@ -364,7 +364,7 @@ impl ItemContent {
     /// Serialize to a stable, reversible, single-line string for persistence
     /// (the data layer stores this opaque value in one column — keeping the codec
     /// pure and in the domain, with no serde in core). Fields are TAB-separated; text fields are
-    /// [`sanitize_field`]-cleaned of control chars so the round-trip is always lossless.
+    /// `sanitize_field`-cleaned of control chars so the round-trip is always lossless.
     pub fn encode(&self) -> String {
         match self {
             ItemContent::Scripture {
@@ -1096,8 +1096,15 @@ pub const MAX_PLAN_LABEL_LEN: usize = 120;
 /// must be total: it processes values that are already stored and has nobody to report a failure
 /// to. This is untrusted INGRESS creating a new document, so it can do the more honest thing and
 /// refuse — the same choice the NDI source name makes. A name quietly rewritten between the
-/// request and the run sheet is a name the coordinator cannot search for later. One set, two
-/// verbs, and that split is only safe because the set no longer contains anything orthographic.
+/// request and the run sheet is a name the coordinator cannot search for later.
+///
+/// "One set, two verbs" is true of `is_display_hostile`, and **only of that set** — do not read
+/// it as "these two paths agree". They do not, and `U+2028` is where they part: this function
+/// also consults `is_line_separator`, which `sanitize_field` does not, so a line separator is
+/// refused here and **kept** by `sanitize_text`. The shared definition covers the invisibles that
+/// act at a distance; the line separators are the validator's alone. That divergence is stated
+/// on `is_line_separator` too, and this sentence previously overstated the agreement while
+/// sitting above the accurate account of it.
 ///
 /// Counted in CHARACTERS, not bytes — a bound in bytes would refuse a legitimate name in a
 /// non-Latin script at a third of the length a Latin one is allowed.
@@ -1128,7 +1135,8 @@ pub const MAX_PLAN_LABEL_LEN: usize = 120;
 /// narrowing** — every one of them passed before it too:
 ///
 /// - **Blank-rendering characters that are not format characters** satisfy the visible-content
-///   guard: U+00AD soft hyphen, U+3164 HANGUL FILLER, U+115F, U+2800 BRAILLE PATTERN BLANK. This
+///   guard: U+00AD soft hyphen, U+3164 HANGUL FILLER, U+115F, U+2800 BRAILLE PATTERN BLANK,
+///   U+FE0F VARIATION SELECTOR-16. This
 ///   class is unbounded without render-aware checking, because a blank-glyph *letter* defeats any
 ///   predicate written over character categories. A category test cannot answer a rendering
 ///   question, and pretending otherwise is how the first version of this rule went wrong.
