@@ -7221,9 +7221,15 @@
         // populated splits into "N items" + a right-aligned "planned H:MM:SS" per frame 608:925.
         const count = document.getElementById("plan-b-count");
         const total = document.getElementById("plan-b-total");
-        const planned = planSummaryOf(view).planned_total_secs;
+        const hdr = planSummaryOf(view);
+        const planned = hdr.planned_total_secs;
+        // The header counts the same thing the panel does — TRIGGERABLE rows, sections excluded.
+        // Using view.items.length here read "9 items" beside a summary saying "Items 6": two
+        // headline numbers describing the same run sheet and disagreeing, which is the §9 MAJOR.
+        // The empty-CTA branch still keys off whether ANY row exists, so a plan of nothing but
+        // dividers renders its dividers rather than the "add your first item" state.
         if (view.items.length) {
-          if (count) count.textContent = view.items.length + " items";
+          if (count) count.textContent = hdr.items + " items";
           if (total) total.textContent = "planned " + planFmtTotal(planned);
         } else {
           if (count) count.textContent = "0 items · 0:00";

@@ -46,7 +46,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # panel, the loading state, and the QA/security remediation. Set to the REAL observed count so
 # dropping even one trips exit 4. Sana S4: this floor had been left at 829 while the driver ran
 # more, which would have let every new check disappear without failing.)
-EXPECTED_MIN_CHECKS = 943
+EXPECTED_MIN_CHECKS = 947
 
 
 def find_chrome():
@@ -2940,6 +2940,27 @@ DRIVER = r"""
          el("plan-b-total").textContent + "\")");
       ok(el("plan-b-total").textContent === "planned " + sumRowValue("Total time"),
          "SP3 AC-22 (Quinn Q2): header and summary are the same STRING — m:ss vs h:mm:ss drift between them cannot hide behind a matching parse");
+      // The header must count the SAME thing the panel does. It read "9 items" beside a summary
+      // saying "Items 6" — two headline numbers describing one run sheet and disagreeing.
+      var secView = { plan_name:"Sec", items:[
+        {id:601, kind:"section",      title:"GATHERING", is_live:false, is_staged:false},
+        {id:602, kind:"song",         title:"Open",  is_live:false, is_staged:false, owner:"W", planned_secs:300},
+        {id:603, kind:"section",      title:"WORD",  is_live:false, is_staged:false},
+        {id:604, kind:"announcement", title:"Notes", is_live:false, is_staged:false, owner:"H", planned_secs:120}
+      ] };
+      planSelectedId = null;
+      planRenderBuilder(secView);
+      ok(el("plan-b-count").textContent === "2 items" && sumRowValue("Items") === "2",
+         "SP3 AC-26: the run-sheet header counts triggerable rows, agreeing with the panel (header=\"" +
+         el("plan-b-count").textContent + "\" panel=\"" + sumRowValue("Items") + "\")");
+      ok(document.querySelectorAll("#plan-b-list .plan-b-row").length === 4,
+         "SP3 AC-26 (control): all four rows including the dividers really are rendered — the count excludes them, the run sheet does not hide them");
+      ok(sumRowValue("Assigned") === "2 / 2",
+         "SP3 AC-26: Assigned excludes dividers too — a divider is not a staffable item, so a fully-staffed sectioned plan reads 2 / 2 and never 2 / 4");
+      ok(!document.querySelector('#plan-b-list .plan-b-row[data-item-id="601"] .plan-b-dur'),
+         "SP3 AC-26: an inert divider carries no duration on its row — its duration is excluded from the total, so a figure there would not be in the header");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
       // --- AC-4: the empty plan's counters, verbatim -------------------------------------------
       // AC-4 had no test at all, which is how the missing header total hid: with no total in the
       // header, the string AC-4 quotes could not be produced on any input.
