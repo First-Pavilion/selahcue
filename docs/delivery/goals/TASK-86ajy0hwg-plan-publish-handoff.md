@@ -99,6 +99,12 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-015 | yes | Formatting and lints are clean | `cargo fmt --check`; `cargo clippy --workspace --all-targets --features selahcue-app/server -- -D warnings` | exit 0 | both exit 0 | PASS |
 | C-016 | yes | Import guards pass (no manifest edit was made, run as a precaution) | `sh scripts/import_guards.sh` | exit 0 | `== import guards: OK ==` | PASS |
 | C-017 | yes | Every control claimed in a comment actually fails when the thing it names is removed | 11-mutation battery, siblings running, never `--exact` | every claimed control RED, or the claim corrected | 10/11 RED; M1 found subsumed and the claim corrected in `2908ffc` + `02a8095` | PASS |
+| C-020 | yes | A replaced plan is a DRAFT and never inherits the discarded plan's publish state | `cargo test -p selahcue-app --features server --test test_publish` | `a_replaced_plan_is_a_draft_again_...` passes for all four commands | 22 passed / 0 failed; mutation M14 RED | PASS |
+| C-021 | yes | Duplicating mid-service keeps the on-air row marked and navigable | same | `duplicating_mid_service_keeps_the_on_air_row_marked_and_navigable` passes | 22 passed / 0 failed; M15 RED | PASS |
+| C-022 | yes | The badge clears when an edit is reversed by a second edit, not only by undo | same | `an_edit_that_is_reversed_by_a_second_edit_clears_the_badge` passes | 22 passed / 0 failed; M16 RED | PASS |
+| C-023 | yes | Plan labels refuse Cc, Cf and Zl/Zp, and accept ordinary international text | `cargo test -p selahcue-core --test test_plan` | `a_plan_label_must_be_visible_bounded_and_single_line` passes | exit 0; M17 RED | PASS |
+| C-024 | yes | `same_document` ignores the id counter and nothing else | same | `same_document_ignores_the_id_counter_and_nothing_else` passes | exit 0; M18 and M19 RED | PASS |
+| C-025 | yes | The local Tauri console can invoke all five actions | `cargo test -p selahcue-app --features server --test test_publish` + `cargo check` on the operator manifest | `the_console_shell_can_reach_every_publish_and_lifecycle_action` passes; operator crate builds with the five Tauri bindings registered | 22 passed / 0 failed; operator check exit 0 | PASS |
 | C-018 | yes | Independent review by Cody, Sana, Vera and Quinn with blocking findings remediated | four-reviewer pipeline on PR #14 | no outstanding blocking findings | dispatched at `02a8095` | PENDING |
 | C-019 | no | CI green on the branch | GitHub Actions | all jobs pass | NOT RUNNABLE — Actions minutes exhausted; runs complete in 7-10s with zero steps | NOT_APPLICABLE |
 
@@ -143,6 +149,20 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - New evidence: the exclusion is SUBSUMED — the block consuming that predicate also requires `self.plan != before`, and publishing changes no item, so no input exists that only the exclusion rejects. It is worth keeping (it saves a plan-sized clone per publish) but it is not what holds the badge down; the document comparison is. The comment claiming otherwise was false and was corrected in both the source and the test rather than a test being manufactured to fit it.
 - Decision: handoff.
 
+### Iteration 4
+
+- Target criterion: C-018 (independent review), which failed on its first pass.
+- Hypothesis: the surface was complete. It was not.
+- Change or investigation: performance review returned Pass and corrected a premise I had assumed rather than checked — `operator_view()` is NOT the per-frame path. Security review returned Pass with one low advisory. **Code review returned changes-requested with one blocking and two high findings.**
+- Verifier executed: the focused suites plus a six-mutation battery on the remediation.
+- Result: all green; six new mutations RED.
+- New evidence, and the part worth carrying forward:
+  - **B1**: every plan replacement left the discarded plan's publish baseline in place, so a brand-new plan reported itself as published with changes to review.
+  - **H3**: `duplicate_plan` un-marked the on-air row mid-service and reset `live_slide`, so `Next` stopped advancing the song the audience was hearing. **My own test asserted this as correct** — the shared four-command loop pinned it in place. This is the "test that vouches for a bug" failure mode, not a vacuous test, and it is the second time on this branch that a test or comment asserted something untrue.
+  - **L9**: the Tauri console could not reach any of the five actions. The wire and controller were complete while the seam was missing, so the backend would have reported itself finished while the frontend it exists to unblock stayed blocked.
+  - Six doc comments across the branch asserted things the code does not do. All corrected.
+- Decision: iterate, then handoff for re-review.
+
 ## Risks and rollback
 
 - Risks: publish state is not persisted, so a restart silently returns the plan to "draft". It can only fail to show a badge, never show a false one. The starter-template contents are provisional and may not survive product review. `duplicate_plan` copies the loaded plan, which is not what the empty-state frame's "Duplicate previous" means.
@@ -156,12 +176,15 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - A saved-plan library over the wire (needed by "Duplicate previous") — Software Architect, then Delivery. Requires a layering decision; no ticket exists.
 - Persisting publish state — needs a `session_repo` migration; no ticket exists.
 - `AddItem`/`RenameItem` titles are not length-bounded (pre-existing, not introduced here); 500 rows of unbounded title is a real no-leak gap. No ticket exists.
+- `ServicePlan::from_parts` — the persistence rehydration path — applies no bound to the plan name, so `MAX_PLAN_LABEL_LEN` holds at the wire ingress only. Documented at the constant; closing it is a persistence change. No ticket exists.
+- `sanitize_field` neither drops nor replaces U+2028/U+2029, so a hard line break can still ride into a stored LINK LABEL. Same class as the ingress gap fixed here, different path. No ticket exists.
+- The `plan_edit_cmds()` list that pins `can_edit_plan`'s probe as representative is hand-maintained; Rust cannot enumerate `Command`'s variants without a derive this crate does not carry. A new plan-edit command not added to it is silently uncovered. Documented in the test.
 
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ajy0hwg-plan-publish-handoff.md`
 - Validator result: see the handoff report.
 - Independent verification result: PENDING — four reviewers dispatched at `02a8095`.
-- Terminal state: PENDING — `VERIFIED_COMPLETE` requires C-018.
+- Terminal state: PENDING — `VERIFIED_COMPLETE` requires C-018 (Cody re-review at `5729e08`, Quinn outstanding).
 - Remaining failed or blocked criteria: C-018 pending; C-019 not applicable (Actions minutes exhausted).
 - ClickUp final evidence comment: NOT POSTED — ClickUp MCP unreachable. The pending update is reproduced in the handoff report.
