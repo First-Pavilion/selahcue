@@ -46,7 +46,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # panel, the loading state, and the QA/security remediation. Set to the REAL observed count so
 # dropping even one trips exit 4. Sana S4: this floor had been left at 829 while the driver ran
 # more, which would have let every new check disappear without failing.)
-EXPECTED_MIN_CHECKS = 947
+EXPECTED_MIN_CHECKS = 954
 
 
 def find_chrome():
@@ -3023,36 +3023,102 @@ DRIVER = r"""
       // --- Q13: the pass-through crosses a trust boundary and must validate ---------------------
       // None of these needs an attacker: a host one release ahead or behind produces them. Each
       // must fall back to the local computation, which is derived from the rendered items.
-      var q13Items = [SONG(311, 300), SONG(312, 300)]; // local total 600 -> "0:10:00"
-      // Every malformed fixture carries songs:7, which the local computation (two songs) can never
-      // produce. Asserting the LOCAL value is what distinguishes a fallback from a host object that
-      // happens to agree — without it, two of these could not tell the two apart and the checks
-      // they were meant to pin survived mutation.
+      //
+      // THE DISCRIMINATOR, and why every check below was worth nothing without it. Falling back and
+      // trusting the host have to RENDER DIFFERENTLY, or the assertion cannot say which path ran.
+      // So the items carry OWNERS — the local path renders "Assigned 2 / 2" — and each malformed
+      // summary claims assigned:1, a value that is perfectly VALID (1 <= 2, so no sub-condition
+      // rejects it) yet one the local computation cannot produce for these items. Before this the
+      // fixtures had no owners and hostSum defaults assigned:0, so "Assigned 0 / 2" rendered
+      // identically down BOTH paths and distinguished nothing. That is how QA could delete eleven
+      // of the nineteen guard sub-conditions one at a time — total-eq among them — and watch all
+      // 947 checks stay green while this panel rendered "Total time: 27:46:39" over rows summing
+      // 0:10:00, which is the §9 MAJOR itself, live.
+      var q13Items = [SONG(311, 300), SONG(312, 300)]; // local: total 600 -> "0:10:00", owners -> "2 / 2"
+      q13Items[0].owner = "Worship";
+      q13Items[1].owner = "Host";
       function malformed(sum, label) {
         planSelectedId = null;
         planRenderBuilder({ plan_name:"M", items:q13Items, summary:sum });
         ok(sumRowValue("Total time") === "0:10:00" && sumRowValue("Items") === "2" &&
-           sumRowValue("Songs") === "2" && sumRowValue("Assigned") === "0 / 2",
+           sumRowValue("Songs") === "2" && sumRowValue("Assigned") === "2 / 2",
            "SP3 AC-25 (Q13): " + label + " falls back to the local computation (got total \"" +
            sumRowValue("Total time") + "\", Items \"" + sumRowValue("Items") + "\", Songs \"" +
            sumRowValue("Songs") + "\", Assigned \"" + sumRowValue("Assigned") + "\")");
       }
-      malformed({}, "an empty summary object");
-      malformed(hostSum({ planned_total_secs:1e308, items:2, songs:7 }), "a non-finite-scale total (1e308 rendered 2.77e+304:58:56)");
-      malformed(hostSum({ planned_total_secs:-1200, items:2, songs:7 }), "a negative total (rendered -1:-20:00)");
-      malformed(hostSum({ planned_total_secs:600, items:2, songs:7 }), "per-kind counts that do not add up to items");
-      malformed(hostSum({ planned_total_secs:99999, items:2, songs:7 }), "a total disagreeing with the rows beneath it (the §9 MAJOR)");
-      // Each of the remaining fixtures is otherwise WELL-FORMED, so exactly one check rejects it.
-      // Overlapping checks would mask a mutation of the one the case is meant to pin — which is
-      // how three of these survived the first round.
+      // ISOLATION IS THE POINT, not coverage. Each fixture marked PINS is well-formed in every
+      // respect EXCEPT the one sub-condition it names, so deleting that sub-condition fails exactly
+      // this case and no other. Undeliberate overlap is what let the first round of these survive.
+      // Measured, by deleting each of the seventeen sub-conditions of planSummaryIsSound in turn
+      // and running this file: TWELVE are pinned and fail exactly one check, the case naming them.
+      // The other FIVE cannot be isolated by any input, because each is subsumed — not merely
+      // overlapped — by a later check, and no value exists that only they reject:
+      //   typeof and isFinite, on the total AND inside count(), are subsumed by Number.isInteger,
+      //     which is false for every non-number and for Infinity, -Infinity and NaN alike;
+      //   the total's >= 0 is subsumed by total-eq, because the local total is a sum of
+      //     planHasDuration-validated values and so can never be negative.
+      // They are kept anyway: they make the guard say what it means at the point it means it, and
+      // they are cheap. What is NOT kept is a comment claiming a pin no fixture can supply.
+      malformed({}, "an empty summary object"); // LAYERED: the type check and all eleven counts
+      // LAYERED, and the ONLY fixture that reaches the finiteness check at all. isFinite is
+      // subsumed by Number.isInteger, which returns false for Infinity, -Infinity and NaN alike:
+      // no value exists that isFinite rejects and Number.isInteger accepts, so this sub-condition
+      // is defence in depth and cannot be pinned. Kept because it is the case that exercises it.
+      malformed(hostSum({ planned_total_secs:Infinity, items:2, songs:2, assigned:1 }), "a non-finite total");
+      // LAYERED (regression case). 1e308 is FINITE — it never reaches the check above; the
+      // week-long bound is what rejects it, with total-eq behind that. Kept for the exact historical
+      // render, which is the string PLAN_MAX_ITEM_SECS and PLAN_MAX_TOTAL_SECS both exist to stop.
+      malformed(hostSum({ planned_total_secs:1e308, items:2, songs:2, assigned:1 }), "a total at 1e308 (rendered 2.77e+304:58:56)");
+      // LAYERED. A negative total is caught by the >= 0 check first, but can never be pinned: the
+      // local total is a sum of planHasDuration-validated values, each >= 0, so a negative host
+      // total can never equal it and total-eq always rejects it too.
+      malformed(hostSum({ planned_total_secs:-1200, items:2, songs:2, assigned:1 }), "a negative total (rendered -1:-20:00)");
+      // LAYERED, and the only fixture that reaches count()'s typeof check. Subsumed for the same
+      // reason as isFinite above: Number.isInteger("1") is false, so the integrality check rejects
+      // a string too and typeof can never be the sole rejector.
       malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:"1" }), "a count that is a string rather than a number");
-      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, partial:"yes" }), "a non-boolean partial");
-      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, partial:true }), "partial:true with no planned_items to disambiguate it");
-      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:9 }), "more assigned items than items");
-      // Backend's own incoherence, mirrored: a duration set ON a section reached planned_items
-      // while the section was absent from items, so planned_items could exceed items and this
-      // panel would have rendered "7 of 6". A subset cannot exceed its whole.
-      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, partial:true, planned_items:9 }), "planned_items exceeding items (\"7 of 6\")");
+      // PINS count()'s integrality. 1.5 is a number, finite, non-negative, under the cap and not
+      // greater than items, so only Number.isInteger can reject it. Counts are usize on the wire.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1.5 }), "a fractional count (\"1.5 / 2\")");
+      // PINS count()'s non-negativity. -1 is a finite integer under the cap, and -1 > items is
+      // false, so the assigned-exceeds-items check cannot catch it — only v >= 0 can.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:-1 }), "a negative count (\"-1 / 2\")");
+      // PINS PLAN_MAX_COUNT. `sections` is deliberately the field used: it is excluded from `items`
+      // by the settled rule and from the per-kind sum, so no other check reads it and the count cap
+      // is the only thing standing between this panel and a six-figure row count.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, sections:100001 }), "a count beyond PLAN_MAX_COUNT");
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, partial:"yes" }), "a non-boolean partial"); // PINS the partial type check
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, partial:true }), "partial:true with no planned_items to disambiguate it"); // PINS the pairing rule
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:9 }), "more assigned items than items"); // PINS assigned <= items
+      // PINS the per-kind sum. songs:5 over items:2 is otherwise sound, so only kinds !== items
+      // rejects it. This was songs:7 on every fixture in the block, which is why several of them
+      // could not tell a fallback from a trusted host object: they all tripped this one check.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:5, assigned:1 }), "per-kind counts that do not add up to items");
+      // PINS the subset rule. Backend's own incoherence, mirrored: a duration set ON a section
+      // reached planned_items while the section was absent from items, so planned_items could
+      // exceed items and this panel would have rendered "7 of 6". A subset cannot exceed its whole.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, partial:true, planned_items:9 }), "planned_items exceeding items (\"7 of 6\")");
+      // PINS missing + unknown <= items. Both counts are individually legal (2 <= 2) and every
+      // other field is sound, so only their SUM can reject this — individually-correct fields that
+      // do not add up are exactly what design QA rejected these frames for the first time round.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, missing:2, unknown:2 }),
+                "missing + unknown exceeding items");
+      // PINS total-eq — THE guard against this ticket's signature defect, and the one QA found
+      // deletable with the suite green: a header total that does not describe the rows beneath it.
+      // 99999 is a number, finite, integral, non-negative and inside the week-long bound, and every
+      // count here adds up, so total-eq is the only check that can reject it.
+      malformed(hostSum({ planned_total_secs:99999, items:2, songs:2, assigned:1 }),
+                "a total that does not describe the rows being rendered (the \u00a79 MAJOR)");
+      // A fractional total: finite, non-negative, in-bounds, and EQUAL to the fixture's own sum, so
+      // only the integrality check can reject it. planned_total_secs is u32 on the wire.
+      var fracItems = [SONG(331, 300.25), SONG(332, 300.25)];
+      fracItems[0].owner = "Worship"; fracItems[1].owner = "Host";
+      planSelectedId = null;
+      planRenderBuilder({ plan_name:"F", items:fracItems,
+                          summary: hostSum({ planned_total_secs:600.5, items:2, songs:2, assigned:1 }) });
+      ok(sumRowValue("Assigned") === "2 / 2",
+         "SP3 AC-25 (Q13): a fractional total is rejected even though it is finite, in range and agrees with its rows — only the integrality check can catch this one (Assigned=" +
+         sumRowValue("Assigned") + ")");
       // Isolates PLAN_MAX_TOTAL_SECS: eight items at the per-item cap sum to 691200s, so the total
       // AGREES with the rows and every other check passes — only the week-long bound rejects it.
       // A corrupt plan claiming eight days of runtime is the real shape of this.
@@ -3075,6 +3141,13 @@ DRIVER = r"""
       // the local computation cannot produce a partial marker at all.
       ok(!!document.querySelector("#plan-b-insp .plan-sum-total.is-partial"),
          "SP3 AC-25 (control): and the marker proves the host object was used — the local fallback carries no partial flag");
+      // The DISCRIMINATOR itself, proven live in the accepting direction. Every malformed case
+      // above concludes "the local path ran" from Assigned reading "2 / 2"; that inference is only
+      // worth something if a trusted host summary can make the same row read something else. These
+      // are the same two owned items, and the host's assigned:0 comes through as "0 / 2".
+      ok(sumRowValue("Assigned") === "0 / 2",
+         "SP3 AC-25 (control): the host's own assigned count is what renders when the summary is trusted — the field the malformed cases read is genuinely host-sourced, not a constant (Assigned=" +
+         sumRowValue("Assigned") + ")");
       // Sections-not-items is UNSETTLED (frame 608:875 counts 6 items over 3 dividers), so the
       // guard must accept both readings rather than hard-code a decision nobody has made.
       planSelectedId = null;
