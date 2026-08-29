@@ -732,3 +732,60 @@ fn planned_total_secs_agrees_with_the_roll_up_it_delegates_to() {
     p.set_item_planned_secs(a, Some(300)).unwrap();
     assert_eq!(p.planned_total_secs(), p.planned_total().secs);
 }
+
+#[test]
+fn a_label_cannot_smuggle_invisible_or_bidi_characters_into_the_run_sheet() {
+    // `char::is_control` covers the Cc category only, so these Cf characters used to survive
+    // into a label that is echoed to every paired device and rendered in the run sheet. A
+    // right-to-left override makes a name DISPLAY as something other than what it is, and
+    // zero-width joiners let two distinct decks look identical. (Security review, PR #13.)
+    let hostile = "Sermon\u{202E}exe.gpj\u{200B}\u{FEFF}";
+    let mut p = ServicePlan::new("Sunday");
+    let d = p.add_item(ItemKind::SlideGroup, "Sermon");
+    p.set_item_content(
+        d,
+        Some(ItemContent::Deck {
+            deck_id: 17,
+            slide_count: None,
+            label: Some(hostile.into()),
+        }),
+    )
+    .unwrap();
+    match p.get(d).unwrap().content.as_ref() {
+        Some(ItemContent::Deck { label, .. }) => {
+            let l = label
+                .as_deref()
+                .expect("the label survives, minus the spoofing");
+            assert!(
+                !l.chars().any(|ch| matches!(ch,
+                    '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+                    | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')),
+                "no invisible or bidi character may reach the run sheet: {l:?}"
+            );
+            // POSITIVE CONTROL: the visible text is KEPT. A sanitizer that returned an empty
+            // string would also satisfy the assertion above and be useless.
+            assert_eq!(
+                l, "Sermonexe.gpj",
+                "the readable characters survive verbatim; only the invisible ones are dropped"
+            );
+        }
+        other => panic!("expected a deck link, got {other:?}"),
+    }
+
+    // A legitimate name with non-ASCII letters is untouched — the filter targets invisible
+    // formatting, not "anything unusual".
+    let real = "Sunday Service \u{2014} Ao\u{00FB}t 4";
+    p.set_item_content(
+        d,
+        Some(ItemContent::Deck {
+            deck_id: 17,
+            slide_count: None,
+            label: Some(real.into()),
+        }),
+    )
+    .unwrap();
+    match p.get(d).unwrap().content.as_ref() {
+        Some(ItemContent::Deck { label, .. }) => assert_eq!(label.as_deref(), Some(real)),
+        other => panic!("expected a deck link, got {other:?}"),
+    }
+}

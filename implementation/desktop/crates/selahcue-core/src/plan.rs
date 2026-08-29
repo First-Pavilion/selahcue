@@ -194,8 +194,29 @@ pub enum ItemContent {
 /// rather than merely assumed.
 fn sanitize_field(s: &str) -> String {
     s.chars()
+        .filter(|c| !is_invisible_formatting(*c))
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
+}
+
+/// Zero-width and bidirectional-override characters, which `char::is_control` does NOT cover:
+/// it tests the Cc category only, and every character below is Cf.
+///
+/// These render as nothing yet reorder or hide the text around them, so a deck name can be made
+/// to *display* as something other than what it is — a right-to-left override rewrites how a
+/// name reads, and zero-width joiners let two distinct labels look identical. A link label is
+/// echoed to every paired device and rendered in the run sheet, so it is a display-spoofing
+/// surface. Dropped rather than replaced with a space, because they are zero-width by
+/// definition: substituting a space would change how legitimate text looks, whereas removing
+/// them restores what it already appeared to be. Found by security review of PR #13.
+fn is_invisible_formatting(c: char) -> bool {
+    matches!(c,
+        '\u{200B}'..='\u{200F}'   // zero-width space/non-joiner/joiner, LRM, RLM
+        | '\u{202A}'..='\u{202E}' // LRE, RLE, PDF, LRO, RLO
+        | '\u{2060}'..='\u{2064}' // word joiner, invisible operators
+        | '\u{2066}'..='\u{2069}' // LRI, RLI, FSI, PDI
+        | '\u{FEFF}'              // BOM / zero-width no-break space
+    )
 }
 
 /// [`sanitize_field`] a display label AND bound it to [`MAX_LINK_LABEL_LEN`] characters.
