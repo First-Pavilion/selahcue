@@ -6619,6 +6619,10 @@
   background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); color: var(--sc-warn);
 }
 .plan-pub.is-published .plan-pub-line { color: var(--sc-preview); }
+/* .is-changed carries no colour of its own: the badge above the line already says the state in
+   TEXT, and tinting the sentence as well would be the second colour-only signal on one fact. It
+   is kept as a hook because the state is worth being addressable; .is-draft was removed rather
+   than left as a selector nothing can act on. */
 
 /* The one-line reason under an ENABLED Publish (what pressing it will do). */
 .plan-sum-hintline { margin: 6px 0 0; color: var(--sc-text-secondary); font-size: 11.5px; }

@@ -5764,7 +5764,9 @@
       // Poll so a running countdown ticks in the UI (the host advances it each frame).
       setInterval(async () => {
         try {
-          render(await invoke("view"));
+          const polled = await invoke("view");
+          render(polled);
+          planSyncPublishFromPoll(polled);
           setConn(true);
         } catch (e) {
           // The link (or a render) just failed, so render() did NOT run and syncRecovery() was
@@ -6166,10 +6168,14 @@
           describedBy = describedBy ? describedBy + " pm-prompt-warn" : "pm-prompt-warn";
         }
         if (describedBy) dlg.setAttribute("aria-describedby", describedBy);
-        if (opts.body) { const extra = document.createElement("div"); extra.className = "pm-prompt-extra"; opts.body(extra); dlg.appendChild(extra); }
         const field = document.createElement("div"); field.style.display = "flex"; field.style.flexDirection = "column"; field.style.gap = "6px";
         const lab = document.createElement("label"); lab.className = "pm-insp-lbl"; lab.textContent = opts.label || "Name"; lab.htmlFor = "pm-prompt-input";
         const input = document.createElement("input"); input.type = "text"; input.id = "pm-prompt-input"; input.className = "pm-insp-ctrl"; input.value = opts.value || ""; input.style.width = "100%"; input.style.maxWidth = "none"; input.setAttribute("aria-label", opts.label || "Name");
+        // The field is built FIRST and handed to opts.body, so a caller that needs it (the
+        // template picker, whose radios follow the name) takes it directly rather than reaching
+        // back into the document by id after pmPrompt returns — which would have grabbed the
+        // WRONG input on the one path where this function early-returns (a dialog already open).
+        if (opts.body) { const extra = document.createElement("div"); extra.className = "pm-prompt-extra"; opts.body(extra, input); dlg.appendChild(extra); }
         // role=alert, not a silent red line: a refusal the operator cannot hear is a dialog that
         // appears to do nothing when they press Enter (WCAG 3.3.1).
         const err = document.createElement("p"); err.className = "pm-prompt-err"; err.id = "pm-prompt-error"; err.setAttribute("role", "alert"); err.hidden = true;
@@ -6180,24 +6186,43 @@
         row.appendChild(cancel); row.appendChild(ok); dlg.appendChild(row);
         back.appendChild(dlg); document.body.appendChild(back);
         const close = () => { document.removeEventListener("keydown", onKey, true); back.remove(); if (prevFocus && prevFocus.focus) prevFocus.focus(); };
+        // The field a refusal BLAMES has to be the field that is wrong. `validate` may return a
+        // plain string (the name is at fault) or `{ message, field }` naming another control —
+        // the import dialog's run-sheet textarea, whose problems were previously reported under
+        // the Service name, marking a perfectly good name aria-invalid and pulling focus off the
+        // textarea the operator had to fix (WCAG 3.3.1/3.3.2).
+        let invalidField = null;
+        const clearInvalid = () => {
+          if (!invalidField) return;
+          invalidField.removeAttribute("aria-invalid");
+          invalidField.removeAttribute("aria-describedby");
+          invalidField = null;
+        };
         const submit = () => {
           const v = input.value;
           if (opts.validate) {
             const why = opts.validate(v);
-            if (why) {
-              err.textContent = why; err.hidden = false;
-              input.setAttribute("aria-invalid", "true");
-              input.setAttribute("aria-describedby", "pm-prompt-error");
-              input.focus();
+            const message = why && typeof why === "object" ? why.message : why;
+            if (message) {
+              const target = (why && typeof why === "object" && why.field) || input;
+              err.textContent = message; err.hidden = false;
+              clearInvalid();
+              invalidField = target;
+              target.setAttribute("aria-invalid", "true");
+              target.setAttribute("aria-describedby", "pm-prompt-error");
+              target.focus();
               return; // the dialog STAYS OPEN with the typed value intact
             }
             err.hidden = true; err.textContent = "";
-            input.removeAttribute("aria-invalid"); input.removeAttribute("aria-describedby");
+            clearInvalid();
           }
           close(); if (opts.onConfirm) opts.onConfirm(v);
         };
         cancel.onclick = close; ok.onclick = submit;
-        back.onmousedown = (ev) => { if (ev.target === back) close(); };
+        // A stray click on the backdrop closes a NAME prompt harmlessly. It must not throw away
+        // a dialog the operator has typed into at length — a 60-line run sheet pasted into the
+        // import dialog is gone with no undo and no confirmation.
+        back.onmousedown = (ev) => { if (ev.target === back && !opts.body) close(); };
         const focusables = () => Array.prototype.slice.call(
           dlg.querySelectorAll("input, textarea, select, button, [href], [tabindex]:not([tabindex='-1'])")
         ).filter((e) => !e.disabled && !e.hidden && e.getClientRects().length > 0);
@@ -6504,8 +6529,33 @@
       function planNameProblem(v) {
         const t = typeof v === "string" ? v.trim() : "";
         if (!t) return "Enter a name.";
+        // Bound the string BEFORE materialising it. `Array.from` builds the whole scalar-value
+        // array to learn its length, so one wrong-clipboard paste — a log file, a minified
+        // bundle, one long JSON row — froze the console for 3.27s and spiked ~270MB of transient
+        // heap on Blink (measured through this dialog on f335a0d). The pre-check is EXACT, not a
+        // heuristic: a Unicode scalar value is at most two UTF-16 code units, so any string whose
+        // code-unit length exceeds 2 x the bound must exceed the bound in scalar values. No
+        // string that would have been accepted can be refused by it.
+        if (t.length > PLAN_NAME_MAX * 2) return "Use " + PLAN_NAME_MAX + " characters or fewer.";
         if (Array.from(t).length > PLAN_NAME_MAX) return "Use " + PLAN_NAME_MAX + " characters or fewer.";
         if (/\p{Cc}/u.test(t)) return "Remove control characters (such as tabs or line breaks) from the name.";
+        // INVISIBLE FORMATTING, refused because the host refuses it (`is_invisible_formatting` in
+        // selahcue-core, added to `plan_name_valid` at 7a6e404 to close a homograph hole).
+        // Mirrored the moment the host tightened, because the drift that matters is the client
+        // being LOOSER: a name this client accepted and the host refused comes back as a raw
+        // bad_request, and on IMPORT it loses the line number the per-line validator exists to
+        // give.
+        //
+        // Tested against the ORIGINAL string, not the trimmed one, and that difference is load
+        // bearing in both directions. None of these code points has the Unicode White_Space
+        // property, so Rust's `trim` can never remove one — checking the original is therefore
+        // EXACTLY equivalent to checking Rust's trimmed form. Checking the JS-trimmed form would
+        // not be: JS `trim()` strips U+FEFF and Rust's does not, so "\uFEFFabc" would pass here
+        // and be refused there. (The control-character test above stays on the TRIMMED string for
+        // the mirror-image reason — Rust trims a leading newline as whitespace before testing, so
+        // testing the original there would refuse a name the host accepts.)
+        if (/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/.test(v))
+          return "Remove invisible formatting characters (such as zero-width or text-direction marks) from the name.";
         return null;
       }
 
@@ -6524,9 +6574,13 @@
       // A `viewer` object carrying no usable boolean says nothing, so it reads as unreported.
       function planViewer(view) {
         const v = view && view.viewer;
-        if (!v || typeof v !== "object") return { reported: false, canEdit: null, role: null };
+        if (!v || typeof v !== "object") return { canEdit: null, role: null };
         const canEdit = typeof v.can_edit === "boolean" ? v.can_edit : null;
-        return { reported: canEdit !== null, canEdit: canEdit, role: typeof v.role === "string" ? v.role : null };
+        // `role` is carried but deliberately NOT rendered and NOT branched on: it is the host's
+        // identity label, and the moment a control reads it the re-derivation this field exists
+        // to remove is back. (A `reported` boolean lived here too — a third name for
+        // `canEdit !== null` that nothing consumed — and is gone rather than left to rot.)
+        return { canEdit: canEdit, role: typeof v.role === "string" ? v.role : null };
       }
       // The question every editing control asks. Both of these consume planViewer().canEdit —
       // the one verdict — so an unreported viewer shows the controls AND shows no badge, and
@@ -6572,7 +6626,12 @@
         const pr = p.published_revision;
         const published = pr !== undefined && pr !== null;
         if (published && !n(pr)) return null;
-        if (p.changed !== undefined && typeof p.changed !== "boolean") return null;
+        // `changed: null` is tolerated as false, exactly as `published_revision: null` is
+        // tolerated as "not published" four lines up. Neither can arrive from a serde host (both
+        // are skip-if-unset on the wire struct), so this is about the READER being internally
+        // consistent: silencing the whole panel over one null while accepting another beside it
+        // was an inconsistency the next reader would have had to explain.
+        if (p.changed !== undefined && p.changed !== null && typeof p.changed !== "boolean") return null;
         return {
           revision: p.revision,
           version: version,
@@ -7328,6 +7387,10 @@
         });
       })();
       function planActivate() {
+        // A fresh visit must not inherit the last visit's outcome. "Plan published…" sitting
+        // under the header describes the plan as it was at that moment; after a few edits, or a
+        // trip to the console and back, it is a statement about a run sheet that has moved on.
+        planNotice("");
         planFocusAfterRender = null; // fresh navigation must not inherit a stale reorder intent
         planSelectedId = null; // ...nor a stale selection: a fresh visit opens on the Plan Summary
         buildPlanPalette();
@@ -7366,9 +7429,18 @@
       // Run a plan mutation, then refresh the builder from the returned view.
       async function planMutate(fn) {
         try {
+          // Any plan EDIT invalidates a lifecycle outcome message: "Plan published" is true of
+          // the run sheet that was published, not of the one now on screen.
+          planNotice("");
           planRenderBuilder(await fn());
         } catch (e) {
           console.error(e);
+          // ...and SAY so. A refused plan edit reached console.error and nothing else, so a host
+          // that rejected a rename, a reorder or an undo looked exactly like a control that did
+          // nothing — the failure this surface's disabled-with-a-reason treatment exists to
+          // avoid, arrived at through the success path instead.
+          const detail = e && e.message ? e.message : typeof e === "string" ? e : "";
+          planNotice("alert", "That change wasn't applied" + (detail ? " — " + detail : "") + ".");
           // The caller may have set a focus intent (e.g. a reorder) BEFORE the mutation; a rejected
           // mutation never re-renders, so clear it — otherwise a later background re-render would
           // consume the stale intent and steal focus onto an item the operator didn't just touch.
@@ -7390,6 +7462,13 @@
           if (isMenuOpen()) return;
           if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
           if (ev.key !== "z" && ev.key !== "Z") return;
+          // Undo and redo are plan EDITS, and this is the SECOND keyboard path that had to be
+          // gated on the host's verdict — the Alt+arrow reorder was the first, and a reviewer had
+          // to find each of them by mutation. Hiding the buttons while leaving a key combination
+          // live makes the restriction hold for the mouse and not for the keyboard, which is not
+          // a restriction. Read from the last view rendered: the same verdict every other control
+          // on this surface consumes.
+          if (!planCanEdit(planLastView)) return;
           const t = ev.target;
           if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
           ev.preventDefault();
@@ -7500,8 +7579,9 @@
             badge.id = "plan-viewonly";
             // Text, not colour: the badge says what it is (WCAG 1.4.1). aria-disabled is on the
             // badge rather than on removed controls — there are no disabled controls to mark.
+            // The text IS the signal. `aria-disabled` on a <span> is inert — it marks a WIDGET
+            // unavailable, and this is a label — so it was noise pretending to be an affordance.
             badge.textContent = "View only";
-            badge.setAttribute("aria-disabled", "true");
             slot.appendChild(badge);
             const why = document.createElement("span");
             why.className = "plan-viewonly-why";
@@ -7528,10 +7608,46 @@
           openLive.className = viewOnly ? "pm-btn-ghost" : "pm-btn-primary";
         }
       }
+      // The change badge, refreshed from the 1 Hz poll.
+      //
+      // WHY IT NEEDS ONE. The builder is rendered only by planActivate and by the operator's own
+      // mutations, so `publish.changed` could only ever flip because THIS operator did something
+      // — and the state the badge exists to report is the other one: a paired controller edits
+      // the plan while the builder sits open. Without this the badge is correct and almost never
+      // arrives (found in QA review; the frame's own scenario was the one it could not show).
+      //
+      // Deliberately NARROW. It re-renders the summary panel and nothing else, and only when
+      // every one of these holds: the plan surface is showing, no item is selected (with one
+      // selected the panel is the item inspector and the badge is not on screen), no dialog is
+      // open, no lifecycle command is in flight, and the publish signature has ACTUALLY changed.
+      // A poll that rebuilt the run sheet would eat in-flight clicks — the same reason render()
+      // keys its own plan rebuild on a change signature.
+      let planPublishSig = null;
+      function planSyncPublishFromPoll(view) {
+        const surf = document.getElementById("surface-plan");
+        if (!surf || !surf.classList.contains("active")) return;
+        if (!planLastView || planSelectedId !== null) return;
+        if (document.querySelector(".pm-confirm-back")) return;
+        if (planLifecycleBusy) return;
+        const pub = planPublishState(view);
+        const sig = pub ? pub.revision + "/" + pub.publishedRevision + "/" + pub.version + "/" + pub.changed : "none";
+        if (sig === planPublishSig) return;
+        planPublishSig = sig;
+        planLastView = view;
+        planClearInspector(view);
+      }
       function planRenderBuilder(view) {
         const list = document.getElementById("plan-b-list");
         if (!list || !view) return; // not on the plan surface
         planLastView = view; // so a pure UI change (deselect) can re-render without a round-trip
+        {
+          // Keep the poll's signature in step with whatever was just drawn, so it never
+          // re-renders over a state identical to the one on screen.
+          const pubNow = planPublishState(view);
+          planPublishSig = pubNow
+            ? pubNow.revision + "/" + pubNow.publishedRevision + "/" + pubNow.version + "/" + pubNow.changed
+            : "none";
+        }
         planSyncPermission(view);
         // Header counters. The planned total belongs HERE, next to the item count, because the pair
         // is what a reader checks against the rows (section 9: "8 items · 1:12:00" over 6 rows
@@ -7896,7 +8012,13 @@
       // mint new ids, and keeping a stale one would re-open an inspector onto an item that no
       // longer exists.
       async function planLifecycleRun(what, replacesPlan, fn) {
-        if (planLifecycleBusy) return false;
+        if (planLifecycleBusy) {
+          // The panel's whole principle is that a control never looks live and silently does
+          // nothing. In this window five of them did — the second press was discarded with no
+          // notice, no error and nothing in the live region.
+          planNotice("status", "Still finishing the last change. Try again in a moment.");
+          return false;
+        }
         planLifecycleBusy = true;
         try {
           const v = await fn();
@@ -7979,7 +8101,9 @@
           label: "Service name",
           value: templates[0].name,
           confirmLabel: "Create",
-          body: (extra) => {
+          body: (extra, input) => {
+            nameInput = input;
+            input.oninput = () => { input.dataset.touched = "1"; };
             const group = document.createElement("div");
             group.className = "plan-tpl-list";
             group.setAttribute("role", "radiogroup");
@@ -8027,9 +8151,6 @@
             });
           },
         });
-        // pmPrompt owns the field; grab it once it exists so the radio handler can follow it.
-        nameInput = document.getElementById("pm-prompt-input");
-        if (nameInput) nameInput.oninput = () => { nameInput.dataset.touched = "1"; };
       }
 
       // --- duplicate_plan (FR-005) ------------------------------------------------------------
@@ -8106,18 +8227,28 @@
       // renders from and is the wire tag set. Both the display label ("Presentation") and the
       // wire tag ("slide_group") are accepted, because the operator is reading labels on screen
       // while the wire carries tags.
+      // Bounded in BOTH accumulators and in work done. The loop used to run to the end of the
+      // paste and only then compare `items.length` to the cap, so the exact count in the error
+      // message ("this paste has 1000000") was itself proof that the whole intermediate had been
+      // built — and `validate` re-runs the parse on every submit attempt. Stopping at the cap
+      // makes the cost a function of the CAP rather than of the clipboard, and "more than 500"
+      // is all the operator needs to know. `problems` is bounded for the same reason: only the
+      // first is ever shown.
+      const PLAN_IMPORT_MAX_PROBLEMS = 20;
       function planParseRunSheet(text) {
         const items = [];
         const problems = [];
+        const note = (msg) => { if (problems.length < PLAN_IMPORT_MAX_PROBLEMS) problems.push(msg); };
         const lines = String(text == null ? "" : text).split(/\r\n|\r|\n/);
         for (let i = 0; i < lines.length; i++) {
+          if (items.length > PLAN_MAX_ITEMS) break; // one past the cap is enough to refuse it
           const raw = lines[i];
           if (!raw.trim()) continue; // blank lines are spacing in a pasted order of service
           const at = raw.indexOf(":");
           const label = at < 0 ? "" : raw.slice(0, at).trim().toLowerCase();
           const match = at < 0 ? null : PLAN_ADD_KINDS.find((k) => k[0] === label || k[1].toLowerCase() === label);
           if (!match) {
-            problems.push("Line " + (i + 1) + ": start the line with a type, for example “Song: " + raw.trim().slice(0, 40) + "”.");
+            note("Line " + (i + 1) + ": start the line with a type, for example “Song: " + raw.trim().slice(0, 40) + "”.");
             continue;
           }
           const title = raw.slice(at + 1).trim();
@@ -8126,13 +8257,13 @@
           // looser copy of it written for this path.
           const why = planNameProblem(title);
           if (why) {
-            problems.push("Line " + (i + 1) + ": " + why.charAt(0).toLowerCase() + why.slice(1));
+            note("Line " + (i + 1) + ": " + why.charAt(0).toLowerCase() + why.slice(1));
             continue;
           }
           items.push({ kind: match[0], title: title });
         }
         if (items.length > PLAN_MAX_ITEMS) {
-          problems.push("A plan holds at most " + PLAN_MAX_ITEMS + " items; this paste has " + items.length + ".");
+          problems.push("A plan holds at most " + PLAN_MAX_ITEMS + " items; this paste has more.");
         }
         return { items: items, problems: problems };
       }
@@ -8167,10 +8298,14 @@
           },
           validate: (v) => {
             const why = planNameProblem(v);
-            if (why) return why;
+            if (why) return why; // the NAME is at fault, so the name field is marked
+            // ...and everything below is a RUN-SHEET fault, so it is reported against the
+            // textarea. Blaming the name field for a bad paste marks a valid name invalid and
+            // moves focus away from the control the operator has to fix.
             const parsed = planParseRunSheet(area ? area.value : "");
-            if (parsed.problems.length) return parsed.problems[0];
-            if (!parsed.items.length) return "Paste at least one item, for example “Song: Great Are You Lord”.";
+            if (parsed.problems.length) return { message: parsed.problems[0], field: area };
+            if (!parsed.items.length)
+              return { message: "Paste at least one item, for example “Song: Great Are You Lord”.", field: area };
             return null;
           },
           onConfirm: (name) => {
@@ -8236,7 +8371,7 @@
         // said about publication at all: no version, no draft label, and above all no badge.
         if (pub) {
           const state = document.createElement("div");
-          state.className = "plan-pub" + (pub.changed ? " is-changed" : pub.published ? " is-published" : " is-draft");
+          state.className = "plan-pub" + (pub.changed ? " is-changed" : pub.published ? " is-published" : "");
           const line = document.createElement("p");
           line.className = "plan-pub-line";
           line.id = "plan-pub-line";
