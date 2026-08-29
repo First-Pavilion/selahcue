@@ -14,3 +14,4 @@ implementation/build/
 
 # Visual-parity harness run artefacts (regenerated; bounded to MAX_RUNS_KEPT runs).
 /.visual-parity/
+.target/
