@@ -46,7 +46,31 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # panel, the loading state, and the QA/security remediation. Set to the REAL observed count so
 # dropping even one trips exit 4. Sana S4: this floor had been left at 829 while the driver ran
 # more, which would have let every new check disappear without failing.)
-EXPECTED_MIN_CHECKS = 955
+# (Raised for the PLAN LIFECYCLE batch — 86ak8467m: the five lifecycle commands, the viewer /
+# publish / plan_templates three-state readers, the empty state's four starts, the view-only
+# frame and the change badge. 963 -> 1103, the REAL observed count. THIRTY-NINE of these controls
+# are mutation-verified — break the guard each names in dist/app.js or app.css and the NAMED
+# check goes RED. Four did not, at first, and every one of those failures is worth knowing:
+#   - the change-badge control re-derived the predicate beside the code under test instead of
+#     consuming it, so deleting the predicate left the whole suite green;
+#   - the publish-state control dereferenced a node that the defect REMOVES, so it threw and
+#     aborted the driver at check 728 rather than failing the check that names the rule;
+#   - the Alt+arrow keyboard reorder gate and the dialog's Tab trap had NO check at all, and
+#     both were live, correct behaviour that a reviewer had to mutate to discover (PL AC-35,
+#     PL AC-36);
+#   - and the plan surface's keyboard UNDO was not gated on the permission at all, which is the
+#     same defect as the Alt+arrow path in a second place. PL AC-47 therefore asserts the CLASS —
+#     no plan-editing command reaches the host from the keyboard under view-only — because
+#     enumerating the paths by hand is what let the first one hide.
+# A battery proves a check BITES; it cannot prove the check asserts the right thing. The one
+# defect this batch found in its own code — publish_plan sharing a helper with the four commands
+# that replace the plan — was invisible to it, because the test and the code agreed.)
+# (Raised 1119 -> 1121 with the two round-2 premises: PL AC-40's stale-notice premise, without
+# which the fresh-visit check could not tell 'planActivate cleared it' from 'it was already
+# clear' (Cody L5), and PL AC-49's derived-range premise, without which a sweep over an
+# empty list would report 'all clear' forever (Quinn Q-N1). The REAL observed count, so
+# dropping either trips exit 4.)
+EXPECTED_MIN_CHECKS = 1121
 
 
 def find_chrome():
@@ -97,6 +121,114 @@ html = open(os.path.join(DIST, "index.html")).read()
 # The driver regexes the rule out of this text and then resolves its VALUE through the live CSS
 # engine (an inline `background-color: var(--token)` on a probe element), so `var()` is followed
 # rather than string-matched and a token rename cannot fake a pass.
+# Cody L6 — the two JS constants in dist/app.js are hand-transcribed copies of host constants in
+# selahcue-core. This repo already pins one cross-language copy (test_protocol.rs pins the Dart
+# fixtures byte-for-byte against the Rust shapes) precisely because a copy drifts silently. The
+# values are read out of plan.rs here and handed to the driver, so moving either constant without
+# moving the client fails this gate.
+#
+# BOTH lookups are hard failures. The name bound was `MAX_PLAN_NAME_LEN` while PR #14 was in
+# flight and is `MAX_PLAN_LABEL_LEN` now that it has landed (the host applies one rule to a plan
+# name, an item title and an owner, so it stopped calling the bound a "name" one). An earlier
+# version of this pin tolerated a missing constant by passing when the lookup returned None --
+# which is exactly what the rename produced: a check that could no longer fail, guarding a
+# constant nobody was checking. A pin with an escape hatch is not a pin.
+_PLAN_RS = os.path.join(
+    _REPO, "implementation", "desktop", "crates", "selahcue-core", "src", "plan.rs"
+)
+
+
+def _rust_const(name):
+    """The integer value of `pub const <name>: <ty> = <n>;` in plan.rs, or None if absent."""
+    try:
+        src = open(_PLAN_RS).read()
+    except OSError:
+        return None
+    m = re.search(r"pub const " + name + r"\s*:\s*\w+\s*=\s*(\d+)\s*;", src)
+    return int(m.group(1)) if m else None
+
+
+_MAX_PLAN_ITEMS = _rust_const("MAX_PLAN_ITEMS")
+if _MAX_PLAN_ITEMS is None:
+    print("FAIL: could not read MAX_PLAN_ITEMS out of selahcue-core/src/plan.rs — the "
+          "cross-language pin cannot be vacuous, so this is a hard failure")
+    sys.exit(3)
+_MAX_PLAN_LABEL_LEN = _rust_const("MAX_PLAN_LABEL_LEN")
+if _MAX_PLAN_LABEL_LEN is None:
+    print("FAIL: could not read MAX_PLAN_LABEL_LEN out of selahcue-core/src/plan.rs — the "
+          "constant the client's PLAN_NAME_MAX copies. If it was renamed again, follow it "
+          "here; do not soften this to a null-tolerant check, which is how the previous "
+          "rename went unnoticed")
+    sys.exit(3)
+
+
+# Quinn Q-N1 — the client's PLAN_DISPLAY_HOSTILE regex is a hand-transcribed mirror of the
+# host's `is_display_hostile` + `is_line_separator`. It used to be checked against an ELEVEN
+# code-point sample typed out beside it, and every one of those eleven was a range ENDPOINT,
+# which is the same failure mode that let the original defect ship (a sample of five scripts,
+# none of which needed a joiner). Narrowing `\u202A-\u202E` to `[\u202A\u202E]` drops U+202D LRO,
+# a Trojan-Source primitive, and the sample could not see it: 1119 checks, 0 FAIL. So the ranges
+# are read out of plan.rs HERE and every code point inside them is swept, exactly as the two
+# integer constants above are read rather than retyped. A sample cannot see interior drift.
+def _rust_char_ranges(fn_name):
+    """Inclusive (lo, hi) code-point ranges matched by `fn <fn_name>(c: char) -> bool` in plan.rs.
+
+    Reads the `matches!` arms literally: `'\\u{202A}'..='\\u{202E}'` is a range and a bare
+    `'\\u{200B}'` is a one-code-point range. Returns None if the function cannot be found, which
+    the caller treats as a hard failure — a mirror check that silently sweeps nothing is worse
+    than no check, because it reports "all clear" forever.
+    """
+    try:
+        src = open(_PLAN_RS).read()
+    except OSError:
+        return None
+    m = re.search(r"fn " + fn_name + r"\(c: char\) -> bool \{(.*?)\n\}", src, re.S)
+    if not m:
+        return None
+    # The arms carry `// LRE, RLE, PDF, LRO, RLO`-style comments naming the characters; a comment
+    # must not be read as an arm.
+    body = re.sub(r"//[^\n]*", "", m.group(1))
+    pair = r"'\\u\{([0-9A-Fa-f]+)\}'\s*\.\.=\s*'\\u\{([0-9A-Fa-f]+)\}'"
+    ranges = [(int(lo, 16), int(hi, 16)) for lo, hi in re.findall(pair, body)]
+    # Whatever is left once the ranges are removed is a singleton arm.
+    for cp in re.findall(r"'\\u\{([0-9A-Fa-f]+)\}'", re.sub(pair, "", body)):
+        ranges.append((int(cp, 16), int(cp, 16)))
+    return sorted(ranges)
+
+
+_HOSTILE_RANGES = _rust_char_ranges("is_display_hostile")
+_SEPARATOR_RANGES = _rust_char_ranges("is_line_separator")
+if not _HOSTILE_RANGES or not _SEPARATOR_RANGES:
+    print("FAIL: could not read is_display_hostile / is_line_separator out of "
+          "selahcue-core/src/plan.rs — the client's PLAN_DISPLAY_HOSTILE mirrors both, and a "
+          "sweep derived from an empty range list would pass forever. If either was renamed or "
+          "restructured, follow it here; do not soften this to an empty-tolerant read")
+    sys.exit(3)
+_HOSTILE_CPS = sorted(
+    {cp for lo, hi in _HOSTILE_RANGES + _SEPARATOR_RANGES for cp in range(lo, hi + 1)}
+)
+# Floor, not an equality: the risk this guards is the range parse SHRINKING (a plan.rs refactor
+# the regexes above stop matching), which would make the sweep vacuous while it still says "0
+# missed". A host that legitimately narrows its rule lowers this deliberately, in review — the
+# same discipline as EXPECTED_MIN_CHECKS. Never lower it to make a red run green.
+_MIN_HOSTILE_CPS = 27
+if len(_HOSTILE_CPS) < _MIN_HOSTILE_CPS:
+    print("FAIL: only %d hostile code points were derived from plan.rs; expected >= %d. Either "
+          "the host narrowed its rule (lower this deliberately, and check the client followed) "
+          "or the range parse above stopped matching and the sweep has gone vacuous"
+          % (len(_HOSTILE_CPS), _MIN_HOSTILE_CPS))
+    sys.exit(3)
+
+RUST_CONSTS = (
+    "<script>window.__RUST_MAX_PLAN_ITEMS = "
+    + json.dumps(_MAX_PLAN_ITEMS)
+    + "; window.__RUST_MAX_PLAN_LABEL_LEN = "
+    + json.dumps(_MAX_PLAN_LABEL_LEN)
+    + "; window.__RUST_HOSTILE_CPS = "
+    + json.dumps(_HOSTILE_CPS)
+    + ";</script>"
+)
+
 CSS_SRC = (
     "<script>window.__CSSTEXT = "
     + json.dumps(open(os.path.join(DIST, "app.css")).read())
@@ -209,6 +341,24 @@ STUB = r"""
     }
     if (cmd === "add_item" || cmd === "move_item" || cmd === "rename_item" || cmd === "remove_item" || cmd === "plan_undo" || cmd === "plan_redo")
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    // Plan lifecycle (86ak8467m; host side 86ajy0hwg). The reply is whatever the driver has
+    // parked in window.__planLifeReply (defaulting to V), with the request's own name and items
+    // folded in — so a check can assert that the client RENDERS what the host returned rather
+    // than what it optimistically assumed. __planRejectOnce drives the rejection path.
+    if (cmd === "publish_plan" || cmd === "new_plan" || cmd === "template_plan" ||
+        cmd === "duplicate_plan" || cmd === "import_plan") {
+      if (window.__planRejectOnce) { window.__planRejectOnce = false; return Promise.reject(new Error("simulated host rejection")); }
+      var pv = JSON.parse(JSON.stringify(window.__planLifeReply || V));
+      if (args && typeof args.name === "string") pv.plan_name = args.name;
+      if (cmd === "new_plan") { pv.items = []; delete pv.summary; }
+      if (cmd === "import_plan" && args && Array.isArray(args.items)) {
+        pv.items = args.items.map(function(it, i){
+          return { id: 800 + i, kind: it.kind, title: it.title, is_live: false, is_staged: false };
+        });
+        delete pv.summary;
+      }
+      return Promise.resolve(pv);
+    }
     // Blackout mirrors the host: it MUTATES the state and returns the new view. It used to fall
     // through to `Promise.resolve(null)`, so the engaged blackout state could never be exercised
     // end to end — the driver could only fake it by poking V directly.
@@ -2737,8 +2887,15 @@ DRIVER = r"""
       var emptyEl = document.querySelector("#plan-b-list .plan-empty");
       ok(!!emptyEl && !!document.getElementById("plan-empty-add"),
          "SP C-002: an empty plan renders the centered CTA with an 'Add first item' action");
-      ok(/coming soon/i.test(emptyEl.textContent),
-         "SP C-002: the empty state shows honest 'coming soon' affordances (Template/Duplicate/Import)");
+      // Superseded by 86ak8467m: Template / Duplicate / Import are no longer a "coming soon" line
+      // but four real controls, each either live or disabled with the reason it cannot work. What
+      // survives from the original intent is asserted here and exercised in full in the PLAN
+      // LIFECYCLE block below: the frame still offers all four starts, and none of them is a no-op.
+      ok(!!document.getElementById("plan-empty-new") && !!document.getElementById("plan-empty-template") &&
+         !!document.getElementById("plan-empty-duplicate") && !!document.getElementById("plan-empty-import"),
+         "SP C-002: the empty state offers all four designed starts (Create · Template · Duplicate · Import)");
+      ok(!/coming soon/i.test(emptyEl.textContent),
+         "SP C-002: ...as controls, not as a 'coming soon' sentence");
       document.getElementById("plan-empty-add").click();
       ok(document.activeElement === document.querySelector("#plan-palette-btns .plan-palette-btn"),
          "SP C-002 a11y: 'Add first item' focuses the Add-item palette");
@@ -3585,6 +3742,1007 @@ DRIVER = r"""
       // C-006 invariant: the whole builder session (incl. Open-in-Live) sent NOT ONE live-control command.
       ok(window.__calls.filter(isLiveCtrl).length === ctrlBefore,
          "SP C-006: no plan-builder interaction sent a live-control command (staging/linking never changes Live)");
+
+      // ==================================================================================
+      // PLAN LIFECYCLE (86ak8467m) — frames 608:875 (publish), 611:124 (empty state),
+      // 612:342 (view only), 612:1020 (change badge), against the settled 86ajy0hwg wire
+      // shape: five commands behind the EXISTING EditPlan permission, and three appended
+      // view fields (viewer / publish / plan_templates), every one of them skip-if-none.
+      //
+      // The three semantics under test are the three that fabricate state when got wrong:
+      // an ABSENT field is not a negative verdict; can_edit is the host's verdict and is
+      // never re-derived from role; and `changed` means nothing without a baseline.
+      // ==================================================================================
+      showSurface("plan");
+      await sleep(80); // let planActivate's two async renders land before we drive our own
+      var PL_ITEMS = [
+        { id: 301, kind: "song",      title: "Opening", is_live: false, is_staged: false },
+        { id: 302, kind: "scripture", title: "Reading", is_live: false, is_staged: false }
+      ];
+      var lifeView = function (extra) {
+        var v = { plan_name: "Sunday AM", items: JSON.parse(JSON.stringify(PL_ITEMS)) };
+        for (var k in (extra || {})) v[k] = extra[k];
+        return v;
+      };
+      var emptyLife = function (extra) { var v = lifeView(extra); v.items = []; return v; };
+      var openPlan = function (view) { planSelectedId = null; planRenderBuilder(view); };
+      var palette = function () { return document.querySelector("#surface-plan .plan-palette"); };
+      var paletteShown = function () { return getComputedStyle(palette()).display !== "none"; };
+      var plCalls = function (cmd) { return window.__calls.filter(function (c) { return c.cmd === cmd; }); };
+      var dlgOk = function () { return document.querySelector(".pm-confirm .pm-confirm-actions .pm-btn-primary"); };
+      // Null-safe on purpose. Dereferencing .plan-pub-line directly turned a real defect —
+      // requiring `version`, which makes every skip-if-default draft read as unreported — into a
+      // THROWN exception that aborted the driver at check 728 instead of failing the check that
+      // names the rule. A control that dies rather than reporting tells you something is wrong
+      // but not what.
+      var pubLine = function () { var n = document.querySelector("#plan-b-insp .plan-pub-line"); return n ? n.textContent : ""; };
+      // THE REAL WIRE SHAPES. PublishStateView is #[serde(default)] with skip-if-none /
+      // skip-if-zero / skip-if-false, so the fixtures below carry exactly the keys the host
+      // actually sends — a fixture that spelled out the defaults would test a shape that never
+      // arrives, and would have hidden the bug where requiring `version` made every real draft
+      // read as unreported.
+      var PUB_DRAFT   = { revision: 0 };                                        // fresh draft: the WHOLE object
+      var PUB_CLEAN   = { revision: 5, published_revision: 5, version: 4 };      // no `changed` key
+      var PUB_CHANGED = { revision: 7, published_revision: 5, version: 4, changed: true };
+      // Touched but NOT different: an edit that was undone. Revisions differ, content does not.
+      var PUB_TOUCHED = { revision: 9, published_revision: 5, version: 4 };
+      var PL_TEMPLATES = [
+        { id: "sunday-morning", name: "Sunday Morning",    items: 5 },
+        { id: "midweek",        name: "Midweek Gathering", items: 4 }
+      ];
+
+      // --- viewer: three states, and the absent one is NOT view-only --------------------------
+      openPlan(lifeView());
+      ok(!el("plan-viewonly"),
+         "PL AC-1: an ABSENT viewer draws no 'View only' badge — a host declining to report a permission is not a host imposing one");
+      ok(paletteShown(),
+         "PL AC-1: ...and hides no editing control (the Add-item column is still displayed)");
+      ok(!!document.querySelector('#plan-b-list .plan-b-row[data-item-id="301"] .plan-b-up'),
+         "PL AC-1: ...and the run-sheet reorder controls are still on the rows");
+
+      openPlan(lifeView({ viewer: { role: "viewer", can_edit: false } }));
+      ok(!!el("plan-viewonly") && /view only/i.test(el("plan-viewonly").textContent),
+         "PL AC-2 (frame 612:342): can_edit:false draws the 'View only' badge as TEXT, never colour alone");
+      // COMPUTED display, not the hidden attribute: in this webview a class-level display rule
+      // silently defeats `hidden`, so the assertion has to ask the CSS engine.
+      ok(getComputedStyle(palette()).display === "none",
+         "PL AC-2: view-only hides the Add-item column — asserted as COMPUTED display, so a class rule cannot defeat it");
+      ok(!document.querySelector("#plan-b-list .plan-b-up") && !document.querySelector("#plan-b-list .plan-b-down") &&
+         !document.querySelector("#plan-b-list .plan-b-handle"),
+         "PL AC-2 (UX-STATE-MATRIX:111): reorder controls are REMOVED, not greyed — so they leave the tab order too");
+      // Hiding a GRID CHILD does not remove its track. With three fixed tracks and the first
+      // child out of flow, every remaining child shifts one place left — the run sheet landed in
+      // the 220px palette track and truncated every title, beside an empty third track. Found by
+      // looking at a real WKWebView render; asserted here on the resolved track list so the
+      // regression is caught by the fast gate.
+      var voTracks = getComputedStyle(document.querySelector("#surface-plan .plan-builder-grid")).gridTemplateColumns.trim().split(/\s+/);
+      ok(voTracks.length === 2,
+         "PL AC-2 layout: with the ADD ITEM column hidden the grid drops its TRACK too — otherwise the run sheet inherits the 220px palette column and truncates every title (tracks: " + voTracks.join(" | ") + ")");
+      var voSheet = document.querySelector("#surface-plan .plan-runsheet").getBoundingClientRect().width;
+      ok(voSheet > 400,
+         "PL AC-2 layout: ...so the run sheet still gets the wide column (" + Math.round(voSheet) + "px)");
+      ok(!el("plan-sum-publish"),
+         "PL AC-2: Publish is removed under view-only rather than shown disabled");
+
+      // THE control that dies the moment anyone re-derives the verdict from the role name.
+      openPlan(lifeView({ viewer: { role: "viewer", can_edit: true }, publish: PUB_CLEAN }));
+      ok(paletteShown() && !!document.querySelector("#plan-b-list .plan-b-up") && !!el("plan-sum-publish") && !el("plan-viewonly"),
+         "PL AC-3: role='viewer' with can_edit:TRUE still edits — the host's verdict is consumed, never recomputed from the role (the rbac.dart drift this field exists to remove)");
+      openPlan(lifeView({ viewer: { role: "operator", can_edit: false }, publish: PUB_CLEAN }));
+      ok(!!el("plan-viewonly") && !el("plan-sum-publish") && !paletteShown(),
+         "PL AC-3 (mirror): role='operator' with can_edit:FALSE is view-only — the verdict decides in BOTH directions, it does not merely ignore the role in one");
+      openPlan(lifeView({ viewer: { role: "producer" } }));
+      ok(!el("plan-viewonly") && paletteShown(),
+         "PL AC-3: a viewer object carrying no can_edit boolean says nothing, so it reads UNREPORTED rather than restricted");
+      // The Tauri path always carries the KEY, so `null` is the shape an unreported viewer
+      // actually takes there. Reading it as view-only would take controls away from an operator
+      // who has them — the mirror of the fabrication this field exists to prevent.
+      openPlan(lifeView({ viewer: null, plan_templates: [] }));
+      ok(!el("plan-viewonly") && paletteShown() && !!document.querySelector("#plan-b-list .plan-b-up"),
+         "PL AC-3: an explicit viewer:null is UNREPORTED, not view-only — the key being present says nothing about the verdict");
+
+      // --- publish: absent / draft / published / edited-since ---------------------------------
+      openPlan(lifeView());
+      ok(!document.querySelector("#plan-b-insp .plan-pub") && !el("plan-pub-changed"),
+         "PL AC-4: an ABSENT publish field says nothing about publication — no version, no draft label, no badge");
+      ok(!!el("plan-sum-publish") && el("plan-sum-publish").disabled &&
+         el("plan-sum-publish").getAttribute("aria-describedby") === "plan-sum-later" && !!el("plan-sum-later"),
+         "PL AC-4: ...and Publish is PRESENT, disabled, and points at a stated reason — never hidden, never a no-op");
+
+      openPlan(lifeView({ publish: PUB_DRAFT }));
+      ok(!el("plan-pub-changed") && /not published yet/i.test(pubLine()),
+         "PL AC-5: with published_revision absent there is no baseline, so the panel reads draft and draws NO change badge");
+      ok(!!document.querySelector("#plan-b-insp .plan-pub"),
+         "PL AC-5: ...and a bare {revision:0} is still REPORTED, not mistaken for an absent field — the host omits every default-valued key, so requiring `version` here would silence the panel on every real draft");
+      openPlan(lifeView({ publish: { revision: 3, version: 0, changed: true } }));
+      // Mutation-verified: deleting `published &&` from planPublishState's `changed` turns this
+      // RED. It did NOT, on the first attempt, because the renderer re-derived `!pub.published`
+      // beside the predicate instead of consuming it — a control asserting a copy (CLAUDE.md's
+      // 86ak643rc trap). The renderer now tests pub.changed first, so this check and the code
+      // under test read the SAME expression.
+      ok(!el("plan-pub-changed") && /not published yet/i.test(el("plan-pub-line").textContent),
+         "PL AC-5 (hostile): a host claiming changed:true with nothing published still draws no badge and still reads draft — 'changed' has no meaning without a baseline to have changed from");
+
+      openPlan(lifeView({ publish: PUB_CLEAN }));
+      ok(!el("plan-pub-changed") && /version 4/i.test(pubLine()),
+         "PL AC-6: a published, unedited plan reads its version with no change badge");
+      openPlan(lifeView({ publish: PUB_CHANGED }));
+      ok(!!el("plan-pub-changed") && /plan updated/i.test(el("plan-pub-changed").textContent),
+         "PL AC-6 (frame 612:1020, positive control): edited-since-publish DOES draw the badge — AC-5 is a rule being applied, not a renderer that never fires");
+      ok(el("plan-sum-publish").getAttribute("aria-describedby") === "plan-pub-line" &&
+         /edited since version 4/i.test(pubLine()),
+         "PL AC-6 a11y: the badge's meaning reaches AT through the Publish button's description — the change glyph is never the only carrier");
+      // The badge must come from `changed` ALONE. `revision !== published_revision` is the
+      // obvious implementation, it looks right in testing, and it is wrong: an edit that is then
+      // undone moves the revision while restoring the content, so this state means "touched, not
+      // different" and a badge here would offer the operator nothing to review.
+      openPlan(lifeView({ publish: PUB_TOUCHED }));
+      ok(!el("plan-pub-changed") && /version 4/i.test(pubLine()),
+         "PL AC-6b: revision 9 against published_revision 5 with NO `changed` key draws no badge — the counters say the document was touched, `changed` says whether it differs, and only the second is worth interrupting an operator with");
+      ok(planPublishState(lifeView({ publish: PUB_TOUCHED })).changed === false &&
+         planPublishState(lifeView({ publish: PUB_TOUCHED })).revision !==
+         planPublishState(lifeView({ publish: PUB_TOUCHED })).publishedRevision,
+         "PL AC-6b (premise): the fixture really does have differing revisions — otherwise the check above passes for the wrong reason");
+      // One fixture exercised ONE of this reader's four guards; the other three were asserted by
+      // comment. Each shape below is refused by a different clause, so removing any one of them
+      // turns this red rather than leaving three-quarters of the validator untested.
+      var malformedPublish = [
+        [{ revision: -1, published_revision: 2, version: 4, changed: true }, "a negative revision"],
+        [{ revision: 1.5, published_revision: 1, version: 4 }, "a non-integer revision"],
+        [{ revision: 5, published_revision: 5, version: "4" }, "a version that is not a number"],
+        [{ revision: 5, published_revision: "5", version: 4 }, "a published_revision that is not a number"],
+        [{ revision: 5, published_revision: 5, version: 4, changed: "yes" }, "a changed that is not a boolean"]
+      ];
+      var rendered = malformedPublish.filter(function (pair) {
+        openPlan(lifeView({ publish: pair[0] }));
+        return !!document.querySelector("#plan-b-insp .plan-pub");
+      });
+      ok(rendered.length === 0,
+         "PL AC-7: every malformed publish shape reads UNREPORTED — a plausible-looking wrong revision printed on a run sheet is worse than none (rendered anyway: " +
+         rendered.map(function (p) { return p[1]; }).join(", ") + ")");
+      ok(malformedPublish.length >= 5,
+         "PL AC-7 (premise): the sweep covers every clause of the reader, not one of them (" + malformedPublish.length + " shapes)");
+      openPlan(lifeView({ publish: { revision: -1, version: 4, published_revision: 2, changed: true } }));
+      ok(el("plan-sum-publish").disabled,
+         "PL AC-7: ...and the lifecycle controls disable with it rather than staying live over a state nothing could read");
+
+      // --- the name rule, mirrored from plan_label_valid ---------------------------------------
+      ok(planNameProblem("Sunday 2nd Service") === null,
+         "PL AC-8 (control): a normal name is accepted — the rule refuses bad input, it is not a wall");
+      ok(planNameProblem("") !== null && planNameProblem("   ") !== null,
+         "PL AC-8: empty and whitespace-only names are refused");
+      var name120 = new Array(121).join("a");
+      ok(planNameProblem(name120) === null && planNameProblem(name120 + "a") !== null,
+         "PL AC-8: the bound is 120 characters — 120 passes and 121 does not");
+      var astral = "";
+      for (var ai = 0; ai < 120; ai++) astral += "\u{1F600}"; // 120 scalar values, 240 UTF-16 code units
+      ok(planNameProblem(astral) === null,
+         "PL AC-9: 120 astral-plane characters are accepted — the bound counts SCALAR VALUES like the host's chars(), not UTF-16 code units");
+      ok(planNameProblem(astral + "\u{1F600}") !== null,
+         "PL AC-9 (control): 121 of them are refused, so the bound is real and not simply missing");
+      // Built from code points rather than typed literally, so this file stays free of control
+      // characters. The set spans the whole Cc class: C0, DEL, and the C1 range the host's
+      // char::is_control also refuses.
+      var ctrlMissed = [0x00, 0x07, 0x09, 0x0a, 0x0d, 0x1b, 0x7f, 0x85, 0x9f].filter(function (cp) {
+        return planNameProblem("Sunday" + String.fromCharCode(cp) + "Service") === null;
+      });
+      ok(ctrlMissed.length === 0,
+         "PL AC-10: every control character in the CLASS is refused, not just NUL — the guard this repo already had to sweep across its class in ee3646f (missed " + ctrlMissed.length + ")");
+      ok(planNameProblem("Sundays’ Café — 2nd") === null,
+         "PL AC-10 (control): punctuation and accents are NOT control characters — the class test does not over-refuse ordinary names");
+
+      // --- empty state (frame 611:124): four real starts, none of them a no-op ------------------
+      openPlan(emptyLife({ publish: PUB_CLEAN, plan_templates: PL_TEMPLATES }));
+      ok(!!el("plan-empty-new") && !el("plan-empty-new").disabled,
+         "PL AC-11: with the lifecycle reported, 'Create a service' is live");
+      var newBefore = plCalls("new_plan").length;
+      el("plan-empty-new").click();
+      await sleep(20);
+      ok(!!el("pm-prompt-input"),
+         "PL AC-11: it opens a name dialog rather than creating an unnamed plan");
+      el("pm-prompt-input").value = "   ";
+      dlgOk().click();
+      await sleep(20);
+      ok(plCalls("new_plan").length === newBefore && !!el("pm-prompt-input"),
+         "PL AC-12: a whitespace-only name sends NOTHING and the dialog stays open with the typed value intact");
+      ok(!!el("pm-prompt-error") && !el("pm-prompt-error").hidden && el("pm-prompt-error").getAttribute("role") === "alert",
+         "PL AC-12 a11y: the refusal is announced (role=alert), not a silent red line an operator can only see");
+      var errCr = _cr(_rgba(getComputedStyle(el("pm-prompt-error")).color),
+                      _rgba(getComputedStyle(document.querySelector(".pm-confirm")).backgroundColor));
+      ok(errCr >= 4.5,
+         "PL AC-12 a11y: ...and it clears AA-NORMAL against the dialog (" + _f(errCr) + ":1) — the refusal is the one thing in this dialog the operator must be able to read");
+      el("pm-prompt-input").value = "Sunday" + String.fromCharCode(9) + "Service";
+      dlgOk().click();
+      await sleep(20);
+      ok(plCalls("new_plan").length === newBefore,
+         "PL AC-12: a control character in the name sends nothing either");
+      el("pm-prompt-input").value = "  Sunday 2nd Service  ";
+      dlgOk().click();
+      await sleep(40);
+      var newCalls = plCalls("new_plan");
+      ok(newCalls.length === newBefore + 1 && (newCalls.length ? newCalls[newCalls.length - 1].args || {} : {}).name === "Sunday 2nd Service",
+         "PL AC-12 (positive control): a VALID name sends new_plan with the TRIMMED name — the guard refuses bad input, it is not a dead button");
+      ok(!el("pm-prompt-input"), "PL AC-12: ...and the dialog closes once the host accepts");
+      var okNote = document.querySelector("#plan-notice .plan-notice-status");
+      ok(!!okNote && okNote.getAttribute("role") === "status",
+         "PL AC-13: the outcome is reported in the PLAN surface's own live region (the presentation surface's toast is not visible from here)");
+
+      // --- templates come from the host, never from a client-side list --------------------------
+      openPlan(emptyLife({ publish: PUB_CLEAN, plan_templates: PL_TEMPLATES }));
+      el("plan-empty-template").click();
+      await sleep(20);
+      var tplRows = document.querySelectorAll(".plan-tpl-row");
+      ok(tplRows.length === 2 && /Sunday Morning/.test(tplRows[0].textContent) && /5 items/.test(tplRows[0].textContent),
+         "PL AC-14: the picker lists the HOST's templates with the host's own item COUNT — the client carries no copy of the list to drift from");
+      ok(!document.querySelector(".pm-confirm select"),
+         "PL AC-14 (WKWebView): the picker uses radios, not a flex-parented select — that collapses to zero width off-Blink and this Blink gate could never see it");
+      ok(el("pm-prompt-input").value === "Sunday Morning",
+         "PL AC-15: the name defaults to the chosen template's name rather than an empty field");
+      document.getElementById("plan-tpl-1").click();
+      ok(el("pm-prompt-input").value === "Midweek Gathering",
+         "PL AC-15: choosing another template follows its name...");
+      el("pm-prompt-input").value = "My Own Name";
+      el("pm-prompt-input").dispatchEvent(new Event("input", { bubbles: true }));
+      document.getElementById("plan-tpl-0").click();
+      ok(el("pm-prompt-input").value === "My Own Name",
+         "PL AC-15: ...but never overwrites a name the operator has typed");
+      el("pm-prompt-input").value = "Sunday 2nd Service";
+      var tplBefore = plCalls("template_plan").length;
+      dlgOk().click();
+      await sleep(40);
+      var tplCalls = plCalls("template_plan");
+      // Null-safe: dereferencing `.args` on a send that never happened turns a real defect into a
+      // THROWN exception that aborts the driver — 280 checks lost, and only the floor reporting
+      // it. Fourth instance of that class in this batch, so it is worth naming: a control that
+      // dies tells you something is wrong but never what.
+      var tplLast = tplCalls.length ? tplCalls[tplCalls.length - 1].args || {} : {};
+      ok(tplCalls.length === tplBefore + 1 &&
+         tplLast.template === "sunday-morning" &&
+         tplLast.name === "Sunday 2nd Service",
+         "PL AC-14: it sends template_plan{template,name} carrying the id the HOST reported, so no id is invented here");
+
+      openPlan(emptyLife({ publish: PUB_CLEAN }));
+      ok(el("plan-empty-template").disabled &&
+         el("plan-empty-template").getAttribute("aria-describedby") === "plan-empty-no-templates" &&
+         !!el("plan-empty-no-templates"),
+         "PL AC-16: a host offering no templates disables the action WITH the reason — never an empty picker");
+
+      // --- the two affordances that are disabled BY DESIGN, not by dependency -------------------
+      ok(el("plan-empty-duplicate").disabled && !!el("plan-empty-no-library") &&
+         /saved-plan library/i.test(el("plan-empty-no-library").textContent),
+         "PL AC-17: 'Duplicate previous' states its real reason — duplicate_plan copies the OPEN plan, and this build keeps exactly one, so there is no past service to choose from");
+      ok(el("plan-empty-bundle").disabled && !!el("plan-empty-no-bundle") &&
+         /media/i.test(el("plan-empty-no-bundle").textContent),
+         "PL AC-17: FR-139's plan BUNDLE is a named, disabled affordance — the run-sheet import must not stand in for it and silently drop every operator's media");
+
+      // --- import: a run-sheet item list, typed per line ----------------------------------------
+      openPlan(emptyLife({ publish: PUB_CLEAN }));
+      el("plan-empty-import").click();
+      await sleep(20);
+      ok(!!el("plan-import-text"), "PL AC-18: Import opens a run-sheet paste");
+      el("pm-prompt-input").value = "Imported";
+      el("plan-import-text").value = "Sermon";
+      var impBefore = plCalls("import_plan").length;
+      dlgOk().click();
+      await sleep(20);
+      ok(plCalls("import_plan").length === impBefore && /line 1/i.test(el("pm-prompt-error").textContent),
+         "PL AC-18: a line that does not name its type is refused BY LINE NUMBER and nothing is sent — never imported as a guessed type that misbehaves on service day");
+      el("plan-import-text").value = "Song: Opening\nScripture: Romans 8:28\n\nPresentation: Sermon Deck";
+      dlgOk().click();
+      await sleep(40);
+      var impCalls = plCalls("import_plan");
+      var impSent = impCalls.length ? impCalls[impCalls.length - 1].args || {} : { items: [] };
+      ok(impCalls.length === impBefore + 1 && impSent.name === "Imported" && (impSent.items || []).length === 3,
+         "PL AC-18 (positive control): a well-formed paste sends import_plan with one item per non-blank line");
+      ok((impSent.items || []).length === 3 && impSent.items[0].kind === "song" && impSent.items[2].kind === "slide_group",
+         "PL AC-18: the on-screen label 'Presentation' maps to the WIRE tag slide_group, and blank lines are spacing rather than empty items");
+      ok((impSent.items || []).length === 3 && impSent.items.every(function (x) { return !("link" in x) && !("content" in x); }),
+         "PL AC-18: import carries kind + title only — content links are set afterwards with SetItemContent, so none is invented on this path");
+      ok(document.querySelectorAll("#plan-b-list .plan-b-row").length === 3,
+         "PL AC-18: ...and the run sheet re-renders from the view the HOST returned, not from what the client assumed it sent");
+
+      var badTitle = planParseRunSheet("Song: " + name120 + "a");
+      ok(!badTitle.items.length && badTitle.problems.length === 1,
+         "PL AC-19: an item TITLE is validated by the SAME rule as the plan name — one definition, not a looser copy written for this path");
+      var many = [];
+      for (var bi = 0; bi < 501; bi++) many.push("Song: Item " + bi);
+      ok(planParseRunSheet(many.join("\n")).problems.some(function (m) { return /500/.test(m); }),
+         "PL AC-19: a paste over MAX_PLAN_ITEMS is refused with the cap named");
+      var atCap = planParseRunSheet(many.slice(0, 500).join("\n"));
+      ok(atCap.items.length === 500 && !atCap.problems.length,
+         "PL AC-19 (control): exactly 500 is accepted — the cap is the host's 500, not one either side of it");
+      // Quinn (Low, MU-C) — the other end of the same cap. Deleting the empty-paste guard left
+      // the suite completely green, and without it an empty paste sends import_plan{items:[]},
+      // which replaces the operator's run sheet with nothing at all.
+      openPlan(emptyLife({ publish: PUB_CLEAN }));
+      el("plan-empty-import").click();
+      await sleep(20);
+      el("pm-prompt-input").value = "Imported";
+      el("plan-import-text").value = "   \n\n  ";
+      var emptyBefore = plCalls("import_plan").length;
+      dlgOk().click();
+      await sleep(20);
+      ok(plCalls("import_plan").length === emptyBefore && !!el("plan-import-text"),
+         "PL AC-19 (Quinn MU-C): a paste with no items sends NOTHING and keeps the dialog open — import REPLACES the run sheet, so an empty one would replace it with nothing");
+      // Null-safe, for the reason the reviewers raised three times on this suite: without the
+      // guard, removing the rule under test closes the dialog and this line THROWS, aborting the
+      // driver instead of failing the check that names the rule.
+      var emptyErr = document.getElementById("pm-prompt-error");
+      ok(/at least one/i.test((emptyErr && emptyErr.textContent) || ""),
+         "PL AC-19 (Quinn MU-C): ...and says why, rather than refusing in silence");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(20);
+
+      // --- publish (FR-006) ---------------------------------------------------------------------
+      openPlan(lifeView({ publish: PUB_CHANGED }));
+      var pubBefore = plCalls("publish_plan").length;
+      el("plan-sum-publish").click();
+      await sleep(40);
+      ok(plCalls("publish_plan").length === pubBefore + 1 && !plCalls("publish_plan")[pubBefore].args,
+         "PL AC-20 (FR-006): Publish sends publish_plan and carries no arguments");
+      var pubNote = document.querySelector("#plan-notice .plan-notice-status");
+      ok(!!pubNote && !/\b(team|network|internet|upload|uploaded|sent to)\b/i.test(pubNote.textContent),
+         "PL AC-20 (copy): the confirmation states the LOCAL builder-to-console hand-off and claims no network transfer — SERVICE-PLAN-2.0-HANDOFF.md:105 and FR-006 both describe publish as local, and the conflict with the button's shipped label is the owner's to settle, not this file's to assert");
+
+      window.__planRejectOnce = true;
+      openPlan(lifeView({ publish: PUB_CHANGED }));
+      el("plan-sum-publish").click();
+      await sleep(40);
+      var failNote = document.querySelector("#plan-notice .plan-notice-alert");
+      ok(!!failNote && failNote.getAttribute("role") === "alert" && /simulated host rejection/.test(failNote.textContent),
+         "PL AC-21: a rejected command reports the HOST'S OWN message, so a name the host refused is fixable rather than an unexplained dead button");
+      ok(!document.querySelector("#plan-notice .plan-notice-status"),
+         "PL AC-21 (control): ...and no stale success message is left standing beside the failure");
+
+      openPlan(lifeView({ publish: PUB_CHANGED }));
+      var raceBefore = plCalls("publish_plan").length;
+      var pubBtn = el("plan-sum-publish");
+      pubBtn.click();
+      pubBtn.click();
+      await sleep(60);
+      ok(plCalls("publish_plan").length === raceBefore + 1,
+         "PL AC-22: double-activating Publish sends exactly one command — these five REPLACE the plan, and two in flight would leave the operator unable to tell which reply they are looking at");
+
+      // --- duplicate_plan lives beside the OPEN plan (FR-005) -----------------------------------
+      openPlan(lifeView({ publish: PUB_CLEAN }));
+      ok(!!el("plan-sum-duplicate") && !el("plan-sum-duplicate").disabled,
+         "PL AC-23 (FR-005): 'Duplicate this service' sits beside the open plan's summary, because duplicate_plan copies the plan that is OPEN — which is exactly why it is wrong for the empty state");
+      el("plan-sum-duplicate").click();
+      await sleep(20);
+      ok(el("pm-prompt-input").value === "Sunday AM (copy)",
+         "PL AC-23: it proposes a name derived from the open plan rather than an empty field");
+      var dupBefore = plCalls("duplicate_plan").length;
+      // Typing the CURRENT name back is refused here rather than sent: the host ACCEPTS it and
+      // does nothing (an Ack, not an error), and this client cannot report that honestly —
+      // "Service duplicated" would be false and silence would read as a broken button.
+      el("pm-prompt-input").value = "Sunday AM";
+      dlgOk().click();
+      await sleep(20);
+      ok(plCalls("duplicate_plan").length === dupBefore && /current name/i.test(el("pm-prompt-error").textContent),
+         "PL AC-23b: duplicating under the plan's CURRENT name is refused with an explanation — the host would Ack and change nothing, which is a success message over a plan that did not move");
+      el("pm-prompt-input").value = "Sunday AM (copy)";
+      dlgOk().click();
+      await sleep(40);
+      var dupCalls = plCalls("duplicate_plan");
+      ok(dupCalls.length === dupBefore + 1 && (dupCalls.length ? dupCalls[dupCalls.length - 1].args || {} : {}).name === "Sunday AM (copy)",
+         "PL AC-23 (positive control): ...and a genuinely different name does send duplicate_plan{name}");
+
+      // --- the read-only inspector (frame 612:342) ----------------------------------------------
+      openPlan(lifeView({ viewer: { role: "viewer", can_edit: false } }));
+      document.querySelector('#plan-b-list .plan-b-row[data-item-id="301"]').click();
+      ok(!el("plan-insp-title") && !!el("plan-insp-title-ro"),
+         "PL AC-24: the view-only inspector shows the title as static text — a field that looks like a field and refuses typing is the same complaint in a different costume");
+      ok(!document.querySelector("#plan-b-insp .pm-btn-danger"),
+         "PL AC-24: ...and 'Remove item' is absent, not disabled");
+      document.querySelector('#plan-b-list .plan-b-row[data-item-id="302"]').click();
+      ok(!document.querySelector("#plan-b-insp .plan-insp-actions .pm-btn-primary"),
+         "PL AC-25: view-only removes the Link/Change action from a scripture item's inspector");
+      openPlan(lifeView());
+      document.querySelector('#plan-b-list .plan-b-row[data-item-id="301"]').click();
+      ok(!!el("plan-insp-title") && !!document.querySelector("#plan-b-insp .pm-btn-danger"),
+         "PL AC-24 (control): with nothing reported the inspector is fully editable — the read-only treatment is a state, not a latch that sticks on");
+
+      // --- Open in Live stays navigation, but stops looking like a write ------------------------
+      openPlan(lifeView({ viewer: { role: "viewer", can_edit: false } }));
+      ok(/Follow in Live/.test(el("plan-open-live").textContent) && el("plan-open-live").className === "pm-btn-ghost",
+         "PL AC-26 (design-QA section 9): under view-only the header action reads as the passive thing it is, rather than an enabled write-looking primary on a plan this operator cannot change");
+      ok(!!el("plan-sum-live") && /Follow in Live/.test(el("plan-sum-live").textContent),
+         "PL AC-26: the panel's twin follows the same rule");
+      openPlan(lifeView());
+      ok(/Open in Live/.test(el("plan-open-live").textContent) && el("plan-open-live").className === "pm-btn-primary",
+         "PL AC-26 (control): with no restriction reported it is the primary 'Open in Live' again");
+      var edTracks = getComputedStyle(document.querySelector("#surface-plan .plan-builder-grid")).gridTemplateColumns.trim().split(/\s+/);
+      ok(edTracks.length === 3,
+         "PL AC-26 (control): ...and the three-track layout comes back with the ADD ITEM column — the dropped track is a state, not a latch (tracks: " + edTracks.join(" | ") + ")");
+
+      // --- an empty plan under view-only offers nothing to press --------------------------------
+      openPlan(emptyLife({ viewer: { role: "viewer", can_edit: false }, publish: PUB_CLEAN, plan_templates: PL_TEMPLATES }));
+      ok(!!el("plan-empty-viewonly") && !el("plan-empty-new") && !el("plan-empty-add") && !el("plan-empty-duplicate"),
+         "PL AC-27: an empty plan under view-only offers no creation controls at all — a permission is not a 'coming soon', so it gets no disabled buttons to explain away");
+      ok(/No service plan yet/i.test(document.querySelector("#plan-b-list .plan-empty-h").textContent) &&
+         !/Add songs/i.test(el("plan-b-list").textContent),
+         "PL AC-27: ...and the COPY follows the permission too — no \"Build your service plan · Add songs…\" instruction to someone whose role forbids all of it");
+
+      // --- a host without the lifecycle gets honest controls, not failing ones -------------------
+      openPlan(emptyLife({ plan_templates: PL_TEMPLATES }));
+      ok(el("plan-empty-new").disabled && el("plan-empty-import").disabled && el("plan-empty-template").disabled &&
+         el("plan-empty-new").getAttribute("aria-describedby") === "plan-empty-later" && !!el("plan-empty-later"),
+         "PL AC-29: a host that does not report the lifecycle gets DISABLED actions pointing at the reason — never live-looking buttons that fail on click against an older or remote host");
+      var quietFrom = window.__calls.length;
+      el("plan-empty-new").click();
+      el("plan-empty-import").click();
+      el("plan-empty-template").click();
+      await sleep(20);
+      ok(window.__calls.slice(quietFrom).filter(function (c) {
+           return ["new_plan", "import_plan", "template_plan"].indexOf(c.cmd) >= 0;
+         }).length === 0,
+         "PL AC-29 (control): pressing them sends nothing — genuinely disabled, not merely styled to look it");
+
+      // --- the copy that says WHY a control is unavailable must be readable ---------------------
+      // These lines are not decoration: they are the only thing that turns a dead-looking button
+      // into an explained one, so they are essential copy at small size and belong on
+      // --sc-text-secondary, not the AA-large-only --sc-text-muted. Measured through the live CSS
+      // engine so a token rename cannot fake it.
+      openPlan(emptyLife({ plan_templates: PL_TEMPLATES }));
+      var reasonEl = el("plan-empty-later");
+      var reasonBg = (function (n) {
+        // Walk to the first ancestor that actually paints, so the ratio is against the ground the
+        // text really sits on rather than a transparent parent.
+        for (var e = n; e && e !== document.documentElement; e = e.parentElement) {
+          var bg = getComputedStyle(e).backgroundColor;
+          if (_rgba(bg)[3] > 0) return bg;
+        }
+        return getComputedStyle(document.body).backgroundColor;
+      })(reasonEl);
+      var reasonCr = _cr(_rgba(getComputedStyle(reasonEl).color), _rgba(reasonBg));
+      ok(reasonCr >= 4.5,
+         "PL AC-30: the stated reason under a disabled action clears AA-NORMAL (" + _f(reasonCr) + ":1) — a reason an operator cannot read leaves the control indistinguishable from a dead button");
+      openPlan(emptyLife({ viewer: { role: "viewer", can_edit: false } }));
+      var voEl = el("plan-empty-viewonly");
+      var voCr = _cr(_rgba(getComputedStyle(voEl).color), _rgba(reasonBg));
+      ok(voCr >= 4.5,
+         "PL AC-30: so does the view-only explanation (" + _f(voCr) + ":1)");
+
+      // --- which one of the five is not like the others? ----------------------------------------
+      // FOUR of the five REPLACE the run sheet; publish_plan moves a marker and leaves the plan,
+      // its item ids and the operator's selection intact. A shared helper that treats all five
+      // alike is exactly where that difference hides — a twelve-mutation battery would pass,
+      // because the test and the code would agree with each other.
+      // Publish lives on the SUMMARY, so the selection is set without opening the item inspector
+      // over it — then the command runs and the selection must survive it.
+      openPlan(lifeView({ publish: PUB_CHANGED }));
+      ok(!!el("plan-sum-publish"), "PL AC-31 (setup): the summary is showing, with Publish on it");
+      planSelectedId = 302;
+      el("plan-sum-publish").click();
+      await sleep(40);
+      ok(planSelectedId === 302,
+         "PL AC-31: publish_plan does NOT clear the operator's selection — it moves a marker, it does not replace the plan, so throwing them back to the Plan Summary would be a reset they could not name");
+      // ...and the control: a command that DOES replace the plan clears it.
+      openPlan(lifeView({ publish: PUB_CLEAN }));
+      planSelectedId = 302;
+      el("plan-sum-duplicate").click();
+      await sleep(20);
+      el("pm-prompt-input").value = "A Different Name";
+      dlgOk().click();
+      await sleep(40);
+      ok(planSelectedId === null,
+         "PL AC-31 (control): duplicate_plan DOES clear it — the four that mint new item ids must not leave a stale one pointing at an item that no longer exists");
+
+      // --- duplicating mid-service says what is on air ------------------------------------------
+      var liveView = lifeView({ publish: PUB_CLEAN });
+      liveView.items[0].is_live = true;
+      openPlan(liveView);
+      el("plan-sum-duplicate").click();
+      await sleep(20);
+      var warn = el("pm-prompt-warn");
+      ok(!!warn && /is LIVE/.test(warn.textContent) && warn.textContent.indexOf(PL_ITEMS[0].title) >= 0,
+         "PL AC-32: duplicating while an item is LIVE NAMES it — the copy replaces the run sheet being edited, and an operator mid-service deserves to be told which of those two things is true (got: " + (warn ? warn.textContent : "no warning") + ")");
+      ok(/audience output is unaffected/i.test(warn.textContent),
+         "PL AC-32: ...and states that the audience is unaffected, rather than leaving them to fear it");
+      ok(document.querySelector(".pm-confirm").getAttribute("aria-describedby").indexOf("pm-prompt-warn") >= 0,
+         "PL AC-32 a11y: the consequence is in the dialog's accessible description — a warning a screen reader never speaks did not happen (WCAG 4.1.2)");
+      ok(!dlgOk().disabled,
+         "PL AC-32: it STATES the consequence, it does not block — duplicating a running service is a legitimate thing to want");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(20);
+      // A live slide whose plan item is already gone is the case a naive items[live_index] misses.
+      var freeView = lifeView({ publish: PUB_CLEAN });
+      freeView.live_free_text = "Removed but still on air";
+      openPlan(freeView);
+      el("plan-sum-duplicate").click();
+      await sleep(20);
+      ok(!!el("pm-prompt-warn") && /Removed but still on air/.test(el("pm-prompt-warn").textContent),
+         "PL AC-32: a live FREE slide — one whose plan item was already removed — is named too, not missed by an items lookup");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(20);
+      openPlan(lifeView({ publish: PUB_CLEAN }));
+      el("plan-sum-duplicate").click();
+      await sleep(20);
+      ok(!el("pm-prompt-warn"),
+         "PL AC-32 (control): with NOTHING on air there is no warning — the line is a state, not decoration on every duplicate");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(20);
+
+      // --- the template list is BOUNDED before it is rendered -----------------------------------
+      // The operator shell reads this from a host across the LAN link, and ControlClient sets no
+      // max_message_size (client.rs:70) while the server caps its own inbound at 64 KiB
+      // (server.rs:46) — so a reply may be far larger than any picker should render.
+      var manyTpl = [];
+      for (var ti = 0; ti < 25; ti++) manyTpl.push({ id: "t" + ti, name: "Template " + ti, items: 3 });
+      ok(planTemplateList({ plan_templates: manyTpl }) === null,
+         "PL AC-33: a template list past the picker's entity cap reads as NO list — bounded by entry COUNT, not by a byte proxy that still admits unboundedly many tiny rows");
+      ok(planTemplateList({ plan_templates: manyTpl.slice(0, 24) }) !== null,
+         "PL AC-33 (control): exactly at the cap it still loads — the bound refuses excess, it is not a dead mechanism");
+      var longName = new Array(200).join("x");
+      ok(planTemplateList({ plan_templates: [{ id: "t", name: longName, items: 3 }] }) === null,
+         "PL AC-33: an over-long template NAME is refused — the string is rendered, so its length is bounded too");
+      ok(planTemplateList({ plan_templates: [{ id: longName, name: "T", items: 3 }] }) === null,
+         "PL AC-33: ...and so is an over-long id");
+      openPlan(emptyLife({ publish: PUB_CLEAN, plan_templates: manyTpl }));
+      ok(el("plan-empty-template").disabled && !document.querySelector(".plan-tpl-row"),
+         "PL AC-33: ...and the picker renders no row for a list it refused, rather than building one DOM node per entry");
+      ok(/no usable starter templates/i.test(el("plan-empty-no-templates").textContent),
+         "PL AC-33: the stated reason is true for a REFUSED list as well as an empty one — 'this host offers none' would have been a claim about the host that this client cannot make");
+
+      // --- a long session must not silently disable the whole panel -----------------------------
+      var busy = planPublishState({ publish: { revision: 250000, published_revision: 240000, version: 900 } });
+      ok(busy !== null && busy.version === 900,
+         "PL AC-34: a revision past 100,000 is still REPORTED — these are ordinals rendered as labels, never summed, and refusing them would degrade the whole lifecycle panel to 'unreported' under a reason that was not true");
+
+
+      // --- review round 1: the controls the reviewers proved nothing guarded --------------------
+      // Each of these went GREEN under a mutation of the guard it now names. That is the whole
+      // reason they exist: "right and unguarded" is the state this repo's CLAUDE.md warns about,
+      // and three of the four below were live, correct behaviour that no check would have missed.
+
+      // Cody M1 — the buttons being gone is not the same as the keyboard path being gated.
+      openPlan(lifeView({ viewer: { role: "viewer", can_edit: false } }));
+      var voRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="301"]');
+      var mvBefore = plCalls("move_item").length;
+      voRow.focus();
+      voRow.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true }));
+      await sleep(30);
+      ok(plCalls("move_item").length === mvBefore,
+         "PL AC-35 (Cody M1): under view-only Alt+ArrowDown sends no move_item — a restriction that only holds for the mouse is not a restriction, and PL AC-2 proving the buttons are gone says nothing about the key handler, which is attached regardless of permission");
+      // The positive control matters more than usual here: without it this passes just as well if
+      // the key handler stopped firing for a reason that has nothing to do with the permission.
+      openPlan(lifeView());
+      var edRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="301"]');
+      var mvBefore2 = plCalls("move_item").length;
+      edRow.focus();
+      edRow.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true }));
+      await sleep(30);
+      ok(plCalls("move_item").length === mvBefore2 + 1,
+         "PL AC-35 (control): the SAME gesture with no restriction reported DOES reorder — so the check above is measuring the permission, not a dead key handler");
+
+      // Cody M2 — the Tab trap must walk the dialog's LIVE focusables. Under the old hard-coded
+      // [input, cancel, ok] triple, indexOf returns -1 for the textarea and for every template
+      // radio, so a keyboard user could never reach either and the import dialog was unusable
+      // without a mouse.
+      openPlan(emptyLife({ publish: PUB_CLEAN, plan_templates: PL_TEMPLATES }));
+      el("plan-empty-import").click();
+      await sleep(20);
+      el("pm-prompt-input").focus();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
+      ok(document.activeElement === el("plan-import-text"),
+         "PL AC-36 (Cody M2): the dialog's Tab trap reaches the run-sheet textarea — content opts.body adds must be reachable, or the import dialog cannot be operated without a mouse");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(20);
+      el("plan-empty-template").click();
+      await sleep(20);
+      el("pm-prompt-input").focus();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
+      ok(document.activeElement === document.getElementById("plan-tpl-1"),
+         "PL AC-36 (Cody M2): ...and the template radios, which the same old trap could never reach either");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(20);
+
+      // Cody L3 — can_edit must be a real boolean. A serde host cannot send anything else, but
+      // the entire reason this field exists is that the console talks to hosts it did not build,
+      // and "false" is truthy.
+      ok(planViewer({ viewer: { role: "operator", can_edit: "false" } }).canEdit === null,
+         "PL AC-37 (Cody L3): a non-boolean can_edit reads as UNREPORTED — coercing it would make the string \"false\" mean editable and the number 0 mean view-only");
+      openPlan(lifeView({ viewer: { role: "operator", can_edit: "false" } }));
+      ok(!el("plan-viewonly") && paletteShown(),
+         "PL AC-37: ...and the surface treats it as unreported rather than as either verdict");
+
+      // Cody L2 — plan_templates crosses the same trust boundary as publish, which has PL AC-7
+      // for exactly this. The asymmetry was the finding.
+      ok(planTemplateList({ plan_templates: [{ id: "", name: "", items: -3 }] }) === null,
+         "PL AC-38 (Cody L2): a malformed template entry is dropped — no picker row with a blank name and \"-3 items\"");
+      ok(planTemplateList({ plan_templates: [{ id: "ok", name: "Fine", items: 3 }, { id: "", name: "", items: -3 }] }) !== null &&
+         planTemplateList({ plan_templates: [{ id: "ok", name: "Fine", items: 3 }, { id: "", name: "", items: -3 }] }).length === 1,
+         "PL AC-38 (control): a good entry beside a bad one still loads, and only the bad one is dropped — the filter refuses entries, it does not refuse lists");
+
+      // Cody L4 — a control that looks live and silently does nothing is the exact thing this
+      // panel's disabled-with-a-reason treatment exists to avoid, and in the in-flight window
+      // five of them did it.
+      openPlan(lifeView({ publish: PUB_CHANGED }));
+      planNotice(""); // start from a clean slot so the message below cannot be a leftover
+      planLifecycleBusy = true;
+      el("plan-sum-publish").click();
+      await sleep(20);
+      ok(/still finishing/i.test(el("plan-notice").textContent),
+         "PL AC-39 (Cody L4): a command dropped by the in-flight guard SAYS so — PL AC-22 pins that only one is sent, which is right; the silence was the defect");
+      planLifecycleBusy = false;
+
+      // Cody L5 — the outcome message must not outlive the run sheet it describes.
+      openPlan(lifeView({ publish: PUB_CHANGED }));
+      el("plan-sum-publish").click();
+      await sleep(40);
+      ok(!!document.querySelector("#plan-notice .plan-notice-status"),
+         "PL AC-40 (setup): publishing leaves its confirmation in the live region");
+      await planMutate(() => invoke("add_item", { kind: "song", title: "Later addition" }));
+      await sleep(20);
+      ok(el("plan-notice").textContent === "",
+         "PL AC-40 (Cody L5): a later plan EDIT clears it — \"Plan published\" is true of the run sheet that was published, not of the one now on screen");
+      // ...and the SAME control on the NAVIGATION path needs a premise of its own. The check
+      // immediately above has just asserted the slot is EMPTY, so without putting an outcome back
+      // on screen first, "a fresh visit does not inherit it" passes whether planActivate cleared
+      // it or not — nothing in the sequence distinguishes "planActivate cleared it" from "it was
+      // already clear". Deleting planNotice("") from planActivate left the whole gate green
+      // (Cody L5, re-review at e71be48). The clearing IS load-bearing: #plan-notice is a static
+      // element in index.html, not rebuilt by the render, so a stale outcome really does survive
+      // a navigation without it.
+      planNotice("status", "A stale outcome from the last visit");
+      ok(/stale outcome/.test(el("plan-notice").textContent),
+         "PL AC-40 (premise): an outcome really is on screen immediately before the navigation — without it the fresh-visit check below is vacuous and planActivate's clearing goes unexercised");
+      planActivate();
+      await sleep(80);
+      ok(el("plan-notice").textContent === "",
+         "PL AC-40 (Cody L5): ...and a fresh visit to the surface does not inherit the last visit's outcome");
+
+      // Cody S2 — the value the client VALIDATED and the value it SENDS must be the same string,
+      // or the validation is describing something other than what the host will see.
+      var trimParsed = planParseRunSheet("Song:   Opening   ");
+      ok(trimParsed.items.length === 1 && trimParsed.items[0].title === "Opening",
+         "PL AC-41 (Cody S2): an imported title is SENT trimmed, not merely validated trimmed");
+
+      // Cody S1 (the half that holds) — an explicit changed:null must not silence the panel,
+      // because published_revision:null is deliberately tolerated four lines above it.
+      var nullChanged = planPublishState({ publish: { revision: 7, published_revision: 5, version: 4, changed: null } });
+      ok(nullChanged !== null && nullChanged.changed === false,
+         "PL AC-42 (Cody S1): an explicit changed:null reads as false rather than silencing the whole publish state — the reader treats its two nulls the same way");
+
+      // Vera F2 — the exact pre-check. A scalar value is at most two UTF-16 code units, so a
+      // string past 2x the bound must exceed it; no string that would have been accepted can be
+      // refused by the guard. Both halves are asserted, because a guard that over-refuses would
+      // be a regression the fast path cannot show.
+      var huge = new Array(300001).join("x"); // 300,000 code units on one line
+      // HONEST SCOPE. This pins the REFUSAL, not the cheap path to it: with the code-unit
+      // pre-check deleted the string is still refused, just after materialising a 300,000-element
+      // array. The pre-check's value is a MEASUREMENT (Vera: 3,267ms main-thread block and ~270MB
+      // transient heap on Blink for a 50MB single-line paste, 357ms on WebKit), and this harness
+      // runs under --virtual-time-budget, which virtualises clocks and makes a timing assertion
+      // here meaningless. So the guard below says what it can prove, and the comment says who
+      // proved the rest — rather than a check whose name claims more than it measures.
+      ok(planNameProblem(huge) !== null,
+         "PL AC-43 (Vera F2): a very long single-line paste is refused — the code-unit pre-check that makes the refusal CHEAP is measured, not asserted here (see the comment)");
+      ok(planNameProblem(astral) === null && planNameProblem(name120) === null,
+         "PL AC-43 (control): the code-unit pre-check refuses nothing the scalar-value bound accepts — 120 astral characters are 240 code units and still pass");
+
+      // Vera F1 — the parse cost is a function of the CAP, not of the clipboard.
+      var overCap = [];
+      for (var oc = 0; oc < 5000; oc++) overCap.push("Song: Item " + oc);
+      var capped = planParseRunSheet(overCap.join("\n"));
+      ok(capped.items.length <= PLAN_MAX_ITEMS + 1,
+         "PL AC-44 (Vera F1): parsing stops at the cap rather than building the whole intermediate — the old error message's exact count was itself proof that it had not (got " + capped.items.length + ")");
+      ok(capped.problems.length > 0 && /at most 500/.test(capped.problems[capped.problems.length - 1]),
+         "PL AC-44: ...and the over-cap paste is still refused, with the cap named");
+      var manyBad = [];
+      for (var mb = 0; mb < 3000; mb++) manyBad.push("no type here " + mb);
+      ok(planParseRunSheet(manyBad.join("\n")).problems.length <= 20,
+         "PL AC-44: the problem list is bounded too — only the first is ever shown, so holding thousands of them is unbounded growth for no reader");
+
+      // Cody L6 — these two constants are hand-transcribed copies of host constants. The repo
+      // already pins a cross-language copy (test_protocol.rs pins the Dart fixtures byte-for-byte
+      // against the Rust shapes) precisely so a copy cannot drift unnoticed. Pinned in Python,
+      // beside the harness, because these are JS constants and no Rust test reads dist/.
+      ok(window.__RUST_MAX_PLAN_ITEMS === PLAN_MAX_ITEMS,
+         "PL AC-45 (Cody L6): PLAN_MAX_ITEMS still equals selahcue-core's MAX_PLAN_ITEMS — a client refusing at a different cap than the host tells the operator a rule that is not the system's (js=" +
+         PLAN_MAX_ITEMS + " rust=" + window.__RUST_MAX_PLAN_ITEMS + ")");
+      ok(window.__RUST_MAX_PLAN_LABEL_LEN === PLAN_NAME_MAX,
+         "PL AC-45 (Cody L6): PLAN_NAME_MAX still equals selahcue-core's MAX_PLAN_LABEL_LEN — the constant was renamed out from under an earlier, null-tolerant version of this pin, so it is now a hard failure on both sides (js=" +
+         PLAN_NAME_MAX + " rust=" + window.__RUST_MAX_PLAN_LABEL_LEN + ")");
+
+      // Every new text site that carries meaning clears AA-NORMAL, measured through the live CSS
+      // engine rather than by reading a token name. Swept in one loop so a new site added without
+      // a check is a one-line addition here rather than a forgotten one.
+      openPlan(lifeView({ publish: PUB_CHANGED }));
+      var inkSites = [
+        [".plan-pub-line", "the publication state line"],
+        [".plan-pub-badge", "the change badge"],
+        [".plan-sum-hintline", "the hint under an enabled Publish"],
+        [".plan-sum-later", "the reason under a disabled action"]
+      ];
+      openPlan(lifeView({ viewer: { role: "viewer", can_edit: false }, publish: PUB_CHANGED }));
+      inkSites.push([".plan-viewonly", "the View only badge"]);
+      inkSites.push([".plan-viewonly-why", "the View only explanation"]);
+      var inkFails = [];
+      var groundOf = function (n) {
+        for (var e = n; e && e !== document.documentElement; e = e.parentElement) {
+          var bg = getComputedStyle(e).backgroundColor;
+          if (_rgba(bg)[3] > 0) return bg;
+        }
+        return getComputedStyle(document.body).backgroundColor;
+      };
+      var measureInk = function () {
+        inkSites.forEach(function (pair) {
+          var n = document.querySelector(pair[0]);
+          if (!n) return;
+          var r = _cr(_rgba(getComputedStyle(n).color), _rgba(groundOf(n)));
+          if (r < 4.5) inkFails.push(pair[1] + " " + _f(r) + ":1");
+        });
+      };
+      measureInk();
+      openPlan(lifeView({ publish: PUB_CHANGED }));
+      measureInk();
+      openPlan(emptyLife({}));
+      inkSites.push([".plan-empty-note", "the view-only empty note"]);
+      measureInk();
+      openPlan(emptyLife({ viewer: { role: "viewer", can_edit: false } }));
+      measureInk();
+      ok(inkFails.length === 0,
+         "PL AC-46: every new text site that carries meaning clears AA-NORMAL against its own ground (" +
+         (inkFails.join("; ") || "all clear") + ")");
+      ok(inkSites.length >= 7,
+         "PL AC-46 (premise): the sweep actually covers the new sites — a loop over an empty list would report 'all clear' forever (" + inkSites.length + " sites)");
+
+
+      // --- QA review round 1: the second keyboard path, the Cf mirror, and the badge's refresh --
+
+      // Quinn Q1 — the Alt+arrow gate was the FIRST keyboard edit path missing its guard. This is
+      // the second, in the same surface, found the same way. Enumerating the two by hand is what
+      // let the first one hide, so this asserts the whole class: under view-only, NO plan-editing
+      // command reaches the host from the keyboard.
+      openPlan(lifeView({ viewer: { role: "viewer", can_edit: false } }));
+      var PLAN_EDIT_CMDS = ["move_item", "rename_item", "remove_item", "add_item", "set_item_content", "plan_undo", "plan_redo"];
+      var editsFrom = window.__calls.length;
+      var voRow2 = document.querySelector('#plan-b-list .plan-b-row[data-item-id="301"]');
+      voRow2.focus();
+      voRow2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true }));
+      voRow2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, shiftKey: true, bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true }));
+      await sleep(40);
+      var leaked = window.__calls.slice(editsFrom).filter(function (c) { return PLAN_EDIT_CMDS.indexOf(c.cmd) >= 0; });
+      ok(leaked.length === 0,
+         "PL AC-47 (Quinn Q1): under view-only NO plan-editing command reaches the host from the KEYBOARD — undo/redo were live behind hidden buttons, which is the same defect as the Alt+arrow path in a second place (leaked: " +
+         (leaked.map(function (c) { return c.cmd; }).join(",") || "none") + ")");
+      // The positive control, again: without it this passes just as well if the key handlers
+      // stopped firing for a reason that has nothing to do with the permission.
+      openPlan(lifeView());
+      var editsFrom2 = window.__calls.length;
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true }));
+      await sleep(40);
+      ok(window.__calls.slice(editsFrom2).some(function (c) { return c.cmd === "plan_undo"; }),
+         "PL AC-47 (control): the SAME keystroke with no restriction reported DOES undo — the check above measures the permission, not a dead key handler");
+
+      // Quinn — a refused plan edit used to reach console.error and nothing else, so a host that
+      // rejected a rename or an undo looked exactly like a control that did nothing.
+      openPlan(lifeView());
+      planNotice("");
+      window.__planRejectOnce = true;
+      await planMutate(function () { return invoke("publish_plan"); }); // the one stub path that can reject
+      await sleep(20);
+      ok(!!document.querySelector("#plan-notice .plan-notice-alert"),
+         "PL AC-48 (Quinn): a plan edit the host REFUSES says so — silence made a refusal indistinguishable from a dead control");
+
+      // Quinn Q7 — the client must agree with the host's invisible-character rule, and this
+      // check is written against the host's OWN test table (selahcue-core/tests/test_plan.rs,
+      // plan_label_valid) rather than against a set retyped from memory.
+      //
+      // BOTH DIRECTIONS ARE TESTED, because both are real defects and only one of them looks
+      // like one. Client LOOSER: a name this client accepts and the host refuses comes back as a
+      // raw bad_request, and on import it loses the line number the per-line validator exists to
+      // give. Client STRICTER: the operator is refused a name the system actually allows, with a
+      // message they cannot act on — and since the admitted set is the orthographic joiners, the
+      // names it locks out are Sinhala, Persian, Urdu, Devanagari and Malayalam ones, plus every
+      // family emoji. That is the direction this suite previously got wrong: it asserted U+200D
+      // was refused, which was true of the host at 7a6e404 and false of the host at 352886d, so
+      // after the host narrowed its rule the check went on vouching for a client defect.
+      //
+      // Quinn Q-N1 — the refused set is swept in FULL, every code point of it, and the set is
+      // DERIVED FROM THE HOST'S RANGES in plan.rs by the harness (window.__RUST_HOSTILE_CPS)
+      // rather than typed out here. It used to be an eleven-code-point sample, and every one of
+      // the eleven was a range ENDPOINT: narrowing this client's `\u202A-\u202E` to
+      // `[\u202A\u202E]` drops U+202D LRO — a Trojan-Source primitive — and the sample went on
+      // reporting 1119 checks, 0 FAIL. Sampling the endpoints of a range cannot see the range
+      // being hollowed out, which is the same shape of gap (a sample standing in for a class)
+      // that let the original defect ship.
+      var hostileCps = window.__RUST_HOSTILE_CPS || [];
+      ok(hostileCps.length >= 27,
+         "PL AC-49 (premise): the harness really did read the host's ranges out of plan.rs — a sweep over an empty or truncated list reports 'all clear' forever and the whole mirror goes unexercised (" + hostileCps.length + " code points)");
+      var hostileMissed = hostileCps.filter(function (cp) {
+        return planNameProblem("Sunday" + String.fromCodePoint(cp) + "Service") === null;
+      });
+      ok(hostileMissed.length === 0,
+         "PL AC-49 (Quinn Q7): every character the host's is_display_hostile / is_line_separator refuses is refused here too — missed " + hostileMissed.length + " of " + hostileCps.length +
+         (hostileMissed.length ? ": " + hostileMissed.map(function (cp) { return "U+" + ("000" + cp.toString(16).toUpperCase()).slice(-4); }).join(" ") : ""));
+      // The other direction. Each of these is asserted VALID by the host's own test file; a
+      // client that refuses them stops entire writing systems being typed into a name field.
+      var admitted = [
+        ["\u0DC1\u0DCA\u200D\u0DBB\u0DD3", "Sinhala Sri — U+200D is not optional, the word cannot be written without it"],
+        ["\u0646\u200C\u06C1", "Urdu ZWNJ"],
+        ["\u0915\u094D\u200C\u0937", "Devanagari conjunct control"],
+        ["Sunday \uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67", "a family emoji is a ZWJ sequence"],
+        ["Sun\u200Eday", "LRM — a stateless implicit bidi mark, not an override"],
+        ["Sun\u200Fday", "RLM"],
+        ["Sun\u061Cday", "ALM"]
+      ];
+      var admittedRefused = admitted.filter(function (c) { return planNameProblem(c[0]) !== null; });
+      ok(admittedRefused.length === 0,
+         "PL AC-49 (Quinn Q7, the other direction): the orthographic joiners and stateless bidi marks the host ADMITS are accepted here — refusing them locks writing systems out of the name field (refused " +
+         admittedRefused.length + ": " + admittedRefused.map(function (c) { return c[1]; }).join("; ") + ")");
+      // ...but a name made only of them still renders as nothing, which is has_visible_content.
+      ok(planNameProblem("\u200C\u200C") !== null && planNameProblem(" \u200C ") !== null,
+         "PL AC-49: a name of nothing but joiners is still refused — admitted-as-spelling is not admitted-as-content, and the host's has_visible_content draws exactly that line");
+      // U+FEFF is the one that proves the test runs on the ORIGINAL string: JS trim() strips it
+      // and Rust's does not, so a leading BOM must be refused here or the client is looser than
+      // the host on exactly the character the host added the rule for.
+      ok(planNameProblem("﻿Sunday Service") !== null,
+         "PL AC-49 (Quinn Q7): a LEADING U+FEFF is refused — JS trim() strips it and Rust's does not, so testing the trimmed string would have let it through");
+      ok(planNameProblem("Sundays’ Café — 2nd") === null && planNameProblem(astral) === null,
+         "PL AC-49 (control): ordinary punctuation, accents and emoji are untouched — the rule refuses invisible formatting, not everything unfamiliar");
+      // And the import path inherits it, which is where losing the line number would hurt.
+      var invisibleImport = planParseRunSheet("Song: Open‮ing");
+      ok(!invisibleImport.items.length && /line 1/i.test(invisibleImport.problems[0] || ""),
+         "PL AC-49 (Quinn Q7): an imported title carrying a bidi override is refused BY LINE NUMBER here, rather than as an opaque host bad_request for the whole paste");
+
+      // Quinn Q5 — a run-sheet problem must not blame the Service name field.
+      openPlan(emptyLife({ publish: PUB_CLEAN }));
+      el("plan-empty-import").click();
+      await sleep(20);
+      el("pm-prompt-input").value = "A Perfectly Good Name";
+      el("plan-import-text").value = "Sermon";
+      dlgOk().click();
+      await sleep(20);
+      ok(el("plan-import-text").getAttribute("aria-invalid") === "true" &&
+         !el("pm-prompt-input").getAttribute("aria-invalid"),
+         "PL AC-50 (Quinn Q5): a RUN-SHEET problem marks the run sheet invalid, not the valid Service name beside it (WCAG 3.3.1)");
+      ok(document.activeElement === el("plan-import-text"),
+         "PL AC-50 (Quinn Q5): ...and focus lands on the control the operator has to fix, not on the one that was already correct (WCAG 3.3.2)");
+      // ...and the mirror: a bad NAME still marks the name.
+      el("plan-import-text").value = "Song: Opening";
+      el("pm-prompt-input").value = "   ";
+      dlgOk().click();
+      await sleep(20);
+      ok(el("pm-prompt-input").getAttribute("aria-invalid") === "true" &&
+         !el("plan-import-text").getAttribute("aria-invalid"),
+         "PL AC-50 (control): a bad NAME marks the name and clears the previous target — the routing decides both ways, it does not simply always blame the textarea");
+      // A stray backdrop click must not throw away a long paste.
+      var pasted = el("plan-import-text").value;
+      document.querySelector(".pm-confirm-back").dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      await sleep(20);
+      ok(!!el("plan-import-text") && el("plan-import-text").value === pasted,
+         "PL AC-51 (Quinn): a backdrop click does NOT discard a dialog the operator has typed into — a pasted run sheet has no undo");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(20);
+      // ...while a plain name prompt still closes on the backdrop, as it always did.
+      openPlan(lifeView({ publish: PUB_CLEAN }));
+      el("plan-sum-duplicate").click();
+      await sleep(20);
+      document.querySelector(".pm-confirm-back").dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      await sleep(20);
+      ok(!el("pm-prompt-input"),
+         "PL AC-51 (control): a plain name prompt still closes on a backdrop click — the guard protects typed CONTENT, it does not disable the gesture");
+
+      // Quinn Q2 — the badge exists for the case where SOMEONE ELSE edits the plan. Without a
+      // refresh it could only ever appear because this operator did something, which is the one
+      // case it is not for.
+      showSurface("plan");
+      await sleep(80);
+      var polledBase = JSON.parse(JSON.stringify(V));
+      polledBase.publish = { revision: 5, published_revision: 5, version: 4 };
+      planSelectedId = null;
+      planRenderBuilder(polledBase);
+      ok(!el("plan-pub-changed"), "PL AC-52 (setup): the plan is published and unedited, so there is no badge");
+      var polledEdited = JSON.parse(JSON.stringify(polledBase));
+      polledEdited.publish = { revision: 9, published_revision: 5, version: 4, changed: true };
+      planSyncPublishFromPoll(polledEdited);
+      ok(!!el("plan-pub-changed"),
+         "PL AC-52 (Quinn Q2): a remote edit arriving on the POLL raises the badge — the builder renders only on this operator's own actions, so without this the badge could never show the state it exists for");
+      // ...and it must not thrash: an identical poll re-render would eat in-flight clicks, which
+      // is the reason render() keys its own plan rebuild on a change signature.
+      var badgeNode = el("plan-pub-changed");
+      planSyncPublishFromPoll(polledEdited);
+      ok(el("plan-pub-changed") === badgeNode,
+         "PL AC-52 (control): an unchanged poll re-renders NOTHING — a panel rebuilt every second would eat the clicks landing on it");
+      // ...and it stays out of the way while the operator is somewhere else in the surface.
+      planSelectedId = 301;
+      planRenderBuilder(polledBase);
+      var inspHeading = el("plan-insp-h").textContent;
+      planSyncPublishFromPoll(polledEdited);
+      ok(el("plan-insp-h").textContent === inspHeading,
+         "PL AC-52 (control): with an item selected the poll leaves the ITEM inspector alone — the badge is not on screen there, and swapping the panel under the operator would be worse than a late badge");
+
+      // Quinn — the same finding as the badge, applied to the OTHER field the poll ignored: a
+      // role demotion arriving from the host left every edit control up until the operator did
+      // something and had it refused.
+      planSelectedId = null;
+      var demoteBase = JSON.parse(JSON.stringify(V));
+      demoteBase.viewer = { role: "producer", can_edit: true };
+      planRenderBuilder(demoteBase);
+      ok(!el("plan-viewonly") && !!document.querySelector("#plan-b-list .plan-b-up"),
+         "PL AC-53 (setup): the operator may edit, so there is no View only badge and the row reorder controls are built");
+      var demoted = JSON.parse(JSON.stringify(demoteBase));
+      demoted.viewer = { role: "viewer", can_edit: false };
+      planSyncViewerFromPoll(demoted);
+      await sleep(20);
+      ok(!!el("plan-viewonly") && !document.querySelector("#plan-b-list .plan-b-up"),
+         "PL AC-53 (Quinn): a DEMOTION arriving on the poll takes the edit controls away — the chrome alone was not enough, because the per-row ↑/↓ controls are built by planRenderBuilder and a View only badge over live reorder buttons is worse than either state");
+      // ...and it must not rebuild on every poll, for the same reason the publish one must not.
+      var rowNode = document.querySelector("#plan-b-list .plan-b-row");
+      planSyncViewerFromPoll(demoted);
+      ok(document.querySelector("#plan-b-list .plan-b-row") === rowNode,
+         "PL AC-53 (control): an unchanged poll rebuilds NOTHING — a surface rebuilt every second would eat the clicks landing on it");
+      // ...and a PROMOTION travels the same path, so the mechanism is not one-directional.
+      planSyncViewerFromPoll(demoteBase);
+      await sleep(20);
+      ok(!el("plan-viewonly") && !!document.querySelector("#plan-b-list .plan-b-up"),
+         "PL AC-53 (control): a promotion arriving on the poll gives the controls BACK — the check above measures the verdict, not a one-way latch");
+
+      // Quinn — a failed open must not leave the last plan's permission chrome painted over a
+      // surface that has no plan.
+      openPlan(lifeView({ viewer: { role: "viewer", can_edit: false } }));
+      ok(!!el("plan-viewonly"), "PL AC-54 (setup): the surface is painted view-only, so there is stale chrome to leave behind");
+      planRenderLoading();
+      planRenderLoadFailed(new Error("boom"));
+      await sleep(20);
+      ok(!el("plan-viewonly"),
+         "PL AC-54 (Quinn): a failed open clears the View only badge — the failure makes the viewer field UNKNOWN, and painting a restriction from an unknown is the fabrication this surface's three-state rule exists to stop");
+      var failedPalette = document.querySelector("#surface-plan .plan-palette");
+      ok(!failedPalette || getComputedStyle(failedPalette).display === "none",
+         "PL AC-54 (Quinn): ...and the ADD ITEM column goes with it — there is no plan to add an item to, so leaving it up is a control that looks live and cannot work");
+      ok(!!document.querySelector("#plan-b-list .plan-load-failed"),
+         "PL AC-54 (control): the failure message is still the thing on screen — the chrome reset did not paint over the only explanation the operator gets");
+
+      // --- the WIRING, not just the function ---------------------------------------------------
+      // AC-52 and AC-53 call planSyncPublishFromPoll / planSyncViewerFromPoll DIRECTLY. That
+      // proves each function does its job; it does not prove the 1 Hz poll ever calls it — and
+      // the whole of Quinn's finding was that the poll did not. Deleting the call from the
+      // interval left AC-53 completely green, which is the "control asserting a copy" trap in
+      // CLAUDE.md: the check consumed the function instead of the wiring. These two drive the
+      // REAL interval, by moving the stub view the poll fetches and waiting for a tick.
+      showSurface("plan");
+      await sleep(60);
+      planSelectedId = null;
+      V.viewer = { role: "producer", can_edit: true };
+      V.publish = { revision: 5, published_revision: 5, version: 4 };
+      planRenderBuilder(JSON.parse(JSON.stringify(V)));
+      ok(!el("plan-viewonly"),
+         "PL AC-55 (setup): the surface is painted from a view that permits editing, so a badge appearing later can only have come from the poll");
+      V.viewer = { role: "viewer", can_edit: false };
+      await sleep(1300);
+      ok(!!el("plan-viewonly"),
+         "PL AC-55 (Quinn): the 1 Hz poll actually CALLS the viewer sync — nothing above this line would notice if the call were deleted from the interval, which is exactly how the gap being fixed here got in");
+      V.viewer = { role: "producer", can_edit: true };
+      await sleep(1300);
+      planSelectedId = null;
+      planRenderBuilder(JSON.parse(JSON.stringify(V)));
+      ok(!el("plan-pub-changed"),
+         "PL AC-55 (setup): ...and the same for publish — painted unedited, so a badge can only arrive on the poll");
+      V.publish = { revision: 9, published_revision: 5, version: 4, changed: true };
+      await sleep(1300);
+      ok(!!el("plan-pub-changed"),
+         "PL AC-55 (Quinn Q2): the poll actually calls the publish sync too — AC-52 proves the function, this proves the wire");
+      delete V.viewer;
+      delete V.publish;
+      await sleep(1300);
+
+      planSelectedId = null;
+
+      // --- the seam was used as a seam ----------------------------------------------------------
+      openPlan(lifeView({ publish: PUB_CLEAN }));
+      var sumLabels = Array.prototype.map.call(
+        document.querySelectorAll("#plan-b-insp .plan-sum-card .plan-sum-label"),
+        function (n) { return n.textContent; }
+      ).join("|");
+      ok(sumLabels === "Total time|Items|Songs|Scripture|Presentations|Media|Announcements|Timers|Missing content|Assigned",
+         "PL AC-28: the Plan Summary CARD is untouched — 86ak8467m adds its actions at the declared planSummaryActions seam and does not rebuild 86ak846ft's panel (got " + sumLabels + ")");
+      planSelectedId = null;
+      planRenderBuilder(planView); // leave the surface on the driver's own fixture
 
       // === Settings → Providers & Privacy (Figma 338:124, backend 86ajy034h) — the panel renders
       // REAL providers_view() state and each control invokes the right command. HONESTY is the whole
@@ -4687,7 +5845,7 @@ DRIVER = r"""
 # resolving against the /tmp temp file (never loading). Inject it right after <head> so the
 # real app.css (and app.js) load and CSS-dependent checks are meaningful.
 html = html.replace("<head>", '<head><base href="file://' + DIST + '/">', 1)
-html = html.replace("</head>", STUB + CSS_SRC + "</head>", 1)
+html = html.replace("</head>", STUB + CSS_SRC + RUST_CONSTS + "</head>", 1)
 html = html.replace("</body>", DRIVER + "</body>", 1)
 
 with tempfile.NamedTemporaryFile(

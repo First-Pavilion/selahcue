@@ -6518,7 +6518,13 @@
 .plan-empty-h { margin: 0; font-size: 16px; }
 .plan-empty-sub { margin: 0; color: var(--sc-text-muted); font-size: 13px; max-width: 44ch; }
 .plan-empty .pm-btn-primary { margin-top: 8px; }
-.plan-empty-later { margin: 8px 0 0; color: var(--sc-text-muted); font-size: 11px; }
+/* Was --sc-text-muted at 11px, which cleared 3.79:1 on this ground — AA-large only. That was
+   defensible while the line read "Template · Duplicate · Import — coming soon" (decoration beside
+   nothing); it is not now that these lines carry the REASON a control cannot be used, which is
+   essential copy at small size and the thing an operator is actually here to read. */
+.plan-empty-later { margin: 8px 0 0; color: var(--sc-text-secondary); font-size: 11.5px; max-width: 46ch; }
+/* The view-only sentence on an empty plan — also essential copy, so not the muted tier. */
+.plan-empty-note { margin: 0; color: var(--sc-text-secondary); font-size: 12.5px; max-width: 44ch; }
 
 /* === Run-sheet row meta: owner + planned duration (frame 606:124 / 608:875, handoff §3) ======
    The design paints the owner in --sc-text-muted (3.79:1 on --sc-inset). Owner is essential
@@ -6572,6 +6578,84 @@
 }
 @media (prefers-reduced-motion: reduce) { .plan-skel-row::after { animation: none; } }
 .plan-load-failed { color: var(--sc-warn); font-size: 13px; margin: 0; }
+
+/* === PLAN LIFECYCLE (86ak8467m) ===============================================================
+   Frames 608:875 (publish), 611:124 (empty state), 612:342 (view only), 612:1020 (change badge).
+   Every supporting sentence here uses --sc-text-secondary, never the AA-large-only
+   --sc-text-muted: these are the lines that say WHY a control is unavailable, so they are
+   essential copy at small size. */
+
+/* View-only drops the ADD ITEM column, so the grid drops its track. Without this the run sheet
+   inherits the 220px palette track and truncates every title. */
+.plan-builder-grid.is-viewonly { grid-template-columns: minmax(0, 1fr) 340px; }
+
+/* Plan-surface feedback strip (planNotice). Sits under the page header, above the columns. */
+.plan-notice-slot:empty { display: none; }
+.plan-notice {
+  margin: 0 0 4px; padding: 9px 12px; border-radius: 9px; font-size: 12.5px;
+  border: 1px solid var(--sc-border);
+}
+/* 7.08:1 — the confirmation an operator reads once and acts on, so AA-normal, not AA-large. */
+.plan-notice-status { background: var(--sc-preview-soft); border-color: var(--sc-preview-border); color: var(--sc-preview); }
+/* 5.31:1 — carries the host's own refusal text, which must be readable to be fixable. */
+.plan-notice-alert { background: var(--sc-live-soft); border-color: var(--sc-live-border); color: var(--sc-live); }
+
+/* "View only" badge (frame 612:342). Text, never colour alone (WCAG 1.4.1). */
+.plan-viewonly-slot:empty { display: none; }
+.plan-viewonly-slot { margin-top: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.plan-viewonly {
+  display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase;
+  background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); color: var(--sc-warn);
+}
+.plan-viewonly-why { color: var(--sc-text-secondary); font-size: 12px; }
+
+/* Publication state + change badge (frames 608:875 / 612:1020), inside the Plan Summary. */
+.plan-pub { margin: 12px 0 2px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.plan-pub-line { margin: 0; font-size: 12px; color: var(--sc-text-secondary); }
+.plan-pub-badge {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 700;
+  background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); color: var(--sc-warn);
+}
+.plan-pub.is-published .plan-pub-line { color: var(--sc-preview); }
+/* .is-changed carries no colour of its own: the badge above the line already says the state in
+   TEXT, and tinting the sentence as well would be the second colour-only signal on one fact. It
+   is kept as a hook because the state is worth being addressable; .is-draft was removed rather
+   than left as a selector nothing can act on. */
+
+/* The one-line reason under an ENABLED Publish (what pressing it will do). */
+.plan-sum-hintline { margin: 6px 0 0; color: var(--sc-text-secondary); font-size: 11.5px; }
+
+/* Empty state actions (frame 611:124): Create · Template · Duplicate · Import, stacked so a
+   long label wraps within the column rather than shrinking its neighbours. */
+.plan-empty-acts { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 300px; margin-top: 10px; }
+.plan-empty-act { width: 100%; justify-content: center; }
+.plan-empty-act[disabled] { opacity: 0.55; cursor: not-allowed; }
+
+/* Read-only item title (view-only inspector) — static text, never a field that refuses input. */
+.plan-insp-ro { margin: 0 0 10px; font-size: 14px; color: var(--sc-text); font-weight: 600; }
+
+/* Template picker (inside the shared pmPrompt dialog). Radios, not a <select>: a flex-parented
+   <select> collapses to zero width in WKWebView and the Blink gate cannot see it. */
+.pm-prompt-extra { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 12px; }
+.plan-tpl-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+.plan-tpl-row {
+  display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 9px;
+  border: 1px solid var(--sc-border); background: var(--sc-inset); cursor: pointer;
+}
+.plan-tpl-row:hover { border-color: var(--sc-border-strong); }
+.plan-tpl-row:focus-within { outline: 2px solid var(--sc-primary); outline-offset: 1px; }
+.plan-tpl-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.plan-tpl-name { color: var(--sc-text); font-size: 13px; font-weight: 600; }
+.plan-tpl-count { color: var(--sc-text-secondary); font-size: 11.5px; }
+
+/* Run-sheet paste (import_plan). */
+.plan-import-text { width: 100%; max-width: none; min-height: 132px; resize: vertical; font-family: inherit; line-height: 1.45; }
+.plan-import-kinds { margin: 0; color: var(--sc-text-secondary); font-size: 11.5px; }
+
+/* Inline refusal in the name prompt (role=alert). */
+.pm-prompt-err { margin: 0; color: var(--sc-live); font-size: 12px; }
 
 /* Presentation link modal — grid picker (frame 610:390): Grid/List toggle · deck cards w/ slide-count
    pills · New-presentation card. Rules are placed after the shared .pm-link-hit rules so source order
