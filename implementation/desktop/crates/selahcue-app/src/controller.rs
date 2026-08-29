@@ -3588,9 +3588,10 @@ impl LiveController {
 }
 
 /// The trimmed form of a wire-supplied plan name / item title / owner, or `None` when it is not
-/// acceptable ([`selahcue_core::plan::plan_label_valid`]: non-blank, bounded, and free of control
-/// characters, invisible formatting and line separators — see that function for a known defect in
-/// the invisible-formatting half).
+/// acceptable ([`selahcue_core::plan::plan_label_valid`]: bounded, visibly non-empty, and free of
+/// control characters, line separators and the invisibles that act at a distance — the
+/// orthographic joiners are deliberately admitted, see that function for the rule and its
+/// accepted residuals).
 ///
 /// One helper for all three because they are the same kind of value — a short single-line label
 /// that a coordinator types and later searches for — and giving them one rule means a reviewer

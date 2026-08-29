@@ -112,6 +112,10 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-030 | yes | A rejected import installs nothing, not even the rows before the bad one | `cargo test -p selahcue-app --features server --test test_publish` | the previous run sheet survives a valid/invalid/valid import | exit 0; M24 RED |PASS |
 | C-031 | yes | Re-publishing moves the baseline to the new document | same | undo back to the FIRST published document reports `changed` | exit 0; M25 and M26 RED | PASS |
 | C-032 | yes | Replacing the plan clears Preview and drops the navigation cursor | same | `staged_index` drops, Preview repaints, `Next` resumes at row 0 | exit 0; M27 and M28 RED | PASS |
+| C-033 | yes | Each half of the label predicate has its own live sentinel | two mutations on `plan.rs`, `cargo test -p selahcue-core --test test_plan` | adding `200C` to the hostile set fails the Persian AND codec pins; removing it from the admitted set fails ONLY the invisible-name pin | verified: 2 failures vs 1, Persian correctly green in the second | PASS |
+| C-034 | yes | Deprecated shaping controls and interlinear anchors are refused | same | `"Sun\u{206E}day"`, `"\u{206E}"`, `"Sun\u{FFFA}day"` refused | exit 0; mutations N1 and N2 RED | PASS |
+| C-035 | yes | U+061C is admitted BY THE RULE, not merely unlisted | same | `"Sun\u{061C}day"` passes and `"\u{061C}"` alone is refused | exit 0; mutation N3 RED on that exact assertion | PASS |
+| C-036 | yes | Mongolian spelling is not swept up by copying the device-name list | same | `"\u{1824}\u{180E}\u{1822}"` accepted | exit 0; mutation N4 (adding U+180E) RED | PASS |
 | C-018 | yes | Independent review by Cody, Sana, Vera and Quinn with blocking findings remediated | four-reviewer pipeline on PR #14 | no outstanding blocking findings | dispatched at `02a8095` | PENDING |
 | C-019 | no | CI green on the branch | GitHub Actions | all jobs pass | NOT RUNNABLE — Actions minutes exhausted; runs complete in 7-10s with zero steps | NOT_APPLICABLE |
 

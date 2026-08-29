@@ -1297,6 +1297,21 @@ fn a_plan_label_must_be_visible_bounded_and_single_line() {
     assert!(!plan_label_valid("Sun\u{200B}day"), "zero-width space");
     assert!(!plan_label_valid("Sun\u{FEFF}day"), "BOM / ZWNBSP");
     assert!(!plan_label_valid("Sun\u{2060}day"), "word joiner");
+    // Deprecated shaping controls and interlinear anchors, added after the security re-test: no
+    // practical spoofing power (renderers ignore them) but they satisfied the visible-content
+    // guard, so a name made only of one was valid.
+    assert!(
+        !plan_label_valid("Sun\u{206E}day"),
+        "deprecated digit-shape control"
+    );
+    assert!(
+        !plan_label_valid("\u{206E}"),
+        "and it is not a valid name on its own"
+    );
+    assert!(
+        !plan_label_valid("Sun\u{FFFA}day"),
+        "interlinear annotation separator"
+    );
 
     // --- Admitted: the joiners are SPELLING, not decoration ---
     //
@@ -1335,6 +1350,22 @@ fn a_plan_label_must_be_visible_bounded_and_single_line() {
     assert!(plan_label_valid("Sun\u{200E}day"), "LRM");
     assert!(plan_label_valid("Sun\u{200F}day"), "RLM");
     assert!(plan_label_valid("Sun\u{061C}day"), "ALM");
+    assert!(
+        !plan_label_valid("\u{061C}"),
+        "ALM alone is still an invisible name — this only holds if the visible-content guard \
+         counts ALM as invisible, so it pins that U+061C is admitted BY THE RULE rather than \
+         merely unlisted"
+    );
+
+    // U+180E MONGOLIAN VOWEL SEPARATOR is orthographic — required Mongolian spelling — and it
+    // must pass. This is the counter-case that makes the divergence from `is_display_unsafe`
+    // (`selahcue-lan/src/server.rs`) load-bearing rather than merely tolerated: that list DROPS
+    // U+180E, so copying it here would have repeated the ZWNJ mistake for Mongolian. Found by
+    // security re-test of PR #14.
+    assert!(
+        plan_label_valid("\u{1824}\u{180E}\u{1822}"),
+        "Mongolian: the vowel separator is spelling, and the device-name list would refuse it"
+    );
 
     // --- The companion guard: admitting joiners must not admit an INVISIBLE name ---
     //

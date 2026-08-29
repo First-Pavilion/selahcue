@@ -271,8 +271,13 @@ fn is_admitted_invisible(c: char) -> bool {
 ///   position*: an unterminated RLO reverses the remainder of a rendered line, so a label can be
 ///   made to display as something other than what it is. This is the Trojan-Source primitive and
 ///   the thing the original security advisory was actually about.
-/// - **Zero-orthography invisibles** (`200B`, `2060..=2064`, `FEFF`) belong to no script's
-///   spelling. Nobody types them into a service name, so refusing them costs nothing.
+/// - **Zero-orthography invisibles** (`200B`, `2060..=2064`, `206A..=206F`, `FFF9..=FFFB`,
+///   `FEFF`) belong to no script's spelling. Nobody types them into a service name, so refusing
+///   them costs nothing. The deprecated shaping controls and the interlinear annotation anchors
+///   were added after the ruling: their practical spoofing power is nil because modern renderers
+///   ignore them, but they satisfied the visible-content guard, so `"\u{206E}"` alone was a valid
+///   invisible name. Refusing them costs nothing and makes the list a truer consequence of the
+///   predicate above, which is the whole point of having stated one.
 ///
 /// Consumed by BOTH [`sanitize_field`] (which drops) and
 /// [`plan_label_valid`] (which refuses). One definition, two verbs — see `plan_label_valid` for
@@ -290,11 +295,18 @@ fn is_display_hostile(c: char) -> bool {
         // Zero-orthography invisibles — no script spells with these.
         | '\u{200B}'              // zero-width space
         | '\u{2060}'..='\u{2064}' // word joiner, invisible operators
+        | '\u{206A}'..='\u{206F}' // deprecated shaping/digit-shape controls
+        | '\u{FFF9}'..='\u{FFFB}' // interlinear annotation anchors
         | '\u{FEFF}'              // BOM / zero-width no-break space
     )
 }
 
-/// Whether `s` contains anything a person could actually SEE.
+/// Whether `s` contains at least one character that is neither whitespace nor an invisible this
+/// rule deliberately admits.
+///
+/// Phrased as the mechanism rather than as "anything a person could SEE", which the check cannot
+/// actually determine: a blank-rendering LETTER such as U+3164 HANGUL FILLER satisfies this and
+/// still displays as nothing. See the accepted residual on [`plan_label_valid`].
 ///
 /// The companion guard to admitting the joiners, and it is load-bearing: without it
 /// `"\u{200C}\u{200C}"` is a perfectly valid — and completely invisible — plan name. Before the
@@ -310,18 +322,19 @@ fn has_visible_content(s: &str) -> bool {
 }
 
 /// Line and paragraph separators (Unicode `Zl` / `Zp`), which are covered by NEITHER
-/// `char::is_control` (they are not Cc) NOR [`is_invisible_formatting`] (they are not Cf).
+/// `char::is_control` (they are not Cc) NOR [`is_display_hostile`] (they are not Cf).
 ///
 /// They render as a hard break, so one embedded in a plan title turns a single-line run-sheet
 /// label into two lines. `str::trim` removes them at the EDGES, because they are `White_Space` —
 /// which is exactly what makes the gap easy to miss: the obvious test, a label made only of
-/// U+2028, is caught by the non-blank rule, while `"Sun\u{2028}day"` sails through. Found by
-/// code review of PR #14.
+/// U+2028, is caught by the visible-content rule, while `"Sun\u{2028}day"` sails through. Found
+/// by code review of PR #14.
 ///
-/// Deliberately separate from `is_invisible_formatting`: adding them there would also change
-/// what [`sanitize_field`] does to stored link labels, which is a different decision on a
-/// different path. **That path still has this gap** — `sanitize_field` neither drops nor
-/// replaces U+2028 — and closing it is not this change's to make.
+/// Kept separate from [`is_display_hostile`] rather than folded into it, because that set is
+/// consumed by [`sanitize_field`] too and folding these in would change what the codec does to
+/// stored link labels — a different decision on a different path. **That path still has this
+/// gap**: `sanitize_field` neither drops nor replaces U+2028, so a hard break can still ride
+/// into a stored label. Closing it is not this change's to make.
 fn is_line_separator(c: char) -> bool {
     matches!(c, '\u{2028}' | '\u{2029}')
 }
@@ -1068,36 +1081,23 @@ impl ServicePlan {
 /// Stated precisely because the obvious reading is wrong: this does not make `ServicePlan.name`
 /// a bounded field. [`ServicePlan::from_parts`], the persistence rehydration path, still applies
 /// no bound, so a name stored by an older build or edited into the database comes back at full
-/// length. That is unlike [`sanitize_label`], which this doc otherwise follows and which is
+/// length. That is unlike `sanitize_label`, which this doc otherwise follows and which is
 /// applied on the way in AND again on decode. Closing that gap means bounding the rehydration
 /// path too, which is a persistence change this does not make.
 pub const MAX_PLAN_LABEL_LEN: usize = 120;
 
-/// Whether `name` is acceptable as a service-plan name arriving from the untrusted wire:
-/// non-empty after trimming, within [`MAX_PLAN_LABEL_LEN`] characters, and free of BOTH control
-/// characters and [`is_invisible_formatting`] characters.
-///
-/// # Both categories, because one is not enough
-///
-/// `char::is_control` tests the Cc category ONLY. Every character this file already classifies
-/// as display-spoofing — zero-width spaces and joiners, bidi overrides and isolates, the BOM —
-/// is Cf, so a rule built on `is_control` alone lets all of them through. That gap was real
-/// here: a right-to-left override made a plan name display as something other than what it is,
-/// and a "title" consisting solely of U+200B passed the non-blank check while rendering as
-/// empty. Both reach every paired device through the run sheet. Found by security review of
-/// PR #14, and the same class the PR #13 review found on link labels.
-///
-/// This consumes `is_invisible_formatting` rather than restating the character ranges, so the
-/// list has ONE definition. A second copy is the thing that drifts the next time a character is
-/// added to it.
+/// Whether `name` is acceptable as a plan label arriving from the untrusted wire: visibly
+/// non-empty after trimming, within [`MAX_PLAN_LABEL_LEN`] characters, and free of control
+/// characters, line separators, and the invisibles that act at a distance.
 ///
 /// # Refused here, dropped in the codec — deliberately different
 ///
-/// [`sanitize_field`] REMOVES these characters, because the codec must be total: it processes
-/// values that are already stored and has nobody to report a failure to. This is untrusted
-/// INGRESS creating a new document, so it can do the more honest thing and refuse — the same
-/// choice the NDI source name makes. A name quietly rewritten between the request and the run
-/// sheet is a name the coordinator cannot search for later.
+/// `sanitize_field` REMOVES the same characters rather than refusing them, because the codec
+/// must be total: it processes values that are already stored and has nobody to report a failure
+/// to. This is untrusted INGRESS creating a new document, so it can do the more honest thing and
+/// refuse — the same choice the NDI source name makes. A name quietly rewritten between the
+/// request and the run sheet is a name the coordinator cannot search for later. One set, two
+/// verbs, and that split is only safe because the set no longer contains anything orthographic.
 ///
 /// Counted in CHARACTERS, not bytes — a bound in bytes would refuse a legitimate name in a
 /// non-Latin script at a third of the length a Latin one is allowed.
@@ -1106,13 +1106,13 @@ pub const MAX_PLAN_LABEL_LEN: usize = 120;
 ///
 /// The rule is a predicate, not a character list: **refuse characters that act at a distance or
 /// have no role in writing words; admit invisibles whose effect is confined to the glyphs they
-/// touch.** [`is_display_hostile`] is the first half, [`is_admitted_invisible`] the second, and
-/// [`has_visible_content`] stops the second half from admitting a wholly invisible name.
+/// touch.** `is_display_hostile` is the first half, `is_admitted_invisible` the second, and
+/// `has_visible_content` stops the second half from admitting a wholly invisible name.
 ///
 /// An earlier version of this predicate refused everything Cf, which locked whole languages out
 /// of the field: Persian and Urdu plurals, Devanagari conjuncts, Malayalam and Sinhala chillu —
 /// including "ශ්‍රී", the word *Sri*, which cannot be written without U+200D. A congregation
-/// could not type their own country's name, and [`Command::ImportPlan`] amplified it, since one
+/// could not type their own country's name, and the `ImportPlan` command amplified it, since one
 /// joiner in one owner cell refused an entire 500-row run sheet with a bare `BadRequest`. Two
 /// tests pinned that behaviour as intended, which is why it was fixed rather than deferred.
 ///
@@ -1123,6 +1123,19 @@ pub const MAX_PLAN_LABEL_LEN: usize = 120;
 /// nothing here refuses and nothing reasonably could. A run sheet is a display label, not an
 /// identifier namespace: the failure is a search miss, and it is recoverable. Weighed against
 /// locking out entire writing systems, it is the better trade.
+///
+/// Two more, both surfaced by security re-test and both **pre-existing rather than opened by the
+/// narrowing** — every one of them passed before it too:
+///
+/// - **Blank-rendering characters that are not format characters** satisfy the visible-content
+///   guard: U+00AD soft hyphen, U+3164 HANGUL FILLER, U+115F, U+2800 BRAILLE PATTERN BLANK. This
+///   class is unbounded without render-aware checking, because a blank-glyph *letter* defeats any
+///   predicate written over character categories. A category test cannot answer a rendering
+///   question, and pretending otherwise is how the first version of this rule went wrong.
+/// - **The tag block `U+E0000..=U+E007F`** passes, so `"Sun\u{E0041}day"` carries a hidden "A" —
+///   a stronger differ-invisibly primitive than a joiner. Refusing it is **not on the table**:
+///   the GB subdivision flags (🏴󠁧󠁢󠁳󠁣󠁴󠁿 Scotland, Wales, England) are tag sequences and validate
+///   today, so refusing the block would break real flag emoji in plan names.
 ///
 /// # Enforced at the WIRE INGRESS only
 ///
