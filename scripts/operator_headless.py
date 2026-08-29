@@ -46,7 +46,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # panel, the loading state, and the QA/security remediation. Set to the REAL observed count so
 # dropping even one trips exit 4. Sana S4: this floor had been left at 829 while the driver ran
 # more, which would have let every new check disappear without failing.)
-EXPECTED_MIN_CHECKS = 910
+EXPECTED_MIN_CHECKS = 920
 
 
 def find_chrome():
@@ -2862,10 +2862,80 @@ DRIVER = r"""
          "SP3 AC-3: Plan Summary total equals the sum of the durations shown on those rows (" + sumRowValue("Total time") + " vs " + rowSum + "s)");
       ok(sumRowValue("Total time") === "0:53:12",
          "SP3 AC-3: the total is formatted h:mm:ss, so a 53-minute plan cannot read as 53 minutes 12 seconds of m:ss");
-      ok(sumRowValue("Assigned") === "5 / 6", "SP3 AC-3: 'Assigned' counts items that actually carry an owner");
-      ok(sumRowValue("Songs") === "2" && sumRowValue("Scripture") === "1" && sumRowValue("Presentations") === "1" &&
-         sumRowValue("Media") === "1" && sumRowValue("Announcements") === "1",
-         "SP3 AC-3: the per-kind counts match the run sheet's typed rows");
+      // Derived, not literal — same reasoning as the per-kind counts: a hardcoded "5 / 6" stops
+      // describing the fixture the moment the fixture changes, and keeps passing anyway.
+      var expAssigned = sumView.items.filter(function(i){ return !!i.owner; }).length;
+      ok(sumRowValue("Assigned") === expAssigned + " / " + sumView.items.length,
+         "SP3 AC-3: 'Assigned' counts the items that actually carry an owner (shown " + sumRowValue("Assigned") +
+         ", fixture " + expAssigned + " / " + sumView.items.length + ")");
+      // AC-3 states a SUMMATION invariant, so assert the sum — derived from the fixture, never
+      // hardcoded. The literals this replaces held for ANY fixture, and because sumView contains
+      // no timer and no section they never exercised the summation at all: the bug (two kinds
+      // uncounted) and the check that should have caught it shared a blind spot. Deriving the
+      // expectation also means an eighth ItemKind cannot slip past unnoticed.
+      var KIND_ROWS = { song:"Songs", scripture:"Scripture", slide_group:"Presentations", media:"Media",
+                        announcement:"Announcements", timer:"Timers", section:"Sections" };
+      function assertKindCounts(view, label) {
+        var expected = {}, unmapped = [];
+        Object.keys(KIND_ROWS).forEach(function(k){ expected[k] = 0; });
+        view.items.forEach(function(it){
+          if (KIND_ROWS[it.kind] === undefined) unmapped.push(it.kind);
+          else expected[it.kind] += 1;
+        });
+        ok(unmapped.length === 0,
+           "SP3 AC-3 (" + label + "): every item kind present has a summary row — an unrepresented kind is invisible in the counts (unmapped: " + (unmapped.join(",") || "none") + ")");
+        var shownTotal = 0, wrong = [];
+        Object.keys(KIND_ROWS).forEach(function(k){
+          var shown = Number(sumRowValue(KIND_ROWS[k]));
+          shownTotal += shown;
+          if (shown !== expected[k]) wrong.push(KIND_ROWS[k] + " shows " + shown + ", fixture has " + expected[k]);
+        });
+        ok(wrong.length === 0,
+           "SP3 AC-3 (" + label + "): each per-kind count matches the fixture (" + (wrong.join("; ") || "all match") + ")");
+        ok(shownTotal === view.items.length && String(shownTotal) === sumRowValue("Items"),
+           "SP3 AC-3 (" + label + "): the per-kind counts SUM to Items (" + shownTotal + " vs Items=" + sumRowValue("Items") + ", fixture=" + view.items.length + ")");
+      }
+      assertKindCounts(sumView, "sumView");
+      // A fixture carrying ALL seven ItemKind variants, so the summation is exercised across every
+      // row the panel draws rather than only the five the demo plan happens to contain.
+      var allKindsView = { plan_name:"All", items:[
+        {id:101, kind:"song",         title:"a", is_live:false, is_staged:false, planned_secs:60, owner:"o"},
+        {id:102, kind:"scripture",    title:"b", is_live:false, is_staged:false, planned_secs:60, owner:"o"},
+        {id:103, kind:"slide_group",  title:"c", is_live:false, is_staged:false, planned_secs:60, owner:"o"},
+        {id:104, kind:"media",        title:"d", is_live:false, is_staged:false, planned_secs:60, owner:"o"},
+        {id:105, kind:"announcement", title:"e", is_live:false, is_staged:false, planned_secs:60, owner:"o"},
+        {id:106, kind:"timer",        title:"f", is_live:false, is_staged:false, planned_secs:60, owner:"o"},
+        {id:107, kind:"section",      title:"g", is_live:false, is_staged:false, planned_secs:60, owner:"o"}
+      ] };
+      planSelectedId = null;
+      planRenderBuilder(allKindsView);
+      assertKindCounts(allKindsView, "all seven kinds");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      // --- Q2: the run-sheet header carries the planned total (frame 608:925) ------------------
+      // Section 9 records this total as the fix for the MAJOR these frames were rejected for, so a
+      // header that omits it reintroduces the defect. It must agree with the rows AND the summary:
+      // two headline numbers that can drift apart is precisely what was rejected.
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      ok(/planned/i.test(el("plan-b-total").textContent) && clockToSecs(el("plan-b-total").textContent) === rowDurationSum(),
+         "SP3 AC-22 (Quinn Q2): the run-sheet header shows the planned total and it equals the sum of the rendered rows' durations (header=\"" +
+         el("plan-b-total").textContent + "\" rows=" + rowDurationSum() + "s)");
+      ok(clockToSecs(el("plan-b-total").textContent) === clockToSecs(sumRowValue("Total time")),
+         "SP3 AC-22 (Quinn Q2): the header total and the Plan Summary total are the same figure");
+      // --- AC-4: the empty plan's counters, verbatim -------------------------------------------
+      // AC-4 had no test at all, which is how the missing header total hid: with no total in the
+      // header, the string AC-4 quotes could not be produced on any input.
+      planSelectedId = null;
+      planRenderBuilder({ plan_name:"E", items: [] });
+      ok(el("plan-b-count").textContent === "0 items · 0:00",
+         "SP3 AC-23 (AC-4): an empty plan's header counters read exactly \"0 items · 0:00\" (got \"" + el("plan-b-count").textContent + "\")");
+      ok(sumRowValue("Items") === "0" && clockToSecs(sumRowValue("Total time")) === 0 && sumRowValue("Assigned") === "0 / 0",
+         "SP3 AC-23 (AC-4): and the summary is zeroed too — not the previous plan's figures left standing");
+      ok(!document.querySelector("#plan-b-list .plan-b-row") && !!document.querySelector("#plan-b-list .plan-empty"),
+         "SP3 AC-23 (control): the empty state really rendered — the zeros describe an empty run sheet, not a failed render");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
       // --- missing-content count: three-state link status -------------------------------------
       // Local deck resolution stays authoritative (the host has no deck store and cannot resolve a
       // deck_id), and an "unknown" status must never be counted as either missing or resolved-by-

@@ -6457,6 +6457,10 @@
    Plan Summary added a fourth instance, so the token is RAISED here rather than propagated:
    --sc-text-secondary is 8.12:1 and still reads as a quiet section label. */
 .plan-col-h { font-size: 11px; letter-spacing: 1px; color: var(--sc-text-secondary); margin: 0 0 12px; font-weight: 700; }
+.plan-runsheet-h { display: flex; align-items: center; gap: 8px; }
+/* The planned total sits right-aligned and reads as a figure, not a section label — so it drops the
+   heading's letter-spacing and bold. --sc-text-secondary (8.12:1), never the muted tier. */
+.plan-b-total { margin-left: auto; letter-spacing: 0; font-weight: 500; font-size: 12px; color: var(--sc-text-secondary); font-variant-numeric: tabular-nums; }
 #plan-palette-btns { display: flex; flex-direction: column; gap: 8px; }
 .plan-palette-btn { text-align: left; padding: 10px 12px; border-radius: 9px; background: var(--sc-inset); border: 1px solid var(--sc-border); color: var(--sc-text); cursor: pointer; font-size: 13px; font-weight: 600; }
 .plan-palette-btn:hover { border-color: var(--sc-primary); }

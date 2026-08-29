@@ -1056,7 +1056,10 @@
             <div id="plan-palette-btns"></div>
           </aside>
           <section class="plan-col plan-runsheet" aria-label="Run sheet">
-            <h2 class="plan-col-h">RUN SHEET <span class="count-pill" id="plan-b-count"></span></h2>
+            <!-- "RUN SHEET  N items" left, "planned H:MM:SS" right (frame 608:925). The total is not
+                 decoration: section 9 records it as the fix for the MAJOR these frames were rejected
+                 for — a header disagreeing with the rows beneath it. -->
+            <h2 class="plan-col-h plan-runsheet-h">RUN SHEET <span class="count-pill" id="plan-b-count"></span><span class="plan-b-total" id="plan-b-total"></span></h2>
             <div id="plan-b-list" role="listbox" aria-label="Run sheet items"></div>
           </section>
           <!-- Labelled BY the heading rather than a fixed aria-label: the panel swaps between PLAN

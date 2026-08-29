@@ -6926,6 +6926,8 @@
         list.innerHTML = "";
         const count = document.getElementById("plan-b-count");
         if (count) count.textContent = "—"; // never a stale count while the real one is unknown
+        const totL = document.getElementById("plan-b-total");
+        if (totL) totL.textContent = ""; // ...and no stale total sitting beside the "—"
         planBlankSummary("Opening plan…");
         const st = document.createElement("p");
         st.className = "plan-loading-msg";
@@ -6950,6 +6952,8 @@
         list.innerHTML = "";
         const count = document.getElementById("plan-b-count");
         if (count) count.textContent = "";
+        const totF = document.getElementById("plan-b-total");
+        if (totF) totF.textContent = "";
         planBlankSummary("Plan figures unavailable — the plan could not be opened.");
         const p = document.createElement("p");
         p.className = "plan-load-failed";
@@ -7144,8 +7148,20 @@
         const list = document.getElementById("plan-b-list");
         if (!list || !view) return; // not on the plan surface
         planLastView = view; // so a pure UI change (deselect) can re-render without a round-trip
+        // Header counters. The planned total belongs HERE, next to the item count, because the pair
+        // is what a reader checks against the rows (section 9: "8 items · 1:12:00" over 6 rows
+        // summing 53:12 was the MAJOR). Empty collapses to the single AC-4 string "0 items · 0:00";
+        // populated splits into "N items" + a right-aligned "planned H:MM:SS" per frame 608:925.
         const count = document.getElementById("plan-b-count");
-        if (count) count.textContent = view.items.length + " items";
+        const total = document.getElementById("plan-b-total");
+        const planned = planSummaryOf(view).planned_total_secs;
+        if (view.items.length) {
+          if (count) count.textContent = view.items.length + " items";
+          if (total) total.textContent = "planned " + planFmtTotal(planned);
+        } else {
+          if (count) count.textContent = "0 items · 0:00";
+          if (total) total.textContent = "";
+        }
         list.innerHTML = "";
         if (!view.items.length) {
           // Empty state (handoff §5, frame 611:124): a centered CTA, not a bare line. Template /
