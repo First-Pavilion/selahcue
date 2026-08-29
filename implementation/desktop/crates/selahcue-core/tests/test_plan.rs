@@ -640,3 +640,95 @@ fn a_label_containing_a_tab_cannot_hijack_the_codec_fields() {
         other => panic!("expected a deck link, got {other:?}"),
     }
 }
+
+// --- Planned-duration roll-up: the total, and whether it covers the plan (FR-202) -------
+
+#[test]
+fn planned_total_marks_itself_partial_only_when_a_real_item_lacks_a_duration() {
+    // POSITIVE CONTROL FIRST. A fully-planned plan must NOT be partial — otherwise an
+    // always-true flag would satisfy every "is it partial?" assertion below, and a broken
+    // control would be indistinguishable from a working one.
+    let mut full = ServicePlan::new("Complete");
+    let a = full.add_item(ItemKind::Song, "Opening");
+    let b = full.add_item(ItemKind::Scripture, "Romans");
+    full.set_item_planned_secs(a, Some(300)).unwrap();
+    full.set_item_planned_secs(b, Some(120)).unwrap();
+    let t = full.planned_total();
+    assert_eq!(t.secs, 420);
+    assert_eq!(t.counted, 2);
+    assert_eq!(t.unplanned, 0);
+    assert!(
+        !t.is_partial(),
+        "a plan where every item has a duration reports a COMPLETE total"
+    );
+
+    // One unset duration makes the total a floor, and it must say so.
+    let mut partial = full.clone();
+    let c = partial.add_item(ItemKind::Media, "Testimony");
+    let t = partial.planned_total();
+    assert_eq!(t.secs, 420, "the unset item contributes nothing to the sum");
+    assert_eq!(t.counted, 2);
+    assert_eq!(t.unplanned, 1);
+    assert!(
+        t.is_partial(),
+        "a total that omits an item must be marked partial — otherwise it renders as the \
+         whole service length while being short by however long that item runs"
+    );
+
+    // Filling it in clears the flag, so the flag tracks the data rather than latching on.
+    partial.set_item_planned_secs(c, Some(192)).unwrap();
+    let t = partial.planned_total();
+    assert_eq!(t.secs, 612);
+    assert!(
+        !t.is_partial(),
+        "filling in the last duration completes the total"
+    );
+}
+
+#[test]
+fn inert_section_dividers_never_make_a_total_partial() {
+    // A section is a divider that never fires, so carrying no duration is its normal state.
+    // Counting it would mark every sectioned plan partial — and a warning that is always on is
+    // one coordinators learn to ignore, which is worse than not having one.
+    let mut p = ServicePlan::new("Sectioned");
+    let s1 = p.add_item(ItemKind::Section, "GATHERING");
+    let song = p.add_item(ItemKind::Song, "Opening");
+    let _s2 = p.add_item(ItemKind::Section, "THE WORD");
+    p.set_item_planned_secs(song, Some(300)).unwrap();
+
+    let t = p.planned_total();
+    assert_eq!(t.secs, 300);
+    assert_eq!(t.unplanned, 0, "dividers are not unplanned items");
+    assert!(
+        !t.is_partial(),
+        "a plan whose only duration-less rows are section dividers is COMPLETE"
+    );
+
+    // But a section deliberately given a duration still counts toward the sum.
+    p.set_item_planned_secs(s1, Some(60)).unwrap();
+    assert_eq!(
+        p.planned_total().secs,
+        360,
+        "setting a duration on a section is deliberate, so it contributes"
+    );
+}
+
+#[test]
+fn an_empty_plans_total_is_complete_not_partial() {
+    // Nothing is missing from a total of nothing. Marking an empty plan "partial" would put a
+    // warning on the empty state the design shows as clean ("0 items · 0:00").
+    let t = ServicePlan::new("Empty").planned_total();
+    assert_eq!(t.secs, 0);
+    assert_eq!(t.counted, 0);
+    assert!(!t.is_partial());
+}
+
+#[test]
+fn planned_total_secs_agrees_with_the_roll_up_it_delegates_to() {
+    // The two must never diverge: `planned_total_secs` is the older API and still has callers.
+    let mut p = ServicePlan::new("Sunday");
+    let a = p.add_item(ItemKind::Song, "Opening");
+    let _b = p.add_item(ItemKind::Media, "Unplanned");
+    p.set_item_planned_secs(a, Some(300)).unwrap();
+    assert_eq!(p.planned_total_secs(), p.planned_total().secs);
+}

@@ -4982,6 +4982,13 @@ fn plan_summary_counts_the_run_sheet_and_keeps_missing_apart_from_unknown() {
         "only the two items given an owner count as assigned"
     );
     assert_eq!(s.planned_total_secs, 2220);
+    // Three of the five items carry no duration, so the total is a FLOOR and must say so —
+    // otherwise "planned 0:37:00" reads as the length of the whole service.
+    assert_eq!(s.planned_items, 2);
+    assert!(
+        s.partial,
+        "a total that omits three items must be marked partial on the wire"
+    );
 
     // The whole point of two totals. If these were folded into one number, the panel would
     // report two healthy decks as broken, or two unchecked links as verified.
@@ -5071,4 +5078,24 @@ fn an_unresolvable_link_degrades_to_a_titled_slide_and_never_blanks_live() {
             "{what} must degrade to a readable slide, never blank the audience output"
         );
     }
+}
+
+#[test]
+fn a_fully_planned_plan_reports_a_complete_total_on_the_wire() {
+    // The positive control for `partial` at the wire boundary: were the flag always true, the
+    // assertion in the summary test above would still pass and mean nothing.
+    let mut plan = ServicePlan::new("Complete");
+    let a = plan.add_item(ItemKind::Song, "Opening");
+    let b = plan.add_item(ItemKind::Song, "Closing");
+    let _divider = plan.add_item(ItemKind::Section, "GATHERING");
+    plan.set_item_planned_secs(a, Some(300)).unwrap();
+    plan.set_item_planned_secs(b, Some(360)).unwrap();
+    let c = LiveController::new(plan, 320, 180, Theme::dark());
+    let s = c.operator_view().summary.unwrap();
+    assert_eq!(s.planned_total_secs, 660);
+    assert_eq!(s.planned_items, 2);
+    assert!(
+        !s.partial,
+        "every item that can carry a duration has one — the section divider is not a gap"
+    );
 }

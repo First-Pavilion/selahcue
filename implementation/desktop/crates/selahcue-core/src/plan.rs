@@ -403,6 +403,31 @@ pub struct ServicePlan {
     next_id: u64,
 }
 
+/// A plan's planned-duration roll-up (FR-202) — the total, and how much of the plan it covers.
+///
+/// `secs` alone is not safe to display: a plan where only half the items carry a duration
+/// produces a total that looks authoritative and is not. [`PlannedTotal::is_partial`] is what
+/// lets the UI mark it, and it is computed in the same pass as the sum so the two cannot
+/// disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlannedTotal {
+    /// Sum of every item's planned duration, saturating.
+    pub secs: u32,
+    /// How many items carried a duration and so contributed to `secs`.
+    pub counted: usize,
+    /// How many items could have carried a duration and did not. `secs` excludes them, so a
+    /// non-zero value means the total is a FLOOR for the service, not its length. Inert
+    /// [`ItemKind::Section`] dividers are never counted here.
+    pub unplanned: usize,
+}
+
+impl PlannedTotal {
+    /// Whether `secs` omits at least one item that could have had a duration.
+    pub fn is_partial(&self) -> bool {
+        self.unplanned > 0
+    }
+}
+
 /// Errors from plan mutations that reference a position or id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanError {
@@ -616,11 +641,39 @@ impl ServicePlan {
 
     /// Total planned duration in seconds across items that have one (saturating,
     /// so a pathological plan can never overflow/panic).
+    ///
+    /// Prefer [`ServicePlan::planned_total`] wherever the caller DISPLAYS this number: on its
+    /// own it cannot say whether it covers the whole plan.
     pub fn planned_total_secs(&self) -> u32 {
-        self.items
-            .iter()
-            .filter_map(|i| i.planned_secs)
-            .fold(0u32, u32::saturating_add)
+        self.planned_total().secs
+    }
+
+    /// The planned-duration roll-up: the total **and whether it covers every item** (FR-202 ·
+    /// PLAN-SECTIONS-DURATIONS-spec §4.2).
+    ///
+    /// Both come out of ONE pass deliberately. A completeness flag derived separately from the
+    /// sum it describes drifts the moment either side changes, and the drift is silent — a
+    /// total that reads as the whole service when it is really a floor.
+    pub fn planned_total(&self) -> PlannedTotal {
+        let mut t = PlannedTotal::default();
+        for item in &self.items {
+            match item.planned_secs {
+                Some(secs) => {
+                    t.secs = t.secs.saturating_add(secs);
+                    t.counted = t.counted.saturating_add(1);
+                }
+                // A Section is an inert divider that never fires, so carrying no duration is
+                // its normal state, not an omission. Counting it would mark every sectioned
+                // plan partial, and a warning that is always on is one operators learn to
+                // ignore. A section GIVEN a duration still contributes above: that is
+                // deliberate.
+                None if item.kind != ItemKind::Section => {
+                    t.unplanned = t.unplanned.saturating_add(1)
+                }
+                None => {}
+            }
+        }
+        t
     }
 
     /// The next id the plan will assign — needed to persist and faithfully

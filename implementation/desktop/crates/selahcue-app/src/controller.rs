@@ -1992,13 +1992,21 @@ impl LiveController {
     /// no store for either library. Keeping those two totals apart is the whole point: folding
     /// `unknown` into `missing` would flag every healthy deck in the plan, and folding it into
     /// the clean count would report a plan verified that nothing ever checked.
-    fn plan_summary(&self) -> Option<PlanSummaryView> {
+    fn plan_summary(
+        &self,
+        resolutions: &[Option<selahcue_core::plan::LinkResolution>],
+    ) -> Option<PlanSummaryView> {
         use selahcue_core::plan::{ItemKind, LinkResolution};
+        // One roll-up, so the total and its completeness flag come from the same pass and can
+        // never disagree (FR-202 · PLAN-SECTIONS-DURATIONS-spec §4.3).
+        let planned = self.plan.planned_total();
         let mut sum = PlanSummaryView {
-            planned_total_secs: self.plan.planned_total_secs(),
+            planned_total_secs: planned.secs,
+            planned_items: planned.counted.min(u32::MAX as usize) as u32,
+            partial: planned.is_partial(),
             ..Default::default()
         };
-        for item in self.plan.items() {
+        for (item, resolution) in self.plan.items().iter().zip(resolutions) {
             // Saturating throughout: MAX_PLAN_ITEMS puts these far below u32, so this can
             // never actually bite — it just means a pathological plan cannot panic a release
             // build or wrap to a smaller count in a debug one.
@@ -2016,7 +2024,7 @@ impl LiveController {
             if item.owner.is_some() {
                 sum.assigned = sum.assigned.saturating_add(1);
             }
-            match item.content.as_ref().map(host_resolution) {
+            match resolution {
                 Some(LinkResolution::Missing) => sum.missing = sum.missing.saturating_add(1),
                 Some(LinkResolution::Unknown) => sum.unknown = sum.unknown.saturating_add(1),
                 // An unlinked item is not a problem, and a resolved one is not either.
@@ -2029,12 +2037,22 @@ impl LiveController {
     /// A serializable snapshot for the operator UI: the plan with per-item Live/Preview
     /// flags, plus the current live/staged indices and blackout state.
     pub fn operator_view(&self) -> OperatorView {
+        // Resolve each item's link ONCE per build and share it with the summary below.
+        // Resolving twice doubles this function's dominant cost — a scripture parse per linked
+        // item — for no benefit (Vera, PR #13).
+        let resolutions: Vec<Option<selahcue_core::plan::LinkResolution>> = self
+            .plan
+            .items()
+            .iter()
+            .map(|it| it.content.as_ref().map(host_resolution))
+            .collect();
         let items = self
             .plan
             .items()
             .iter()
+            .zip(&resolutions)
             .enumerate()
-            .map(|(i, item)| ItemView {
+            .map(|(i, (item, resolution))| ItemView {
                 id: item.id.0,
                 kind: item.kind.as_tag().to_string(),
                 title: item.title.clone(),
@@ -2065,14 +2083,15 @@ impl LiveController {
                 link: item
                     .content
                     .as_ref()
-                    .map(|c| content_link_view(c, host_resolution(c))),
+                    .zip(*resolution)
+                    .map(|(c, r)| content_link_view(c, r)),
                 // Owner + planned duration for the run-sheet row (FR-004); `None` passes through
                 // untouched so unassigned/unplanned items stay byte-stable on the wire.
                 owner: item.owner.clone(),
                 planned_secs: item.planned_secs,
             })
             .collect();
-        let summary = self.plan_summary();
+        let summary = self.plan_summary(&resolutions);
         OperatorView {
             plan_name: self.plan.name.clone(),
             items,

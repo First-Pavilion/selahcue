@@ -578,8 +578,31 @@ pub struct PlanSummaryView {
     pub missing: u32,
     /// Items whose link could NOT be checked by the layer that built this view.
     pub unknown: u32,
-    /// Sum of every item's planned duration, saturating.
+    /// Sum of every item's planned duration, saturating. **Read `partial` before displaying
+    /// this**: on its own it cannot say whether it covers the whole plan.
     pub planned_total_secs: u32,
+    /// How many items carried a duration and so contributed to `planned_total_secs`.
+    ///
+    /// This separates the spec's two partial renderings: `0` with items present is "no
+    /// durations at all" (`— · partial`), a non-zero count is a real subtotal
+    /// (`12:30 · partial`). `planned_total_secs == 0` alone cannot tell them apart, because
+    /// zero is a legitimate duration meaning "instant" (PLAN-SECTIONS-DURATIONS-spec §4.1-4.2).
+    pub planned_items: u32,
+    /// Whether `planned_total_secs` OMITS at least one item that could have had a duration —
+    /// i.e. the total is a FLOOR for the service, not its length
+    /// (PLAN-SECTIONS-DURATIONS-spec §4.2 · FR-202).
+    ///
+    /// A client rendering the total without this shows a number that reads as confidently
+    /// precise while being wrong — the defect design-QA rejected these frames for once already
+    /// ("8 items · 1:12:00" over rows summing 53:12). Computed in the SAME pass as the sum
+    /// ([`selahcue_core::plan::ServicePlan::planned_total`]), because a separately-derived flag
+    /// drifts from the number it describes and the drift is silent.
+    ///
+    /// Inert `section` dividers never set it: carrying no duration is their normal state, so
+    /// counting them would mark every sectioned plan partial. Skip-if-false — a complete total
+    /// simply omits the key.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub partial: bool,
 }
 
 /// One plan item as the operator UI renders it — the wire form of an item view.

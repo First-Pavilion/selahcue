@@ -1597,6 +1597,8 @@ fn plan_summary_is_omitted_when_absent_and_keeps_missing_and_unknown_apart() {
         missing: 1,
         unknown: 2,
         planned_total_secs: 3192,
+        planned_items: 5,
+        partial: true,
     };
     let json = to_json(&s).unwrap();
     assert_eq!(from_json::<PlanSummaryView>(&json).unwrap(), s);
@@ -1604,6 +1606,26 @@ fn plan_summary_is_omitted_when_absent_and_keeps_missing_and_unknown_apart() {
     // would report decks the host never checked as confirmed-missing.
     assert!(json.contains(r#""missing":1"#), "{json}");
     assert!(json.contains(r#""unknown":2"#), "{json}");
+
+    // The completeness flag rides WITH the total. A client rendering `planned_total_secs`
+    // without it shows a floor as though it were the whole service.
+    assert!(json.contains(r#""partial":true"#), "{json}");
+    assert!(
+        json.contains(r#""planned_items":5"#),
+        "the contributing count travels with the total, so a client can say 5 of 6: {json}"
+    );
+
+    // A COMPLETE total omits the flag entirely (skip-if-false), which is also what an empty
+    // plan produces — nothing is missing from a total of nothing.
+    let complete = to_json(&PlanSummaryView {
+        partial: false,
+        ..s
+    })
+    .unwrap();
+    assert!(
+        !complete.contains("partial"),
+        "a complete total must not emit the key at all: {complete}"
+    );
 
     // An older host omits the whole object rather than sending a zeroed one — a zeroed summary
     // would read as "checked, nothing wrong", which is a different claim from "not reported".
