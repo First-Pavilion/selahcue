@@ -46,7 +46,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # panel, the loading state, and the QA/security remediation. Set to the REAL observed count so
 # dropping even one trips exit 4. Sana S4: this floor had been left at 829 while the driver ran
 # more, which would have let every new check disappear without failing.)
-EXPECTED_MIN_CHECKS = 939
+EXPECTED_MIN_CHECKS = 940
 
 
 def find_chrome():
@@ -2996,22 +2996,36 @@ DRIVER = r"""
       // None of these needs an attacker: a host one release ahead or behind produces them. Each
       // must fall back to the local computation, which is derived from the rendered items.
       var q13Items = [SONG(311, 300), SONG(312, 300)]; // local total 600 -> "0:10:00"
+      // Every malformed fixture carries songs:7, which the local computation (two songs) can never
+      // produce. Asserting the LOCAL value is what distinguishes a fallback from a host object that
+      // happens to agree — without it, two of these could not tell the two apart and the checks
+      // they were meant to pin survived mutation.
       function malformed(sum, label) {
         planSelectedId = null;
         planRenderBuilder({ plan_name:"M", items:q13Items, summary:sum });
-        ok(sumRowValue("Total time") === "0:10:00" && sumRowValue("Items") === "2",
+        ok(sumRowValue("Total time") === "0:10:00" && sumRowValue("Items") === "2" && sumRowValue("Songs") === "2",
            "SP3 AC-25 (Q13): " + label + " falls back to the local computation (got total \"" +
-           sumRowValue("Total time") + "\", Items \"" + sumRowValue("Items") + "\")");
+           sumRowValue("Total time") + "\", Items \"" + sumRowValue("Items") + "\", Songs \"" + sumRowValue("Songs") + "\")");
       }
       malformed({}, "an empty summary object");
-      malformed(hostSum({ planned_total_secs:1e308, items:2, songs:2 }), "a non-finite-scale total (1e308 rendered 2.77e+304:58:56)");
-      malformed(hostSum({ planned_total_secs:-1200, items:2, songs:2 }), "a negative total (rendered -1:-20:00)");
-      malformed(hostSum({ planned_total_secs:600, items:2, songs:5 }), "per-kind counts that do not add up to items");
-      malformed(hostSum({ planned_total_secs:99999, items:2, songs:2 }), "a total disagreeing with the rows beneath it (the §9 MAJOR)");
-      malformed(hostSum({ planned_total_secs:600, items:2, songs:"2" }), "a count that is a string rather than a number");
-      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, partial:"yes" }), "a non-boolean partial");
-      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, partial:true }), "partial:true with no planned_items to disambiguate it");
-      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:9 }), "more assigned items than items");
+      malformed(hostSum({ planned_total_secs:1e308, items:2, songs:7 }), "a non-finite-scale total (1e308 rendered 2.77e+304:58:56)");
+      malformed(hostSum({ planned_total_secs:-1200, items:2, songs:7 }), "a negative total (rendered -1:-20:00)");
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:7 }), "per-kind counts that do not add up to items");
+      malformed(hostSum({ planned_total_secs:99999, items:2, songs:7 }), "a total disagreeing with the rows beneath it (the §9 MAJOR)");
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:"7" }), "a count that is a string rather than a number");
+      malformed(hostSum({ planned_total_secs:600, items:9, songs:7, partial:"yes" }), "a non-boolean partial");
+      malformed(hostSum({ planned_total_secs:600, items:9, songs:7, partial:true }), "partial:true with no planned_items to disambiguate it");
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:7, assigned:9 }), "more assigned items than items");
+      // Isolates PLAN_MAX_TOTAL_SECS: eight items at the per-item cap sum to 691200s, so the total
+      // AGREES with the rows and every other check passes — only the week-long bound rejects it.
+      // A corrupt plan claiming eight days of runtime is the real shape of this.
+      var hugeItems = [];
+      for (var hz = 0; hz < 8; hz++) hugeItems.push(SONG(400 + hz, 86400));
+      planSelectedId = null;
+      planRenderBuilder({ plan_name:"HUGE", items:hugeItems,
+                          summary: hostSum({ planned_total_secs:691200, items:8, songs:99 }) });
+      ok(sumRowValue("Songs") === "8",
+         "SP3 AC-25 (Q13): a total beyond the week-long bound is rejected even though it agrees with the rows — only the bound can catch this one (Songs=" + sumRowValue("Songs") + ")");
       // Control: a WELL-FORMED summary is still used. Without this the guard could pass by
       // rejecting everything, which would silently disable PR #13 the day it merges.
       planSelectedId = null;
