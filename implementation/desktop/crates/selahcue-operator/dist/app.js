@@ -6151,11 +6151,21 @@
         const dlg = document.createElement("div"); dlg.className = "pm-confirm"; dlg.setAttribute("role", "dialog"); dlg.setAttribute("aria-modal", "true");
         dlg.setAttribute("aria-labelledby", "pm-prompt-title");
         const h = document.createElement("h2"); h.className = "pm-confirm-title"; h.id = "pm-prompt-title"; h.textContent = opts.title || "Name"; dlg.appendChild(h);
+        let describedBy = "";
         if (opts.describe) {
           const d = document.createElement("p"); d.className = "pm-confirm-body"; d.id = "pm-prompt-describe"; d.textContent = opts.describe;
           dlg.appendChild(d);
-          dlg.setAttribute("aria-describedby", "pm-prompt-describe");
+          describedBy = "pm-prompt-describe";
         }
+        // The consequence line, mirroring pmConfirm's. It MUST be in the accessible description
+        // and not merely drawn: a warning a screen reader never speaks is a warning that did not
+        // happen (WCAG 4.1.2), which is the same rule pmConfirm's `warning` already follows.
+        if (opts.warning) {
+          const w = document.createElement("p"); w.className = "pm-confirm-warn"; w.id = "pm-prompt-warn"; w.textContent = opts.warning;
+          dlg.appendChild(w);
+          describedBy = describedBy ? describedBy + " pm-prompt-warn" : "pm-prompt-warn";
+        }
+        if (describedBy) dlg.setAttribute("aria-describedby", describedBy);
         if (opts.body) { const extra = document.createElement("div"); extra.className = "pm-prompt-extra"; opts.body(extra); dlg.appendChild(extra); }
         const field = document.createElement("div"); field.style.display = "flex"; field.style.flexDirection = "column"; field.style.gap = "6px";
         const lab = document.createElement("label"); lab.className = "pm-insp-lbl"; lab.textContent = opts.label || "Name"; lab.htmlFor = "pm-prompt-input";
@@ -6458,6 +6468,15 @@
       const PLAN_NAME_MAX = 120;
       // The run-sheet cap the untrusted ingress enforces (`MAX_PLAN_ITEMS`).
       const PLAN_MAX_ITEMS = 500;
+      // How many starter templates the picker will render. A picker is a human-scale list that a
+      // coordinator SCANS — this build's host ships two — so the bound is generous by an order of
+      // magnitude and still nowhere near a number that could hang the console. A host reporting
+      // more than this is malformed, and a malformed list reads as no list rather than being
+      // silently truncated: quietly dropping templates the host offers is the same fabrication
+      // as inventing ones it does not.
+      const PLAN_TEMPLATES_MAX = 24;
+      // A template id is a wire tag ("sunday-morning"), never displayed.
+      const PLAN_TEMPLATE_ID_MAX = 64;
 
       // Why v is unacceptable as a plan name or an imported item title, or null when it is fine.
       //
@@ -6540,7 +6559,13 @@
       function planPublishState(view) {
         const p = view && view.publish;
         if (!p || typeof p !== "object") return null;
-        const n = (x) => typeof x === "number" && isFinite(x) && Number.isInteger(x) && x >= 0 && x <= PLAN_MAX_COUNT;
+        // These are ORDINALS, not counts, so they do not share PLAN_MAX_COUNT's bound. `revision`
+        // bumps on every plan edit, undo and redo; a long automated session could pass 100,000,
+        // and refusing it there would silently degrade the WHOLE lifecycle panel to "unreported"
+        // under a stated reason that was not true. They are only ever rendered as labels — never
+        // summed, subtracted or compared for the badge — so the only bound they need is the one
+        // past which a number stops being a number.
+        const n = (x) => typeof x === "number" && isFinite(x) && Number.isInteger(x) && x >= 0 && x <= Number.MAX_SAFE_INTEGER;
         if (!n(p.revision)) return null; // the one field the host always sends
         const version = p.version === undefined ? 0 : p.version;
         if (!n(version)) return null;
@@ -6574,11 +6599,22 @@
       function planTemplateList(view) {
         const t = view && view.plan_templates;
         if (!Array.isArray(t) || !t.length) return null;
+        // BOUNDED BEFORE IT IS READ, not after. The operator shell talks to a host over the LAN
+        // link, and `ControlClient` sets no `max_message_size` (client.rs:70) — so while the
+        // SERVER caps inbound frames at 64 KiB (server.rs:46), a reply travelling the other way
+        // may be up to tungstenite's 64 MiB default. Unbounded, this filter runs over every entry
+        // on EVERY plan render and the picker would then build a DOM row for each.
+        //
+        // The bound is on the ENTITY — the number of entries, and the length of each string that
+        // is rendered — not on a byte proxy, because a byte budget alone still admits
+        // unboundedly many tiny rows.
+        if (t.length > PLAN_TEMPLATES_MAX) return null;
+        const str = (v, max) => typeof v === "string" && v.length > 0 && v.length <= max;
         const ok = t.filter(
           (x) =>
             x && typeof x === "object" &&
-            typeof x.id === "string" && x.id &&
-            typeof x.name === "string" && x.name &&
+            str(x.id, PLAN_TEMPLATE_ID_MAX) &&
+            str(x.name, PLAN_NAME_MAX) &&
             typeof x.items === "number" && isFinite(x.items) &&
             Number.isInteger(x.items) && x.items >= 0 && x.items <= PLAN_MAX_ITEMS
         );
@@ -6597,6 +6633,17 @@
       // control that looks live and fails on click, which is the exact failure the
       // disabled-with-a-stated-reason treatment in this panel already exists to avoid. Asked
       // once, here, and consumed by every lifecycle control.
+      // The title of whatever is on air right now, or null. Read from the HOST's own live_index
+      // / live_free_text, never inferred: `live_free_text` is a slide whose plan item is already
+      // gone, and it is exactly the case a naive `items[live_index]` lookup misses.
+      function planLiveItemTitle(view) {
+        if (!view) return null;
+        const items = Array.isArray(view.items) ? view.items : [];
+        const live = items.find((x) => x && x.is_live);
+        if (live && typeof live.title === "string" && live.title) return live.title;
+        if (typeof view.live_free_text === "string" && view.live_free_text) return view.live_free_text;
+        return null;
+      }
       function planLifecycleAvailable(view) { return planPublishState(view) !== null; }
       const PLAN_NO_LIFECYCLE_REASON =
         "This host doesn't report plan publishing, so creating, duplicating, importing and publishing aren't available from here yet.";
@@ -7603,7 +7650,7 @@
             empty.appendChild(p);
           };
           if (!lifecycle) reason("plan-empty-later", PLAN_NO_LIFECYCLE_REASON);
-          else if (!templates) reason("plan-empty-no-templates", "This host doesn't offer any starter templates.");
+          else if (!templates) reason("plan-empty-no-templates", "This host reported no usable starter templates.");
           reason("plan-empty-no-library", "Duplicating a past service needs a saved-plan library. This build keeps one plan at a time.");
           reason("plan-empty-no-bundle", "A plan bundle carries items and their media together. That file format doesn't exist yet — paste a run sheet instead.");
           list.appendChild(empty);
@@ -7841,14 +7888,23 @@
       // The selection is dropped first because every one of these commands can replace the whole
       // run sheet: keeping a stale id would re-open an inspector onto an item that no longer
       // exists.
-      async function planLifecycleRun(what, fn) {
+      // `replacesPlan` is spelled out at every call site rather than defaulted, because FOUR of
+      // the five commands replace the run sheet and ONE does not — and the one that does not is
+      // the one a shared loop silently gets wrong. `publish_plan` moves a marker; the plan, its
+      // item ids and the operator's selection all survive it, so clearing the selection there
+      // would throw them back to the Plan Summary for no reason they could name. The other four
+      // mint new ids, and keeping a stale one would re-open an inspector onto an item that no
+      // longer exists.
+      async function planLifecycleRun(what, replacesPlan, fn) {
         if (planLifecycleBusy) return false;
         planLifecycleBusy = true;
         try {
           const v = await fn();
           if (!v || !Array.isArray(v.items)) throw new Error("the host did not return a plan");
-          planSelectedId = null;
-          planFocusAfterRender = null;
+          if (replacesPlan) {
+            planSelectedId = null;
+            planFocusAfterRender = null;
+          }
           planRenderBuilder(v);
           return true;
         } catch (e) {
@@ -7873,8 +7929,11 @@
       // written HERE is network-neutral: nothing below claims the plan was sent anywhere.
       function planPublish(view) {
         const pub = planPublishState(view);
-        if (!pub) return;
-        planLifecycleRun("publish this plan", () => invoke("publish_plan")).then((ok) => {
+        // The same send-site guard the other four make. Unreachable today — view-only never
+        // renders this button — but an asymmetric guard across five sibling send sites is the
+        // shape a real hole hides in, and the cost of closing it is one clause.
+        if (!pub || !planCanEdit(view)) return;
+        planLifecycleRun("publish this plan", false, () => invoke("publish_plan")).then((ok) => {
           if (ok) planNotice("status", "Plan published. The Live Console opens this run sheet for the service.");
         });
       }
@@ -7890,7 +7949,7 @@
           confirmLabel: "Create",
           validate: planNameProblem,
           onConfirm: (name) => {
-            planLifecycleRun("create the service", () => invoke("new_plan", { name: name.trim() })).then((ok) => {
+            planLifecycleRun("create the service", true, () => invoke("new_plan", { name: name.trim() })).then((ok) => {
               if (ok) planNotice("status", "New service created. Add your first item to build the run sheet.");
             });
           },
@@ -7961,7 +8020,7 @@
           },
           validate: (v) => planNameProblem(v),
           onConfirm: (name) => {
-            planLifecycleRun("start from that template", () =>
+            planLifecycleRun("start from that template", true, () =>
               invoke("template_plan", { template: chosen.id, name: name.trim() })
             ).then((ok) => {
               if (ok) planNotice("status", "Service created from “" + chosen.name + "”. Rename the items and link content to each one.");
@@ -7993,6 +8052,14 @@
           // obvious thing, and the validator below covers the case where they type it back.
           value: base ? base + " (copy)" : "",
           confirmLabel: "Duplicate",
+          // A duplicate REPLACES the open run sheet with the copy, and it can be pressed
+          // mid-service. The audience is unaffected — the host carries the live slide across a
+          // plan swap — but an operator about to do this while something is on air deserves to
+          // be told which of those two things is true, rather than discovering it. Stated, not
+          // blocked: duplicating a service that is running is a legitimate thing to want.
+          warning: planLiveItemTitle(view)
+            ? "“" + planLiveItemTitle(view) + "” is LIVE. The copy replaces the run sheet you are editing; the audience output is unaffected."
+            : null,
           validate: (v) => {
             const why = planNameProblem(v);
             if (why) return why;
@@ -8006,7 +8073,7 @@
             return null;
           },
           onConfirm: (name) => {
-            planLifecycleRun("duplicate this service", () => invoke("duplicate_plan", { name: name.trim() })).then((ok) => {
+            planLifecycleRun("duplicate this service", true, () => invoke("duplicate_plan", { name: name.trim() })).then((ok) => {
               if (ok) planNotice("status", "Service duplicated. You are now editing the copy.");
             });
           },
@@ -8108,7 +8175,7 @@
           },
           onConfirm: (name) => {
             const parsed = planParseRunSheet(area ? area.value : "");
-            planLifecycleRun("import that run sheet", () =>
+            planLifecycleRun("import that run sheet", true, () =>
               invoke("import_plan", { name: name.trim(), items: parsed.items })
             ).then((ok) => {
               if (ok)

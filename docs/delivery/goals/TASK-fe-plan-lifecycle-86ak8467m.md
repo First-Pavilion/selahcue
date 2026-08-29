@@ -128,34 +128,27 @@ rather than taken on report):
   (`69c3161`). This goal ships the client against that shape and gates every control on the
   host reporting it, so it is correct both before and after PR #14 merges.
 
-- **BLOCKING, and owned by neither ticket as it stands: the operator shell's Tauri layer has no
-  plumbing for these five commands.** PR #14 does not touch
-  `implementation/desktop/crates/selahcue-operator/src/main.rs`, and adds no `OperatorShell` or
-  `RemoteOperator` method to back one. But `LiveController::operator_view()` **does** populate
-  `publish` (`controller.rs:2329`) and `plan_templates` (`:2337`), and `console_view()` stamps
-  `viewer = Some(for_role(Operator))` with `can_edit: true`. So the moment PR #14 merges, a
-  local operator build reports the capability, this client enables Publish / Create / Template /
-  Import / Duplicate, and every one of them rejects with "command not found".
+- **CLOSED.** This goal raised a blocking gap: at `69c3161` the operator shell's Tauri layer had
+  no plumbing for the five commands, while `LiveController::operator_view()` already populated
+  `publish` (`controller.rs:2329`) and `plan_templates` (`:2337`) and `console_view()` stamped
+  `viewer` with `can_edit: true` — so a merged backend would have made this client enable
+  controls the shell could not dispatch. It is implemented at **`a1eadd4`** across all four
+  layers, and **verified from that source rather than taken on report**: all five are registered
+  in `invoke_handler` (`main.rs:3115-3119`), and every command name and argument name matches
+  what this webview invokes —
 
-  It cannot be closed from this branch: the Tauri command needs a `Backend` arm for each of
-  `Backend::Local(OperatorShell)` and `Backend::Remote(RemoteOperator)`, and neither method
-  exists in `selahcue-app` — the crate PR #14 owns and is currently in review. Adding them here
-  would be a second, conflicting change to a file under active review.
-
-  What is needed, exactly — five `#[tauri::command]`s registered in `invoke_handler`, each
-  returning the fresh `OperatorView`, with these names and argument names (the webview calls
-  them verbatim):
-
-  | Tauri command | JS arguments | Wire command |
+  | Tauri command | JS arguments | Verified at `a1eadd4` |
   |---|---|---|
-  | `publish_plan` | *(none)* | `PublishPlan` |
-  | `new_plan` | `{ name }` | `NewPlan { name }` |
-  | `template_plan` | `{ template, name }` | `TemplatePlan { template, name }` |
-  | `duplicate_plan` | `{ name }` | `DuplicatePlan { name }` |
-  | `import_plan` | `{ name, items: [{ kind, title }] }` | `ImportPlan { name, items }` |
+  | `publish_plan` | *(none)* | `main.rs:2136` |
+  | `new_plan` | `{ name }` | `main.rs:2140` |
+  | `template_plan` | `{ template, name }` | `main.rs:2144` |
+  | `duplicate_plan` | `{ name }` | `main.rs:2152` |
+  | `import_plan` | `{ name, items: [{ kind, title }] }` | `main.rs:2156` |
 
-  Merge order matters: this plumbing must land with or before PR #14, or the console ships
-  live-looking buttons that fail on click.
+  The capability gate in this client is **not** a workaround for that gap and is not unwound:
+  the shell drives whichever host is on the other end, and a remote output window may be a
+  different build. It is the same three-state rule the contract itself mandates, applied to the
+  command set rather than to a rendered field.
 
 - ClickUp MCP is **not connected in this session**. No ticket read, status move, or comment
   can be made from here. A structured pending ClickUp update is produced instead of a
@@ -276,12 +269,37 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
   zero-byte placeholders. Reproduced the placeholders locally to proceed; raised as a finding.
 - Decision: handoff
 
+### Iteration 6 — review round 1
+
+- Target criterion: C-016
+- Change or investigation: four reviewers dispatched on `f335a0d`. Remediation applied for the
+  security findings, for the coordinator's addendum, and for one defect this goal found in its
+  OWN code by applying the coordinator's technique.
+- Verifier executed: `python3 scripts/operator_headless.py`; the mutation battery (now 21);
+  the WebKit render probe; `make ci`
+- Result: gate **1062 checks, 0 FAIL**; **21 of 21** mutations caught by their named check;
+  WebKit probe 0 FAIL.
+- New evidence, in order of how much it mattered:
+  - **`publish_plan` was the one of five that is not like the others.** All five shared
+    `planLifecycleRun`, which cleared the operator's selection. Four REPLACE the run sheet and
+    must; publish moves a marker and leaves the plan and its item ids intact, so clearing there
+    threw the operator back to the Plan Summary for no reason they could name. The battery would
+    never have found it — the test and the code agreed with each other. `replacesPlan` is now
+    spelled out at all five call sites and pinned by `PL AC-31` plus its inverse control.
+  - **Sana M1 (Medium):** `planTemplateList` bounded neither entry count nor rendered string
+    length, and `ControlClient` sets no `max_message_size` (`client.rs:70`) while the server caps
+    its own inbound at 64 KiB (`server.rs:46`) — verified in source. Bounded on the ENTITY.
+  - **Sana L2:** the publish ordinals shared a COUNT's bound, so a long session would have
+    degraded the whole panel to "unreported" under a stated reason that was not true.
+  - **Sana I2:** `planPublish` lacked the send-site guard its four siblings had. Unreachable, but
+    an asymmetric guard across five siblings is the shape a real hole hides in.
+  - **Coordinator:** `duplicate_plan` had un-marked the on-air row backend-side. Fixed there; the
+    dialog now names what is on air and states that the audience is unaffected, rather than
+    blocking an action that is legitimate mid-service.
+- Decision: handoff
+
 ## Risks and rollback
 
-- **Highest risk: the missing Tauri layer above.** Until it lands, a merged PR #14 makes this
-  client enable controls the shell cannot dispatch. The failure is loud rather than silent — the
-  banner shows the host's own rejection and no success is claimed — but it is still a broken
-  button, and it is a merge-ORDER risk, not a code risk.
 - The capability predicate keys on the host reporting `publish` and is consumed by all five
   controls. A host that reported `publish` while implementing only some of the commands would
   enable the rest; nothing in the wire shape allows finer discrimination, and the five land as

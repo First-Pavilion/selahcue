@@ -48,14 +48,14 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # more, which would have let every new check disappear without failing.)
 # (Raised for the PLAN LIFECYCLE batch — 86ak8467m: the five lifecycle commands, the viewer /
 # publish / plan_templates three-state readers, the empty state's four starts, the view-only
-# frame and the change badge. 963 -> 1046, the REAL observed count. SIXTEEN of these controls are
+# frame and the change badge. 963 -> 1062, the REAL observed count. SIXTEEN of these controls are
 # mutation-verified — break the guard each names in dist/app.js or app.css and the NAMED check
 # goes RED. Two did not, at first, and both failures are the interesting kind: the change-badge
 # control re-derived the predicate beside the code under test instead of consuming it (so
 # deleting the predicate left the suite green), and the publish-state control dereferenced a
 # node that the defect removes (so it threw and aborted the driver at check 728 rather than
 # failing the check that names the rule).)
-EXPECTED_MIN_CHECKS = 1046
+EXPECTED_MIN_CHECKS = 1062
 
 
 def find_chrome():
@@ -4034,6 +4034,92 @@ DRIVER = r"""
       var voCr = _cr(_rgba(getComputedStyle(voEl).color), _rgba(reasonBg));
       ok(voCr >= 4.5,
          "PL AC-30: so does the view-only explanation (" + _f(voCr) + ":1)");
+
+      // --- which one of the five is not like the others? ----------------------------------------
+      // FOUR of the five REPLACE the run sheet; publish_plan moves a marker and leaves the plan,
+      // its item ids and the operator's selection intact. A shared helper that treats all five
+      // alike is exactly where that difference hides — a twelve-mutation battery would pass,
+      // because the test and the code would agree with each other.
+      // Publish lives on the SUMMARY, so the selection is set without opening the item inspector
+      // over it — then the command runs and the selection must survive it.
+      openPlan(lifeView({ publish: PUB_CHANGED }));
+      ok(!!el("plan-sum-publish"), "PL AC-31 (setup): the summary is showing, with Publish on it");
+      planSelectedId = 302;
+      el("plan-sum-publish").click();
+      await sleep(40);
+      ok(planSelectedId === 302,
+         "PL AC-31: publish_plan does NOT clear the operator's selection — it moves a marker, it does not replace the plan, so throwing them back to the Plan Summary would be a reset they could not name");
+      // ...and the control: a command that DOES replace the plan clears it.
+      openPlan(lifeView({ publish: PUB_CLEAN }));
+      planSelectedId = 302;
+      el("plan-sum-duplicate").click();
+      await sleep(20);
+      el("pm-prompt-input").value = "A Different Name";
+      dlgOk().click();
+      await sleep(40);
+      ok(planSelectedId === null,
+         "PL AC-31 (control): duplicate_plan DOES clear it — the four that mint new item ids must not leave a stale one pointing at an item that no longer exists");
+
+      // --- duplicating mid-service says what is on air ------------------------------------------
+      var liveView = lifeView({ publish: PUB_CLEAN });
+      liveView.items[0].is_live = true;
+      openPlan(liveView);
+      el("plan-sum-duplicate").click();
+      await sleep(20);
+      var warn = el("pm-prompt-warn");
+      ok(!!warn && /is LIVE/.test(warn.textContent) && warn.textContent.indexOf(PL_ITEMS[0].title) >= 0,
+         "PL AC-32: duplicating while an item is LIVE NAMES it — the copy replaces the run sheet being edited, and an operator mid-service deserves to be told which of those two things is true (got: " + (warn ? warn.textContent : "no warning") + ")");
+      ok(/audience output is unaffected/i.test(warn.textContent),
+         "PL AC-32: ...and states that the audience is unaffected, rather than leaving them to fear it");
+      ok(document.querySelector(".pm-confirm").getAttribute("aria-describedby").indexOf("pm-prompt-warn") >= 0,
+         "PL AC-32 a11y: the consequence is in the dialog's accessible description — a warning a screen reader never speaks did not happen (WCAG 4.1.2)");
+      ok(!dlgOk().disabled,
+         "PL AC-32: it STATES the consequence, it does not block — duplicating a running service is a legitimate thing to want");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(20);
+      // A live slide whose plan item is already gone is the case a naive items[live_index] misses.
+      var freeView = lifeView({ publish: PUB_CLEAN });
+      freeView.live_free_text = "Removed but still on air";
+      openPlan(freeView);
+      el("plan-sum-duplicate").click();
+      await sleep(20);
+      ok(!!el("pm-prompt-warn") && /Removed but still on air/.test(el("pm-prompt-warn").textContent),
+         "PL AC-32: a live FREE slide — one whose plan item was already removed — is named too, not missed by an items lookup");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(20);
+      openPlan(lifeView({ publish: PUB_CLEAN }));
+      el("plan-sum-duplicate").click();
+      await sleep(20);
+      ok(!el("pm-prompt-warn"),
+         "PL AC-32 (control): with NOTHING on air there is no warning — the line is a state, not decoration on every duplicate");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(20);
+
+      // --- the template list is BOUNDED before it is rendered -----------------------------------
+      // The operator shell reads this from a host across the LAN link, and ControlClient sets no
+      // max_message_size (client.rs:70) while the server caps its own inbound at 64 KiB
+      // (server.rs:46) — so a reply may be far larger than any picker should render.
+      var manyTpl = [];
+      for (var ti = 0; ti < 25; ti++) manyTpl.push({ id: "t" + ti, name: "Template " + ti, items: 3 });
+      ok(planTemplateList({ plan_templates: manyTpl }) === null,
+         "PL AC-33: a template list past the picker's entity cap reads as NO list — bounded by entry COUNT, not by a byte proxy that still admits unboundedly many tiny rows");
+      ok(planTemplateList({ plan_templates: manyTpl.slice(0, 24) }) !== null,
+         "PL AC-33 (control): exactly at the cap it still loads — the bound refuses excess, it is not a dead mechanism");
+      var longName = new Array(200).join("x");
+      ok(planTemplateList({ plan_templates: [{ id: "t", name: longName, items: 3 }] }) === null,
+         "PL AC-33: an over-long template NAME is refused — the string is rendered, so its length is bounded too");
+      ok(planTemplateList({ plan_templates: [{ id: longName, name: "T", items: 3 }] }) === null,
+         "PL AC-33: ...and so is an over-long id");
+      openPlan(emptyLife({ publish: PUB_CLEAN, plan_templates: manyTpl }));
+      ok(el("plan-empty-template").disabled && !document.querySelector(".plan-tpl-row"),
+         "PL AC-33: ...and the picker renders no row for a list it refused, rather than building one DOM node per entry");
+      ok(/no usable starter templates/i.test(el("plan-empty-no-templates").textContent),
+         "PL AC-33: the stated reason is true for a REFUSED list as well as an empty one — 'this host offers none' would have been a claim about the host that this client cannot make");
+
+      // --- a long session must not silently disable the whole panel -----------------------------
+      var busy = planPublishState({ publish: { revision: 250000, published_revision: 240000, version: 900 } });
+      ok(busy !== null && busy.version === 900,
+         "PL AC-34: a revision past 100,000 is still REPORTED — these are ordinals rendered as labels, never summed, and refusing them would degrade the whole lifecycle panel to 'unreported' under a reason that was not true");
 
       // --- the seam was used as a seam ----------------------------------------------------------
       openPlan(lifeView({ publish: PUB_CLEAN }));
