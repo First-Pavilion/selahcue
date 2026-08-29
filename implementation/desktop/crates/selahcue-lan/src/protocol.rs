@@ -350,8 +350,13 @@ pub enum Command {
     /// operator choose when to reload (frame `612:1020`).
     ///
     /// **Changes nothing on the live output, and nothing in Preview.** Publishing is a
-    /// statement about the document, not a cue. Idempotent: publishing an unchanged plan
-    /// re-marks the same revision and still counts a version.
+    /// statement about the document, not a cue.
+    ///
+    /// Repeatable and safe, but NOT idempotent: publishing an unchanged plan re-marks the same
+    /// revision and clears no badge that was not already clear, yet it does increment `version`,
+    /// which is on the wire and on screen. Calling it twice is harmless; it is not invisible.
+    /// (An earlier version of this line said "idempotent" and then described the increment that
+    /// makes it not so.)
     PublishPlan,
     /// Replace the plan with a fresh EMPTY one called `name` — "Create a service" on the
     /// empty-plan frame. The outgoing plan is not saved anywhere by this command; it is

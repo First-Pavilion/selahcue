@@ -528,9 +528,16 @@ fn plan_publish_and_lifecycle_commands_are_operator_only_plan_editing() {
 fn can_edit_plan_agrees_with_the_choke_point_for_every_plan_edit_command() {
     // `can_edit_plan` is what the operator view reports as `can_edit`, and it answers by probing
     // ONE representative plan-edit command. This is the control that the probe is representative:
-    // if a plan-edit command is ever moved onto a different permission, or the probe is changed
-    // to a command that is not a plan edit, the affordance stops speaking for the commands it
-    // claims to describe and this fails.
+    // if a plan-edit command is moved onto a different permission, or the probe is changed to a
+    // command that is not a plan edit, the affordance stops speaking for the commands it claims
+    // to describe and this fails.
+    //
+    // KNOWN LIMIT, stated rather than implied: `plan_edit_cmds()` is hand-maintained. Rust
+    // cannot enumerate `Command`'s variants without a derive this crate does not carry, so a NEW
+    // plan-edit command added to `required_permission`'s `EditPlan` arm and not added to that
+    // list is simply not covered here, and nothing fails. The exhaustive `match` in
+    // `required_permission` forces the author to think about the permission; it cannot force
+    // them to think about this list. Adding a plan-edit command means adding it there too.
     //
     // Repointing `PLAN_EDIT_PROBE` at `Command::GoLive` fails here on Producer, who may go live
     // but may not edit the plan.

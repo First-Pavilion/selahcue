@@ -3081,7 +3081,7 @@ impl LiveController {
                 self.publish_count = self.publish_count.saturating_add(1);
                 ControllerReply::Ack
             }
-            Command::NewPlan { name } => match valid_plan_name(name) {
+            Command::NewPlan { name } => match valid_plan_label(name) {
                 Some(name) => {
                     self.install_plan(ServicePlan::new(name));
                     ControllerReply::Ack
@@ -3089,7 +3089,7 @@ impl LiveController {
                 None => ControllerReply::Deny(DenyReason::BadRequest),
             },
             Command::TemplatePlan { template, name } => {
-                let Some(name) = valid_plan_name(name) else {
+                let Some(name) = valid_plan_label(name) else {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 };
                 // An unknown template is refused, never silently downgraded to a blank plan: a
@@ -3101,7 +3101,7 @@ impl LiveController {
                 self.install_plan(template.build(name));
                 ControllerReply::Ack
             }
-            Command::DuplicatePlan { name } => match valid_plan_name(name) {
+            Command::DuplicatePlan { name } => match valid_plan_label(name) {
                 Some(name) => {
                     // Duplicates the plan that is LOADED (FR-005) — the wire caller
                     // `ServicePlan::duplicate` never had. Not a library copy: this host keeps
@@ -3228,19 +3228,19 @@ impl LiveController {
     /// Re-answer "does the plan differ from what was published?".
     ///
     /// Called from the two places the document can move — an applied edit in `apply`, and an
-    /// undo/redo swap — and nowhere else. Uses the domain's own `PartialEq` rather than a
-    /// hand-picked subset of fields: a subset would silently stop covering a field the moment
-    /// `ServicePlan` grows one.
+    /// undo/redo swap — and nowhere else.
     ///
-    /// That equality includes the internal id counter, so add-then-remove leaves the plan
-    /// marked changed even though the visible run sheet matches. That is the safe direction and
-    /// the only one available without inventing a second definition of what a plan is: this can
-    /// show a badge that turns out to be uninteresting, never hide a real edit.
+    /// Asks [`ServicePlan::same_document`] rather than `==`. `==` includes the internal id
+    /// counter, so adding an item and removing it again left the plan marked changed for good
+    /// over a run sheet that had returned to exactly what was published — the same "badge with
+    /// nothing behind it" this comparison exists to prevent, just reached by a different route.
+    /// The definition lives in the domain beside the struct, so it cannot quietly stop covering
+    /// a field that `ServicePlan` grows later.
     fn refresh_published_delta(&mut self) {
         self.changed_since_publish = self
             .published_plan
             .as_ref()
-            .is_some_and(|baseline| *baseline != self.plan);
+            .is_some_and(|baseline| !baseline.same_document(&self.plan));
     }
 
     /// The bookkeeping every plan-document change shares: re-point the cursors at the new
@@ -3394,14 +3394,18 @@ impl LiveController {
     /// free live slide, by exactly the mechanism `RemoveItem` already uses for the same reason.
     /// A live SCRIPTURE needs nothing — it is tracked by reference, not by plan index.
     ///
-    /// # Why the indices are dropped rather than clamped
+    /// # Why the indices are dropped — but only when the run sheet actually moved
     ///
-    /// [`reconcile_plan_cursors`](Self::reconcile_plan_cursors) clamps an index into range,
-    /// which is right for undo (the two plans are versions of one document) and wrong here (the
-    /// incoming plan has no relationship to the outgoing one). A clamped `live_index` would
-    /// point at whichever unrelated row now occupies that position, and the view would report an
-    /// item as LIVE that the audience has never seen. Reporting a false Live row is worse than
-    /// reporting none, so every cursor is dropped.
+    /// [`reconcile_plan_cursors`](Self::reconcile_plan_cursors) clamps an index into range, which
+    /// is right for undo (the two plans are versions of one document) and wrong for an unrelated
+    /// one: a clamped `live_index` points at whichever unrelated row now occupies that position,
+    /// and the view reports an item as LIVE that the audience has never seen. A false Live row is
+    /// worse than none, so for an unrelated document every cursor is dropped.
+    ///
+    /// **"Unrelated" is not true of all four callers, and an earlier version of this comment said
+    /// it was.** `DuplicatePlan` clones every item and changes only the name, so its rows ARE the
+    /// outgoing rows; dropping the cursors for it un-marked the on-air row mid-service. The rows
+    /// are therefore compared, and the cursors survive when they did not move.
     fn install_plan(&mut self, next: ServicePlan) {
         // Replacing the plan with an IDENTICAL one changes nothing, so it must do nothing.
         //
@@ -3417,24 +3421,51 @@ impl LiveController {
         if next == self.plan {
             return;
         }
-        if self.live_idx.is_some() {
-            // Read the composed slide BEFORE the plan goes away — it is the only remaining
-            // record of what the audience is looking at.
-            if let Some(slide) = self.presenter.live_slide() {
-                self.live_free_text = Some(slide.title.clone());
-                self.live_free_body = slide.body.clone();
+        // Does the RUN SHEET change, or only the document around it?
+        //
+        // `DuplicatePlan` clones every item and changes only the name, so its incoming rows ARE
+        // the outgoing rows — same titles, same order, same content. Dropping the cursors for it
+        // would un-mark the row that is on air mid-service, reset `live_slide` to 0 so `Next`
+        // stopped advancing the song the audience is hearing, and clear Preview, all for a run
+        // sheet that did not move. Compared by CONTENT rather than by id, because a freshly
+        // created plan issues ids from 1 too and would otherwise look like a match.
+        let same_run_sheet = next.items() == self.plan.items();
+
+        if !same_run_sheet {
+            if self.live_idx.is_some() {
+                // Read the composed slide BEFORE the plan goes away — it is the only remaining
+                // record of what the audience is looking at.
+                if let Some(slide) = self.presenter.live_slide() {
+                    self.live_free_text = Some(slide.title.clone());
+                    self.live_free_body = slide.body.clone();
+                }
             }
+            self.live_idx = None;
+            self.staged_idx = None;
+            self.plan_cursor = None;
+            self.live_slide = 0;
+            self.staged_slide = 0;
+            self.cursor_slide = 0;
         }
-        self.live_idx = None;
-        self.staged_idx = None;
-        self.plan_cursor = None;
-        self.live_slide = 0;
-        self.staged_slide = 0;
-        self.cursor_slide = 0;
         self.plan = next;
+        // A replaced document has never been handed to anyone, so it is a DRAFT again.
+        //
+        // Without this the discarded plan's baseline outlives it: publish, then start a new
+        // plan, and the view reported `version: 1` with `changed: true` over a run sheet nobody
+        // had ever been given — contradicting what `PublishStateView` says about itself. Every
+        // replacement resets it, including `DuplicatePlan`, whose copy has never been published
+        // under its new name.
+        //
+        // `plan_revision` is deliberately NOT reset: it is a monotonic ordinal a client uses to
+        // notice movement, and winding it backwards would make an up-to-date client believe it
+        // was ahead of the host.
+        self.published_plan = None;
+        self.published_revision = None;
+        self.publish_count = 0;
+        self.changed_since_publish = false;
         // Preview held a row of the outgoing plan; that row is gone. A staged SCRIPTURE is not
         // a plan row and survives, so it is checked first — same condition as `RemoveItem`.
-        if self.staged_scripture.is_none() {
+        if !same_run_sheet && self.staged_scripture.is_none() {
             self.presenter.clear_preview();
         }
         self.reconcile_after_plan_change();
@@ -3446,7 +3477,7 @@ impl LiveController {
     /// last row has been accepted. A prefix-applied import is worse than a refused one: the
     /// coordinator is left with a partial run sheet and nothing tells them where it stopped.
     fn import_plan(&mut self, name: &str, items: &[ImportItemView]) -> ControllerReply {
-        let Some(name) = valid_plan_name(name) else {
+        let Some(name) = valid_plan_label(name) else {
             return ControllerReply::Deny(DenyReason::BadRequest);
         };
         // Bound the untrusted ingress at the cap the domain documents (no-leak): an import is
@@ -3462,19 +3493,26 @@ impl LiveController {
             };
             // Titles get the plan-name rule: non-blank, bounded, no control characters. Bounding
             // matters most here — 500 rows of unbounded title is unbounded memory.
-            let Some(title) = valid_plan_name(&item.title) else {
+            let Some(title) = valid_plan_label(&item.title) else {
                 return ControllerReply::Deny(DenyReason::BadRequest);
             };
             let id = built.add_item(kind, title);
-            if let Some(owner) = item.owner.as_deref() {
-                // Present-but-invalid is refused rather than dropped. A client that wants no
-                // owner omits the field; one that sent a blank or hostile string made a mistake
-                // worth reporting. The domain also refuses an owner on a `section` divider
-                // (`PlanError::NotApplicable`), which surfaces here as a rejected import rather
-                // than a silently unstaffed row.
-                let Some(owner) = valid_plan_name(owner) else {
+            // A BLANK owner cell means unassigned, which is `set_item_owner`'s own reading of it
+            // (it filters a blank owner to `None`). A spreadsheet export has empty owner cells as
+            // a matter of course, and failing an entire run sheet over one would be a gratuitous
+            // divergence from the domain. A non-blank owner is validated like any other label.
+            if let Some(owner) = item
+                .owner
+                .as_deref()
+                .map(str::trim)
+                .filter(|o| !o.is_empty())
+            {
+                let Some(owner) = valid_plan_label(owner) else {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 };
+                // The domain refuses an owner on a `section` divider
+                // (`PlanError::NotApplicable`), which surfaces here as a rejected import rather
+                // than a silently unstaffed row.
                 if built.set_item_owner(id, Some(owner.to_string())).is_err() {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 }
@@ -3518,13 +3556,13 @@ impl LiveController {
 }
 
 /// The trimmed form of a wire-supplied plan name / item title / owner, or `None` when it is not
-/// acceptable ([`selahcue_core::plan::plan_name_valid`]: non-blank, bounded, no control chars).
+/// acceptable ([`selahcue_core::plan::plan_label_valid`]: non-blank, bounded, no control chars).
 ///
 /// One helper for all three because they are the same kind of value — a short single-line label
 /// that a coordinator types and later searches for — and giving them one rule means a reviewer
 /// checks one predicate instead of three that drift apart.
-fn valid_plan_name(name: &str) -> Option<&str> {
-    selahcue_core::plan::plan_name_valid(name).then(|| name.trim())
+fn valid_plan_label(name: &str) -> Option<&str> {
+    selahcue_core::plan::plan_label_valid(name).then(|| name.trim())
 }
 
 /// Build a [`ControlServer`](selahcue_lan::ControlServer) handler that drives a

@@ -8,10 +8,10 @@
 
 use crate::controller::LiveController;
 use selahcue_lan::protocol::{
-    Command, ContentLinkView, DetectionView, OperatorStateView, OutputHealthView, PlanItemView,
-    PlanSummaryView, PlanTemplateView, PublishStateView, SavedThemeView, ScaleFit, ScreenThemeView,
-    ScreenView, SessionHealthView, StorageHealthView, TimerSnapshot, TranscriptSegmentView,
-    ViewerView,
+    Command, ContentLinkView, DetectionView, ImportItemView, OperatorStateView, OutputHealthView,
+    PlanItemView, PlanSummaryView, PlanTemplateView, PublishStateView, SavedThemeView, ScaleFit,
+    ScreenThemeView, ScreenView, SessionHealthView, StorageHealthView, TimerSnapshot,
+    TranscriptSegmentView, ViewerView,
 };
 use selahcue_lan::Role;
 use selahcue_present::FrameBuffer;
@@ -325,6 +325,39 @@ impl OperatorShell {
         self.act(&Command::RenameItem {
             item_id,
             title: title.into(),
+        })
+    }
+
+    /// Publish the plan — the coordinator→operator hand-off (FR-006). Marks the current
+    /// revision as published; changes nothing in Preview and nothing on Live.
+    pub fn publish_plan(&self) -> OperatorView {
+        self.act(&Command::PublishPlan)
+    }
+
+    /// Replace the plan with a fresh empty one called `name` ("Create" on the empty-plan frame).
+    pub fn new_plan(&self, name: &str) -> OperatorView {
+        self.act(&Command::NewPlan { name: name.into() })
+    }
+
+    /// Replace the plan with one built from a starter `template` (the ids the view reports in
+    /// `plan_templates`), called `name`.
+    pub fn template_plan(&self, template: &str, name: &str) -> OperatorView {
+        self.act(&Command::TemplatePlan {
+            template: template.into(),
+            name: name.into(),
+        })
+    }
+
+    /// Replace the plan with an independent copy of the CURRENT plan under `name` (FR-005).
+    pub fn duplicate_plan(&self, name: &str) -> OperatorView {
+        self.act(&Command::DuplicatePlan { name: name.into() })
+    }
+
+    /// Replace the plan with an imported run sheet. Refused whole if any row is invalid.
+    pub fn import_plan(&self, name: &str, items: Vec<ImportItemView>) -> OperatorView {
+        self.act(&Command::ImportPlan {
+            name: name.into(),
+            items,
         })
     }
 
@@ -931,6 +964,54 @@ impl RemoteOperator {
 
     /// Append a plan item on the host (requires the Operator role).
     /// `content` is the optional plain-text stanza body for songs (S8-1).
+    /// Publish the plan on the HOST (FR-006). The host is authoritative for publish state, so
+    /// this goes over the wire like any other command rather than being tracked locally.
+    pub async fn publish_plan(&mut self) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::PublishPlan).await
+    }
+
+    /// Replace the host's plan with a fresh empty one called `name`.
+    pub async fn new_plan(
+        &mut self,
+        name: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::NewPlan { name: name.into() }).await
+    }
+
+    /// Replace the host's plan with one built from a starter `template`, called `name`.
+    pub async fn template_plan(
+        &mut self,
+        template: &str,
+        name: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::TemplatePlan {
+            template: template.into(),
+            name: name.into(),
+        })
+        .await
+    }
+
+    /// Replace the host's plan with an independent copy of it under `name` (FR-005).
+    pub async fn duplicate_plan(
+        &mut self,
+        name: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::DuplicatePlan { name: name.into() }).await
+    }
+
+    /// Replace the host's plan with an imported run sheet.
+    pub async fn import_plan(
+        &mut self,
+        name: &str,
+        items: Vec<ImportItemView>,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::ImportPlan {
+            name: name.into(),
+            items,
+        })
+        .await
+    }
+
     pub async fn add_item(
         &mut self,
         kind: &str,

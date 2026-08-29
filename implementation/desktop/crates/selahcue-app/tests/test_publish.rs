@@ -11,7 +11,7 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_app::{ControllerReply, LiveController};
-use selahcue_core::plan::{ItemKind, ServicePlan, MAX_PLAN_ITEMS, MAX_PLAN_NAME_LEN};
+use selahcue_core::plan::{ItemKind, ServicePlan, MAX_PLAN_ITEMS, MAX_PLAN_LABEL_LEN};
 use selahcue_lan::protocol::{Command, DenyReason, ImportItemView};
 use selahcue_present::Theme;
 
@@ -22,10 +22,10 @@ const _: () = assert!(
     MAX_PLAN_ITEMS >= 2,
     "the import cap test needs a cap with room below it"
 );
-/// Likewise the name battery builds a name of exactly `MAX_PLAN_NAME_LEN + 1` characters and
-/// expects it refused while `MAX_PLAN_NAME_LEN` is accepted.
+/// Likewise the name battery builds a name of exactly `MAX_PLAN_LABEL_LEN + 1` characters and
+/// expects it refused while `MAX_PLAN_LABEL_LEN` is accepted.
 const _: () = assert!(
-    MAX_PLAN_NAME_LEN >= 2,
+    MAX_PLAN_LABEL_LEN >= 2,
     "the name-length test needs a bound with room below it"
 );
 
@@ -227,9 +227,11 @@ fn publishing_never_changes_the_live_output() {
 }
 
 #[test]
-fn every_plan_replacement_keeps_the_live_slide_on_air() {
+fn a_replacement_that_changes_the_run_sheet_keeps_the_live_slide_on_air() {
     // NFR-024 / FR-012: a coordinator starting next week's run sheet must not blank the service
-    // that is running. All four lifecycle commands share `install_plan`, so each is exercised.
+    // that is running. These three bring a DIFFERENT run sheet, so the outgoing rows are gone and
+    // the cursors cannot survive. `DuplicatePlan` is deliberately not here — its rows are the
+    // same rows, and it has its own test below.
     let replacements: Vec<(&str, Command)> = vec![
         (
             "new_plan",
@@ -242,12 +244,6 @@ fn every_plan_replacement_keeps_the_live_slide_on_air() {
             Command::TemplatePlan {
                 template: "sunday-morning".into(),
                 name: "Next Week".into(),
-            },
-        ),
-        (
-            "duplicate_plan",
-            Command::DuplicatePlan {
-                name: "Sunday (copy)".into(),
             },
         ),
         (
@@ -268,7 +264,7 @@ fn every_plan_replacement_keeps_the_live_slide_on_air() {
         assert_eq!(c.apply(&command), ControllerReply::Ack, "{label} refused");
 
         let view = c.operator_view();
-        // POSITIVE CONTROL: the plan really was replaced. Without it, "Live unchanged" is the
+        // POSITIVE CONTROL: the run sheet really did change. Without it, "Live unchanged" is the
         // reading you also get from a command that did nothing.
         assert_ne!(
             view.plan_name, "Sunday",
@@ -282,9 +278,9 @@ fn every_plan_replacement_keeps_the_live_slide_on_air() {
         );
         assert_eq!(
             view.live_index, None,
-            "{label} left a plan row marked LIVE after replacing the plan; the incoming rows are \
-             unrelated to the outgoing ones, so a clamped index reports an item the audience has \
-             never seen"
+            "{label} left a plan row marked LIVE after bringing a different run sheet; the \
+             incoming rows are unrelated to the outgoing ones, so a clamped index reports an \
+             item the audience has never seen"
         );
         assert_eq!(
             view.live_free_text,
@@ -293,6 +289,50 @@ fn every_plan_replacement_keeps_the_live_slide_on_air() {
              the same way removing the live item does"
         );
     }
+}
+
+#[test]
+fn duplicating_mid_service_keeps_the_on_air_row_marked_and_navigable() {
+    // `ServicePlan::duplicate` clones every item and changes only the name, so the incoming rows
+    // ARE the outgoing rows. Treating that as an unrelated document un-marks the row that is on
+    // air, demotes it to a free slide, and resets `live_slide` to 0 — after which `Next` stops
+    // advancing the song the audience is hearing. Found by code review of PR #14; the earlier
+    // version of this suite asserted the broken behaviour as correct.
+    let (mut c, ids) = controller();
+    go_live(&mut c, ids[0]);
+    let pixels_before = c.presenter().live_output().bytes().to_vec();
+
+    assert_eq!(
+        c.apply(&Command::DuplicatePlan {
+            name: "Next Week".into()
+        }),
+        ControllerReply::Ack
+    );
+
+    let view = c.operator_view();
+    // POSITIVE CONTROL: this really was a replacement, not a no-op short-circuited by the
+    // identity guard — the name changed.
+    assert_eq!(view.plan_name, "Next Week", "the duplicate did not install");
+    assert_eq!(
+        c.presenter().live_output().bytes(),
+        pixels_before.as_slice(),
+        "duplicating changed the audience output"
+    );
+    assert_eq!(
+        view.live_index,
+        Some(0),
+        "duplicating un-marked the row that is on air, over a run sheet identical to the one it \
+         replaced"
+    );
+    assert_eq!(
+        view.live_free_text, None,
+        "the live item was demoted to a free slide even though it is still a plan row"
+    );
+    assert_eq!(
+        c.plan().items()[0].title,
+        "Opening Song",
+        "the duplicate must carry the same rows in the same order"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -415,7 +455,7 @@ fn each_lifecycle_guard_refuses_an_input_only_it_rejects() {
     // ways would still pass with the guard it is named for deleted. The two divider cases are
     // where that matters most: the `planned_secs` case carries NO owner, because with one the
     // owner guard fires first and the duration guard is never reached.
-    let too_long: String = "x".repeat(MAX_PLAN_NAME_LEN + 1);
+    let too_long: String = "x".repeat(MAX_PLAN_LABEL_LEN + 1);
     let over_cap: Vec<ImportItemView> = (0..=MAX_PLAN_ITEMS)
         .map(|i| item("song", &format!("Item {i}")))
         .collect();
@@ -467,13 +507,15 @@ fn each_lifecycle_guard_refuses_an_input_only_it_rejects() {
             },
         ),
         (
-            "present but blank owner",
+            "control character in an owner",
             Command::ImportPlan {
                 name: "Valid Name".into(),
                 items: vec![ImportItemView {
                     kind: "song".into(),
                     title: "Opening".into(),
-                    owner: Some("  ".into()),
+                    // Non-blank, so it is not skipped as unassigned, and on a triggerable item,
+                    // so the divider rule cannot pre-empt the label rule.
+                    owner: Some("A\u{7}da".into()),
                     planned_secs: None,
                 }],
             },
@@ -540,6 +582,16 @@ fn each_lifecycle_guard_refuses_an_input_only_it_rejects() {
                 items: vec![item("song", "Open\u{200D}ing")],
             },
         ),
+        (
+            // A THIRD category: U+2028 is Zl, so neither `is_control` (Cc) nor
+            // `is_invisible_formatting` (Cf) covers it. It is `White_Space`, so `trim` strips it
+            // at the edges — which is why it has to be embedded here to be exercised at all.
+            "line separator embedded in an item title",
+            Command::ImportPlan {
+                name: "Valid Name".into(),
+                items: vec![item("song", "Sun\u{2028}day")],
+            },
+        ),
     ];
 
     for (label, command) in cases {
@@ -571,7 +623,7 @@ fn each_lifecycle_guard_refuses_an_input_only_it_rejects() {
 fn the_benign_counterpart_of_every_refused_case_still_works() {
     // Without this, "refused" above is indistinguishable from a dead code path that refuses
     // everything. Each case here is the same command with the one offending detail corrected.
-    let at_bound: String = "x".repeat(MAX_PLAN_NAME_LEN);
+    let at_bound: String = "x".repeat(MAX_PLAN_LABEL_LEN);
     let at_cap: Vec<ImportItemView> = (0..MAX_PLAN_ITEMS)
         .map(|i| item("song", &format!("Item {i}")))
         .collect();
@@ -608,6 +660,21 @@ fn the_benign_counterpart_of_every_refused_case_still_works() {
             Command::ImportPlan {
                 name: "Valid Name".into(),
                 items: vec![item("song", "Opening")],
+            },
+        ),
+        (
+            // A spreadsheet export has empty owner cells as a matter of course; the row imports
+            // unassigned rather than failing the whole file. Matches `set_item_owner`, which
+            // filters a blank owner to `None`.
+            "a blank owner cell, meaning unassigned",
+            Command::ImportPlan {
+                name: "Valid Name".into(),
+                items: vec![ImportItemView {
+                    kind: "song".into(),
+                    title: "Opening".into(),
+                    owner: Some("   ".into()),
+                    planned_secs: None,
+                }],
             },
         ),
         (
@@ -881,18 +948,205 @@ fn duplicating_to_the_same_name_is_a_true_no_op_and_keeps_the_live_row_marked() 
          an edit that did not happen"
     );
 
-    // POSITIVE CONTROL: a duplicate under a DIFFERENT name is still a real replacement, so the
-    // guard above is not simply disabling the command.
+    // POSITIVE CONTROL: the guard is not simply disabling the command. A duplicate under a
+    // DIFFERENT name still installs — the name changes — and a replacement that brings a
+    // different run sheet still drops the cursors.
     assert_eq!(
         c.apply(&Command::DuplicatePlan {
             name: "Sunday (copy)".into()
         }),
         ControllerReply::Ack
     );
-    assert_eq!(c.plan().name, "Sunday (copy)");
+    assert_eq!(c.plan().name, "Sunday (copy)", "the rename did not install");
+    assert_eq!(
+        c.live_index(),
+        Some(0),
+        "the rows did not move, so the on-air row must stay marked"
+    );
+    assert_eq!(
+        c.apply(&Command::NewPlan {
+            name: "Next Week".into()
+        }),
+        ControllerReply::Ack
+    );
     assert_eq!(
         c.live_index(),
         None,
-        "a real replacement still drops the cursors"
+        "a replacement that DOES change the run sheet must still drop the cursors"
+    );
+}
+
+#[test]
+fn a_replaced_plan_is_a_draft_again_and_never_inherits_the_old_ones_publish_state() {
+    // Found by code review of PR #14. Every replacement used to leave the DISCARDED plan's
+    // baseline in place, so publishing and then starting a new plan reported `version: 1` and
+    // `changed: true` over a run sheet nobody had ever been handed — contradicting what
+    // `PublishStateView` says about itself.
+    //
+    // `DuplicatePlan` is included deliberately: its rows are the same rows, but the copy has
+    // never been published under its new name, so it is a draft too.
+    let replacements: Vec<(&str, Command)> = vec![
+        (
+            "new_plan",
+            Command::NewPlan {
+                name: "Next Week".into(),
+            },
+        ),
+        (
+            "template_plan",
+            Command::TemplatePlan {
+                template: "sunday-morning".into(),
+                name: "Next Week".into(),
+            },
+        ),
+        (
+            "duplicate_plan",
+            Command::DuplicatePlan {
+                name: "Next Week".into(),
+            },
+        ),
+        (
+            "import_plan",
+            Command::ImportPlan {
+                name: "Imported".into(),
+                items: vec![item("song", "One")],
+            },
+        ),
+    ];
+
+    for (label, command) in replacements {
+        let (mut c, _) = controller();
+        assert_eq!(c.apply(&Command::PublishPlan), ControllerReply::Ack);
+        // POSITIVE CONTROL: there really is a published baseline to inherit, so "draft" below is
+        // a verdict about state that existed rather than state that was never set.
+        let published = publish(&c);
+        assert_eq!(
+            published.version, 1,
+            "{label}: nothing was published to inherit"
+        );
+        assert_eq!(published.published_revision, Some(published.revision));
+
+        assert_eq!(c.apply(&command), ControllerReply::Ack, "{label} refused");
+
+        let after = publish(&c);
+        assert_eq!(
+            after.published_revision, None,
+            "{label}: the discarded plan's baseline outlived it — the new plan reports as having \
+             been published when nobody has ever been handed it"
+        );
+        assert_eq!(
+            after.version, 0,
+            "{label}: the new plan inherited a version number it never earned"
+        );
+        assert!(
+            !after.changed,
+            "{label}: a brand-new plan reports changes to review against a baseline that is not \
+             its own"
+        );
+        assert!(
+            after.revision >= published.revision,
+            "{label}: the revision went backwards, which would make an up-to-date client believe \
+             it was ahead of the host"
+        );
+    }
+}
+
+#[test]
+fn an_edit_that_is_reversed_by_a_second_edit_clears_the_badge() {
+    // The undo path already proved the badge compares documents. This is the OTHER route to the
+    // same place, and `==` got it wrong: adding an item and removing it again leaves the run
+    // sheet exactly as published while `next_id` has advanced for good, so a value comparison
+    // latched the badge on permanently with nothing behind it for the operator to review.
+    let (mut c, _) = controller();
+    assert_eq!(c.apply(&Command::PublishPlan), ControllerReply::Ack);
+
+    assert_eq!(
+        c.apply(&Command::AddItem {
+            kind: "song".into(),
+            title: "Temporary".into(),
+            content: None
+        }),
+        ControllerReply::Ack
+    );
+    let added = publish(&c);
+    assert!(added.changed, "the add must raise the badge first");
+
+    let temp_id = c.plan().items().last().unwrap().id.0;
+    assert_eq!(
+        c.apply(&Command::RemoveItem { item_id: temp_id }),
+        ControllerReply::Ack
+    );
+
+    let reversed = publish(&c);
+    // POSITIVE CONTROL: the removal really moved the document, so "no badge" is a verdict about
+    // a comparison that ran.
+    assert!(
+        reversed.revision > added.revision,
+        "the removal did not move the revision, so the comparison was never exercised"
+    );
+    assert_eq!(
+        c.plan().len(),
+        2,
+        "the run sheet is back to what was published"
+    );
+    assert!(
+        !reversed.changed,
+        "the run sheet matches the published one exactly, so there is nothing to review — a \
+         badge here is the same empty badge the document comparison exists to prevent"
+    );
+}
+
+#[test]
+fn the_console_shell_can_reach_every_publish_and_lifecycle_action() {
+    // The Tauri console drives `OperatorShell`, not `LiveController` directly, so a command with
+    // no wrapper here is a command the operator surface cannot invoke however well the protocol
+    // and RBAC layers work. Found by code review of PR #14: the wire and the controller were
+    // complete while the console seam was missing, which would have left the frontend ticket
+    // blocked on a backend that reported itself finished.
+    use selahcue_app::OperatorShell;
+    use std::sync::{Arc, Mutex};
+
+    let (c, _) = controller();
+    let sh = OperatorShell::new(Arc::new(Mutex::new(c)));
+
+    let v = sh.publish_plan();
+    let p = v.publish.expect("the shell view must carry publish state");
+    assert_eq!(p.version, 1, "publish did not reach the controller");
+
+    let v = sh.new_plan("Next Week");
+    assert_eq!(v.plan_name, "Next Week");
+    assert_eq!(v.items.len(), 0);
+    assert_eq!(
+        v.publish.expect("publish state").version,
+        0,
+        "a replaced plan is a draft again, through the shell as through the wire"
+    );
+
+    let template = v.plan_templates.first().expect("templates offered").clone();
+    let v = sh.template_plan(&template.id, "From Template");
+    assert_eq!(v.plan_name, "From Template");
+    assert_eq!(v.items.len() as u32, template.items);
+
+    let v = sh.duplicate_plan("A Copy");
+    assert_eq!(v.plan_name, "A Copy");
+    assert_eq!(
+        v.items.len() as u32,
+        template.items,
+        "the duplicate carries the same rows"
+    );
+
+    let v = sh.import_plan(
+        "Imported",
+        vec![item("song", "One"), item("section", "Two")],
+    );
+    assert_eq!(v.plan_name, "Imported");
+    assert_eq!(v.items.len(), 2);
+
+    // A refused action returns the unchanged view rather than erroring — the shell's convention
+    // for every other command, and what lets the UI simply re-render.
+    let v = sh.new_plan("   ");
+    assert_eq!(
+        v.plan_name, "Imported",
+        "a refused lifecycle action must leave the plan alone"
     );
 }

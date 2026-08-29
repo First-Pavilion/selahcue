@@ -209,8 +209,15 @@ const PLAN_EDIT_PROBE: Command = Command::RemoveItem { item_id: 0 };
 /// — are both *copies* of the policy, and this repository has already been bitten by a control
 /// that re-derived a predicate instead of consuming it. Going through `authorize` means the
 /// affordance and the gate read the same `required_permission` match and the same
-/// `Role::permissions()` table: changing either moves both, and there is no expression left
-/// that only one of them consults.
+/// `Role::permissions()` table, so changing either moves both.
+///
+/// **It does not remove every expression only one side consults, and an earlier version of this
+/// comment claimed it did.** The verdict is pinned to `PLAN_EDIT_PROBE` alone; the mapping for
+/// every OTHER plan-edit command is still an expression the gate consults and this does not.
+/// What closes that is a test (`test_rbac.rs`) asserting all of them agree with this verdict for
+/// all four roles — a guard that moved from the type system into a test, rather than one that
+/// vanished. That test's command list is hand-maintained, which is where the residual risk now
+/// sits.
 ///
 /// # This is an affordance, not a gate
 ///

@@ -238,6 +238,23 @@ fn sanitize_field(s: &str) -> String {
 /// surface. Dropped rather than replaced with a space, because they are zero-width by
 /// definition: substituting a space would change how legitimate text looks, whereas removing
 /// them restores what it already appeared to be. Found by security review of PR #13.
+/// Line and paragraph separators (Unicode `Zl` / `Zp`), which are covered by NEITHER
+/// `char::is_control` (they are not Cc) NOR [`is_invisible_formatting`] (they are not Cf).
+///
+/// They render as a hard break, so one embedded in a plan title turns a single-line run-sheet
+/// label into two lines. `str::trim` removes them at the EDGES, because they are `White_Space` —
+/// which is exactly what makes the gap easy to miss: the obvious test, a label made only of
+/// U+2028, is caught by the non-blank rule, while `"Sun\u{2028}day"` sails through. Found by
+/// code review of PR #14.
+///
+/// Deliberately separate from `is_invisible_formatting`: adding them there would also change
+/// what [`sanitize_field`] does to stored link labels, which is a different decision on a
+/// different path. **That path still has this gap** — `sanitize_field` neither drops nor
+/// replaces U+2028 — and closing it is not this change's to make.
+fn is_line_separator(c: char) -> bool {
+    matches!(c, '\u{2028}' | '\u{2029}')
+}
+
 fn is_invisible_formatting(c: char) -> bool {
     matches!(c,
         '\u{200B}'..='\u{200F}'   // zero-width space/non-joiner/joiner, LRM, RLM
@@ -922,6 +939,27 @@ impl ServicePlan {
         }
     }
 
+    /// Whether `other` is the same plan DOCUMENT as this one — everything a person can see.
+    ///
+    /// Compares the name and the ordered items, and deliberately NOT [`next_id`](Self::next_id),
+    /// which is internal bookkeeping for issuing future ids and appears nowhere in the run sheet.
+    ///
+    /// # Why this is not `PartialEq`
+    ///
+    /// `==` is the right answer to "are these values identical", and it is what undo needs. This
+    /// answers a different question — "would an operator see any difference?" — and the two come
+    /// apart on exactly one field: add an item and remove it again and the plan is observably
+    /// unchanged while `next_id` has advanced for good. A change-since-publish badge built on
+    /// `==` therefore latches on permanently after any add-then-remove, which is the *same*
+    /// defect (a badge with nothing behind it) that comparing documents was chosen to avoid.
+    ///
+    /// It lives here, beside the struct, rather than in the caller: a caller-local field subset
+    /// silently stops covering a field the day `ServicePlan` grows one, and the caller is the
+    /// last place anyone looks when that happens.
+    pub fn same_document(&self, other: &ServicePlan) -> bool {
+        self.name == other.name && self.items == other.items
+    }
+
     /// A deep, independent copy with a new name (FR-005). Ids are preserved but
     /// the copy has its own id counter, so future additions never collide.
     pub fn duplicate(&self, new_name: impl Into<String>) -> ServicePlan {
@@ -933,7 +971,12 @@ impl ServicePlan {
     }
 }
 
-/// Longest permitted service-plan NAME, in characters.
+/// Longest permitted plan LABEL — a plan name, an item title, or an owner — in characters.
+///
+/// Named for the role rather than for the plan name alone, because all three are the same kind
+/// of value and share one rule. An earlier name said `..._PLAN_NAME_...` while two of its three
+/// callers passed something else, which is the sort of small lie that makes a reviewer trust the
+/// next identifier less.
 ///
 /// `ServicePlan.name` was previously unbounded because every writer was trusted seeding or a
 /// rename of an item (not the plan). The publish/hand-off commands (FR-006) create and rename
@@ -941,10 +984,19 @@ impl ServicePlan {
 /// wire-reachable string has. Matched to [`MAX_LINK_LABEL_LEN`]: both are one-line display
 /// labels shown in the same run-sheet header, and a plan title far shorter than this is already
 /// unreadable in the UI.
-pub const MAX_PLAN_NAME_LEN: usize = 120;
+///
+/// # Enforced at the WIRE INGRESS only
+///
+/// Stated precisely because the obvious reading is wrong: this does not make `ServicePlan.name`
+/// a bounded field. [`ServicePlan::from_parts`], the persistence rehydration path, still applies
+/// no bound, so a name stored by an older build or edited into the database comes back at full
+/// length. That is unlike [`sanitize_label`], which this doc otherwise follows and which is
+/// applied on the way in AND again on decode. Closing that gap means bounding the rehydration
+/// path too, which is a persistence change this does not make.
+pub const MAX_PLAN_LABEL_LEN: usize = 120;
 
 /// Whether `name` is acceptable as a service-plan name arriving from the untrusted wire:
-/// non-empty after trimming, within [`MAX_PLAN_NAME_LEN`] characters, and free of BOTH control
+/// non-empty after trimming, within [`MAX_PLAN_LABEL_LEN`] characters, and free of BOTH control
 /// characters and [`is_invisible_formatting`] characters.
 ///
 /// # Both categories, because one is not enough
@@ -981,13 +1033,13 @@ pub const MAX_PLAN_NAME_LEN: usize = 120;
 /// permitting U+200D is exactly the homograph hole this closes, and the alternative — silently
 /// dropping it, as the codec does — would mangle the sequence into three separate people
 /// without saying so. Single emoji carry no joiner and are unaffected.
-pub fn plan_name_valid(name: &str) -> bool {
+pub fn plan_label_valid(name: &str) -> bool {
     let trimmed = name.trim();
     !trimmed.is_empty()
-        && trimmed.chars().count() <= MAX_PLAN_NAME_LEN
+        && trimmed.chars().count() <= MAX_PLAN_LABEL_LEN
         && !trimmed
             .chars()
-            .any(|c| c.is_control() || is_invisible_formatting(c))
+            .any(|c| c.is_control() || is_invisible_formatting(c) || is_line_separator(c))
 }
 
 /// A named starter template — a run-sheet skeleton a coordinator begins a service from
