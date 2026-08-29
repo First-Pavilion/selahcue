@@ -2026,6 +2026,17 @@ impl LiveController {
             // Saturating throughout: MAX_PLAN_ITEMS puts these far below u32, so this can
             // never actually bite — it just means a pathological plan cannot panic a release
             // build or wrap to a smaller count in a debug one.
+            // A Section is a DIVIDER, not an item. It is counted only as a section, and is
+            // excluded from `items`, `assigned` and the link tallies. The design draws it that
+            // way — node 608:875 reads "6 items" and "Assigned 6 / 6" over six rows and three
+            // dividers — and the reasoning is the same one that keeps dividers out of
+            // `partial`: a divider is not a staffable thing, so counting it in the assigned
+            // denominator would make a fully staffed plan read as incomplete forever.
+            // `sections` keeps the count, so nothing is lost, only unconflated.
+            if item.kind == ItemKind::Section {
+                sum.sections = sum.sections.saturating_add(1);
+                continue;
+            }
             sum.items = sum.items.saturating_add(1);
             let bucket = match item.kind {
                 ItemKind::Song => &mut sum.songs,
@@ -2034,6 +2045,9 @@ impl LiveController {
                 ItemKind::Media => &mut sum.media,
                 ItemKind::Announcement => &mut sum.announcements,
                 ItemKind::Timer => &mut sum.timers,
+                // Unreachable: handled by the `continue` above. Kept as a real arm rather than
+                // an `unreachable!()` so adding an ItemKind is a compile error here, never a
+                // panic in front of an audience.
                 ItemKind::Section => &mut sum.sections,
             };
             *bucket = bucket.saturating_add(1);

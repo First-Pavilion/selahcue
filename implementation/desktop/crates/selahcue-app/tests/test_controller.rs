@@ -5200,3 +5200,82 @@ fn a_parseable_passage_that_names_no_verse_is_reported_missing_on_the_wire() {
     );
     assert_eq!(view.summary.unwrap().missing, 0);
 }
+
+#[test]
+fn the_plan_summary_reproduces_the_designs_own_numbers() {
+    // Node 608:875 (Plan Summary) draws a specific plan, and the whole panel has to add up:
+    // "6 items" over a run sheet of SIX rows and THREE section dividers, "Assigned 6 / 6",
+    // "Total time 0:53:12", "Missing content 0", and the per-kind rows summing to 6. A Section
+    // is not an item — this test is what pins that definition, because both an earlier design
+    // QA pass and two engineers reached it independently.
+    let mut plan = ServicePlan::new("Sunday Morning");
+    let add = |plan: &mut ServicePlan, kind, title: &str, owner: &str, secs| {
+        let id = plan.add_item(kind, title);
+        plan.set_item_owner(id, Some(owner.into())).unwrap();
+        plan.set_item_planned_secs(id, Some(secs)).unwrap();
+    };
+    plan.add_item(ItemKind::Section, "GATHERING");
+    add(&mut plan, ItemKind::Song, "Opening Song", "Worship", 300);
+    add(
+        &mut plan,
+        ItemKind::Announcement,
+        "Welcome & Announcements",
+        "Host",
+        120,
+    );
+    add(
+        &mut plan,
+        ItemKind::Scripture,
+        "Romans 8:28-30",
+        "Scripture op",
+        120,
+    );
+    plan.add_item(ItemKind::Section, "THE WORD");
+    add(
+        &mut plan,
+        ItemKind::SlideGroup,
+        "Sermon: The Waiting",
+        "Pastor",
+        2100,
+    );
+    add(&mut plan, ItemKind::Media, "Testimony Video", "Media", 192);
+    plan.add_item(ItemKind::Section, "RESPONSE");
+    add(&mut plan, ItemKind::Song, "Closing Song", "Worship", 360);
+
+    let c = LiveController::new(plan, 320, 180, Theme::dark());
+    let s = c.operator_view().summary.unwrap();
+
+    assert_eq!(s.items, 6, "three dividers are not items");
+    assert_eq!(s.sections, 3, "they are still counted, just not conflated");
+    assert_eq!(s.songs, 2);
+    assert_eq!(s.scripture, 1);
+    assert_eq!(s.presentations, 1);
+    assert_eq!(s.media, 1);
+    assert_eq!(s.announcements, 1);
+    assert_eq!(s.missing, 0, "Missing content 0");
+    assert_eq!(s.planned_total_secs, 3192, "Total time 0:53:12");
+    assert_eq!(
+        s.assigned, 6,
+        "Assigned 6 / 6 — a fully staffed plan must not read as short because of dividers"
+    );
+    assert!(
+        !s.partial,
+        "every item that can carry a duration has one, so the total is complete"
+    );
+
+    // The panel has to be internally consistent, not merely individually correct: the per-kind
+    // rows must account for exactly the item count, and no subset may exceed it.
+    assert_eq!(
+        s.songs + s.scripture + s.presentations + s.media + s.announcements + s.timers,
+        s.items,
+        "the per-kind rows must add up to Items, with sections outside that total"
+    );
+    assert!(
+        s.assigned <= s.items,
+        "assigned can never exceed the denominator"
+    );
+    assert!(
+        s.planned_items <= s.items,
+        "a contributing count above the item count would render as '7 of 6'"
+    );
+}

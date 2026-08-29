@@ -715,13 +715,16 @@ fn inert_section_dividers_never_make_a_total_partial() {
         "a plan whose only duration-less rows are section dividers is COMPLETE"
     );
 
-    // But a section deliberately given a duration still counts toward the sum.
+    // A divider is excluded from the roll-up ENTIRELY, so even a duration set on one does not
+    // reach the total. Otherwise `counted` could exceed the plan's item count and the UI would
+    // render "7 of 6".
     p.set_item_planned_secs(s1, Some(60)).unwrap();
+    let t = p.planned_total();
     assert_eq!(
-        p.planned_total().secs,
-        360,
-        "setting a duration on a section is deliberate, so it contributes"
+        t.secs, 300,
+        "a divider contributes no duration even when one has been set on it"
     );
+    assert_eq!(t.counted, 1, "and it is not counted as a contributing item");
 }
 
 #[test]

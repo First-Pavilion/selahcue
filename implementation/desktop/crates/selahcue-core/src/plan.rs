@@ -466,8 +466,10 @@ pub struct PlannedTotal {
     /// How many items carried a duration and so contributed to `secs`.
     pub counted: usize,
     /// How many items could have carried a duration and did not. `secs` excludes them, so a
-    /// non-zero value means the total is a FLOOR for the service, not its length. Inert
-    /// [`ItemKind::Section`] dividers are never counted here.
+    /// non-zero value means the total is a FLOOR for the service, not its length.
+    ///
+    /// Inert [`ItemKind::Section`] dividers are excluded from this roll-up entirely — from
+    /// `secs` and `counted` as well as from here. A divider is not a thing anyone schedules.
     pub unplanned: usize,
 }
 
@@ -729,20 +731,21 @@ impl ServicePlan {
     pub fn planned_total(&self) -> PlannedTotal {
         let mut t = PlannedTotal::default();
         for item in &self.items {
+            // A Section is a DIVIDER, not an item, so it is excluded from the roll-up
+            // entirely — it contributes no duration and creates no gap. The design draws this
+            // directly: node 608:875 shows "6 items" and "Total time 0:53:12" over a run sheet
+            // of six rows and three dividers, and the total is not marked partial. Counting a
+            // divider as a missing duration would mark every sectioned plan partial, and a
+            // warning that is always on is one coordinators learn to ignore.
+            if item.kind == ItemKind::Section {
+                continue;
+            }
             match item.planned_secs {
                 Some(secs) => {
                     t.secs = t.secs.saturating_add(secs);
                     t.counted = t.counted.saturating_add(1);
                 }
-                // A Section is an inert divider that never fires, so carrying no duration is
-                // its normal state, not an omission. Counting it would mark every sectioned
-                // plan partial, and a warning that is always on is one operators learn to
-                // ignore. A section GIVEN a duration still contributes above: that is
-                // deliberate.
-                None if item.kind != ItemKind::Section => {
-                    t.unplanned = t.unplanned.saturating_add(1)
-                }
-                None => {}
+                None => t.unplanned = t.unplanned.saturating_add(1),
             }
         }
         t
