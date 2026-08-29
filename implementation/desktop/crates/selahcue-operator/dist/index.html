@@ -1056,11 +1056,18 @@
             <div id="plan-palette-btns"></div>
           </aside>
           <section class="plan-col plan-runsheet" aria-label="Run sheet">
-            <h2 class="plan-col-h">RUN SHEET <span class="count-pill" id="plan-b-count"></span></h2>
+            <!-- "RUN SHEET  N items" left, "planned H:MM:SS" right (frame 608:925). The total is not
+                 decoration: section 9 records it as the fix for the MAJOR these frames were rejected
+                 for — a header disagreeing with the rows beneath it. -->
+            <h2 class="plan-col-h plan-runsheet-h">RUN SHEET <span class="count-pill" id="plan-b-count"></span><span class="plan-b-total" id="plan-b-total"></span></h2>
             <div id="plan-b-list" role="listbox" aria-label="Run sheet items"></div>
           </section>
-          <aside class="plan-col plan-inspector" aria-label="Item inspector">
-            <h2 class="plan-col-h">ITEM</h2>
+          <!-- Labelled BY the heading rather than a fixed aria-label: the panel swaps between PLAN
+               SUMMARY and ITEM, and a static label would announce the wrong panel half the time. -->
+          <aside class="plan-col plan-inspector" id="plan-insp-panel" tabindex="-1" aria-labelledby="plan-insp-h">
+            <!-- Swaps between "PLAN SUMMARY" (nothing selected, frame 608:875) and "ITEM"
+                 (an item is selected) — planRenderBuilder owns the text. -->
+            <h2 class="plan-col-h" id="plan-insp-h">PLAN SUMMARY</h2>
             <div id="plan-b-insp"><p class="coming-soon">Select an item to edit it and link its scripture or presentation.</p></div>
           </aside>
         </div>

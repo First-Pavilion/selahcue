@@ -6168,7 +6168,12 @@
       async function planLoadDecks() {
         try {
           const r = await invoke("deck_list");
-          planDecks = (r && r.decks) || [];
+          // A response without a real decks ARRAY is UNKNOWN, not "loaded and empty". `|| []`
+          // here defeated the catch branch below: a host that answers deck_list with null (an
+          // older host, or one where the command is not implemented) read as an empty library,
+          // so EVERY deck-linked item was flagged "⚠ presentation missing" and counted in the
+          // Plan Summary. Only a genuine array means the library was actually read.
+          planDecks = r && Array.isArray(r.decks) ? r.decks : null;
         } catch (e) {
           console.error(e);
           // Load FAILED — stay UNRESOLVED (null), not empty. planLinkChip only shows "⚠ missing"
@@ -6190,6 +6195,197 @@
         if (sel && sel.options.length) return Array.from(sel.options).map((o) => o.value);
         return ["KJV", "WEB"];
       }
+      // A visually-hidden prefix, so a bare value in a dense row ("Worship", "5:00") still reads
+      // as what it IS to a screen reader. The row is one option in a listbox, so an aria-label on
+      // a child <span> is unreliable; real text in the accessibility tree is not.
+      function srOnly(text) {
+        const s = document.createElement("span");
+        s.className = "sr-only";
+        s.textContent = text;
+        return s;
+      }
+      // The ONE predicate for "this item has a planned duration", used by the run-sheet row AND by
+      // planSummaryOf. A row and a total that disagree about what counts is the drift this whole
+      // surface was rejected for once; sharing the predicate makes disagreement impossible rather
+      // than merely tested-against. Absent = unset (renders "—", excluded from the sum, marks the
+      // total partial). An explicit 0 is SET, and renders 0:00.
+      // A single plan item longer than 24h is not a duration, it is corrupt or hostile input.
+      // isFinite alone is not a bound: 1e308 is finite and rendered "2.77e+304:58:56" as a total.
+      const PLAN_MAX_ITEM_SECS = 86400;
+      function planHasDuration(it) {
+        // Finite and non-negative: a LAN peer is untrusted, and a JSON-valid -1200 or 1e308 would
+        // otherwise render "-1:-15:00" / "Infinity:NaN:NaN" in the total (Sana S3). An out-of-range
+        // value is treated as UNSET rather than clamped — inventing a duration is worse than
+        // showing none.
+        return (
+          typeof it.planned_secs === "number" &&
+          isFinite(it.planned_secs) &&
+          it.planned_secs >= 0 &&
+          it.planned_secs <= PLAN_MAX_ITEM_SECS
+        );
+      }
+      // Spoken form for AT (UI-A1 §211): "eight colon zero zero" is not useful. The run-sheet row
+      // is role=option, so a descendant's aria-label feeds the option's accessible name — which is
+      // what a screen reader actually announces for the row.
+      function planSpokenDuration(secs) {
+        const h = Math.floor(secs / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        const sec = secs % 60;
+        const parts = [];
+        const unit = (n, one) => n + " " + one + (n === 1 ? "" : "s");
+        if (h) parts.push(unit(h, "hour"));
+        if (m) parts.push(unit(m, "minute"));
+        if (sec || !parts.length) parts.push(unit(sec, "second"));
+        return parts.join(" ");
+      }
+      // Row durations: m:ss under an hour (the design's 5:00 / 3:12), h:mm:ss at or above one, so a
+      // 65-minute item reads 1:05:00 and never "65:00" — which is indistinguishable from 65 seconds
+      // of m:ss at a glance and disagrees with how the total is formatted.
+      function planFmtDuration(secs) {
+        return secs >= 3600 ? planFmtTotal(secs) : fmtClock(secs);
+      }
+      // h:mm:ss for a plan total. fmtClock is m:ss, which would render a 53-minute plan as 53:12
+      // and a 65-minute one as 1:05 — indistinguishable from 1 minute 5 seconds.
+      function planFmtTotal(secs) {
+        const h = Math.floor(secs / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        return h + ":" + String(m).padStart(2, "0") + ":" + String(secs % 60).padStart(2, "0");
+      }
+      // Resolution state of a content link — the ONE place that decides it, so the run-sheet chip,
+      // the inspector deck card and the Plan Summary can never disagree. Three-state, because
+      // "could not check" is not "fine":
+      //   "missing"  - checked, and the content is gone   -> missing treatment
+      //   "unknown"  - nobody could check                 -> NOT resolved, never counted missing
+      //   "resolved" - it is there
+      // Decks are operator-owned by design: the host has no deck store and structurally cannot
+      // resolve a deck_id, so for a deck link LOCAL resolution stays authoritative whatever the
+      // host says. `status` is an additive field (86ajy0hw0), absent today; every branch below
+      // already holds without it and honours it the moment it lands.
+      function planLinkState(link) {
+        if (!link || typeof link !== "object") return "resolved";
+        // Decks are settled FIRST, before any host status. The operator owns the deck library and
+        // the host has no deck store, so when the library is loaded it is ground truth — a host
+        // "missing" for a deck the operator can see is stale, not authoritative. (Sana S1: this
+        // check used to sit after the status test, which inverted exactly that rule.)
+        if (link.kind === "deck") {
+          if (planDecks) return planDecks.some((d) => d && d.id === link.id) ? "resolved" : "missing";
+          // Library unavailable — no ground truth here, so defer to whatever the host could say.
+          return link.status === "missing" ? "missing" : "unknown";
+        }
+        if (link.status === "missing") return "missing";
+        if (link.status === "unknown") return "unknown";
+        return "resolved";
+      }
+      // Plan Summary figures (frame 608:875). Computed from the view we already hold, so the panel
+      // ships today. The backend `summary` object (86ajy0hw0) is additive and arrives on the same
+      // view; planRenderSummary reads ONE summary-shaped object either way, so adopting it is a
+      // change here and nowhere else.
+      // A plan longer than a week is corrupt, not a service. Bounds the host total the way
+      // PLAN_MAX_ITEM_SECS bounds a single item's duration.
+      const PLAN_MAX_TOTAL_SECS = 86400 * 7;
+      const PLAN_MAX_COUNT = 100000;
+      const SUMMARY_COUNTS = ["items", "songs", "scripture", "presentations", "media",
+                              "announcements", "timers", "sections", "assigned", "missing", "unknown"];
+      // Validate the host summary before trusting it, and fall back to the local computation on
+      // anything malformed.
+      //
+      // The pass-through crosses a TRUST BOUNDARY. Handing the host's object straight to the
+      // renderer silently inherited every defect the local path had already been hardened against:
+      // `{}` rendered "NaN:NaN:NaN", 1e308 rendered "2.77e+304:58:56" (the exact string
+      // PLAN_MAX_ITEM_SECS exists to prevent), and a total disagreeing with the rows beneath it is
+      // the §9 MAJOR the header total was added to fix. None of that needs an attacker — a host one
+      // release ahead or behind is enough.
+      //
+      // Falling back is always SAFE: the local computation is derived from the very items being
+      // rendered, and is separately tested. So this errs strict.
+      function planSummaryIsSound(sum, items) {
+        if (!sum || typeof sum !== "object") return false;
+        const count = (v) => typeof v === "number" && isFinite(v) && Number.isInteger(v) && v >= 0 && v <= PLAN_MAX_COUNT;
+        if (!(typeof sum.planned_total_secs === "number" && isFinite(sum.planned_total_secs) &&
+              Number.isInteger(sum.planned_total_secs) && sum.planned_total_secs >= 0 &&
+              sum.planned_total_secs <= PLAN_MAX_TOTAL_SECS)) return false;
+        for (let i = 0; i < SUMMARY_COUNTS.length; i++) if (!count(sum[SUMMARY_COUNTS[i]])) return false;
+        if (sum.partial !== undefined && typeof sum.partial !== "boolean") return false;
+        if (sum.planned_items !== undefined && !count(sum.planned_items)) return false;
+        if (sum.partial === true && sum.planned_items === undefined) return false;
+        if (sum.assigned > sum.items) return false;
+        if (sum.missing + sum.unknown > sum.items) return false;
+        // Every TRIGGERABLE item must land in exactly one per-kind line. Sections are excluded
+        // from `items` by the settled rule, so they are excluded here too.
+        const kinds = sum.songs + sum.scripture + sum.presentations + sum.media +
+                      sum.announcements + sum.timers;
+        if (kinds !== sum.items) return false;
+        // A subset can never exceed its whole. Backend caught the mirror of this in their own
+        // work: a duration set ON a section reached planned_items while the section was absent
+        // from items, so planned_items could exceed items and this panel would have rendered
+        // "7 of 6". Individually-correct fields that do not add up are what design QA rejected
+        // these frames for the first time round, so the seam checks the arithmetic, not just the
+        // field types.
+        if (sum.planned_items !== undefined && sum.planned_items > sum.items) return false;
+        // The total must describe the items actually being rendered. A header reading 99999s over
+        // rows summing 600s is precisely the §9 MAJOR. Sections carry no duration, so this holds
+        // under either reading of the question above.
+        let localTotal = 0;
+        items.forEach((x) => { if (planHasDuration(x)) localTotal += x.planned_secs; });
+        if (sum.planned_total_secs !== localTotal) return false;
+        return true;
+      }
+      function planSummaryOf(view) {
+        // PREFER THE HOST'S SUMMARY. ServicePlan::planned_total() returns the sum and `partial`
+        // from ONE pass, so the flag cannot drift from the number it describes — which is why it
+        // belongs there and not here. Absent today; this is the whole of the swap when PR #13
+        // lands, and until then the local computation below stands in.
+        //
+        // A consequence worth stating: because `partial` is CONSUMED and never computed here, the
+        // "inert sections never set partial" rule (spec §4.2 — unset children, not headers) is the
+        // host's to enforce and this client cannot diverge from it. The local fallback carries no
+        // partial flag at all, so it has no section rule to get wrong either.
+        if (planSummaryIsSound(view && view.summary, (view && view.items) || [])) return view.summary;
+        const all = (view && view.items) || [];
+        const by = (k) => all.filter((x) => x.kind === k).length;
+        // Every summary metric describes the TRIGGERABLE run sheet, so an inert `section` divider
+        // is excluded from all of them — items, assigned, the planned total, missing and unknown.
+        // Frame 608:875 is explicit: "6 items" and "Assigned 6 / 6" over six rows and THREE
+        // dividers, with no Sections line in the panel at all. The `sections` count is still
+        // reported below, so nothing is lost; it is simply no longer conflated with the run sheet.
+        const items = all.filter((x) => x.kind !== "section");
+        let total = 0;
+        let assigned = 0;
+        let missing = 0;
+        let unknown = 0;
+        items.forEach((x) => {
+          if (planHasDuration(x)) total += x.planned_secs;
+          if (x.owner) assigned += 1;
+          if (x.link) {
+            // missing and unknown are counted SEPARATELY and never merged. "The host could not
+            // check" is not "it is fine": the host structurally cannot resolve decks or media, so
+            // collapsing unknown into resolved is the failure this three-state field exists to
+            // prevent. Decks are settled locally by planLinkState; media has no library in any
+            // layer yet, so it stays unknown by design.
+            const st = planLinkState(x.link);
+            if (st === "missing") missing += 1;
+            else if (st === "unknown") unknown += 1;
+          }
+        });
+        // Field names deliberately mirror OperatorStateView.summary (86ajy0hw0) one-for-one, so
+        // adopting the host's summary is a swap of this function's body and nothing else.
+        // `partial`/`unplanned` are local additions the wire may not carry — see the PR.
+        return {
+          planned_total_secs: total,
+          items: items.length, // triggerable rows only — sections excluded
+          planned_items: items.filter(planHasDuration).length,
+          songs: by("song"),
+          scripture: by("scripture"),
+          presentations: by("slide_group"), // slide-group count, per the wire shape
+          media: by("media"),
+          announcements: by("announcement"),
+          timers: by("timer"),
+          sections: by("section"),
+          assigned: assigned,
+          missing: missing,
+          unknown: unknown,
+        };
+      }
       function planLinkChip(link) {
         const el = document.createElement("span");
         el.className = "link-chip link-" + link.kind;
@@ -6198,15 +6394,21 @@
             "✦ " + (link.reference || "scripture") + (link.translation ? " · " + link.translation : "");
         } else if (link.kind === "deck") {
           const name = planDeckName(link.id);
-          if (planDecks && !name) {
-            // The deck list is loaded and this id is gone → the plan item is missing content.
+          if (planLinkState(link) === "missing") {
             el.className = "link-chip link-missing";
             el.textContent = "⚠ presentation missing";
           } else {
             el.textContent = "▦ " + (name || "presentation");
           }
         } else if (link.kind === "media") {
-          el.textContent = "▷ media";
+          // The chip asks planLinkState like everything else, so a host-flagged missing medium is
+          // not drawn as a healthy one while the summary counts it missing (Sana S2).
+          if (planLinkState(link) === "missing") {
+            el.className = "link-chip link-missing";
+            el.textContent = "⚠ media missing";
+          } else {
+            el.textContent = "▷ media";
+          }
         } else {
           el.textContent = link.kind;
         }
@@ -6770,6 +6972,7 @@
         ["section", "Section"],
       ];
       let planSelectedId = null;
+      let planLastView = null; // last view rendered, for UI-only re-renders
       // After planRenderBuilder blanks + rebuilds the run sheet, keyboard focus would fall to
       // <body>; this records what the last user action should re-focus (the selected row, or a
       // moved row's ↑/↓ button) so focus survives the rebuild (WCAG 2.4.3). Null on a background
@@ -6779,14 +6982,94 @@
         const f = PLAN_ADD_KINDS.find((k) => k[0] === kind);
         return f ? f[1] : kind;
       }
+      // Loading (frame 611:350). planActivate runs on navigation to the surface, so this paints
+      // once per visit and the first planRenderBuilder replaces it — a mutation re-render never
+      // flashes it. The message is a role=status live region because the missing-content scan is
+      // the part an operator actually waits on, so it is announced and not merely drawn. The
+      // skeleton rows are aria-hidden: they are texture, and announcing four empty rows is noise.
+      function planRenderLoading() {
+        const list = document.getElementById("plan-b-list");
+        if (!list) return;
+        list.innerHTML = "";
+        const count = document.getElementById("plan-b-count");
+        if (count) count.textContent = "—"; // never a stale count while the real one is unknown
+        const totL = document.getElementById("plan-b-total");
+        if (totL) totL.textContent = ""; // ...and no stale total sitting beside the "—"
+        planBlankSummary("Opening plan…");
+        const st = document.createElement("p");
+        st.className = "plan-loading-msg";
+        st.setAttribute("role", "status");
+        st.textContent = "Opening plan… scanning for missing content.";
+        list.appendChild(st);
+        for (let i = 0; i < 4; i++) {
+          const sk = document.createElement("div");
+          sk.className = "plan-skel-row";
+          sk.setAttribute("aria-hidden", "true");
+          list.appendChild(sk);
+        }
+      }
+      // A failed open must not leave the skeleton up forever — an endless loading state is a lie
+      // about work still being in flight. This is the MINIMUM honest replacement; the designed
+      // error state (frame 612:124: non-blocking banner + Restore last autosave + integrity check)
+      // needs autosave-slot wire fields that do not exist yet and belongs to 86ak8467m.
+      function planRenderLoadFailed(e) {
+        console.error(e);
+        const list = document.getElementById("plan-b-list");
+        if (!list || !list.querySelector(".plan-skel-row")) return; // a view already painted; leave it
+        list.innerHTML = "";
+        const count = document.getElementById("plan-b-count");
+        if (count) count.textContent = "";
+        const totF = document.getElementById("plan-b-total");
+        if (totF) totF.textContent = "";
+        planBlankSummary("Plan figures unavailable — the plan could not be opened.");
+        const p = document.createElement("p");
+        p.className = "plan-load-failed";
+        p.setAttribute("role", "alert");
+        p.textContent = "Couldn't open the plan. Live output is unaffected — reopen this surface to retry.";
+        list.appendChild(p);
+      }
+      // Deselect back to the Plan Summary. Mirrors the Theme Designer's Escape-deselects pattern
+      // (tdSel keydown / empty-canvas click). Without this, planSelectedId is only ever SET by a
+      // gesture and cleared by deleting the item — so the summary, and the Publish / pre-service
+      // actions that live in it, become unreachable after the first row click.
+      function planDeselect() {
+        if (planSelectedId === null) return; // already on the summary — do not rebuild on every Escape
+        planSelectedId = null;
+        // Re-render from the view already in hand. Deselecting is a pure UI state change, so it
+        // must not cost a host round-trip (and must not race one in).
+        if (planLastView) planRenderBuilder(planLastView);
+      }
+      (function planWireDeselect() {
+        document.addEventListener("keydown", (ev) => {
+          if (ev.key !== "Escape" || planSelectedId === null) return;
+          const surf = document.getElementById("surface-plan");
+          if (!surf || !surf.classList.contains("active")) return;
+          if (document.querySelector(".pm-confirm-back")) return; // a dialog owns Escape
+          if (window.__cmdPalette && window.__cmdPalette.isOpen()) return;
+          if (isMenuOpen()) return;
+          const t = ev.target;
+          if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+          ev.preventDefault();
+          planDeselect();
+        });
+        // Clicking the empty area BELOW the rows also deselects (the pointer path), matching the
+        // Theme Designer's empty-canvas click.
+        document.addEventListener("click", (ev) => {
+          const list = document.getElementById("plan-b-list");
+          if (!list || ev.target !== list) return; // a row click bubbles with target = the row
+          planDeselect();
+        });
+      })();
       function planActivate() {
         planFocusAfterRender = null; // fresh navigation must not inherit a stale reorder intent
+        planSelectedId = null; // ...nor a stale selection: a fresh visit opens on the Plan Summary
         buildPlanPalette();
+        planRenderLoading();
         // Deck names/missing-status for link chips; then render with resolved names.
         planLoadDecks().then(() => {
-          if (document.getElementById("plan-b-list")) invoke("view").then(planRenderBuilder).catch(console.error);
+          if (document.getElementById("plan-b-list")) invoke("view").then(planRenderBuilder).catch(planRenderLoadFailed);
         });
-        invoke("view").then(planRenderBuilder).catch(console.error);
+        invoke("view").then(planRenderBuilder).catch(planRenderLoadFailed);
       }
       function buildPlanPalette() {
         const box = document.getElementById("plan-palette-btns");
@@ -6931,8 +7214,27 @@
       function planRenderBuilder(view) {
         const list = document.getElementById("plan-b-list");
         if (!list || !view) return; // not on the plan surface
+        planLastView = view; // so a pure UI change (deselect) can re-render without a round-trip
+        // Header counters. The planned total belongs HERE, next to the item count, because the pair
+        // is what a reader checks against the rows (section 9: "8 items · 1:12:00" over 6 rows
+        // summing 53:12 was the MAJOR). Empty collapses to the single AC-4 string "0 items · 0:00";
+        // populated splits into "N items" + a right-aligned "planned H:MM:SS" per frame 608:925.
         const count = document.getElementById("plan-b-count");
-        if (count) count.textContent = view.items.length + " items";
+        const total = document.getElementById("plan-b-total");
+        const hdr = planSummaryOf(view);
+        const planned = hdr.planned_total_secs;
+        // The header counts the same thing the panel does — TRIGGERABLE rows, sections excluded.
+        // Using view.items.length here read "9 items" beside a summary saying "Items 6": two
+        // headline numbers describing the same run sheet and disagreeing, which is the §9 MAJOR.
+        // The empty-CTA branch still keys off whether ANY row exists, so a plan of nothing but
+        // dividers renders its dividers rather than the "add your first item" state.
+        if (view.items.length) {
+          if (count) count.textContent = hdr.items + " items";
+          if (total) total.textContent = "planned " + planFmtTotal(planned);
+        } else {
+          if (count) count.textContent = "0 items · 0:00";
+          if (total) total.textContent = "";
+        }
         list.innerHTML = "";
         if (!view.items.length) {
           // Empty state (handoff §5, frame 611:124): a centered CTA, not a bare line. Template /
@@ -6963,7 +7265,7 @@
           empty.appendChild(ec);
           empty.appendChild(el8);
           list.appendChild(empty);
-          planClearInspector();
+          planClearInspector(view);
           return;
         }
         const last = view.items.length - 1;
@@ -7001,6 +7303,12 @@
           handle.onpointerdown = (e) => planStartRowDrag(e, it.id, i, row);
           handle.onclick = (e) => e.stopPropagation(); // a handle interaction must not select the row
           row.appendChild(handle);
+          // Per-type accent bar (handoff §3). Purely a scanning cue — the type BADGE inside .main
+          // carries the same information as text, so this is aria-hidden and never the only signal.
+          const accent = document.createElement("span");
+          accent.className = "plan-b-accent kind-" + it.kind;
+          accent.setAttribute("aria-hidden", "true");
+          row.appendChild(accent);
           row.appendChild(main);
           const tools = document.createElement("span");
           tools.className = "plan-b-tools";
@@ -7030,6 +7338,32 @@
           );
           down.className = "plan-b-down";
           down.disabled = i === last;
+          // Owner + planned duration (handoff §3, FR-004). Both have been on PlanItemView all
+          // along and were dropped on the floor here. Absent = unassigned / unplanned, so the
+          // element is omitted rather than padded with a placeholder dash that reads as data.
+          const meta = document.createElement("span");
+          meta.className = "plan-b-meta";
+          if (it.owner) {
+            const own = document.createElement("span");
+            own.className = "plan-b-owner";
+            own.appendChild(srOnly("Owner: "));
+            own.appendChild(document.createTextNode(it.owner));
+            meta.appendChild(own);
+          }
+          // Unset = the element is OMITTED (86ak846ft AC-1: "without a gap or placeholder text").
+          // UI-A1 FR-202 asks for a "—" placeholder instead; the two acceptance criteria conflict
+          // and DECISION 86ak84cth owns it. Current behaviour stands until that lands.
+          // aria-label carries the SPOKEN form (UI-A1 §211) — "five colon zero zero" is not useful.
+          // A section is inert: its duration is excluded from the plan total, so rendering one on
+          // the row would put a number in the column that the header total does not include.
+          if (planHasDuration(it) && it.kind !== "section") {
+            const dur = document.createElement("span");
+            dur.className = "plan-b-dur";
+            dur.textContent = planFmtDuration(it.planned_secs);
+            dur.setAttribute("aria-label", "Planned " + planSpokenDuration(it.planned_secs));
+            meta.appendChild(dur);
+          }
+          if (meta.childElementCount) row.appendChild(meta);
           tools.appendChild(up);
           tools.appendChild(down);
           row.appendChild(tools);
@@ -7068,13 +7402,152 @@
         }
         const sel = view.items.find((x) => x.id === planSelectedId);
         if (sel) planRenderInspector(sel);
-        else planClearInspector();
+        else planClearInspector(view);
       }
-      function planClearInspector() {
+      // Right panel with NOTHING selected = Plan Summary (frame 608:875). Selecting an item swaps
+      // it for the item inspector; the heading swaps with it so the panel always says which one
+      // this is.
+      // The right panel swaps its ENTIRE subtree between PLAN SUMMARY and ITEM, so keyboard focus
+      // inside it would fall to <body> (WCAG 2.4.3). If the operator was focused in there, move
+      // focus to the panel itself — it is aria-labelledby the heading, so AT announces which panel
+      // they have landed in rather than going silent.
+      function planKeepPanelFocus(box, rebuild) {
+        const hadFocus = !!(box && box.contains(document.activeElement));
+        rebuild();
+        if (!hadFocus) return;
+        const panel = document.getElementById("plan-insp-panel");
+        if (panel && panel.focus) panel.focus();
+      }
+      // While the plan is loading — or after it failed to open — the right panel must NOT keep
+      // reporting the previous plan's figures beside a run sheet that says otherwise. Stale numbers
+      // next to "Couldn't open the plan" are worse than no numbers.
+      function planBlankSummary(msg) {
         const box = document.getElementById("plan-b-insp");
-        if (box)
-          box.innerHTML =
-            '<p class="coming-soon">Select an item to edit it and link its scripture or presentation.</p>';
+        if (!box) return;
+        planSetInspHeading("PLAN SUMMARY");
+        box.innerHTML = "";
+        const p = document.createElement("p");
+        p.className = "plan-sum-blank";
+        p.setAttribute("role", "status");
+        p.textContent = msg;
+        box.appendChild(p);
+      }
+      function planSetInspHeading(text) {
+        const h = document.getElementById("plan-insp-h");
+        if (h) h.textContent = text;
+      }
+      function planSumRow(label, value, opts) {
+        const row = document.createElement("div");
+        row.className = "plan-sum-row" + ((opts && opts.cls) ? " " + opts.cls : "");
+        const l = document.createElement("span");
+        l.className = "plan-sum-label";
+        l.textContent = label;
+        const v = document.createElement("span");
+        v.className = "plan-sum-value";
+        v.textContent = value;
+        row.appendChild(l);
+        row.appendChild(v);
+        return row;
+      }
+      // ---------------------------------------------------------------------------------------
+      // SEAM — the Plan Summary's WRITE actions (86ak8467m owns these; 86ak846ft owns the panel).
+      // Frame 608:875 draws three: Run pre-service check, Publish to team, Open in Live. Only
+      // "Open in Live" is a pure surface switch and works today; the other two need the plan
+      // lifecycle backend (86ajy0hwg) that does not exist yet.
+      //
+      // They ship DISABLED with a stated reason rather than hidden — an operator looking for
+      // Publish should find it and learn when it arrives — and never wired to a no-op, because a
+      // control that looks live and silently does nothing is worse than one that says it is not
+      // ready. 86ak8467m enables them HERE, in this function, and must not rebuild the panel.
+      // ---------------------------------------------------------------------------------------
+      function planSummaryActions(box) {
+        const laterNote = document.createElement("p");
+        laterNote.className = "plan-sum-later";
+        laterNote.id = "plan-sum-later";
+        laterNote.textContent = "Pre-service check and publishing arrive with the plan lifecycle work.";
+
+        const pre = document.createElement("button");
+        pre.type = "button";
+        pre.className = "pm-btn-ghost plan-sum-btn";
+        pre.id = "plan-sum-precheck";
+        pre.textContent = "✓ Run pre-service check";
+        pre.disabled = true;
+        pre.setAttribute("aria-describedby", "plan-sum-later");
+
+        const pub = document.createElement("button");
+        pub.type = "button";
+        pub.className = "pm-btn-ghost plan-sum-btn";
+        pub.id = "plan-sum-publish";
+        pub.textContent = "↑ Publish to team";
+        pub.disabled = true;
+        pub.setAttribute("aria-describedby", "plan-sum-later");
+
+        // A pure surface switch to the Live Console — never a go-live. Mirrors the header button:
+        // a plan edit must not commit anything to Live.
+        const live = document.createElement("button");
+        live.type = "button";
+        live.className = "pm-btn-primary plan-sum-btn";
+        live.id = "plan-sum-live";
+        live.textContent = "▶ Open in Live";
+        live.onclick = () => showSurface("console");
+
+        box.appendChild(pre);
+        box.appendChild(pub);
+        box.appendChild(laterNote);
+        box.appendChild(live);
+      }
+      function planClearInspector(view) {
+        const box = document.getElementById("plan-b-insp");
+        if (!box) return;
+        planKeepPanelFocus(box, () => planRenderSummaryInto(box, view));
+      }
+      function planRenderSummaryInto(box, view) {
+        planSetInspHeading("PLAN SUMMARY");
+        box.innerHTML = "";
+        const sum = planSummaryOf(view);
+        const card = document.createElement("div");
+        card.className = "plan-sum-card";
+        // `partial` is read from the host summary, never computed here. It needs `planned_items`
+        // alongside it: ZERO is a legitimate duration meaning "instant" (spec §4.1), so a total of
+        // 0 does not imply nothing is set. With nothing planned at all the figure is meaningless
+        // and reads "—"; with something planned it is a real but incomplete sum.
+        const partial = sum.partial === true;
+        const nothingPlanned = partial && sum.planned_items === 0;
+        const totalText = (nothingPlanned ? "—" : planFmtTotal(sum.planned_total_secs)) + (partial ? " · partial" : "");
+        const totalRow = planSumRow("Total time", totalText, { cls: "plan-sum-total" + (partial ? " is-partial" : "") });
+        totalRow.querySelector(".plan-sum-value").setAttribute(
+          "aria-label",
+          (nothingPlanned ? "Total unknown" : "Total " + planSpokenDuration(sum.planned_total_secs)) +
+            (partial ? ", partial — some items have no duration set" : "")
+        );
+        card.appendChild(totalRow);
+        card.appendChild(planSumRow("Items", String(sum.items)));
+        card.appendChild(planSumRow("Songs", String(sum.songs)));
+        card.appendChild(planSumRow("Scripture", String(sum.scripture)));
+        card.appendChild(planSumRow("Presentations", String(sum.presentations)));
+        card.appendChild(planSumRow("Media", String(sum.media)));
+        card.appendChild(planSumRow("Announcements", String(sum.announcements)));
+        // Timers and Sections are rendered too, so the per-kind rows ALWAYS sum to Items. Omitting
+        // them (the demo plan in the frame has none) leaves a reader doing arithmetic that does not
+        // add up — the same class of defect design-QA §9 rejected these frames for.
+        card.appendChild(planSumRow("Timers", String(sum.timers)));
+        // No Sections row: frame 608:875 has none, and `items` excludes sections, so a Sections
+        // line here would make the per-kind rows stop summing to Items — the exact "figures that
+        // do not add up" defect. The count is still carried on the summary object for other uses.
+        // Missing content carries a ⚠ in the TEXT when non-zero, not just a colour — the count is
+        // the one figure here that means "something is broken" (WCAG 1.4.1).
+        card.appendChild(
+          planSumRow("Missing content", sum.missing ? "⚠ " + sum.missing : "0", sum.missing ? { cls: "plan-sum-warn" } : null)
+        );
+        card.appendChild(planSumRow("Assigned", sum.assigned + " / " + sum.items));
+        box.appendChild(card);
+
+        planSummaryActions(box);
+
+        const note = document.createElement("p");
+        note.className = "plan-sum-hint";
+        note.textContent = "Select an item to edit it and link its scripture or presentation.";
+        box.appendChild(note);
       }
       // A richer linked-deck card for the inspector (frame 608:124): name + slide count, resolved
       // from the loaded deck list; a deleted deck renders the missing treatment.
@@ -7082,7 +7555,7 @@
         const card = document.createElement("div");
         card.className = "plan-deck-card";
         const name = planDeckName(link.id);
-        if (planDecks && !name) {
+        if (planLinkState(link) === "missing") {
           card.classList.add("missing");
           const w = document.createElement("div");
           w.className = "plan-deck-card-name link-missing";
@@ -7108,6 +7581,10 @@
       function planRenderInspector(it) {
         const box = document.getElementById("plan-b-insp");
         if (!box) return;
+        planKeepPanelFocus(box, () => planRenderInspectorInto(box, it));
+      }
+      function planRenderInspectorInto(box, it) {
+        planSetInspHeading("ITEM");
         box.innerHTML = "";
         const kindRow = document.createElement("div");
         kindRow.className = "plan-insp-kind";

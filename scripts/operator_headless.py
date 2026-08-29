@@ -42,7 +42,11 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # (Raised with the Design 2.0 parity batch 1 block — CON-046 / CON-142 / PME-001 / PME-005 /
 # PME-014 / PME-015 — which adds 67 checks: 640 -> 707. Set to the REAL observed count, not a
 # round number, so that dropping even one of the new checks trips exit 4.)
-EXPECTED_MIN_CHECKS = 829
+# (Raised for the Service Plan parity batch — 86ak846ft: run-sheet owner/duration, the Plan Summary
+# panel, the loading state, and the QA/security remediation. Set to the REAL observed count so
+# dropping even one trips exit 4. Sana S4: this floor had been left at 829 while the driver ran
+# more, which would have let every new check disappear without failing.)
+EXPECTED_MIN_CHECKS = 955
 
 
 def find_chrome():
@@ -346,7 +350,12 @@ STUB = r"""
       // What an undo could ACTUALLY put back (LibraryView.restorable). Bounded, so it shrinks.
       restorable: LIB.trash.map(function(t){ return t.id; }) }; };
     var libUnique = function(base){ var n=base, k=2; var names=LIB.decks.map(function(d){return d.name;}); while(names.indexOf(n)>=0){ n=base+" ("+k+")"; k++; } return n; };
-    if (cmd === "deck_list") return Promise.resolve(libView());
+    if (cmd === "deck_list") {
+      // Test hook (mirrors __pmRejectOnce): force a MALFORMED null answer, so a host that does
+      // not implement deck_list can be told apart from one reporting an empty library.
+      if (window.__deckListNullOnce) { window.__deckListNullOnce = false; return Promise.resolve(null); }
+      return Promise.resolve(libView());
+    }
     if (cmd === "deck_search") {
       var gq = String((args && args.query) || "").trim().toLowerCase();
       if (!gq) return Promise.resolve({hits: []});
@@ -2785,6 +2794,753 @@ DRIVER = r"""
       await sleep(10);
       ok(window.__calls.filter(function(c){return c.cmd==="move_item";}).length === mvBefore3, "SP2 C-002: a cancelled drag does not reorder");
       ok(!document.querySelector("#plan-b-list .plan-b-dropline"), "SP2 C-002: pointercancel tears down the drop line");
+      // === 86ak846ft — run-sheet owner/duration + Plan Summary + loading ======================
+      // A plan whose per-item owner + duration are known, so the RENDERED rows and the RENDERED
+      // summary can be checked against each other rather than against a hand-copied constant.
+      var sumView = { plan_name:"Sunday", items:[
+        {id:21, kind:"song",         title:"Opening Song",    is_live:false, is_staged:false, owner:"Worship",      planned_secs:300},
+        {id:22, kind:"announcement", title:"Welcome",         is_live:false, is_staged:false, owner:"Host",         planned_secs:120},
+        {id:23, kind:"scripture",    title:"Romans 8:28-30",  is_live:false, is_staged:false, owner:"Scripture op", planned_secs:120,
+         link:{kind:"scripture", reference:"Romans 8:28-30", translation:"WEB"}},
+        {id:24, kind:"slide_group",  title:"Sermon",          is_live:false, is_staged:false, owner:"Pastor",       planned_secs:2100, link:{kind:"deck", id:2}},
+        {id:25, kind:"media",        title:"Testimony Video", is_live:false, is_staged:false, owner:"Media",        planned_secs:192},
+        {id:26, kind:"song",         title:"Closing Song",    is_live:false, is_staged:false,                       planned_secs:360}
+      ] };
+      planSelectedId = null; // nothing selected -> the right panel is the Plan Summary
+      planRenderBuilder(sumView);
+      // --- owner + planned duration on every row (handoff §3, FR-004) -------------------------
+      var oRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="21"]');
+      ok(!!oRow.querySelector(".plan-b-owner") && /Worship/.test(oRow.querySelector(".plan-b-owner").textContent),
+         "SP3 AC-1: a run-sheet row renders its owner");
+      ok(!!oRow.querySelector(".plan-b-dur") && /5:00/.test(oRow.querySelector(".plan-b-dur").textContent),
+         "SP3 AC-1: a run-sheet row renders its planned duration as m:ss");
+      ok(/Owner:/.test(oRow.querySelector(".plan-b-owner").textContent),
+         "SP3 AC-1 a11y: the owner carries a visually-hidden prefix, so a bare 'Worship' is not ambiguous to AT");
+      // Positive control: the element is OMITTED when unassigned, never padded with a placeholder
+      // dash that would read as data. Without this, "renders the owner" could pass on a stub.
+      var noOwner = document.querySelector('#plan-b-list .plan-b-row[data-item-id="26"]');
+      ok(!noOwner.querySelector(".plan-b-owner"), "SP3 AC-1 (control): an unassigned item renders NO owner element");
+      ok(!!noOwner.querySelector(".plan-b-dur"), "SP3 AC-1 (control): that same row still renders its duration — the owner omission is per-field, not a dead branch");
+      ok(oRow.querySelector(".plan-b-dur").getAttribute("aria-label") === "Planned 5 minutes",
+         "SP3 AC-1 a11y (UI-A1 §211): the duration carries a SPOKEN label — a screen reader reading \"five colon zero zero\" is not useful");
+      // --- AC-3: the summary must AGREE with the run sheet ------------------------------------
+      // Design-QA §9 rejected these frames once for exactly this: "8 items · 1:12:00" displayed
+      // over 6 rows summing 53:12. So compare the two RENDERED surfaces against each other. A
+      // second, independent computation of the totals is precisely how they drift apart, and only
+      // a cross-check between them catches it — asserting the summary against a literal would not.
+      function sumRowValue(label) {
+        var rows = document.querySelectorAll("#plan-b-insp .plan-sum-row");
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].querySelector(".plan-sum-label").textContent === label)
+            return rows[i].querySelector(".plan-sum-value").textContent.trim();
+        }
+        return null;
+      }
+      function clockToSecs(t) {
+        // Tolerates surrounding text: the total renders "0:05:00 · partial", and a naive split
+        // would make the last field NaN and silently zero the comparison.
+        var m = String(t).match(/(\d+):(\d{2})(?::(\d{2}))?/);
+        if (!m) return NaN;
+        return m[3] !== undefined
+          ? Number(m[1])*3600 + Number(m[2])*60 + Number(m[3])
+          : Number(m[1])*60 + Number(m[2]);
+      }
+      var renderedRows = document.querySelectorAll("#plan-b-list .plan-b-row");
+      function rowDurationSum() {
+        var t = 0;
+        Array.prototype.forEach.call(document.querySelectorAll("#plan-b-list .plan-b-dur"), function(d) {
+          var txt = d.textContent.trim();
+          if (txt === "\u2014") return; // an unset duration renders "—" and is excluded from the sum
+          t += clockToSecs(txt);
+        });
+        return t;
+      }
+      var rowSum = rowDurationSum();
+      ok(sumRowValue("Items") === String(renderedRows.length),
+         "SP3 AC-3: Plan Summary 'Items' equals the rows the run sheet actually rendered (" + sumRowValue("Items") + " vs " + renderedRows.length + ")");
+      ok(clockToSecs(sumRowValue("Total time")) === rowSum,
+         "SP3 AC-3: Plan Summary total equals the sum of the durations shown on those rows (" + sumRowValue("Total time") + " vs " + rowSum + "s)");
+      ok(sumRowValue("Total time") === "0:53:12",
+         "SP3 AC-3: the total is formatted h:mm:ss, so a 53-minute plan cannot read as 53 minutes 12 seconds of m:ss");
+      // Derived, not literal — same reasoning as the per-kind counts: a hardcoded "5 / 6" stops
+      // describing the fixture the moment the fixture changes, and keeps passing anyway.
+      var expAssigned = sumView.items.filter(function(i){ return !!i.owner; }).length;
+      ok(sumRowValue("Assigned") === expAssigned + " / " + sumView.items.length,
+         "SP3 AC-3: 'Assigned' counts the items that actually carry an owner (shown " + sumRowValue("Assigned") +
+         ", fixture " + expAssigned + " / " + sumView.items.length + ")");
+      // AC-3 states a SUMMATION invariant, so assert the sum — derived from the fixture, never
+      // hardcoded. The literals this replaces held for ANY fixture, and because sumView contains
+      // no timer and no section they never exercised the summation at all: the bug (two kinds
+      // uncounted) and the check that should have caught it shared a blind spot. Deriving the
+      // expectation also means an eighth ItemKind cannot slip past unnoticed.
+      // No `section` entry: the panel has no Sections row, because every summary metric describes
+      // the TRIGGERABLE run sheet and `items` excludes dividers (frame 608:875 — "6 items",
+      // "Assigned 6 / 6", six rows over three dividers).
+      var KIND_ROWS = { song:"Songs", scripture:"Scripture", slide_group:"Presentations", media:"Media",
+                        announcement:"Announcements", timer:"Timers" };
+      function assertKindCounts(view, label) {
+        var expected = {}, unmapped = [];
+        Object.keys(KIND_ROWS).forEach(function(k){ expected[k] = 0; });
+        var triggerable = view.items.filter(function(it){ return it.kind !== "section"; });
+        triggerable.forEach(function(it){
+          if (KIND_ROWS[it.kind] === undefined) unmapped.push(it.kind);
+          else expected[it.kind] += 1;
+        });
+        ok(unmapped.length === 0,
+           "SP3 AC-3 (" + label + "): every item kind present has a summary row — an unrepresented kind is invisible in the counts (unmapped: " + (unmapped.join(",") || "none") + ")");
+        var shownTotal = 0, wrong = [];
+        Object.keys(KIND_ROWS).forEach(function(k){
+          var shown = Number(sumRowValue(KIND_ROWS[k]));
+          shownTotal += shown;
+          if (shown !== expected[k]) wrong.push(KIND_ROWS[k] + " shows " + shown + ", fixture has " + expected[k]);
+        });
+        ok(wrong.length === 0,
+           "SP3 AC-3 (" + label + "): each per-kind count matches the fixture (" + (wrong.join("; ") || "all match") + ")");
+        ok(shownTotal === triggerable.length && String(shownTotal) === sumRowValue("Items"),
+           "SP3 AC-3 (" + label + "): the per-kind counts SUM to Items, counting triggerable rows only (" + shownTotal +
+           " vs Items=" + sumRowValue("Items") + ", fixture=" + triggerable.length + " of " + view.items.length + " rows)");
+        ok(!sumRowValue("Sections"),
+           "SP3 AC-3 (" + label + "): the panel has NO Sections row — one would make the per-kind rows stop summing to Items");
+      }
+      assertKindCounts(sumView, "sumView");
+      // A fixture carrying ALL seven ItemKind variants, so the summation is exercised across every
+      // row the panel draws rather than only the five the demo plan happens to contain.
+      var allKindsView = { plan_name:"All", items:[
+        {id:101, kind:"song",         title:"a", is_live:false, is_staged:false, planned_secs:60, owner:"o"},
+        {id:102, kind:"scripture",    title:"b", is_live:false, is_staged:false, planned_secs:60, owner:"o"},
+        {id:103, kind:"slide_group",  title:"c", is_live:false, is_staged:false, planned_secs:60, owner:"o"},
+        {id:104, kind:"media",        title:"d", is_live:false, is_staged:false, planned_secs:60, owner:"o"},
+        {id:105, kind:"announcement", title:"e", is_live:false, is_staged:false, planned_secs:60, owner:"o"},
+        {id:106, kind:"timer",        title:"f", is_live:false, is_staged:false, planned_secs:60, owner:"o"},
+        {id:107, kind:"section",      title:"g", is_live:false, is_staged:false, planned_secs:60, owner:"o"}
+      ] };
+      planSelectedId = null;
+      planRenderBuilder(allKindsView);
+      assertKindCounts(allKindsView, "all seven kinds");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      // --- Q2: the run-sheet header carries the planned total (frame 608:925) ------------------
+      // Section 9 records this total as the fix for the MAJOR these frames were rejected for, so a
+      // header that omits it reintroduces the defect. It must agree with the rows AND the summary:
+      // two headline numbers that can drift apart is precisely what was rejected.
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      // Q12: assert the RENDERED STRING, not its parse. clockToSecs reads "53:12" and "0:53:12"
+      // identically, so comparing parsed seconds let a regression from planFmtTotal to fmtClock
+      // pass every assertion here while the header and the summary visibly disagreed.
+      function fmtHMS(secs) {
+        var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), q = secs % 60;
+        return h + ":" + String(m).padStart(2, "0") + ":" + String(q).padStart(2, "0");
+      }
+      ok(sumRowValue("Total time") === fmtHMS(rowDurationSum()),
+         "SP3 AC-22 (Quinn Q2): the Plan Summary total is the h:mm:ss STRING for the rendered rows' durations (got \"" +
+         sumRowValue("Total time") + "\", expected \"" + fmtHMS(rowDurationSum()) + "\")");
+      ok(el("plan-b-total").textContent === "planned " + fmtHMS(rowDurationSum()),
+         "SP3 AC-22 (Quinn Q2): the run-sheet header renders exactly \"planned \" + that same string (got \"" +
+         el("plan-b-total").textContent + "\")");
+      ok(el("plan-b-total").textContent === "planned " + sumRowValue("Total time"),
+         "SP3 AC-22 (Quinn Q2): header and summary are the same STRING — m:ss vs h:mm:ss drift between them cannot hide behind a matching parse");
+      // The header must count the SAME thing the panel does. It read "9 items" beside a summary
+      // saying "Items 6" — two headline numbers describing one run sheet and disagreeing.
+      var secView = { plan_name:"Sec", items:[
+        {id:601, kind:"section",      title:"GATHERING", is_live:false, is_staged:false},
+        {id:602, kind:"song",         title:"Open",  is_live:false, is_staged:false, owner:"W", planned_secs:300},
+        {id:603, kind:"section",      title:"WORD",  is_live:false, is_staged:false},
+        {id:604, kind:"announcement", title:"Notes", is_live:false, is_staged:false, owner:"H", planned_secs:120}
+      ] };
+      planSelectedId = null;
+      planRenderBuilder(secView);
+      ok(el("plan-b-count").textContent === "2 items" && sumRowValue("Items") === "2",
+         "SP3 AC-26: the run-sheet header counts triggerable rows, agreeing with the panel (header=\"" +
+         el("plan-b-count").textContent + "\" panel=\"" + sumRowValue("Items") + "\")");
+      ok(document.querySelectorAll("#plan-b-list .plan-b-row").length === 4,
+         "SP3 AC-26 (control): all four rows including the dividers really are rendered — the count excludes them, the run sheet does not hide them");
+      ok(sumRowValue("Assigned") === "2 / 2",
+         "SP3 AC-26: Assigned excludes dividers too — a divider is not a staffable item, so a fully-staffed sectioned plan reads 2 / 2 and never 2 / 4");
+      ok(!document.querySelector('#plan-b-list .plan-b-row[data-item-id="601"] .plan-b-dur'),
+         "SP3 AC-26: an inert divider carries no duration on its row — its duration is excluded from the total, so a figure there would not be in the header");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      // --- AC-4: the empty plan's counters, verbatim -------------------------------------------
+      // AC-4 had no test at all, which is how the missing header total hid: with no total in the
+      // header, the string AC-4 quotes could not be produced on any input.
+      planSelectedId = null;
+      planRenderBuilder({ plan_name:"E", items: [] });
+      ok(el("plan-b-count").textContent === "0 items · 0:00",
+         "SP3 AC-23 (AC-4): an empty plan's header counters read exactly \"0 items · 0:00\" (got \"" + el("plan-b-count").textContent + "\")");
+      ok(sumRowValue("Items") === "0" && clockToSecs(sumRowValue("Total time")) === 0 && sumRowValue("Assigned") === "0 / 0",
+         "SP3 AC-23 (AC-4): and the summary is zeroed too — not the previous plan's figures left standing");
+      ok(!document.querySelector("#plan-b-list .plan-b-row") && !!document.querySelector("#plan-b-list .plan-empty"),
+         "SP3 AC-23 (control): the empty state really rendered — the zeros describe an empty run sheet, not a failed render");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      // --- host summary + `partial` (PR #13 contract, consumed not computed) -------------------
+      // These drive the RENDERER with a synthetic host summary, so the consumption path is proven
+      // against the agreed shape before the wire carries it — and so the swap cannot land wrong.
+      // A host summary is only trusted when it DESCRIBES the items being rendered, so each of these
+      // pairs a summary with items it actually adds up over. (The first draft of this block used
+      // arbitrary figures and the new validator rejected every one of them — which is the guard
+      // working.)
+      function withSummary(items, sum) {
+        planSelectedId = null;
+        planRenderBuilder({ plan_name:"HS", items: items, summary: sum });
+        return sumRowValue("Total time");
+      }
+      function hostSum(extra) {
+        var o = { planned_total_secs:0, items:0, songs:0, scripture:0, presentations:0, media:0,
+                  announcements:0, timers:0, sections:0, assigned:0, missing:0, unknown:0 };
+        Object.keys(extra).forEach(function(k){ o[k] = extra[k]; });
+        return o;
+      }
+      var SONG = function(id, secs) {
+        var it = { id:id, kind:"song", title:"s"+id, is_live:false, is_staged:false };
+        if (secs !== null) it.planned_secs = secs;
+        return it;
+      };
+      ok(withSummary([SONG(301, 750), SONG(302, null)],
+                     hostSum({ planned_total_secs:750, items:2, songs:2, partial:true, planned_items:1 })) === "0:12:30 · partial",
+         "SP3 AC-24: a partial total with something planned reads as a real but incomplete sum plus the marker (got \"" + sumRowValue("Total time") + "\")");
+      ok(withSummary([SONG(303, null), SONG(304, null)],
+                     hostSum({ planned_total_secs:0, items:2, songs:2, partial:true, planned_items:0 })) === "— · partial",
+         "SP3 AC-24: with planned_items 0 the figure is meaningless and reads \"— · partial\" — zero is a legitimate duration meaning instant (spec §4.1), so a 0 total does NOT imply nothing is set");
+      ok(withSummary([SONG(305, 750)], hostSum({ planned_total_secs:750, items:1, songs:1, partial:false, planned_items:1 })) === "0:12:30",
+         "SP3 AC-24 (control): a complete total carries no marker — 'partial' is not stuck on");
+      ok(!/partial/i.test(document.querySelector("#plan-b-insp .plan-sum-total .plan-sum-value").getAttribute("aria-label")),
+         "SP3 AC-24 (control): and the spoken form does not say partial either when it is complete");
+      withSummary([SONG(306, null)], hostSum({ planned_total_secs:0, items:1, songs:1, partial:true, planned_items:0 }));
+      ok(/partial/i.test(document.querySelector("#plan-b-insp .plan-sum-total .plan-sum-value").getAttribute("aria-label")) &&
+         !!document.querySelector("#plan-b-insp .plan-sum-total.is-partial"),
+         "SP3 AC-24 a11y: 'partial' is spoken and marked, and the word is in the TEXT so it is not colour-only");
+      // The "inert sections never set partial" rule (spec §4.2) is the HOST's to enforce, and this
+      // client cannot diverge from it because it never computes the flag. A plan that is nothing
+      // but dividers, reported partial:false, must render no marker — the client must not
+      // second-guess it into one.
+      ok(withSummary([{id:201, kind:"section", title:"Gathering", is_live:false, is_staged:false},
+                      {id:202, kind:"section", title:"The Word",  is_live:false, is_staged:false}],
+                     hostSum({ planned_total_secs:0, items:0, sections:2, partial:false, planned_items:0 })) === "0:00:00" &&
+         !document.querySelector("#plan-b-insp .plan-sum-total.is-partial"),
+         "SP3 AC-24: a plan of inert section dividers is NOT marked partial — a warning that is always on is one coordinators learn to ignore");
+      // --- Q13: the pass-through crosses a trust boundary and must validate ---------------------
+      // None of these needs an attacker: a host one release ahead or behind produces them. Each
+      // must fall back to the local computation, which is derived from the rendered items.
+      //
+      // THE DISCRIMINATOR, and why every check below was worth nothing without it. Falling back and
+      // trusting the host have to RENDER DIFFERENTLY, or the assertion cannot say which path ran.
+      // So the items carry OWNERS — the local path renders "Assigned 2 / 2" — and each malformed
+      // summary claims assigned:1, a value that is perfectly VALID (1 <= 2, so no sub-condition
+      // rejects it) yet one the local computation cannot produce for these items. Before this the
+      // fixtures had no owners and hostSum defaults assigned:0, so "Assigned 0 / 2" rendered
+      // identically down BOTH paths and distinguished nothing. That is how QA could delete eleven
+      // of the nineteen guard sub-conditions one at a time — total-eq among them — and watch all
+      // 947 checks stay green while this panel rendered "Total time: 27:46:39" over rows summing
+      // 0:10:00, which is the §9 MAJOR itself, live.
+      var q13Items = [SONG(311, 300), SONG(312, 300)]; // local: total 600 -> "0:10:00", owners -> "2 / 2"
+      q13Items[0].owner = "Worship";
+      q13Items[1].owner = "Host";
+      function malformed(sum, label) {
+        planSelectedId = null;
+        planRenderBuilder({ plan_name:"M", items:q13Items, summary:sum });
+        ok(sumRowValue("Total time") === "0:10:00" && sumRowValue("Items") === "2" &&
+           sumRowValue("Songs") === "2" && sumRowValue("Assigned") === "2 / 2",
+           "SP3 AC-25 (Q13): " + label + " falls back to the local computation (got total \"" +
+           sumRowValue("Total time") + "\", Items \"" + sumRowValue("Items") + "\", Songs \"" +
+           sumRowValue("Songs") + "\", Assigned \"" + sumRowValue("Assigned") + "\")");
+      }
+      // ISOLATION IS THE POINT, not coverage. Each fixture marked PINS is well-formed in every
+      // respect EXCEPT the one sub-condition it names, so deleting that sub-condition fails exactly
+      // this case and no other. Undeliberate overlap is what let the first round of these survive.
+      // Measured, by deleting each of the NINETEEN sub-conditions of planSummaryIsSound in turn and
+      // running this file: THIRTEEN are pinned and fail exactly one check, the case naming them.
+      // One more, the `for` loop applying count() to SUMMARY_COUNTS, fails FOUR — it is the
+      // container for four pinned sub-conditions, so that is containment, not masking: each of the
+      // four is still individually pinned by its own case.
+      // The remaining FIVE cannot be isolated by any input, because each is subsumed — not merely
+      // overlapped — by a later check, and no value exists that only they reject:
+      //   typeof and isFinite, on the total AND inside count(), are subsumed by Number.isInteger,
+      //     which is false for every non-number and for Infinity, -Infinity and NaN alike;
+      //   the total's >= 0 is subsumed by total-eq, because the local total is a sum of
+      //     planHasDuration-validated values and so can never be negative.
+      // They are kept anyway: they make the guard say what it means at the point it means it, and
+      // they are cheap. What is NOT kept is a comment claiming a pin no fixture can supply.
+      malformed({}, "an empty summary object"); // LAYERED: the type check and all eleven counts
+      // LAYERED, and the ONLY fixture that reaches the finiteness check at all. isFinite is
+      // subsumed by Number.isInteger, which returns false for Infinity, -Infinity and NaN alike:
+      // no value exists that isFinite rejects and Number.isInteger accepts, so this sub-condition
+      // is defence in depth and cannot be pinned. Kept because it is the case that exercises it.
+      malformed(hostSum({ planned_total_secs:Infinity, items:2, songs:2, assigned:1 }), "a non-finite total");
+      // LAYERED (regression case). 1e308 is FINITE — it never reaches the check above; the
+      // week-long bound is what rejects it, with total-eq behind that. Kept for the exact historical
+      // render, which is the string PLAN_MAX_ITEM_SECS and PLAN_MAX_TOTAL_SECS both exist to stop.
+      malformed(hostSum({ planned_total_secs:1e308, items:2, songs:2, assigned:1 }), "a total at 1e308 (rendered 2.77e+304:58:56)");
+      // LAYERED. A negative total is caught by the >= 0 check first, but can never be pinned: the
+      // local total is a sum of planHasDuration-validated values, each >= 0, so a negative host
+      // total can never equal it and total-eq always rejects it too.
+      malformed(hostSum({ planned_total_secs:-1200, items:2, songs:2, assigned:1 }), "a negative total (rendered -1:-20:00)");
+      // LAYERED, and the only fixture that reaches count()'s typeof check. Subsumed for the same
+      // reason as isFinite above: Number.isInteger("1") is false, so the integrality check rejects
+      // a string too and typeof can never be the sole rejector.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:"1" }), "a count that is a string rather than a number");
+      // PINS count()'s integrality. 1.5 is a number, finite, non-negative, under the cap and not
+      // greater than items, so only Number.isInteger can reject it. Counts are usize on the wire.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1.5 }), "a fractional count (\"1.5 / 2\")");
+      // PINS count()'s non-negativity. -1 is a finite integer under the cap, and -1 > items is
+      // false, so the assigned-exceeds-items check cannot catch it — only v >= 0 can.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:-1 }), "a negative count (\"-1 / 2\")");
+      // PINS PLAN_MAX_COUNT. `sections` is deliberately the field used: it is excluded from `items`
+      // by the settled rule and from the per-kind sum, so no other check reads it and the count cap
+      // is the only thing standing between this panel and a six-figure row count.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, sections:100001 }), "a count beyond PLAN_MAX_COUNT");
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, partial:"yes" }), "a non-boolean partial"); // PINS the partial type check
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, partial:true }), "partial:true with no planned_items to disambiguate it"); // PINS the pairing rule
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:9 }), "more assigned items than items"); // PINS assigned <= items
+      // PINS the per-kind sum. songs:5 over items:2 is otherwise sound, so only kinds !== items
+      // rejects it. This was songs:7 on every fixture in the block, which is why several of them
+      // could not tell a fallback from a trusted host object: they all tripped this one check.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:5, assigned:1 }), "per-kind counts that do not add up to items");
+      // PINS the subset rule. Backend's own incoherence, mirrored: a duration set ON a section
+      // reached planned_items while the section was absent from items, so planned_items could
+      // exceed items and this panel would have rendered "7 of 6". A subset cannot exceed its whole.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, partial:true, planned_items:9 }), "planned_items exceeding items (\"7 of 6\")");
+      // PINS the planned_items type/range check — the ONLY guard on this field, because
+      // planned_items is deliberately NOT in SUMMARY_COUNTS (it is optional, so the loop cannot
+      // require it) and the subset rule above only compares it. Without this check a host sending
+      // the STRING "0" renders "0:10:00 · partial" — a real total, meaning "some items are
+      // planned" — where planned_items:0 must render "— · partial", meaning "nothing is planned
+      // and this figure is meaningless". `nothingPlanned` tests `=== 0`, which a string fails, so
+      // dropping this check INVERTS the two-field distinction planned_items exists to carry.
+      // "0" and not -1 on purpose: a string is rejected by count()'s typeof AND its integrality,
+      // so neutralising either one alone leaves this fixture still rejected. -1 is rejected only
+      // by count()'s v >= 0, which couples this case to that mutation — measured, it made the
+      // negative-count case and this one fail together and cost count.nonneg its isolation.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, partial:true, planned_items:"0" }),
+                "a planned_items that is a string rather than a number (\"0:10:00 · partial\" for what is really \"— · partial\")");
+      // PINS missing + unknown <= items. Both counts are individually legal (2 <= 2) and every
+      // other field is sound, so only their SUM can reject this — individually-correct fields that
+      // do not add up are exactly what design QA rejected these frames for the first time round.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, missing:2, unknown:2 }),
+                "missing + unknown exceeding items");
+      // PINS total-eq — THE guard against this ticket's signature defect, and the one QA found
+      // deletable with the suite green: a header total that does not describe the rows beneath it.
+      // 99999 is a number, finite, integral, non-negative and inside the week-long bound, and every
+      // count here adds up, so total-eq is the only check that can reject it.
+      malformed(hostSum({ planned_total_secs:99999, items:2, songs:2, assigned:1 }),
+                "a total that does not describe the rows being rendered (the \u00a79 MAJOR)");
+      // A fractional total: finite, non-negative, in-bounds, and EQUAL to the fixture's own sum, so
+      // only the integrality check can reject it. planned_total_secs is u32 on the wire.
+      var fracItems = [SONG(331, 300.25), SONG(332, 300.25)];
+      fracItems[0].owner = "Worship"; fracItems[1].owner = "Host";
+      planSelectedId = null;
+      planRenderBuilder({ plan_name:"F", items:fracItems,
+                          summary: hostSum({ planned_total_secs:600.5, items:2, songs:2, assigned:1 }) });
+      ok(sumRowValue("Assigned") === "2 / 2",
+         "SP3 AC-25 (Q13): a fractional total is rejected even though it is finite, in range and agrees with its rows — only the integrality check can catch this one (Assigned=" +
+         sumRowValue("Assigned") + ")");
+      // Isolates PLAN_MAX_TOTAL_SECS: eight items at the per-item cap sum to 691200s, so the total
+      // AGREES with the rows and every other check passes — only the week-long bound rejects it.
+      // A corrupt plan claiming eight days of runtime is the real shape of this.
+      var hugeItems = [];
+      for (var hz = 0; hz < 8; hz++) hugeItems.push(SONG(400 + hz, 86400));
+      planSelectedId = null;
+      planRenderBuilder({ plan_name:"HUGE", items:hugeItems,
+                          summary: hostSum({ planned_total_secs:691200, items:8, songs:8, assigned:5 }) });
+      ok(sumRowValue("Assigned") === "0 / 8",
+         "SP3 AC-25 (Q13): a total beyond the week-long bound is rejected even though it agrees with the rows and every other field is sound — only the bound can catch this one (Assigned=" +
+         sumRowValue("Assigned") + ")");
+      // Control: a WELL-FORMED summary is still used. Without this the guard could pass by
+      // rejecting everything, which would silently disable PR #13 the day it merges.
+      planSelectedId = null;
+      planRenderBuilder({ plan_name:"OK", items:q13Items,
+                          summary: hostSum({ planned_total_secs:600, items:2, songs:2, assigned:0, partial:true, planned_items:2 }) });
+      ok(sumRowValue("Total time") === "0:10:00 · partial",
+         "SP3 AC-25 (control): a sound host summary IS used — the guard rejects malformed input, not every input");
+      // ...and it is genuinely the HOST's object, not the local fallback coincidentally agreeing:
+      // the local computation cannot produce a partial marker at all.
+      ok(!!document.querySelector("#plan-b-insp .plan-sum-total.is-partial"),
+         "SP3 AC-25 (control): and the marker proves the host object was used — the local fallback carries no partial flag");
+      // The DISCRIMINATOR itself, proven live in the accepting direction. Every malformed case
+      // above concludes "the local path ran" from Assigned reading "2 / 2"; that inference is only
+      // worth something if a trusted host summary can make the same row read something else. These
+      // are the same two owned items, and the host's assigned:0 comes through as "0 / 2".
+      ok(sumRowValue("Assigned") === "0 / 2",
+         "SP3 AC-25 (control): the host's own assigned count is what renders when the summary is trusted — the field the malformed cases read is genuinely host-sourced, not a constant (Assigned=" +
+         sumRowValue("Assigned") + ")");
+      // Sections-not-items is UNSETTLED (frame 608:875 counts 6 items over 3 dividers), so the
+      // guard must accept both readings rather than hard-code a decision nobody has made.
+      planSelectedId = null;
+      planRenderBuilder({ plan_name:"SX", items:[SONG(321, 600), {id:322, kind:"section", title:"D", is_live:false, is_staged:false}],
+                          summary: hostSum({ planned_total_secs:600, items:1, songs:1, sections:1 }) });
+      ok(sumRowValue("Items") === "1",
+         "SP3 AC-25: a host summary excluding inert sections from `items` is accepted — that is the settled rule, and the per-kind rows sum to it");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      // --- missing-content count: three-state link status -------------------------------------
+      // Local deck resolution stays authoritative (the host has no deck store and cannot resolve a
+      // deck_id), and an "unknown" status must never be counted as either missing or resolved-by-
+      // fiat. Deck 2 resolves locally; deck 99 does not.
+      var missView = { plan_name:"S", items:[
+        {id:31, kind:"slide_group", title:"Gone",       is_live:false, is_staged:false, link:{kind:"deck", id:99}},
+        {id:32, kind:"slide_group", title:"Present",    is_live:false, is_staged:false, link:{kind:"deck", id:2}},
+        {id:33, kind:"media",       title:"Host: gone", is_live:false, is_staged:false, link:{kind:"media", id:7, status:"missing"}},
+        {id:34, kind:"media",       title:"Unknown",    is_live:false, is_staged:false, link:{kind:"media", id:8, status:"unknown"}}
+      ] };
+      planSelectedId = null;
+      planRenderBuilder(missView);
+      ok(sumRowValue("Missing content") === "⚠ 2",
+         "SP3 AC-4: Missing content counts the locally-unresolvable deck AND the host-flagged media (got " + sumRowValue("Missing content") + ")");
+      ok(document.querySelectorAll("#plan-b-insp .plan-sum-warn").length === 1,
+         "SP3 AC-4: a non-zero missing count is marked, and the ⚠ is in the TEXT so it is not colour-only");
+      // Control for the "unknown" branch specifically. Item 34 is a NON-deck link carrying
+      // status:"unknown" — it reaches the `status === "unknown"` return, which a deck link never
+      // does (decks short-circuit into local resolution first). "Could not check" must not be
+      // counted as broken; if it were, the count above would read 3.
+      ok(planLinkState(missView.items[3].link) === "unknown",
+         "SP3 AC-4 (control): a non-deck link with status 'unknown' resolves to unknown, not missing and not resolved-by-fiat");
+      // Control for the OTHER unknown branch: a deck_list that never loaded. planDecks === null
+      // must read unknown, so one transient deck_list failure cannot flag every deck-linked item
+      // in the plan as broken. This is the branch a loaded fixture otherwise never exercises.
+      var decksSaved = planDecks;
+      planDecks = null;
+      planRenderBuilder(missView);
+      ok(planLinkState(missView.items[0].link) === "unknown" && sumRowValue("Missing content") === "⚠ 1",
+         "SP3 AC-4 (control): with the deck list unloaded, deck links read unknown — only the host-flagged media counts missing (got " + sumRowValue("Missing content") + ")");
+      planDecks = decksSaved;
+      planRenderBuilder(missView);
+      ok(sumRowValue("Missing content") === "⚠ 2",
+         "SP3 AC-4 (control): restoring the deck list restores the real count — the unknown path is a state, not a latch");
+      // Regression, found by rendering the real dist in WebKit: a host that answers deck_list with
+      // null must read as UNKNOWN, not as a loaded-and-empty library. `(r && r.decks) || []` made
+      // a null response mean "the library is empty", so every deck-linked item was flagged
+      // "⚠ presentation missing" and counted here — the false alarm the catch branch exists to
+      // prevent, reached through the success path instead.
+      window.__deckListNullOnce = true;
+      await planLoadDecks();
+      ok(planDecks === null, "SP3 AC-4 (regression): a null deck_list response reads UNKNOWN, not an empty library");
+      planRenderBuilder(missView);
+      ok(sumRowValue("Missing content") === "⚠ 1",
+         "SP3 AC-4 (regression): with the deck library unreadable, deck links are NOT counted missing — only the host-flagged media is (got " + sumRowValue("Missing content") + ")");
+      await planLoadDecks();
+      ok(Array.isArray(planDecks) && planDecks.length > 0,
+         "SP3 AC-4 (control): a well-formed deck_list still loads the library — the guard rejects malformed responses, not every response");
+      planRenderBuilder(missView);
+      planRenderBuilder(sumView);
+      ok(sumRowValue("Missing content") === "0" && !document.querySelector("#plan-b-insp .plan-sum-warn"),
+         "SP3 AC-4 (control): a plan with nothing missing reads 0 and is NOT marked — the marker is not stuck on");
+      // --- the panel swaps with selection, and the heading says which panel this is ------------
+      ok(el("plan-insp-h").textContent === "PLAN SUMMARY", "SP3 AC-2: with nothing selected the right panel is headed PLAN SUMMARY");
+      document.querySelector('#plan-b-list .plan-b-row[data-item-id="21"]').click();
+      ok(el("plan-insp-h").textContent === "ITEM" && !document.querySelector("#plan-b-insp .plan-sum-card"),
+         "SP3 AC-2: selecting an item swaps the summary for the item inspector, and the heading follows");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      ok(!!document.querySelector("#plan-b-insp .plan-sum-card"), "SP3 AC-2: clearing the selection brings the summary back");
+      // --- the two write actions are present, honest, and slotted for 86ak8467m ---------------
+      ok(!!el("plan-sum-publish") && el("plan-sum-publish").disabled,
+         "SP3 AC-5: 'Publish to team' is PRESENT and disabled — not hidden (an operator must be able to find it) and not wired to a no-op");
+      ok(!!el("plan-sum-precheck") && el("plan-sum-precheck").disabled, "SP3 AC-5: 'Run pre-service check' is present and disabled");
+      ok(el("plan-sum-publish").getAttribute("aria-describedby") === "plan-sum-later" && !!el("plan-sum-later"),
+         "SP3 AC-5 a11y: the disabled actions point at a stated reason, so AT hears why they are unavailable");
+      ok(!!el("plan-sum-live") && !el("plan-sum-live").disabled,
+         "SP3 AC-5 (control): 'Open in Live' in the SAME panel is enabled — 'disabled' means not-yet-built, not a dead panel");
+      // Open in Live is a pure surface switch: it must never send a live-control command.
+      // Assert what is FORBIDDEN, not a raw call count: a 1 Hz `view` poll runs throughout the
+      // gate, so counting every call makes this pass or fail on timing rather than on behaviour.
+      var liveCallsBefore = window.__calls.length;
+      el("plan-sum-live").click();
+      await sleep(20);
+      var during = window.__calls.slice(liveCallsBefore).map(function(c){ return c.cmd; });
+      // Name what is FORBIDDEN rather than allowlisting reads: the console polls view /
+      // detection_health / link_status continuously, so a new poll must not break this, while any
+      // command that commits to Live or edits the plan must.
+      var FORBIDDEN = ["go_live","deck_go_live","deck_go_live_delta","blackout","clear","next","previous",
+                       "select","select_slide","stage_scripture","present_plan_deck_slide",
+                       "add_item","move_item","remove_item","rename_item","set_item_content","plan_undo","plan_redo"];
+      var offended = during.filter(function(c){ return FORBIDDEN.indexOf(c) >= 0; });
+      ok(offended.length === 0,
+         "SP3 AC-6 invariant: 'Open in Live' only switches surface — it commits nothing to Live and edits no plan item (saw: " + (offended.join(",") || "none") + ")");
+      // --- unset durations: OMITTED, per 86ak846ft AC-1 ("without a gap or placeholder text") ---
+      // UI-A1 FR-202 asks for a "—" placeholder instead. The two acceptance criteria genuinely
+      // conflict and DECISION 86ak84cth owns it; this pins the CURRENT contract so a silent switch
+      // to either behaviour fails here rather than surprising whichever spec wins.
+      var partialView = { plan_name:"P", items:[
+        {id:41, kind:"song",        title:"Has one",  is_live:false, is_staged:false, owner:"W", planned_secs:300},
+        {id:42, kind:"song",        title:"Has none", is_live:false, is_staged:false, owner:"W"},
+        {id:43, kind:"announcement",title:"Zero",     is_live:false, is_staged:false, owner:"H", planned_secs:0}
+      ] };
+      planSelectedId = null;
+      planRenderBuilder(partialView);
+      ok(!document.querySelector('#plan-b-list .plan-b-row[data-item-id="42"] .plan-b-dur'),
+         "SP3 AC-8: an item with no planned duration renders NO duration element (86ak846ft AC-1; the UI-A1 em-dash is DECISION 86ak84cth)");
+      // An explicit 0 is SET, not unset — guards the predicate against a truthiness bug.
+      var zeroRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="43"] .plan-b-dur');
+      ok(!!zeroRow && zeroRow.textContent.trim() === "0:00",
+         "SP3 AC-8 (control): planned_secs 0 is a SET duration and renders 0:00 — the omission is 'absent', not 'falsy'");
+      ok(clockToSecs(sumRowValue("Total time")) === rowDurationSum(),
+         "SP3 AC-8: the total still equals the sum of the durations that ARE set");
+      // KNOWN GAP pinned deliberately: the total excludes unplanned items with no marker. `partial`
+      // must be computed in ONE place, the same place as the sum (PLAN-SECTIONS-DURATIONS §128),
+      // and that place is the host's PlanSummaryView — which does not carry it yet (raised on PR
+      // #13). Computing it here would make THIS surface look right while the mobile client and the
+      // Live Console panel stayed wrong. This asserts the gap is not silently "fixed" locally.
+      ok(!/partial/i.test(sumRowValue("Total time")),
+         "SP3 AC-8 (pinned gap): the total carries no locally-computed 'partial' — that flag belongs on the wire beside the sum, not in this one client");
+      // Hostile numerics must not corrupt the total (Sana S3): out of range is treated as UNSET.
+      planRenderBuilder({ plan_name:"X", items:[
+        {id:44, kind:"song", title:"Neg",  is_live:false, is_staged:false, planned_secs:-1200},
+        {id:45, kind:"song", title:"Huge", is_live:false, is_staged:false, planned_secs:1e308},
+        {id:46, kind:"song", title:"Real", is_live:false, is_staged:false, planned_secs:600}
+      ] });
+      ok(sumRowValue("Total time") === "0:10:00",
+         "SP3 AC-8 (Sana S3): a negative or non-finite planned_secs is treated as UNSET, so it cannot render -1:-15:00 or Infinity:NaN:NaN (got " + sumRowValue("Total time") + ")");
+      ok(document.querySelectorAll("#plan-b-list .plan-b-dur").length === 1,
+         "SP3 AC-8 (Sana S3 control): only the one in-range duration renders — the guard rejects bad values, not every value");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      // --- unknown is counted separately from missing, and never merged into it ----------------
+      // The host structurally cannot resolve decks or media, so it returns "unknown" for both.
+      // Collapsing that into "resolved" is the failure the three-state field exists to prevent.
+      var unkView = { plan_name:"U", items:[
+        {id:51, kind:"media",       title:"Unresolvable media", is_live:false, is_staged:false, link:{kind:"media", id:9, status:"unknown"}},
+        {id:52, kind:"slide_group", title:"Gone deck",          is_live:false, is_staged:false, link:{kind:"deck", id:99}}
+      ] };
+      planRenderBuilder(unkView);
+      ok(planSummaryOf(unkView).unknown === 1 && planSummaryOf(unkView).missing === 1,
+         "SP3 AC-9: unknown and missing are counted SEPARATELY — 'the host could not check' is not 'it is fine'");
+      ok(sumRowValue("Missing content") === "⚠ 1",
+         "SP3 AC-9 (control): the unknown item is NOT folded into the missing count");
+      // The summary object mirrors OperatorStateView.summary field-for-field, so adopting the
+      // host's summary is a swap of planSummaryOf's body and nothing else.
+      var shape = planSummaryOf(sumView);
+      var WIRE = ["items","songs","scripture","presentations","media","announcements","timers","sections","assigned","missing","unknown","planned_total_secs"];
+      var absent = WIRE.filter(function(k){ return !(k in shape); });
+      ok(absent.length === 0,
+         "SP3 AC-10: the local summary carries every OperatorStateView.summary field, so the backend swap is one function (missing: " + (absent.join(",") || "none") + ")");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      // --- QA-review remediation (Quinn, PR #12): these guard fixes whose probes were transient ---
+      showSurface("plan");
+      await sleep(40);
+      // P1: the per-kind rows must ALWAYS sum to Items, including kinds the demo frame has none of.
+      var kindsView = { plan_name:"K", items:[
+        {id:61, kind:"song",    title:"S", is_live:false, is_staged:false, planned_secs:60},
+        {id:62, kind:"timer",   title:"T", is_live:false, is_staged:false, planned_secs:60},
+        {id:63, kind:"section", title:"Sec", is_live:false, is_staged:false, planned_secs:60},
+        {id:64, kind:"media",   title:"M", is_live:false, is_staged:false, planned_secs:60}
+      ] };
+      planSelectedId = null;
+      planRenderBuilder(kindsView);
+      var kindSum = ["Songs","Scripture","Presentations","Media","Announcements","Timers"]
+        .reduce(function(a,k){ return a + Number(sumRowValue(k)); }, 0);
+      ok(String(kindSum) === sumRowValue("Items"),
+         "SP3 AC-11 (Quinn P1): the per-kind rows sum to Items for every kind, so a reader's arithmetic adds up (kinds=" + kindSum + " vs Items=" + sumRowValue("Items") + ")");
+      ok(document.querySelectorAll("#plan-b-list .plan-b-row").length === 4,
+         "SP3 AC-11 (control): the run sheet really did render all four kinds");
+      // P5c: a long owner must not crush the title to nothing (WKWebView trap #1, owner side).
+      var longView = { plan_name:"L", items:[{id:71, kind:"song", title:"A reasonably long item title here",
+        is_live:false, is_staged:false, owner:"Wednesday Evening Worship Team Coordinator", planned_secs:300}] };
+      planRenderBuilder(longView);
+      var lRow = document.querySelector('#plan-b-list .plan-b-row');
+      var lTitle = lRow.querySelector(".plan-b-title");
+      // The bug was titleW=0 — total collapse. The floor on .plan-b-main stops that. In a SQUEEZED
+      // column the title is still short, because the ↑↓ tools (66px) and the type badge (33px) are
+      // fixed and the owner has already yielded to ~7px; that is geometry, not a starvation bug.
+      // What must hold is that the title never disappears and the owner yields FIRST.
+      ok(lTitle.getBoundingClientRect().width > 20,
+         "SP3 AC-12 (Quinn P5c): a very long owner never crushes the title out of existence (titleW=" + Math.round(lTitle.getBoundingClientRect().width) + ")");
+      ok(lRow.querySelector(".plan-b-owner").getBoundingClientRect().width < lTitle.getBoundingClientRect().width,
+         "SP3 AC-12: under pressure the OWNER yields before the title — priority is title > duration > owner");
+      ok(lRow.scrollWidth <= lRow.clientWidth + 2,
+         "SP3 AC-12 (Quinn P5): a very long owner does not overflow its row (scrollW=" + lRow.scrollWidth + " clientW=" + lRow.clientWidth + ")");
+      ok(lRow.querySelector(".plan-b-dur").getBoundingClientRect().width > 20,
+         "SP3 AC-12 (control): the duration is never the thing that gets truncated — a clipped time is worse than a clipped name");
+      // P9: a 65-minute row must not read "65:00".
+      planRenderBuilder({ plan_name:"H", items:[{id:81, kind:"song", title:"Long", is_live:false, is_staged:false, planned_secs:3900}] });
+      var hDur = document.querySelector("#plan-b-list .plan-b-dur").textContent.trim();
+      ok(hDur === "1:05:00",
+         "SP3 AC-13 (Quinn P9): a 65-minute row reads h:mm:ss like the total, not '65:00' (got " + hDur + ")");
+      ok(document.querySelector("#plan-b-list .plan-b-dur").getAttribute("aria-label") === "Planned 1 hour 5 minutes",
+         "SP3 AC-13: and its spoken form is unambiguous");
+      // P8: the per-type accent bar (handoff §3), decorative — the badge carries the type as text.
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      var acc = document.querySelector('#plan-b-list .plan-b-row[data-item-id="23"] .plan-b-accent');
+      ok(!!acc && acc.classList.contains("kind-scripture"),
+         "SP3 AC-14 (Quinn P8): run-sheet rows carry a per-type accent bar");
+      ok(acc.getAttribute("aria-hidden") === "true",
+         "SP3 AC-14 a11y: the accent bar is decorative — the type badge carries the same information as TEXT, so colour is never the only cue");
+      ok(document.querySelectorAll("#plan-b-list .plan-b-accent").length === document.querySelectorAll("#plan-b-list .plan-b-row").length,
+         "SP3 AC-14 (control): every row gets one, not just the typed ones");
+      // P7: the landmark must follow the heading rather than claim "Item inspector" throughout.
+      var aside = document.getElementById("plan-insp-panel");
+      ok(aside.getAttribute("aria-labelledby") === "plan-insp-h" && !aside.getAttribute("aria-label"),
+         "SP3 AC-15 (Quinn P7): the right panel is labelled BY its heading, so it never announces the wrong panel");
+      ok(el("plan-insp-h").textContent === "PLAN SUMMARY",
+         "SP3 AC-15 (control): and that heading currently reads PLAN SUMMARY");
+      // P6: swapping the panel must not strand focus on <body>.
+      el("plan-sum-live").focus();
+      ok(document.activeElement === el("plan-sum-live"), "SP3 AC-16 (setup): focus is inside the Plan Summary panel");
+      document.querySelector('#plan-b-list .plan-b-row[data-item-id="21"]').click();
+      ok(document.activeElement !== document.body,
+         "SP3 AC-16 (Quinn P6): swapping the summary for the inspector does not strand focus on <body> (activeElement=" + document.activeElement.tagName + ")");
+      // Control: a swap with focus OUTSIDE the panel must NOT steal it — otherwise the fix would
+      // yank focus away from the run sheet on every background re-render.
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      var outside = document.querySelector('#plan-b-list .plan-b-row[data-item-id="22"]');
+      outside.focus();
+      planRenderBuilder(sumView);
+      // Asserts what planKeepPanelFocus OWNS: it must not PULL focus into the panel when focus was
+      // outside it. (Where focus lands after a run-sheet rebuild is separate, pre-existing
+      // behaviour — planFocusAfterRender is deliberately null on a background re-render.)
+      ok(!el("plan-b-insp").contains(document.activeElement),
+         "SP3 AC-16 (control): a rebuild with focus OUTSIDE the panel does not steal focus into it (activeElement=" + document.activeElement.tagName + ")");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      // --- Sana S1: local deck truth outranks a host-stamped status ---------------------------
+      // The host has no deck store, so its verdict on a deck is never ground truth. A deck the
+      // operator can SEE is not missing because the host said so.
+      ok(planLinkState({kind:"deck", id:2, status:"missing"}) === "resolved",
+         "SP3 AC-17 (Sana S1): a deck present in the local library resolves even when the host stamped status:missing");
+      ok(planLinkState({kind:"deck", id:99, status:"missing"}) === "missing",
+         "SP3 AC-17 (control): a deck absent locally is still missing — local truth decides BOTH ways, it does not merely ignore the host");
+      var savedDecks = planDecks;
+      planDecks = null;
+      ok(planLinkState({kind:"deck", id:2, status:"missing"}) === "missing" && planLinkState({kind:"deck", id:2}) === "unknown",
+         "SP3 AC-17: with no local library there is no ground truth, so the host's status is the fallback and silence reads unknown");
+      planDecks = savedDecks;
+      // --- Sana S2: one verdict per link, shared by the chip and the summary -------------------
+      var s2View = { plan_name:"S2", items:[
+        {id:91, kind:"media", title:"Host says gone", is_live:false, is_staged:false, link:{kind:"media", id:3, status:"missing"}},
+        {id:92, kind:"media", title:"Fine",           is_live:false, is_staged:false, link:{kind:"media", id:4}}
+      ] };
+      planSelectedId = null;
+      planRenderBuilder(s2View);
+      // THE assertion behind planLinkState's stated purpose: what is DRAWN missing and what is
+      // COUNTED missing must be the same set. Previously the chip ignored `status` while the
+      // summary honoured it, so the panel read "⚠ 1" with no visibly-missing row.
+      ok(document.querySelectorAll("#plan-b-list .link-missing").length === Number(String(sumRowValue("Missing content")).replace(/\D/g, "")),
+         "SP3 AC-18 (Sana S2): the rows DRAWN missing equal the summary's missing count — one verdict, not two (drawn=" +
+         document.querySelectorAll("#plan-b-list .link-missing").length + " counted=" + sumRowValue("Missing content") + ")");
+      ok(/media missing/i.test(document.querySelector('#plan-b-list .plan-b-row[data-item-id="91"] .link-chip').textContent),
+         "SP3 AC-18: a host-flagged missing medium is drawn missing, not as a healthy chip");
+      ok(!document.querySelector('#plan-b-list .plan-b-row[data-item-id="92"] .link-chip').classList.contains("link-missing"),
+         "SP3 AC-18 (control): a medium with no status is NOT drawn missing — the treatment is not stuck on");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      // --- Cody BLOCKER 1: the way back to the Plan Summary must exist as a GESTURE -----------
+      // AC-2 above proved nothing about reachability: it restores the summary by assigning
+      // planSelectedId = null, which no operator can do. Selecting a row was a one-way door, and
+      // it took Publish / Run pre-service check (the 86ak8467m seam) with it.
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      document.querySelector('#plan-b-list .plan-b-row[data-item-id="21"]').click();
+      ok(el("plan-insp-h").textContent === "ITEM", "SP3 AC-19 (setup): clicking a row opens the item inspector");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(40);
+      ok(el("plan-insp-h").textContent === "PLAN SUMMARY" && !!el("plan-sum-publish"),
+         "SP3 AC-19 (Cody BLOCKER 1): Escape returns to the Plan Summary, so Publish is reachable again after a row has been selected");
+      document.querySelector('#plan-b-list .plan-b-row[data-item-id="21"]').click();
+      ok(el("plan-insp-h").textContent === "ITEM", "SP3 AC-19 (setup): re-selected, for the pointer path");
+      el("plan-b-list").click(); // the empty area below the rows — target is the list itself
+      await sleep(40);
+      ok(el("plan-insp-h").textContent === "PLAN SUMMARY",
+         "SP3 AC-19 (Cody BLOCKER 1): clicking the empty run-sheet area also deselects");
+      // Control: Escape with nothing selected must not fire a pointless refetch.
+      var cardBefore = document.querySelector("#plan-b-insp .plan-sum-card");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(20);
+      ok(document.querySelector("#plan-b-insp .plan-sum-card") === cardBefore,
+         "SP3 AC-19 (control): Escape with nothing selected does not rebuild the panel — it is a genuine no-op, not a rebuild on every keypress");
+      // --- Cody HIGH 4: the summary must not report a plan that is loading or failed to open ---
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      ok(!!document.querySelector("#plan-b-insp .plan-sum-card"), "SP3 AC-20 (setup): the summary is showing real figures");
+      planRenderLoading();
+      ok(!document.querySelector("#plan-b-insp .plan-sum-card") && !!document.querySelector("#plan-b-insp .plan-sum-blank"),
+         "SP3 AC-20 (Cody HIGH 4): loading clears the summary — it must not report the previous plan's figures beside a skeleton run sheet");
+      planRenderLoading();
+      planRenderLoadFailed(new Error("x"));
+      ok(!document.querySelector("#plan-b-insp .plan-sum-card") && /unavailable/i.test(el("plan-b-insp").textContent),
+         "SP3 AC-20 (Cody HIGH 4): after a failed open the panel says figures are unavailable, not 'Items 6 · 0:53:12' next to 'Couldn't open the plan'");
+      // --- focus retention, exercised properly --------------------------------------------------
+      // AC-16 could not reach planKeepPanelFocus: clicking a row focuses the ROW, so focus was
+      // never inside the panel at rebuild time. This drives the actual path — a background
+      // re-render under a focused panel control.
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      el("plan-sum-live").focus();
+      planRenderBuilder(sumView);
+      ok(el("plan-insp-panel").contains(document.activeElement),
+         "SP3 AC-16b: a rebuild under a focused panel control keeps focus in the panel rather than dropping it to <body> (activeElement=" + document.activeElement.tagName + ")");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      // --- the Plan Summary must stay REACHABLE as it grows (WKWebView trap #2 family) ---------
+      // Adding the Timers/Sections rows pushed the panel's last element below the emergency
+      // footer. That is fine only because #surface-plan scrolls; if a future row made the panel
+      // taller than the scroll container allows, the bottom of the summary would be permanently
+      // obscured. Note the weaker check this replaces: the grid's own scrollHeight === clientHeight
+      // stayed equal the whole time the content was overflowing, so it proved nothing.
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      var surf = el("surface-plan");
+      var hint = document.querySelector("#plan-b-insp .plan-sum-hint");
+      ok(!!hint, "SP3 AC-21 (setup): the summary's last element exists");
+      // Self-referential to the SCROLL CONTAINER, not to the footer: the footer sits in different
+      // places under the gate's layout than in the real window, so a footer-relative assertion
+      // would measure the harness rather than the product.
+      // FORCE the overflow. At the gate's viewport the panel happens to fit, so the assertion
+      // would be trivially true and guard nothing (it survived an overflow-y:hidden mutation until
+      // this was added). Squeezing the surface reproduces the real-window condition, where the
+      // panel's last element sits below the fold.
+      var savedH = surf.style.height;
+      surf.style.height = "200px";
+      ok(hint.getBoundingClientRect().bottom > Math.round(surf.getBoundingClientRect().top + surf.clientHeight),
+         "SP3 AC-21 (premise): with the surface squeezed the summary really does overflow — otherwise the reachability check below proves nothing");
+      // The container must be USER-scrollable, not merely script-scrollable: overflow-y:hidden
+      // still honours a programmatic scrollTop, so scrolling in a test and finding the element
+      // proves nothing about whether an operator could ever reach it.
+      var ovf = getComputedStyle(surf).overflowY;
+      ok(ovf === "auto" || ovf === "scroll",
+         "SP3 AC-21: the plan surface is user-scrollable (overflow-y=" + ovf + "), so overflowing panel content is reachable by a person and not just by script");
+      surf.scrollTop = surf.scrollHeight;
+      var surfBottom = Math.round(surf.getBoundingClientRect().top + surf.clientHeight);
+      ok(Math.round(hint.getBoundingClientRect().bottom) <= surfBottom + 1,
+         "SP3 AC-21: the bottom of the Plan Summary can be scrolled into the surface's visible area — a taller panel must never become unreachable (hint=" +
+         Math.round(hint.getBoundingClientRect().bottom) + " surfaceBottom=" + surfBottom + ")");
+      surf.scrollTop = 0;
+      surf.style.height = savedH;
+      // --- loading (frame 611:350) ------------------------------------------------------------
+      planRenderLoading();
+      ok(document.querySelectorAll("#plan-b-list .plan-skel-row").length > 0, "SP3 AC-7: opening the plan paints skeleton rows");
+      var lmsg = document.querySelector("#plan-b-list .plan-loading-msg");
+      ok(!!lmsg && lmsg.getAttribute("role") === "status" && /scanning for missing content/i.test(lmsg.textContent),
+         "SP3 AC-7 a11y: the wait is announced via role=status and names the missing-content scan, not just drawn");
+      ok(document.querySelector("#plan-b-list .plan-skel-row").getAttribute("aria-hidden") === "true",
+         "SP3 AC-7 a11y: the skeleton rows are aria-hidden — texture, not four empty rows announced to AT");
+      ok(el("plan-b-count").textContent === "—",
+         "SP3 AC-7: the count reads — while loading, rather than showing a stale count as if it were current");
+      // Positive control: the skeleton is REPLACED by real content. Without this, "paints a
+      // skeleton" would pass just as well on a loading state that never resolves.
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      ok(!document.querySelector("#plan-b-list .plan-skel-row") && document.querySelectorAll("#plan-b-list .plan-b-row").length === 6,
+         "SP3 AC-7 (control): the first real render clears the skeleton — the loading state is not stuck");
+      ok(el("plan-b-count").textContent === "6 items", "SP3 AC-7 (control): and the real count replaces the — placeholder");
+      // A failed open must not leave the skeleton up forever: an endless loading state is a lie
+      // about work still being in flight.
+      planRenderLoading();
+      planRenderLoadFailed(new Error("boom"));
+      var lfail = document.querySelector("#plan-b-list .plan-load-failed");
+      ok(!!lfail && lfail.getAttribute("role") === "alert" && !document.querySelector("#plan-b-list .plan-skel-row"),
+         "SP3 AC-7: a failed open replaces the skeleton with a role=alert message instead of spinning forever");
+      ok(/Live output is unaffected/.test(lfail.textContent),
+         "SP3 AC-7: the failure says the audience is unaffected (NFR-024) rather than implying live output is at risk");
+      // Control: a LATE failure must not wipe a run sheet that already painted.
+      planRenderBuilder(sumView);
+      planRenderLoadFailed(new Error("late"));
+      ok(document.querySelectorAll("#plan-b-list .plan-b-row").length === 6 && !document.querySelector("#plan-b-list .plan-load-failed"),
+         "SP3 AC-7 (control): a late rejection does not clobber a run sheet that already rendered");
+      showSurface("plan");
+      await sleep(40);
       planRenderBuilder(planView); // restore before the nav check
       // #9/#10 "Open in Live ▶" is a real, NAV-ONLY control (it was a dead button) — it switches to
       // the Live Console and sends no live-control command.
