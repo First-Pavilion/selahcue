@@ -73,8 +73,19 @@ window.__V = V;
 """
 
 fails = []
+checks = []
+# The floor exists for the same reason operator_headless.py has one: this probe drives five
+# states in sequence, so anything that throws part-way through — a renamed id, a WebKit-only
+# layout change — silently stops the run, and a shorter run that reports "0 FAIL" is the most
+# convincing wrong answer available. An earlier version of this line printed a HARDCODED 5
+# while eighteen assertions ran, so the summary could not have noticed thirteen of them
+# disappearing. Raise it when assertions are added.
+EXPECTED_MIN_CHECKS = 18
+
+
 def ok(cond, msg):
     print(("PASS: " if cond else "FAIL: ") + msg)
+    checks.append(msg)
     if not cond:
         fails.append(msg)
 
@@ -187,9 +198,16 @@ with sync_playwright() as pw:
     pg.wait_for_timeout(150)
 
     # --- 5. view-only -----------------------------------------------------------------
+    # The STUB HOST is moved as well as the local fixture, because there is only ever one host.
+    # Rendering a view-only fixture while `invoke("view")` kept answering with an editable view
+    # described a host that cannot exist, and the 1 Hz poll — which reconciles the surface with
+    # the host's current verdict, and must — correctly rebuilt it back to editable, racing this
+    # assertion. Found by this probe failing intermittently, which is the failure worth having:
+    # the alternative was a probe that passed by out-running the reconciliation it was not
+    # modelling.
     pg.evaluate("""() => {
+      window.__V.viewer = { role: 'viewer', can_edit: false };
       const v = JSON.parse(JSON.stringify(window.__V));
-      v.viewer = { role: 'viewer', can_edit: false };
       planSelectedId = null; planRenderBuilder(v);
     }""")
     pg.wait_for_timeout(150)
@@ -210,6 +228,13 @@ with sync_playwright() as pw:
 
     b.close()
 
-print("\n=== WebKit plan-lifecycle render: %d check(s), %d FAIL ===" % (5, len(fails)))
+if len(checks) < EXPECTED_MIN_CHECKS:
+    fails.append(
+        "only %d checks ran; expected >= %d (the probe must not silently shrink)"
+        % (len(checks), EXPECTED_MIN_CHECKS)
+    )
+    print("FAIL: " + fails[-1])
+
+print("\n=== WebKit plan-lifecycle render: %d check(s), %d FAIL ===" % (len(checks), len(fails)))
 print("screenshots in " + str(OUT))
 sys.exit(1 if fails else 0)
