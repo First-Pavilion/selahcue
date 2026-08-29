@@ -58,15 +58,32 @@ pub struct Stanza {
     pub lines: Vec<String>,
 }
 
-/// How verse numbers are rendered on a scripture slide (FR-029 · Design 2.0 inspector,
-/// "Verse numbers" — Superscript / Inline / Hidden). `None` on a link = the plan default.
+/// The coordinator's CHOSEN verse-number treatment for a scripture slide (FR-029 · Design 2.0
+/// inspector, "Verse numbers" — Superscript / Inline / Hidden). `None` on a link = the plan
+/// default.
+///
+/// **Carried, not yet applied — and no renderer reads it.** This value round-trips through the
+/// wire and through persistence so the inspector can hold the operator's choice, but nothing
+/// composes a slide from it: `scripture_slide_in` still prefixes the verse number on a
+/// multi-verse passage and omits it on a single one, whichever variant is stored. Setting it
+/// changes what is saved and what the UI shows as selected. It does not change what the
+/// audience sees.
+///
+/// **There is no ticket for the renderer half yet.** Saying so plainly rather than writing
+/// "later": FR-029 is MVP in the PRD and its "verse numbers formatted per setting" clause is
+/// unbuilt, so whoever picks this up should raise that ticket first rather than assume one
+/// exists. The wire and persistence half is 86ajy0hw0, which is this change and is done.
+///
+/// The variant docs below describe the TYPOGRAPHIC INTENT each option will carry when a
+/// renderer is written. They are a specification for that work, not a description of current
+/// behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerseNumbers {
-    /// Raised, smaller than the verse text (the default typographic convention).
+    /// Intent: raised, smaller than the verse text (the default typographic convention).
     Superscript,
-    /// Full-size, on the same baseline as the verse text.
+    /// Intent: full-size, on the same baseline as the verse text.
     Inline,
-    /// Not rendered at all.
+    /// Intent: not rendered at all.
     Hidden,
 }
 
