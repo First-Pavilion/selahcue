@@ -10,7 +10,7 @@
 - Execution engine: goal
 - ClickUp task: 86ak8467m (ClickUp MCP not connected this session — see "Dependencies and approvals")
 - Created: 2026-08-29
-- Updated: 2026-08-29 (addendum: PR #14 landed, verified against `69c3161`)
+- Updated: 2026-08-29 (rebased onto `ff85d65`, PR #14 merged; round-1 threads dispositioned)
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -326,6 +326,59 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
     `OperatorStateView` in `protocol.rs`, a different struct with different serde.
 - Decision: handoff
 
+### Iteration 8 — rebased onto merged `main`, and what the rebase broke
+
+- Target criterion: C-013, C-014, C-016
+- Hypothesis: the rebase onto `ff85d65` (PR #14 merged) is inert for this branch, because
+  `main` did not touch either file it owns.
+- Change or investigation: rebased; compared blob hashes for all six owned files before and
+  after; then re-read every host symbol this client MIRRORS, rather than only the files it edits.
+- Verifier executed: `git rev-parse` hash comparison; `python3 scripts/operator_headless.py`;
+  a 7-mutation battery; `python3 scripts/operator_plan_webkit_probe.py` x3; `make ci`
+- Result: gate **1119 checks, 0 FAIL**, exit 0 (floor raised 1103 -> 1119); every mutation
+  caught by the check that names it; WebKit smoke 5/0 FAIL; render probe 18/0 FAIL; `make ci`
+  ALL GREEN, exit 0.
+- New evidence, in order of how much it mattered:
+  - **The rebase was textually inert and semantically not.** All six owned blobs are
+    byte-identical before and after, and `main`'s 13 commits touch neither `dist/app.js` nor
+    `scripts/operator_headless.py`. What moved was the HOST these files mirror. Comparing the
+    files would have found nothing; comparing the mirrored symbols found two live defects.
+  - **The invisible-character rule had drifted in BOTH directions, and the stricter one bites a
+    user.** Round 1 mirrored `plan_name_valid` at `7a6e404`, which refused every Cf. `main`
+    then narrowed the rule to a principle (`352886d`): `is_display_hostile` refuses only what
+    acts at a distance, and `is_admitted_invisible` deliberately ADMITS the orthographic
+    joiners. Against merged `main` this client refused U+200C/200D/200E/200F — so a Sinhala,
+    Persian, Urdu, Devanagari or Malayalam service name could not be typed, nor one containing
+    a family emoji, every one of which the host's own test file asserts is valid — while being
+    LOOSER on U+206E, U+FFF9-FFFB and the Zl/Zp line separators. Rewritten against the host's
+    own test table, with a case in each direction.
+  - **A remediated guard had gone vacuous through a rename.** `MAX_PLAN_NAME_LEN` is
+    `MAX_PLAN_LABEL_LEN` on merged `main`. The Cody L6 cross-language pin tolerated a missing
+    constant by passing, so the rename left a check that could no longer fail, still reading
+    green. Hard failure on both sides now.
+  - **Both poll checks were asserting the function, not the wire.** `PL AC-52` — shipped in
+    round 1 AS the Quinn Q2 remediation — called `planSyncPublishFromPoll` directly. Deleting
+    the call from the 1 Hz interval left the suite green, so the remediation for "nothing calls
+    this on a poll" was guarded by a check that never exercised the poll. `PL AC-55` drives the
+    real interval.
+  - **My own WebKit probe printed a hardcoded check count** (a literal 5 while 18 assertions
+    ran), so it could not have noticed thirteen of them disappearing.
+- Decision: handoff
+
+## Round-1 thread disposition
+
+All 29 review threads on PR #15 were open and unresolved at rebase time. 24 are fixed, 2 were
+explicitly no-action findings, 2 are fixed as of this iteration, and **1 is declined pending a
+product decision**:
+
+- **Quinn — `new_plan` / `template_plan` / `import_plan` are reachable only from the empty
+  state.** An operator holding a run sheet cannot start a different service from this console.
+  This is left open deliberately. The three commands REPLACE the plan, and the host keeps
+  exactly one, so an entry point beside a populated run sheet is a destructive control offered
+  mid-service — a product call about the Populated row of `UX-STATE-MATRIX.md` §4, not an
+  engineering one. Recorded here as an explicit open question rather than silently entered as a
+  non-goal, because Quinn is right that as shipped it reads as an oversight. Owner: product.
+
 ## Risks and rollback
 
 - The capability predicate keys on the host reporting `publish` and is consumed by all five
@@ -348,10 +401,10 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-fe-plan-lifecycle-86ak8467m.md --completion`
 - Validator result: (run at handoff)
 - Independent verification result: pending review pipeline
-- Evidence: webview gate **1103 checks, 0 FAIL** (baseline 963; floor raised 955 -> 1103);
-  **39-mutation battery, every mutation caught by the check that NAMES it**; WebKit boot smoke
-  5/0 FAIL; WebKit render probe 18 assertions, 0 FAIL, screenshots inspected; `make ci`
-  **ALL GREEN**, exit 0. Four reviewers completed round 1; every blocking and medium finding is
+- Evidence (rebased head, re-earned rather than carried): webview gate **1119 checks, 0 FAIL**,
+  exit 0 (baseline 963; floor raised 955 -> 1119); mutation battery, every mutation caught by
+  the check that NAMES it; WebKit boot smoke 5/0 FAIL; WebKit render probe **18 checks, 0 FAIL**
+  across three consecutive runs, screenshots inspected; `make ci` **ALL GREEN**, exit 0. Four reviewers completed round 1; every blocking and medium finding is
   remediated, one is pushed back on with evidence, and the deliberate non-fixes are listed on the
   merge request.
 - Independent verification result: round 1 complete (Cody, Sana, Vera, Quinn); remediated at `c91a9a5`; re-review pending
