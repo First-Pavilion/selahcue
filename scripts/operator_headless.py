@@ -2744,6 +2744,28 @@ DRIVER = r"""
       var deckCard = dinsp.querySelector(".plan-deck-card");
       ok(deckCard && /Grace That Feeds/.test(deckCard.textContent) && /slide/.test(deckCard.textContent),
          "SP2 C-005: a presentation-linked item shows a deck card (name + slide count)");
+      // --- Frame 611:1035 — a MISSING deck is named, which is the whole point of link.label ---
+      // The deck's library row is gone, so the id resolves to nothing; only the label captured
+      // at link time can say WHICH presentation vanished. Without this the card degrades to
+      // "presentation missing" and the design's "'X' was deleted from the library" is unbuildable.
+      var goneNamed = planDeckCard({ kind: "deck", id: 987654, label: "Sunday Service \u2014 Aug 4" });
+      ok(goneNamed.classList.contains("missing"),
+         "SP2 C-005: an unresolvable deck id renders the missing card");
+      ok(/Sunday Service \u2014 Aug 4/.test(goneNamed.textContent),
+         "SP2 C-005: the missing card NAMES the deleted deck from link.label, not just 'presentation missing'");
+      ok(/deleted from the library/i.test(goneNamed.textContent),
+         "SP2 C-005: and it says what happened to it, so the operator knows to relink rather than retry");
+      // CONTROL 1: without a label there is nothing to name, so it must fall back rather than
+      // render an empty quotation — otherwise the check above would pass on any card at all.
+      var goneAnon = planDeckCard({ kind: "deck", id: 987654 });
+      ok(goneAnon.classList.contains("missing") && /presentation missing/i.test(goneAnon.textContent)
+         && !/\u201c\u201d/.test(goneAnon.textContent),
+         "SP2 C-005 (control): a missing deck with no captured label degrades to the generic message, never an empty quotation");
+      // CONTROL 2: a PRESENT deck must not take the missing branch even when a stale label is
+      // attached — the live library name wins, so a rename can never render as a deletion.
+      var alive = planDeckCard({ kind: "deck", id: 2, label: "Some Old Name" });
+      ok(!alive.classList.contains("missing") && !/Some Old Name/.test(alive.textContent),
+         "SP2 C-005 (control): a resolvable deck ignores a stale label and shows the library name");
       var openEd = Array.prototype.filter.call(dinsp.querySelectorAll("button"), function(b){return b.textContent==="Open in editor";})[0];
       ok(!!openEd, "SP2 C-005: the deck inspector offers Open in editor");
       openEd.click();
