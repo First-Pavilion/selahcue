@@ -46,7 +46,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # panel, the loading state, and the QA/security remediation. Set to the REAL observed count so
 # dropping even one trips exit 4. Sana S4: this floor had been left at 829 while the driver ran
 # more, which would have let every new check disappear without failing.)
-EXPECTED_MIN_CHECKS = 954
+EXPECTED_MIN_CHECKS = 955
 
 
 def find_chrome():
@@ -3049,9 +3049,12 @@ DRIVER = r"""
       // ISOLATION IS THE POINT, not coverage. Each fixture marked PINS is well-formed in every
       // respect EXCEPT the one sub-condition it names, so deleting that sub-condition fails exactly
       // this case and no other. Undeliberate overlap is what let the first round of these survive.
-      // Measured, by deleting each of the seventeen sub-conditions of planSummaryIsSound in turn
-      // and running this file: TWELVE are pinned and fail exactly one check, the case naming them.
-      // The other FIVE cannot be isolated by any input, because each is subsumed — not merely
+      // Measured, by deleting each of the NINETEEN sub-conditions of planSummaryIsSound in turn and
+      // running this file: THIRTEEN are pinned and fail exactly one check, the case naming them.
+      // One more, the `for` loop applying count() to SUMMARY_COUNTS, fails FOUR — it is the
+      // container for four pinned sub-conditions, so that is containment, not masking: each of the
+      // four is still individually pinned by its own case.
+      // The remaining FIVE cannot be isolated by any input, because each is subsumed — not merely
       // overlapped — by a later check, and no value exists that only they reject:
       //   typeof and isFinite, on the total AND inside count(), are subsumed by Number.isInteger,
       //     which is false for every non-number and for Infinity, -Infinity and NaN alike;
@@ -3098,6 +3101,19 @@ DRIVER = r"""
       // reached planned_items while the section was absent from items, so planned_items could
       // exceed items and this panel would have rendered "7 of 6". A subset cannot exceed its whole.
       malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, partial:true, planned_items:9 }), "planned_items exceeding items (\"7 of 6\")");
+      // PINS the planned_items type/range check — the ONLY guard on this field, because
+      // planned_items is deliberately NOT in SUMMARY_COUNTS (it is optional, so the loop cannot
+      // require it) and the subset rule above only compares it. Without this check a host sending
+      // the STRING "0" renders "0:10:00 · partial" — a real total, meaning "some items are
+      // planned" — where planned_items:0 must render "— · partial", meaning "nothing is planned
+      // and this figure is meaningless". `nothingPlanned` tests `=== 0`, which a string fails, so
+      // dropping this check INVERTS the two-field distinction planned_items exists to carry.
+      // "0" and not -1 on purpose: a string is rejected by count()'s typeof AND its integrality,
+      // so neutralising either one alone leaves this fixture still rejected. -1 is rejected only
+      // by count()'s v >= 0, which couples this case to that mutation — measured, it made the
+      // negative-count case and this one fail together and cost count.nonneg its isolation.
+      malformed(hostSum({ planned_total_secs:600, items:2, songs:2, assigned:1, partial:true, planned_items:"0" }),
+                "a planned_items that is a string rather than a number (\"0:10:00 · partial\" for what is really \"— · partial\")");
       // PINS missing + unknown <= items. Both counts are individually legal (2 <= 2) and every
       // other field is sound, so only their SUM can reject this — individually-correct fields that
       // do not add up are exactly what design QA rejected these frames for the first time round.
