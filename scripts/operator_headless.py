@@ -65,7 +65,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # A battery proves a check BITES; it cannot prove the check asserts the right thing. The one
 # defect this batch found in its own code — publish_plan sharing a helper with the four commands
 # that replace the plan — was invisible to it, because the test and the code agreed.)
-EXPECTED_MIN_CHECKS = 1105
+EXPECTED_MIN_CHECKS = 1119
 
 
 def find_chrome():
@@ -3985,6 +3985,27 @@ DRIVER = r"""
       var atCap = planParseRunSheet(many.slice(0, 500).join("\n"));
       ok(atCap.items.length === 500 && !atCap.problems.length,
          "PL AC-19 (control): exactly 500 is accepted — the cap is the host's 500, not one either side of it");
+      // Quinn (Low, MU-C) — the other end of the same cap. Deleting the empty-paste guard left
+      // the suite completely green, and without it an empty paste sends import_plan{items:[]},
+      // which replaces the operator's run sheet with nothing at all.
+      openPlan(emptyLife({ publish: PUB_CLEAN }));
+      el("plan-empty-import").click();
+      await sleep(20);
+      el("pm-prompt-input").value = "Imported";
+      el("plan-import-text").value = "   \n\n  ";
+      var emptyBefore = plCalls("import_plan").length;
+      dlgOk().click();
+      await sleep(20);
+      ok(plCalls("import_plan").length === emptyBefore && !!el("plan-import-text"),
+         "PL AC-19 (Quinn MU-C): a paste with no items sends NOTHING and keeps the dialog open — import REPLACES the run sheet, so an empty one would replace it with nothing");
+      // Null-safe, for the reason the reviewers raised three times on this suite: without the
+      // guard, removing the rule under test closes the dialog and this line THROWS, aborting the
+      // driver instead of failing the check that names the rule.
+      var emptyErr = document.getElementById("pm-prompt-error");
+      ok(/at least one/i.test((emptyErr && emptyErr.textContent) || ""),
+         "PL AC-19 (Quinn MU-C): ...and says why, rather than refusing in silence");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(20);
 
       // --- publish (FR-006) ---------------------------------------------------------------------
       openPlan(lifeView({ publish: PUB_CHANGED }));
@@ -4546,6 +4567,81 @@ DRIVER = r"""
       planSyncPublishFromPoll(polledEdited);
       ok(el("plan-insp-h").textContent === inspHeading,
          "PL AC-52 (control): with an item selected the poll leaves the ITEM inspector alone — the badge is not on screen there, and swapping the panel under the operator would be worse than a late badge");
+
+      // Quinn — the same finding as the badge, applied to the OTHER field the poll ignored: a
+      // role demotion arriving from the host left every edit control up until the operator did
+      // something and had it refused.
+      planSelectedId = null;
+      var demoteBase = JSON.parse(JSON.stringify(V));
+      demoteBase.viewer = { role: "producer", can_edit: true };
+      planRenderBuilder(demoteBase);
+      ok(!el("plan-viewonly") && !!document.querySelector("#plan-b-list .plan-b-up"),
+         "PL AC-53 (setup): the operator may edit, so there is no View only badge and the row reorder controls are built");
+      var demoted = JSON.parse(JSON.stringify(demoteBase));
+      demoted.viewer = { role: "viewer", can_edit: false };
+      planSyncViewerFromPoll(demoted);
+      await sleep(20);
+      ok(!!el("plan-viewonly") && !document.querySelector("#plan-b-list .plan-b-up"),
+         "PL AC-53 (Quinn): a DEMOTION arriving on the poll takes the edit controls away — the chrome alone was not enough, because the per-row ↑/↓ controls are built by planRenderBuilder and a View only badge over live reorder buttons is worse than either state");
+      // ...and it must not rebuild on every poll, for the same reason the publish one must not.
+      var rowNode = document.querySelector("#plan-b-list .plan-b-row");
+      planSyncViewerFromPoll(demoted);
+      ok(document.querySelector("#plan-b-list .plan-b-row") === rowNode,
+         "PL AC-53 (control): an unchanged poll rebuilds NOTHING — a surface rebuilt every second would eat the clicks landing on it");
+      // ...and a PROMOTION travels the same path, so the mechanism is not one-directional.
+      planSyncViewerFromPoll(demoteBase);
+      await sleep(20);
+      ok(!el("plan-viewonly") && !!document.querySelector("#plan-b-list .plan-b-up"),
+         "PL AC-53 (control): a promotion arriving on the poll gives the controls BACK — the check above measures the verdict, not a one-way latch");
+
+      // Quinn — a failed open must not leave the last plan's permission chrome painted over a
+      // surface that has no plan.
+      openPlan(lifeView({ viewer: { role: "viewer", can_edit: false } }));
+      ok(!!el("plan-viewonly"), "PL AC-54 (setup): the surface is painted view-only, so there is stale chrome to leave behind");
+      planRenderLoading();
+      planRenderLoadFailed(new Error("boom"));
+      await sleep(20);
+      ok(!el("plan-viewonly"),
+         "PL AC-54 (Quinn): a failed open clears the View only badge — the failure makes the viewer field UNKNOWN, and painting a restriction from an unknown is the fabrication this surface's three-state rule exists to stop");
+      var failedPalette = document.querySelector("#surface-plan .plan-palette");
+      ok(!failedPalette || getComputedStyle(failedPalette).display === "none",
+         "PL AC-54 (Quinn): ...and the ADD ITEM column goes with it — there is no plan to add an item to, so leaving it up is a control that looks live and cannot work");
+      ok(!!document.querySelector("#plan-b-list .plan-load-failed"),
+         "PL AC-54 (control): the failure message is still the thing on screen — the chrome reset did not paint over the only explanation the operator gets");
+
+      // --- the WIRING, not just the function ---------------------------------------------------
+      // AC-52 and AC-53 call planSyncPublishFromPoll / planSyncViewerFromPoll DIRECTLY. That
+      // proves each function does its job; it does not prove the 1 Hz poll ever calls it — and
+      // the whole of Quinn's finding was that the poll did not. Deleting the call from the
+      // interval left AC-53 completely green, which is the "control asserting a copy" trap in
+      // CLAUDE.md: the check consumed the function instead of the wiring. These two drive the
+      // REAL interval, by moving the stub view the poll fetches and waiting for a tick.
+      showSurface("plan");
+      await sleep(60);
+      planSelectedId = null;
+      V.viewer = { role: "producer", can_edit: true };
+      V.publish = { revision: 5, published_revision: 5, version: 4 };
+      planRenderBuilder(JSON.parse(JSON.stringify(V)));
+      ok(!el("plan-viewonly"),
+         "PL AC-55 (setup): the surface is painted from a view that permits editing, so a badge appearing later can only have come from the poll");
+      V.viewer = { role: "viewer", can_edit: false };
+      await sleep(1300);
+      ok(!!el("plan-viewonly"),
+         "PL AC-55 (Quinn): the 1 Hz poll actually CALLS the viewer sync — nothing above this line would notice if the call were deleted from the interval, which is exactly how the gap being fixed here got in");
+      V.viewer = { role: "producer", can_edit: true };
+      await sleep(1300);
+      planSelectedId = null;
+      planRenderBuilder(JSON.parse(JSON.stringify(V)));
+      ok(!el("plan-pub-changed"),
+         "PL AC-55 (setup): ...and the same for publish — painted unedited, so a badge can only arrive on the poll");
+      V.publish = { revision: 9, published_revision: 5, version: 4, changed: true };
+      await sleep(1300);
+      ok(!!el("plan-pub-changed"),
+         "PL AC-55 (Quinn Q2): the poll actually calls the publish sync too — AC-52 proves the function, this proves the wire");
+      delete V.viewer;
+      delete V.publish;
+      await sleep(1300);
+
       planSelectedId = null;
 
       // --- the seam was used as a seam ----------------------------------------------------------

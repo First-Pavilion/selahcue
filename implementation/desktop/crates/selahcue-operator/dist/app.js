@@ -5767,6 +5767,7 @@
           const polled = await invoke("view");
           render(polled);
           planSyncPublishFromPoll(polled);
+          planSyncViewerFromPoll(polled);
           setConn(true);
         } catch (e) {
           // The link (or a render) just failed, so render() did NOT run and syncRecovery() was
@@ -7376,6 +7377,16 @@
         const totF = document.getElementById("plan-b-total");
         if (totF) totF.textContent = "";
         planBlankSummary("Plan figures unavailable — the plan could not be opened.");
+        // Quinn — the previous view's permission chrome outlived the plan it described. A "View
+        // only" badge over a surface whose plan could not be opened is a verdict this client does
+        // not have: the failure means the viewer field is UNKNOWN, and painting a restriction from
+        // an unknown is the exact fabrication the three-state rule on this surface exists to stop.
+        // Cleared to the unreported state, and the palette goes with it — there is no plan to add
+        // an item to, so an ADD ITEM column here is a control that looks live and cannot work.
+        planViewerSig = null; // ...and the next good poll re-baselines rather than reading as a change
+        planSyncPermission(null);
+        const palette = document.querySelector("#surface-plan .plan-palette");
+        if (palette) palette.style.display = "none";
         const p = document.createElement("p");
         p.className = "plan-load-failed";
         p.setAttribute("role", "alert");
@@ -7664,6 +7675,38 @@
         planLastView = view;
         planClearInspector(view);
       }
+      // Quinn — the same finding as the badge, on the other field. `planSyncPermission` runs
+      // only from `planActivate` and after this operator's own mutation, so a role DEMOTION
+      // arriving from the host left every edit control up until the operator happened to do
+      // something — and then had each of them refused.
+      //
+      // This one rebuilds the WHOLE surface rather than the chrome alone, because the per-row
+      // reorder buttons and drag handles are built by planRenderBuilder, not by
+      // planSyncPermission: syncing the chrome only would have produced a surface wearing a
+      // "View only" badge with live ↑/↓ buttons under it, which is worse than either state.
+      //
+      // A rebuild eats a click that lands in the same frame, which is why the publish poll above
+      // refuses to do one. It is the right trade HERE and only here: this fires at most once per
+      // permission change, and at that instant every control it could interrupt is one the host
+      // is about to refuse anyway.
+      let planViewerSig = null;
+      function planViewerSignature(view) {
+        const v = planViewer(view);
+        return v.role + "/" + v.canEdit;
+      }
+      function planSyncViewerFromPoll(view) {
+        const surf = document.getElementById("surface-plan");
+        if (!surf || !surf.classList.contains("active")) return;
+        if (!planLastView) return;
+        if (document.querySelector(".pm-confirm-back")) return; // a dialog owns the surface
+        if (planLifecycleBusy) return;
+        const sig = planViewerSignature(view);
+        if (planViewerSig === null) { planViewerSig = sig; return; } // first sight is a baseline, not a change
+        if (sig === planViewerSig) return;
+        planViewerSig = sig;
+        planLastView = view;
+        planRenderBuilder(view);
+      }
       function planRenderBuilder(view) {
         const list = document.getElementById("plan-b-list");
         if (!list || !view) return; // not on the plan surface
@@ -7675,6 +7718,7 @@
           planPublishSig = pubNow
             ? pubNow.revision + "/" + pubNow.publishedRevision + "/" + pubNow.version + "/" + pubNow.changed
             : "none";
+          planViewerSig = planViewerSignature(view);
         }
         planSyncPermission(view);
         // Header counters. The planned total belongs HERE, next to the item count, because the pair
