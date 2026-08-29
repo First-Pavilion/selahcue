@@ -65,7 +65,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # A battery proves a check BITES; it cannot prove the check asserts the right thing. The one
 # defect this batch found in its own code — publish_plan sharing a helper with the four commands
 # that replace the plan — was invisible to it, because the test and the code agreed.)
-EXPECTED_MIN_CHECKS = 1103
+EXPECTED_MIN_CHECKS = 1105
 
 
 def find_chrome():
@@ -120,8 +120,14 @@ html = open(os.path.join(DIST, "index.html")).read()
 # selahcue-core. This repo already pins one cross-language copy (test_protocol.rs pins the Dart
 # fixtures byte-for-byte against the Rust shapes) precisely because a copy drifts silently. The
 # values are read out of plan.rs here and handed to the driver, so moving either constant without
-# moving the client fails this gate. MAX_PLAN_NAME_LEN arrives with the plan-publish work; until
-# then it reads None and the driver's check says so rather than passing on a typo'd regex.
+# moving the client fails this gate.
+#
+# BOTH lookups are hard failures. The name bound was `MAX_PLAN_NAME_LEN` while PR #14 was in
+# flight and is `MAX_PLAN_LABEL_LEN` now that it has landed (the host applies one rule to a plan
+# name, an item title and an owner, so it stopped calling the bound a "name" one). An earlier
+# version of this pin tolerated a missing constant by passing when the lookup returned None --
+# which is exactly what the rename produced: a check that could no longer fail, guarding a
+# constant nobody was checking. A pin with an escape hatch is not a pin.
 _PLAN_RS = os.path.join(
     _REPO, "implementation", "desktop", "crates", "selahcue-core", "src", "plan.rs"
 )
@@ -142,11 +148,18 @@ if _MAX_PLAN_ITEMS is None:
     print("FAIL: could not read MAX_PLAN_ITEMS out of selahcue-core/src/plan.rs — the "
           "cross-language pin cannot be vacuous, so this is a hard failure")
     sys.exit(3)
+_MAX_PLAN_LABEL_LEN = _rust_const("MAX_PLAN_LABEL_LEN")
+if _MAX_PLAN_LABEL_LEN is None:
+    print("FAIL: could not read MAX_PLAN_LABEL_LEN out of selahcue-core/src/plan.rs — the "
+          "constant the client's PLAN_NAME_MAX copies. If it was renamed again, follow it "
+          "here; do not soften this to a null-tolerant check, which is how the previous "
+          "rename went unnoticed")
+    sys.exit(3)
 RUST_CONSTS = (
     "<script>window.__RUST_MAX_PLAN_ITEMS = "
     + json.dumps(_MAX_PLAN_ITEMS)
-    + "; window.__RUST_MAX_PLAN_NAME_LEN = "
-    + json.dumps(_rust_const("MAX_PLAN_NAME_LEN"))
+    + "; window.__RUST_MAX_PLAN_LABEL_LEN = "
+    + json.dumps(_MAX_PLAN_LABEL_LEN)
     + ";</script>"
 )
 
@@ -3827,7 +3840,7 @@ DRIVER = r"""
       ok(el("plan-sum-publish").disabled,
          "PL AC-7: ...and the lifecycle controls disable with it rather than staying live over a state nothing could read");
 
-      // --- the name rule, mirrored from plan_name_valid ----------------------------------------
+      // --- the name rule, mirrored from plan_label_valid ---------------------------------------
       ok(planNameProblem("Sunday 2nd Service") === null,
          "PL AC-8 (control): a normal name is accepted — the rule refuses bad input, it is not a wall");
       ok(planNameProblem("") !== null && planNameProblem("   ") !== null,
@@ -4330,9 +4343,9 @@ DRIVER = r"""
       ok(window.__RUST_MAX_PLAN_ITEMS === PLAN_MAX_ITEMS,
          "PL AC-45 (Cody L6): PLAN_MAX_ITEMS still equals selahcue-core's MAX_PLAN_ITEMS — a client refusing at a different cap than the host tells the operator a rule that is not the system's (js=" +
          PLAN_MAX_ITEMS + " rust=" + window.__RUST_MAX_PLAN_ITEMS + ")");
-      ok(window.__RUST_MAX_PLAN_NAME_LEN === null || window.__RUST_MAX_PLAN_NAME_LEN === PLAN_NAME_MAX,
-         "PL AC-45 (Cody L6): PLAN_NAME_MAX still equals MAX_PLAN_NAME_LEN where core defines it — the pin arms itself when that constant lands (js=" +
-         PLAN_NAME_MAX + " rust=" + window.__RUST_MAX_PLAN_NAME_LEN + ")");
+      ok(window.__RUST_MAX_PLAN_LABEL_LEN === PLAN_NAME_MAX,
+         "PL AC-45 (Cody L6): PLAN_NAME_MAX still equals selahcue-core's MAX_PLAN_LABEL_LEN — the constant was renamed out from under an earlier, null-tolerant version of this pin, so it is now a hard failure on both sides (js=" +
+         PLAN_NAME_MAX + " rust=" + window.__RUST_MAX_PLAN_LABEL_LEN + ")");
 
       // Every new text site that carries meaning clears AA-NORMAL, measured through the live CSS
       // engine rather than by reading a token name. Swept in one loop so a new site added without
@@ -4418,16 +4431,43 @@ DRIVER = r"""
       ok(!!document.querySelector("#plan-notice .plan-notice-alert"),
          "PL AC-48 (Quinn): a plan edit the host REFUSES says so — silence made a refusal indistinguishable from a dead control");
 
-      // Quinn Q7 — the host tightened plan_name_valid to refuse invisible formatting
-      // (is_invisible_formatting, 7a6e404). The drift that matters is the client being LOOSER: a
-      // name accepted here and refused there comes back as a raw bad_request, and on import it
-      // loses the line number the per-line validator exists to give.
-      var invisibles = [0x200b, 0x200d, 0x200e, 0x202e, 0x2060, 0x2066, 0xfeff];
-      var invisibleMissed = invisibles.filter(function (cp) {
+      // Quinn Q7 — the client must agree with the host's invisible-character rule, and this
+      // check is written against the host's OWN test table (selahcue-core/tests/test_plan.rs,
+      // plan_label_valid) rather than against a set retyped from memory.
+      //
+      // BOTH DIRECTIONS ARE TESTED, because both are real defects and only one of them looks
+      // like one. Client LOOSER: a name this client accepts and the host refuses comes back as a
+      // raw bad_request, and on import it loses the line number the per-line validator exists to
+      // give. Client STRICTER: the operator is refused a name the system actually allows, with a
+      // message they cannot act on — and since the admitted set is the orthographic joiners, the
+      // names it locks out are Sinhala, Persian, Urdu, Devanagari and Malayalam ones, plus every
+      // family emoji. That is the direction this suite previously got wrong: it asserted U+200D
+      // was refused, which was true of the host at 7a6e404 and false of the host at 352886d, so
+      // after the host narrowed its rule the check went on vouching for a client defect.
+      var hostileCps = [0x200b, 0x202a, 0x202e, 0x2060, 0x2066, 0x2069, 0x206e, 0xfff9, 0xfeff, 0x2028, 0x2029];
+      var hostileMissed = hostileCps.filter(function (cp) {
         return planNameProblem("Sunday" + String.fromCharCode(cp) + "Service") === null;
       });
-      ok(invisibleMissed.length === 0,
-         "PL AC-49 (Quinn Q7): invisible-formatting characters are refused, mirroring the host's is_invisible_formatting — missed " + invisibleMissed.length);
+      ok(hostileMissed.length === 0,
+         "PL AC-49 (Quinn Q7): every character the host's is_display_hostile / is_line_separator refuses is refused here too — missed " + hostileMissed.length + " of " + hostileCps.length);
+      // The other direction. Each of these is asserted VALID by the host's own test file; a
+      // client that refuses them stops entire writing systems being typed into a name field.
+      var admitted = [
+        ["\u0DC1\u0DCA\u200D\u0DBB\u0DD3", "Sinhala Sri — U+200D is not optional, the word cannot be written without it"],
+        ["\u0646\u200C\u06C1", "Urdu ZWNJ"],
+        ["\u0915\u094D\u200C\u0937", "Devanagari conjunct control"],
+        ["Sunday \uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67", "a family emoji is a ZWJ sequence"],
+        ["Sun\u200Eday", "LRM — a stateless implicit bidi mark, not an override"],
+        ["Sun\u200Fday", "RLM"],
+        ["Sun\u061Cday", "ALM"]
+      ];
+      var admittedRefused = admitted.filter(function (c) { return planNameProblem(c[0]) !== null; });
+      ok(admittedRefused.length === 0,
+         "PL AC-49 (Quinn Q7, the other direction): the orthographic joiners and stateless bidi marks the host ADMITS are accepted here — refusing them locks writing systems out of the name field (refused " +
+         admittedRefused.length + ": " + admittedRefused.map(function (c) { return c[1]; }).join("; ") + ")");
+      // ...but a name made only of them still renders as nothing, which is has_visible_content.
+      ok(planNameProblem("\u200C\u200C") !== null && planNameProblem(" \u200C ") !== null,
+         "PL AC-49: a name of nothing but joiners is still refused — admitted-as-spelling is not admitted-as-content, and the host's has_visible_content draws exactly that line");
       // U+FEFF is the one that proves the test runs on the ORIGINAL string: JS trim() strips it
       // and Rust's does not, so a leading BOM must be refused here or the client is looser than
       // the host on exactly the character the host added the rule for.

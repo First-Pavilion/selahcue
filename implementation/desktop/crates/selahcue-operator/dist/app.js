@@ -6489,7 +6489,8 @@
       // beside the code under test passes while the real predicate is mutated away (86ak643rc).
       // =======================================================================================
 
-      // The plan-name bound the host enforces (`MAX_PLAN_NAME_LEN` in selahcue-core::plan).
+      // The label bound the host enforces (`MAX_PLAN_LABEL_LEN` in selahcue-core::plan — one
+      // bound for a plan name, an item title and an owner, which is why it is not called a name).
       const PLAN_NAME_MAX = 120;
       // The run-sheet cap the untrusted ingress enforces (`MAX_PLAN_ITEMS`).
       const PLAN_MAX_ITEMS = 500;
@@ -6503,14 +6504,39 @@
       // A template id is a wire tag ("sunday-morning"), never displayed.
       const PLAN_TEMPLATE_ID_MAX = 64;
 
+      // The invisible characters the HOST refuses, and the ones it deliberately ADMITS.
+      //
+      // Two named sets rather than one regex, because the host has two and the distinction is the
+      // whole point of its rule (`is_display_hostile` / `is_admitted_invisible`, plan.rs). Mirrored
+      // as data so a reader can diff them against that file line by line.
+      //
+      //  - REFUSED: stateful direction controls, which reorder text BEYOND their own position (an
+      //    unterminated RLO reverses the rest of a rendered line — the Trojan-Source primitive),
+      //    and zero-orthography invisibles that belong to no script's spelling. Plus the Zl/Zp
+      //    line separators, which `\p{Cc}` does not cover and which render as a hard break inside
+      //    a single-line run-sheet label (`is_line_separator`).
+      //  - ADMITTED: the orthographic joiners and the stateless implicit bidi marks. These are
+      //    SPELLING. Sinhala "ශ්‍රී" (as in Sri Lanka) cannot be written without U+200D at all;
+      //    Persian and Urdu need U+200C for the plural suffix; and a family emoji is a ZWJ
+      //    sequence. Refusing them does not harden a name field, it stops entire writing systems
+      //    being typed into one — which is why the host, and now this client, admit them.
+      const PLAN_DISPLAY_HOSTILE = /[\u202A-\u202E\u2066-\u2069\u200B\u2060-\u2064\u206A-\u206F\uFFF9-\uFFFB\uFEFF\u2028\u2029]/;
+      // Everything that is neither whitespace nor an admitted invisible — the host's
+      // `has_visible_content`. A name of nothing but joiners renders as nothing and is refused.
+      const PLAN_VISIBLE_CONTENT = /[^\s\u200C\u200D\u200E\u200F\u061C]/u;
+
       // Why v is unacceptable as a plan name or an imported item title, or null when it is fine.
       //
-      // Mirrors `plan_name_valid`: non-empty after trimming, at most PLAN_NAME_MAX characters,
-      // no control characters. The HOST stays authoritative — this refuses EARLY so a typo shows
-      // up under the field instead of coming back as a Denied{bad_request} the operator cannot
-      // read, and every host rejection is still surfaced verbatim (planLifecycleFailed).
+      // Mirrors `plan_label_valid` (selahcue-core/src/plan.rs), which is the single rule the host
+      // applies to a plan name, an item title AND an item owner — `valid_plan_label` in
+      // controller.rs calls it for all three. One rule here for the same reason: three copies
+      // drift apart and a reviewer then has to check three predicates instead of one.
       //
-      // Two details that are easy to get wrong and were got wrong here first:
+      // The HOST stays authoritative — this refuses EARLY so a typo shows up under the field
+      // instead of coming back as a Denied{bad_request} the operator cannot read, and every host
+      // rejection is still surfaced verbatim (planLifecycleFailed).
+      //
+      // Details that are easy to get wrong and were got wrong here first:
       //
       //  - COUNT SCALAR VALUES, not UTF-16 code units. The host counts `chars()`. `s.length`
       //    counts code units, so a name written in an astral script would be refused by this
@@ -6520,12 +6546,18 @@
       //    category Rust's `char::is_control` tests. This repo has already shipped a guard that
       //    refused NUL and let every other control character through (commit ee3646f swept it
       //    across the class); repeating that in JS would be the same bug in a second language.
+      //  - DRIFT RUNS IN BOTH DIRECTIONS, and the stricter direction is the one that bites a
+      //    user. An earlier version of this function mirrored the host's first invisible rule
+      //    (`is_invisible_formatting`, 7a6e404) by refusing ALL Cf. The host then narrowed that
+      //    rule to a principle (352886d) and now admits the joiners; a client left behind would
+      //    have refused a Sinhala, Persian, Urdu, Devanagari or Malayalam service name, and every
+      //    family emoji, with a message the operator has no way to act on. Looser drift costs an
+      //    unreadable bad_request; stricter drift locks people out of naming their own service.
       //
-      // Known, one-directional divergence: JS `trim()` and Rust `str::trim` do not strip an
-      // identical set (U+0085 on one side, U+FEFF on the other). The gap is a handful of
-      // pathological code points at the very edge of the length bound; it is left rather than
-      // reimplementing a Unicode table twice, because the host is authoritative and its refusal
-      // is shown to the operator rather than swallowed.
+      // Known, one-directional divergence that remains: JS `trim()` and Rust `str::trim` do not
+      // strip an identical set (U+0085 on one side, U+FEFF on the other). Both of those code
+      // points are refused above by the control-character and display-hostile tests before the
+      // difference can matter, so the two agree on every input either would accept.
       function planNameProblem(v) {
         const t = typeof v === "string" ? v.trim() : "";
         if (!t) return "Enter a name.";
@@ -6539,23 +6571,19 @@
         if (t.length > PLAN_NAME_MAX * 2) return "Use " + PLAN_NAME_MAX + " characters or fewer.";
         if (Array.from(t).length > PLAN_NAME_MAX) return "Use " + PLAN_NAME_MAX + " characters or fewer.";
         if (/\p{Cc}/u.test(t)) return "Remove control characters (such as tabs or line breaks) from the name.";
-        // INVISIBLE FORMATTING, refused because the host refuses it (`is_invisible_formatting` in
-        // selahcue-core, added to `plan_name_valid` at 7a6e404 to close a homograph hole).
-        // Mirrored the moment the host tightened, because the drift that matters is the client
-        // being LOOSER: a name this client accepted and the host refused comes back as a raw
-        // bad_request, and on IMPORT it loses the line number the per-line validator exists to
-        // give.
-        //
         // Tested against the ORIGINAL string, not the trimmed one, and that difference is load
-        // bearing in both directions. None of these code points has the Unicode White_Space
+        // bearing: JS `trim()` strips U+FEFF and Rust's does not, so "\uFEFFabc" would pass here
+        // and be refused there. None of the refused code points has the Unicode White_Space
         // property, so Rust's `trim` can never remove one — checking the original is therefore
-        // EXACTLY equivalent to checking Rust's trimmed form. Checking the JS-trimmed form would
-        // not be: JS `trim()` strips U+FEFF and Rust's does not, so "\uFEFFabc" would pass here
-        // and be refused there. (The control-character test above stays on the TRIMMED string for
-        // the mirror-image reason — Rust trims a leading newline as whitespace before testing, so
-        // testing the original there would refuse a name the host accepts.)
-        if (/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/.test(v))
+        // exactly equivalent to checking Rust's trimmed form. (The control-character test above
+        // stays on the TRIMMED string for the mirror-image reason: Rust trims a leading newline
+        // as whitespace before testing, so testing the original there would refuse a name the
+        // host accepts.)
+        if (PLAN_DISPLAY_HOSTILE.test(v))
           return "Remove invisible formatting characters (such as zero-width or text-direction marks) from the name.";
+        // `has_visible_content`, last because the more specific messages above are more useful.
+        // A name of nothing but joiners passes `trim()` and renders as nothing.
+        if (!PLAN_VISIBLE_CONTENT.test(t)) return "Enter a name.";
         return null;
       }
 
