@@ -6168,7 +6168,12 @@
       async function planLoadDecks() {
         try {
           const r = await invoke("deck_list");
-          planDecks = (r && r.decks) || [];
+          // A response without a real decks ARRAY is UNKNOWN, not "loaded and empty". `|| []`
+          // here defeated the catch branch below: a host that answers deck_list with null (an
+          // older host, or one where the command is not implemented) read as an empty library,
+          // so EVERY deck-linked item was flagged "⚠ presentation missing" and counted in the
+          // Plan Summary. Only a genuine array means the library was actually read.
+          planDecks = r && Array.isArray(r.decks) ? r.decks : null;
         } catch (e) {
           console.error(e);
           // Load FAILED — stay UNRESOLVED (null), not empty. planLinkChip only shows "⚠ missing"
@@ -6189,6 +6194,71 @@
         const sel = document.getElementById("translation");
         if (sel && sel.options.length) return Array.from(sel.options).map((o) => o.value);
         return ["KJV", "WEB"];
+      }
+      // A visually-hidden prefix, so a bare value in a dense row ("Worship", "5:00") still reads
+      // as what it IS to a screen reader. The row is one option in a listbox, so an aria-label on
+      // a child <span> is unreliable; real text in the accessibility tree is not.
+      function srOnly(text) {
+        const s = document.createElement("span");
+        s.className = "sr-only";
+        s.textContent = text;
+        return s;
+      }
+      // h:mm:ss for a plan total. fmtClock is m:ss, which would render a 53-minute plan as 53:12
+      // and a 65-minute one as 1:05 — indistinguishable from 1 minute 5 seconds.
+      function planFmtTotal(secs) {
+        const h = Math.floor(secs / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        return h + ":" + String(m).padStart(2, "0") + ":" + String(secs % 60).padStart(2, "0");
+      }
+      // Resolution state of a content link — the ONE place that decides it, so the run-sheet chip,
+      // the inspector deck card and the Plan Summary can never disagree. Three-state, because
+      // "could not check" is not "fine":
+      //   "missing"  - checked, and the content is gone   -> missing treatment
+      //   "unknown"  - nobody could check                 -> NOT resolved, never counted missing
+      //   "resolved" - it is there
+      // Decks are operator-owned by design: the host has no deck store and structurally cannot
+      // resolve a deck_id, so for a deck link LOCAL resolution stays authoritative whatever the
+      // host says. `status` is an additive field (86ajy0hw0), absent today; every branch below
+      // already holds without it and honours it the moment it lands.
+      function planLinkState(link) {
+        if (!link) return "resolved";
+        if (link.status === "missing") return "missing";
+        if (link.kind === "deck") {
+          // planDecks === null means the list never loaded (or the load failed) — unknown, never
+          // "missing", so a transient deck_list failure cannot flag every deck-linked item broken.
+          if (!planDecks) return "unknown";
+          return planDecks.some((d) => d.id === link.id) ? "resolved" : "missing";
+        }
+        if (link.status === "unknown") return "unknown";
+        return "resolved";
+      }
+      // Plan Summary figures (frame 608:875). Computed from the view we already hold, so the panel
+      // ships today. The backend `summary` object (86ajy0hw0) is additive and arrives on the same
+      // view; planRenderSummary reads ONE summary-shaped object either way, so adopting it is a
+      // change here and nowhere else.
+      function planSummaryOf(view) {
+        const items = (view && view.items) || [];
+        const by = (k) => items.filter((x) => x.kind === k).length;
+        let total = 0;
+        let assigned = 0;
+        let missing = 0;
+        items.forEach((x) => {
+          if (typeof x.planned_secs === "number") total += x.planned_secs;
+          if (x.owner) assigned += 1;
+          if (x.link && planLinkState(x.link) === "missing") missing += 1;
+        });
+        return {
+          total_secs: total,
+          items: items.length,
+          songs: by("song"),
+          scripture: by("scripture"),
+          presentations: by("slide_group"),
+          media: by("media"),
+          announcements: by("announcement"),
+          missing: missing,
+          assigned: assigned,
+        };
       }
       function planLinkChip(link) {
         const el = document.createElement("span");
@@ -6779,14 +6849,55 @@
         const f = PLAN_ADD_KINDS.find((k) => k[0] === kind);
         return f ? f[1] : kind;
       }
+      // Loading (frame 611:350). planActivate runs on navigation to the surface, so this paints
+      // once per visit and the first planRenderBuilder replaces it — a mutation re-render never
+      // flashes it. The message is a role=status live region because the missing-content scan is
+      // the part an operator actually waits on, so it is announced and not merely drawn. The
+      // skeleton rows are aria-hidden: they are texture, and announcing four empty rows is noise.
+      function planRenderLoading() {
+        const list = document.getElementById("plan-b-list");
+        if (!list) return;
+        list.innerHTML = "";
+        const count = document.getElementById("plan-b-count");
+        if (count) count.textContent = "—"; // never a stale count while the real one is unknown
+        const st = document.createElement("p");
+        st.className = "plan-loading-msg";
+        st.setAttribute("role", "status");
+        st.textContent = "Opening plan… scanning for missing content.";
+        list.appendChild(st);
+        for (let i = 0; i < 4; i++) {
+          const sk = document.createElement("div");
+          sk.className = "plan-skel-row";
+          sk.setAttribute("aria-hidden", "true");
+          list.appendChild(sk);
+        }
+      }
+      // A failed open must not leave the skeleton up forever — an endless loading state is a lie
+      // about work still being in flight. This is the MINIMUM honest replacement; the designed
+      // error state (frame 612:124: non-blocking banner + Restore last autosave + integrity check)
+      // needs autosave-slot wire fields that do not exist yet and belongs to 86ak8467m.
+      function planRenderLoadFailed(e) {
+        console.error(e);
+        const list = document.getElementById("plan-b-list");
+        if (!list || !list.querySelector(".plan-skel-row")) return; // a view already painted; leave it
+        list.innerHTML = "";
+        const count = document.getElementById("plan-b-count");
+        if (count) count.textContent = "";
+        const p = document.createElement("p");
+        p.className = "plan-load-failed";
+        p.setAttribute("role", "alert");
+        p.textContent = "Couldn't open the plan. Live output is unaffected — reopen this surface to retry.";
+        list.appendChild(p);
+      }
       function planActivate() {
         planFocusAfterRender = null; // fresh navigation must not inherit a stale reorder intent
         buildPlanPalette();
+        planRenderLoading();
         // Deck names/missing-status for link chips; then render with resolved names.
         planLoadDecks().then(() => {
-          if (document.getElementById("plan-b-list")) invoke("view").then(planRenderBuilder).catch(console.error);
+          if (document.getElementById("plan-b-list")) invoke("view").then(planRenderBuilder).catch(planRenderLoadFailed);
         });
-        invoke("view").then(planRenderBuilder).catch(console.error);
+        invoke("view").then(planRenderBuilder).catch(planRenderLoadFailed);
       }
       function buildPlanPalette() {
         const box = document.getElementById("plan-palette-btns");
@@ -6963,7 +7074,7 @@
           empty.appendChild(ec);
           empty.appendChild(el8);
           list.appendChild(empty);
-          planClearInspector();
+          planClearInspector(view);
           return;
         }
         const last = view.items.length - 1;
@@ -7030,6 +7141,26 @@
           );
           down.className = "plan-b-down";
           down.disabled = i === last;
+          // Owner + planned duration (handoff §3, FR-004). Both have been on PlanItemView all
+          // along and were dropped on the floor here. Absent = unassigned / unplanned, so the
+          // element is omitted rather than padded with a placeholder dash that reads as data.
+          const meta = document.createElement("span");
+          meta.className = "plan-b-meta";
+          if (it.owner) {
+            const own = document.createElement("span");
+            own.className = "plan-b-owner";
+            own.appendChild(srOnly("Owner: "));
+            own.appendChild(document.createTextNode(it.owner));
+            meta.appendChild(own);
+          }
+          if (typeof it.planned_secs === "number" && it.planned_secs > 0) {
+            const dur = document.createElement("span");
+            dur.className = "plan-b-dur";
+            dur.appendChild(srOnly("Planned: "));
+            dur.appendChild(document.createTextNode(fmtClock(it.planned_secs)));
+            meta.appendChild(dur);
+          }
+          if (meta.childElementCount) row.appendChild(meta);
           tools.appendChild(up);
           tools.appendChild(down);
           row.appendChild(tools);
@@ -7068,13 +7199,104 @@
         }
         const sel = view.items.find((x) => x.id === planSelectedId);
         if (sel) planRenderInspector(sel);
-        else planClearInspector();
+        else planClearInspector(view);
       }
-      function planClearInspector() {
+      // Right panel with NOTHING selected = Plan Summary (frame 608:875). Selecting an item swaps
+      // it for the item inspector; the heading swaps with it so the panel always says which one
+      // this is.
+      function planSetInspHeading(text) {
+        const h = document.getElementById("plan-insp-h");
+        if (h) h.textContent = text;
+      }
+      function planSumRow(label, value, opts) {
+        const row = document.createElement("div");
+        row.className = "plan-sum-row" + ((opts && opts.cls) ? " " + opts.cls : "");
+        const l = document.createElement("span");
+        l.className = "plan-sum-label";
+        l.textContent = label;
+        const v = document.createElement("span");
+        v.className = "plan-sum-value";
+        v.textContent = value;
+        row.appendChild(l);
+        row.appendChild(v);
+        return row;
+      }
+      // ---------------------------------------------------------------------------------------
+      // SEAM — the Plan Summary's WRITE actions (86ak8467m owns these; 86ak846ft owns the panel).
+      // Frame 608:875 draws three: Run pre-service check, Publish to team, Open in Live. Only
+      // "Open in Live" is a pure surface switch and works today; the other two need the plan
+      // lifecycle backend (86ajy0hwg) that does not exist yet.
+      //
+      // They ship DISABLED with a stated reason rather than hidden — an operator looking for
+      // Publish should find it and learn when it arrives — and never wired to a no-op, because a
+      // control that looks live and silently does nothing is worse than one that says it is not
+      // ready. 86ak8467m enables them HERE, in this function, and must not rebuild the panel.
+      // ---------------------------------------------------------------------------------------
+      function planSummaryActions(box) {
+        const laterNote = document.createElement("p");
+        laterNote.className = "plan-sum-later";
+        laterNote.id = "plan-sum-later";
+        laterNote.textContent = "Pre-service check and publishing arrive with the plan lifecycle work.";
+
+        const pre = document.createElement("button");
+        pre.type = "button";
+        pre.className = "pm-btn-ghost plan-sum-btn";
+        pre.id = "plan-sum-precheck";
+        pre.textContent = "✓ Run pre-service check";
+        pre.disabled = true;
+        pre.setAttribute("aria-describedby", "plan-sum-later");
+
+        const pub = document.createElement("button");
+        pub.type = "button";
+        pub.className = "pm-btn-ghost plan-sum-btn";
+        pub.id = "plan-sum-publish";
+        pub.textContent = "↑ Publish to team";
+        pub.disabled = true;
+        pub.setAttribute("aria-describedby", "plan-sum-later");
+
+        // A pure surface switch to the Live Console — never a go-live. Mirrors the header button:
+        // a plan edit must not commit anything to Live.
+        const live = document.createElement("button");
+        live.type = "button";
+        live.className = "pm-btn-primary plan-sum-btn";
+        live.id = "plan-sum-live";
+        live.textContent = "▶ Open in Live";
+        live.onclick = () => showSurface("console");
+
+        box.appendChild(pre);
+        box.appendChild(pub);
+        box.appendChild(laterNote);
+        box.appendChild(live);
+      }
+      function planClearInspector(view) {
         const box = document.getElementById("plan-b-insp");
-        if (box)
-          box.innerHTML =
-            '<p class="coming-soon">Select an item to edit it and link its scripture or presentation.</p>';
+        if (!box) return;
+        planSetInspHeading("PLAN SUMMARY");
+        box.innerHTML = "";
+        const sum = planSummaryOf(view);
+        const card = document.createElement("div");
+        card.className = "plan-sum-card";
+        card.appendChild(planSumRow("Total time", planFmtTotal(sum.total_secs), { cls: "plan-sum-total" }));
+        card.appendChild(planSumRow("Items", String(sum.items)));
+        card.appendChild(planSumRow("Songs", String(sum.songs)));
+        card.appendChild(planSumRow("Scripture", String(sum.scripture)));
+        card.appendChild(planSumRow("Presentations", String(sum.presentations)));
+        card.appendChild(planSumRow("Media", String(sum.media)));
+        card.appendChild(planSumRow("Announcements", String(sum.announcements)));
+        // Missing content carries a ⚠ in the TEXT when non-zero, not just a colour — the count is
+        // the one figure here that means "something is broken" (WCAG 1.4.1).
+        card.appendChild(
+          planSumRow("Missing content", sum.missing ? "⚠ " + sum.missing : "0", sum.missing ? { cls: "plan-sum-warn" } : null)
+        );
+        card.appendChild(planSumRow("Assigned", sum.assigned + " / " + sum.items));
+        box.appendChild(card);
+
+        planSummaryActions(box);
+
+        const note = document.createElement("p");
+        note.className = "plan-sum-hint";
+        note.textContent = "Select an item to edit it and link its scripture or presentation.";
+        box.appendChild(note);
       }
       // A richer linked-deck card for the inspector (frame 608:124): name + slide count, resolved
       // from the loaded deck list; a deleted deck renders the missing treatment.
@@ -7108,6 +7330,7 @@
       function planRenderInspector(it) {
         const box = document.getElementById("plan-b-insp");
         if (!box) return;
+        planSetInspHeading("ITEM");
         box.innerHTML = "";
         const kindRow = document.createElement("div");
         kindRow.className = "plan-insp-kind";

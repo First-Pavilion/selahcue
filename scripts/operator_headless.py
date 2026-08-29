@@ -346,7 +346,12 @@ STUB = r"""
       // What an undo could ACTUALLY put back (LibraryView.restorable). Bounded, so it shrinks.
       restorable: LIB.trash.map(function(t){ return t.id; }) }; };
     var libUnique = function(base){ var n=base, k=2; var names=LIB.decks.map(function(d){return d.name;}); while(names.indexOf(n)>=0){ n=base+" ("+k+")"; k++; } return n; };
-    if (cmd === "deck_list") return Promise.resolve(libView());
+    if (cmd === "deck_list") {
+      // Test hook (mirrors __pmRejectOnce): force a MALFORMED null answer, so a host that does
+      // not implement deck_list can be told apart from one reporting an empty library.
+      if (window.__deckListNullOnce) { window.__deckListNullOnce = false; return Promise.resolve(null); }
+      return Promise.resolve(libView());
+    }
     if (cmd === "deck_search") {
       var gq = String((args && args.query) || "").trim().toLowerCase();
       if (!gq) return Promise.resolve({hits: []});
@@ -2785,6 +2790,182 @@ DRIVER = r"""
       await sleep(10);
       ok(window.__calls.filter(function(c){return c.cmd==="move_item";}).length === mvBefore3, "SP2 C-002: a cancelled drag does not reorder");
       ok(!document.querySelector("#plan-b-list .plan-b-dropline"), "SP2 C-002: pointercancel tears down the drop line");
+      // === 86ak846ft — run-sheet owner/duration + Plan Summary + loading ======================
+      // A plan whose per-item owner + duration are known, so the RENDERED rows and the RENDERED
+      // summary can be checked against each other rather than against a hand-copied constant.
+      var sumView = { plan_name:"Sunday", items:[
+        {id:21, kind:"song",         title:"Opening Song",    is_live:false, is_staged:false, owner:"Worship",      planned_secs:300},
+        {id:22, kind:"announcement", title:"Welcome",         is_live:false, is_staged:false, owner:"Host",         planned_secs:120},
+        {id:23, kind:"scripture",    title:"Romans 8:28-30",  is_live:false, is_staged:false, owner:"Scripture op", planned_secs:120,
+         link:{kind:"scripture", reference:"Romans 8:28-30", translation:"WEB"}},
+        {id:24, kind:"slide_group",  title:"Sermon",          is_live:false, is_staged:false, owner:"Pastor",       planned_secs:2100, link:{kind:"deck", id:2}},
+        {id:25, kind:"media",        title:"Testimony Video", is_live:false, is_staged:false, owner:"Media",        planned_secs:192},
+        {id:26, kind:"song",         title:"Closing Song",    is_live:false, is_staged:false,                       planned_secs:360}
+      ] };
+      planSelectedId = null; // nothing selected -> the right panel is the Plan Summary
+      planRenderBuilder(sumView);
+      // --- owner + planned duration on every row (handoff §3, FR-004) -------------------------
+      var oRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="21"]');
+      ok(!!oRow.querySelector(".plan-b-owner") && /Worship/.test(oRow.querySelector(".plan-b-owner").textContent),
+         "SP3 AC-1: a run-sheet row renders its owner");
+      ok(!!oRow.querySelector(".plan-b-dur") && /5:00/.test(oRow.querySelector(".plan-b-dur").textContent),
+         "SP3 AC-1: a run-sheet row renders its planned duration as m:ss");
+      ok(/Owner:/.test(oRow.querySelector(".plan-b-owner").textContent) && /Planned:/.test(oRow.querySelector(".plan-b-dur").textContent),
+         "SP3 AC-1 a11y: owner and duration carry a visually-hidden prefix, so a bare 'Worship 5:00' is not ambiguous to AT");
+      // Positive control: the element is OMITTED when unassigned, never padded with a placeholder
+      // dash that would read as data. Without this, "renders the owner" could pass on a stub.
+      var noOwner = document.querySelector('#plan-b-list .plan-b-row[data-item-id="26"]');
+      ok(!noOwner.querySelector(".plan-b-owner"), "SP3 AC-1 (control): an unassigned item renders NO owner element");
+      ok(!!noOwner.querySelector(".plan-b-dur"), "SP3 AC-1 (control): that same row still renders its duration — the omission is per-field, not a dead branch");
+      // --- AC-3: the summary must AGREE with the run sheet ------------------------------------
+      // Design-QA §9 rejected these frames once for exactly this: "8 items · 1:12:00" displayed
+      // over 6 rows summing 53:12. So compare the two RENDERED surfaces against each other. A
+      // second, independent computation of the totals is precisely how they drift apart, and only
+      // a cross-check between them catches it — asserting the summary against a literal would not.
+      function sumRowValue(label) {
+        var rows = document.querySelectorAll("#plan-b-insp .plan-sum-row");
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].querySelector(".plan-sum-label").textContent === label)
+            return rows[i].querySelector(".plan-sum-value").textContent.trim();
+        }
+        return null;
+      }
+      function clockToSecs(t) {
+        var q = t.replace(/^[^0-9]*/, "").split(":").map(Number);
+        return q.length === 3 ? q[0]*3600 + q[1]*60 + q[2] : q[0]*60 + q[1];
+      }
+      var renderedRows = document.querySelectorAll("#plan-b-list .plan-b-row");
+      var rowSum = 0;
+      Array.prototype.forEach.call(document.querySelectorAll("#plan-b-list .plan-b-dur"), function(d) {
+        rowSum += clockToSecs(d.textContent.replace("Planned:", "").trim());
+      });
+      ok(sumRowValue("Items") === String(renderedRows.length),
+         "SP3 AC-3: Plan Summary 'Items' equals the rows the run sheet actually rendered (" + sumRowValue("Items") + " vs " + renderedRows.length + ")");
+      ok(clockToSecs(sumRowValue("Total time")) === rowSum,
+         "SP3 AC-3: Plan Summary total equals the sum of the durations shown on those rows (" + sumRowValue("Total time") + " vs " + rowSum + "s)");
+      ok(sumRowValue("Total time") === "0:53:12",
+         "SP3 AC-3: the total is formatted h:mm:ss, so a 53-minute plan cannot read as 53 minutes 12 seconds of m:ss");
+      ok(sumRowValue("Assigned") === "5 / 6", "SP3 AC-3: 'Assigned' counts items that actually carry an owner");
+      ok(sumRowValue("Songs") === "2" && sumRowValue("Scripture") === "1" && sumRowValue("Presentations") === "1" &&
+         sumRowValue("Media") === "1" && sumRowValue("Announcements") === "1",
+         "SP3 AC-3: the per-kind counts match the run sheet's typed rows");
+      // --- missing-content count: three-state link status -------------------------------------
+      // Local deck resolution stays authoritative (the host has no deck store and cannot resolve a
+      // deck_id), and an "unknown" status must never be counted as either missing or resolved-by-
+      // fiat. Deck 2 resolves locally; deck 99 does not.
+      var missView = { plan_name:"S", items:[
+        {id:31, kind:"slide_group", title:"Gone",       is_live:false, is_staged:false, link:{kind:"deck", id:99}},
+        {id:32, kind:"slide_group", title:"Present",    is_live:false, is_staged:false, link:{kind:"deck", id:2}},
+        {id:33, kind:"media",       title:"Host: gone", is_live:false, is_staged:false, link:{kind:"media", id:7, status:"missing"}},
+        {id:34, kind:"media",       title:"Unknown",    is_live:false, is_staged:false, link:{kind:"media", id:8, status:"unknown"}}
+      ] };
+      planSelectedId = null;
+      planRenderBuilder(missView);
+      ok(sumRowValue("Missing content") === "⚠ 2",
+         "SP3 AC-4: Missing content counts the locally-unresolvable deck AND the host-flagged media (got " + sumRowValue("Missing content") + ")");
+      ok(document.querySelectorAll("#plan-b-insp .plan-sum-warn").length === 1,
+         "SP3 AC-4: a non-zero missing count is marked, and the ⚠ is in the TEXT so it is not colour-only");
+      // Control for the "unknown" branch specifically. Item 34 is a NON-deck link carrying
+      // status:"unknown" — it reaches the `status === "unknown"` return, which a deck link never
+      // does (decks short-circuit into local resolution first). "Could not check" must not be
+      // counted as broken; if it were, the count above would read 3.
+      ok(planLinkState(missView.items[3].link) === "unknown",
+         "SP3 AC-4 (control): a non-deck link with status 'unknown' resolves to unknown, not missing and not resolved-by-fiat");
+      // Control for the OTHER unknown branch: a deck_list that never loaded. planDecks === null
+      // must read unknown, so one transient deck_list failure cannot flag every deck-linked item
+      // in the plan as broken. This is the branch a loaded fixture otherwise never exercises.
+      var decksSaved = planDecks;
+      planDecks = null;
+      planRenderBuilder(missView);
+      ok(planLinkState(missView.items[0].link) === "unknown" && sumRowValue("Missing content") === "⚠ 1",
+         "SP3 AC-4 (control): with the deck list unloaded, deck links read unknown — only the host-flagged media counts missing (got " + sumRowValue("Missing content") + ")");
+      planDecks = decksSaved;
+      planRenderBuilder(missView);
+      ok(sumRowValue("Missing content") === "⚠ 2",
+         "SP3 AC-4 (control): restoring the deck list restores the real count — the unknown path is a state, not a latch");
+      // Regression, found by rendering the real dist in WebKit: a host that answers deck_list with
+      // null must read as UNKNOWN, not as a loaded-and-empty library. `(r && r.decks) || []` made
+      // a null response mean "the library is empty", so every deck-linked item was flagged
+      // "⚠ presentation missing" and counted here — the false alarm the catch branch exists to
+      // prevent, reached through the success path instead.
+      window.__deckListNullOnce = true;
+      await planLoadDecks();
+      ok(planDecks === null, "SP3 AC-4 (regression): a null deck_list response reads UNKNOWN, not an empty library");
+      planRenderBuilder(missView);
+      ok(sumRowValue("Missing content") === "⚠ 1",
+         "SP3 AC-4 (regression): with the deck library unreadable, deck links are NOT counted missing — only the host-flagged media is (got " + sumRowValue("Missing content") + ")");
+      await planLoadDecks();
+      ok(Array.isArray(planDecks) && planDecks.length > 0,
+         "SP3 AC-4 (control): a well-formed deck_list still loads the library — the guard rejects malformed responses, not every response");
+      planRenderBuilder(missView);
+      planRenderBuilder(sumView);
+      ok(sumRowValue("Missing content") === "0" && !document.querySelector("#plan-b-insp .plan-sum-warn"),
+         "SP3 AC-4 (control): a plan with nothing missing reads 0 and is NOT marked — the marker is not stuck on");
+      // --- the panel swaps with selection, and the heading says which panel this is ------------
+      ok(el("plan-insp-h").textContent === "PLAN SUMMARY", "SP3 AC-2: with nothing selected the right panel is headed PLAN SUMMARY");
+      document.querySelector('#plan-b-list .plan-b-row[data-item-id="21"]').click();
+      ok(el("plan-insp-h").textContent === "ITEM" && !document.querySelector("#plan-b-insp .plan-sum-card"),
+         "SP3 AC-2: selecting an item swaps the summary for the item inspector, and the heading follows");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      ok(!!document.querySelector("#plan-b-insp .plan-sum-card"), "SP3 AC-2: clearing the selection brings the summary back");
+      // --- the two write actions are present, honest, and slotted for 86ak8467m ---------------
+      ok(!!el("plan-sum-publish") && el("plan-sum-publish").disabled,
+         "SP3 AC-5: 'Publish to team' is PRESENT and disabled — not hidden (an operator must be able to find it) and not wired to a no-op");
+      ok(!!el("plan-sum-precheck") && el("plan-sum-precheck").disabled, "SP3 AC-5: 'Run pre-service check' is present and disabled");
+      ok(el("plan-sum-publish").getAttribute("aria-describedby") === "plan-sum-later" && !!el("plan-sum-later"),
+         "SP3 AC-5 a11y: the disabled actions point at a stated reason, so AT hears why they are unavailable");
+      ok(!!el("plan-sum-live") && !el("plan-sum-live").disabled,
+         "SP3 AC-5 (control): 'Open in Live' in the SAME panel is enabled — 'disabled' means not-yet-built, not a dead panel");
+      // Open in Live is a pure surface switch: it must never send a live-control command.
+      // Assert what is FORBIDDEN, not a raw call count: a 1 Hz `view` poll runs throughout the
+      // gate, so counting every call makes this pass or fail on timing rather than on behaviour.
+      var liveCallsBefore = window.__calls.length;
+      el("plan-sum-live").click();
+      await sleep(20);
+      var during = window.__calls.slice(liveCallsBefore).map(function(c){ return c.cmd; });
+      // Name what is FORBIDDEN rather than allowlisting reads: the console polls view /
+      // detection_health / link_status continuously, so a new poll must not break this, while any
+      // command that commits to Live or edits the plan must.
+      var FORBIDDEN = ["go_live","deck_go_live","deck_go_live_delta","blackout","clear","next","previous",
+                       "select","select_slide","stage_scripture","present_plan_deck_slide",
+                       "add_item","move_item","remove_item","rename_item","set_item_content","plan_undo","plan_redo"];
+      var offended = during.filter(function(c){ return FORBIDDEN.indexOf(c) >= 0; });
+      ok(offended.length === 0,
+         "SP3 AC-6 invariant: 'Open in Live' only switches surface — it commits nothing to Live and edits no plan item (saw: " + (offended.join(",") || "none") + ")");
+      // --- loading (frame 611:350) ------------------------------------------------------------
+      planRenderLoading();
+      ok(document.querySelectorAll("#plan-b-list .plan-skel-row").length > 0, "SP3 AC-7: opening the plan paints skeleton rows");
+      var lmsg = document.querySelector("#plan-b-list .plan-loading-msg");
+      ok(!!lmsg && lmsg.getAttribute("role") === "status" && /scanning for missing content/i.test(lmsg.textContent),
+         "SP3 AC-7 a11y: the wait is announced via role=status and names the missing-content scan, not just drawn");
+      ok(document.querySelector("#plan-b-list .plan-skel-row").getAttribute("aria-hidden") === "true",
+         "SP3 AC-7 a11y: the skeleton rows are aria-hidden — texture, not four empty rows announced to AT");
+      ok(el("plan-b-count").textContent === "—",
+         "SP3 AC-7: the count reads — while loading, rather than showing a stale count as if it were current");
+      // Positive control: the skeleton is REPLACED by real content. Without this, "paints a
+      // skeleton" would pass just as well on a loading state that never resolves.
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      ok(!document.querySelector("#plan-b-list .plan-skel-row") && document.querySelectorAll("#plan-b-list .plan-b-row").length === 6,
+         "SP3 AC-7 (control): the first real render clears the skeleton — the loading state is not stuck");
+      ok(el("plan-b-count").textContent === "6 items", "SP3 AC-7 (control): and the real count replaces the — placeholder");
+      // A failed open must not leave the skeleton up forever: an endless loading state is a lie
+      // about work still being in flight.
+      planRenderLoading();
+      planRenderLoadFailed(new Error("boom"));
+      var lfail = document.querySelector("#plan-b-list .plan-load-failed");
+      ok(!!lfail && lfail.getAttribute("role") === "alert" && !document.querySelector("#plan-b-list .plan-skel-row"),
+         "SP3 AC-7: a failed open replaces the skeleton with a role=alert message instead of spinning forever");
+      ok(/Live output is unaffected/.test(lfail.textContent),
+         "SP3 AC-7: the failure says the audience is unaffected (NFR-024) rather than implying live output is at risk");
+      // Control: a LATE failure must not wipe a run sheet that already painted.
+      planRenderBuilder(sumView);
+      planRenderLoadFailed(new Error("late"));
+      ok(document.querySelectorAll("#plan-b-list .plan-b-row").length === 6 && !document.querySelector("#plan-b-list .plan-load-failed"),
+         "SP3 AC-7 (control): a late rejection does not clobber a run sheet that already rendered");
+      showSurface("plan");
+      await sleep(40);
       planRenderBuilder(planView); // restore before the nav check
       // #9/#10 "Open in Live ▶" is a real, NAV-ONLY control (it was a dead button) — it switches to
       // the Live Console and sends no live-control command.
