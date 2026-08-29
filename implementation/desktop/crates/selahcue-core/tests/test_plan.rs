@@ -1257,11 +1257,9 @@ fn same_document_ignores_the_id_counter_and_nothing_else() {
 
 #[test]
 fn a_plan_label_must_be_visible_bounded_and_single_line() {
-    // The ingress rule for plan names, item titles and owners. Three character categories have
-    // to be refused and only one of them is `char::is_control`:
-    //   Cc  control characters
-    //   Cf  zero-width and bidi overrides (`is_invisible_formatting`) — PR #14 security review
-    //   Zl/Zp  line and paragraph separators                          — PR #14 code review
+    // The ingress rule for plan names, item titles and owners. The predicate is: refuse
+    // characters that act at a distance or have no role in writing words; admit invisibles whose
+    // effect is confined to the glyphs they touch.
     assert!(plan_label_valid("Sunday Morning"));
     assert!(
         plan_label_valid("  trimmed  "),
@@ -1279,39 +1277,144 @@ fn a_plan_label_must_be_visible_bounded_and_single_line() {
         "exactly at the bound is fine — the bound must not be off by one"
     );
 
+    // --- Refused: control characters, line separators, and invisibles that act at a distance ---
     assert!(!plan_label_valid("Sun\u{7}day"), "Cc: bell");
-    assert!(
-        !plan_label_valid("Sun\u{202E}day"),
-        "Cf: right-to-left override"
-    );
-    assert!(
-        !plan_label_valid("\u{200B}"),
-        "Cf: zero-width space is not blank to `trim`"
-    );
-    assert!(
-        !plan_label_valid("Open\u{200D}ing"),
-        "Cf: zero-width joiner"
-    );
     assert!(!plan_label_valid("Sun\u{2028}day"), "Zl: line separator");
     assert!(
         !plan_label_valid("Sun\u{2029}day"),
         "Zp: paragraph separator"
     );
+    // Stateful direction controls: these reorder text BEYOND their own position, which is the
+    // Trojan-Source primitive the original advisory was about.
+    assert!(!plan_label_valid("Sun\u{202E}day"), "RLO override");
+    assert!(!plan_label_valid("Sun\u{202A}day"), "LRE embedding");
+    assert!(
+        !plan_label_valid("Sun\u{2066}day"),
+        "LRI isolate — the isolates were previously untested entirely"
+    );
+    assert!(!plan_label_valid("Sun\u{2069}day"), "PDI isolate");
+    // Zero-orthography invisibles: no script spells with these.
+    assert!(!plan_label_valid("Sun\u{200B}day"), "zero-width space");
+    assert!(!plan_label_valid("Sun\u{FEFF}day"), "BOM / ZWNBSP");
+    assert!(!plan_label_valid("Sun\u{2060}day"), "word joiner");
 
-    // A spoofing rule that swept up ordinary international text would be a worse bug than the
-    // one it fixes, so the counterparts are pinned too.
+    // --- Admitted: the joiners are SPELLING, not decoration ---
+    //
+    // Each of these is a real word in a real script that cannot be written without the joiner.
+    // Refusing them does not harden a name field; it stops the language being typed into one.
+    assert!(
+        plan_label_valid("\u{06A9}\u{062A}\u{0627}\u{0628}\u{200C}\u{0647}\u{0627}"),
+        "Persian: ZWNJ carries the plural suffix"
+    );
+    assert!(
+        plan_label_valid("\u{0646}\u{200C}\u{06C1}"),
+        "Urdu: ZWNJ between joining forms"
+    );
+    assert!(
+        plan_label_valid("\u{0915}\u{094D}\u{200C}\u{0937}"),
+        "Devanagari: ZWNJ forces the explicit halant"
+    );
+    assert!(
+        plan_label_valid("\u{0DC1}\u{0DCA}\u{200D}\u{0DBB}\u{0DD3}"),
+        "Sinhala \u{0DC1}\u{0DCA}\u{200D}\u{0DBB}\u{0DD3} — the word Sri, as in Sri Lanka. It \
+         cannot be written without U+200D at all, so refusing ZWJ stopped a congregation typing \
+         their own country's name"
+    );
+    assert!(
+        plan_label_valid("\u{0D23}\u{0D4D}\u{200D}"),
+        "Malayalam: ZWJ forms the chillu letter"
+    );
+    assert!(
+        plan_label_valid("Sunday \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"),
+        "a family emoji is bound by the same ZWJ — this used to be a documented 'accepted cost' \
+         and is simply valid now"
+    );
+    // Implicit bidi marks are stateless: they influence adjacent neutrals only and cannot
+    // reorder a strong-directional run. U+061C always passed, so refusing these two was not even
+    // internally consistent.
+    assert!(plan_label_valid("Sun\u{200E}day"), "LRM");
+    assert!(plan_label_valid("Sun\u{200F}day"), "RLM");
+    assert!(plan_label_valid("Sun\u{061C}day"), "ALM");
+
+    // --- The companion guard: admitting joiners must not admit an INVISIBLE name ---
+    //
+    // Load-bearing. Before the joiners were admitted this string was refused only as a side
+    // effect of the over-broad list, so narrowing without this would have opened a hole.
+    assert!(
+        !plan_label_valid("\u{200C}\u{200C}"),
+        "a label made only of joiners renders as nothing and must be refused"
+    );
+    assert!(
+        !plan_label_valid("\u{200D}"),
+        "one joiner alone is still an invisible name"
+    );
+    assert!(
+        !plan_label_valid(" \u{200C} "),
+        "whitespace plus a joiner is still nothing to look at"
+    );
+    assert!(
+        plan_label_valid("\u{0915}\u{094D}\u{200C}\u{0937}"),
+        "POSITIVE CONTROL beside it: the same joiner INSIDE a word is fine, so the guard rejects \
+         invisibility rather than rejecting the joiner"
+    );
+
+    // Ordinary international text, unaffected either way.
     assert!(plan_label_valid("主日崇拜"), "Chinese");
-    assert!(
-        plan_label_valid("خدمة الأحد"),
-        "Arabic, genuinely right-to-left"
-    );
+    assert!(plan_label_valid("خدمة الأحد"), "Arabic");
     assert!(plan_label_valid("Богослужение"), "Cyrillic");
-    assert!(
-        plan_label_valid("Opening 🎉"),
-        "a single emoji carries no joiner"
-    );
+    assert!(plan_label_valid("Opening 🎉"), "a single emoji");
     assert!(
         plan_label_valid("Café — Sunday's 1st"),
         "accents, dashes and apostrophes are ordinary label text"
+    );
+}
+
+#[test]
+fn the_codec_preserves_orthographic_joiners_in_a_stored_label() {
+    // `sanitize_field` DROPS what `plan_label_valid` REFUSES, over the same set — so narrowing
+    // that set fixes the codec too. It previously misspelled stored labels silently: Persian lost
+    // its ZWNJ (7 characters in, 6 out) and Sinhala "Sri" was broken outright.
+    //
+    // Different verb, deliberately: the codec runs on already-stored data and has nobody to
+    // report a failure to, so it must be total and drops. Ingress creating a new document can
+    // refuse. That split is only safe because no orthographic character is in the set any more.
+    let persian = "\u{06A9}\u{062A}\u{0627}\u{0628}\u{200C}\u{0647}\u{0627}";
+    let sinhala = "\u{0DC1}\u{0DCA}\u{200D}\u{0DBB}\u{0DD3}";
+
+    for label in [persian, sinhala] {
+        let link = ItemContent::Deck {
+            deck_id: 7,
+            slide_count: Some(3),
+            label: Some(label.to_string()),
+        };
+        let decoded = ItemContent::decode(&link.encode()).expect("the link must decode");
+        let ItemContent::Deck { label: out, .. } = decoded else {
+            panic!("expected a deck link");
+        };
+        let out = out.expect("the label must survive the round trip");
+        assert_eq!(
+            out.chars().count(),
+            label.chars().count(),
+            "the codec dropped a character from {label:?} — an orthographic joiner is spelling, \
+             and dropping it misspells the stored label with no way to notice"
+        );
+        assert_eq!(out, label, "the label must round-trip byte-identically");
+    }
+
+    // POSITIVE CONTROL: the codec still drops what it is supposed to drop, so the assertions
+    // above are not passing because the filter is dead.
+    let hostile = ItemContent::Deck {
+        deck_id: 7,
+        slide_count: None,
+        label: Some("Deck\u{202E}Name".to_string()),
+    };
+    let decoded = ItemContent::decode(&hostile.encode()).expect("decodes");
+    let ItemContent::Deck { label: out, .. } = decoded else {
+        panic!("expected a deck link");
+    };
+    assert_eq!(
+        out.as_deref(),
+        Some("DeckName"),
+        "a direction override must still be stripped from a stored label"
     );
 }

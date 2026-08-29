@@ -223,21 +223,92 @@ pub enum ItemContent {
 /// rather than merely assumed.
 fn sanitize_field(s: &str) -> String {
     s.chars()
-        .filter(|c| !is_invisible_formatting(*c))
+        .filter(|c| !is_display_hostile(*c))
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
 }
 
-/// Zero-width and bidirectional-override characters, which `char::is_control` does NOT cover:
-/// it tests the Cc category only, and every character below is Cf.
+/// Invisible (Cf) characters that are part of WRITING WORDS, and are therefore admitted.
 ///
-/// These render as nothing yet reorder or hide the text around them, so a deck name can be made
-/// to *display* as something other than what it is — a right-to-left override rewrites how a
-/// name reads, and zero-width joiners let two distinct labels look identical. A link label is
-/// echoed to every paired device and rendered in the run sheet, so it is a display-spoofing
-/// surface. Dropped rather than replaced with a space, because they are zero-width by
-/// definition: substituting a space would change how legitimate text looks, whereas removing
-/// them restores what it already appeared to be. Found by security review of PR #13.
+/// # Why these are not a security problem
+///
+/// The joiners are **spelling**, not decoration. Persian and Urdu need ZWNJ for the plural
+/// suffix and the durative prefix; Devanagari uses it for conjunct control; Malayalam and
+/// Sinhala use ZWJ to form chillu letters — the Sinhala word *Sri*, as in *Sri Lanka*, cannot be
+/// written without U+200D at all. Refusing them does not harden a name field, it stops entire
+/// languages being typed into one.
+///
+/// Precedent: **IDNA2008 (RFC 5892, CONTEXTJ) admits both in domain names** — the most
+/// homograph-sensitive identifier system in production. We deliberately do NOT implement
+/// CONTEXTJ's contextual virama and joining-type rules: they are disproportionate for a 120-char
+/// display label, and the homograph surface they would narrow is already wide open through
+/// confusables that nothing here refuses (Cyrillic "о" passes today and always will).
+///
+/// The implicit bidi marks are **stateless**. LRM/RLM/ALM influence only the neutral characters
+/// immediately around them and cannot reorder a strong-directional run, unlike the embeddings
+/// and overrides in [`is_display_hostile`]. They arrive routinely in RTL text pasted from a word
+/// processor. U+061C was never in the refused set anyway, so refusing its LRM/RLM counterparts
+/// was not even internally consistent.
+fn is_admitted_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200C}' | '\u{200D}'   // ZWNJ, ZWJ — orthographic joiners
+        | '\u{200E}' | '\u{200F}' // LRM, RLM — implicit, stateless bidi marks
+        | '\u{061C}' // ALM — the Arabic counterpart of the above
+    )
+}
+
+/// Invisible characters that **act at a distance, or have no role in writing words**.
+///
+/// That predicate is the rule; the list below is only its consequence. An earlier version had no
+/// principle behind it and showed it: U+061C ALM passed while U+200E LRM was refused, though both
+/// are invisible implicit bidi marks. It was not a strict rule, it was the set of characters that
+/// happened to get listed.
+///
+/// Two groups, for two different reasons:
+///
+/// - **Stateful direction controls** (`202A..=202E`, `2066..=2069`) reorder text *beyond their own
+///   position*: an unterminated RLO reverses the remainder of a rendered line, so a label can be
+///   made to display as something other than what it is. This is the Trojan-Source primitive and
+///   the thing the original security advisory was actually about.
+/// - **Zero-orthography invisibles** (`200B`, `2060..=2064`, `FEFF`) belong to no script's
+///   spelling. Nobody types them into a service name, so refusing them costs nothing.
+///
+/// Consumed by BOTH [`sanitize_field`] (which drops) and
+/// [`plan_label_valid`] (which refuses). One definition, two verbs — see `plan_label_valid` for
+/// why the verbs differ and why that is safe once the *set* is right.
+///
+/// **Deliberately narrower than `is_display_unsafe` in `selahcue-lan/src/server.rs`.** That one
+/// keeps its broader list on purpose: it guards DEVICE NAMES in the pairing approve/deny prompt,
+/// which feeds a security decision a human makes once. A misspelled Persian device name is an
+/// acceptable price there; a spoofed one is not. Do not "unify" the two without re-reading this.
+fn is_display_hostile(c: char) -> bool {
+    matches!(c,
+        // Stateful direction controls — reorder text beyond their own position.
+        '\u{202A}'..='\u{202E}'   // LRE, RLE, PDF, LRO, RLO
+        | '\u{2066}'..='\u{2069}' // LRI, RLI, FSI, PDI
+        // Zero-orthography invisibles — no script spells with these.
+        | '\u{200B}'              // zero-width space
+        | '\u{2060}'..='\u{2064}' // word joiner, invisible operators
+        | '\u{FEFF}'              // BOM / zero-width no-break space
+    )
+}
+
+/// Whether `s` contains anything a person could actually SEE.
+///
+/// The companion guard to admitting the joiners, and it is load-bearing: without it
+/// `"\u{200C}\u{200C}"` is a perfectly valid — and completely invisible — plan name. Before the
+/// admitted set existed, that string was refused only as a side effect of the over-broad list, so
+/// narrowing the list without adding this would have opened a hole rather than closed one.
+///
+/// Also subsumes the empty-string check: a blank label has no visible character either, so
+/// `plan_label_valid` does not test emptiness separately. One predicate, so there is no second
+/// one to drift.
+fn has_visible_content(s: &str) -> bool {
+    s.chars()
+        .any(|c| !c.is_whitespace() && !is_admitted_invisible(c))
+}
+
 /// Line and paragraph separators (Unicode `Zl` / `Zp`), which are covered by NEITHER
 /// `char::is_control` (they are not Cc) NOR [`is_invisible_formatting`] (they are not Cf).
 ///
@@ -253,16 +324,6 @@ fn sanitize_field(s: &str) -> String {
 /// replaces U+2028 — and closing it is not this change's to make.
 fn is_line_separator(c: char) -> bool {
     matches!(c, '\u{2028}' | '\u{2029}')
-}
-
-fn is_invisible_formatting(c: char) -> bool {
-    matches!(c,
-        '\u{200B}'..='\u{200F}'   // zero-width space/non-joiner/joiner, LRM, RLM
-        | '\u{202A}'..='\u{202E}' // LRE, RLE, PDF, LRO, RLO
-        | '\u{2060}'..='\u{2064}' // word joiner, invisible operators
-        | '\u{2066}'..='\u{2069}' // LRI, RLI, FSI, PDI
-        | '\u{FEFF}'              // BOM / zero-width no-break space
-    )
 }
 
 /// Public form of [`sanitize_field`], for callers that must clean untrusted text BEFORE
@@ -956,8 +1017,25 @@ impl ServicePlan {
     /// It lives here, beside the struct, rather than in the caller: a caller-local field subset
     /// silently stops covering a field the day `ServicePlan` grows one, and the caller is the
     /// last place anyone looks when that happens.
+    ///
+    /// # The destructuring is the guard, not the comment
+    ///
+    /// Proximity alone was the first version of this and it was a hope, failing in the WRONG
+    /// direction: an inclusion list means a field added tomorrow is silently EXCLUDED, so the
+    /// badge quietly stops noticing part of the document — no error, no failing test, just a
+    /// change flag that has gone partly blind. Binding every field by name makes that a compile
+    /// error instead: a new field cannot build until someone writes it into the comparison or
+    /// explicitly ignores it, and no prose has to stay accurate for that to work.
     pub fn same_document(&self, other: &ServicePlan) -> bool {
-        self.name == other.name && self.items == other.items
+        // Adding a field to `ServicePlan`? The compiler stopped you here on purpose. Decide
+        // whether an operator can SEE it: if so it belongs in the comparison, if not ignore it
+        // by name with a reason, as `next_id` is ignored above.
+        let ServicePlan {
+            name,
+            items,
+            next_id: _,
+        } = self;
+        *name == other.name && *items == other.items
     }
 
     /// A deep, independent copy with a new name (FR-005). Ids are preserved but
@@ -1022,24 +1100,48 @@ pub const MAX_PLAN_LABEL_LEN: usize = 120;
 /// sheet is a name the coordinator cannot search for later.
 ///
 /// Counted in CHARACTERS, not bytes — a bound in bytes would refuse a legitimate name in a
-/// non-Latin script at a third of the length a Latin one is allowed. Non-Latin names are
-/// otherwise untouched by this rule and there is a test saying so, because a spoofing guard that
-/// quietly excluded most of the world's scripts would be a worse bug than the one it fixes.
+/// non-Latin script at a third of the length a Latin one is allowed.
 ///
-/// # Known cost: multi-person emoji are refused
+/// # What is refused, and what is deliberately admitted
 ///
-/// U+200D (zero-width joiner) is what binds an emoji sequence together, so a plan named
-/// "Sunday 👨‍👩‍👧" is refused. That is a real usability cost and it is accepted deliberately:
-/// permitting U+200D is exactly the homograph hole this closes, and the alternative — silently
-/// dropping it, as the codec does — would mangle the sequence into three separate people
-/// without saying so. Single emoji carry no joiner and are unaffected.
+/// The rule is a predicate, not a character list: **refuse characters that act at a distance or
+/// have no role in writing words; admit invisibles whose effect is confined to the glyphs they
+/// touch.** [`is_display_hostile`] is the first half, [`is_admitted_invisible`] the second, and
+/// [`has_visible_content`] stops the second half from admitting a wholly invisible name.
+///
+/// An earlier version of this predicate refused everything Cf, which locked whole languages out
+/// of the field: Persian and Urdu plurals, Devanagari conjuncts, Malayalam and Sinhala chillu —
+/// including "ශ්‍රී", the word *Sri*, which cannot be written without U+200D. A congregation
+/// could not type their own country's name, and [`Command::ImportPlan`] amplified it, since one
+/// joiner in one owner cell refused an entire 500-row run sheet with a bare `BadRequest`. Two
+/// tests pinned that behaviour as intended, which is why it was fixed rather than deferred.
+///
+/// # Accepted residual
+///
+/// Two labels can render identically and differ by a joiner, so a search for one may miss the
+/// other. That is the same class as confusable letters — Cyrillic "о" against Latin "o" — which
+/// nothing here refuses and nothing reasonably could. A run sheet is a display label, not an
+/// identifier namespace: the failure is a search miss, and it is recoverable. Weighed against
+/// locking out entire writing systems, it is the better trade.
+///
+/// # Enforced at the WIRE INGRESS only
+///
+/// Stated precisely because the obvious reading is wrong: this does not make `ServicePlan.name` a
+/// bounded field, and it does not close this class across the plan surface.
+/// [`ServicePlan::from_parts`], the persistence rehydration path, applies no bound. And
+/// **`AddItem` and `RenameItem` do not use this rule at all** — they apply only `trim` and a
+/// non-empty check, so an override or a 50,000-character title still reaches the run sheet
+/// through the path an operator actually uses. Both are pre-existing and tracked as follow-ups;
+/// routing them through here is the coherent single rule *now that the set no longer locks out
+/// scripts*, but it changes established command behaviour and needs its own test round.
+///
 pub fn plan_label_valid(name: &str) -> bool {
     let trimmed = name.trim();
-    !trimmed.is_empty()
+    has_visible_content(trimmed)
         && trimmed.chars().count() <= MAX_PLAN_LABEL_LEN
         && !trimmed
             .chars()
-            .any(|c| c.is_control() || is_invisible_formatting(c) || is_line_separator(c))
+            .any(|c| c.is_control() || is_display_hostile(c) || is_line_separator(c))
 }
 
 /// A named starter template — a run-sheet skeleton a coordinator begins a service from
@@ -1047,10 +1149,12 @@ pub fn plan_label_valid(name: &str) -> bool {
 ///
 /// # These entries are PROVISIONAL
 ///
-/// No document in this repository says what a template contains. `UX-STATE-MATRIX.md:108`,
-/// `SERVICE-PLAN-2.0-HANDOFF.md:74` and `COMPONENT-SPECS.md:192` each name the *action* three
-/// different ways and none of them describes a template's content, where templates are stored,
-/// or which ones ship. The two below are modelled on this repository's own `demo_plan()` —
+/// No document in this repository says what a template contains or which ones ship.
+/// `UX-STATE-MATRIX.md:108`, `SERVICE-PLAN-2.0-HANDOFF.md:74` and `COMPONENT-SPECS.md:192` each
+/// name the *action* three different ways and none describes its content. (Storage IS specified —
+/// `ARCHITECTURE.md:93` lists `template` among the SQLite core entities — so a persisted,
+/// user-authored template library is the intended end state and this static table is not it. An
+/// earlier version of this note wrongly said storage was unspecified too.) The two below are modelled on this repository's own `demo_plan()` —
 /// the only service shape the product has ever committed to — so the mechanism can ship and be
 /// tested. **The set and its contents are a product decision, not an engineering one**; they
 /// live in this one table so changing them is a data edit rather than a code change.

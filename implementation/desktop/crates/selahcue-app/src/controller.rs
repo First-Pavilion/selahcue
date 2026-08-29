@@ -3386,7 +3386,14 @@ impl LiveController {
 
     /// Install a wholesale-replaced plan document (New / Template / Duplicate / Import).
     ///
-    /// # The live output is never changed
+    /// # The AUDIENCE output is never changed
+    ///
+    /// Said precisely: the audience surface. The stage / confidence monitor DOES change, because
+    /// `reconcile_after_plan_change` dirties it — replacing the plan mid-song takes the singer's
+    /// "next line" and "Verse 1 of 3" to nothing while the audience output is untouched. That
+    /// follows from the plan row being gone (there is no song left to read ahead in) and is
+    /// believed correct, but it is a real consequence the pixel oracle in the tests does not
+    /// cover, and an earlier heading here read as though it did.
     ///
     /// Replacing the plan is a document edit, and edits never change Live (FR-012); a
     /// coordinator starting next week's run sheet must not blank the service that is currently
@@ -3427,8 +3434,16 @@ impl LiveController {
         // the outgoing rows — same titles, same order, same content. Dropping the cursors for it
         // would un-mark the row that is on air mid-service, reset `live_slide` to 0 so `Next`
         // stopped advancing the song the audience is hearing, and clear Preview, all for a run
-        // sheet that did not move. Compared by CONTENT rather than by id, because a freshly
-        // created plan issues ids from 1 too and would otherwise look like a match.
+        // sheet that did not move.
+        //
+        // `PlanItem` derives `PartialEq` and its first field is the id, so this compares the
+        // WHOLE item — identity included. An earlier version of this comment claimed the opposite
+        // ("by content rather than by id") and was simply wrong about its own expression. The
+        // consequence is real and worth knowing: importing a run sheet whose rows LOOK identical
+        // keeps the marker when the ids happen to match and drops it when a row was removed and
+        // re-added, which the operator cannot see. That is conservative — a changed identity is
+        // treated as a changed row, the safe direction — but it is not the question
+        // `ServicePlan::same_document` answers, and unifying the two is open rather than settled.
         let same_run_sheet = next.items() == self.plan.items();
 
         if !same_run_sheet {
@@ -3459,6 +3474,22 @@ impl LiveController {
         // `plan_revision` is deliberately NOT reset: it is a monotonic ordinal a client uses to
         // notice movement, and winding it backwards would make an up-to-date client believe it
         // was ahead of the host.
+        //
+        // ACCEPTED LIMITATION, decided rather than overlooked (code review raised it twice).
+        // Undoing a replacement restores the plan DOCUMENT but not its publish state, so a plan
+        // that really was published comes back reading as a draft: version 0, no baseline, no
+        // badge. The information is genuinely destroyed here, and restoring it would mean
+        // carrying a publish baseline beside every one of the 60 `plan_undo` snapshots — up to 60
+        // extra plan-sized clones, roughly doubling a bound this crate states and tests.
+        //
+        // Accepted because it never produces a FALSE badge, never loses plan content and never
+        // touches the live output; the operator re-publishes.
+        //
+        // Do NOT generalise that into "quiet degradation is always the safe direction here". It
+        // is not, and RESTART is the counterexample: FR-006 exists so an operator does not run a
+        // stale plan, so failing to show the badge is the very outcome it is meant to prevent,
+        // and the `v4 (published)` header cannot be rendered at all by a counter that returns to
+        // zero. That is a separate gap from this one and is tracked separately.
         self.published_plan = None;
         self.published_revision = None;
         self.publish_count = 0;
@@ -3491,8 +3522,9 @@ impl LiveController {
             let Some(kind) = selahcue_core::plan::ItemKind::from_tag(&item.kind) else {
                 return ControllerReply::Deny(DenyReason::BadRequest);
             };
-            // Titles get the plan-name rule: non-blank, bounded, no control characters. Bounding
-            // matters most here — 500 rows of unbounded title is unbounded memory.
+            // Titles get the same label rule as the plan name: non-blank, bounded, and free of
+            // control characters, invisible formatting and line separators. Bounding matters most
+            // here — 500 rows of unbounded title is unbounded memory.
             let Some(title) = valid_plan_label(&item.title) else {
                 return ControllerReply::Deny(DenyReason::BadRequest);
             };
@@ -3556,7 +3588,9 @@ impl LiveController {
 }
 
 /// The trimmed form of a wire-supplied plan name / item title / owner, or `None` when it is not
-/// acceptable ([`selahcue_core::plan::plan_label_valid`]: non-blank, bounded, no control chars).
+/// acceptable ([`selahcue_core::plan::plan_label_valid`]: non-blank, bounded, and free of control
+/// characters, invisible formatting and line separators — see that function for a known defect in
+/// the invisible-formatting half).
 ///
 /// One helper for all three because they are the same kind of value — a short single-line label
 /// that a coordinator types and later searches for — and giving them one rule means a reviewer

@@ -576,10 +576,20 @@ fn each_lifecycle_guard_refuses_an_input_only_it_rejects() {
             },
         ),
         (
-            "zero-width joiner homograph in an item title",
+            // The joiners are SPELLING and are admitted, so the guard that must still bite is
+            // the one stopping a wholly INVISIBLE label. A title of joiners alone renders as an
+            // empty row exactly as the U+200B case above does.
+            "an item title made only of joiners",
             Command::ImportPlan {
                 name: "Valid Name".into(),
-                items: vec![item("song", "Open\u{200D}ing")],
+                items: vec![item("song", "\u{200C}\u{200D}")],
+            },
+        ),
+        (
+            "a bidi ISOLATE in an item title",
+            Command::ImportPlan {
+                name: "Valid Name".into(),
+                items: vec![item("song", "Open\u{2066}ing")],
             },
         ),
         (
@@ -730,6 +740,27 @@ fn the_benign_counterpart_of_every_refused_case_still_works() {
                 items: vec![item("song", "Opening 🎉")],
             },
         ),
+        (
+            // These are the cases the earlier over-broad rule refused. One joiner in one cell
+            // used to refuse an entire 500-row run sheet with a bare BadRequest.
+            "a Persian plan name and a Sinhala title, both needing a joiner",
+            Command::ImportPlan {
+                name: "\u{06A9}\u{062A}\u{0627}\u{0628}\u{200C}\u{0647}\u{0627}".into(),
+                items: vec![item("song", "\u{0DC1}\u{0DCA}\u{200D}\u{0DBB}\u{0DD3}")],
+            },
+        ),
+        (
+            "an owner whose name needs a joiner",
+            Command::ImportPlan {
+                name: "Valid Name".into(),
+                items: vec![ImportItemView {
+                    kind: "song".into(),
+                    title: "Opening".into(),
+                    owner: Some("\u{0915}\u{094D}\u{200C}\u{0937}".into()),
+                    planned_secs: None,
+                }],
+            },
+        ),
     ];
 
     for (label, command) in cases {
@@ -740,6 +771,15 @@ fn the_benign_counterpart_of_every_refused_case_still_works() {
             "{label} was refused — the guard it neighbours is refusing legitimate input, so the \
              matching rejection above proves nothing"
         );
+        if label == "a blank owner cell, meaning unassigned" {
+            // Accepting it is only half the claim; it must land as UNASSIGNED rather than as an
+            // empty string, or `Some("")` would satisfy the Ack above and still reach the UI.
+            assert_eq!(
+                c.plan().items()[0].owner,
+                None,
+                "a blank owner cell must store as unassigned, not as an empty owner"
+            );
+        }
     }
 }
 
@@ -1044,9 +1084,9 @@ fn a_replaced_plan_is_a_draft_again_and_never_inherits_the_old_ones_publish_stat
              its own"
         );
         assert!(
-            after.revision >= published.revision,
-            "{label}: the revision went backwards, which would make an up-to-date client believe \
-             it was ahead of the host"
+            after.revision > published.revision,
+            "{label}: a replacement must MOVE the revision forward; `>=` would also pass if it \
+             froze, which is a different bug wearing the same assertion"
         );
     }
 }
@@ -1148,5 +1188,165 @@ fn the_console_shell_can_reach_every_publish_and_lifecycle_action() {
     assert_eq!(
         v.plan_name, "Imported",
         "a refused lifecycle action must leave the plan alone"
+    );
+}
+
+#[test]
+fn a_rejected_import_installs_nothing_not_even_the_rows_before_the_bad_one() {
+    // "Refused whole, never applied as a prefix" is claimed in the PR body, in `ImportPlan`'s doc
+    // and in `import_plan`'s doc. Nothing held it: every rejected case in the battery has exactly
+    // ONE item, so "install the prefix" and "install nothing" are the same outcome there.
+    //
+    // Found by QA review. Making `import_plan` install the accepted rows on failure left the
+    // whole suite green, which would have left a coordinator importing a 40-row sheet with a bad
+    // row at 17 holding 16 rows and a "rejected" message.
+    let (mut c, _) = controller();
+    let before = c.plan().clone();
+
+    // Valid, invalid, valid — so a prefix install is distinguishable from no install, and the
+    // bad row is neither first nor last.
+    let items = vec![
+        item("song", "Accepted One"),
+        item("song", "\u{202E}Bad Row"),
+        item("song", "Accepted Two"),
+    ];
+    assert_eq!(
+        c.apply(&Command::ImportPlan {
+            name: "Partial".into(),
+            items
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+
+    assert_eq!(
+        c.plan(),
+        &before,
+        "the import was refused but the plan moved — a prefix-applied run sheet leaves the \
+         coordinator with rows they did not import and no way to tell where it stopped"
+    );
+    assert_eq!(
+        c.plan().len(),
+        2,
+        "the ORIGINAL two rows must still be there, not the one row that had been accepted"
+    );
+    assert_eq!(c.plan().name, "Sunday", "not even the name may land");
+
+    // POSITIVE CONTROL: the same three rows with the middle one corrected DO import, so the
+    // rejection above is the bad row and not the shape of the request.
+    let good = vec![
+        item("song", "Accepted One"),
+        item("song", "Good Row"),
+        item("song", "Accepted Two"),
+    ];
+    assert_eq!(
+        c.apply(&Command::ImportPlan {
+            name: "Partial".into(),
+            items: good
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(c.plan().len(), 3);
+}
+
+#[test]
+fn republishing_moves_the_baseline_to_the_new_document() {
+    // The re-publish path was entirely unpinned. `publishing_sets_the_baseline_...` republishes
+    // and asserts `!changed`, but the handler sets `changed_since_publish = false` DIRECTLY, so
+    // that assertion holds whether or not the baseline actually moved — the belt asserted while
+    // the braces are what breaks. Found by QA review; two mutations survived it.
+    //
+    // The discriminator: publish A, edit to B, publish B, then undo back to A. If the baseline
+    // really moved to B, returning to A is a difference and the badge must be ON. If the baseline
+    // were still A, the badge would be off. In production the stale form means a "Review changes"
+    // badge measured against the FIRST version ever published, standing over a plan the operator
+    // already reviewed and accepted at v2.
+    let (mut c, _) = controller();
+    assert_eq!(c.apply(&Command::PublishPlan), ControllerReply::Ack);
+    let first = publish(&c);
+
+    assert_eq!(
+        c.apply(&Command::AddItem {
+            kind: "song".into(),
+            title: "Second Version".into(),
+            content: None
+        }),
+        ControllerReply::Ack
+    );
+    assert!(publish(&c).changed, "the edit must raise the badge first");
+
+    assert_eq!(c.apply(&Command::PublishPlan), ControllerReply::Ack);
+    let second = publish(&c);
+    assert_eq!(second.version, 2, "the second hand-off counts");
+    assert!(!second.changed, "republishing clears the badge");
+    assert!(
+        second.published_revision > first.published_revision,
+        "the published REVISION did not move on the second publish, so the marker still points \
+         at the first version ever published"
+    );
+
+    // Back to the document that was published FIRST.
+    c.undo_plan();
+    let back_at_first = publish(&c);
+    assert_eq!(
+        c.plan().len(),
+        2,
+        "undo must have restored the first published run sheet"
+    );
+    assert!(
+        back_at_first.changed,
+        "the plan now differs from the SECOND published version, so the badge must be on. If it \
+         is off, the baseline never moved past the first publish and every later comparison is \
+         made against a version the operator has already reviewed and replaced"
+    );
+}
+
+#[test]
+fn replacing_the_plan_clears_preview_and_drops_the_navigation_cursor() {
+    // Two behaviours that were correct but unheld (QA review). Both are observable, so both get
+    // a control; the sibling slide-index reset is NOT observable through the public API — after a
+    // replacement every cursor is `None`, so no reader reaches the stale slide value, and the
+    // next `GoLive`/`Next` writes it. A test for it would be green for the wrong reason, so it is
+    // named here rather than faked.
+    let (mut c, ids) = controller();
+
+    // Stage the SECOND item, so a surviving cursor is distinguishable from a dropped one.
+    assert_eq!(
+        c.apply(&Command::SelectItem { item_id: ids[1] }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.staged_index(),
+        Some(1),
+        "the fixture must stage something"
+    );
+    let preview_before = c.presenter().preview_output().bytes().to_vec();
+
+    assert_eq!(
+        c.apply(&Command::TemplatePlan {
+            template: "sunday-morning".into(),
+            name: "Next Week".into()
+        }),
+        ControllerReply::Ack
+    );
+
+    assert_eq!(
+        c.staged_index(),
+        None,
+        "Preview held a row of the outgoing plan and that row is gone"
+    );
+    assert_ne!(
+        c.presenter().preview_output().bytes(),
+        preview_before.as_slice(),
+        "Preview still shows the slide of a plan that no longer exists"
+    );
+
+    // The cursor: `Next` resumes from it. Dropped means it stages row 0; a surviving cursor of 1
+    // would stage row 2 instead.
+    assert_eq!(c.apply(&Command::Next), ControllerReply::Ack);
+    assert_eq!(
+        c.staged_index(),
+        Some(0),
+        "Next resumed from a cursor pointing into the plan that was replaced, so it skipped into \
+         the middle of an unrelated run sheet"
     );
 }

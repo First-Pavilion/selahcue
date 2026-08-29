@@ -105,8 +105,28 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-023 | yes | Plan labels refuse Cc, Cf and Zl/Zp, and accept ordinary international text | `cargo test -p selahcue-core --test test_plan` | `a_plan_label_must_be_visible_bounded_and_single_line` passes | exit 0; M17 RED | PASS |
 | C-024 | yes | `same_document` ignores the id counter and nothing else | same | `same_document_ignores_the_id_counter_and_nothing_else` passes | exit 0; M18 and M19 RED | PASS |
 | C-025 | yes | The local Tauri console can invoke all five actions | `cargo test -p selahcue-app --features server --test test_publish` + `cargo check` on the operator manifest | `the_console_shell_can_reach_every_publish_and_lifecycle_action` passes; operator crate builds with the five Tauri bindings registered | 22 passed / 0 failed; operator check exit 0 | PASS |
+| C-026 | yes | A new `ServicePlan` field cannot silently escape the change comparison | add a field, `cargo check -p selahcue-core` | compile error at `same_document` | `E0027: pattern does not mention field` at plan.rs:978, then reverted | PASS |
+| C-027 | yes | The out-of-workspace operator crate compiles the five Tauri bindings from CLEAN, and they are registered | `rm -rf` its target dir, then `cargo check --all-targets`, `clippy -D warnings`, `cargo test` on its manifest | all exit 0; all five appear in `generate_handler!` | exit 0 (54s cold); 66 tests pass; five bindings confirmed registered | PASS |
+| C-028 | yes | Plan labels accept scripts whose spelling needs ZWNJ/ZWJ, and still refuse direction controls and invisible-only names | `cargo test -p selahcue-core --test test_plan` | Persian, Urdu, Devanagari, Sinhala "ශ්‍රී", Malayalam and family emoji accepted; RLO/LRE/isolates/ZWSP/BOM/word-joiner and all-joiner names refused | exit 0; mutations M20-M22 RED | PASS |
+| C-029 | yes | The codec preserves orthographic joiners in a stored label, and still strips direction controls | same | Persian and Sinhala labels round-trip byte-identically; an RLO is stripped | exit 0; M23 RED | PASS |
+| C-030 | yes | A rejected import installs nothing, not even the rows before the bad one | `cargo test -p selahcue-app --features server --test test_publish` | the previous run sheet survives a valid/invalid/valid import | exit 0; M24 RED |PASS |
+| C-031 | yes | Re-publishing moves the baseline to the new document | same | undo back to the FIRST published document reports `changed` | exit 0; M25 and M26 RED | PASS |
+| C-032 | yes | Replacing the plan clears Preview and drops the navigation cursor | same | `staged_index` drops, Preview repaints, `Next` resumes at row 0 | exit 0; M27 and M28 RED | PASS |
 | C-018 | yes | Independent review by Cody, Sana, Vera and Quinn with blocking findings remediated | four-reviewer pipeline on PR #14 | no outstanding blocking findings | dispatched at `02a8095` | PENDING |
 | C-019 | no | CI green on the branch | GitHub Actions | all jobs pass | NOT RUNNABLE — Actions minutes exhausted; runs complete in 7-10s with zero steps | NOT_APPLICABLE |
+
+## Accepted risk — CI could not run at all
+
+**GitHub Actions minutes are exhausted**, so no job ran on PR #14; runs complete in seconds with zero steps. The following are therefore **unverified for this change and accepted as risk**, not merely "not run locally". Recorded here because ClickUp MCP is unreachable and this is the only durable place for it:
+
+| Uncovered job | Why it matters here | Residual risk |
+|---|---|---|
+| ubuntu + Windows matrix (`rust`, `operator`) | Verified on macOS only. New code is pure Rust with no path, filesystem or line-ending handling, so exposure is low | Low |
+| Playwright **WebKit** smoke | The Blink gate ran (963 checks, 0 FAIL); no WebView-only break can be seen | Low — no `dist/` change in this branch |
+| `cargo audit` / `cargo deny` | No dependency was added or changed by this branch | Low |
+| `launch-smoke` | The operator crate compiles cold and its bindings are registered, but the app was never launched | Medium for the console seam |
+| `make nfr` | Performance review measured the changed paths directly and judged NFR observation unnecessary | Low, by reviewer agreement |
+| Flutter `analyze` + `test` | Deliberately skipped: concurrent runs produce false reds and one `make ci` was live in the shared checkout. No Dart file changed, and the cross-language byte pin passes unchanged | Low |
 
 ## Verification plan
 
@@ -178,6 +198,11 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - `AddItem`/`RenameItem` titles are not length-bounded (pre-existing, not introduced here); 500 rows of unbounded title is a real no-leak gap. No ticket exists.
 - `ServicePlan::from_parts` — the persistence rehydration path — applies no bound to the plan name, so `MAX_PLAN_LABEL_LEN` holds at the wire ingress only. Documented at the constant; closing it is a persistence change. No ticket exists.
 - `sanitize_field` neither drops nor replaces U+2028/U+2029, so a hard line break can still ride into a stored LINK LABEL. Same class as the ingress gap fixed here, different path. No ticket exists.
+- **Frame 8's "Duplicate previous" acceptance criterion is NOT met** and cannot be met here: `duplicate_plan` copies the LOADED plan, while every document defining the action (`UX-STATE-MATRIX.md:108`, `COMPONENT-SPECS.md:192`, `UX-FLOWS.md:142`, `WORKFLOWS.md:171`) defines it as duplicating a PREVIOUS service. Three of four empty-state actions land. Needs a plan-library ticket. **No ticket exists.**
+- **Publish state is lost on restart, and the "safe direction" argument covers only the badge.** The `v4 (published)` header (`COMPONENT-SPECS.md:150`) cannot be rendered by a counter that returns to zero, and FR-006 exists precisely so an operator does not run a stale plan — so failing to show the badge after a crash is the harmful direction, not the safe one. Needs a follow-up ticket; `86ajy0hxg` covers autosave restore, not this. **No ticket exists.**
+- **`AddItem` and `RenameItem` bypass the label rule entirely** — `trim` plus non-empty only — so a direction override, an invisible title or a 50,000-character title still reaches the run sheet through the path an operator actually uses, and `RenameItem` applies no length bound. Routing them through `plan_label_valid` is the coherent single rule now that the set no longer locks out scripts, but it changes established command behaviour and needs its own test round. Routed to security for the scope call. **No ticket exists.**
+- Whether `install_plan`'s run-sheet comparison should use the observable-document definition (`same_document`) rather than whole-item equality including ids. Today an import of visually identical rows keeps the live marker when ids match and drops it when a row was removed and re-added. Conservative and harmless, but not the same question. **No ticket exists.**
+- Undo after a plan replacement restores the document but not its publish state, so a published plan returns reading as a draft. Accepted: restoring it needs a publish baseline beside all 60 undo snapshots, roughly doubling a stated bound, and the failure is safe (never a false badge, no content loss, no live-output effect). Documented at `install_plan`. No ticket exists.
 - The `plan_edit_cmds()` list that pins `can_edit_plan`'s probe as representative is hand-maintained; Rust cannot enumerate `Command`'s variants without a derive this crate does not carry. A new plan-edit command not added to it is silently uncovered. Documented in the test.
 
 ## Final evaluation
