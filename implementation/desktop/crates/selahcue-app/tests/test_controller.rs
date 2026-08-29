@@ -5380,3 +5380,83 @@ fn a_divider_cannot_make_the_summary_contradict_the_rows_it_describes() {
     let s = c.operator_view().summary.unwrap();
     assert_eq!(s.assigned, 1, "a real item can still be assigned");
 }
+
+#[test]
+fn an_invisible_character_in_a_wire_reference_is_cleaned_before_it_is_validated() {
+    // L6's CONTROLLER half. `item_content_from_link` runs `sanitize_text` on the inbound
+    // reference BEFORE `set_item_content` parses it, so the string that gets validated is
+    // byte-for-byte the string that gets stored. That ordering is not cosmetic — it is the
+    // difference between accepting this link and refusing it, and deleting the `sanitize_text`
+    // call left the entire `test_controller` suite at exit 0 before this test existed.
+    let (mut c, ids) = controller();
+    let scr = ids[1]; // the Scripture item
+
+    // PREMISE, pinned: the raw string must NOT parse. If a future parser learned to skip
+    // zero-width characters itself, this test would silently stop exercising the sanitize
+    // call, so assert the premise rather than assume it.
+    assert!(
+        selahcue_core::scripture::parse_one("Romans 8:2\u{200B}8").is_err(),
+        "premise: the raw reference must not parse, or this test proves nothing about cleaning"
+    );
+
+    let link = |reference: &str| ContentLinkView {
+        kind: "scripture".into(),
+        reference: Some(reference.into()),
+        translation: Some("WEB".into()),
+        verses_per_slide: None,
+        id: None,
+        slide_count: None,
+        verse_numbers: None,
+        status: None,
+        label: None,
+    };
+
+    // Cleaned on the way in, so it parses and is accepted.
+    let reply = c.apply(&Command::SetItemContent {
+        item_id: scr,
+        link: Some(link("Romans 8:2\u{200B}8")),
+    });
+    assert!(
+        matches!(reply, ControllerReply::Ack),
+        "a reference carrying an invisible character is cleaned, then accepted: {reply:?}"
+    );
+
+    // ...and what is STORED is the cleaned form. Without this the accept above could be
+    // satisfied by storing the raw string and parsing something else.
+    let stored = c.operator_view().items[1]
+        .link
+        .clone()
+        .expect("the item is linked")
+        .reference
+        .expect("a scripture link carries its reference");
+    assert_eq!(
+        stored, "Romans 8:28",
+        "the stored reference is the cleaned one, not the raw wire value"
+    );
+    assert!(
+        !stored.contains('\u{200B}'),
+        "no invisible character survives onto the wire or into persistence: {stored:?}"
+    );
+
+    // POSITIVE CONTROL: cleaning must not have REPLACED validation. A reference that is still
+    // unparseable after cleaning is refused — so the accept above is evidence that the parse
+    // ran and passed, not that the parse is dead.
+    let deny = c.apply(&Command::SetItemContent {
+        item_id: scr,
+        link: Some(link("Not a\u{200B} reference")),
+    });
+    assert!(
+        matches!(deny, ControllerReply::Deny(DenyReason::BadRequest)),
+        "cleaning is not a substitute for validating: {deny:?}"
+    );
+    assert_eq!(
+        c.operator_view().items[1]
+            .link
+            .as_ref()
+            .unwrap()
+            .reference
+            .as_deref(),
+        Some("Romans 8:28"),
+        "a refused edit leaves the prior link untouched"
+    );
+}

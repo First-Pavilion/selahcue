@@ -231,18 +231,23 @@ fn is_invisible_formatting(c: char) -> bool {
     )
 }
 
-/// [`sanitize_field`] a display label AND bound it to [`MAX_LINK_LABEL_LEN`] characters.
-/// Truncation is by CHARACTER, never by byte, so a multi-byte name can never be cut mid-scalar
-/// (which would not round-trip). Applied on the way in and again on decode, so neither a hostile
-/// wire value nor a hand-edited database row can park an unbounded string on a plan item.
 /// Public form of [`sanitize_field`], for callers that must clean untrusted text BEFORE
 /// validating it — the controller parses a scripture reference and stores what it parsed, so
 /// sanitizing only on `encode` would let a bidi override ride on the wire and into the run
 /// sheet while never reaching persistence. One implementation, so the two cannot drift.
+///
+/// Cleans ONLY -- it applies no length bound of any kind. A caller that also needs the value
+/// bounded wants [`sanitize_label`]; one that calls this is responsible for its own limit.
+/// Saying so explicitly because this doc block and `sanitize_label`'s were previously
+/// transposed, leaving a public function documented as capping a length it never touched.
 pub fn sanitize_text(s: &str) -> String {
     sanitize_field(s)
 }
 
+/// [`sanitize_field`] a display label AND bound it to [`MAX_LINK_LABEL_LEN`] characters.
+/// Truncation is by CHARACTER, never by byte, so a multi-byte name can never be cut mid-scalar
+/// (which would not round-trip). Applied on the way in and again on decode, so neither a hostile
+/// wire value nor a hand-edited database row can park an unbounded string on a plan item.
 fn sanitize_label(s: &str) -> String {
     sanitize_field(s).chars().take(MAX_LINK_LABEL_LEN).collect()
 }
