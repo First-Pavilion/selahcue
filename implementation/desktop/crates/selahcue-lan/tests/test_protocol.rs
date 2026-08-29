@@ -1675,3 +1675,134 @@ fn plan_summary_is_omitted_when_absent_and_keeps_missing_and_unknown_apart() {
         "a present-but-empty summary is still explicit: {default_state}"
     );
 }
+
+#[test]
+fn plan_publish_and_lifecycle_commands_have_a_pinned_wire_shape() {
+    // Pins the command names and field names the operator shell and any future cross-language
+    // client send for FR-006 / FR-005. Pinned from the day they ship rather than after something
+    // starts depending on them — the Dart client does not send these today, so nothing else would
+    // catch a rename.
+    use selahcue_lan::protocol::{to_json, ImportItemView};
+
+    assert_eq!(
+        to_json(&Command::PublishPlan).unwrap(),
+        r#"{"cmd":"publish_plan"}"#
+    );
+    assert_eq!(
+        to_json(&Command::NewPlan {
+            name: "Sunday 2nd Service".into()
+        })
+        .unwrap(),
+        r#"{"cmd":"new_plan","name":"Sunday 2nd Service"}"#
+    );
+    assert_eq!(
+        to_json(&Command::TemplatePlan {
+            template: "sunday-morning".into(),
+            name: "Sunday 2nd Service".into()
+        })
+        .unwrap(),
+        r#"{"cmd":"template_plan","template":"sunday-morning","name":"Sunday 2nd Service"}"#
+    );
+    assert_eq!(
+        to_json(&Command::DuplicatePlan {
+            name: "Sunday (copy)".into()
+        })
+        .unwrap(),
+        r#"{"cmd":"duplicate_plan","name":"Sunday (copy)"}"#
+    );
+    // A minimal import row omits the two optional fields entirely (skip-if-none), so the common
+    // frame stays compact.
+    assert_eq!(
+        to_json(&Command::ImportPlan {
+            name: "Imported".into(),
+            items: vec![ImportItemView {
+                kind: "song".into(),
+                title: "Opening".into(),
+                owner: None,
+                planned_secs: None,
+            }]
+        })
+        .unwrap(),
+        r#"{"cmd":"import_plan","name":"Imported","items":[{"kind":"song","title":"Opening"}]}"#
+    );
+    // With them present they append LAST, in declaration order.
+    assert_eq!(
+        to_json(&Command::ImportPlan {
+            name: "Imported".into(),
+            items: vec![ImportItemView {
+                kind: "song".into(),
+                title: "Opening".into(),
+                owner: Some("Ada".into()),
+                planned_secs: Some(300),
+            }]
+        })
+        .unwrap(),
+        r#"{"cmd":"import_plan","name":"Imported","items":[{"kind":"song","title":"Opening","owner":"Ada","planned_secs":300}]}"#
+    );
+}
+
+#[test]
+fn the_publish_viewer_and_template_view_fields_have_a_pinned_wire_shape() {
+    // The fixture in `wire_fixtures_are_stable_for_cross_language_clients` is the proof that
+    // these fields are ADDITIVE: it still produces byte-identical JSON with all three absent.
+    // This pins the POPULATED shape, so the field names a client reads are contract-locked now
+    // rather than after a client starts depending on them.
+    use selahcue_lan::protocol::{to_json, PlanTemplateView, PublishStateView, ViewerView};
+    use selahcue_lan::Role;
+
+    // A view-only session: `can_edit` is reported as the HOST's verdict, so no client has to
+    // re-derive it from `role`.
+    assert_eq!(
+        to_json(&ViewerView::for_role(Role::Viewer)).unwrap(),
+        r#"{"role":"viewer","can_edit":false}"#
+    );
+    assert_eq!(
+        to_json(&ViewerView::for_role(Role::Operator)).unwrap(),
+        r#"{"role":"operator","can_edit":true}"#
+    );
+
+    // A draft: never published, so no baseline, no version, and — critically — no badge.
+    assert_eq!(
+        to_json(&PublishStateView {
+            revision: 3,
+            published_revision: None,
+            version: 0,
+            changed: false,
+        })
+        .unwrap(),
+        r#"{"revision":3}"#
+    );
+    // Published and since edited: the badge state the "Plan updated · Review changes" frame reads.
+    assert_eq!(
+        to_json(&PublishStateView {
+            revision: 7,
+            published_revision: Some(5),
+            version: 4,
+            changed: true,
+        })
+        .unwrap(),
+        r#"{"revision":7,"published_revision":5,"version":4,"changed":true}"#
+    );
+    // Touched but not different — revisions apart, no badge. A client must render this as
+    // published-and-clean, not as a change to review.
+    assert_eq!(
+        to_json(&PublishStateView {
+            revision: 7,
+            published_revision: Some(5),
+            version: 4,
+            changed: false,
+        })
+        .unwrap(),
+        r#"{"revision":7,"published_revision":5,"version":4}"#
+    );
+
+    assert_eq!(
+        to_json(&PlanTemplateView {
+            id: "sunday-morning".into(),
+            name: "Sunday Morning".into(),
+            items: 5,
+        })
+        .unwrap(),
+        r#"{"id":"sunday-morning","name":"Sunday Morning","items":5}"#
+    );
+}
