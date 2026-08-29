@@ -6551,6 +6551,9 @@
 .plan-sum-value { color: var(--sc-text); font-weight: 700; font-variant-numeric: tabular-nums; }
 .plan-sum-total .plan-sum-label { color: var(--sc-text); }
 .plan-sum-total .plan-sum-value { color: var(--sc-gold); }
+/* A partial total is INCOMPLETE, not merely notable. The word "partial" carries that in TEXT
+   (WCAG 1.4.1); the warn ink only reinforces it. 9.25:1 on --sc-inset. */
+.plan-sum-total.is-partial .plan-sum-value { color: var(--sc-warn); }
 .plan-sum-warn .plan-sum-value { color: var(--sc-warn); }
 .plan-sum-btn { display: flex; align-items: center; justify-content: center; width: 100%; margin-top: 10px; }
 .plan-sum-blank { margin: 0; color: var(--sc-text-secondary); font-size: 12.5px; }

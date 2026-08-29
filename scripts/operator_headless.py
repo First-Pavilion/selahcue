@@ -46,7 +46,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # panel, the loading state, and the QA/security remediation. Set to the REAL observed count so
 # dropping even one trips exit 4. Sana S4: this floor had been left at 829 while the driver ran
 # more, which would have let every new check disappear without failing.)
-EXPECTED_MIN_CHECKS = 920
+EXPECTED_MIN_CHECKS = 927
 
 
 def find_chrome():
@@ -2934,6 +2934,56 @@ DRIVER = r"""
          "SP3 AC-23 (AC-4): and the summary is zeroed too — not the previous plan's figures left standing");
       ok(!document.querySelector("#plan-b-list .plan-b-row") && !!document.querySelector("#plan-b-list .plan-empty"),
          "SP3 AC-23 (control): the empty state really rendered — the zeros describe an empty run sheet, not a failed render");
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      // --- host summary + `partial` (PR #13 contract, consumed not computed) -------------------
+      // These drive the RENDERER with a synthetic host summary, so the consumption path is proven
+      // against the agreed shape before the wire carries it — and so the swap cannot land wrong.
+      function withSummary(sum) {
+        planSelectedId = null;
+        planRenderBuilder({ plan_name:"HS", items: sumView.items, summary: sum });
+        return sumRowValue("Total time");
+      }
+      var BASE_SUM = { planned_total_secs:750, items:6, songs:2, scripture:1, presentations:1, media:1,
+                       announcements:1, timers:0, sections:0, assigned:5, missing:0, unknown:0 };
+      function sumWith(extra) {
+        var o = {}; Object.keys(BASE_SUM).forEach(function(k){ o[k] = BASE_SUM[k]; });
+        Object.keys(extra).forEach(function(k){ o[k] = extra[k]; });
+        return o;
+      }
+      // h:mm:ss, matching the design's own "0:53:12" and the format the rest of this panel uses —
+      // the contract note's "12:30 · partial" illustrates the semantic, not the formatting.
+      ok(withSummary(sumWith({ partial:true, planned_items:3 })) === "0:12:30 · partial",
+         "SP3 AC-24: a partial total with something planned reads as a real but incomplete sum plus the marker (got \"" + sumRowValue("Total time") + "\")");
+      ok(withSummary(sumWith({ partial:true, planned_items:0 })) === "— · partial",
+         "SP3 AC-24: with planned_items 0 the figure is meaningless and reads \"— · partial\" — zero is a legitimate duration meaning instant (spec §4.1), so a 0 total does NOT imply nothing is set");
+      ok(withSummary(sumWith({ partial:false, planned_items:6 })) === "0:12:30",
+         "SP3 AC-24 (control): a complete total carries no marker — 'partial' is not stuck on");
+      var partialLabel = document.querySelector("#plan-b-insp .plan-sum-total .plan-sum-value").getAttribute("aria-label");
+      ok(!/partial/i.test(partialLabel),
+         "SP3 AC-24 (control): and the spoken form does not say partial either when it is complete");
+      withSummary(sumWith({ partial:true, planned_items:0 }));
+      ok(/partial/i.test(document.querySelector("#plan-b-insp .plan-sum-total .plan-sum-value").getAttribute("aria-label")) &&
+         !!document.querySelector("#plan-b-insp .plan-sum-total.is-partial"),
+         "SP3 AC-24 a11y: 'partial' is spoken and marked, and the word is in the TEXT so it is not colour-only");
+      // The "inert sections never set partial" rule (spec §4.2) is the HOST's to enforce, and this
+      // client cannot diverge from it because it never computes the flag. A plan that is nothing
+      // but dividers, with the host reporting partial:false, must render no marker — the client
+      // must not second-guess it into one.
+      planSelectedId = null;
+      planRenderBuilder({ plan_name:"Sec", items:[
+        {id:201, kind:"section", title:"Gathering", is_live:false, is_staged:false},
+        {id:202, kind:"section", title:"The Word",  is_live:false, is_staged:false}
+      ], summary: sumWith({ items:2, songs:0, scripture:0, presentations:0, media:0, announcements:0,
+                            sections:2, assigned:0, planned_total_secs:0, partial:false, planned_items:0 }) });
+      ok(sumRowValue("Total time") === "0:00:00" && !document.querySelector("#plan-b-insp .plan-sum-total.is-partial"),
+         "SP3 AC-24: a plan of inert section dividers is NOT marked partial — a warning that is always on is one coordinators learn to ignore (got \"" + sumRowValue("Total time") + "\")");
+      // Control for the seam itself: with no host summary the local computation still stands in,
+      // so adding the pass-through has not quietly disabled today's path.
+      planSelectedId = null;
+      planRenderBuilder(sumView);
+      ok(sumRowValue("Items") === "6" && clockToSecs(sumRowValue("Total time")) === rowDurationSum(),
+         "SP3 AC-24 (control): with no host summary the local computation is still used and still agrees with the rows");
       planSelectedId = null;
       planRenderBuilder(sumView);
       // --- missing-content count: three-state link status -------------------------------------

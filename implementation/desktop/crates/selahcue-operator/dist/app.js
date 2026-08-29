@@ -6281,6 +6281,16 @@
       // view; planRenderSummary reads ONE summary-shaped object either way, so adopting it is a
       // change here and nowhere else.
       function planSummaryOf(view) {
+        // PREFER THE HOST'S SUMMARY. ServicePlan::planned_total() returns the sum and `partial`
+        // from ONE pass, so the flag cannot drift from the number it describes — which is why it
+        // belongs there and not here. Absent today; this is the whole of the swap when PR #13
+        // lands, and until then the local computation below stands in.
+        //
+        // A consequence worth stating: because `partial` is CONSUMED and never computed here, the
+        // "inert sections never set partial" rule (spec §4.2 — unset children, not headers) is the
+        // host's to enforce and this client cannot diverge from it. The local fallback carries no
+        // partial flag at all, so it has no section rule to get wrong either.
+        if (view && view.summary && typeof view.summary === "object") return view.summary;
         const items = (view && view.items) || [];
         const by = (k) => items.filter((x) => x.kind === k).length;
         let total = 0;
@@ -7432,15 +7442,18 @@
         const sum = planSummaryOf(view);
         const card = document.createElement("div");
         card.className = "plan-sum-card";
-        // KNOWN GAP, deliberately not patched here: a total that excludes unplanned items
-        // under-reports with no marker. `partial` must be computed in exactly ONE place — the same
-        // place as the sum (PLAN-SECTIONS-DURATIONS-spec §128) — and that place is the host's
-        // PlanSummaryView, which does not carry it yet (raised on PR #13). Computing it locally
-        // would leave the mobile client and the Live Console panel still wrong while making this
-        // one surface look right. Adopt `summary.partial` when the wire lands it.
-        const totalRow = planSumRow("Total time", planFmtTotal(sum.planned_total_secs), { cls: "plan-sum-total" });
+        // `partial` is read from the host summary, never computed here. It needs `planned_items`
+        // alongside it: ZERO is a legitimate duration meaning "instant" (spec §4.1), so a total of
+        // 0 does not imply nothing is set. With nothing planned at all the figure is meaningless
+        // and reads "—"; with something planned it is a real but incomplete sum.
+        const partial = sum.partial === true;
+        const nothingPlanned = partial && sum.planned_items === 0;
+        const totalText = (nothingPlanned ? "—" : planFmtTotal(sum.planned_total_secs)) + (partial ? " · partial" : "");
+        const totalRow = planSumRow("Total time", totalText, { cls: "plan-sum-total" + (partial ? " is-partial" : "") });
         totalRow.querySelector(".plan-sum-value").setAttribute(
-          "aria-label", "Total " + planSpokenDuration(sum.planned_total_secs)
+          "aria-label",
+          (nothingPlanned ? "Total unknown" : "Total " + planSpokenDuration(sum.planned_total_secs)) +
+            (partial ? ", partial — some items have no duration set" : "")
         );
         card.appendChild(totalRow);
         card.appendChild(planSumRow("Items", String(sum.items)));
