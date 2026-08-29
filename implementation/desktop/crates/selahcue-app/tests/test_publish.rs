@@ -787,3 +787,63 @@ fn a_view_only_role_is_still_refused_a_plan_edit_by_the_handler() {
         }
     }
 }
+
+#[test]
+fn duplicating_to_the_same_name_is_a_true_no_op_and_keeps_the_live_row_marked() {
+    // Reachable by clicking Duplicate and leaving the pre-filled name alone: the copy equals the
+    // current plan in every field, so the command must do nothing at all.
+    //
+    // Without the identity guard in `install_plan` the cursors would still be reset — dropping
+    // the LIVE row marking and clearing Preview — while `apply`'s undo block skipped the
+    // snapshot, because it asks `self.plan != before` and the plan did not change. The operator
+    // would lose the marking with no undo entry to take it back.
+    let (mut c, ids) = controller();
+    go_live(&mut c, ids[0]);
+    let live_before = c.live_index();
+    assert_eq!(
+        live_before,
+        Some(0),
+        "the fixture must have a live row to lose"
+    );
+    let revision_before = publish(&c).revision;
+
+    assert_eq!(
+        c.apply(&Command::DuplicatePlan {
+            name: c.plan().name.clone()
+        }),
+        ControllerReply::Ack,
+        "an identical duplicate is accepted — it is a no-op, not an error"
+    );
+
+    assert_eq!(
+        c.live_index(),
+        live_before,
+        "the live row marking was dropped by a replacement that changed nothing"
+    );
+    assert_eq!(
+        c.operator_view().live_free_text,
+        None,
+        "the live item was demoted to a free slide even though it is still a plan row"
+    );
+    assert_eq!(
+        publish(&c).revision,
+        revision_before,
+        "a no-op replacement must not move the revision, or it would raise a change badge for \
+         an edit that did not happen"
+    );
+
+    // POSITIVE CONTROL: a duplicate under a DIFFERENT name is still a real replacement, so the
+    // guard above is not simply disabling the command.
+    assert_eq!(
+        c.apply(&Command::DuplicatePlan {
+            name: "Sunday (copy)".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(c.plan().name, "Sunday (copy)");
+    assert_eq!(
+        c.live_index(),
+        None,
+        "a real replacement still drops the cursors"
+    );
+}

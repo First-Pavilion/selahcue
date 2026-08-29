@@ -3396,6 +3396,20 @@ impl LiveController {
     /// item as LIVE that the audience has never seen. Reporting a false Live row is worse than
     /// reporting none, so every cursor is dropped.
     fn install_plan(&mut self, next: ServicePlan) {
+        // Replacing the plan with an IDENTICAL one changes nothing, so it must do nothing.
+        //
+        // This is reachable: "Duplicate" with the pre-filled name left alone produces a plan
+        // equal to the current one in every field. Without this guard the cursor reset below
+        // would still run — dropping the LIVE row marking and clearing Preview — while the
+        // post-dispatch block in `apply` skipped the undo snapshot, because that block asks
+        // `self.plan != before` and the plan did not change. The operator would lose the live
+        // marking with no undo entry to take it back.
+        //
+        // Returning early keeps the two in step: no document change, no cursor churn, no undo
+        // entry, no revision bump, and the run sheet keeps saying which row is on air.
+        if next == self.plan {
+            return;
+        }
         if self.live_idx.is_some() {
             // Read the composed slide BEFORE the plan goes away — it is the only remaining
             // record of what the audience is looking at.
