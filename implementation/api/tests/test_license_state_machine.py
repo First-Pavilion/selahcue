@@ -104,6 +104,11 @@ def _seed_license_key(*, tag: str) -> AppLicenseKey:
             customer_id=str(customer.id),
             key_type="TRIAL",
             feature_scope="CHURCH",
+            # DEC-014 made the catalogue plan part of issuing a licence, and now refuses the
+            # designated fallback outright — so this names a sellable plan rather than the
+            # pre-catalogue one. The lifecycle is what these tests exercise, and the plan
+            # changes nothing any of them assert.
+            plan_code="PRO",
             starts_at=now,
             expires_at=now + timedelta(days=30),
             timezone="Africa/Lagos",

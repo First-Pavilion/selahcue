@@ -65,6 +65,10 @@ def _seed_license_key(*, tag, device_limit=3, starts_at=None, expires_at=None):
             customer_id=str(customer.id),
             key_type="TRIAL",
             feature_scope="CHURCH",
+            # DEC-014 refuses issuance onto the catalogue's designated fallback, so this
+            # seeder names a sellable plan. The lifecycle/transport behaviour these tests
+            # assert does not depend on which plan it is.
+            plan_code="PRO",
             starts_at=starts_at or now,
             expires_at=expires_at or (now + timedelta(days=30)),
             timezone="Africa/Lagos",

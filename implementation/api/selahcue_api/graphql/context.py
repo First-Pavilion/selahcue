@@ -46,6 +46,31 @@ ACCOUNT_SESSION_COOKIE = "selahcue_account_session"
 
 IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9._:-]{12,128}$")
 
+# C0 and C1 control characters, NUL included. Caller-supplied text carrying one of these is
+# refused at the service boundary rather than handed to the database, because the two engines
+# disagree about it and BOTH answers are wrong:
+#
+#   Postgres raises `DataError: PostgreSQL text fields cannot contain NUL (0x00) bytes`. That
+#   is an unmapped exception, so it escapes as a bare 500-shaped failure that
+#   `safe_graphql_error` flattens to the generic "The request is invalid." — masked, unlogged,
+#   and indistinguishable from ordinary bad input, which is precisely what the comment beside
+#   `MIN_REASON_LENGTH` argues against.
+#
+#   SQLite raises nothing and STORES the NUL. A control character then sits in the row, and in
+#   `feature_scope`'s case travels into a signed manifest cached offline until the licence
+#   expires.
+#
+# Refusing up front is engine-independent, which is the point: catching `DataError` instead
+# would run only on Postgres, leaving the SQLite path — the one every local `pytest` takes —
+# never executing the handler at all, so a test written for it would pass without exercising
+# it. Same lesson as the 0004/0005 migration split.
+CONTROL_CHARACTERS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def has_control_characters(value: str) -> bool:
+    """True when `value` carries a C0/C1 control character (NUL included)."""
+    return bool(CONTROL_CHARACTERS_RE.search(value))
+
 
 def parse_staff_permissions(raw_permissions: str | Iterable[str] | None) -> frozenset[StaffPermission]:
     if raw_permissions is None:
@@ -170,5 +195,18 @@ def require_reason(value: str, *, min_length: int = 8, max_length: int = 1000) -
         raise SafeAPIError(
             ErrorCode.VALIDATION_FAILED,
             f"Reason must be between {min_length} and {max_length} characters.",
+        )
+    # Checked AFTER the collapse above, which already removes tab, newline and carriage
+    # return — so anything still in this class is a genuine control character. NUL is the one
+    # that matters: `str.split()` does not treat it as whitespace, so it survives the collapse
+    # and reaches the database, where Postgres refuses the write and SQLite stores it.
+    #
+    # This is the single choke point for `reason` across every governed writer — issuance, the
+    # two catalogue writers and the licence state machine — so it is fixed once here rather
+    # than at each caller.
+    if has_control_characters(cleaned):
+        raise SafeAPIError(
+            ErrorCode.VALIDATION_FAILED,
+            "Reason contains a control character. Supply the reason as plain text.",
         )
     return cleaned
