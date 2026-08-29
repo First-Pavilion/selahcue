@@ -11,11 +11,11 @@ use selahcue_core::plan::{ItemId, ServicePlan};
 use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{
-    Command, ContentLinkView, DenyReason, DetectionView, DisplayView, OutputConfigView,
-    OutputHealthView, OutputStatusView, PlanSummaryView, SavedThemeView, ScaleFit, ScreenThemeView,
-    ScreenView, ServerMessage, SessionHealthView, StorageHealthView, ThumbView, TimerSnapshot,
-    TranscriptSegmentView, VerseView, MAX_FRAME_RATE, MAX_NDI_NAME_LEN, MAX_OUTPUT_DELAY_MS,
-    MIN_FRAME_RATE,
+    Command, ContentLinkView, DenyReason, DetectionView, DisplayView, ImportItemView,
+    OutputConfigView, OutputHealthView, OutputStatusView, PlanSummaryView, PlanTemplateView,
+    PublishStateView, SavedThemeView, ScaleFit, ScreenThemeView, ScreenView, ServerMessage,
+    SessionHealthView, StorageHealthView, ThumbView, TimerSnapshot, TranscriptSegmentView,
+    VerseView, MAX_FRAME_RATE, MAX_NDI_NAME_LEN, MAX_OUTPUT_DELAY_MS, MIN_FRAME_RATE,
 };
 use selahcue_present::{
     AuthoredSlide, FrameBuffer, LayerMask, Presenter, Slide, StageDisplay, StageTheme, Theme,
@@ -150,6 +150,40 @@ pub struct LiveController {
     /// replayed by `redo_plan`. Cleared whenever a fresh plan edit is recorded (a new edit
     /// invalidates the redo branch). Bounded by [`MAX_PLAN_UNDO`].
     plan_redo: Vec<ServicePlan>,
+    /// Monotonic revision of the plan DOCUMENT (FR-006 publish / hand-off). Bumped exactly
+    /// where an undo snapshot is recorded — that block is already this file's single
+    /// definition of "a plan edit really happened and really changed the plan", and deriving
+    /// the revision anywhere else would let the badge and the undo history disagree about
+    /// whether the plan moved. Also bumped by undo and redo, which move it too.
+    ///
+    /// Saturating: a `u64` of plan edits is unreachable, but wrapping to zero would silently
+    /// re-equal a published baseline and hide a real change.
+    plan_revision: u64,
+    /// The [`plan_revision`](Self::plan_revision) captured by the last `PublishPlan`.
+    /// `None` = never published, i.e. the plan is a draft.
+    published_revision: Option<u64>,
+    /// The plan DOCUMENT exactly as it was at the last publish — the baseline the change badge
+    /// compares against. `None` = never published.
+    ///
+    /// A whole clone, deliberately, so that "has the plan changed since publish" is answered by
+    /// comparing documents rather than by comparing revision counters. A counter cannot tell
+    /// "edited" from "edited and undone": undo moves the revision but restores the content, and
+    /// a counter would leave the operator staring at a "Plan updated · Review changes" badge
+    /// over a plan identical to the one they published, with nothing to review.
+    ///
+    /// The cost is one plan-sized clone against the [`MAX_PLAN_UNDO`] (60) that `plan_undo`
+    /// already holds — a 1/60 increase on an accepted bound, itself capped because the plan is
+    /// capped at `MAX_PLAN_ITEMS`.
+    published_plan: Option<ServicePlan>,
+    /// Whether the plan differs from [`published_plan`](Self::published_plan) right now.
+    ///
+    /// Recomputed when the document MOVES and when it is published — never while building a
+    /// view. The comparison is O(plan) and view building is per-frame, so deriving it on read
+    /// would put a deep compare of every item into the render path to answer a question that
+    /// can only change when someone edits.
+    changed_since_publish: bool,
+    /// How many times this plan has been published — the `v4 (published)` label. Saturating.
+    publish_count: u32,
     /// The scripture reference staged in Preview, if Preview holds one (non-plan slide).
     staged_scripture: Option<String>,
     /// The scripture reference on the Live output, if Live shows one (verse text
@@ -797,6 +831,11 @@ impl LiveController {
             plan_dirty: false,
             plan_undo: Vec::new(),
             plan_redo: Vec::new(),
+            plan_revision: 0,
+            published_revision: None,
+            published_plan: None,
+            changed_since_publish: false,
+            publish_count: 0,
             staged_scripture: None,
             live_scripture: None,
             live_free_text: None,
@@ -2284,6 +2323,25 @@ impl LiveController {
                     }
                 })
                 .collect(),
+            // The publish / hand-off state (FR-006). Always `Some` here: this controller owns
+            // the plan document, so it can always answer. `None` on the wire is reserved for a
+            // host that does not report it at all.
+            publish: Some(self.publish_state()),
+            // WHO is asking is not something this controller knows — it holds the plan, not the
+            // session. The layers that DO know stamp it: the operator shell for the local
+            // console, and the LAN handler for a remote session's authenticated role. `None`
+            // here is therefore the honest answer, not a restriction.
+            viewer: None,
+            // The starter templates this build offers (FR-005), reported so the picker renders
+            // the host's list rather than a client-side copy of it.
+            plan_templates: selahcue_core::plan::PLAN_TEMPLATES
+                .iter()
+                .map(|t| PlanTemplateView {
+                    id: t.id.to_string(),
+                    name: t.name.to_string(),
+                    items: t.items.len() as u32,
+                })
+                .collect(),
         }
     }
 
@@ -2998,6 +3056,57 @@ impl LiveController {
                     ControllerReply::Deny(DenyReason::BadRequest)
                 }
             }
+            // --- Plan publish / hand-off (FR-006) + the plan lifecycle actions (FR-005) ---
+            Command::PublishPlan => {
+                // A statement about the DOCUMENT, not a cue. It moves the published marker and
+                // counts the hand-off; it touches no cursor, no Preview and no Live output.
+                //
+                // Deliberately NOT a plan edit: `is_plan_edit` excludes it, so publishing takes
+                // no undo snapshot and does not bump `plan_revision`. If it did, the act of
+                // publishing would immediately mark the plan changed-since-publish and the badge
+                // would be on the moment it was cleared.
+                self.published_revision = Some(self.plan_revision);
+                self.published_plan = Some(self.plan.clone());
+                // Just published: the document IS the baseline. Set directly rather than by
+                // calling the refresh below, so publishing cannot leave a badge standing even
+                // if the comparison were ever wrong.
+                self.changed_since_publish = false;
+                self.publish_count = self.publish_count.saturating_add(1);
+                ControllerReply::Ack
+            }
+            Command::NewPlan { name } => match valid_plan_name(name) {
+                Some(name) => {
+                    self.install_plan(ServicePlan::new(name));
+                    ControllerReply::Ack
+                }
+                None => ControllerReply::Deny(DenyReason::BadRequest),
+            },
+            Command::TemplatePlan { template, name } => {
+                let Some(name) = valid_plan_name(name) else {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                };
+                // An unknown template is refused, never silently downgraded to a blank plan: a
+                // coordinator who asked for "Sunday Morning" and silently received an empty run
+                // sheet has been told nothing about what went wrong.
+                let Some(template) = selahcue_core::plan::plan_template(template) else {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                };
+                self.install_plan(template.build(name));
+                ControllerReply::Ack
+            }
+            Command::DuplicatePlan { name } => match valid_plan_name(name) {
+                Some(name) => {
+                    // Duplicates the plan that is LOADED (FR-005) — the wire caller
+                    // `ServicePlan::duplicate` never had. Not a library copy: this host keeps
+                    // exactly one plan row and this crate cannot reach the data layer.
+                    let copy = self.plan.duplicate(name);
+                    self.install_plan(copy);
+                    ControllerReply::Ack
+                }
+                None => ControllerReply::Deny(DenyReason::BadRequest),
+            },
+            Command::ImportPlan { name, items } => self.import_plan(name, items),
+
             // Remote Control device management is handled at the transport/session layer
             // (server.rs, which owns the SessionRegistry), NOT the operational controller — the
             // server intercepts these before the handler, so this arm is a defensive fallback
@@ -3018,6 +3127,13 @@ impl LiveController {
                     self.plan_undo.remove(0);
                 }
                 self.plan_redo.clear();
+                // The publish badge's revision is bumped HERE, inside the block that already
+                // decides "an edit was applied AND the document actually changed" (FR-006).
+                // Deriving it from a second predicate elsewhere is how a badge and an undo
+                // history come to disagree about whether the plan moved; there is one predicate
+                // and both consume it. A denied or no-op edit reaches neither.
+                self.plan_revision = self.plan_revision.saturating_add(1);
+                self.refresh_published_delta();
             }
         }
         reply
@@ -3038,6 +3154,14 @@ impl LiveController {
                 | Command::SetItemContent { .. }
                 | Command::SetItemOwner { .. }
                 | Command::SetItemDuration { .. }
+                // Replacing the plan wholesale is the largest plan edit there is, so it takes an
+                // undo snapshot like any other — an import or a mistaken "new plan" is exactly
+                // the edit an operator most needs to take back. `PublishPlan` is absent on
+                // purpose: it changes no item and must not register as a change to review.
+                | Command::NewPlan { .. }
+                | Command::TemplatePlan { .. }
+                | Command::DuplicatePlan { .. }
+                | Command::ImportPlan { .. }
         )
     }
 
@@ -3077,6 +3201,40 @@ impl LiveController {
     /// cursors against it and mark the plan (persist) + stage (confidence-monitor) dirty. The
     /// Live output is untouched here — the presenter keeps its rendered slide.
     fn after_plan_swap(&mut self) {
+        self.reconcile_after_plan_change();
+        // Undo and redo move the plan document without passing through `apply`, so they never
+        // reach the revision bump in the undo-record block and need their own. A plan restored
+        // by undo is not the plan that was published, and a badge that ignored undo would tell
+        // the operator the two still matched.
+        self.plan_revision = self.plan_revision.saturating_add(1);
+        self.refresh_published_delta();
+    }
+
+    /// Re-answer "does the plan differ from what was published?".
+    ///
+    /// Called from the two places the document can move — an applied edit in `apply`, and an
+    /// undo/redo swap — and nowhere else. Uses the domain's own `PartialEq` rather than a
+    /// hand-picked subset of fields: a subset would silently stop covering a field the moment
+    /// `ServicePlan` grows one.
+    ///
+    /// That equality includes the internal id counter, so add-then-remove leaves the plan
+    /// marked changed even though the visible run sheet matches. That is the safe direction and
+    /// the only one available without inventing a second definition of what a plan is: this can
+    /// show a badge that turns out to be uninteresting, never hide a real edit.
+    fn refresh_published_delta(&mut self) {
+        self.changed_since_publish = self
+            .published_plan
+            .as_ref()
+            .is_some_and(|baseline| *baseline != self.plan);
+    }
+
+    /// The bookkeeping every plan-document change shares: re-point the cursors at the new
+    /// document and mark it for persistence and a stage recompose.
+    ///
+    /// Split out of [`after_plan_swap`](Self::after_plan_swap) so that the wholesale-replacement
+    /// commands can share the reconciliation WITHOUT sharing its revision bump — they go through
+    /// `apply` and are counted there, and calling `after_plan_swap` would count them twice.
+    fn reconcile_after_plan_change(&mut self) {
         self.reconcile_plan_cursors();
         self.plan_dirty = true;
         self.stage_dirty = true;
@@ -3211,10 +3369,133 @@ impl LiveController {
         ControllerReply::Ack
     }
 
+    /// Install a wholesale-replaced plan document (New / Template / Duplicate / Import).
+    ///
+    /// # The live output is never changed
+    ///
+    /// Replacing the plan is a document edit, and edits never change Live (FR-012); a
+    /// coordinator starting next week's run sheet must not blank the service that is currently
+    /// running (NFR-024). Whatever is on air keeps airing: a live PLAN ITEM is carried over as a
+    /// free live slide, by exactly the mechanism `RemoveItem` already uses for the same reason.
+    /// A live SCRIPTURE needs nothing — it is tracked by reference, not by plan index.
+    ///
+    /// # Why the indices are dropped rather than clamped
+    ///
+    /// [`reconcile_plan_cursors`](Self::reconcile_plan_cursors) clamps an index into range,
+    /// which is right for undo (the two plans are versions of one document) and wrong here (the
+    /// incoming plan has no relationship to the outgoing one). A clamped `live_index` would
+    /// point at whichever unrelated row now occupies that position, and the view would report an
+    /// item as LIVE that the audience has never seen. Reporting a false Live row is worse than
+    /// reporting none, so every cursor is dropped.
+    fn install_plan(&mut self, next: ServicePlan) {
+        if self.live_idx.is_some() {
+            // Read the composed slide BEFORE the plan goes away — it is the only remaining
+            // record of what the audience is looking at.
+            if let Some(slide) = self.presenter.live_slide() {
+                self.live_free_text = Some(slide.title.clone());
+                self.live_free_body = slide.body.clone();
+            }
+        }
+        self.live_idx = None;
+        self.staged_idx = None;
+        self.plan_cursor = None;
+        self.live_slide = 0;
+        self.staged_slide = 0;
+        self.cursor_slide = 0;
+        self.plan = next;
+        // Preview held a row of the outgoing plan; that row is gone. A staged SCRIPTURE is not
+        // a plan row and survives, so it is checked first — same condition as `RemoveItem`.
+        if self.staged_scripture.is_none() {
+            self.presenter.clear_preview();
+        }
+        self.reconcile_after_plan_change();
+    }
+
+    /// Replace the plan with an imported run sheet, or refuse the import whole.
+    ///
+    /// Validates every row and builds the plan into a LOCAL value, installing it only once the
+    /// last row has been accepted. A prefix-applied import is worse than a refused one: the
+    /// coordinator is left with a partial run sheet and nothing tells them where it stopped.
+    fn import_plan(&mut self, name: &str, items: &[ImportItemView]) -> ControllerReply {
+        let Some(name) = valid_plan_name(name) else {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        };
+        // Bound the untrusted ingress at the cap the domain documents (no-leak): an import is
+        // the only path that can create hundreds of items in one frame, and each of those items
+        // is also snapshotted onto the bounded undo stack.
+        if items.len() > selahcue_core::plan::MAX_PLAN_ITEMS {
+            return ControllerReply::Deny(DenyReason::BadRequest);
+        }
+        let mut built = ServicePlan::new(name);
+        for item in items {
+            let Some(kind) = selahcue_core::plan::ItemKind::from_tag(&item.kind) else {
+                return ControllerReply::Deny(DenyReason::BadRequest);
+            };
+            // Titles get the plan-name rule: non-blank, bounded, no control characters. Bounding
+            // matters most here — 500 rows of unbounded title is unbounded memory.
+            let Some(title) = valid_plan_name(&item.title) else {
+                return ControllerReply::Deny(DenyReason::BadRequest);
+            };
+            let id = built.add_item(kind, title);
+            if let Some(owner) = item.owner.as_deref() {
+                // Present-but-invalid is refused rather than dropped. A client that wants no
+                // owner omits the field; one that sent a blank or hostile string made a mistake
+                // worth reporting. The domain also refuses an owner on a `section` divider
+                // (`PlanError::NotApplicable`), which surfaces here as a rejected import rather
+                // than a silently unstaffed row.
+                let Some(owner) = valid_plan_name(owner) else {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                };
+                if built.set_item_owner(id, Some(owner.to_string())).is_err() {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
+            }
+            if let Some(secs) = item.planned_secs {
+                // Likewise refused on a divider — an inert label is not schedulable.
+                if built.set_item_planned_secs(id, Some(secs)).is_err() {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
+            }
+        }
+        self.install_plan(built);
+        ControllerReply::Ack
+    }
+
+    /// The plan's publish / hand-off state for the operator view (FR-006).
+    ///
+    /// `changed` reports whether the plan DIFFERS from the published baseline, not merely
+    /// whether it has been touched since. It is `false` whenever the plan has never been
+    /// published — with no baseline there is no comparison to report, and a badge there would
+    /// describe a review that was never possible — and it is `false` again once an edit is
+    /// undone back to the published document.
+    ///
+    /// `revision` and `published_revision` can therefore differ while `changed` is `false`.
+    /// That is not a contradiction: the revisions say the document was TOUCHED, `changed` says
+    /// whether it actually DIFFERS, and only the second is worth an operator's attention
+    /// mid-service.
+    pub fn publish_state(&self) -> PublishStateView {
+        PublishStateView {
+            revision: self.plan_revision,
+            published_revision: self.published_revision,
+            version: self.publish_count,
+            changed: self.changed_since_publish,
+        }
+    }
+
     /// The current index of a plan item id, if present.
     fn index_of(&self, item_id: u64) -> Option<usize> {
         self.plan.items().iter().position(|it| it.id.0 == item_id)
     }
+}
+
+/// The trimmed form of a wire-supplied plan name / item title / owner, or `None` when it is not
+/// acceptable ([`selahcue_core::plan::plan_name_valid`]: non-blank, bounded, no control chars).
+///
+/// One helper for all three because they are the same kind of value — a short single-line label
+/// that a coordinator types and later searches for — and giving them one rule means a reviewer
+/// checks one predicate instead of three that drift apart.
+fn valid_plan_name(name: &str) -> Option<&str> {
+    selahcue_core::plan::plan_name_valid(name).then(|| name.trim())
 }
 
 /// Build a [`ControlServer`](selahcue_lan::ControlServer) handler that drives a
@@ -3224,12 +3505,26 @@ impl LiveController {
 pub fn handler_for(
     controller: std::sync::Arc<std::sync::Mutex<LiveController>>,
 ) -> selahcue_lan::server::Handler {
+    use selahcue_lan::protocol::ViewerView;
     use selahcue_lan::server::Reply;
-    std::sync::Arc::new(move |_role, command| match controller.lock() {
+    std::sync::Arc::new(move |role, command| match controller.lock() {
         Ok(mut controller) => match controller.apply(command) {
             ControllerReply::Ack => Reply::Ack,
             ControllerReply::Deny(reason) => Reply::Deny(reason),
-            ControllerReply::Message(message) => Reply::Message(Box::new(message)),
+            ControllerReply::Message(mut message) => {
+                // Stamp the AUTHENTICATED role onto the operator view (FR-006 view-only).
+                //
+                // This is the only layer that can: the controller holds the plan but not the
+                // session, and the server holds the session but not the view. `role` is the
+                // role the server just ran `authorize()` against to let this very command
+                // through, and `ViewerView::for_role` asks that same choke point what it
+                // permits — so what the client renders and what the host enforces are one
+                // policy read twice, never two policies kept in step by hand.
+                if let ServerMessage::OperatorState { view } = &mut message {
+                    view.viewer = Some(ViewerView::for_role(role));
+                }
+                Reply::Message(Box::new(message))
+            }
         },
         Err(_) => Reply::Message(Box::new(ServerMessage::Error {
             message: "controller unavailable".into(),

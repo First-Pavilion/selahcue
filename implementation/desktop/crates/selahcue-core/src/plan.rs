@@ -933,4 +933,120 @@ impl ServicePlan {
     }
 }
 
+/// Longest permitted service-plan NAME, in characters.
+///
+/// `ServicePlan.name` was previously unbounded because every writer was trusted seeding or a
+/// rename of an item (not the plan). The publish/hand-off commands (FR-006) create and rename
+/// whole plans from the untrusted wire, so the name needs the same bound every other
+/// wire-reachable string has. Matched to [`MAX_LINK_LABEL_LEN`]: both are one-line display
+/// labels shown in the same run-sheet header, and a plan title far shorter than this is already
+/// unreadable in the UI.
+pub const MAX_PLAN_NAME_LEN: usize = 120;
+
+/// Whether `name` is acceptable as a service-plan name arriving from the untrusted wire:
+/// non-empty after trimming, within [`MAX_PLAN_NAME_LEN`] characters, and free of control
+/// characters.
+///
+/// Rejects rather than silently repairing, the same choice the NDI source name makes: a caller
+/// that types a control character into a plan title has made a mistake worth reporting, and a
+/// name quietly rewritten between the request and the run sheet is a name the coordinator
+/// cannot search for later.
+///
+/// Counted in CHARACTERS, not bytes — a bound in bytes would refuse a legitimate name in a
+/// non-Latin script at a third of the length a Latin one is allowed.
+pub fn plan_name_valid(name: &str) -> bool {
+    let trimmed = name.trim();
+    !trimmed.is_empty()
+        && trimmed.chars().count() <= MAX_PLAN_NAME_LEN
+        && !trimmed.chars().any(|c| c.is_control())
+}
+
+/// A named starter template — a run-sheet skeleton a coordinator begins a service from
+/// (FR-005 "save as template"; the `Template` action on the empty-plan frame `611:124`).
+///
+/// # These entries are PROVISIONAL
+///
+/// No document in this repository says what a template contains. `UX-STATE-MATRIX.md:108`,
+/// `SERVICE-PLAN-2.0-HANDOFF.md:74` and `COMPONENT-SPECS.md:192` each name the *action* three
+/// different ways and none of them describes a template's content, where templates are stored,
+/// or which ones ship. The two below are modelled on this repository's own `demo_plan()` —
+/// the only service shape the product has ever committed to — so the mechanism can ship and be
+/// tested. **The set and its contents are a product decision, not an engineering one**; they
+/// live in this one table so changing them is a data edit rather than a code change.
+///
+/// The host REPORTS this list on the operator view (`plan_templates`) rather than the client
+/// hardcoding it, for the same reason `themes` and `translations` are reported: a client that
+/// transcribes the host's list drifts from it silently the first time either side changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlanTemplate {
+    /// Stable id used on the wire (`TemplatePlan { template }`). Never displayed.
+    pub id: &'static str,
+    /// Default display name, used when the caller supplies no name of its own.
+    pub name: &'static str,
+    /// The ordered skeleton. Titles are placeholders the coordinator renames.
+    pub items: &'static [(ItemKind, &'static str)],
+}
+
+impl PlanTemplate {
+    /// Build a fresh, independent plan from this template under `name`.
+    ///
+    /// Uses the infallible domain `add_item`, which is correct here precisely because a
+    /// template is *trusted, in-process seed data* — not wire input. The item count is fixed by
+    /// the table above and asserted against [`MAX_PLAN_ITEMS`] at compile time below, so no
+    /// template can ever seed a plan past the cap that the untrusted ingress enforces.
+    pub fn build(&self, name: impl Into<String>) -> ServicePlan {
+        let mut plan = ServicePlan::new(name);
+        for (kind, title) in self.items {
+            plan.add_item(*kind, *title);
+        }
+        plan
+    }
+}
+
+/// The starter templates this build offers, in the order a picker should show them.
+pub const PLAN_TEMPLATES: &[PlanTemplate] = &[
+    PlanTemplate {
+        id: "sunday-morning",
+        name: "Sunday Morning",
+        items: &[
+            (ItemKind::Announcement, "Welcome"),
+            (ItemKind::Song, "Opening Song"),
+            (ItemKind::Scripture, "Scripture Reading"),
+            (ItemKind::Section, "Sermon"),
+            (ItemKind::Song, "Closing Song"),
+        ],
+    },
+    PlanTemplate {
+        id: "midweek",
+        name: "Midweek Gathering",
+        items: &[
+            (ItemKind::Announcement, "Welcome"),
+            (ItemKind::Song, "Worship"),
+            (ItemKind::Section, "Teaching"),
+            (ItemKind::Section, "Prayer"),
+        ],
+    },
+];
+
+/// No template may seed a plan that already breaches the cap the untrusted ingress enforces.
+///
+/// Pinned at COMPILE time rather than in a test: a template added to the table above is a data
+/// edit, and the person making it should be stopped by the compiler rather than by a test they
+/// may not think to run. Checks the LARGEST template, so adding a big one fails the build.
+const _: () = {
+    let mut i = 0;
+    while i < PLAN_TEMPLATES.len() {
+        assert!(
+            PLAN_TEMPLATES[i].items.len() <= MAX_PLAN_ITEMS,
+            "a starter template must not exceed MAX_PLAN_ITEMS"
+        );
+        i += 1;
+    }
+};
+
+/// The template with this id, or `None` for an unknown one.
+pub fn plan_template(id: &str) -> Option<&'static PlanTemplate> {
+    PLAN_TEMPLATES.iter().find(|t| t.id == id)
+}
+
 // Tests live in `tests/test_plan.rs` (public-API integration tests).

@@ -138,7 +138,18 @@ pub fn required_permission(cmd: &Command) -> Permission {
         | Command::SetItemContent { .. }
         // Owner + planned duration are plan metadata edits — the same EditPlan privilege (FR-004).
         | Command::SetItemOwner { .. }
-        | Command::SetItemDuration { .. } => EditPlan,
+        | Command::SetItemDuration { .. }
+        // Publish / hand-off and the plan lifecycle actions (FR-006, FR-005) are statements
+        // about the plan DOCUMENT — none of them changes the live output — so they carry the
+        // SAME EditPlan privilege as any other plan edit. No new permission: no role in the
+        // table distinguishes publishing from editing, and the view-only frame hides
+        // "edit/add/reorder/publish" as one group, so a separate permission would express a
+        // distinction the product does not make.
+        | Command::PublishPlan
+        | Command::NewPlan { .. }
+        | Command::TemplatePlan { .. }
+        | Command::DuplicatePlan { .. }
+        | Command::ImportPlan { .. } => EditPlan,
         Command::IdentifyOutputs
         | Command::AssignOutput { .. }
         | Command::SetTheme { .. }
@@ -179,4 +190,35 @@ pub fn required_permission(cmd: &Command) -> Permission {
 /// The authorization choke point: may `role` perform `cmd`?
 pub fn authorize(role: Role, cmd: &Command) -> bool {
     role.can(required_permission(cmd))
+}
+
+/// The plan-edit command [`can_edit_plan`] asks the choke point about.
+///
+/// Any command from the `EditPlan` arm would do; this one is a plain `u64` so the verdict
+/// allocates nothing. Which one it is must not matter, and `test_rbac.rs` pins that it does not
+/// by checking every plan-edit command against the verdict for every role.
+const PLAN_EDIT_PROBE: Command = Command::RemoveItem { item_id: 0 };
+
+/// Whether `role` may edit the plan document — the verdict the operator view reports as
+/// `can_edit`, which a client uses to decide whether to SHOW the edit / add / reorder / publish
+/// controls at all (view-only frame `612:342`).
+///
+/// # Why it runs `authorize` instead of stating the rule
+///
+/// The obvious implementations — `role == Role::Operator`, or `role.can(Permission::EditPlan)`
+/// — are both *copies* of the policy, and this repository has already been bitten by a control
+/// that re-derived a predicate instead of consuming it. Going through `authorize` means the
+/// affordance and the gate read the same `required_permission` match and the same
+/// `Role::permissions()` table: changing either moves both, and there is no expression left
+/// that only one of them consults.
+///
+/// # This is an affordance, not a gate
+///
+/// It decides what a client offers, never what the host accepts. Enforcement is unchanged and
+/// unconditional: the server calls `authorize` on every inbound command before the handler
+/// runs, so a client that ignores this verdict and sends a plan edit as a Viewer is refused. It
+/// is reported so that clients stop transcribing the permission table — not so that they become
+/// responsible for it.
+pub fn can_edit_plan(role: Role) -> bool {
+    authorize(role, &PLAN_EDIT_PROBE)
 }

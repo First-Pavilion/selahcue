@@ -336,6 +336,86 @@ pub enum Command {
     /// Mint a fresh single-use pairing code + fingerprint for the "Pair a device" QR (reply:
     /// [`ServerMessage::PairingCode`]).
     NewPairingCode,
+
+    // --- Plan publish / hand-off (FR-006) and the plan lifecycle actions on the empty-plan
+    //     frame `611:124` (FR-005). All five require the SAME existing `EditPlan` permission,
+    //     because all five are statements about the plan DOCUMENT and none of them touches the
+    //     live output. Deliberately not a new `PublishPlan` permission: no role in the table
+    //     distinguishes publishing from editing, so a separate permission would be policy that
+    //     nothing can express — dead by construction. The view-only frame `612:342` hides
+    //     "edit/add/reorder/publish" as ONE group, which is the same grouping. ---
+    /// Mark the plan's CURRENT revision as published — the coordinator→operator hand-off
+    /// (FR-006). The operator's open copy is never force-refreshed: this only moves the
+    /// published marker, so the client can show "Plan updated · Review changes" and let the
+    /// operator choose when to reload (frame `612:1020`).
+    ///
+    /// **Changes nothing on the live output, and nothing in Preview.** Publishing is a
+    /// statement about the document, not a cue. Idempotent: publishing an unchanged plan
+    /// re-marks the same revision and still counts a version.
+    PublishPlan,
+    /// Replace the plan with a fresh EMPTY one called `name` — "Create a service" on the
+    /// empty-plan frame. The outgoing plan is not saved anywhere by this command; it is
+    /// recoverable only through plan undo.
+    ///
+    /// A blank, over-long or control-character `name` is rejected
+    /// ([`selahcue_core::plan::plan_name_valid`]). Never changes the live output: whatever is
+    /// on air keeps airing as a free slide, exactly as removing the live item already does.
+    NewPlan { name: String },
+    /// Replace the plan with one built from the named starter template
+    /// ([`selahcue_core::plan::PLAN_TEMPLATES`]), called `name`. An unknown `template` is
+    /// rejected rather than silently falling back to a blank plan — a coordinator who asked
+    /// for "Sunday Morning" and got an empty run sheet has been told nothing.
+    ///
+    /// The offered templates are reported on [`OperatorStateView::plan_templates`] so the
+    /// picker renders the HOST's list rather than a transcribed copy of it.
+    TemplatePlan { template: String, name: String },
+    /// Replace the plan with a deep, independent copy of the CURRENT plan under `name`
+    /// (FR-005) — the wire caller [`selahcue_core::plan::ServicePlan::duplicate`] never had.
+    ///
+    /// **This duplicates the plan that is loaded, not a previous one from a library.** The
+    /// empty-plan frame's "Duplicate previous" needs a saved-plan library that does not exist:
+    /// the desktop host persists exactly one plan row and `selahcue-app` cannot reach the data
+    /// layer. Naming that limit here because a caller reading only the command name would
+    /// reasonably assume the other meaning.
+    DuplicatePlan { name: String },
+    /// Replace the plan with `items` under `name` — the "Import" action on the empty-plan
+    /// frame, as an explicit run-sheet list.
+    ///
+    /// A deliberately narrow surface: kind, title, and the two plan-metadata fields. Content
+    /// LINKS are set afterwards with [`Command::SetItemContent`], so link parsing and
+    /// resolution are not reimplemented on a second, less-tested path. This is **not** FR-139's
+    /// portable plan bundle (items plus media refs), which is a separate piece of work.
+    ///
+    /// Rejected as a whole — never partially applied — when the name is invalid, any item's
+    /// kind tag or title is invalid, or the list exceeds
+    /// [`selahcue_core::plan::MAX_PLAN_ITEMS`]. A half-imported run sheet is worse than a
+    /// refused one, because nothing tells the coordinator which half arrived.
+    ImportPlan {
+        name: String,
+        items: Vec<ImportItemView>,
+    },
+}
+
+/// One row of a [`Command::ImportPlan`] run sheet.
+///
+/// Its own type rather than a reuse of [`PlanItemView`]: that view carries host-DERIVED state
+/// (live/staged flags, slide counts, resolved link status) which an importing client cannot
+/// know and must not be able to assert. Accepting it here would let a client claim an item was
+/// live.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportItemView {
+    /// The stable item-kind tag (`"song"`, `"scripture"`, `"section"`, …). An unknown tag
+    /// rejects the whole import.
+    pub kind: String,
+    /// Display title. Validated exactly like a plan name — non-blank, bounded, no control
+    /// characters — because an import is the one path that can create hundreds of them at once.
+    pub title: String,
+    /// Optional owner (FR-004). Skip-if-none, so a minimal import stays compact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Optional planned duration in seconds (FR-004).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_secs: Option<u32>,
 }
 
 /// A controller → operator request frame.
@@ -810,6 +890,142 @@ pub struct OperatorStateView {
     /// fixtures stay byte-identical and an older client is unaffected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<PlanSummaryView>,
+    /// Who this frame was built FOR, and what the host says they may do (FR-006 view-only,
+    /// frame `612:342`). `None` = this host does not report it.
+    ///
+    /// **`None` is not "view only".** It is the same third state `output_health`, `storage` and
+    /// `session` use: an older host, or a view built by a layer with no authenticated session
+    /// (the bare controller knows the plan but not who is asking). A client that renders absent
+    /// telemetry as a restriction takes controls away from someone who has them, which is the
+    /// mirror image of the fabrication this codebase already refuses on the health fields.
+    /// Skip-if-none, so the pinned v2 fixtures stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewer: Option<ViewerView>,
+    /// The plan's publish / hand-off state (FR-006). `None` = this host does not report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish: Option<PublishStateView>,
+    /// The starter templates THIS host offers, in picker order (FR-005). Omitted when empty.
+    ///
+    /// Reported rather than transcribed, for the reason `themes` and `translations` are: the
+    /// set is a product decision that will change, and a client holding its own copy shows a
+    /// template the host cannot build the moment the two disagree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plan_templates: Vec<PlanTemplateView>,
+}
+
+/// The authenticated session a frame was built for, and the host's own verdict on what it may
+/// do (FR-006 view-only).
+///
+/// Both fields are present deliberately, and they are not redundant. `role` is an IDENTITY, for
+/// the "connected as Assistant" label. `can_edit` is a POLICY VERDICT, and it is on the wire so
+/// that no client has to re-derive it: the Dart controller already keeps a hand-transcribed copy
+/// of `Role::permissions()` (`lib/models/rbac.dart`, "transcribed verbatim from rbac.rs"), and a
+/// transcription is a copy that drifts silently the first time the table moves. They cannot
+/// disagree with each other because both are produced by [`ViewerView::for_role`], which asks
+/// the RBAC choke point rather than restating its policy.
+///
+/// # This is an affordance, never a gate
+///
+/// `can_edit` decides which controls a client OFFERS. It decides nothing about what the host
+/// ACCEPTS: every command is still checked by [`authorize`](crate::rbac::authorize) at the
+/// server before the handler runs, so a client that ignores this field entirely and sends
+/// `RenameItem` as a Viewer is refused with `Denied{forbidden}` exactly as before. Nothing here
+/// widens what any role can do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewerView {
+    /// The role the host granted this session.
+    pub role: Role,
+    /// Whether that role may edit the plan document — and therefore whether the edit, add,
+    /// reorder and publish controls should be shown at all. The view-only frame hides them
+    /// rather than greying them, because the persona pain being fixed is "seeing controls they
+    /// can't use" (`UX-STATE-MATRIX.md:111`).
+    pub can_edit: bool,
+}
+
+impl ViewerView {
+    /// The view for `role`, asking the RBAC choke point what it may do.
+    ///
+    /// The ONE place `can_edit` is computed. It consumes
+    /// [`can_edit_plan`](crate::rbac::can_edit_plan), which in turn runs the real
+    /// `authorize()` — so this field cannot drift from enforcement without the drift
+    /// showing up in enforcement too.
+    pub fn for_role(role: Role) -> Self {
+        ViewerView {
+            role,
+            can_edit: crate::rbac::can_edit_plan(role),
+        }
+    }
+}
+
+/// The plan's publish / hand-off state (FR-006) — enough for a client to render the version
+/// label, the draft/published distinction, and the "Plan updated · Review changes" badge, and
+/// nothing more.
+///
+/// # Why a counter and not a copy of the plan
+///
+/// Frame `612:1020` asks for a *badge* and a reload-vs-keep choice, not a diff. Keeping a
+/// second published copy of the plan to diff against would double the plan's memory for a
+/// feature nothing has asked for, so the host reports revisions and the client decides when to
+/// re-read. The host never force-refreshes anyone and never reorders the live run sheet — that
+/// is the whole point of the badge.
+///
+/// # In-session only, this slice
+///
+/// These counters live in the running controller and are NOT persisted. After a restart the
+/// plan reads as a draft again until it is republished. That degrades quietly and in the safe
+/// direction — it can only ever fail to show a badge, never show a false one — but it is a real
+/// limitation and persisting it needs a `session_repo` migration that this slice does not make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PublishStateView {
+    /// Monotonic revision of the plan DOCUMENT. Bumped once per applied plan edit, and by undo
+    /// and redo — both move the document, and a badge that ignored undo would tell an operator
+    /// the plan matched what was published when it no longer did.
+    ///
+    /// An opaque ordinal for change detection; it is not the `v4` a user sees.
+    pub revision: u64,
+    /// The `revision` captured by the last [`Command::PublishPlan`]. `None` = never published,
+    /// i.e. the plan is a DRAFT.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_revision: Option<u64>,
+    /// How many times this plan has been published — the `v4 (published)` label in the plan
+    /// header (`COMPONENT-SPECS.md:150`). `0` = never published.
+    ///
+    /// Separate from `revision` because the two count different things and the UI shows this
+    /// one: `revision` counts edits, `version` counts hand-offs. Saturating.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub version: u32,
+    /// The plan DIFFERS from what was published → show "Plan updated · Review changes".
+    ///
+    /// Compared against the published DOCUMENT, not against `published_revision`. The two are
+    /// not the same question and only this one is worth interrupting an operator with: an edit
+    /// that is then undone moves the revision but restores the content, and a badge derived
+    /// from the counter would sit over a plan identical to the published one with nothing in it
+    /// to review. So `revision != published_revision` with `changed: false` is a normal,
+    /// meaningful state — touched, but not different.
+    ///
+    /// **Always `false` while `published_revision` is `None`.** With no baseline there is
+    /// nothing to review against, and a badge on a plan that was never published would be
+    /// telling the operator about a comparison that never happened. Skip-if-false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub changed: bool,
+}
+
+/// One starter template the host offers (FR-005), as the picker renders it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanTemplateView {
+    /// Stable id to send back as [`Command::TemplatePlan`]`::template`.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// How many items the template seeds, so the picker can say "5 items" without the client
+    /// holding the template's contents.
+    pub items: u32,
+}
+
+/// serde skip for a `u32` counter that has not moved yet.
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 /// The live output's fault/recovery health, as the operator UI renders it (NFR-024).

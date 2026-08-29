@@ -471,6 +471,11 @@ fn transcript_and_detection_view_fields_are_additive() {
             source_segment: None,
         }],
         summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -707,6 +712,11 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         session: None,
         detections: vec![],
         summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -751,6 +761,11 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         storage: None,
         session: None,
         summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: held }).unwrap(),
@@ -793,6 +808,11 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         storage: None,
         session: None,
         summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     let healthy_json = to_json(&ServerMessage::OperatorState { view: healthy }).unwrap();
     assert_eq!(
@@ -851,6 +871,11 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         session: None,
         detections: vec![],
         summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view }).unwrap(),
@@ -899,6 +924,11 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         session: None,
         detections: vec![],
         summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: themed }).unwrap(),
@@ -938,6 +968,11 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         session: None,
         detections: vec![],
         summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: library }).unwrap(),
@@ -983,6 +1018,11 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         session: None,
         detections: vec![],
         summary: None,
+        // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
+        // bytes below are UNCHANGED, which is the proof these fields are additive.
+        viewer: None,
+        publish: None,
+        plan_templates: vec![],
     };
     assert_eq!(
         to_json(&ServerMessage::OperatorState { view: screens }).unwrap(),
