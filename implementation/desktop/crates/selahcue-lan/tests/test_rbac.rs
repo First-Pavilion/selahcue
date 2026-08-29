@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_lan::protocol::Command;
-use selahcue_lan::rbac::{authorize, Permission, Role};
+use selahcue_lan::rbac::{authorize, can_edit_plan, required_permission, Permission, Role};
 
 fn navigate_cmds() -> Vec<Command> {
     // Preview navigation only — `Clear` is a live-output change, not navigation.
@@ -454,5 +454,135 @@ fn device_management_commands_are_operator_only() {
             "assistant must be denied {c:?}"
         );
         assert!(!authorize(Role::Viewer, c), "viewer must be denied {c:?}");
+    }
+}
+
+/// Every command that edits the plan DOCUMENT, including the lifecycle actions.
+///
+/// One list, consumed by both tests below: the "Operator only" check and the check that
+/// `can_edit_plan` speaks for all of them. Two hand-kept lists would drift, and the drift would
+/// be silent because each list would still pass its own test.
+fn plan_edit_cmds() -> Vec<Command> {
+    vec![
+        Command::AddItem {
+            kind: "song".into(),
+            title: "Opening".into(),
+            content: None,
+        },
+        Command::RemoveItem { item_id: 1 },
+        Command::MoveItem { item_id: 1, to: 0 },
+        Command::RenameItem {
+            item_id: 1,
+            title: "Renamed".into(),
+        },
+        Command::SetItemOwner {
+            item_id: 1,
+            owner: Some("Ada".into()),
+        },
+        Command::SetItemDuration {
+            item_id: 1,
+            secs: Some(300),
+        },
+        // Publish / hand-off (FR-006) and the plan lifecycle actions (FR-005).
+        Command::PublishPlan,
+        Command::NewPlan {
+            name: "Next Week".into(),
+        },
+        Command::TemplatePlan {
+            template: "sunday-morning".into(),
+            name: "Next Week".into(),
+        },
+        Command::DuplicatePlan {
+            name: "Sunday (copy)".into(),
+        },
+        Command::ImportPlan {
+            name: "Imported".into(),
+            items: vec![],
+        },
+    ]
+}
+
+#[test]
+fn plan_publish_and_lifecycle_commands_are_operator_only_plan_editing() {
+    // Publishing, creating, templating, duplicating and importing are all statements about the
+    // plan DOCUMENT, so they carry the same `EditPlan` privilege as any other plan edit — and
+    // like every plan edit, nobody below Operator holds it. In particular an Assistant, who may
+    // stage scripture and navigate Preview, may not hand a plan off to the operator.
+    for cmd in plan_edit_cmds() {
+        assert_eq!(
+            required_permission(&cmd),
+            Permission::EditPlan,
+            "{cmd:?} is not gated as plan editing"
+        );
+        assert!(authorize(Role::Operator, &cmd), "operator denied {cmd:?}");
+        assert!(!authorize(Role::Producer, &cmd), "producer allowed {cmd:?}");
+        assert!(
+            !authorize(Role::Assistant, &cmd),
+            "assistant allowed {cmd:?}"
+        );
+        assert!(!authorize(Role::Viewer, &cmd), "viewer allowed {cmd:?}");
+    }
+}
+
+#[test]
+fn can_edit_plan_agrees_with_the_choke_point_for_every_plan_edit_command() {
+    // `can_edit_plan` is what the operator view reports as `can_edit`, and it answers by probing
+    // ONE representative plan-edit command. This is the control that the probe is representative:
+    // if a plan-edit command is moved onto a different permission, or the probe is changed to a
+    // command that is not a plan edit, the affordance stops speaking for the commands it claims
+    // to describe and this fails.
+    //
+    // KNOWN LIMIT, stated rather than implied: `plan_edit_cmds()` is hand-maintained. Rust
+    // cannot enumerate `Command`'s variants without a derive this crate does not carry, so a NEW
+    // plan-edit command added to `required_permission`'s `EditPlan` arm and not added to that
+    // list is simply not covered here, and nothing fails. The exhaustive `match` in
+    // `required_permission` forces the author to think about the permission; it cannot force
+    // them to think about this list. Adding a plan-edit command means adding it there too.
+    //
+    // Repointing `PLAN_EDIT_PROBE` at `Command::GoLive` fails here on Producer, who may go live
+    // but may not edit the plan.
+    for role in [
+        Role::Operator,
+        Role::Producer,
+        Role::Assistant,
+        Role::Viewer,
+    ] {
+        let verdict = can_edit_plan(role);
+        for cmd in plan_edit_cmds() {
+            assert_eq!(
+                authorize(role, &cmd),
+                verdict,
+                "{role:?}: can_edit_plan says {verdict} but the choke point disagrees about \
+                 {cmd:?} — the affordance the UI renders no longer matches the gate the host \
+                 enforces"
+            );
+        }
+    }
+    // The verdict is not a constant in either direction: without both of these, a `can_edit_plan`
+    // hardwired to `true` or to `false` would satisfy the loop above for the roles that happen to
+    // agree with it.
+    assert!(
+        can_edit_plan(Role::Operator),
+        "the Operator may edit the plan"
+    );
+    assert!(
+        !can_edit_plan(Role::Viewer),
+        "a Viewer may not edit the plan"
+    );
+}
+
+#[test]
+fn the_view_only_verdict_never_widens_what_a_role_may_do() {
+    // `can_edit` is an affordance, not a gate. Whatever the view reports, the choke point still
+    // refuses a plan edit from a role that does not hold `EditPlan` — a client that ignores the
+    // field entirely gains nothing.
+    for role in [Role::Producer, Role::Assistant, Role::Viewer] {
+        assert!(!can_edit_plan(role), "{role:?} must read as view-only");
+        for cmd in plan_edit_cmds() {
+            assert!(
+                !authorize(role, &cmd),
+                "{role:?} was allowed {cmd:?} despite reading as view-only"
+            );
+        }
     }
 }

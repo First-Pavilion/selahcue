@@ -899,6 +899,17 @@ pub fn generate_pairing_code() -> String {
 /// Characters unsafe to show in the operator's approve/deny UI: control chars (Cc) plus the
 /// zero-width, bidi-control, and other invisible format code points that could spoof or reorder a
 /// device name/platform (e.g. U+202E RIGHT-TO-LEFT OVERRIDE). Filtered from untrusted display text.
+/// **Deliberately BROADER than `selahcue_core::plan`'s label rule, and it must stay that way.**
+///
+/// That rule was narrowed to admit the orthographic joiners (ZWNJ/ZWJ) and the stateless bidi
+/// marks, because refusing them stops Persian, Urdu, Devanagari, Malayalam and Sinhala names
+/// being typed at all. This list keeps them refused on purpose: it guards a DEVICE NAME shown in
+/// the pairing approve/deny prompt, which feeds a security decision a human makes once, about a
+/// peer asking to join. A misspelled Persian device name is an acceptable cost there; a spoofed
+/// one that reads as an already-trusted device is not.
+///
+/// So the two lists diverge for a reason, and the reason is the consequence of being wrong on
+/// each path. Do not unify them without re-reading this and the security ruling behind it.
 fn is_display_unsafe(c: char) -> bool {
     c.is_control()
         || matches!(c,

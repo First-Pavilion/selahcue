@@ -3,8 +3,8 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_core::plan::{
-    ItemContent, ItemId, ItemKind, LinkResolution, PlanError, PlanItem, ServicePlan, VerseNumbers,
-    MAX_LINK_LABEL_LEN,
+    plan_label_valid, ItemContent, ItemId, ItemKind, LinkResolution, PlanError, PlanItem,
+    ServicePlan, VerseNumbers, MAX_LINK_LABEL_LEN, MAX_PLAN_LABEL_LEN,
 };
 
 #[test]
@@ -1193,4 +1193,259 @@ fn a_section_with_a_duration_would_break_the_operators_summary_validation_seam()
             );
         }
     }
+}
+
+#[test]
+fn same_document_ignores_the_id_counter_and_nothing_else() {
+    // `same_document` answers "would an operator see any difference?", which is a different
+    // question from `==`. The two come apart on exactly one field, and that difference is the
+    // whole reason the method exists: the change-since-publish badge must not latch on for good
+    // after an add-then-remove that leaves the run sheet exactly as it was.
+    let mut plan = ServicePlan::new("Sunday");
+    plan.add_item(ItemKind::Song, "Opening");
+    plan.add_item(ItemKind::Scripture, "Romans 8:28");
+
+    let baseline = plan.clone();
+    assert!(
+        baseline.same_document(&plan),
+        "a clone is the same document"
+    );
+    assert_eq!(baseline, plan, "and is also equal");
+
+    // Add then remove: observably identical, but the id counter has advanced for good.
+    let temp = plan.add_item(ItemKind::Song, "Temporary");
+    plan.remove(temp).unwrap();
+    assert_ne!(
+        baseline, plan,
+        "the premise: `==` DOES see the advanced id counter, so this test is not vacuous"
+    );
+    assert!(
+        baseline.same_document(&plan),
+        "add-then-remove leaves a run sheet an operator cannot tell apart, so it must compare \
+         as the same document"
+    );
+
+    // Everything a person CAN see still counts as a difference.
+    let mut renamed = plan.clone();
+    renamed.name = "Next Week".into();
+    assert!(
+        !baseline.same_document(&renamed),
+        "the plan name is on screen, so a rename is a real difference"
+    );
+
+    let mut retitled = plan.clone();
+    retitled.get_mut(retitled.items()[0].id).unwrap().title = "Changed".into();
+    assert!(
+        !baseline.same_document(&retitled),
+        "an item title is on screen, so retitling is a real difference"
+    );
+
+    let mut reordered = plan.clone();
+    reordered.reorder(0, 1).unwrap();
+    assert!(
+        !baseline.same_document(&reordered),
+        "order IS the run sheet, so reordering is a real difference"
+    );
+
+    let mut shorter = plan.clone();
+    shorter.remove(shorter.items()[0].id).unwrap();
+    assert!(
+        !baseline.same_document(&shorter),
+        "a removed row is a real difference"
+    );
+}
+
+#[test]
+fn a_plan_label_must_be_visible_bounded_and_single_line() {
+    // The ingress rule for plan names, item titles and owners. The predicate is: refuse
+    // characters that act at a distance or have no role in writing words; admit invisibles whose
+    // effect is confined to the glyphs they touch.
+    assert!(plan_label_valid("Sunday Morning"));
+    assert!(
+        plan_label_valid("  trimmed  "),
+        "surrounding space is trimmed"
+    );
+
+    assert!(!plan_label_valid(""), "empty");
+    assert!(!plan_label_valid("   "), "whitespace only");
+    assert!(
+        !plan_label_valid(&"x".repeat(MAX_PLAN_LABEL_LEN + 1)),
+        "one character over the bound"
+    );
+    assert!(
+        plan_label_valid(&"x".repeat(MAX_PLAN_LABEL_LEN)),
+        "exactly at the bound is fine — the bound must not be off by one"
+    );
+
+    // --- Refused: control characters, line separators, and invisibles that act at a distance ---
+    assert!(!plan_label_valid("Sun\u{7}day"), "Cc: bell");
+    assert!(!plan_label_valid("Sun\u{2028}day"), "Zl: line separator");
+    assert!(
+        !plan_label_valid("Sun\u{2029}day"),
+        "Zp: paragraph separator"
+    );
+    // Stateful direction controls: these reorder text BEYOND their own position, which is the
+    // Trojan-Source primitive the original advisory was about.
+    assert!(!plan_label_valid("Sun\u{202E}day"), "RLO override");
+    assert!(!plan_label_valid("Sun\u{202A}day"), "LRE embedding");
+    assert!(
+        !plan_label_valid("Sun\u{2066}day"),
+        "LRI isolate — the isolates were previously untested entirely"
+    );
+    assert!(!plan_label_valid("Sun\u{2069}day"), "PDI isolate");
+    // Zero-orthography invisibles: no script spells with these.
+    assert!(!plan_label_valid("Sun\u{200B}day"), "zero-width space");
+    assert!(!plan_label_valid("Sun\u{FEFF}day"), "BOM / ZWNBSP");
+    assert!(!plan_label_valid("Sun\u{2060}day"), "word joiner");
+    // Deprecated shaping controls and interlinear anchors, added after the security re-test: no
+    // practical spoofing power (renderers ignore them) but they satisfied the visible-content
+    // guard, so a name made only of one was valid.
+    assert!(
+        !plan_label_valid("Sun\u{206E}day"),
+        "deprecated digit-shape control"
+    );
+    assert!(
+        !plan_label_valid("\u{206E}"),
+        "and it is not a valid name on its own"
+    );
+    assert!(
+        !plan_label_valid("Sun\u{FFFA}day"),
+        "interlinear annotation separator"
+    );
+
+    // --- Admitted: the joiners are SPELLING, not decoration ---
+    //
+    // Each of these is a real word in a real script that cannot be written without the joiner.
+    // Refusing them does not harden a name field; it stops the language being typed into one.
+    assert!(
+        plan_label_valid("\u{06A9}\u{062A}\u{0627}\u{0628}\u{200C}\u{0647}\u{0627}"),
+        "Persian: ZWNJ carries the plural suffix"
+    );
+    assert!(
+        plan_label_valid("\u{0646}\u{200C}\u{06C1}"),
+        "Urdu: ZWNJ between joining forms"
+    );
+    assert!(
+        plan_label_valid("\u{0915}\u{094D}\u{200C}\u{0937}"),
+        "Devanagari: ZWNJ forces the explicit halant"
+    );
+    assert!(
+        plan_label_valid("\u{0DC1}\u{0DCA}\u{200D}\u{0DBB}\u{0DD3}"),
+        "Sinhala \u{0DC1}\u{0DCA}\u{200D}\u{0DBB}\u{0DD3} — the word Sri, as in Sri Lanka. It \
+         cannot be written without U+200D at all, so refusing ZWJ stopped a congregation typing \
+         their own country's name"
+    );
+    assert!(
+        plan_label_valid("\u{0D23}\u{0D4D}\u{200D}"),
+        "Malayalam: ZWJ forms the chillu letter"
+    );
+    assert!(
+        plan_label_valid("Sunday \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"),
+        "a family emoji is bound by the same ZWJ — this used to be a documented 'accepted cost' \
+         and is simply valid now"
+    );
+    // Implicit bidi marks are stateless: they influence adjacent neutrals only and cannot
+    // reorder a strong-directional run. U+061C always passed, so refusing these two was not even
+    // internally consistent.
+    assert!(plan_label_valid("Sun\u{200E}day"), "LRM");
+    assert!(plan_label_valid("Sun\u{200F}day"), "RLM");
+    assert!(plan_label_valid("Sun\u{061C}day"), "ALM");
+    assert!(
+        !plan_label_valid("\u{061C}"),
+        "ALM alone is still an invisible name — this only holds if the visible-content guard \
+         counts ALM as invisible, so it pins that U+061C is admitted BY THE RULE rather than \
+         merely unlisted"
+    );
+
+    // U+180E MONGOLIAN VOWEL SEPARATOR is orthographic — required Mongolian spelling — and it
+    // must pass. This is the counter-case that makes the divergence from `is_display_unsafe`
+    // (`selahcue-lan/src/server.rs`) load-bearing rather than merely tolerated: that list DROPS
+    // U+180E, so copying it here would have repeated the ZWNJ mistake for Mongolian. Found by
+    // security re-test of PR #14.
+    assert!(
+        plan_label_valid("\u{1824}\u{180E}\u{1822}"),
+        "Mongolian: the vowel separator is spelling, and the device-name list would refuse it"
+    );
+
+    // --- The companion guard: admitting joiners must not admit an INVISIBLE name ---
+    //
+    // Load-bearing. Before the joiners were admitted this string was refused only as a side
+    // effect of the over-broad list, so narrowing without this would have opened a hole.
+    assert!(
+        !plan_label_valid("\u{200C}\u{200C}"),
+        "a label made only of joiners renders as nothing and must be refused"
+    );
+    assert!(
+        !plan_label_valid("\u{200D}"),
+        "one joiner alone is still an invisible name"
+    );
+    assert!(
+        !plan_label_valid(" \u{200C} "),
+        "whitespace plus a joiner is still nothing to look at"
+    );
+    assert!(
+        plan_label_valid("\u{0915}\u{094D}\u{200C}\u{0937}"),
+        "POSITIVE CONTROL beside it: the same joiner INSIDE a word is fine, so the guard rejects \
+         invisibility rather than rejecting the joiner"
+    );
+
+    // Ordinary international text, unaffected either way.
+    assert!(plan_label_valid("主日崇拜"), "Chinese");
+    assert!(plan_label_valid("خدمة الأحد"), "Arabic");
+    assert!(plan_label_valid("Богослужение"), "Cyrillic");
+    assert!(plan_label_valid("Opening 🎉"), "a single emoji");
+    assert!(
+        plan_label_valid("Café — Sunday's 1st"),
+        "accents, dashes and apostrophes are ordinary label text"
+    );
+}
+
+#[test]
+fn the_codec_preserves_orthographic_joiners_in_a_stored_label() {
+    // `sanitize_field` DROPS what `plan_label_valid` REFUSES, over the same set — so narrowing
+    // that set fixes the codec too. It previously misspelled stored labels silently: Persian lost
+    // its ZWNJ (7 characters in, 6 out) and Sinhala "Sri" was broken outright.
+    //
+    // Different verb, deliberately: the codec runs on already-stored data and has nobody to
+    // report a failure to, so it must be total and drops. Ingress creating a new document can
+    // refuse. That split is only safe because no orthographic character is in the set any more.
+    let persian = "\u{06A9}\u{062A}\u{0627}\u{0628}\u{200C}\u{0647}\u{0627}";
+    let sinhala = "\u{0DC1}\u{0DCA}\u{200D}\u{0DBB}\u{0DD3}";
+
+    for label in [persian, sinhala] {
+        let link = ItemContent::Deck {
+            deck_id: 7,
+            slide_count: Some(3),
+            label: Some(label.to_string()),
+        };
+        let decoded = ItemContent::decode(&link.encode()).expect("the link must decode");
+        let ItemContent::Deck { label: out, .. } = decoded else {
+            panic!("expected a deck link");
+        };
+        let out = out.expect("the label must survive the round trip");
+        assert_eq!(
+            out.chars().count(),
+            label.chars().count(),
+            "the codec dropped a character from {label:?} — an orthographic joiner is spelling, \
+             and dropping it misspells the stored label with no way to notice"
+        );
+        assert_eq!(out, label, "the label must round-trip byte-identically");
+    }
+
+    // POSITIVE CONTROL: the codec still drops what it is supposed to drop, so the assertions
+    // above are not passing because the filter is dead.
+    let hostile = ItemContent::Deck {
+        deck_id: 7,
+        slide_count: None,
+        label: Some("Deck\u{202E}Name".to_string()),
+    };
+    let decoded = ItemContent::decode(&hostile.encode()).expect("decodes");
+    let ItemContent::Deck { label: out, .. } = decoded else {
+        panic!("expected a deck link");
+    };
+    assert_eq!(
+        out.as_deref(),
+        Some("DeckName"),
+        "a direction override must still be stripped from a stored label"
+    );
 }

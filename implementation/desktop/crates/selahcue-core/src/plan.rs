@@ -223,38 +223,129 @@ pub enum ItemContent {
 /// rather than merely assumed.
 fn sanitize_field(s: &str) -> String {
     s.chars()
-        .filter(|c| !is_invisible_formatting(*c))
+        .filter(|c| !is_display_hostile(*c))
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
 }
 
-/// Zero-width and bidirectional-override characters, which `char::is_control` does NOT cover:
-/// it tests the Cc category only, and every character below is Cf.
+/// Invisible (Cf) characters that are part of WRITING WORDS, and are therefore admitted.
 ///
-/// These render as nothing yet reorder or hide the text around them, so a deck name can be made
-/// to *display* as something other than what it is — a right-to-left override rewrites how a
-/// name reads, and zero-width joiners let two distinct labels look identical. A link label is
-/// echoed to every paired device and rendered in the run sheet, so it is a display-spoofing
-/// surface. Dropped rather than replaced with a space, because they are zero-width by
-/// definition: substituting a space would change how legitimate text looks, whereas removing
-/// them restores what it already appeared to be. Found by security review of PR #13.
-fn is_invisible_formatting(c: char) -> bool {
+/// # Why these are not a security problem
+///
+/// The joiners are **spelling**, not decoration. Persian and Urdu need ZWNJ for the plural
+/// suffix and the durative prefix; Devanagari uses it for conjunct control; Malayalam and
+/// Sinhala use ZWJ to form chillu letters — the Sinhala word *Sri*, as in *Sri Lanka*, cannot be
+/// written without U+200D at all. Refusing them does not harden a name field, it stops entire
+/// languages being typed into one.
+///
+/// Precedent: **IDNA2008 (RFC 5892, CONTEXTJ) admits both in domain names** — the most
+/// homograph-sensitive identifier system in production. We deliberately do NOT implement
+/// CONTEXTJ's contextual virama and joining-type rules: they are disproportionate for a 120-char
+/// display label, and the homograph surface they would narrow is already wide open through
+/// confusables that nothing here refuses (Cyrillic "о" passes today and always will).
+///
+/// The implicit bidi marks are **stateless**. LRM/RLM/ALM influence only the neutral characters
+/// immediately around them and cannot reorder a strong-directional run, unlike the embeddings
+/// and overrides in [`is_display_hostile`]. They arrive routinely in RTL text pasted from a word
+/// processor. U+061C was never in the refused set anyway, so refusing its LRM/RLM counterparts
+/// was not even internally consistent.
+fn is_admitted_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200C}' | '\u{200D}'   // ZWNJ, ZWJ — orthographic joiners
+        | '\u{200E}' | '\u{200F}' // LRM, RLM — implicit, stateless bidi marks
+        | '\u{061C}' // ALM — the Arabic counterpart of the above
+    )
+}
+
+/// Invisible characters that **act at a distance, or have no role in writing words**.
+///
+/// That predicate is the rule; the list below is only its consequence. An earlier version had no
+/// principle behind it and showed it: U+061C ALM passed while U+200E LRM was refused, though both
+/// are invisible implicit bidi marks. It was not a strict rule, it was the set of characters that
+/// happened to get listed.
+///
+/// Two groups, for two different reasons:
+///
+/// - **Stateful direction controls** (`202A..=202E`, `2066..=2069`) reorder text *beyond their own
+///   position*: an unterminated RLO reverses the remainder of a rendered line, so a label can be
+///   made to display as something other than what it is. This is the Trojan-Source primitive and
+///   the thing the original security advisory was actually about.
+/// - **Zero-orthography invisibles** (`200B`, `2060..=2064`, `206A..=206F`, `FFF9..=FFFB`,
+///   `FEFF`) belong to no script's spelling. Nobody types them into a service name, so refusing
+///   them costs nothing. The deprecated shaping controls and the interlinear annotation anchors
+///   were added after the ruling: their practical spoofing power is nil because modern renderers
+///   ignore them, but they satisfied the visible-content guard, so `"\u{206E}"` alone was a valid
+///   invisible name. Refusing them costs nothing and makes the list a truer consequence of the
+///   predicate above, which is the whole point of having stated one.
+///
+/// Consumed by BOTH [`sanitize_field`] (which drops) and
+/// [`plan_label_valid`] (which refuses). One definition, two verbs — see `plan_label_valid` for
+/// why the verbs differ and why that is safe once the *set* is right.
+///
+/// **Deliberately narrower than `is_display_unsafe` in `selahcue-lan/src/server.rs`.** That one
+/// keeps its broader list on purpose: it guards DEVICE NAMES in the pairing approve/deny prompt,
+/// which feeds a security decision a human makes once. A misspelled Persian device name is an
+/// acceptable price there; a spoofed one is not. Do not "unify" the two without re-reading this.
+fn is_display_hostile(c: char) -> bool {
     matches!(c,
-        '\u{200B}'..='\u{200F}'   // zero-width space/non-joiner/joiner, LRM, RLM
-        | '\u{202A}'..='\u{202E}' // LRE, RLE, PDF, LRO, RLO
-        | '\u{2060}'..='\u{2064}' // word joiner, invisible operators
+        // Stateful direction controls — reorder text beyond their own position.
+        '\u{202A}'..='\u{202E}'   // LRE, RLE, PDF, LRO, RLO
         | '\u{2066}'..='\u{2069}' // LRI, RLI, FSI, PDI
+        // Zero-orthography invisibles — no script spells with these.
+        | '\u{200B}'              // zero-width space
+        | '\u{2060}'..='\u{2064}' // word joiner, invisible operators
+        | '\u{206A}'..='\u{206F}' // deprecated shaping/digit-shape controls
+        | '\u{FFF9}'..='\u{FFFB}' // interlinear annotation anchors
         | '\u{FEFF}'              // BOM / zero-width no-break space
     )
 }
 
-/// Public form of [`sanitize_field`], for callers that must clean untrusted text BEFORE
+/// Whether `s` contains at least one character that is neither whitespace nor an invisible this
+/// rule deliberately admits.
+///
+/// Phrased as the mechanism rather than as "anything a person could SEE", which the check cannot
+/// actually determine: a blank-rendering LETTER such as U+3164 HANGUL FILLER satisfies this and
+/// still displays as nothing. See the accepted residual on [`plan_label_valid`].
+///
+/// The companion guard to admitting the joiners, and it is load-bearing: without it
+/// `"\u{200C}\u{200C}"` is a perfectly valid — and completely invisible — plan name. Before the
+/// admitted set existed, that string was refused only as a side effect of the over-broad list, so
+/// narrowing the list without adding this would have opened a hole rather than closed one.
+///
+/// Also subsumes the empty-string check: a blank label has no visible character either, so
+/// `plan_label_valid` does not test emptiness separately. One predicate, so there is no second
+/// one to drift.
+fn has_visible_content(s: &str) -> bool {
+    s.chars()
+        .any(|c| !c.is_whitespace() && !is_admitted_invisible(c))
+}
+
+/// Line and paragraph separators (Unicode `Zl` / `Zp`), which are covered by NEITHER
+/// `char::is_control` (they are not Cc) NOR [`is_display_hostile`] (they are not Cf).
+///
+/// They render as a hard break, so one embedded in a plan title turns a single-line run-sheet
+/// label into two lines. `str::trim` removes them at the EDGES, because they are `White_Space` —
+/// which is exactly what makes the gap easy to miss: the obvious test, a label made only of
+/// U+2028, is caught by the visible-content rule, while `"Sun\u{2028}day"` sails through. Found
+/// by code review of PR #14.
+///
+/// Kept separate from [`is_display_hostile`] rather than folded into it, because that set is
+/// consumed by [`sanitize_field`] too and folding these in would change what the codec does to
+/// stored link labels — a different decision on a different path. **That path still has this
+/// gap**: `sanitize_field` neither drops nor replaces U+2028, so a hard break can still ride
+/// into a stored label. Closing it is not this change's to make.
+fn is_line_separator(c: char) -> bool {
+    matches!(c, '\u{2028}' | '\u{2029}')
+}
+
+/// Public form of `sanitize_field`, for callers that must clean untrusted text BEFORE
 /// validating it — the controller parses a scripture reference and stores what it parsed, so
 /// sanitizing only on `encode` would let a bidi override ride on the wire and into the run
 /// sheet while never reaching persistence. One implementation, so the two cannot drift.
 ///
 /// Cleans ONLY -- it applies no length bound of any kind. A caller that also needs the value
-/// bounded wants [`sanitize_label`]; one that calls this is responsible for its own limit.
+/// bounded wants `sanitize_label`; one that calls this is responsible for its own limit.
 /// Saying so explicitly because this doc block and `sanitize_label`'s were previously
 /// transposed, leaving a public function documented as capping a length it never touched.
 pub fn sanitize_text(s: &str) -> String {
@@ -273,7 +364,7 @@ impl ItemContent {
     /// Serialize to a stable, reversible, single-line string for persistence
     /// (the data layer stores this opaque value in one column — keeping the codec
     /// pure and in the domain, with no serde in core). Fields are TAB-separated; text fields are
-    /// [`sanitize_field`]-cleaned of control chars so the round-trip is always lossless.
+    /// `sanitize_field`-cleaned of control chars so the round-trip is always lossless.
     pub fn encode(&self) -> String {
         match self {
             ItemContent::Scripture {
@@ -922,6 +1013,44 @@ impl ServicePlan {
         }
     }
 
+    /// Whether `other` is the same plan DOCUMENT as this one — everything a person can see.
+    ///
+    /// Compares the name and the ordered items, and deliberately NOT [`next_id`](Self::next_id),
+    /// which is internal bookkeeping for issuing future ids and appears nowhere in the run sheet.
+    ///
+    /// # Why this is not `PartialEq`
+    ///
+    /// `==` is the right answer to "are these values identical", and it is what undo needs. This
+    /// answers a different question — "would an operator see any difference?" — and the two come
+    /// apart on exactly one field: add an item and remove it again and the plan is observably
+    /// unchanged while `next_id` has advanced for good. A change-since-publish badge built on
+    /// `==` therefore latches on permanently after any add-then-remove, which is the *same*
+    /// defect (a badge with nothing behind it) that comparing documents was chosen to avoid.
+    ///
+    /// It lives here, beside the struct, rather than in the caller: a caller-local field subset
+    /// silently stops covering a field the day `ServicePlan` grows one, and the caller is the
+    /// last place anyone looks when that happens.
+    ///
+    /// # The destructuring is the guard, not the comment
+    ///
+    /// Proximity alone was the first version of this and it was a hope, failing in the WRONG
+    /// direction: an inclusion list means a field added tomorrow is silently EXCLUDED, so the
+    /// badge quietly stops noticing part of the document — no error, no failing test, just a
+    /// change flag that has gone partly blind. Binding every field by name makes that a compile
+    /// error instead: a new field cannot build until someone writes it into the comparison or
+    /// explicitly ignores it, and no prose has to stay accurate for that to work.
+    pub fn same_document(&self, other: &ServicePlan) -> bool {
+        // Adding a field to `ServicePlan`? The compiler stopped you here on purpose. Decide
+        // whether an operator can SEE it: if so it belongs in the comparison, if not ignore it
+        // by name with a reason, as `next_id` is ignored above.
+        let ServicePlan {
+            name,
+            items,
+            next_id: _,
+        } = self;
+        *name == other.name && *items == other.items
+    }
+
     /// A deep, independent copy with a new name (FR-005). Ids are preserved but
     /// the copy has its own id counter, so future additions never collide.
     pub fn duplicate(&self, new_name: impl Into<String>) -> ServicePlan {
@@ -931,6 +1060,199 @@ impl ServicePlan {
             next_id: self.next_id,
         }
     }
+}
+
+/// Longest permitted plan LABEL — a plan name, an item title, or an owner — in characters.
+///
+/// Named for the role rather than for the plan name alone, because all three are the same kind
+/// of value and share one rule. An earlier name said `..._PLAN_NAME_...` while two of its three
+/// callers passed something else, which is the sort of small lie that makes a reviewer trust the
+/// next identifier less.
+///
+/// `ServicePlan.name` was previously unbounded because every writer was trusted seeding or a
+/// rename of an item (not the plan). The publish/hand-off commands (FR-006) create and rename
+/// whole plans from the untrusted wire, so the name needs the same bound every other
+/// wire-reachable string has. Matched to [`MAX_LINK_LABEL_LEN`]: both are one-line display
+/// labels shown in the same run-sheet header, and a plan title far shorter than this is already
+/// unreadable in the UI.
+///
+/// # Enforced at the WIRE INGRESS only
+///
+/// Stated precisely because the obvious reading is wrong: this does not make `ServicePlan.name`
+/// a bounded field. [`ServicePlan::from_parts`], the persistence rehydration path, still applies
+/// no bound, so a name stored by an older build or edited into the database comes back at full
+/// length. That is unlike `sanitize_label`, which this doc otherwise follows and which is
+/// applied on the way in AND again on decode. Closing that gap means bounding the rehydration
+/// path too, which is a persistence change this does not make.
+pub const MAX_PLAN_LABEL_LEN: usize = 120;
+
+/// Whether `name` is acceptable as a plan label arriving from the untrusted wire: visibly
+/// non-empty after trimming, within [`MAX_PLAN_LABEL_LEN`] characters, and free of control
+/// characters, line separators, and the invisibles that act at a distance.
+///
+/// # Refused here, dropped in the codec — deliberately different
+///
+/// `sanitize_field` REMOVES the same characters rather than refusing them, because the codec
+/// must be total: it processes values that are already stored and has nobody to report a failure
+/// to. This is untrusted INGRESS creating a new document, so it can do the more honest thing and
+/// refuse — the same choice the NDI source name makes. A name quietly rewritten between the
+/// request and the run sheet is a name the coordinator cannot search for later.
+///
+/// "One set, two verbs" is true of `is_display_hostile`, and **only of that set** — do not read
+/// it as "these two paths agree". They do not, and `U+2028` is where they part: this function
+/// also consults `is_line_separator`, which `sanitize_field` does not, so a line separator is
+/// refused here and **kept** by `sanitize_text`. The shared definition covers the invisibles that
+/// act at a distance; the line separators are the validator's alone. That divergence is stated
+/// on `is_line_separator` too, and this sentence previously overstated the agreement while
+/// sitting above the accurate account of it.
+///
+/// Counted in CHARACTERS, not bytes — a bound in bytes would refuse a legitimate name in a
+/// non-Latin script at a third of the length a Latin one is allowed.
+///
+/// # What is refused, and what is deliberately admitted
+///
+/// The rule is a predicate, not a character list: **refuse characters that act at a distance or
+/// have no role in writing words; admit invisibles whose effect is confined to the glyphs they
+/// touch.** `is_display_hostile` is the first half, `is_admitted_invisible` the second, and
+/// `has_visible_content` stops the second half from admitting a wholly invisible name.
+///
+/// An earlier version of this predicate refused everything Cf, which locked whole languages out
+/// of the field: Persian and Urdu plurals, Devanagari conjuncts, Malayalam and Sinhala chillu —
+/// including "ශ්‍රී", the word *Sri*, which cannot be written without U+200D. A congregation
+/// could not type their own country's name, and the `ImportPlan` command amplified it, since one
+/// joiner in one owner cell refused an entire 500-row run sheet with a bare `BadRequest`. Two
+/// tests pinned that behaviour as intended, which is why it was fixed rather than deferred.
+///
+/// # Accepted residual
+///
+/// Two labels can render identically and differ by a joiner, so a search for one may miss the
+/// other. That is the same class as confusable letters — Cyrillic "о" against Latin "o" — which
+/// nothing here refuses and nothing reasonably could. A run sheet is a display label, not an
+/// identifier namespace: the failure is a search miss, and it is recoverable. Weighed against
+/// locking out entire writing systems, it is the better trade.
+///
+/// Two more, both surfaced by security re-test and both **pre-existing rather than opened by the
+/// narrowing** — every one of them passed before it too:
+///
+/// - **Blank-rendering characters that are not format characters** satisfy the visible-content
+///   guard: U+00AD soft hyphen, U+3164 HANGUL FILLER, U+115F, U+2800 BRAILLE PATTERN BLANK,
+///   U+FE0F VARIATION SELECTOR-16. This
+///   class is unbounded without render-aware checking, because a blank-glyph *letter* defeats any
+///   predicate written over character categories. A category test cannot answer a rendering
+///   question, and pretending otherwise is how the first version of this rule went wrong.
+/// - **The tag block `U+E0000..=U+E007F`** passes, so `"Sun\u{E0041}day"` carries a hidden "A" —
+///   a stronger differ-invisibly primitive than a joiner. Refusing it is **not on the table**:
+///   the GB subdivision flags (🏴󠁧󠁢󠁳󠁣󠁴󠁿 Scotland, Wales, England) are tag sequences and validate
+///   today, so refusing the block would break real flag emoji in plan names.
+///
+/// # Enforced at the WIRE INGRESS only
+///
+/// Stated precisely because the obvious reading is wrong: this does not make `ServicePlan.name` a
+/// bounded field, and it does not close this class across the plan surface.
+/// [`ServicePlan::from_parts`], the persistence rehydration path, applies no bound. And
+/// **`AddItem` and `RenameItem` do not use this rule at all** — they apply only `trim` and a
+/// non-empty check, so an override or a 50,000-character title still reaches the run sheet
+/// through the path an operator actually uses. Both are pre-existing and tracked as follow-ups;
+/// routing them through here is the coherent single rule *now that the set no longer locks out
+/// scripts*, but it changes established command behaviour and needs its own test round.
+///
+pub fn plan_label_valid(name: &str) -> bool {
+    let trimmed = name.trim();
+    has_visible_content(trimmed)
+        && trimmed.chars().count() <= MAX_PLAN_LABEL_LEN
+        && !trimmed
+            .chars()
+            .any(|c| c.is_control() || is_display_hostile(c) || is_line_separator(c))
+}
+
+/// A named starter template — a run-sheet skeleton a coordinator begins a service from
+/// (FR-005 "save as template"; the `Template` action on the empty-plan frame `611:124`).
+///
+/// # These entries are PROVISIONAL
+///
+/// No document in this repository says what a template contains or which ones ship.
+/// `UX-STATE-MATRIX.md:108`, `SERVICE-PLAN-2.0-HANDOFF.md:74` and `COMPONENT-SPECS.md:192` each
+/// name the *action* three different ways and none describes its content. (Storage IS specified —
+/// `ARCHITECTURE.md:93` lists `template` among the SQLite core entities — so a persisted,
+/// user-authored template library is the intended end state and this static table is not it. An
+/// earlier version of this note wrongly said storage was unspecified too.) The two below are modelled on this repository's own `demo_plan()` —
+/// the only service shape the product has ever committed to — so the mechanism can ship and be
+/// tested. **The set and its contents are a product decision, not an engineering one**; they
+/// live in this one table so changing them is a data edit rather than a code change.
+///
+/// The host REPORTS this list on the operator view (`plan_templates`) rather than the client
+/// hardcoding it, for the same reason `themes` and `translations` are reported: a client that
+/// transcribes the host's list drifts from it silently the first time either side changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlanTemplate {
+    /// Stable id used on the wire (`TemplatePlan { template }`). Never displayed.
+    pub id: &'static str,
+    /// Default display name, used when the caller supplies no name of its own.
+    pub name: &'static str,
+    /// The ordered skeleton. Titles are placeholders the coordinator renames.
+    pub items: &'static [(ItemKind, &'static str)],
+}
+
+impl PlanTemplate {
+    /// Build a fresh, independent plan from this template under `name`.
+    ///
+    /// Uses the infallible domain `add_item`, which is correct here precisely because a
+    /// template is *trusted, in-process seed data* — not wire input. The item count is fixed by
+    /// the table above and asserted against [`MAX_PLAN_ITEMS`] at compile time below, so no
+    /// template can ever seed a plan past the cap that the untrusted ingress enforces.
+    pub fn build(&self, name: impl Into<String>) -> ServicePlan {
+        let mut plan = ServicePlan::new(name);
+        for (kind, title) in self.items {
+            plan.add_item(*kind, *title);
+        }
+        plan
+    }
+}
+
+/// The starter templates this build offers, in the order a picker should show them.
+pub const PLAN_TEMPLATES: &[PlanTemplate] = &[
+    PlanTemplate {
+        id: "sunday-morning",
+        name: "Sunday Morning",
+        items: &[
+            (ItemKind::Announcement, "Welcome"),
+            (ItemKind::Song, "Opening Song"),
+            (ItemKind::Scripture, "Scripture Reading"),
+            (ItemKind::Section, "Sermon"),
+            (ItemKind::Song, "Closing Song"),
+        ],
+    },
+    PlanTemplate {
+        id: "midweek",
+        name: "Midweek Gathering",
+        items: &[
+            (ItemKind::Announcement, "Welcome"),
+            (ItemKind::Song, "Worship"),
+            (ItemKind::Section, "Teaching"),
+            (ItemKind::Section, "Prayer"),
+        ],
+    },
+];
+
+/// No template may seed a plan that already breaches the cap the untrusted ingress enforces.
+///
+/// Pinned at COMPILE time rather than in a test: a template added to the table above is a data
+/// edit, and the person making it should be stopped by the compiler rather than by a test they
+/// may not think to run. Checks the LARGEST template, so adding a big one fails the build.
+const _: () = {
+    let mut i = 0;
+    while i < PLAN_TEMPLATES.len() {
+        assert!(
+            PLAN_TEMPLATES[i].items.len() <= MAX_PLAN_ITEMS,
+            "a starter template must not exceed MAX_PLAN_ITEMS"
+        );
+        i += 1;
+    }
+};
+
+/// The template with this id, or `None` for an unknown one.
+pub fn plan_template(id: &str) -> Option<&'static PlanTemplate> {
+    PLAN_TEMPLATES.iter().find(|t| t.id == id)
 }
 
 // Tests live in `tests/test_plan.rs` (public-API integration tests).
