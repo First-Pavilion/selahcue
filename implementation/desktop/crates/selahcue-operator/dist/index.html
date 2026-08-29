@@ -1047,9 +1047,18 @@
           <div>
             <h1>Service Plan</h1>
             <p class="plan-builder-sub">Build the run sheet — link scriptures &amp; presentations to items. Editing here never changes Live.</p>
+            <!-- "View only" badge (frame 612:342). Written by planSyncPermission ONLY when the
+                 host reports viewer.can_edit === false. An ABSENT viewer field means the host
+                 does not report a permission at all, which is not view-only, so this slot stays
+                 empty then — never populated on the strength of a missing field. -->
+            <div id="plan-viewonly-slot" class="plan-viewonly-slot"></div>
           </div>
           <button id="plan-open-live" class="pm-btn-primary" type="button">Open in Live ▶</button>
         </header>
+        <!-- Plan-surface feedback strip. The presentation surface's #pm-toast sits inside that
+             surface's subtree and is not visible from here; planNotice() rebuilds a role=status
+             or role=alert child in this slot instead. -->
+        <div id="plan-notice" class="plan-notice-slot"></div>
         <div class="plan-builder-grid">
           <aside class="plan-col plan-palette" aria-label="Add item">
             <h2 class="plan-col-h">ADD ITEM</h2>

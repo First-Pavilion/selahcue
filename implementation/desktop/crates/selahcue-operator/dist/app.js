@@ -6131,6 +6131,19 @@
 
       // === Presentations Library (view mode of the Presentation surface) ==========================
       // A text-input modal (role=dialog) for New / Rename — reuses the confirm modal chrome + trap.
+      // A focus-trapped name prompt. Three optional hooks were added for the plan-lifecycle
+      // dialogs (86ak8467m) so those reuse THIS dialog rather than growing a second one:
+      //
+      //   opts.describe  — a sentence under the title, wired into the dialog's accessible
+      //                    description, for a dialog whose consequence is not obvious from
+      //                    its title alone.
+      //   opts.body(el)  — extra content ABOVE the name field (a template list, a run-sheet
+      //                    textarea). The caller keeps its own state in its own closure.
+      //   opts.validate(v) — returns the REASON v is unacceptable, or null when it is fine.
+      //                    A rejected value is shown inline and never submitted.
+      //
+      // Every existing caller passes none of them and is unaffected. The Tab trap now walks the
+      // dialog's live focusables instead of a hard-coded triple, because opts.body may add some.
       function pmPrompt(opts) {
         if (document.querySelector(".pm-confirm-back")) return;
         const prevFocus = document.activeElement;
@@ -6138,23 +6151,50 @@
         const dlg = document.createElement("div"); dlg.className = "pm-confirm"; dlg.setAttribute("role", "dialog"); dlg.setAttribute("aria-modal", "true");
         dlg.setAttribute("aria-labelledby", "pm-prompt-title");
         const h = document.createElement("h2"); h.className = "pm-confirm-title"; h.id = "pm-prompt-title"; h.textContent = opts.title || "Name"; dlg.appendChild(h);
+        if (opts.describe) {
+          const d = document.createElement("p"); d.className = "pm-confirm-body"; d.id = "pm-prompt-describe"; d.textContent = opts.describe;
+          dlg.appendChild(d);
+          dlg.setAttribute("aria-describedby", "pm-prompt-describe");
+        }
+        if (opts.body) { const extra = document.createElement("div"); extra.className = "pm-prompt-extra"; opts.body(extra); dlg.appendChild(extra); }
         const field = document.createElement("div"); field.style.display = "flex"; field.style.flexDirection = "column"; field.style.gap = "6px";
         const lab = document.createElement("label"); lab.className = "pm-insp-lbl"; lab.textContent = opts.label || "Name"; lab.htmlFor = "pm-prompt-input";
         const input = document.createElement("input"); input.type = "text"; input.id = "pm-prompt-input"; input.className = "pm-insp-ctrl"; input.value = opts.value || ""; input.style.width = "100%"; input.style.maxWidth = "none"; input.setAttribute("aria-label", opts.label || "Name");
-        field.appendChild(lab); field.appendChild(input); dlg.appendChild(field);
+        // role=alert, not a silent red line: a refusal the operator cannot hear is a dialog that
+        // appears to do nothing when they press Enter (WCAG 3.3.1).
+        const err = document.createElement("p"); err.className = "pm-prompt-err"; err.id = "pm-prompt-error"; err.setAttribute("role", "alert"); err.hidden = true;
+        field.appendChild(lab); field.appendChild(input); field.appendChild(err); dlg.appendChild(field);
         const row = document.createElement("div"); row.className = "pm-confirm-actions";
         const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "pm-btn-ghost"; cancel.textContent = "Cancel";
         const ok = document.createElement("button"); ok.type = "button"; ok.className = "pm-btn-primary"; ok.textContent = opts.confirmLabel || "OK";
         row.appendChild(cancel); row.appendChild(ok); dlg.appendChild(row);
         back.appendChild(dlg); document.body.appendChild(back);
         const close = () => { document.removeEventListener("keydown", onKey, true); back.remove(); if (prevFocus && prevFocus.focus) prevFocus.focus(); };
-        const submit = () => { const v = input.value; close(); if (opts.onConfirm) opts.onConfirm(v); };
+        const submit = () => {
+          const v = input.value;
+          if (opts.validate) {
+            const why = opts.validate(v);
+            if (why) {
+              err.textContent = why; err.hidden = false;
+              input.setAttribute("aria-invalid", "true");
+              input.setAttribute("aria-describedby", "pm-prompt-error");
+              input.focus();
+              return; // the dialog STAYS OPEN with the typed value intact
+            }
+            err.hidden = true; err.textContent = "";
+            input.removeAttribute("aria-invalid"); input.removeAttribute("aria-describedby");
+          }
+          close(); if (opts.onConfirm) opts.onConfirm(v);
+        };
         cancel.onclick = close; ok.onclick = submit;
         back.onmousedown = (ev) => { if (ev.target === back) close(); };
+        const focusables = () => Array.prototype.slice.call(
+          dlg.querySelectorAll("input, textarea, select, button, [href], [tabindex]:not([tabindex='-1'])")
+        ).filter((e) => !e.disabled && !e.hidden && e.getClientRects().length > 0);
         const onKey = (ev) => {
           if (ev.key === "Escape") { ev.preventDefault(); close(); }
           else if (ev.key === "Enter" && document.activeElement === input) { ev.preventDefault(); submit(); }
-          else if (ev.key === "Tab") { const els = [input, cancel, ok]; const i = els.indexOf(document.activeElement); ev.preventDefault(); const n = ev.shiftKey ? (i <= 0 ? els.length - 1 : i - 1) : (i >= els.length - 1 ? 0 : i + 1); els[n].focus(); }
+          else if (ev.key === "Tab") { const els = focusables(); if (!els.length) return; const i = els.indexOf(document.activeElement); ev.preventDefault(); const n = ev.shiftKey ? (i <= 0 ? els.length - 1 : i - 1) : (i >= els.length - 1 ? 0 : i + 1); els[n].focus(); }
         };
         document.addEventListener("keydown", onKey, true);
         input.focus(); input.select();
@@ -6402,6 +6442,165 @@
           unknown: unknown,
         };
       }
+      // =======================================================================================
+      // PLAN LIFECYCLE (86ak8467m) — the host's viewer / publish / template state, and the five
+      // commands that act on it: publish_plan, new_plan, template_plan, duplicate_plan,
+      // import_plan. All five require the EXISTING EditPlan permission; no new permission is
+      // invented here, and none is enforced here either — the host's authorize() is the gate and
+      // this file only reports its verdict.
+      //
+      // Every reader below is a SINGLE DEFINITION consumed by the renderers, by the send sites,
+      // and by the gate's controls. That is deliberate: a control that re-derives a predicate
+      // beside the code under test passes while the real predicate is mutated away (86ak643rc).
+      // =======================================================================================
+
+      // The plan-name bound the host enforces (`MAX_PLAN_NAME_LEN` in selahcue-core::plan).
+      const PLAN_NAME_MAX = 120;
+      // The run-sheet cap the untrusted ingress enforces (`MAX_PLAN_ITEMS`).
+      const PLAN_MAX_ITEMS = 500;
+
+      // Why v is unacceptable as a plan name or an imported item title, or null when it is fine.
+      //
+      // Mirrors `plan_name_valid`: non-empty after trimming, at most PLAN_NAME_MAX characters,
+      // no control characters. The HOST stays authoritative — this refuses EARLY so a typo shows
+      // up under the field instead of coming back as a Denied{bad_request} the operator cannot
+      // read, and every host rejection is still surfaced verbatim (planLifecycleFailed).
+      //
+      // Two details that are easy to get wrong and were got wrong here first:
+      //
+      //  - COUNT SCALAR VALUES, not UTF-16 code units. The host counts `chars()`. `s.length`
+      //    counts code units, so a name written in an astral script would be refused by this
+      //    client at half the length the host allows — a client stricter than the host for a
+      //    reason the operator cannot see or fix.
+      //  - Test the CLASS, not a hand-listed set. `\p{Cc}` is exactly the Unicode general
+      //    category Rust's `char::is_control` tests. This repo has already shipped a guard that
+      //    refused NUL and let every other control character through (commit ee3646f swept it
+      //    across the class); repeating that in JS would be the same bug in a second language.
+      //
+      // Known, one-directional divergence: JS `trim()` and Rust `str::trim` do not strip an
+      // identical set (U+0085 on one side, U+FEFF on the other). The gap is a handful of
+      // pathological code points at the very edge of the length bound; it is left rather than
+      // reimplementing a Unicode table twice, because the host is authoritative and its refusal
+      // is shown to the operator rather than swallowed.
+      function planNameProblem(v) {
+        const t = typeof v === "string" ? v.trim() : "";
+        if (!t) return "Enter a name.";
+        if (Array.from(t).length > PLAN_NAME_MAX) return "Use " + PLAN_NAME_MAX + " characters or fewer.";
+        if (/\p{Cc}/u.test(t)) return "Remove control characters (such as tabs or line breaks) from the name.";
+        return null;
+      }
+
+      // The host's verdict on what this operator may do with the plan (`viewer` on the view).
+      //
+      // THREE STATES, NOT TWO. An absent `viewer` means THIS HOST DOES NOT REPORT IT — an older
+      // host, or a peer with no permission model to report — and that is emphatically NOT
+      // "view only". Painting a "View only" badge on an absent field is the fabrication this
+      // field exists to remove, and it is the same rule already carried by output_health,
+      // storage, session, summary and ContentLinkView.status.
+      //
+      // `can_edit` is the HOST'S OWN VERDICT, computed from the same authorize() choke point
+      // that enforces it, and it is CONSUMED here and never recomputed from `role`. The mobile
+      // client's transcribed rbac.dart permission table is precisely the drift this field
+      // removes, and that table has already diverged from the backend once in this project.
+      // A `viewer` object carrying no usable boolean says nothing, so it reads as unreported.
+      function planViewer(view) {
+        const v = view && view.viewer;
+        if (!v || typeof v !== "object") return { reported: false, canEdit: null, role: null };
+        const canEdit = typeof v.can_edit === "boolean" ? v.can_edit : null;
+        return { reported: canEdit !== null, canEdit: canEdit, role: typeof v.role === "string" ? v.role : null };
+      }
+      // The question every editing control asks. Both of these consume planViewer().canEdit —
+      // the one verdict — so an unreported viewer shows the controls AND shows no badge, and
+      // neither answer can drift from the other.
+      function planCanEdit(view) { return planViewer(view).canEdit !== false; }
+      function planIsViewOnly(view) { return planViewer(view).canEdit === false; }
+
+      // The host's publish state for the open plan, or null when the host does not report it.
+      //
+      // Validated before use, exactly as the host summary is (planSummaryIsSound): a malformed
+      // object reads as UNREPORTED rather than being rendered, because a plausible-looking wrong
+      // revision printed on a run sheet is worse than no revision at all.
+      //
+      // `changed` is folded into the SAME expression as `published` here rather than being
+      // reported raw, because "changed" has no meaning without a baseline: with nothing
+      // published there is nothing to have changed FROM, so a badge there would be inventing
+      // state. Every consumer — the badge, the status line, the Publish button's description —
+      // reads THIS `changed`, so mutating the conjunction below moves all three at once.
+      // THE OBJECT OMITS ITS DEFAULTS. `PublishStateView` is `#[serde(default)]` with
+      // skip-if-none / skip-if-zero / skip-if-false, so only `revision` is always present and a
+      // fresh draft arrives as the whole object `{"revision":0}`:
+      //
+      //     missing `version`            = 0        (never published)
+      //     missing `published_revision` = null     (draft)
+      //     missing `changed`            = false
+      //
+      // Requiring `version` here — the first version of this function did — made every real
+      // draft read as UNREPORTED, so the panel said nothing at all about a plan it could have
+      // described correctly. Defaults are applied, then the RESULT is validated.
+      function planPublishState(view) {
+        const p = view && view.publish;
+        if (!p || typeof p !== "object") return null;
+        const n = (x) => typeof x === "number" && isFinite(x) && Number.isInteger(x) && x >= 0 && x <= PLAN_MAX_COUNT;
+        if (!n(p.revision)) return null; // the one field the host always sends
+        const version = p.version === undefined ? 0 : p.version;
+        if (!n(version)) return null;
+        const pr = p.published_revision;
+        const published = pr !== undefined && pr !== null;
+        if (published && !n(pr)) return null;
+        if (p.changed !== undefined && typeof p.changed !== "boolean") return null;
+        return {
+          revision: p.revision,
+          version: version,
+          publishedRevision: published ? pr : null,
+          published: published,
+          // READ FROM `changed`, NEVER COMPUTED FROM THE REVISIONS. The counters say the
+          // document was TOUCHED; `changed` says it actually DIFFERS. An edit that is then
+          // undone moves `revision` past `published_revision` while restoring the content, so
+          // `revision !== published_revision` with `changed:false` is a normal, meaningful
+          // state — and a badge derived from the counters would sit over a plan identical to
+          // the published one, offering an operator nothing to review. The obvious
+          // implementation is the wrong one and it looks right in testing.
+          changed: published && p.changed === true,
+        };
+      }
+
+      // The starter templates THIS HOST offers, or null when it offers none.
+      //
+      // Reported by the host rather than transcribed here, for the same reason `themes` and
+      // `translations` are: a client carrying its own copy of the list drifts from the host's
+      // silently, the first time either side changes. `items` is a COUNT, not an array — the
+      // template's contents never cross the wire, only its size, so the picker says how big a
+      // skeleton it is about to create and nothing more.
+      function planTemplateList(view) {
+        const t = view && view.plan_templates;
+        if (!Array.isArray(t) || !t.length) return null;
+        const ok = t.filter(
+          (x) =>
+            x && typeof x === "object" &&
+            typeof x.id === "string" && x.id &&
+            typeof x.name === "string" && x.name &&
+            typeof x.items === "number" && isFinite(x.items) &&
+            Number.isInteger(x.items) && x.items >= 0 && x.items <= PLAN_MAX_ITEMS
+        );
+        return ok.length ? ok : null;
+      }
+
+      // Does this host implement the plan-lifecycle COMMANDS?
+      //
+      // The signal is that it reports `publish`. Publication state and the commands that produce
+      // it are one capability landing as one wire addition, so a host that can describe the
+      // plan's publication is a host that can act on it.
+      //
+      // Why gate at all, when the frames simply draw the buttons: this shell talks to whichever
+      // host is on the other end — the in-process one, or a REMOTE output window that may be a
+      // different build entirely. A button wired to a command the host does not have is a
+      // control that looks live and fails on click, which is the exact failure the
+      // disabled-with-a-stated-reason treatment in this panel already exists to avoid. Asked
+      // once, here, and consumed by every lifecycle control.
+      function planLifecycleAvailable(view) { return planPublishState(view) !== null; }
+      const PLAN_NO_LIFECYCLE_REASON =
+        "This host doesn't report plan publishing, so creating, duplicating, importing and publishing aren't available from here yet.";
+
       function planLinkChip(link) {
         const el = document.createElement("span");
         el.className = "link-chip link-" + link.kind;
@@ -7232,10 +7431,61 @@
         if (to === d.fromIndex) return; // no-op
         planReorderTo(d.itemId, to, planRunRows().length - 1);
       }
+      // Frame 612:342 — the permission state, applied to the surface chrome.
+      //
+      // The rule is HIDDEN, NOT GREYED (UX-STATE-MATRIX:111 — the persona pain is literally
+      // "seeing controls they can't use"), and hidden means gone from the tab order too. So the
+      // add-item column is taken out with an INLINE display:none rather than the `hidden`
+      // attribute: in this webview a class-level `display` rule silently defeats `hidden`, and an
+      // inline rule cannot be overridden by one. Controls this file builds itself (Publish, the
+      // reorder buttons, the inspector's actions) are simply not built at all.
+      //
+      // A "View only" badge is written ONLY on an explicit can_edit === false. An absent viewer
+      // field is the host declining to report, which is not a restriction, so nothing is drawn.
+      function planSyncPermission(view) {
+        const viewOnly = planIsViewOnly(view);
+        const slot = document.getElementById("plan-viewonly-slot");
+        if (slot) {
+          slot.innerHTML = "";
+          if (viewOnly) {
+            const badge = document.createElement("span");
+            badge.className = "plan-viewonly";
+            badge.id = "plan-viewonly";
+            // Text, not colour: the badge says what it is (WCAG 1.4.1). aria-disabled is on the
+            // badge rather than on removed controls — there are no disabled controls to mark.
+            badge.textContent = "View only";
+            badge.setAttribute("aria-disabled", "true");
+            slot.appendChild(badge);
+            const why = document.createElement("span");
+            why.className = "plan-viewonly-why";
+            why.id = "plan-viewonly-why";
+            why.textContent = "You can follow this plan. Your role can't change it.";
+            slot.appendChild(why);
+          }
+        }
+        const palette = document.querySelector("#surface-plan .plan-palette");
+        if (palette) palette.style.display = viewOnly ? "none" : "";
+        // ...and the GRID must lose the track with it. .plan-builder-grid declares three fixed
+        // tracks (220px | 1fr | 340px); taking the first child out of flow does not remove its
+        // track, it shifts every remaining child one place left — so the run sheet landed in the
+        // 220px column and rendered "G…", "We…" beside a 792px-wide inspector and an empty third
+        // track. Invisible to the Blink gate (which asserts elements, not track widths) and
+        // found by looking at a real WKWebView render.
+        const grid = document.querySelector("#surface-plan .plan-builder-grid");
+        if (grid) grid.classList.toggle("is-viewonly", viewOnly);
+        // The header's Open in Live is a pure surface switch, so it survives view-only — but it
+        // reads as the passive thing it is, per design-QA §9 on this frame.
+        const openLive = document.getElementById("plan-open-live");
+        if (openLive) {
+          openLive.textContent = viewOnly ? "Follow in Live ▶" : "Open in Live ▶";
+          openLive.className = viewOnly ? "pm-btn-ghost" : "pm-btn-primary";
+        }
+      }
       function planRenderBuilder(view) {
         const list = document.getElementById("plan-b-list");
         if (!list || !view) return; // not on the plan surface
         planLastView = view; // so a pure UI change (deselect) can re-render without a round-trip
+        planSyncPermission(view);
         // Header counters. The planned total belongs HERE, next to the item count, because the pair
         // is what a reader checks against the rows (section 9: "8 items · 1:12:00" over 6 rows
         // summing 53:12 was the MAJOR). Empty collapses to the single AC-4 string "0 items · 0:00";
@@ -7258,17 +7508,40 @@
         }
         list.innerHTML = "";
         if (!view.items.length) {
-          // Empty state (handoff §5, frame 611:124): a centered CTA, not a bare line. Template /
-          // Duplicate / Import need backend commands outside this API, so they are shown as honest
-          // "coming soon" affordances rather than omitted (match-the-full-shell).
+          // Empty state (handoff §5, frame 611:124): a centered CTA, not a bare line. The four
+          // designed starts — Create · Template · Duplicate · Import (WORKFLOWS B1) — are built
+          // here, each either live or disabled WITH THE REASON IT CANNOT WORK. Nothing on this
+          // frame is a no-op.
+          const canEditEmpty = planCanEdit(view);
           const empty = document.createElement("div");
           empty.className = "plan-empty";
           const eh = document.createElement("h3");
           eh.className = "plan-empty-h";
-          eh.textContent = "Build your service plan";
-          const es = document.createElement("p");
-          es.className = "plan-empty-sub";
-          es.textContent = "Add songs, scriptures, and presentations to the run sheet, then link content to each item.";
+          // The COPY follows the permission too, not just the controls. "Build your service
+          // plan · Add songs, scriptures and presentations…" is an instruction, and telling
+          // someone to do a thing their role forbids is worse than showing them the button.
+          // UX-STATE-MATRIX's own view-only heading is "No service plan yet".
+          eh.textContent = canEditEmpty ? "Build your service plan" : "No service plan yet";
+          empty.appendChild(eh);
+          if (canEditEmpty) {
+            const es = document.createElement("p");
+            es.className = "plan-empty-sub";
+            es.textContent = "Add songs, scriptures, and presentations to the run sheet, then link content to each item.";
+            empty.appendChild(es);
+          } else {
+            // View-only on an empty plan: nothing to follow and nothing this operator may
+            // create, so the frame says so. No disabled buttons here — a permission is not a
+            // "coming soon", and four controls it would then have to explain away is exactly
+            // the "seeing controls they can't use" pain this frame exists to fix.
+            const ro = document.createElement("p");
+            ro.className = "plan-empty-note";
+            ro.id = "plan-empty-viewonly";
+            ro.textContent = "There's no plan to follow yet, and your role can't create one.";
+            empty.appendChild(ro);
+            list.appendChild(empty);
+            planClearInspector(view);
+            return;
+          }
           const ec = document.createElement("button");
           ec.type = "button";
           ec.id = "plan-empty-add";
@@ -7278,18 +7551,69 @@
             const first = document.querySelector("#plan-palette-btns .plan-palette-btn");
             if (first) first.focus();
           };
-          const el8 = document.createElement("p");
-          el8.className = "plan-empty-later";
-          el8.textContent = "Start from a template · Duplicate a past plan · Import — coming soon";
-          empty.appendChild(eh);
-          empty.appendChild(es);
           empty.appendChild(ec);
-          empty.appendChild(el8);
+
+          const acts = document.createElement("div");
+          acts.className = "plan-empty-acts";
+          const templates = planTemplateList(view);
+          const lifecycle = planLifecycleAvailable(view);
+          const mk = (id, label, onclick, reasonId) => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.id = id;
+            b.className = "pm-btn-ghost plan-empty-act";
+            b.textContent = label;
+            if (onclick) b.onclick = onclick;
+            else {
+              b.disabled = true;
+              b.setAttribute("aria-describedby", reasonId);
+            }
+            acts.appendChild(b);
+            return b;
+          };
+          mk("plan-empty-new", "Create a service…", lifecycle ? () => planNewPlan(planLastView) : null, "plan-empty-later");
+          // A template picker with no templates to pick is an empty dialog, so the control is
+          // disabled when the host reports none — the same three-state rule as everything else
+          // on this surface, applied to a list rather than a flag.
+          mk(
+            "plan-empty-template",
+            "Start from a template…",
+            lifecycle && templates ? () => planTemplatePlan(planLastView) : null,
+            templates || !lifecycle ? "plan-empty-later" : "plan-empty-no-templates"
+          );
+          // DISABLED BY DESIGN, not by dependency. `duplicate_plan` copies the plan that is OPEN,
+          // which is right for "duplicate this service" (it lives in the Plan Summary) and wrong
+          // for this frame: "Duplicate previous" wants a saved-plan LIBRARY to choose a past
+          // service from, and this build persists exactly one plan row. There is no library and
+          // no ticket for one, so the control states that instead of pretending.
+          mk("plan-empty-duplicate", "Duplicate previous…", null, "plan-empty-no-library");
+          mk("plan-empty-import", "Import a run sheet…", lifecycle ? () => planImportPlan(planLastView) : null, "plan-empty-later");
+          // FR-139's portable bundle is a DIFFERENT thing from the run-sheet import above: it
+          // carries items AND their media references. No such format exists in any layer, and
+          // letting the run-sheet import stand in for it would ship an "Import" that silently
+          // drops every operator's media.
+          mk("plan-empty-bundle", "Import a plan bundle…", null, "plan-empty-no-bundle");
+          empty.appendChild(acts);
+
+          const reason = (id, text) => {
+            const p = document.createElement("p");
+            p.className = "plan-empty-later";
+            p.id = id;
+            p.textContent = text;
+            empty.appendChild(p);
+          };
+          if (!lifecycle) reason("plan-empty-later", PLAN_NO_LIFECYCLE_REASON);
+          else if (!templates) reason("plan-empty-no-templates", "This host doesn't offer any starter templates.");
+          reason("plan-empty-no-library", "Duplicating a past service needs a saved-plan library. This build keeps one plan at a time.");
+          reason("plan-empty-no-bundle", "A plan bundle carries items and their media together. That file format doesn't exist yet — paste a run sheet instead.");
           list.appendChild(empty);
           planClearInspector(view);
           return;
         }
         const last = view.items.length - 1;
+        // Asked ONCE for the whole run sheet, from the host's own verdict. Every reorder
+        // affordance below consumes THIS value; none of them re-reads the role.
+        const canEdit = planCanEdit(view);
         view.items.forEach((it, i) => {
           const row = document.createElement("div");
           row.className =
@@ -7316,14 +7640,18 @@
           if (it.link) main.appendChild(planLinkChip(it.link));
           // Drag handle (pointer reorder). aria-hidden — keyboard users reorder via Alt+↑/↓ (below),
           // so the glyph handle is a pointer affordance only and stays out of the tab order / AT tree.
-          const handle = document.createElement("span");
-          handle.className = "plan-b-handle";
-          handle.textContent = "⠿";
-          handle.setAttribute("aria-hidden", "true");
-          handle.title = "Drag to reorder";
-          handle.onpointerdown = (e) => planStartRowDrag(e, it.id, i, row);
-          handle.onclick = (e) => e.stopPropagation(); // a handle interaction must not select the row
-          row.appendChild(handle);
+          // Reordering is an EDIT, so view-only omits the handle rather than leaving a grab
+          // affordance that does nothing when grabbed.
+          if (canEdit) {
+            const handle = document.createElement("span");
+            handle.className = "plan-b-handle";
+            handle.textContent = "⠿";
+            handle.setAttribute("aria-hidden", "true");
+            handle.title = "Drag to reorder";
+            handle.onpointerdown = (e) => planStartRowDrag(e, it.id, i, row);
+            handle.onclick = (e) => e.stopPropagation(); // a handle interaction must not select the row
+            row.appendChild(handle);
+          }
           // Per-type accent bar (handoff §3). Purely a scanning cue — the type BADGE inside .main
           // carries the same information as text, so this is aria-hidden and never the only signal.
           const accent = document.createElement("span");
@@ -7333,32 +7661,36 @@
           row.appendChild(main);
           const tools = document.createElement("span");
           tools.className = "plan-b-tools";
-          const up = miniBtn(
-            "↑",
-            (e) => {
-              e.stopPropagation();
-              if (i > 0) {
-                planFocusAfterRender = { kind: "up", id: it.id };
-                planMutate(() => invoke("move_item", { itemId: it.id, to: i - 1 }));
-              }
-            },
-            "Move “" + it.title + "” up"
-          );
-          up.className = "plan-b-up";
-          up.disabled = i === 0;
-          const down = miniBtn(
-            "↓",
-            (e) => {
-              e.stopPropagation();
-              if (i < last) {
-                planFocusAfterRender = { kind: "down", id: it.id };
-                planMutate(() => invoke("move_item", { itemId: it.id, to: i + 1 }));
-              }
-            },
-            "Move “" + it.title + "” down"
-          );
-          down.className = "plan-b-down";
-          down.disabled = i === last;
+          let up = null;
+          let down = null;
+          if (canEdit) {
+            up = miniBtn(
+              "↑",
+              (e) => {
+                e.stopPropagation();
+                if (i > 0) {
+                  planFocusAfterRender = { kind: "up", id: it.id };
+                  planMutate(() => invoke("move_item", { itemId: it.id, to: i - 1 }));
+                }
+              },
+              "Move “" + it.title + "” up"
+            );
+            up.className = "plan-b-up";
+            up.disabled = i === 0;
+            down = miniBtn(
+              "↓",
+              (e) => {
+                e.stopPropagation();
+                if (i < last) {
+                  planFocusAfterRender = { kind: "down", id: it.id };
+                  planMutate(() => invoke("move_item", { itemId: it.id, to: i + 1 }));
+                }
+              },
+              "Move “" + it.title + "” down"
+            );
+            down.className = "plan-b-down";
+            down.disabled = i === last;
+          }
           // Owner + planned duration (handoff §3, FR-004). Both have been on PlanItemView all
           // along and were dropped on the floor here. Absent = unassigned / unplanned, so the
           // element is omitted rather than padded with a placeholder dash that reads as data.
@@ -7385,8 +7717,10 @@
             meta.appendChild(dur);
           }
           if (meta.childElementCount) row.appendChild(meta);
-          tools.appendChild(up);
-          tools.appendChild(down);
+          if (up && down) {
+            tools.appendChild(up);
+            tools.appendChild(down);
+          }
           row.appendChild(tools);
           if (it.is_live) row.appendChild(badge("live", "LIVE"));
           else if (it.is_staged) row.appendChild(badge("preview", "PREVIEW"));
@@ -7403,7 +7737,9 @@
               return;
             }
             // Alt+↑/↓ reorders the row (NFR-019 keyboard reorder); focus follows the moved row.
-            if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+            // Gated on the same verdict as the buttons: hiding the buttons while leaving the
+            // keyboard path live would make the restriction a lie for keyboard users only.
+            if (canEdit && e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
               e.preventDefault();
               planReorderTo(it.id, i + (e.key === "ArrowUp" ? -1 : 1), last);
             }
@@ -7422,7 +7758,7 @@
           }
         }
         const sel = view.items.find((x) => x.id === planSelectedId);
-        if (sel) planRenderInspector(sel);
+        if (sel) planRenderInspector(sel, view);
         else planClearInspector(view);
       }
       // Right panel with NOTHING selected = Plan Summary (frame 608:875). Selecting an item swaps
@@ -7470,6 +7806,344 @@
         row.appendChild(v);
         return row;
       }
+      // =======================================================================================
+      // PLAN LIFECYCLE — the send sites. One place per command, each reachable from exactly one
+      // control, each refusing to run twice and each reporting what the host actually said.
+      // =======================================================================================
+
+      // One lifecycle command in flight at a time. These commands REPLACE the plan; two of them
+      // racing would leave the operator looking at whichever view came back last with no way to
+      // tell which one they got.
+      let planLifecycleBusy = false;
+
+      // The plan surface's own feedback strip. The presentation surface's #pm-toast lives inside
+      // that surface's subtree, so it is not visible from here — this is the plan surface's
+      // equivalent, and it is REBUILT rather than re-texted on each call: a live region whose
+      // role changes between status and alert does not reliably re-announce, and "Published"
+      // arriving in the element that last said "Couldn't publish" is worth announcing.
+      function planNotice(kind, message) {
+        const slot = document.getElementById("plan-notice");
+        if (!slot) return;
+        slot.innerHTML = "";
+        if (!message) return;
+        const p = document.createElement("p");
+        p.className = "plan-notice plan-notice-" + kind;
+        p.setAttribute("role", kind === "alert" ? "alert" : "status");
+        p.textContent = message;
+        slot.appendChild(p);
+      }
+
+      // Run one lifecycle command and re-render from the view it returns.
+      //
+      // On failure the HOST'S OWN MESSAGE is shown. The five commands answer a bad name with
+      // Denied{bad_request}, and the operator needs to see which rule they broke — a generic
+      // "something went wrong" here would turn a fixable typo into an unexplained dead button.
+      // The selection is dropped first because every one of these commands can replace the whole
+      // run sheet: keeping a stale id would re-open an inspector onto an item that no longer
+      // exists.
+      async function planLifecycleRun(what, fn) {
+        if (planLifecycleBusy) return false;
+        planLifecycleBusy = true;
+        try {
+          const v = await fn();
+          if (!v || !Array.isArray(v.items)) throw new Error("the host did not return a plan");
+          planSelectedId = null;
+          planFocusAfterRender = null;
+          planRenderBuilder(v);
+          return true;
+        } catch (e) {
+          console.error(e);
+          // A Tauri command declared `Result<_, String>` rejects with the bare STRING, not an
+          // Error, so both shapes are unwrapped. The host's own words are what make a refused
+          // name fixable.
+          const detail = e && e.message ? e.message : typeof e === "string" ? e : "";
+          planNotice("alert", "Couldn't " + what + (detail ? " — " + detail : "") + ".");
+          return false;
+        } finally {
+          planLifecycleBusy = false;
+        }
+      }
+
+      // --- publish_plan (frame 608:875, FR-006) ---------------------------------------------
+      //
+      // COPY NOTE. The shipped button reads "Publish to team", but SERVICE-PLAN-2.0-HANDOFF.md:105
+      // describes publish as a purely LOCAL builder-to-console hand-off, which is also FR-006's
+      // actual acceptance criterion ("operator opens identical ordered plan"). That conflict is
+      // the owner's to settle, so the designed label is left exactly as it is and every sentence
+      // written HERE is network-neutral: nothing below claims the plan was sent anywhere.
+      function planPublish(view) {
+        const pub = planPublishState(view);
+        if (!pub) return;
+        planLifecycleRun("publish this plan", () => invoke("publish_plan")).then((ok) => {
+          if (ok) planNotice("status", "Plan published. The Live Console opens this run sheet for the service.");
+        });
+      }
+
+      // --- new_plan --------------------------------------------------------------------------
+      function planNewPlan(view) {
+        if (!planLifecycleAvailable(view) || !planCanEdit(view)) return;
+        pmPrompt({
+          title: "Create a service",
+          describe: "Starts an empty run sheet under this name. The plan currently open is replaced.",
+          label: "Service name",
+          value: "",
+          confirmLabel: "Create",
+          validate: planNameProblem,
+          onConfirm: (name) => {
+            planLifecycleRun("create the service", () => invoke("new_plan", { name: name.trim() })).then((ok) => {
+              if (ok) planNotice("status", "New service created. Add your first item to build the run sheet.");
+            });
+          },
+        });
+      }
+
+      // --- template_plan ---------------------------------------------------------------------
+      //
+      // The list comes from the HOST (`plan_templates`). The picker never invents an id the host
+      // cannot build from, and it reports each template's SIZE, which is the only thing about a
+      // template's contents that crosses the wire.
+      //
+      // The NAME FIELD IS NOT OPTIONAL CHROME. `TemplatePlan { template, name }` requires a
+      // valid non-blank name and the host does nothing to default it — a template's own name is
+      // display text, not a fallback — so a picker that only chose a template would be refused
+      // with Denied{bad_request} every time. It is seeded from the chosen template so the
+      // obvious gesture still works in one keystroke (UX-FLOWS Flow 1 step 1: pick a template,
+      // set the name).
+      function planTemplatePlan(view) {
+        const templates = planTemplateList(view);
+        if (!templates || !planLifecycleAvailable(view) || !planCanEdit(view)) return;
+        let chosen = templates[0];
+        let nameInput = null;
+        pmPrompt({
+          title: "Start from a template",
+          describe: "Creates a run sheet with the template's items already in order. Rename them, then link content to each one.",
+          label: "Service name",
+          value: templates[0].name,
+          confirmLabel: "Create",
+          body: (extra) => {
+            const group = document.createElement("div");
+            group.className = "plan-tpl-list";
+            group.setAttribute("role", "radiogroup");
+            group.setAttribute("aria-label", "Template");
+            templates.forEach((t, i) => {
+              const id = "plan-tpl-" + i;
+              const row = document.createElement("label");
+              row.className = "plan-tpl-row";
+              row.htmlFor = id;
+              const r = document.createElement("input");
+              r.type = "radio";
+              r.name = "plan-template";
+              r.id = id;
+              r.value = t.id;
+              r.checked = i === 0;
+              r.onchange = () => {
+                chosen = t;
+                // Follow the chosen template's name unless the operator has typed their own.
+                // Overwriting a typed name would silently discard what they meant to call it.
+                if (nameInput && !nameInput.dataset.touched) nameInput.value = t.name;
+              };
+              const txt = document.createElement("span");
+              txt.className = "plan-tpl-txt";
+              const nm = document.createElement("span");
+              nm.className = "plan-tpl-name";
+              nm.textContent = t.name;
+              const ct = document.createElement("span");
+              ct.className = "plan-tpl-count";
+              // `items` is a COUNT reported by the host, never a list rendered from the client.
+              ct.textContent = t.items + (t.items === 1 ? " item" : " items");
+              txt.appendChild(nm);
+              txt.appendChild(ct);
+              row.appendChild(r);
+              row.appendChild(txt);
+              group.appendChild(row);
+            });
+            extra.appendChild(group);
+          },
+          validate: (v) => planNameProblem(v),
+          onConfirm: (name) => {
+            planLifecycleRun("start from that template", () =>
+              invoke("template_plan", { template: chosen.id, name: name.trim() })
+            ).then((ok) => {
+              if (ok) planNotice("status", "Service created from “" + chosen.name + "”. Rename the items and link content to each one.");
+            });
+          },
+        });
+        // pmPrompt owns the field; grab it once it exists so the radio handler can follow it.
+        nameInput = document.getElementById("pm-prompt-input");
+        if (nameInput) nameInput.oninput = () => { nameInput.dataset.touched = "1"; };
+      }
+
+      // --- duplicate_plan (FR-005) ------------------------------------------------------------
+      //
+      // Copies the plan that is OPEN, under a new name. That is "duplicate this service", and it
+      // is why this control lives beside the open plan's summary rather than in the empty state:
+      // the empty state's designed "Duplicate previous" wants a saved-plan LIBRARY to pick from,
+      // and this build persists exactly one plan row. See the empty state for that affordance.
+      function planDuplicatePlan(view) {
+        if (!planLifecycleAvailable(view) || !planCanEdit(view)) return;
+        const base = view && typeof view.plan_name === "string" ? view.plan_name : "";
+        pmPrompt({
+          title: "Duplicate this service",
+          describe: "Copies the current run sheet under a new name. The copy is independent — editing it never changes the original.",
+          label: "New name",
+          // A DISTINCT default, deliberately. Duplicating under the CURRENT name is accepted by
+          // the host as a true no-op — it Acks and nothing changes — so an operator who presses
+          // Enter on a prefilled unchanged name would be told "Service duplicated" over a plan
+          // that had not moved. Prefilling "… (copy)" means the obvious gesture does the
+          // obvious thing, and the validator below covers the case where they type it back.
+          value: base ? base + " (copy)" : "",
+          confirmLabel: "Duplicate",
+          validate: (v) => {
+            const why = planNameProblem(v);
+            if (why) return why;
+            // Refused HERE rather than sent. The host would accept it and do nothing, and this
+            // client cannot honestly report that outcome: "duplicated" would be false and
+            // silence would look like a broken button. Compared trimmed, because that is the
+            // form the host compares.
+            if (base && v.trim() === base.trim()) {
+              return "That is the current name. Give the copy a different one.";
+            }
+            return null;
+          },
+          onConfirm: (name) => {
+            planLifecycleRun("duplicate this service", () => invoke("duplicate_plan", { name: name.trim() })).then((ok) => {
+              if (ok) planNotice("status", "Service duplicated. You are now editing the copy.");
+            });
+          },
+        });
+      }
+
+      // --- import_plan -------------------------------------------------------------------------
+      //
+      // A RUN-SHEET ITEM LIST, and nothing more. `import_plan` carries kind + title (+ optional
+      // owner and duration) per item; CONTENT LINKS are set afterwards with the existing
+      // SetItemContent, so there is deliberately no link handling on this path.
+      //
+      // This is NOT FR-139. That requirement wants a portable bundle carrying items AND their
+      // media references; no such format exists in any layer, and the empty state offers it as a
+      // named, disabled affordance with that reason rather than letting this dialog stand in for
+      // it. Conflating the two would ship an "Import" that silently loses every operator's media.
+      //
+      // WHY EACH LINE MUST NAME ITS TYPE. The obvious kindness — treat a bare line as some
+      // default type — is the wrong one. Every default is wrong for most lines (a plan of
+      // announcements triggers nothing an operator wants; a plan of sections triggers nothing at
+      // all, because a section is inert), and a mis-typed item is silent: it looks imported and
+      // behaves wrongly on service day. An unrecognised line is reported by line number instead,
+      // with the accepted types listed in the dialog.
+      const PLAN_IMPORT_EXAMPLE = "Announcement: Welcome\nSong: Great Are You Lord\nScripture: Romans 8:28\nSection: Sermon\nSong: Closing Song";
+
+      // Parse pasted text into wire items. Returns { items, problems } — problems are stated per
+      // LINE so the operator can fix the paste rather than re-reading the whole thing.
+      //
+      // Kinds are matched against PLAN_ADD_KINDS, which is the same table the Add-item palette
+      // renders from and is the wire tag set. Both the display label ("Presentation") and the
+      // wire tag ("slide_group") are accepted, because the operator is reading labels on screen
+      // while the wire carries tags.
+      function planParseRunSheet(text) {
+        const items = [];
+        const problems = [];
+        const lines = String(text == null ? "" : text).split(/\r\n|\r|\n/);
+        for (let i = 0; i < lines.length; i++) {
+          const raw = lines[i];
+          if (!raw.trim()) continue; // blank lines are spacing in a pasted order of service
+          const at = raw.indexOf(":");
+          const label = at < 0 ? "" : raw.slice(0, at).trim().toLowerCase();
+          const match = at < 0 ? null : PLAN_ADD_KINDS.find((k) => k[0] === label || k[1].toLowerCase() === label);
+          if (!match) {
+            problems.push("Line " + (i + 1) + ": start the line with a type, for example “Song: " + raw.trim().slice(0, 40) + "”.");
+            continue;
+          }
+          const title = raw.slice(at + 1).trim();
+          // Item titles cross the same untrusted boundary as the plan name and the host applies
+          // the same rule to them, so they are checked by the same function — not by a second,
+          // looser copy of it written for this path.
+          const why = planNameProblem(title);
+          if (why) {
+            problems.push("Line " + (i + 1) + ": " + why.charAt(0).toLowerCase() + why.slice(1));
+            continue;
+          }
+          items.push({ kind: match[0], title: title });
+        }
+        if (items.length > PLAN_MAX_ITEMS) {
+          problems.push("A plan holds at most " + PLAN_MAX_ITEMS + " items; this paste has " + items.length + ".");
+        }
+        return { items: items, problems: problems };
+      }
+
+      function planImportPlan(view) {
+        if (!planLifecycleAvailable(view) || !planCanEdit(view)) return;
+        let area = null;
+        pmPrompt({
+          title: "Import a run sheet",
+          describe: "Paste one item per line, each starting with its type. Owners, durations and content links are set afterwards in the item inspector.",
+          label: "Service name",
+          value: "",
+          confirmLabel: "Import",
+          body: (extra) => {
+            const lab = document.createElement("label");
+            lab.className = "pm-insp-lbl";
+            lab.htmlFor = "plan-import-text";
+            lab.textContent = "Run sheet";
+            area = document.createElement("textarea");
+            area.id = "plan-import-text";
+            area.className = "pm-insp-ctrl plan-import-text";
+            area.rows = 8;
+            area.placeholder = PLAN_IMPORT_EXAMPLE;
+            area.setAttribute("aria-describedby", "plan-import-kinds");
+            const kinds = document.createElement("p");
+            kinds.id = "plan-import-kinds";
+            kinds.className = "plan-import-kinds";
+            kinds.textContent = "Types: " + PLAN_ADD_KINDS.map((k) => k[1]).join(" · ");
+            extra.appendChild(lab);
+            extra.appendChild(area);
+            extra.appendChild(kinds);
+          },
+          validate: (v) => {
+            const why = planNameProblem(v);
+            if (why) return why;
+            const parsed = planParseRunSheet(area ? area.value : "");
+            if (parsed.problems.length) return parsed.problems[0];
+            if (!parsed.items.length) return "Paste at least one item, for example “Song: Great Are You Lord”.";
+            return null;
+          },
+          onConfirm: (name) => {
+            const parsed = planParseRunSheet(area ? area.value : "");
+            planLifecycleRun("import that run sheet", () =>
+              invoke("import_plan", { name: name.trim(), items: parsed.items })
+            ).then((ok) => {
+              if (ok)
+                planNotice(
+                  "status",
+                  "Imported " + parsed.items.length + (parsed.items.length === 1 ? " item" : " items") +
+                    ". Link content to each one to finish the plan."
+                );
+            });
+          },
+        });
+      }
+
+      // A control that cannot work yet: present, disabled, and pointing at the REASON. Never
+      // hidden (an operator looking for Publish must be able to find it and learn when it
+      // arrives) and never wired to a no-op (a control that looks live and silently does nothing
+      // is worse than one that says it is not ready).
+      function planDisabledAction(id, label, reasonId) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "pm-btn-ghost plan-sum-btn";
+        b.id = id;
+        b.textContent = label;
+        b.disabled = true;
+        b.setAttribute("aria-describedby", reasonId);
+        return b;
+      }
+      function planReasonNote(id, text, cls) {
+        const p = document.createElement("p");
+        p.className = cls || "plan-sum-later";
+        p.id = id;
+        p.textContent = text;
+        return p;
+      }
+
       // ---------------------------------------------------------------------------------------
       // SEAM — the Plan Summary's WRITE actions (86ak8467m owns these; 86ak846ft owns the panel).
       // Frame 608:875 draws three: Run pre-service check, Publish to team, Open in Live. Only
@@ -7480,41 +8154,115 @@
       // Publish should find it and learn when it arrives — and never wired to a no-op, because a
       // control that looks live and silently does nothing is worse than one that says it is not
       // ready. 86ak8467m enables them HERE, in this function, and must not rebuild the panel.
+      //
+      // 86ak8467m: Publish and Duplicate are now live WHEN THE HOST REPORTS THE CAPABILITY, and
+      // the panel carries the plan's publication state and the frame-612:1020 change badge. The
+      // pre-service check stays disabled — no command in this contract performs one.
       // ---------------------------------------------------------------------------------------
-      function planSummaryActions(box) {
-        const laterNote = document.createElement("p");
-        laterNote.className = "plan-sum-later";
-        laterNote.id = "plan-sum-later";
-        laterNote.textContent = "Pre-service check and publishing arrive with the plan lifecycle work.";
+      function planSummaryActions(box, view) {
+        const canEdit = planCanEdit(view);
+        const pub = planPublishState(view);
+        const lifecycle = planLifecycleAvailable(view);
 
-        const pre = document.createElement("button");
-        pre.type = "button";
-        pre.className = "pm-btn-ghost plan-sum-btn";
-        pre.id = "plan-sum-precheck";
-        pre.textContent = "✓ Run pre-service check";
-        pre.disabled = true;
-        pre.setAttribute("aria-describedby", "plan-sum-later");
+        // --- Publication state + the change badge (frame 612:1020) ---------------------------
+        // Rendered only when the host REPORTS `publish`. With the field absent nothing may be
+        // said about publication at all: no version, no draft label, and above all no badge.
+        if (pub) {
+          const state = document.createElement("div");
+          state.className = "plan-pub" + (pub.changed ? " is-changed" : pub.published ? " is-published" : " is-draft");
+          const line = document.createElement("p");
+          line.className = "plan-pub-line";
+          line.id = "plan-pub-line";
+          // THE BADGE IS TESTED FIRST, and it consumes `pub.changed` — the one expression in
+          // which "published AND edited since" is defined (planPublishState). It deliberately
+          // does NOT re-derive `!pub.published` here.
+          //
+          // That ordering is load-bearing, and this is the second attempt at it. The first wrote
+          // `if (!pub.published) … else if (pub.changed)`, which reads identically and is not: it
+          // re-assembles the conjunction beside the code under test, so deleting `published &&`
+          // from planPublishState left the suite completely green (the mutation battery caught
+          // it; CLAUDE.md's 86ak643rc trap, exactly). With the badge consuming the predicate
+          // directly, breaking the predicate breaks the badge — which is the only way this rule
+          // is actually guarded.
+          if (pub.changed) {
+            const b = document.createElement("span");
+            b.className = "plan-pub-badge";
+            b.id = "plan-pub-changed";
+            b.textContent = "⟳ Plan updated";
+            state.appendChild(b);
+            line.textContent = "Edited since version " + pub.version + " was published.";
+          } else if (pub.published) {
+            line.textContent = "Published · version " + pub.version;
+          } else {
+            line.textContent = "Draft · not published yet";
+          }
+          state.appendChild(line);
+          box.appendChild(state);
+        }
 
-        const pub = document.createElement("button");
-        pub.type = "button";
-        pub.className = "pm-btn-ghost plan-sum-btn";
-        pub.id = "plan-sum-publish";
-        pub.textContent = "↑ Publish to team";
-        pub.disabled = true;
-        pub.setAttribute("aria-describedby", "plan-sum-later");
+        // --- Pre-service check: still not built, still honest --------------------------------
+        const preNote = planReasonNote(
+          "plan-sum-precheck-later",
+          "The pre-service check isn't built yet."
+        );
+        const pre = planDisabledAction("plan-sum-precheck", "✓ Run pre-service check", "plan-sum-precheck-later");
+        box.appendChild(pre);
+        box.appendChild(preNote);
 
-        // A pure surface switch to the Live Console — never a go-live. Mirrors the header button:
-        // a plan edit must not commit anything to Live.
+        // --- Publish (frame 608:875, FR-006) -------------------------------------------------
+        // View-only HIDES it (UX-STATE-MATRIX:111 — hidden, not greyed, so it also leaves the
+        // tab order). Reported-but-unavailable DISABLES it with the reason.
+        if (canEdit) {
+          if (lifecycle && pub) {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "pm-btn-ghost plan-sum-btn";
+            b.id = "plan-sum-publish";
+            // The DESIGNED label, left exactly as drawn. Whether it should keep network-implying
+            // wording for a local hand-off is an open owner question (see planPublish).
+            b.textContent = "↑ Publish to team";
+            b.setAttribute(
+              "aria-describedby",
+              pub.changed ? "plan-pub-line" : "plan-sum-publish-hint"
+            );
+            b.onclick = () => planPublish(planLastView);
+            box.appendChild(b);
+            if (!pub.changed) {
+              box.appendChild(
+                planReasonNote(
+                  "plan-sum-publish-hint",
+                  pub.published
+                    ? "Publishing again hands the current run sheet to the Live Console."
+                    : "Publishing hands this run sheet to the Live Console for the service.",
+                  "plan-sum-hintline"
+                )
+              );
+            }
+            const dup = document.createElement("button");
+            dup.type = "button";
+            dup.className = "pm-btn-ghost plan-sum-btn";
+            dup.id = "plan-sum-duplicate";
+            dup.textContent = "⧉ Duplicate this service";
+            dup.onclick = () => planDuplicatePlan(planLastView);
+            box.appendChild(dup);
+          } else {
+            box.appendChild(planDisabledAction("plan-sum-publish", "↑ Publish to team", "plan-sum-later"));
+            box.appendChild(planDisabledAction("plan-sum-duplicate", "⧉ Duplicate this service", "plan-sum-later"));
+            box.appendChild(planReasonNote("plan-sum-later", PLAN_NO_LIFECYCLE_REASON));
+          }
+        }
+
+        // --- Open in Live: a pure surface switch, never a go-live ----------------------------
+        // Design-QA §9 rejected an enabled write-looking action on the view-only frame, so in
+        // view-only this reads as the passive thing it actually is. It still NAVIGATES: watching
+        // the console is exactly what a view-only operator is there to do, and taking that away
+        // would remove a capability the permission never restricted.
         const live = document.createElement("button");
         live.type = "button";
-        live.className = "pm-btn-primary plan-sum-btn";
+        live.className = (canEdit ? "pm-btn-primary" : "pm-btn-ghost") + " plan-sum-btn";
         live.id = "plan-sum-live";
-        live.textContent = "▶ Open in Live";
+        live.textContent = canEdit ? "▶ Open in Live" : "▶ Follow in Live";
         live.onclick = () => showSurface("console");
-
-        box.appendChild(pre);
-        box.appendChild(pub);
-        box.appendChild(laterNote);
         box.appendChild(live);
       }
       function planClearInspector(view) {
@@ -7563,7 +8311,7 @@
         card.appendChild(planSumRow("Assigned", sum.assigned + " / " + sum.items));
         box.appendChild(card);
 
-        planSummaryActions(box);
+        planSummaryActions(box, view);
 
         const note = document.createElement("p");
         note.className = "plan-sum-hint";
@@ -7603,12 +8351,17 @@
         card.appendChild(meta);
         return card;
       }
-      function planRenderInspector(it) {
+      function planRenderInspector(it, view) {
         const box = document.getElementById("plan-b-insp");
         if (!box) return;
-        planKeepPanelFocus(box, () => planRenderInspectorInto(box, it));
+        planKeepPanelFocus(box, () => planRenderInspectorInto(box, it, view));
       }
-      function planRenderInspectorInto(box, it) {
+      // The item inspector. Frame 612:342 calls for a READ-ONLY inspector under view-only: the
+      // item's facts still read, every control that would change them is absent. `view` may be
+      // undefined for a caller that has none, and planCanEdit answers "yes" to that — an absent
+      // verdict is not a restriction.
+      function planRenderInspectorInto(box, it, view) {
+        const canEdit = planCanEdit(view);
         planSetInspHeading("ITEM");
         box.innerHTML = "";
         const kindRow = document.createElement("div");
@@ -7621,24 +8374,34 @@
         const tl = document.createElement("label");
         tl.className = "pm-insp-lbl";
         tl.textContent = "Title";
-        tl.htmlFor = "plan-insp-title";
-        const ti = document.createElement("input");
-        ti.className = "pm-insp-ctrl";
-        ti.id = "plan-insp-title";
-        ti.type = "text";
-        ti.value = it.title;
-        ti.setAttribute("aria-label", "Item title");
-        ti.onkeydown = (e) => {
-          if (e.key === "Enter") {
-            const t = ti.value.trim();
-            if (t && t !== it.title) {
-              planFocusAfterRender = { kind: "row", id: it.id }; // keep focus on the item after the rebuild
-              planMutate(() => invoke("rename_item", { itemId: it.id, title: t }));
-            }
-          }
-        };
         box.appendChild(tl);
-        box.appendChild(ti);
+        if (canEdit) {
+          tl.htmlFor = "plan-insp-title";
+          const ti = document.createElement("input");
+          ti.className = "pm-insp-ctrl";
+          ti.id = "plan-insp-title";
+          ti.type = "text";
+          ti.value = it.title;
+          ti.setAttribute("aria-label", "Item title");
+          ti.onkeydown = (e) => {
+            if (e.key === "Enter") {
+              const t = ti.value.trim();
+              if (t && t !== it.title) {
+                planFocusAfterRender = { kind: "row", id: it.id }; // keep focus on the item after the rebuild
+                planMutate(() => invoke("rename_item", { itemId: it.id, title: t }));
+              }
+            }
+          };
+          box.appendChild(ti);
+        } else {
+          // STATIC TEXT, not a read-only input. A field that looks like a field and refuses to
+          // accept typing is the "controls they can't use" complaint in a different costume.
+          const tv = document.createElement("p");
+          tv.className = "plan-insp-ro";
+          tv.id = "plan-insp-title-ro";
+          tv.textContent = it.title;
+          box.appendChild(tv);
+        }
         if (it.kind === "scripture" || it.kind === "slide_group") {
           const ll = document.createElement("div");
           ll.className = "pm-insp-lbl";
@@ -7662,16 +8425,20 @@
           }
           const acts = document.createElement("div");
           acts.className = "plan-insp-actions";
-          const linkBtn = document.createElement("button");
-          linkBtn.type = "button";
-          linkBtn.className = "pm-btn-primary";
-          linkBtn.textContent = it.link
-            ? "Change…"
-            : it.kind === "scripture"
-            ? "Link a scripture…"
-            : "Link a presentation…";
-          linkBtn.onclick = () => openLinkModal(it);
-          acts.appendChild(linkBtn);
+          // Linking and unlinking are plan EDITS; only "Open in editor" below is navigation, and
+          // navigation is not what this permission restricts.
+          if (canEdit) {
+            const linkBtn = document.createElement("button");
+            linkBtn.type = "button";
+            linkBtn.className = "pm-btn-primary";
+            linkBtn.textContent = it.link
+              ? "Change…"
+              : it.kind === "scripture"
+              ? "Link a scripture…"
+              : "Link a presentation…";
+            linkBtn.onclick = () => openLinkModal(it);
+            acts.appendChild(linkBtn);
+          }
           // Open in editor: jump to the Presentation surface with this deck open (deck edits happen
           // there, not in the plan builder). Only for a resolvable deck link.
           if (isDeckLink && planDeckName(it.link.id)) {
@@ -7685,7 +8452,7 @@
             };
             acts.appendChild(openEd);
           }
-          if (it.link) {
+          if (it.link && canEdit) {
             const un = document.createElement("button");
             un.type = "button";
             un.className = "pm-btn-ghost";
@@ -7698,27 +8465,31 @@
           }
           box.appendChild(acts);
         }
-        const danger = document.createElement("div");
-        danger.className = "plan-insp-actions plan-insp-danger";
-        const del = document.createElement("button");
-        del.type = "button";
-        del.className = "pm-btn-danger";
-        del.textContent = "Remove item";
-        del.onclick = () =>
-          pmConfirm({
-            title: "Remove “" + it.title + "”?",
-            body: "Only this run-sheet item is removed — any linked scripture or presentation is untouched.",
-            confirmLabel: "Remove",
-            onConfirm: () => {
-              if (planSelectedId === it.id) planSelectedId = null;
-              planMutate(() => invoke("remove_item", { itemId: it.id }));
-            },
-          });
-        danger.appendChild(del);
-        box.appendChild(danger);
+        if (canEdit) {
+          const danger = document.createElement("div");
+          danger.className = "plan-insp-actions plan-insp-danger";
+          const del = document.createElement("button");
+          del.type = "button";
+          del.className = "pm-btn-danger";
+          del.textContent = "Remove item";
+          del.onclick = () =>
+            pmConfirm({
+              title: "Remove “" + it.title + "”?",
+              body: "Only this run-sheet item is removed — any linked scripture or presentation is untouched.",
+              confirmLabel: "Remove",
+              onConfirm: () => {
+                if (planSelectedId === it.id) planSelectedId = null;
+                planMutate(() => invoke("remove_item", { itemId: it.id }));
+              },
+            });
+          danger.appendChild(del);
+          box.appendChild(danger);
+        }
         const note = document.createElement("p");
         note.className = "plan-insp-note";
-        note.textContent = "🔒 Editing here never changes Live. Open in Live loads the plan into the console.";
+        note.textContent = canEdit
+          ? "🔒 Editing here never changes Live. Open in Live loads the plan into the console."
+          : "🔒 View only — you can read this item and follow the service. Your role can't change the plan.";
         box.appendChild(note);
       }
 
