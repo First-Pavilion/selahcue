@@ -3156,8 +3156,16 @@ impl LiveController {
                 | Command::SetItemDuration { .. }
                 // Replacing the plan wholesale is the largest plan edit there is, so it takes an
                 // undo snapshot like any other — an import or a mistaken "new plan" is exactly
-                // the edit an operator most needs to take back. `PublishPlan` is absent on
-                // purpose: it changes no item and must not register as a change to review.
+                // the edit an operator most needs to take back.
+                //
+                // `PublishPlan` is absent because it edits nothing, but do not mistake this for
+                // what keeps a publish from raising its own badge. It is NOT load-bearing:
+                // listing `PublishPlan` here changes no observable behaviour, because the block
+                // that consumes this predicate also requires `self.plan != before`, and
+                // publishing leaves the plan identical. Verified by mutation — adding it here
+                // leaves the whole `selahcue-app` suite green. What it saves is a pointless
+                // plan-sized clone on every publish; what actually holds the badge down is the
+                // document comparison in `refresh_published_delta`.
                 | Command::NewPlan { .. }
                 | Command::TemplatePlan { .. }
                 | Command::DuplicatePlan { .. }
