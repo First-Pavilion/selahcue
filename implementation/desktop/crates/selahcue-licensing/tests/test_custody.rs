@@ -26,7 +26,7 @@ use selahcue_licensing::{
 use std::path::PathBuf;
 
 /// Number of `.rs` modules in `src/`. Pinned so a sweep cannot silently cover less.
-const EXPECTED_SRC_MODULES: usize = 8;
+const EXPECTED_SRC_MODULES: usize = 9;
 
 /// Number of formatted renderings the credential sweep covers. Pinned so an entry cannot
 /// quietly disappear from it.
@@ -642,10 +642,45 @@ fn crate_src_dir() -> PathBuf {
 
 #[test]
 fn no_filesystem_primitive_is_reachable_from_this_crate() {
-    // "Never in a plaintext file" is enforced by making a file unnameable from this crate's
-    // own code, in the spirit of `scripts/import_guards.sh` §14. Inspecting a running
-    // install would only ever prove the token was absent on the day the test ran; this
-    // proves the code has no way to put it there.
+    // A lexical scan of THIS crate's own `src/` for an enumerated set of spellings, in the
+    // spirit of `scripts/import_guards.sh` §14. Worth having: it catches the plain forms,
+    // and inspecting a running install would only ever prove the token was absent on the day
+    // the test ran.
+    //
+    // What it does NOT do — stated here because an earlier version of this comment claimed
+    // it "proves the code has no way to put it there", and the same false claim in
+    // `trust.rs` was a review finding. Security review demonstrated three compiling loaders
+    // that pass this guard green: `use std::{env as source};` (the brace breaks the
+    // substring), `std :: env :: var(..)` (whitespace does the same), and a helper placed in
+    // the path dependency `selahcue-cloud` and called from here, which names no forbidden
+    // token in this crate's `src/` at all. No name-scan can close that: reachability is
+    // transitive through the dependency graph and the spellings are unbounded. Widening the
+    // list moves the boundary; it never closes it.
+    //
+    // The test's NAME overstates for the same reason — "reachable" implies transitivity this
+    // cannot see. It is kept as-is deliberately, so the review trail that cites it stays
+    // legible; renaming it to something like `..._is_named_in_this_crates_own_source` is
+    // worth doing in the ticket that next touches this file.
+    //
+    // The effect-level control is the byte scan of the shipped release artefact —
+    // `scripts/dev_key_not_in_release.sh`, which ships and RUNS TODAY in `make ci` and CI.
+    // An earlier version of this comment called it an obligation deferred onto 86ak5mn1d /
+    // 86ak5mn1t; it has not been one for some time, and `TrustedKeys::bundled` says so.
+    //
+    // It is NOT a superset of this guard and must not be cited as one. It searches the
+    // release rlib for the LITERAL key bytes, so it closes "the dev key is COMPILED INTO
+    // release" and is blind to "a release binary OBTAINS the key at runtime" — which is
+    // precisely the threat this guard names above and also cannot catch. Handing that threat
+    // on to the byte scan as "the real guarantee" is what turned two honest admissions into
+    // a false claim: QA built the loader that BOTH of them miss (key derived from the seed
+    // file's own decimal form, env read placed in `selahcue-cloud`, behind a runtime trigger)
+    // and every control in the repository passed it green. The three env-spelling
+    // counterexamples named above are security review's — two separate demonstrations, kept
+    // apart so the review trail stays traceable.
+    //
+    // What actually holds this line is the review rule in `TrustedKeys::insert`: no config
+    // loader in this crate. That is enforced by a reviewer, deliberately — writing one is a
+    // considered act, not a slip, and no name-scan or byte-scan is going to catch it.
     //
     // Comment lines are filtered out because the module docs deliberately NAME these
     // primitives to explain why they are absent, and a guard silenced by deleting a comment
@@ -658,6 +693,16 @@ fn no_filesystem_primitive_is_reachable_from_this_crate() {
         "fs::read",
         "std::process",
         "Command::new",
+        // Environment access, added after review found `trust.rs` CLAIMING this guard
+        // covered it when it did not. The claim was not idle: an env-var trusted-key loader
+        // would defeat the release exclusion **at runtime, inside a release binary, with no
+        // `cfg` involved at all** — the `#[cfg(debug_assertions)]` gates would be perfectly
+        // intact and perfectly irrelevant. A no-op today because `src/` is otherwise
+        // env-free, which is exactly when it is cheapest to close.
+        "std::env",
+        "env::var",
+        "env!(",
+        "option_env!(",
     ];
 
     let mut sources = Vec::new();

@@ -330,6 +330,69 @@ jobs:
       # no-I/O rule + the ADR-0025 decoder pin). These are one-line checks only because the
       # importer is its own crate; inside the operator, whose graph legitimately contains a TLS
       # stack, the no-network property would not even be stateable.
+      # THE release-profile gate for the licensing crate. Debug builds deliberately trust a
+      # development entitlement key whose seed is COMMITTED (dev-signing-key.NOT-A-SECRET),
+      # so anyone can mint a manifest against a debug build. Release builds must not trust
+      # it, and `#[cfg(debug_assertions)]` is what stops them.
+      #
+      # WHAT THIS STEP DOES CLOSE: removal of the `#[cfg(debug_assertions)]` gates, and a
+      # second ungated insertion in `bundled()` (E0425 in release). The workspace test above
+      # is debug-only and the other --release steps build crates that do not link licensing,
+      # so without this those routes shipped the public-seed key with an all-green CI.
+      #
+      # WHAT IT DOES NOT CLOSE, stated plainly because an overclaim here is worse than a
+      # gap: the test is `if cfg!(debug_assertions) { present } else { absent }`, which asks
+      # the profile a question and checks the answer against itself. `[profile.release]
+      # debug-assertions = true` -- or RUSTFLAGS -- makes that cfg TRUE under --release, so
+      # this step passes green in BOTH profiles while the key ships, with no source edit at
+      # all. The manifest and cargo-config routes are closed by scripts/import_guards.sh;
+      # the environment route cannot be closed from inside the repository.
+      #
+      # WHAT ONLY THIS STEP CLOSES -- do not delete it as redundant. An earlier revision
+      # called the byte scan below "THE COMPLETE CONTROL", which it is not. The scan looks
+      # for the LITERAL key bytes in the release rlib, so a runtime loader that derives the
+      # key rather than embedding it is invisible to it, while this test still catches it:
+      # the key would be in `TrustedKeys::bundled()` in a release build and the assertion of
+      # absence would fail. The two controls are complementary --
+      #
+      #   route                                        | byte scan | this iff test
+      #   ---------------------------------------------+-----------+---------------
+      #   profile table / cargo config / RUSTFLAGS     | KILL      | miss
+      #   runtime loader, non-literal key              | miss      | KILL
+      #   ...the same loader behind a runtime trigger  | miss      | miss
+      #
+      # -- and the bottom row is closed by neither. That is deliberate: "no config loader in
+      # this crate" is a review-enforced rule, not a gate. See scripts/dev_key_not_in_release.sh.
+      #
+      # The byte scan runs below -- see "Dev key absent from the release artefact". It was
+      # previously deferred here on the belief that it "needs something to link the crate
+      # first". That was wrong: `cargo build -p selahcue-licensing --release` emits an rlib
+      # today and the scan takes seconds.
+      - name: Test (licensing crate in RELEASE — the dev-key exclusion only holds here)
+        if: ${{ !cancelled() }}
+        run: cargo test -p selahcue-licensing --release --no-fail-fast
+      # `-D warnings` in release too. Without it this job passed while warning on every run:
+      # `bundled()`'s `let mut store` is only mutated inside the debug-only cfg block, so
+      # release warned `unused_mut` -- the compiler correctly observing that nothing mutates
+      # it, which is exactly the property release is supposed to have.
+      - name: Clippy (licensing crate in RELEASE)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p selahcue-licensing --release --all-targets -- -D warnings
+      # The effect-level gate on the development entitlement key. Everything above asks a
+      # question ABOUT the source or the configuration and can be defeated by a spelling
+      # nobody enumerated; this asks whether the key bytes are in the artefact, which closes
+      # every CONFIGURATION route at once -- profile tables (including the inline
+      # `[profile] release = { .. }` form), the legacy `.cargo/config` filename, a valueless
+      # `-C debug-assertions`, a config in a parent directory or $CARGO_HOME, and RUSTFLAGS in
+      # the environment.
+      #
+      # It does NOT close a runtime loader: it searches for the literal key bytes, so a loader
+      # that derives them leaves nothing to find. The release test above is what catches that,
+      # which is why both steps exist and neither is redundant. Route table in the script.
+      - name: Dev key absent from the release artefact (effect-level gate)
+        if: ${{ !cancelled() }}
+        working-directory: ${{ github.workspace }}
+        run: sh scripts/dev_key_not_in_release.sh
       - name: Import structural guards (no network, no filesystem, pinned decoder)
         if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}

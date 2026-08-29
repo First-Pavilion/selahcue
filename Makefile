@@ -277,6 +277,9 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	$(CARGO) clippy $(OP) --all-targets -- -D warnings
 	$(CARGO) test $(WS) --workspace --no-fail-fast
 	sh scripts/import_guards.sh
+	$(CARGO) test $(WS) -p selahcue-licensing --release --no-fail-fast
+	$(CARGO) clippy $(WS) -p selahcue-licensing --release --all-targets -- -D warnings
+	sh scripts/dev_key_not_in_release.sh
 	$(CARGO) test $(WS) -p selahcue-lan --features server --no-fail-fast
 	$(CARGO) test $(WS) -p selahcue-app --features server --no-fail-fast
 	$(CARGO) test $(WS) -p selahcue-data --features encryption --no-fail-fast

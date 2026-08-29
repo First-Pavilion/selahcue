@@ -60,6 +60,16 @@ const _: () = assert!(
     "FR-518/DEC-011: the entitlement trust store must be a SET (>= 2 keys), never a single key"
 );
 
+/// The development entitlement signing key's PUBLIC half — **debug builds only**.
+///
+/// Derived from the deliberately-public seed in `dev-signing-key.NOT-A-SECRET`. Compiled
+/// out of release builds entirely, so a release binary cannot trust it even by accident.
+#[cfg(debug_assertions)]
+const DEV_PUBLIC_KEY: [u8; PUBLIC_KEY_BYTES] = [
+    122, 63, 108, 222, 26, 234, 144, 88, 16, 53, 82, 180, 127, 244, 213, 16, 86, 6, 76, 132, 249,
+    209, 18, 122, 21, 96, 175, 100, 231, 174, 33, 129,
+];
+
 /// A raw Ed25519 public key together with its derived id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustedKey {
@@ -138,6 +148,13 @@ impl TrustedKeys {
         }
     }
 
+    /// `key_id` of the **development** entitlement signing key (`f5194d13`).
+    ///
+    /// Always compiled, in every profile, because it is a public identifier and the
+    /// release-exclusion test has to be able to name the entity it asserts is absent.
+    /// Compiling the id is not what makes a build trust the key — [`Self::bundled`] is.
+    pub const DEV_KEY_ID: &'static str = "f5194d13";
+
     /// The keys compiled into this build.
     ///
     /// **Currently empty, and honestly so.** The production entitlement signing key is an
@@ -149,10 +166,111 @@ impl TrustedKeys {
     /// an empty store therefore fails closed on *verification* without ever failing
     /// closed on *presentation*.
     pub fn bundled() -> Self {
-        Self::new()
+        let store = Self::new();
+
+        // --- development entitlement key (debug builds ONLY) -----------------------------
+        // `make launch` must not demand activation, and the owner will opt into QAing
+        // enforcement deliberately. The mechanism is to MINT, not to bypass: a debug build
+        // additionally trusts the development key below, `make` mints a manifest signed by
+        // its (deliberately public) seed, and real verification runs — real signature
+        // check, real expiry, real cache behaviour. There is no bypass branch, because a
+        // branch that skips verification is the highest-value target in the product and
+        // means the path we ship is not the path anyone develops against.
+        //
+        // THE EFFECT-LEVEL GATE IS `scripts/dev_key_not_in_release.sh`, which runs in
+        // `make ci` and CI. It builds this crate in both profiles and fails if these 32 bytes
+        // appear in the release rlib, with the debug rlib as a live positive control.
+        //
+        // It exists because everything else here is partial. The `cfg` gates can be removed
+        // (caught by the source guard), a release profile can turn `debug_assertions` back on
+        // (import_guards.sh catches the common spellings and misses several), and RUSTFLAGS
+        // can do the same from the environment where nothing in-repo can see it. Asking what
+        // is IN THE ARTEFACT closes all of those CONFIGURATION routes at once.
+        //
+        // It does NOT close a runtime loader, and this comment used to say it did. The scan
+        // searches for the literal key bytes, so it settles "is the key compiled into
+        // release" and is blind to "does a release binary obtain the key at runtime" — a
+        // loader that derives the bytes leaves it nothing to find. The release `iff` test in
+        // CI is what catches that one, so the two controls are COMPLEMENTARY and neither is
+        // redundant; the route table is in `scripts/dev_key_not_in_release.sh`.
+        //
+        // It was deferred once on the belief that it needed something to link the crate
+        // first. That was wrong -- `cargo build -p selahcue-licensing --release` emits an
+        // rlib today -- and the deferral is recorded here because it cost several rounds of
+        // enumerating spellings that a five-second scan made unnecessary.
+        //
+        // The `cfg` is the control. A release build must not trust this key: its seed is
+        // committed in `dev-signing-key.NOT-A-SECRET`, so anyone at all can sign with it.
+        // `the_development_key_is_gated_on_debug_assertions` fails if this gate is removed.
+        // Shadowed rather than declared `mut` up front: in a release build the block below
+        // is compiled out, so a `let mut` there is an unused-mut warning on every release
+        // build. Silencing that with `#[allow(unused_mut)]` would have hidden a real signal —
+        // the warning is the compiler saying "nothing mutates this here", which is exactly
+        // the property the release profile is supposed to have.
+        #[cfg(debug_assertions)]
+        let store = {
+            let mut store = store;
+            if let Ok(id) = store.insert(DEV_PUBLIC_KEY) {
+                debug_assert_eq!(id, Self::DEV_KEY_ID, "dev key_id drifted from its bytes");
+            }
+            store
+        };
+
+        store
     }
 
     /// Add a key, deriving its id. Returns the id.
+    ///
+    /// # The trusted set must never become loadable from configuration
+    ///
+    /// This is `pub` so the bundled set can be built and so tests can exercise the bounds.
+    /// It must **not** grow a caller that reads keys from a file, an environment variable or
+    /// a config value: a trust store an operator can append to is not a trust store, and it
+    /// re-creates by the back door exactly the bypass that `bundled`'s `cfg` gate exists to
+    /// prevent.
+    ///
+    /// **That rule is enforced by review, not by the build.** An earlier version of this
+    /// paragraph claimed the opposite — that a config loader "cannot be written in this crate
+    /// without tripping" `no_filesystem_primitive_is_reachable_from_this_crate`. It can.
+    /// Security review demonstrated three compiling loaders that pass that guard green:
+    /// `use std::{env as source};` (the brace puts `{` between `std::` and `env`, so the
+    /// scanned substring never appears), `std :: env :: var(..)` (whitespace around `::`
+    /// does the same), and — the one no amount of spelling-chasing reaches — a helper placed
+    /// in the path dependency `selahcue-cloud` and called as `selahcue_cloud::read_env()`,
+    /// which names no forbidden token in this crate's `src/` at all.
+    ///
+    /// What that guard actually is: a **lexical scan of this crate's own `src/` for an
+    /// enumerated set of spellings**. It catches the plain forms, which is worth having and
+    /// is why it stays. It cannot catch aliased or whitespace-separated paths, and it cannot
+    /// see through the dependency graph — and no name-scan ever will, because reachability
+    /// is transitive and the spellings are unbounded. Widening the list only moves the
+    /// boundary; it never closes it.
+    ///
+    /// The effect-level control is the one [`TrustedKeys::bundled`] records twenty lines
+    /// above: **byte-scan the shipped release artefact** for the dev key and fail if it is
+    /// present — `scripts/dev_key_not_in_release.sh`. It **ships and runs today**, in
+    /// `make ci` and in CI. This paragraph previously called it an obligation deferred onto
+    /// 86ak5mn1d / 86ak5mn1t "because it needs something to actually link this crate first";
+    /// that is the belief `bundled()` calls wrong, and the scan has run at every commit since.
+    ///
+    /// It is immune to spelling, to aliasing and to the dependency graph. It is **not** immune
+    /// to a runtime loader, and this paragraph claimed it was. The scan searches the emitted
+    /// rlib for the literal key bytes, so it settles *"is the key compiled into release"* and
+    /// cannot see *"does a release binary obtain the key at runtime"*. A loader that derives
+    /// the bytes — from the decimal form the seed file itself publishes, for instance —
+    /// leaves it nothing to find. **QA** built that loader — key parsed from the decimal form
+    /// the seed file itself publishes, env read placed in the path dependency
+    /// `selahcue-cloud` so the guard above is blind too, behind a runtime trigger so the
+    /// compile-time `cfg` still matches — and every control in the repository passed it
+    /// green. (The three env counterexamples credited above are security review's; these are
+    /// two different demonstrations and the trail is easier to follow if they stay apart.)
+    ///
+    /// **No gate closes that, and none is being added.** Handing the runtime-loader threat on
+    /// to the byte scan is what turned two honest admissions into a false guarantee, so it is
+    /// not handed on: the rule at the top of this comment is enforced by REVIEW, deliberately.
+    /// Writing a config loader here is a considered act rather than a slip, and the honest
+    /// position is that this paragraph tells a reviewer what to look for instead of pretending
+    /// a scan will catch it.
     ///
     /// Idempotent for the *same key material*: re-adding a key already present succeeds
     /// and consumes no extra slot, so a loader that runs twice cannot exhaust the cap.

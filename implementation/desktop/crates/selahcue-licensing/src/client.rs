@@ -182,6 +182,13 @@ pub struct LicensingClient<T: HttpTransport> {
 
 impl<T: HttpTransport> LicensingClient<T> {
     /// A client against `base_url`, e.g. `https://api.selahcue.example`.
+    ///
+    /// **The scheme is not validated here, and the wiring must require `https://`.** Every
+    /// call this client makes carries a credential — the password on sign-in, the enrollment
+    /// key on activation, the session token as a bearer — so an `http://` base URL puts all
+    /// three on the wire in clear. The check belongs at the configuration boundary, where a
+    /// bad value can be refused with something an operator can act on, rather than here
+    /// where it would be a panic or a silent rewrite deep in a call stack.
     pub fn new(transport: T, base_url: impl Into<String>) -> Self {
         LicensingClient {
             transport,

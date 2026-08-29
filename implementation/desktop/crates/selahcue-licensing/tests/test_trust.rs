@@ -335,19 +335,217 @@ fn key_ids_are_reported_deterministically() {
 }
 
 #[test]
-fn the_bundled_store_is_empty_and_says_so_honestly() {
-    // No production entitlement public key has been issued for bundling yet (DEC-011 pt 1
-    // keeps the private key as a server env-var seed). An empty store fails closed on
-    // VERIFICATION — every key_id is unknown, so every manifest is refused, which FR-518
-    // says must keep the previous valid cache and never degrade the running app. It must
-    // never fail closed on PRESENTATION, which is why nothing in this crate consults it to
-    // decide whether the app may run.
+fn no_production_key_is_bundled_yet_and_the_store_says_so_honestly() {
+    // This test used to assert the bundled store was simply EMPTY. That stopped being true
+    // when debug builds began trusting the development key, so it is restated rather than
+    // deleted: what it actually protects is that **no production key is bundled**, because
+    // none has been issued — the production signing key is a server env-var seed (DEC-011
+    // pt 1). An empty store fails closed on VERIFICATION (every key_id is unknown, so every
+    // manifest is refused, which FR-518 says must keep the previous valid cache) and never
+    // fails closed on PRESENTATION, which is why nothing consults it to decide whether the
+    // app may run.
     let bundled = TrustedKeys::bundled();
-    assert!(bundled.is_empty());
-    assert_eq!(bundled.len(), 0);
-    assert!(
-        bundled.get("630dcd29").is_none(),
-        "an empty bundled store trusts nothing"
+
+    let production_keys = bundled
+        .key_ids()
+        .into_iter()
+        .filter(|id| *id != TrustedKeys::DEV_KEY_ID)
+        .count();
+    assert_eq!(
+        production_keys, 0,
+        "a production entitlement key appeared in the bundled set; if one has genuinely \
+         been issued, this test should be updated deliberately rather than by surprise"
     );
+
+    // A key_id nobody has issued is unknown in every profile.
+    assert!(bundled.get("630dcd29").is_none());
     assert_eq!(TrustedKeys::capacity(), MAX_TRUSTED_KEYS);
+}
+
+#[test]
+fn the_development_key_id_matches_its_committed_bytes() {
+    // The id and the bytes are committed separately (the id in `trust.rs`, the bytes there
+    // and in `dev-signing-key.NOT-A-SECRET`). If they ever drifted, a debug build would
+    // trust a key nobody could name and the exclusion test below would assert the absence
+    // of something that was never present — passing while protecting nothing.
+    let bytes: [u8; PUBLIC_KEY_BYTES] = [
+        122, 63, 108, 222, 26, 234, 144, 88, 16, 53, 82, 180, 127, 244, 213, 16, 86, 6, 76, 132,
+        249, 209, 18, 122, 21, 96, 175, 100, 231, 174, 33, 129,
+    ];
+    assert_eq!(
+        derive_key_id(&bytes),
+        TrustedKeys::DEV_KEY_ID,
+        "the committed dev key_id does not match the committed dev public key"
+    );
+}
+
+#[test]
+fn the_development_key_is_trusted_in_this_build_iff_it_is_a_debug_build() {
+    // Asserts the ENTITY by name — the dev key_id present or absent from the trusted set —
+    // not a proxy like "the set is empty".
+    let bundled = TrustedKeys::bundled();
+    let trusted = bundled.contains(TrustedKeys::DEV_KEY_ID);
+
+    if cfg!(debug_assertions) {
+        // Positive control: in a debug build it IS there, and resolves to real key
+        // material. Without this, "absent in release" would be indistinguishable from a
+        // dead mechanism that never adds any key in any profile.
+        assert!(
+            trusted,
+            "a debug build must trust the development key, or `make launch` would demand \
+             activation on every developer's machine"
+        );
+        assert_eq!(
+            bundled
+                .get(TrustedKeys::DEV_KEY_ID)
+                .map(|k| *k.public_key()),
+            Some([
+                122, 63, 108, 222, 26, 234, 144, 88, 16, 53, 82, 180, 127, 244, 213, 16, 86, 6, 76,
+                132, 249, 209, 18, 122, 21, 96, 175, 100, 231, 174, 33, 129
+            ]),
+            "the trusted dev entry must be the committed key, not some other key"
+        );
+        assert_eq!(bundled.len(), 1, "debug trusts exactly the dev key today");
+    } else {
+        assert!(
+            !trusted,
+            "a RELEASE build must not trust the development key: its seed is committed in \
+             dev-signing-key.NOT-A-SECRET, so anyone at all can sign with it"
+        );
+        assert!(
+            bundled.is_empty(),
+            "release trusts no key until one is issued"
+        );
+    }
+}
+
+/// `src/trust.rs` with every comment removed.
+///
+/// Stripping comments is the whole point. The first version of the guard below searched the
+/// raw text, so deleting both `#[cfg(debug_assertions)]` gates while leaving
+/// `// was: #[cfg(debug_assertions)]` behind kept it green — the `rfind` matched the gate
+/// text inside the comment. A release build would then have trusted a key whose seed is
+/// committed in this repository, with the whole debug suite passing.
+///
+/// The general lesson, worth stating where the next person writing a source guard will see
+/// it: **a guard that inspects source TEXT is defeated by anything that preserves the text
+/// while removing its effect** — a comment, a string literal, `#[cfg(any())]`, or moving the
+/// code somewhere that never runs. Assert the effect where you can; the effect assertion
+/// here is `the_development_key_is_trusted_in_this_build_iff_it_is_a_debug_build`, which
+/// only exercises the release branch under `cargo test --release`, so CI now runs exactly
+/// that (`ci.yml`, "Test (licensing crate in RELEASE ...)").
+fn trust_rs_without_comments() -> String {
+    let raw = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/trust.rs"),
+    )
+    .unwrap();
+
+    // Strip /* ... */ first, then // to end-of-line.
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw.as_str();
+    while let Some(open) = rest.find("/*") {
+        out.push_str(&rest[..open]);
+        match rest[open..].find("*/") {
+            Some(close) => rest = &rest[open + close + 2..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+
+    out.lines()
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_comment_stripper_actually_removes_gate_text() {
+    // Positive control for the stripper itself. If it ever stopped removing comments, the
+    // guard below would silently return to matching commented-out gates — the exact defect
+    // it was written to close — and would still pass.
+    let stripped = trust_rs_without_comments();
+    assert!(
+        stripped.contains("const DEV_PUBLIC_KEY"),
+        "the stripper removed real code, not just comments"
+    );
+
+    let sample =
+        "let a = 1; // #[cfg(debug_assertions)]\n/* #[cfg(debug_assertions)] */ let b = 2;";
+    let stripped_sample: String = sample
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !stripped_sample.contains("// #[cfg"),
+        "line comments must be removed before the gate search"
+    );
+}
+
+#[test]
+fn the_development_key_is_gated_on_debug_assertions() {
+    // The runtime test can only exercise the profile it is compiled in, and `cargo test` is
+    // a debug build — so on its own it never sees the release branch. This reads the source
+    // (comments stripped) and fails if either gate is removed, so the control also bites in
+    // an ordinary debug run.
+    //
+    // Two things must be gated: the key BYTES (so a release binary does not carry them) and
+    // the INSERTION (so a release build does not trust them). Removing either is the defect.
+    let source = trust_rs_without_comments();
+    let gate = "#[cfg(debug_assertions)]";
+
+    // Positive control: we really read trust.rs, so the assertions below are not vacuous.
+    assert!(
+        source.contains("DEV_PUBLIC_KEY"),
+        "did not read trust.rs, or the dev key was renamed — repoint this guard, never drop it"
+    );
+
+    let bytes_at = source
+        .find("const DEV_PUBLIC_KEY")
+        .expect("DEV_PUBLIC_KEY declaration not found");
+    let gate_before_bytes = source[..bytes_at].rfind(gate).is_some_and(|g| {
+        source[g..bytes_at]
+            .trim_start_matches(gate)
+            .trim()
+            .is_empty()
+    });
+    assert!(
+        gate_before_bytes,
+        "DEV_PUBLIC_KEY is not immediately preceded by {gate} — a release binary would \
+         carry the development key material"
+    );
+
+    let insert_at = source
+        .find("store.insert(DEV_PUBLIC_KEY)")
+        .expect("the dev key insertion was not found in bundled()");
+    assert!(
+        source[..insert_at]
+            .rfind(gate)
+            .is_some_and(|g| !source[g..insert_at].contains("fn ")),
+        "the dev key insertion in bundled() is not inside a {gate} block — a RELEASE build \
+         would trust a key whose seed is committed in the repository"
+    );
+}
+
+#[test]
+fn the_dev_signing_seed_is_committed_and_says_it_is_not_a_secret() {
+    // A secret that is deliberately public cannot be confused with one that leaked — but
+    // only if it says so where someone will read it.
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dev-signing-key.NOT-A-SECRET");
+    let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "{} must exist ({e}) — the dev seed is deliberately committed",
+            path.display()
+        )
+    });
+    assert!(body.contains("SELAHCUE-DEV-ONLY-NOT-A-SECRET!!"));
+    assert!(body.contains("NEVER PRODUCTION"));
+    assert!(
+        body.contains(TrustedKeys::DEV_KEY_ID),
+        "the seed file must name the key_id it derives to, or the pair cannot be checked"
+    );
 }
