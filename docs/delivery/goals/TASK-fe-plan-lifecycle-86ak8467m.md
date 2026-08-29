@@ -298,6 +298,34 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
     blocking an action that is legitimate mid-service.
 - Decision: handoff
 
+### Iteration 7 — review round 1 remediated
+
+- Target criterion: C-016
+- Verifier executed: `python3 scripts/operator_headless.py`; the mutation battery (now 39);
+  `python3 scripts/operator_plan_webkit_probe.py`; `make ci`
+- Result: gate **1103 checks, 0 FAIL**; **39 of 39** mutations caught by their named check;
+  WebKit probe 0 FAIL; `make ci` ALL GREEN, exit 0.
+- New evidence, in order of how much it mattered:
+  - **Quinn Q1 — view-only left ⌘Z / ⌘⇧Z live.** The buttons were hidden and the Alt+arrow path
+    was gated; undo/redo were not. The same defect as Cody's M1, in a second place, in the same
+    surface. `PL AC-47` now asserts the CLASS — no plan-editing command reaches the host from the
+    keyboard under view-only — because enumerating the paths by hand is what let the first hide.
+  - **Quinn Q7 — this client had become LOOSER than the host.** `plan_name_valid` tightened at
+    `7a6e404` to refuse invisible formatting; the client still tested `\p{Cc}` alone. Mirrored,
+    on the ORIGINAL string, because JS `trim()` strips U+FEFF and Rust's does not.
+  - **Quinn Q2 — the change badge could not show the state it exists for.** The builder renders
+    only on this operator's own actions, so `changed` could never flip because someone else
+    edited. A narrow poll refresh now covers it.
+  - **Vera F2 (measured) —** `Array.from` froze the console for 3,267 ms and ~270 MB on one 50 MB
+    single-line paste. An exact code-unit pre-check refuses it first.
+  - **Sana M1 / Cody M1 —** the template list was unbounded across a trust boundary whose client
+    sets no `max_message_size`. Bounded on the ENTITY.
+  - **One finding pushed back on, with evidence:** the driver's `viewer: null` comment is correct.
+    `selahcue_app::OperatorView` — the struct the Tauri command returns, and the only one `dist/`
+    sees — carries no `skip_serializing_if` on these three fields. The reviewer read
+    `OperatorStateView` in `protocol.rs`, a different struct with different serde.
+- Decision: handoff
+
 ## Risks and rollback
 
 - The capability predicate keys on the host reporting `publish` and is consumed by all five
@@ -320,15 +348,19 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-fe-plan-lifecycle-86ak8467m.md --completion`
 - Validator result: (run at handoff)
 - Independent verification result: pending review pipeline
-- Evidence: webview gate **1046 checks, 0 FAIL** (baseline 963; floor raised 955 -> 1046);
-  16-mutation battery, every mutation caught by its named check; WebKit boot smoke 5/0 FAIL;
-  WebKit render probe 18 assertions, 0 FAIL, screenshots inspected; `make ci` **ALL GREEN**,
-  exit 0.
-- Independent verification result: pending (C-016)
+- Evidence: webview gate **1103 checks, 0 FAIL** (baseline 963; floor raised 955 -> 1103);
+  **39-mutation battery, every mutation caught by the check that NAMES it**; WebKit boot smoke
+  5/0 FAIL; WebKit render probe 18 assertions, 0 FAIL, screenshots inspected; `make ci`
+  **ALL GREEN**, exit 0. Four reviewers completed round 1; every blocking and medium finding is
+  remediated, one is pushed back on with evidence, and the deliberate non-fixes are listed on the
+  merge request.
+- Independent verification result: round 1 complete (Cody, Sana, Vera, Quinn); remediated at `c91a9a5`; re-review pending
 - Terminal state: pending review
 - Remaining failed or blocked criteria: C-016 pending. The Tauri command plumbing is a blocking
   cross-ticket gap, recorded under "Dependencies and approvals" — it does not block this branch,
   it blocks the FEATURE, and it must land with or before PR #14.
+- Review report (round 1): https://claude.ai/code/artifact/52053758-2025-42e1-9979-e925ce1b0bbf
+  — linked on the merge request. Private on publish; needs link-sharing enabled by the owner.
 - ClickUp final evidence comment: BLOCKED — ClickUp MCP is not connected in this session. The
   handoff text is prepared and returned to the coordinator rather than written to a shadow
   backlog.
