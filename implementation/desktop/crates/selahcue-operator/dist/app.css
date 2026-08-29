@@ -54,6 +54,10 @@
         /* READY status-pill border (Design 2.0 §STATUS PILL) — the only design colour that
            lacked a token; added so the pill never hardcodes a hex. */
         --sc-info-border: #1c3a4a;
+        /* Type-scale accents for run-sheet rows (handoff §3). Violet + rose are design colours
+           that had no token; added so the accent bar never hardcodes a hex. */
+        --sc-song: #a99bff;
+        --sc-media: #f472b6;
       }
 
       * {
@@ -6449,7 +6453,7 @@
 .plan-builder-grid { display: grid; grid-template-columns: 220px minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
 .plan-col { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 12px; padding: 14px; }
 /* ADD ITEM / RUN SHEET / PLAN SUMMARY / ITEM column headings. The design paints these in
-   --sc-text-muted (#6b7383), which is 3.79:1 on --sc-surface — under AA for 11px type. The
+   --sc-text-muted (#6b7383), which is 3.79:1 on --sc-surface — under AA for 11px type (3.96:1 on --sc-inset). The
    Plan Summary added a fourth instance, so the token is RAISED here rather than propagated:
    --sc-text-secondary is 8.12:1 and still reads as a quiet section label. */
 .plan-col-h { font-size: 11px; letter-spacing: 1px; color: var(--sc-text-secondary); margin: 0 0 12px; font-weight: 700; }
@@ -6462,7 +6466,10 @@
 .plan-b-row.sel { border-color: var(--sc-primary); background: var(--sc-accent-soft, var(--sc-inset)); }
 .plan-b-row.is-live { border-color: var(--sc-live); }
 .plan-b-row.is-staged { border-color: var(--sc-preview); }
-.plan-b-main { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+/* min-width is a FLOOR, not 0: with flex-basis 0 the title collapsed to 0px whenever the meta's
+   nowrap content claimed the row (Quinn P5c / Vera). The floor makes the title the last thing to
+   give way — priority under pressure is title > duration > owner. */
+.plan-b-main { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 8ch; }
 .plan-b-title { color: var(--sc-text); font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .plan-b-tools { display: flex; gap: 4px; }
 /* Run-sheet drag reorder (frame 611:820): handle · lifted origin row · indigo drop line. */
@@ -6514,9 +6521,23 @@
    content — who is responsible for this item — not decoration, so it ships at
    --sc-text-secondary (8.49:1). This is a deliberate divergence from the Figma fill, in the same
    spirit as GO LIVE / BLACKOUT already shipping more accessible ink than the frames draw. */
-.plan-b-meta { display: flex; align-items: center; gap: 14px; flex-shrink: 0; white-space: nowrap; }
-.plan-b-owner { color: var(--sc-text-secondary); font-size: 12px; }
-.plan-b-dur { color: var(--sc-text); font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+/* The meta must never starve the title. `flex-shrink: 0` here crushed .plan-b-title to 0px on a
+   long owner — trap #1 from the other side. The owner truncates; the duration never does, because
+   a clipped time is worse than a clipped name. */
+/* max-width caps the meta PROPORTIONALLY, not just by content: in a narrow run-sheet column the
+   owner's 16ch cap alone still left nothing for the title. Priority under pressure is
+   title > duration > owner. */
+.plan-b-meta { display: flex; align-items: center; gap: 14px; flex-shrink: 1; min-width: 0; max-width: 45%; white-space: nowrap; }
+.plan-b-owner { color: var(--sc-text-secondary); font-size: 12px; flex: 0 1 auto; min-width: 0; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; }
+.plan-b-accent { width: 4px; height: 34px; border-radius: 2px; flex-shrink: 0; background: var(--sc-text-muted); }
+.plan-b-accent.kind-song { background: var(--sc-song); }
+.plan-b-accent.kind-scripture { background: var(--sc-gold); }
+.plan-b-accent.kind-slide_group { background: var(--sc-info); }
+.plan-b-accent.kind-media { background: var(--sc-media); }
+.plan-b-accent.kind-announcement { background: var(--sc-text-secondary); }
+.plan-b-accent.kind-timer { background: var(--sc-warn); }
+.plan-b-accent.kind-section { background: var(--sc-text-muted); }
+.plan-b-dur { color: var(--sc-text); font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 
 /* === Plan Summary panel (frame 608:875) ==================================================== */
 .plan-sum-card { background: var(--sc-inset); border: 1px solid var(--sc-border); border-radius: 12px; padding: 0 14px; }
@@ -6528,6 +6549,7 @@
 .plan-sum-total .plan-sum-value { color: var(--sc-gold); }
 .plan-sum-warn .plan-sum-value { color: var(--sc-warn); }
 .plan-sum-btn { display: flex; align-items: center; justify-content: center; width: 100%; margin-top: 10px; }
+.plan-sum-blank { margin: 0; color: var(--sc-text-secondary); font-size: 12.5px; }
 .plan-sum-later { margin: 8px 0 0; color: var(--sc-text-secondary); font-size: 11.5px; }
 .plan-sum-hint { margin: 14px 0 0; background: var(--sc-elevated); border-radius: 9px; padding: 10px 12px; color: var(--sc-text-secondary); font-size: 11.5px; }
 
