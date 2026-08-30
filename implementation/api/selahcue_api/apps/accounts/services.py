@@ -498,13 +498,20 @@ def _email_fingerprint(email: str) -> str:
     return _fingerprint(email)
 
 
-def _validate_password(password: str) -> None:
-    # Length policy only (v1); complexity/breach checks are a later slice. Do NOT strip — spaces
-    # can be intentional — but reject an all-whitespace password.
+def _validate_password(password: str, *, code: ErrorCode = ErrorCode.VALIDATION_FAILED) -> None:
+    """Length policy only (v1); complexity/breach checks are a later slice.
+
+    `code` selects which coded failure a rejection raises, and the choice is a security
+    boundary, not a style preference. The default is the collapsed VALIDATION_FAILED, so a
+    caller who has proved nothing (signup) learns nothing. `confirm_password_reset` passes
+    PASSWORD_INVALID — but only from BEHIND a validated token, never before one. Defaulting
+    to the collapsed code is what makes a future third caller fail SAFE.
+    """
+    # Do NOT strip — spaces can be intentional — but reject an all-whitespace password.
     if not isinstance(password, str) or not password.strip():
-        raise _validation_error()
+        raise SafeAPIError(code)
     if not (MIN_PASSWORD_LENGTH <= len(password) <= MAX_PASSWORD_LENGTH):
-        raise _validation_error()
+        raise SafeAPIError(code)
 
 
 def _generate_token(label: str) -> str:
@@ -1166,11 +1173,18 @@ def request_password_reset(email: str) -> AcceptedResult:
 
 def confirm_password_reset(raw_token: str, new_password: str) -> ConfirmPasswordResetResult:
     """Consume a PASSWORD_RESET token, set the new password, and revoke ALL of the user's ACTIVE
-    sessions (invalidation on password change). Token/password failures → VALIDATION_FAILED."""
+    sessions (invalidation on password change).
+
+    Errors, and why they differ (FR-551, DEC-012 (a)):
+
+    - EVERY token failure — malformed, unknown, wrong-purpose, consumed, expired — is one
+      collapsed VALIDATION_FAILED, mutually indistinguishable. Unchanged (FR-529 / CON-P6).
+    - A bad password behind a LIVE token is PASSWORD_INVALID, so the caller is told the one
+      thing they can act on. Reachable only after the token has been validated.
+    """
     token_value = (raw_token or "").strip()
     if not token_value:
         raise _validation_error()
-    _validate_password(new_password)
     fingerprint = _fingerprint(token_value)
     now = djtz.now()
     with transaction.atomic():
@@ -1190,6 +1204,45 @@ def confirm_password_reset(raw_token: str, new_password: str) -> ConfirmPassword
             or token.expires_at <= now
         ):
             raise _validation_error()
+        # FR-551 — THE ORDER OF THESE TWO CHECKS IS THE FIX. DO NOT MOVE THIS ABOVE THE
+        # TOKEN LOOKUP.
+        #
+        # The token is now known live, so the caller has proved possession of a working link
+        # and may safely be told that it is their PASSWORD that is wrong. Run before this
+        # block, the password check reached everyone — and, raising the same collapsed
+        # VALIDATION_FAILED as every token failure, told a user with a perfectly good link
+        # that the link was broken. They fetched a fresh one, retyped the same short
+        # password, and looped with no exit and no clue (DEC-012 (a)).
+        #
+        # WHY THIS LEAKS NOTHING is argued ONCE, beside `ErrorCode.PASSWORD_INVALID` in
+        # `selahcue_api/graphql/errors.py`. Do not restate it here: the argument was being
+        # maintained in four places, and by the first review round one copy had drifted.
+        #
+        # ON THE PLACEMENT RELATIVE TO THE CONSUME BELOW — read this before "tidying" it.
+        # A rejected password does not burn the user's link. That guarantee comes from the
+        # enclosing `transaction.atomic()`, which rolls the consume back on the raise; it
+        # does NOT come from this line sitting above `token.consumed_at`. The two are
+        # redundant, and the transaction is the one doing the work.
+        #
+        # Said plainly because an earlier version of this comment claimed the opposite — and
+        # with numbers, because the version after that understated them. Measured over the
+        # whole API suite, at 523 tests:
+        #
+        #   this call moved BELOW the consume, `atomic()` intact   523 passed — nothing notices
+        #   `atomic()` removed, this call left where it is         1 failed
+        #   BOTH                                                   5 failed
+        #
+        # Two reviewers measured the same shape independently on the 520-test tree that went
+        # into review: 520 passed / 1 failed / 4 failed. The counts move as tests are added;
+        # the shape is what matters, and it has now been reproduced three times.
+        #
+        # So the placement is inert while the transaction holds, and removing the transaction
+        # is loud whether or not the placement goes with it. Keep the placement — it is
+        # defence in depth for the day the transaction boundary is refactored away — but do
+        # not believe the link-preservation property is tested by its position. It is tested
+        # through `atomic()`, by `test_a_failed_reset_rolls_back_the_consume_and_the_password`
+        # in the auth slice.
+        _validate_password(new_password, code=ErrorCode.PASSWORD_INVALID)
         token.consumed_at = now
         token.save(update_fields=["consumed_at"])
         user = token.customer_user

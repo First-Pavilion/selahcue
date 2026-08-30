@@ -4,6 +4,46 @@ Durable record of material product/scope/architecture decisions, with traceabili
 
 ---
 
+## DEC-017 — `PASSWORD_INVALID` on password-reset confirm: a second sanctioned exception to the FR-529 collapse (AMENDS DEC-012)
+
+- **Date:** 2026-08-30
+- **Stage:** Platform licensing / customer auth — FR-551, ticket [86ak5p9aq](https://app.clickup.com/t/86ak5p9aq), PR #16
+- **Decided by:** User (product owner)
+- **Type:** Security posture — accepted risk, with a named follow-up
+- **Status:** DECIDED
+
+**Decision.** `confirmPasswordReset` may return the distinct code `PASSWORD_INVALID` when a **valid, live** reset token is presented with a password that fails policy, instead of collapsing to `VALIDATION_FAILED`. This is the **second** sanctioned exception to the FR-529 error collapse, after FR-523's `EXPIRED`. The owner accepts the residual risk described below, **paired with a required follow-up to throttle `confirm_password_reset`**.
+
+**What this fixes.** FR-551 also reorders the function so the token is fully validated — presence, lookup, `compare_digest`, purpose, consumed, expiry — **before** the password is examined. Previously the password was validated first, which was an enumeration oracle: an attacker submitting a deliberately weak password learned from the error code whether a token was real. Closing that oracle is not the subject of this decision; it is unambiguously correct and needs no exception.
+
+What *does* need an exception is the user-facing half. Under the absolute collapse, a user holding a **good** link who chooses a policy-failing password is told the link is broken — permanently, with no way through, because the client cannot distinguish the two cases unless the server splits the code. That is the DEC-012(a) loop this decision closes.
+
+**Accepted risk.** The split gives any caller already holding a live reset token a **repeatable, non-destructive liveness oracle**: submit any policy-failing password, and `PASSWORD_INVALID` rather than `VALIDATION_FAILED` confirms the token is live *without consuming it*. Before the change, testing liveness required submitting a valid password, which consumed the token — probing was destructive and self-limiting. It is now silent and repeatable.
+
+**Why this is accepted rather than blocking** — three reviewers converged on it independently and all graded it Low:
+
+- The capability delta is **stealth only**. Anyone holding a live token can already do the strictly worse thing: complete the reset and take the account.
+- The 2^256 token space makes the oracle useless for *finding* tokens; it only confirms one already held.
+- Timing adds nothing beyond the sanctioned code — consumed-vs-live measured at **+7 µs** (d=0.036 at ~20,000 samples/class). For scale, the DEC-013 email-existence gap next door is **+437 µs**, 15–20× larger and already accepted.
+
+**Required follow-up (not optional).** `confirm_password_reset` is throttled by **nothing** — verified by measurement at the service, view and URL layers; only `resend_email_verification` spends a budget. The DEC-013 throttling follow-up must be extended to name `confirm_password_reset`, which bounds the probe's repeatability without touching the fix. Until it lands, the oracle repeats indefinitely and alerts no one.
+
+**Evidence.** Sana (security): oracle closed on all five error exits, wire layer rebuilds errors from `SAFE_MESSAGES`, residual reported as accepted-by-design. Vera (performance): the reorder neither introduced nor narrowed the timing channel (+18–34 µs unknown-vs-dead on *both* trees); cost ceiling unchanged; no throttle at any layer. Cody (code): flagged that the paper trail did not grant what the code does. Quinn (QA): the collapse is caught by exactly one test in the repository, re-derived independently.
+
+**Affected items.**
+- **DEC-012** — its reversibility note reads "additive error code **on authenticated surfaces only**". A password-reset link is not an authenticated surface. That constraint is **amended here** for this one surface; it otherwise stands.
+- **FR-529** and **CON-P6** — both currently name FR-523's `EXPIRED` as the *only* sanctioned exception. Both must be updated to name `PASSWORD_INVALID` on reset-confirm as the second.
+- `selahcue_api/graphql/errors.py` — its in-code claim that this is "the ONLY sanctioned split" now has a record behind it.
+- Marketing client — `SERVER_ERROR_CODES` does not list `PASSWORD_INVALID`, so it degrades to a generic server error; and `passwordPolicy.ts:6-17` documents the **pre-FR-551** ordering as its rationale, which this decision falsifies. Tracked as a follow-up (see below); no security property rests on either.
+
+**Interim record note.** ClickUp was unreachable when this landed (no MCP tooling in any session that day), so the marketing follow-up ticket — client `PASSWORD_INVALID` handling, the falsified `passwordPolicy.ts` rationale, and a `strip()`/`trim()` whitespace divergence on U+001C–U+001F/U+0085 — exists only in PR #16's body and this entry. The owner accepted that as the interim record and the ticket is to be created when ClickUp returns.
+
+**A contradiction this resolves, which predates the change.** FR-551's own acceptance criterion already required the split — *"valid token + weak password produces a **password** error, not a token error"* — while FR-529, in the same PRD, called FR-523's `EXPIRED` "the only sanctioned exception". The two requirements contradicted each other as written, before any code was touched. The review finding that the paper trail did not authorise the behaviour was correct; what it had found was this pre-existing inconsistency, not a new carve-out invented by the implementation. CON-P6, FR-529 and §14's threat summary are amended here to name both exceptions and stay consistent with FR-551.
+
+**Reversibility.** Reversible: revert the surface to the collapsed code. Doing so reopens the DEC-012(a) loop in full — a user with a valid link and a policy-failing password is again told the link is broken, forever. There is no third option; the client cannot separate the cases unless the server splits the code.
+
+---
+
 ## DEC-016 — ProPresenter UI adoption posture: adopt/adapt/reject per the Operator UI PRD (PROPOSED)
 
 - **Date:** 2026-08-28
