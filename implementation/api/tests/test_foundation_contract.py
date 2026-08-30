@@ -413,3 +413,32 @@ def test_desktop_and_webhook_stubs_are_not_blocked_by_browser_csrf():
         response = client.post(path, data=json.dumps({}), content_type="application/json")
         assert response.status_code == 501
         assert response.json()["error"]["code"] == "NOT_IMPLEMENTED"
+
+
+def test_every_error_code_has_a_chosen_http_status():
+    """`_STATUS_BY_CODE` must be TOTAL over `ErrorCode`.
+
+    `command_error_response` reads it as `_STATUS_BY_CODE.get(code, 400)`, so a member with no
+    row does not raise — it silently inherits 400. That default is not always right: an
+    UNAUTHENTICATED served as 400 would break a client's retry logic, and a 500-class failure
+    reported as 400 blames the caller for the server's fault. The gap is therefore invisible at
+    runtime and only shows up as a wrong status on a surface nobody was watching.
+
+    This is not hypothetical bookkeeping. `PASSWORD_INVALID` was added to `ErrorCode` in this
+    slice and shipped through review with no row here; the `.get` default absorbed it and no
+    test noticed.
+    """
+    from selahcue_api.graphql.errors import ErrorCode
+    from selahcue_api.platform.responses import _STATUS_BY_CODE
+
+    assert set(_STATUS_BY_CODE) == set(ErrorCode), (
+        "the /v1 code-to-status map is no longer total over ErrorCode. Missing members fall "
+        f"through to the 400 default in `command_error_response`. Missing: "
+        f"{sorted(c.value for c in set(ErrorCode) - set(_STATUS_BY_CODE))}; "
+        f"unknown keys: {sorted(str(c) for c in set(_STATUS_BY_CODE) - set(ErrorCode))}"
+    )
+    # Every status must be a real HTTP error status, not a default that happens to be an int.
+    # Without this the assertion above passes on a row added as `None` or `0` to silence it.
+    assert all(400 <= status <= 599 for status in _STATUS_BY_CODE.values()), (
+        f"a code maps to a status outside the 4xx/5xx range: {sorted(set(_STATUS_BY_CODE.values()))}"
+    )

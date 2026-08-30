@@ -1214,9 +1214,9 @@ def confirm_password_reset(raw_token: str, new_password: str) -> ConfirmPassword
         # that the link was broken. They fetched a fresh one, retyped the same short
         # password, and looped with no exit and no clue (DEC-012 (a)).
         #
-        # Nothing leaks by moving it here. A caller WITHOUT a live token raised above and
-        # never arrives, so unknown / consumed / expired / wrong-purpose remain mutually
-        # indistinguishable (FR-529).
+        # WHY THIS LEAKS NOTHING is argued ONCE, beside `ErrorCode.PASSWORD_INVALID` in
+        # `selahcue_api/graphql/errors.py`. Do not restate it here: the argument was being
+        # maintained in four places, and by the first review round one copy had drifted.
         #
         # ON THE PLACEMENT RELATIVE TO THE CONSUME BELOW — read this before "tidying" it.
         # A rejected password does not burn the user's link. That guarantee comes from the
@@ -1224,12 +1224,24 @@ def confirm_password_reset(raw_token: str, new_password: str) -> ConfirmPassword
         # does NOT come from this line sitting above `token.consumed_at`. The two are
         # redundant, and the transaction is the one doing the work.
         #
-        # Said plainly because an earlier version of this comment claimed the opposite:
-        # moving this call BELOW the consume changes no observable behaviour and no test in
-        # the repository fails (reviewed as mutation D). Keep it here anyway — it is defence
-        # in depth that survives the transaction boundary being refactored away — but do not
-        # believe the link-preservation property is tested by its position. It is tested
-        # through `atomic()`, by the audit-rollback test in the auth slice.
+        # Said plainly because an earlier version of this comment claimed the opposite — and
+        # with numbers, because the version after that understated them. Measured over the
+        # whole API suite, at 523 tests:
+        #
+        #   this call moved BELOW the consume, `atomic()` intact   523 passed — nothing notices
+        #   `atomic()` removed, this call left where it is         1 failed
+        #   BOTH                                                   5 failed
+        #
+        # Two reviewers measured the same shape independently on the 520-test tree that went
+        # into review: 520 passed / 1 failed / 4 failed. The counts move as tests are added;
+        # the shape is what matters, and it has now been reproduced three times.
+        #
+        # So the placement is inert while the transaction holds, and removing the transaction
+        # is loud whether or not the placement goes with it. Keep the placement — it is
+        # defence in depth for the day the transaction boundary is refactored away — but do
+        # not believe the link-preservation property is tested by its position. It is tested
+        # through `atomic()`, by `test_a_failed_reset_rolls_back_the_consume_and_the_password`
+        # in the auth slice.
         _validate_password(new_password, code=ErrorCode.PASSWORD_INVALID)
         token.consumed_at = now
         token.save(update_fields=["consumed_at"])

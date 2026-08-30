@@ -484,36 +484,43 @@ def test_reset_token_is_single_use(client, sender):
 # WHAT WAS WRONG. `confirm_password_reset` used to call `_validate_password` before it
 # looked the token up, and both raised the same collapsed VALIDATION_FAILED. A user
 # holding a perfectly good link who typed a short password was told their LINK was
-# broken. They fetched a fresh link, retyped the same short password, and looped — no
-# exit, no clue, a burnt token per lap.
+# broken, fetched a fresh link, retyped the same short password, and looped.
+#
+# WHY THE SPLIT IS SAFE is written out ONCE, beside `ErrorCode.PASSWORD_INVALID` in
+# `selahcue_api/graphql/errors.py`. Do not restate the argument here — it was already
+# maintained in four places and one copy had drifted by the first review round. This block
+# owns exactly one thing the canonical copy cannot: WHICH TEST CATCHES WHICH MUTATION.
 #
 # WHAT EACH TEST BELOW ACTUALLY GUARDS. The catch map is the point of this block: the
 # mutations are different, and different tests catch each. Do not delete a test as
 # redundant without re-deriving this table — and keep it ACCURATE, because a catch map
-# that overstates one test's reach is worse than none. (An earlier version of this block
-# said mutation B was caught by ONE test. Three catch it. Corrected in review.)
+# that overstates one test's reach is worse than none. Two earlier versions of this block
+# undercounted mutation B: the first said ONE test caught it, the correction said THREE, and
+# eleven lines below the same block already said FOUR and listed four. Neither of the first
+# two was re-run. Measured, B was caught by FOUR before review round 2 and by FIVE now that a
+# third live-token test exists.
 #
 # The counts below are MEASURED, by applying each mutation and running this whole file.
 # Do not adjust one from reasoning alone; re-run it.
 #
 #   Mutation A — move the `_validate_password` call back above the token lookup, keeping
 #                `code=ErrorCode.PASSWORD_INVALID`. The ORDER is wrong again.
-#                Caught by TWO tests (2 failed, 32 passed): the two dead-token tests,
+#                Caught by TWO tests (2 failed, 35 passed): the two dead-token tests,
 #                `..._never_mentions_the_password` and `..._stays_collapsed`. Under A any
 #                token that is not live answers PASSWORD_INVALID and hands an
 #                UNAUTHENTICATED caller a brand-new oracle.
 #                NOT caught by the live-token tests, which still see PASSWORD_INVALID.
 #
 #   Mutation B — the full revert: move it back AND drop the code argument.
-#                Caught by FOUR tests (4 failed, 30 passed): both live-token tests, which
-#                then see the collapsed VALIDATION_FAILED — the original defect —
+#                Caught by FIVE tests (5 failed, 32 passed): all three live-token tests,
+#                which then see the collapsed VALIDATION_FAILED — the original defect —
 #                `test_a_rejected_password_does_not_burn_the_users_link`, and
 #                `..._stays_collapsed` via its positive control.
 #
 #   Mutation F — move the call below the row lookup but ABOVE the purpose/consumed/expired
-#                block. The subtlest of the four, and the most dangerous.
+#                block. The subtlest, and the most dangerous.
 #                Caught ONLY by `test_a_dead_but_real_token_with_a_weak_password_stays_collapsed`
-#                (1 failed, 33 passed).
+#                (1 failed, 36 passed).
 #                Under F a token that EXISTS but is spent/expired/wrong-purpose answers
 #                PASSWORD_INVALID while an unknown token still answers VALIDATION_FAILED —
 #                so an unauthenticated caller can tell "this token never existed" from
@@ -523,13 +530,40 @@ def test_reset_token_is_single_use(client, sender):
 #                not by the suite, which is exactly why the test below exists.
 #
 #   Mutation D — move the call BELOW `token.consumed_at = now`.
-#                Caught by NOTHING (34 passed), here or anywhere in the repository, and that is
-#                CORRECT, not a gap: the link-preservation property comes from the
+#                Caught by NOTHING (37 passed here; 523 passed across the whole API suite),
+#                and that is CORRECT, not a gap: the link-preservation property comes from the
 #                enclosing `transaction.atomic()` rolling the consume back, so D changes
 #                no observable behaviour. `test_a_rejected_password_does_not_burn_the_users_link`
 #                guards the PROPERTY, never the placement — see its docstring. What guards
 #                the transaction boundary itself is
-#                `test_a_failed_reset_rolls_back_the_consume_and_the_password`.
+#                `test_a_failed_reset_rolls_back_the_consume_and_the_password`, and D
+#                together with `atomic()` removed is caught by FIVE tests. The redundancy is
+#                real defence in depth, not a gap with a justification attached.
+#
+#   Mutation P — delete `token.purpose != CredentialTokenPurpose.PASSWORD_RESET` from the
+#                guard, so an EMAIL_VERIFY token can reset a password.
+#                Caught by THREE tests (3 failed, 34 passed here; 3 failed, 520 passed
+#                across the whole API suite):
+#                `test_a_live_verify_token_is_refused_by_the_reset_mutation`,
+#                `test_every_token_failure_stays_mutually_indistinguishable` and
+#                `..._stays_collapsed`.
+#                Before review round 2 it was caught by NOTHING in the repository — all 520
+#                tests passed with the clause deleted. Every wrong-purpose fixture was built
+#                from `sender.verify_tokens[-1]` AFTER `signup_and_verify` had spent it, so
+#                `consumed_at` did the refusing and the purpose clause never decided
+#                anything. The fixtures below are now LIVE verify tokens from an unverified
+#                second registration, which is the only shape that reaches this clause.
+#
+#   Mutation U — drop `<= MAX_PASSWORD_LENGTH` from `_validate_password`, removing the
+#                upper length bound.
+#                Caught by ONE test (1 failed, 36 passed here; 1 failed, 522 passed across
+#                the whole API suite):
+#                `test_a_live_token_with_an_over_long_password_blames_the_password`.
+#                Its positive control catches a SECOND mutation nothing else does: the
+#                bound moved by one, `<=` to `<` (1 failed, 36 passed).
+#                Before review round 2 it was caught by NOTHING — 520 passed. The lower
+#                bound and the whitespace branch were both pinned; the third branch of the
+#                same condition was exercised by no test in the repository.
 #
 # `test_signup_weak_password_rejected` above is NOT coverage for any of this: signup is a
 # different function and would keep passing however broken this path became.
@@ -539,15 +573,46 @@ SHORT_PASSWORD = "short"
 # Whitespace only, but LONG ENOUGH to clear the length rule, so it can only fail the
 # all-whitespace branch. That isolation is the point.
 BLANK_PASSWORD = " " * (services.MIN_PASSWORD_LENGTH + 2)
+# The two sides of the UPPER length bound, one character apart. The pair is what makes the
+# test bite: `OVER_LONG_PASSWORD` alone proves only that SOME long password is refused,
+# which stays true if the bound creeps downwards. `AT_LIMIT_PASSWORD` pins WHERE the
+# boundary is by being accepted.
+AT_LIMIT_PASSWORD = "x" * services.MAX_PASSWORD_LENGTH
+OVER_LONG_PASSWORD = "x" * (services.MAX_PASSWORD_LENGTH + 1)
+# The password used where the request is meant to SUCCEED. A literal here is what let
+# `test_a_failed_reset_rolls_back_the_consume_and_the_password` go quietly vacuous under a
+# raised MIN_PASSWORD_LENGTH while its siblings failed loudly.
+GOOD_PASSWORD = "a-perfectly-good-passphrase"
 
-# Pin both premises. If MIN_PASSWORD_LENGTH is ever lowered past 5, `SHORT_PASSWORD`
-# becomes a VALID password and every test below quietly stops testing anything — passing
-# for the wrong reason. Fail loudly at import instead.
+# Pin the premises. Each assertion below must be able to FAIL on a plausible edit —
+# an assertion whose subject is derived from the constant it is compared against is
+# arithmetic wearing a guard's clothes, and review round 2 removed one of those.
+#
+# If MIN_PASSWORD_LENGTH is ever lowered past 5, `SHORT_PASSWORD` becomes a VALID password
+# and every test below quietly stops testing anything — passing for the wrong reason. Fail
+# loudly at import instead.
 assert len(SHORT_PASSWORD) < services.MIN_PASSWORD_LENGTH, (
     "SHORT_PASSWORD is no longer short enough to be rejected — the FR-551 tests would pass vacuously"
 )
-assert services.MIN_PASSWORD_LENGTH <= len(BLANK_PASSWORD) <= services.MAX_PASSWORD_LENGTH, (
+# `MIN <= len(BLANK_PASSWORD)` was the other half of this assertion and is arithmetic:
+# BLANK_PASSWORD is MIN + 2 spaces, so it can never fire. What CAN fire is the property the
+# constant exists for, and the upper bound if MAX is ever pulled below MIN + 2.
+assert BLANK_PASSWORD.strip() == "", (
+    "BLANK_PASSWORD is no longer all-whitespace — it would stop isolating the whitespace branch"
+)
+assert len(BLANK_PASSWORD) <= services.MAX_PASSWORD_LENGTH, (
     "BLANK_PASSWORD no longer isolates the all-whitespace branch — it would fail on LENGTH instead"
+)
+assert AT_LIMIT_PASSWORD.strip() and OVER_LONG_PASSWORD.strip(), (
+    "the length-bound passwords became blank — they would fail the WHITESPACE branch, not LENGTH"
+)
+assert services.MIN_PASSWORD_LENGTH <= services.MAX_PASSWORD_LENGTH, (
+    "MAX_PASSWORD_LENGTH fell below MIN_PASSWORD_LENGTH — no password satisfies the policy and "
+    "the upper-bound test would pass for the wrong reason"
+)
+assert services.MIN_PASSWORD_LENGTH <= len(GOOD_PASSWORD) <= services.MAX_PASSWORD_LENGTH, (
+    "GOOD_PASSWORD no longer satisfies the password policy — every test that expects the reset "
+    "to SUCCEED would instead be measuring a rejected password"
 )
 
 
@@ -565,6 +630,43 @@ def token_row(raw_token):
 def error_message(response):
     errors = body(response).get("errors") or []
     return errors[0].get("message") if errors else None
+
+
+def live_verify_token(client, sender, *, email="deacon@grace.example", idem="live-verify-0001"):
+    """Register WITHOUT verifying, and return the resulting EMAIL_VERIFY token — live and
+    UNCONSUMED.
+
+    This is the only fixture that can exercise the purpose clause in `confirm_password_reset`.
+    `signup_and_verify` SPENDS the verify token it mints, so `sender.verify_tokens[-1]` after
+    it is a consumed token: offered to the reset mutation it is refused by `consumed_at`, and
+    `token.purpose != PASSWORD_RESET` never decides anything. Every wrong-purpose fixture in
+    this file was built that way until review round 2, which is why deleting the purpose clause
+    left all 520 tests in the repository passing.
+    """
+    post_account(client, REGISTER, register_input(idem=idem, email=email))
+    return sender.verify_tokens[-1]
+
+
+def assert_only_the_purpose_clause_can_refuse(raw_token):
+    """Premise for every wrong-purpose case: the token must be REAL, UNCONSUMED and UNEXPIRED,
+    so the only thing that can refuse it is its PURPOSE.
+
+    Asserting the purpose alone — which is what this file used to do — pins the wrong property.
+    It confirms the fixture is a verification token and says nothing about whether the clause
+    under test is the one doing the work.
+    """
+    row = token_row(raw_token)
+    assert row.purpose == CredentialTokenPurpose.EMAIL_VERIFY, (
+        "the wrong-purpose case was NOT set up — this is not a verification token"
+    )
+    assert row.consumed_at is None, (
+        "the wrong-purpose token is already SPENT, so `consumed_at` refuses it and the purpose "
+        "clause is never reached — this case proves nothing about purpose"
+    )
+    assert row.expires_at > timezone.now(), (
+        "the wrong-purpose token has EXPIRED, so `expires_at` refuses it and the purpose clause "
+        "is never reached — this case proves nothing about purpose"
+    )
 
 
 @pytest.mark.django_db
@@ -597,6 +699,55 @@ def test_a_live_token_with_an_all_whitespace_password_blames_the_password(client
         "the token was already spent, so the whitespace branch was NOT exercised behind a live token"
     )
     assert error_code(resp) == "PASSWORD_INVALID"
+
+
+@pytest.mark.django_db
+def test_a_live_token_with_an_over_long_password_blames_the_password(client, sender):
+    """The THIRD branch of `_validate_password` — the UPPER length bound. Catches mutation U.
+
+    Nothing in the repository exercised it before this test: with `<= MAX_PASSWORD_LENGTH`
+    deleted from the condition, all 520 tests passed. The lower bound and the all-whitespace
+    branch were each pinned; this half of the same `if` was not.
+    """
+    reset_token = live_reset_token(client, sender)
+
+    # PREMISE, asserted BEFORE the request, deliberately. Its siblings assert liveness after
+    # theirs, where it doubles as a contract — but here the mutation this test exists to catch
+    # (the bound removed) makes the request SUCCEED and consume the token, so a post-request
+    # liveness assertion would fire first and report "the token was already spent", which is
+    # the wrong diagnosis for the right failure.
+    assert token_row(reset_token).consumed_at is None, (
+        "the reset token was not live before the request, so this case never got behind a "
+        "validated token at all"
+    )
+
+    rejected = post_account(
+        client, CONFIRM_RESET, {"input": {"token": reset_token, "newPassword": OVER_LONG_PASSWORD}}
+    )
+    assert error_code(rejected) == "PASSWORD_INVALID", (
+        f"a password one character past MAX_PASSWORD_LENGTH answered {error_code(rejected)}. If "
+        "that is None the reset SUCCEEDED: the upper length bound is gone, the server no longer "
+        "matches the client's mirror of the same rule, and an arbitrarily long password now "
+        "reaches make_password, where KDF work scales with its length"
+    )
+    assert token_row(reset_token).consumed_at is None, (
+        "the over-long password was refused but the user's link was burnt anyway"
+    )
+
+    # POSITIVE CONTROL, on the SAME link: exactly MAX_PASSWORD_LENGTH is still ACCEPTED. Without
+    # it the assertion above also passes if the bound has crept DOWNWARDS, or if long passwords
+    # are refused for some unrelated reason — "refused" would not be evidence that the boundary
+    # is where the policy says it is. The pair is one character apart, so it pins the boundary
+    # itself rather than the fact that some long password is rejected. Measured: `<=` changed to
+    # `<` on the upper bound is caught here and nowhere else.
+    accepted = post_account(
+        client, CONFIRM_RESET, {"input": {"token": reset_token, "newPassword": AT_LIMIT_PASSWORD}}
+    )
+    assert error_code(accepted) is None, (
+        f"a password of exactly MAX_PASSWORD_LENGTH was refused with {error_code(accepted)} — the "
+        "bound has moved, so the refusal asserted above proves nothing about where it is"
+    )
+    assert body(accepted)["data"]["confirmPasswordReset"]["reset"] is True
 
 
 @pytest.mark.django_db
@@ -649,16 +800,63 @@ def test_a_dead_token_with_a_weak_password_never_mentions_the_password(client, s
 
 
 @pytest.mark.django_db
-def test_every_token_failure_stays_mutually_indistinguishable(client, sender):
-    """FR-529 / CON-P6, unchanged by this fix: unknown / consumed / expired / wrong-purpose
-    must answer identically — same code AND same message — and none may leak PASSWORD_INVALID.
+def test_a_live_verify_token_is_refused_by_the_reset_mutation(client, sender):
+    """The PURPOSE clause, which nothing in the repository guarded. Catches mutation P.
 
-    Every request below deliberately carries a VALID password, so the only thing that can
-    vary between them is the token.
+    A token minted for EMAIL_VERIFY must not reset a password, even while it is perfectly
+    live. Deleting `token.purpose != CredentialTokenPurpose.PASSWORD_RESET` from the guard
+    left all 520 tests passing before this test existed — every wrong-purpose fixture in the
+    file was a token `signup_and_verify` had already spent, so `consumed_at` was doing the
+    refusing.
+
+    The password is deliberately VALID and the token deliberately LIVE, so the purpose is the
+    only thing left that can refuse this request.
+    """
+    verify_token = live_verify_token(client, sender)
+    assert_only_the_purpose_clause_can_refuse(verify_token)
+
+    resp = post_account(
+        client, CONFIRM_RESET, {"input": {"token": verify_token, "newPassword": GOOD_PASSWORD}}
+    )
+
+    assert error_code(resp) == "VALIDATION_FAILED", (
+        f"an EMAIL_VERIFY token answered {error_code(resp)} instead of the collapsed code. If "
+        "that is None the reset SUCCEEDED, and a verification link — which is emailed on every "
+        "signup attempt for an address, including one that already has an account — can now take "
+        "the account over"
+    )
+    assert token_row(verify_token).consumed_at is None, (
+        "the refused verification token was consumed anyway, so the caller has also burnt it"
+    )
+
+
+@pytest.mark.django_db
+def test_every_token_failure_stays_mutually_indistinguishable(client, sender):
+    """FR-529 / CON-P6, unchanged by this fix. `confirm_password_reset`'s docstring names FIVE
+    collapsed classes — malformed, unknown, wrong-purpose, consumed, expired — and this test
+    covers all five. It used to cover four: malformed was named by the service docstring and
+    sent by no test in the repository.
+
+    Every class must answer identically, same code AND same message, and none may leak
+    PASSWORD_INVALID. Every request below deliberately carries a VALID password, so the only
+    thing that can vary between them is the token.
     """
     email = "pastor@grace.example"
     signup_and_verify(client, sender, email=email)
     good_password = "another-fine-passphrase"
+
+    # malformed. Three shapes, and they are NOT three code paths — worth saying, because the
+    # docstring's flat list of five reads as if they were. An empty or whitespace-only token
+    # raises at the `if not token_value` guard, ABOVE the transaction, and is the only malformed
+    # shape with an exit of its own. A non-empty wrong-shape token is fingerprinted like any
+    # other and misses, so it is `unknown` by construction and cannot diverge from it. Only the
+    # first adds a distinct path; the third is here so nobody reads the docstring as claiming
+    # more than that.
+    empty = post_account(client, CONFIRM_RESET, {"input": {"token": "", "newPassword": good_password}})
+    whitespace = post_account(client, CONFIRM_RESET, {"input": {"token": "   ", "newPassword": good_password}})
+    wrong_shape = post_account(
+        client, CONFIRM_RESET, {"input": {"token": "not-a-token-shape", "newPassword": good_password}}
+    )
 
     # unknown
     unknown = post_account(client, CONFIRM_RESET, {"input": {"token": "SC-PRS-nobody-minted-this", "newPassword": good_password}})
@@ -678,14 +876,17 @@ def test_every_token_failure_stays_mutually_indistinguishable(client, sender):
     row.save(update_fields=["expires_at"])
     expired = post_account(client, CONFIRM_RESET, {"input": {"token": stale, "newPassword": good_password}})
 
-    # wrong purpose — an EMAIL_VERIFY token offered to the reset mutation
-    verify_token = sender.verify_tokens[-1]
-    assert token_row(verify_token).purpose == CredentialTokenPurpose.EMAIL_VERIFY, (
-        "the wrong-purpose case was NOT set up — this is not a verification token"
-    )
+    # wrong purpose — a LIVE, UNCONSUMED EMAIL_VERIFY token offered to the reset mutation. It
+    # used to be `sender.verify_tokens[-1]`, which `signup_and_verify` had already spent, so
+    # this case was a second `consumed` case wearing a wrong-purpose label.
+    verify_token = live_verify_token(client, sender, idem="collapse-purpose-0001", email="verger@grace.example")
+    assert_only_the_purpose_clause_can_refuse(verify_token)
     wrong_purpose = post_account(client, CONFIRM_RESET, {"input": {"token": verify_token, "newPassword": good_password}})
 
     responses = {
+        "malformed_empty": empty,
+        "malformed_whitespace": whitespace,
+        "malformed_wrong_shape": wrong_shape,
         "unknown": unknown,
         "consumed": consumed,
         "expired": expired,
@@ -693,13 +894,18 @@ def test_every_token_failure_stays_mutually_indistinguishable(client, sender):
     }
     for name, resp in responses.items():
         assert error_code(resp) == "VALIDATION_FAILED", f"{name} did not return the collapsed code"
-    # SECOND-ORDER, and labelled as such so it is not mistaken for an independent guard.
-    # `safe_graphql_error` rebuilds every message from `SAFE_MESSAGES[code]`, so with the
-    # four code assertions above already passing, the message is a pure function of the
-    # code and this cannot fail on its own. It bites only if the view's scrubbing is ALSO
-    # removed — a real regression, just not one the codes above would catch.
+    # SECOND-ORDER, and NOT an independent guard. The earlier annotation here said it "bites only
+    # if the view's scrubbing is ALSO removed — a real regression, just not one the codes above
+    # would catch", which reads as a claim that this line guards that regression. It does not, and
+    # this was measured: with `safe_graphql_error` dropped from `SafeGraphQLView.process_result`,
+    # this whole file stays GREEN. The reason is that every raise on this path is a bare
+    # `_validation_error()` with no custom message, so all seven responses already carry
+    # `SAFE_MESSAGES[VALIDATION_FAILED]` whether or not the view rebuilds them. Firing this line
+    # needs TWO regressions at once, and the second — a service raising differing messages under
+    # one code — is not reachable from this path today. Kept as a cheap pin for the day a raise
+    # site here does carry a custom message; the code assertions above are what bite.
     assert len({error_message(resp) for resp in responses.values()}) == 1, (
-        "the four token failures are no longer byte-identical — the view's message scrubbing "
+        "the token failures are no longer byte-identical — the view's message scrubbing "
         "has been lost and the message itself has become an oracle"
     )
 
@@ -710,8 +916,9 @@ def test_a_dead_but_real_token_with_a_weak_password_stays_collapsed(client, send
 
     Every OTHER weak-password test in this file uses an UNKNOWN token, which fails at the
     row lookup — so none of them ever drives a weak password into the
-    purpose/consumed/expired block. That left a mutation that passes 32/32 while turning
-    the API into an enumeration oracle:
+    purpose/consumed/expired block. That left a mutation which every other test in this file
+    passes (measured with this test present: 1 failed, 36 passed) while turning the API into
+    an enumeration oracle:
 
         unknown        -> VALIDATION_FAILED     ("this token never existed")
         consumed       -> PASSWORD_INVALID      ("this token EXISTED")
@@ -722,8 +929,8 @@ def test_a_dead_but_real_token_with_a_weak_password_stays_collapsed(client, send
     from "existed" just by attaching a short password — strictly worse than the sanctioned
     live-token oracle, which at least requires a working link first.
 
-    So: a token that is REAL but DEAD must answer exactly like one that never existed, no
-    matter what the password is.
+    So: a token that is REAL but cannot be used must answer exactly like one that never
+    existed, no matter what the password is.
     """
     email = "pastor@grace.example"
     signup_and_verify(client, sender, email=email)
@@ -740,18 +947,18 @@ def test_a_dead_but_real_token_with_a_weak_password_stays_collapsed(client, send
     stale_row.expires_at = timezone.now() - timezone.timedelta(seconds=1)
     stale_row.save(update_fields=["expires_at"])
 
-    # wrong purpose — an EMAIL_VERIFY token offered to the reset mutation
-    verify_token = sender.verify_tokens[-1]
+    # wrong purpose — a LIVE, UNCONSUMED EMAIL_VERIFY token offered to the reset mutation. This
+    # case used to be `sender.verify_tokens[-1]`, already spent by `signup_and_verify`, so it
+    # was a second `consumed` case and the catch map's three dead-but-real states were two.
+    verify_token = live_verify_token(client, sender, idem="dead-purpose-0001", email="sexton@grace.example")
 
-    # PREMISES, asserted before the contract. Each row must be REAL and DEAD for the
-    # right reason; if any of these slips, the case below stops exercising the
-    # purpose/consumed/expired block and passes for the wrong reason.
+    # PREMISES, asserted before the contract. Each row must be REAL and unusable for the
+    # right reason; if any of these slips, the case below stops exercising the clause it
+    # names and passes for the wrong reason.
     assert token_row(spent).consumed_at is not None, "the consumed case was NOT set up — token never spent"
     assert token_row(stale).expires_at <= timezone.now(), "the expired case was NOT set up — token still live"
     assert token_row(stale).consumed_at is None, "the expired token was spent, so it is not testing EXPIRY"
-    assert token_row(verify_token).purpose == CredentialTokenPurpose.EMAIL_VERIFY, (
-        "the wrong-purpose case was NOT set up — this is not a verification token"
-    )
+    assert_only_the_purpose_clause_can_refuse(verify_token)
 
     dead_but_real = {"consumed": spent, "expired": stale, "wrong_purpose": verify_token}
     for name, raw in dead_but_real.items():
@@ -791,12 +998,27 @@ def test_a_failed_reset_rolls_back_the_consume_and_the_password(client, sender, 
     reset_token = live_reset_token(client, sender, email=email)
     original = CustomerUser.objects.get(email=email).password_hash
 
+    reached_audit = []
+
     def boom(*a, **k):
+        reached_audit.append(True)
         raise RuntimeError("audit down")
 
     monkeypatch.setattr("selahcue_api.apps.accounts.services.record_audit_event", boom)
-    post_account(client, CONFIRM_RESET, {"input": {"token": reset_token, "newPassword": "a-perfectly-good-passphrase"}})
+    post_account(client, CONFIRM_RESET, {"input": {"token": reset_token, "newPassword": GOOD_PASSWORD}})
 
+    # PREMISE, asserted BEFORE the contract, because the two assertions below describe a
+    # post-state that is IDENTICAL to a request refused long before the consume ever happened.
+    # Measured both ways. Swap this test's password for one `_validate_password` rejects and,
+    # before this assertion existed, the file stayed GREEN at 35 passed — the test proving
+    # nothing about the transaction boundary while looking exactly as healthy. With this
+    # assertion the same swap fails here, and only here (1 failed, 36 passed). The realistic
+    # trigger is drift in the password, which is now `GOOD_PASSWORD` and pinned against the
+    # policy at import; this is the second lock, and it catches any other early raise too.
+    assert reached_audit, (
+        "the reset never reached the audit call, so nothing was consumed and no password was "
+        "written — the rollback was never exercised and the two assertions below prove nothing"
+    )
     assert token_row(reset_token).consumed_at is None, (
         "the token stayed consumed through a failed reset — the user's link is burnt and the "
         "password was never changed, the worst of both outcomes"
