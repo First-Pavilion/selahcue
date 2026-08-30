@@ -97,59 +97,105 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-002 | yes | Unknown-email and wrong-password sign-in render byte-identical card text | `npm run test:states` cross-scenario text equality | exits 0 | `PASS [enumeration] … indistinguishable at sign-in (card)` and `(ops)` | PASS |
 | C-003 | yes | Signup for a new address and for an already-registered address render byte-identical card text | `npm run test:states` cross-scenario text equality | exits 0 | `PASS [enumeration] … new and an already-registered address (card)` and `(ops)` | PASS |
 | C-004 | yes | Forgot-password for a registered and an unregistered address render byte-identical card text | `npm run test:states` cross-scenario text equality | exits 0 | `PASS [enumeration] … registered and an unregistered address (card)` and `(ops)` | PASS |
-| C-005 | yes | No auth failure state is a dead end — each offers a named forward action (FR-552) | `npm run test:states` | exits 0 | `forwardPathCheck` asserted on every failure scenario | PASS |
+| C-005 | yes | No auth failure state is a dead end — each offers a control that can be ACTUATED and is not part of a field (FR-552) | `npm run test:states` | exits 0 | `forwardPathCheck` on 16 failure scenarios (was 6); it requires an enabled button outside `.form-field`, or an `a[href]`. Mutation-verified: hiding the submit button and the forgot link on a rejected sign-in gives 15 FAIL including 3 forward-path FAIL (it previously gave **zero** behavioural failures) | PASS |
 | C-006 | yes | A password shorter than 10 chars is never sent to `registerCustomerUser` | `npm run test:states` | exits 0; 0 mutations dispatched | `signup-short-password`: `NO mutation dispatched for a 9-character password` | PASS |
 | C-007 | yes | No session token is written to browser storage; a hint carrying one is rejected | `npm test` | exits 0 | `tests/session.test.ts`; plus a live localStorage sweep in `signin-success` | PASS |
-| C-008 | yes | The session hint alone never grants entry to a protected route | `npm test` + `npm run test:states` | exits 0 | guard calls `confirmSession` unconditionally; `account-guarded` | PASS |
+| C-008 | yes | The session hint alone never grants entry to a protected route | `npm test` + `npm run test:states` | exits 0 | `account-stale-hint` plants a LIVE-LOOKING hint (30-day expiry) over a dead server session. Previously both guard-refusal scenarios ran with no hint at all, proving only that an ABSENT hint is refused (Quinn). Mutation-verified: a guard that returns early on `isProbablySignedIn` gives 4 FAIL on this scenario alone | PASS |
 | C-009 | yes | Sign-out revokes server-side, clears local state, and `/account` redirects to `/signin` afterwards | `npm run test:states` | exits 0 | `session-lifecycle`; `signout-failure` covers the failed case | PASS |
 | C-010 | yes | A transport failure is never rendered as a credential failure | `npm test` + `npm run test:states` | exits 0 | `signin-unreachable`, `signup-unreachable` | PASS |
-| C-011 | yes | The CSRF cookie is bootstrapped through the existing seam, and no second transport path exists | `npm test` | exits 0; one `fetch` module | `tests/accountApi.test.ts` CSRF suite; `csrfChecks()` in every scenario | PASS |
+| C-011 | yes | The CSRF cookie is bootstrapped through the existing seam, and no second transport path exists | `npm test` | exits 0; one `fetch` module | `tests/accountApi.test.ts` CSRF suite; `csrfChecks()` in every scenario. The `fetch`/`XMLHttpRequest` ban used to iterate the three VIEWS only, so a raw `fetch` in `sessionStore.ts` would have passed (Quinn LOW-9); it now runs over all 20 guarded modules | PASS |
 | C-012 | yes | Typecheck and production build are clean | `npm run build` | exits 0 | `vue-tsc -b && vite build`, exit 0 | PASS |
-| C-013 | yes | Every flow is completable by keyboard alone; fields carry labels, `aria-invalid`, `aria-describedby`, and errors are announced | `npm run test:states` | exits 0 | autocomplete/label/aria/44px-target checks per scenario | PASS |
-| C-014 | yes | No fabricated success remains — no `setTimeout`-simulated outcome, no unbacked OAuth affordance | `npm run test:states` + review | no matches | universal check `no unbacked OAuth affordance`; no `setTimeout` in the views | PASS |
-| C-015 | yes | The headless suite did not shrink; its floor was raised to the new count | `npm run test:states` | exits 0, not 4 | floor 495 → 1384; 49 scenarios, 1384 checks | PASS |
-| C-016 | yes | No wait in the request path is unbounded — a hung CSRF bootstrap still resolves to an honest state | `npm test` | exits 0; the call settles within its own deadline and the mutation still runs | `tests/accountApi.test.ts`: `a hung bootstrap is bounded and the mutation still gets its answer` | PASS |
-| C-017 | yes | The enumeration probe gates five channels — copy, whole-page text, request sequence, colour, and DOM attributes — and each is mutation-verified to be the sole catcher of its own channel | `npm run test:states` | exits 0; 15 `PASS [enumeration]` lines | 3 groups × 5 gated facets; one mutation per group isolated exactly one facet | PASS |
-| C-018 | yes | The timing channel is covered by a deterministic control whose scope is stated, and the noisy measurement is reported rather than gated | `npm test` | exits 0; no timer, address inspection or address literal anywhere on the auth path, **including inside bound attributes** | `tests/authViews.test.ts` (mutation-verified, proportional anti-vacuity floor + per-export anchors, positive control on its own regexes); `INFO [enumeration] … (elapsed)` printed each run | PASS |
+| C-013a | yes | Fields carry labels, `autocomplete`, `aria-invalid` and `aria-describedby`; errors are announced; targets clear 44px | `npm run test:states` | exits 0 | autocomplete/label/aria/44px-target checks per scenario | PASS |
+| C-013b | no | Every flow is completable by keyboard alone | **not verified** | — | **NOT_APPLICABLE — this was an overclaim and is withdrawn rather than left standing.** Quinn: `Tab`, `keydown` and `KeyboardEvent` appear nowhere in the harness, every interaction is a programmatic `submit`/`click`, and `document.activeElement` is asserted exactly once in the whole file — on `verify-success`, a view this PR does not touch. `focusHeading()` is called five times across the new views and `SignInView` moves focus to the password field after a rejection; none of it is checked. The ARIA half genuinely holds and is C-013a. Keyboard verification needs a driver that can send real key events; tracked as a follow-up, not claimed here | NOT_APPLICABLE |
+| C-014 | yes | No fabricated success remains — no timer-simulated outcome, no unbacked OAuth affordance | `npm run test:states` + `npm test` | no matches | universal check `no unbacked OAuth affordance`; the timer ban covers `setTimeout`, `setInterval`, `setImmediate`, `requestIdleCallback` and `requestAnimationFrame` across 20 modules. Vera planted a ~900ms delay built from 56 chained `requestAnimationFrame` calls in a COVERED file and it passed 110/110, because the primitive was not on the list | PASS |
+| C-015 | yes | The headless suite did not shrink; its floor was raised to the new count | `npm run test:states` | exits 0, not 4 | floor 495 → 1384 → **1556**; 55 scenarios, 1556 checks. Note what the floor is: it counts LINES PUSHED TO `results`, not assertions (Quinn verified this by pushing two INFO lines and watching the total rise), so it catches a driver regression that runs fewer checks and is **not** a measure of coverage | PASS |
+| C-016 | yes | No wait in the request path is unbounded — a hung CSRF bootstrap still resolves to an honest state, and a caller who abandons the request is not held to it | `npm test` | exits 0 | `tests/accountApi.test.ts`. Now on `node:test` mock timers (Vera LOW-3: the old form waited out the real 5s and was ~93% of the suite's wall time; 5.1s → 0.34s) and the bounds are TIGHTER for it — the mutation is pinned as not-issued one millisecond before the deadline and issued just after. Plus `a caller who abandons the request does not sit out the seed deadline`, which was 5,001ms for a 500ms abort | PASS |
+| C-017 | yes | The enumeration probe compares the two branches of each pair at THREE moments — before submit, in flight, and settled — over copy, whole-page text, request sequence, colour, every DOM attribute, and elapsed time | `npm run test:states` | exits 0; 45 `PASS [enumeration]` lines | 3 groups × (5 settled facets + elapsed) + 6 surface groups × 4 facets. **The old wording claimed each facet is "mutation-verified to be the sole catcher of its own channel", and that was FALSE of `tone`** — Quinn planted a class-based colour leak with identical text and BOTH `tone` and `attrs` failed, because `attrs` signs `class` and `toneSignature()` reads nothing but class names. `tone` is kept (it is cheap and it names the channel) but it is not sole. `card`, `page`, `ops` and `attrs` are each sole; `ops` verified by Quinn and Cody independently with an address-keyed extra request | PASS |
+| C-018 | yes | The source-level bans are TRIPWIRES with a stated ceiling, each with a positive control that consumes the ban's own definition; the timing channel is gated at a wide paired delta | `npm test` + `npm run test:states` | exits 0 | `tests/authViews.test.ts`. **Two claims in the old wording were false and are withdrawn.** (1) "including inside bound attributes" — Cody extracted `function looksRegistered(value: string)`, moved the inspection onto a parameter outside the name list, bound it to a `:placeholder`, and both gates passed. A ban keyed on identifier names can always be walked past by renaming; that is the ceiling of the technique, it is now stated in the file header, and the boundary is C-017's behavioural comparison instead. (2) "positive control on its own regexes" — the control declared its OWN copies of the regexes, so Quinn disarmed the ban, planted the leak, and the control printed `ok`. Every predicate is one module-scope definition now, consumed by both. `elapsed` is gated at a 600ms paired delta, calibrated on local runs only — see the constant's comment | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
 ### What the probe does NOT cover, stated so it is not mistaken for more
 
-The five gated facets are each mutation-verified as the only catcher of their own channel.
-That is not the same as proving the set is exhaustive, and C-017 must not be read as
-saying so — the `attrs` facet exists precisely because a QA review found a sixth channel
-the first four were blind to, after they had all been mutation-verified. Known limits:
+Four reviewers each broke the round-1 guard set independently, and the honest summary of
+why is that the guards **enumerated syntax where they needed to observe behaviour**, and
+the controls that vouched for them **read private copies of the guards' own lists**. Both
+are fixed; what follows is what is still true after the fix.
 
-- **The timing channel is not gated.** `elapsed` is measured and printed, never asserted;
-  its noise floor is structural (a 20ms poll under `--virtual-time-budget`, so the reading
-  is "how many quanta" plus a 120ms grace) and is wider than any useful threshold.
-  Observed spreads on CORRECT code, across machine loads 5.85→41: 321ms, and independently
-  29/7/23ms and 0/4/2ms.
-- **The deterministic timing control covers the auth path, not the whole app.**
-  `tests/authViews.test.ts` refuses timers and address inspection across the three views
-  plus `account.ts`, `session.ts`, `sessionStore.ts`, `signupPolicy.ts`, `redirect.ts`,
-  `AuthShell.vue`, `AuthBanner.vue` and `StatusDisc.vue`. `graphql.ts` is exempt from the
-  blanket ban because its two `setTimeout` calls are the request and bootstrap deadlines;
-  it instead has to prove every timer is armed from a deadline constant, and that it
-  contains no reference to an email address at all. Anything outside that list — a new
-  component, a new module — is not covered until it is added.
-- **The client does hold one piece of registration-adjacent knowledge: the address the
-  user typed.** That is precisely why the address-inspection ban is load-bearing rather
-  than decorative, and why a strip that blinded it to bound attributes was a real hole
-  rather than a cosmetic one. The bullet that used to sit here claimed the client held
-  nothing to branch on; that was wrong, and a one-line `:placeholder` proved it.
+- **The source-level bans are tripwires and cannot be more than that.** They key on
+  identifier names, and an identifier can always be renamed. Cody's `looksRegistered(value)`
+  helper extraction is the proof, and no widening of the regexes would have changed it. The
+  file header says so now. The boundary is the behavioural comparison in C-017, which does
+  not care how the source is written.
+- **`elapsed`'s threshold is calibrated on developer machines only.** Every clean reading on
+  record — Vera's 18/18, Quinn's, Cody's, and this round's — comes from a laptop. Nobody has
+  measured a CI runner's variance and, with this repository's Actions minutes exhausted,
+  nobody could. 600ms sits well above the worst recorded correct-code spread (321ms, at load
+  41) and well below every planted mutant (869–900ms). **If CI turns it red on correct code,
+  widen it to 1500ms — which still catches every mutant on record — rather than removing
+  the gate, and record the measurement here.**
+- **`tone` is not a sole catcher and the contract no longer says it is.** A class-based
+  colour leak fails `attrs` too, because `attrs` signs `class`. The half of the colour
+  channel that neither covered — inline `style` — is closed by signing every attribute.
+- **The facet set is not proven exhaustive.** It never was, and two rounds of review have now
+  each found a channel the previous set was blind to (`attrs` after round 1; the pre-submit
+  and in-flight WINDOWS, and inline `style`, after round 2). Signing every attribute rather
+  than a whitelist, and sampling three moments rather than one, is an attempt to make the
+  next hole a different SHAPE rather than the same shape one item along — not a proof there
+  is no next hole.
+- **The guarded module list is hand-maintained.** It is 20 files now (was 11), and it grew
+  because the auth path grew in this PR and the list did not follow. Nothing detects that
+  automatically; a new component on this path is uncovered until someone adds it.
+- **The client does hold one piece of registration-adjacent knowledge: the address the user
+  typed.** That is why the address ban is load-bearing rather than decorative, and why a
+  strip that blinded it to bound attributes was a real hole. It was re-introduced and
+  re-fixed during this very round — `withoutStringContents` blanked Vue's double-quoted
+  bound attributes, and Quinn's inline-style mutation is what exposed it.
 - **The strongest guarantee on timing is structural, not a test.** The server equalises the
   branches itself — `check_password` against `_DUMMY_PASSWORD_HASH` on the unknown-email
   path, and a dummy-PBKDF2 pad in `request_password_reset` — and its responses to the two
-  branches are byte-identical. **The client is never told which branch occurred, so it
-  holds no registration knowledge to time-branch on.** A client-side timing oracle would
-  require the client to first acquire the very fact the whole design withholds.
-- **The fixtures never present a difference.** Every scenario scripts identical responses
-  for both branches, because that is what the API really returns. So the probe proves the
-  client does not **invent** a distinction; it cannot prove the client would not **render**
-  one if the server ever started emitting it. "No *response* difference reveals whether an
-  address is registered" is a server property, and this branch verifies it nowhere.
+  branches are byte-identical. The client is never told which branch occurred, so it holds
+  no registration knowledge to time-branch on. A client-side timing oracle would require the
+  client to first acquire the very fact the whole design withholds.
+- **The fixtures never present a difference.** Every scenario scripts identical responses for
+  both branches, because that is what the API really returns. So the probe proves the client
+  does not **invent** a distinction; it cannot prove the client would not **render** one if
+  the server ever started emitting it. "No *response* difference reveals whether an address
+  is registered" is a server property, and this branch verifies it nowhere.
+- **Keyboard operability is not verified at all.** See C-013b. The ARIA half holds; the
+  keyboard half was claimed and never tested, and the claim is withdrawn rather than
+  softened.
+
+### Findings deliberately NOT actioned, with reasoning
+
+Both are reviewer findings I disagree with on the evidence, recorded here so the
+disagreement is reviewable rather than silent.
+
+- **A negative cache on the CSRF seed (Cody LOW-8, sized by Vera).** Three sequential
+  logins against a hanging `/graphql/csrf` cost three 5s waits. A session-scoped backoff
+  would remove the wait — and would also send the next mutation with no CSRF token, turning
+  a bounded DELAY into a functional 403 the moment the seed recovers. Today a failed seed
+  costs time and the mutation still runs; with a negative cache a transient failure costs
+  correctness. Vera's own verdict is "acceptable while the seed shares fate with the API; a
+  session-scoped backoff is only worth it if that ever changes". Not implemented; the abort
+  half of the same finding, which has no such trade, is fixed.
+- **`?next=` reachability of the unguarded `/admin/*` routes (Cody LOW-7, routed to Sana).**
+  `?next=/admin` does land a signed-in customer on an admin view. But those routes carry no
+  `requiresSession` and are reachable by typing the URL, so `?next=` grants no access that
+  did not already exist — it is a shorter path to the same place. The real defect is that
+  `/admin/*` is unguarded, which is neither this ticket's scope nor something `safeNextPath`
+  should paper over by growing a route blacklist. Raised as a follow-up instead.
+
+### Follow-ups this round did not close
+
+- Keyboard operability verification (C-013b) — needs a driver that sends real key events.
+- Quinn's remaining coverage gaps: `confirmSession`'s `unreachable` branch and the guard's
+  deliberate `return true` for it; both `submitResend` failure paths; `signOut`'s
+  "already gone counts as success"; a failed `refreshSession`; `Navbar.vue`'s mobile drawer,
+  which holds a second copy of the signed-in controls and a second `handleSignOut`;
+  `ForgotPasswordView`'s NETWORK-path scenario (`forgot-failure` uses `INTERNAL`).
+- Guarding `/admin/*` and `/affiliates/*`.
+- CI has never run the marketing job on this PR (see the PR description).
 
 ## Verification plan
 
@@ -308,6 +354,57 @@ the first four were blind to, after they had all been mutation-verified. Known l
   the second where MY OWN accommodation created the hole — the placeholder strip was added
   to stop a false positive and silently removed a true one. An exception carved into a
   guard to make it pass is the thing to re-examine first.
+- Decision: complete
+
+### Iteration 8 — four-reviewer round 2: the guards enumerated syntax where they needed to observe behaviour
+
+- Hypothesis under test: that the round-1 guard set covered what it claimed, and that the
+  controls vouching for it were alive.
+- Verifier executed: the four review reports on PR #17 (2 High, ~7 Medium, ~9 Low), then
+  every finding re-derived here and every fix mutation-verified before being claimed.
+- Result: **both halves of the hypothesis were false, and they share one root cause.**
+  - **The bans enumerated SYNTAX.** Four leaks passed both gates: Cody's helper extraction
+    onto a parameter name (`looksRegistered(value)`), Sana's computed `:placeholder` keyed
+    on the typed address, Quinn's inline-`style` colour oracle in the settled state, and
+    Quinn's in-flight `au-note` in a window nothing sampled. `INSPECTORS` was a ten-name
+    whitelist missing `split`, `toLowerCase`, `replace`, `at` and `.length`; `SIGNED_ATTRS`
+    was a twenty-three-name whitelist missing `style`; `recordBranch` fired once, after
+    `settle()`, and with synchronous fixtures the `submitting` state never painted at all.
+  - **The controls read PRIVATE COPIES.** `authViews.test.ts` declared its regexes at lines
+    149-152 and again at 179-182. Quinn deleted `startsWith|` from the first copy only,
+    planted the leak, and got `npm test` EXIT=0 with the control printing `ok`. This is
+    Shape 3 in `CLAUDE.md` verbatim, in a file written to remediate an earlier round.
+  - **A real user-facing defect**, separate from the guards: `await router.replace(...)`
+    inside the credential-failure `try`, so a rejected navigation rendered "Invalid email
+    or password" over a login that had succeeded — triggered in production by a stale
+    `index.html` pointing at a lazy chunk a deploy removed.
+  - **Two client/server mirrors were wrong and their tests pinned the wrongness** with
+    fixtures drawn from the region where the two languages already agree.
+- Remediation, and how each was earned:
+  - The boundary is behavioural now. Every attribute is signed, and each pair is compared
+    at three moments. Re-planting all four leaks: Cody's fails pre-submit and in-flight
+    `attrs`; Sana's the same; Quinn's colour oracle fails settled `attrs`; her in-flight
+    oracle fails in-flight `card` and `page`.
+  - Every predicate is one module-scope definition consumed by both the ban and its
+    control. Re-ran Quinn's disarm — ban silenced AND leak planted — and the control goes
+    RED.
+  - `elapsed` is gated at a 600ms paired delta. Vera's exact mutation now fails with
+    `880ms apart, over the 600ms budget. Readings: 920 vs 40`.
+  - Both mirrors derive from one definition with two consumers. Flipping a verdict in
+    `tests/fixtures/email-mirror.json` turns the TS test AND the Python reference RED.
+- New evidence, and the thing worth carrying forward: **a whitelist is the wrong shape for
+  a guard whose job is to notice ANY difference.** Round 1 extended `SIGNED_ATTRS` twice
+  and `INSPECTORS` once, each time for a demonstrated leak, and each time the next reviewer
+  found the next item along. The fix that ended it was not a longer list — it was inverting
+  both (sign everything and normalise the two known-nondeterministic things; allow two
+  members rather than ban ten methods) and moving the real guarantee to a comparison that
+  does not read the source at all.
+  Second: **an accommodation added to stop a false positive is the first place to look for
+  a hole.** It happened twice on this branch. Round 1's placeholder strip blinded the ban to
+  bound attributes; in THIS round I added `withoutStringContents` to keep prose out of the
+  member ban and it blanked every Vue bound attribute — the same hole, re-made, one week
+  later. It was caught only because re-planting Quinn's mutation showed `npm test` staying
+  green when it had no business doing so. Mutation-verify the fix, not just the finding.
 - Decision: complete
 
 ## Risks and rollback
