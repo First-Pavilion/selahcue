@@ -72,6 +72,21 @@ const router = createRouter({
     { path: '/admin/affiliates', name: 'admin-affiliates', component: () => import('@/views/admin/AdminAffiliatesView.vue') },
     { path: '/admin/payouts', name: 'admin-payouts', component: () => import('@/views/admin/AdminPayoutsView.vue') },
     { path: '/admin/settings', name: 'admin-settings', component: () => import('@/views/admin/AdminSettingsView.vue') },
+
+    // MEDIUM-4 (Cody). There was no catch-all, so any path with no route resolved with
+    // ZERO matched components and rendered a BLANK PAGE. That is reachable from a link —
+    // `/signin?next=/anything` signs the visitor in and leaves them looking at nothing —
+    // and a blank page after a successful sign-in is exactly the dead end C-005 and FR-552
+    // forbid. `safeNextPath` cannot fix this on its own: it is pure and dependency-free by
+    // design and has no view of the route table, and giving it one would couple the
+    // open-redirect guard to the router for a problem the router should not have had.
+    //
+    // Placed last so it only ever matches what nothing else did.
+    {
+      path: '/:pathMatch(.*)*',
+      name: 'not-found',
+      component: () => import('@/views/NotFoundView.vue'),
+    },
   ]
 })
 

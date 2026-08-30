@@ -67,11 +67,23 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # Bump it when adding checks; never lower it to mask a lost one.
 #
 # It HAS moved down once, deliberately: 1384 → 1381 when the `elapsed` facet stopped being
-# gated and became reported evidence (see REPORTED_FACETS), removing three comparisons and
-# adding three INFO lines. The guard did its job and refused the run until this number was
-# changed on purpose, which is the only acceptable way for it to go down. Back to 1384 with
-# the `attrs` facet, which adds one comparison per equivalence group.
-EXPECTED_MIN_CHECKS = 1384
+# gated and became reported evidence, removing three comparisons and adding three INFO
+# lines. The guard did its job and refused the run until this number was changed on
+# purpose, which is the only acceptable way for it to go down.
+#
+# 1384 → 1483 in the PR #17 review round. What was added: 24 surface comparisons (the three
+# pairs at two new moments — before submit and in flight — times four facets), 6 in-flight
+# reach checks, 3 re-gated `elapsed` comparisons, 9 forward-path checks on failure states
+# that had none, 3 whole scenarios for the `?next=` round trip, and one declared
+# button-expectation check. `verify-loading` gives 3 back by declaring itself button-less.
+#
+# WHAT THIS NUMBER IS AND IS NOT (Quinn, LOW-1): it counts LINES PUSHED TO `results`, not
+# assertions — she verified that by pushing two non-assertion INFO lines and watching the
+# total rise 1384 → 1386. Combined with the 462 broadcast negatives from the banned-phrase
+# loop, all of which pass together whenever `cardText()` returns `''`, the floor is weaker
+# evidence than its size suggests. It catches a driver regression that runs FEWER checks;
+# it is not a measure of coverage, and it should not be read as one.
+EXPECTED_MIN_CHECKS = 1483
 
 
 def find_chrome() -> str | None:
@@ -184,8 +196,10 @@ DRIVER = r"""
     // `login` returns the SAME UNAUTHENTICATED for an unknown address, a wrong password and
     // a locked-out account, and equalises their timing. These two scenarios differ only in
     // the address typed; EQUIVALENCE_GROUPS asserts their renders are identical.
-    'signin-rejected-unknown':        function () { return UNAUTHENTICATED(); },
-    'signin-rejected-wrong-password': function () { return UNAUTHENTICATED(); },
+    // `gated`: the reply is held until the scenario releases it, so the in-flight state
+    // actually paints and can be compared. See `gated()` for why these six and not a timer.
+    'signin-rejected-unknown':        gated(function () { return UNAUTHENTICATED(); }),
+    'signin-rejected-wrong-password': gated(function () { return UNAUTHENTICATED(); }),
     'signin-unverified':   function () { return json({ errors: [{ extensions: { code: 'POLICY_DENIED' } }] }); },
     'signin-resend':       function (op) {
       if (op === 'Login') return json({ errors: [{ extensions: { code: 'POLICY_DENIED' } }] });
@@ -196,6 +210,24 @@ DRIVER = r"""
     'signin-validation':   function () { return UNAUTHENTICATED(); },
     'signin-expired':      function () { return UNAUTHENTICATED(); },
     'signin-success':      function (op) {
+      if (op === 'Login') return LOGIN_OK();
+      return VIEWER_OK();
+    },
+    // MEDIUM-2 (Quinn): `safeNextPath` is well tested in isolation and was UNTESTED IN
+    // PLACE. She replaced `SignInView.vue`'s only call site with a bare
+    // `router.replace('/account')` and both gates stayed green — the open-redirect guard
+    // could be unwired entirely, and the `?next=` round trip had no end-to-end coverage on
+    // either half. These three scenarios sign in from a guarded redirect and assert where
+    // the visitor actually lands.
+    'signin-next-honoured': function (op) {
+      if (op === 'Login') return LOGIN_OK();
+      return VIEWER_OK();
+    },
+    'signin-next-hostile':  function (op) {
+      if (op === 'Login') return LOGIN_OK();
+      return VIEWER_OK();
+    },
+    'signin-next-unmatched': function (op) {
       if (op === 'Login') return LOGIN_OK();
       return VIEWER_OK();
     },
@@ -217,8 +249,8 @@ DRIVER = r"""
     // returns accepted:true for a brand-new address AND for one that already has an
     // account, emailing the real owner out of band instead. EQUIVALENCE_GROUPS asserts
     // the two renders match.
-    'signup-new':          function () { return REGISTERED(); },
-    'signup-existing':     function () { return REGISTERED(); },
+    'signup-new':          gated(function () { return REGISTERED(); }),
+    'signup-existing':     gated(function () { return REGISTERED(); }),
     'signup-form':         function () { return REGISTERED(); },
     'signup-short-password': function () { return REGISTERED(); },
     'signup-no-terms':     function () { return REGISTERED(); },
@@ -240,8 +272,8 @@ DRIVER = r"""
     // ----------------------------------------------------------- forgot password --
     // Same uniformity: `request_password_reset` pads the miss branch with a dummy PBKDF2
     // so a registered and an unregistered address are indistinguishable in code AND time.
-    'forgot-registered':   function () { return RESET_REQUESTED(); },
-    'forgot-unregistered': function () { return RESET_REQUESTED(); },
+    'forgot-registered':   gated(function () { return RESET_REQUESTED(); }),
+    'forgot-unregistered': gated(function () { return RESET_REQUESTED(); }),
     'forgot-form':         function () { return RESET_REQUESTED(); },
     'forgot-bad-email':    function () { return RESET_REQUESTED(); },
     'forgot-failure':      function () { return json({ errors: [{ extensions: { code: 'INTERNAL' } }] }); },
@@ -313,32 +345,34 @@ DRIVER = r"""
 
   function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-  var SIGNED_ATTRS = [
-    'href', 'target', 'rel', 'disabled', 'type', 'name', 'role', 'class', 'checked',
-    'autocomplete', 'aria-invalid', 'aria-busy', 'aria-live', 'aria-pressed',
-    'aria-label', 'aria-hidden', 'aria-describedby', 'aria-current', 'tabindex',
-    // Attribute-borne TEXT. Added after Cody demonstrated the channel with one line:
-    //
-    //   :placeholder="email.startsWith('nobody') ? 'This address has no account' : '…'"
-    //
-    // `innerText` excludes attribute text, so `card` and `page` were blind to it, and
-    // `placeholder` was not signed here — so a sentence stating registration status, on
-    // screen, passed all fifteen facets. `title` and `alt` are the same shape and are
-    // signed for the same reason rather than waiting to be demonstrated separately.
-    'placeholder', 'title', 'alt', 'value'
-  ];
-
   /**
-   * Attributes whose value is an ID REFERENCE, and therefore the only ones that may have
-   * generated ids collapsed out of them.
+   * EVERY attribute is signed. There is no whitelist any more, and that is the fix.
    *
-   * MEDIUM-1: the collapse used to run over every signed attribute, `class` included, and
-   * `/field-[a-z0-9]+/` matches real semantic class names — `field-error` (red) and
-   * `field-hint` (muted) both ship in `FormField.vue`. So two branches differing only in
-   * those classes — identical copy, one red and one muted — normalised to the same string
-   * and passed. Scoped to the attributes that actually carry a generated id.
+   * There used to be a list of twenty-three names, and it was one name short in a way
+   * nobody could have predicted from the list itself. Quinn put the signup footer in
+   * danger red for the already-registered address and near-black for the new one, keyed
+   * off the submitted address, expressed as an INLINE STYLE:
+   *
+   *     signup-new       computed colour rgb(16, 24, 40)
+   *     signup-existing  computed colour rgb(180, 35, 24)
+   *
+   * `style` was not on the list and `toneSignature()` reads only class names, so the
+   * colour channel had a half neither facet could see — in the SETTLED state, in the
+   * shipped sample window, with no transience and no timing assumption. `npm test` and
+   * `npm run test:states` were both green.
+   *
+   * Adding `style` would have closed that one hole and left the next one. The list had
+   * already been extended twice for exactly this reason (`placeholder`/`title`/`alt` after
+   * Cody, `value` after Quinn). A whitelist of attributes is the wrong shape for a facet
+   * whose job is to notice ANY difference, so it is inverted: sign everything, and
+   * normalise only the two things that are legitimately non-deterministic — generated ids,
+   * and the email address itself.
+   *
+   * `ID_REF_ATTRS` is gone with it. LOW-5 (Quinn): it named `aria-labelledby` and
+   * `aria-controls`, neither of which was ever signed, and the comment above claimed `id`
+   * and `for` were "collapsed" when they were not signed at all. All three are signed now,
+   * and the collapse below applies to every attribute except `class`.
    */
-  var ID_REF_ATTRS = { 'aria-describedby': 1, 'aria-labelledby': 1, 'aria-controls': 1 };
 
   /**
    * `FormField.vue`'s generator: `'field-' + Math.random().toString(36).substr(2, 9)`.
@@ -466,11 +500,20 @@ DRIVER = r"""
       // defensively so a future reordering cannot poison the comparison.
       if (node.id === '__results' || node.id === '__records') continue;
       var pairs = [];
-      for (var a = 0; a < SIGNED_ATTRS.length; a += 1) {
-        var attr = SIGNED_ATTRS[a];
-        if (!node.hasAttribute(attr)) continue;
+      // Sorted, because the DOM makes no promise about attribute ORDER and two renders
+      // that differ only in ordering are not a difference a user could ever perceive.
+      var names = [];
+      for (var a = 0; a < node.attributes.length; a += 1) names.push(node.attributes[a].name);
+      names.sort();
+      for (var n = 0; n < names.length; n += 1) {
+        var attr = names[n];
         var value = String(node.getAttribute(attr));
-        if (ID_REF_ATTRS[attr]) value = value.replace(GENERATED_ID, '<ID>');
+        // Everything BUT `class`. `/field-[a-z0-9]{7,9}/` is anchored tightly enough that
+        // `field-error` and `field-hint` cannot match it, but keeping `class` out of the
+        // collapse is what MEDIUM-1 was about and the exclusion stays explicit: two
+        // branches differing only in `field-error` (red) versus `field-hint` (muted) must
+        // remain a visible difference.
+        if (attr !== 'class') value = value.replace(GENERATED_ID, '<ID>');
         value = value.replace(EMAIL_IN_VALUE, '<EMAIL>');
         pairs.push(attr + '=' + value);
       }
@@ -480,6 +523,71 @@ DRIVER = r"""
     // rather than left as the one attribute-borne string outside the facet's scope.
     parts.push('title[' + String(document.title).replace(EMAIL_IN_VALUE, '<EMAIL>') + ']');
     return parts.join(' ');
+  }
+
+  /**
+   * The comparable surface at ONE moment: what the page renders, in words, colour and
+   * attributes.
+   *
+   * Split out of `recordBranch` so the same comparison can be made at moments other than
+   * the settled one. `ops` and `elapsed` are deliberately not here — a request sequence and
+   * a duration are only meaningful once the interaction has finished.
+   */
+  function recordSurface(key) {
+    record(key + '|card', cardText());
+    record(key + '|page', pageText());
+    record(key + '|tone', toneSignature());
+    record(key + '|attrs', attributeSignature());
+  }
+
+  /**
+   * The GATE that makes the in-flight window observable.
+   *
+   * HIGH-2(b) (Quinn): `recordBranch` runs once, after `settle()`, and nothing sampled any
+   * earlier state. With the shipped fixtures — which resolved synchronously — the
+   * `submitting` state NEVER PAINTED AT ALL, so no facet could ever have seen it. She put
+   * an address-keyed status line under the forgot-password form, rendered only while
+   * submitting, and both gates stayed green; with 250ms of injected latency, which is what
+   * any real network gives, the two branches painted different words.
+   *
+   * That matters beyond the mutant: `SignInView.vue` and `SignUpView.vue` already ship an
+   * `au-note role="status" aria-live="polite"` in that window on EVERY real sign-in, and no
+   * facet had ever compared it across branches.
+   *
+   * A gate rather than an injected delay, deliberately. Chrome runs under
+   * `--virtual-time-budget`, so a timer-based fixture would depend on how the fast-forward
+   * interleaves with the poll loop. Holding the reply until the scenario releases it is
+   * deterministic, and it costs no wall-clock time.
+   */
+  var gateQueue = [];
+  function gated(makeReply) {
+    return function (op) {
+      return new Promise(function (resolve) {
+        gateQueue.push(function () { resolve(makeReply(op)); });
+      });
+    };
+  }
+  function releaseGate() {
+    var queued = gateQueue;
+    gateQueue = [];
+    for (var i = 0; i < queued.length; i += 1) queued[i]();
+  }
+
+  /**
+   * Poll until the form reports itself busy AND the request is genuinely out.
+   *
+   * Both conditions matter. `aria-busy` alone would be satisfied by the synchronous state
+   * flip before `fetch` is called, and `calls.length` alone says nothing about what has
+   * been painted. Together they mean: the user is looking at the in-flight state, and the
+   * server has not answered.
+   */
+  async function settleInFlight(budgetMs) {
+    var deadline = Date.now() + (budgetMs || 3000);
+    while (Date.now() < deadline) {
+      if (document.querySelector('form[aria-busy="true"]') && calls.length > 0) return true;
+      await wait(20);
+    }
+    return false;
   }
 
   function recordBranch(key) {
@@ -548,10 +656,33 @@ DRIVER = r"""
    * button to retry, or a link onward.
    */
   function forwardPathCheck(label) {
-    var actionable =
-      document.querySelectorAll('.au-card button, .au-card a, .au-card input').length;
-    check('a way forward is offered: ' + label, actionable > 0,
-          'the card rendered no button, link or field');
+    // MEDIUM-1 (Quinn): this used to count `.au-card button, .au-card a, .au-card input`,
+    // and EVERY call site is a state where the form is still mounted — so the two text
+    // fields satisfied it on their own, whatever else was missing. She hid the submit
+    // button and the "Forgot your password?" link whenever a rejection banner was showing,
+    // which is a genuine FR-552 dead end: a rejected sign-in card with nothing to press.
+    // The suite reported ZERO behavioural failures. Only the shrink guard stopped the run,
+    // and it fired for an unrelated reason, reporting something a reader would diagnose as
+    // a harness regression.
+    //
+    // A field you can type into is not a way forward if nothing will accept what you type.
+    // What counts now is a control that can actually be ACTUATED — an enabled button, or a
+    // link with a real destination — and the message says which was found.
+    // AND NOT A CONTROL THAT BELONGS TO A FIELD. Re-planting Quinn's dead end with the
+    // first version of this fix showed the geometry checks failing and THIS ONE STILL
+    // PASSING, because `FormField.vue` renders an enabled password show/hide toggle inside
+    // the card. That is the same proxy she objected to, one element over: revealing what
+    // you already typed is not a way out of a state that will not accept it.
+    var candidates = document.querySelectorAll('.au-card button:not([disabled])');
+    var buttons = 0;
+    for (var f = 0; f < candidates.length; f += 1) {
+      if (!candidates[f].closest('.form-field')) buttons += 1;
+    }
+    var links = document.querySelectorAll('.au-card a[href]').length;
+    check('a way forward is offered — an enabled button or a real link: ' + label,
+          buttons + links > 0,
+          'the card rendered ' + buttons + ' actionable button(s) and ' + links +
+          ' link(s) outside its fields, so there is nothing to press');
   }
 
   function type(selector, value) {
@@ -647,7 +778,21 @@ DRIVER = r"""
   }
 
   // ------------------------------------------------------------------ shared checks --
-  function universalChecks() {
+  /**
+   * `options.noPrimaryButton` — a state that legitimately renders no primary button.
+   *
+   * LOW-1 (Quinn) asked for these checks to stop VANISHING when the button goes missing,
+   * and the first attempt at that failed `verify-loading`, which is a spinner with nothing
+   * to press and is entirely correct. Guarding on the DOM was the original bug; guarding
+   * on nothing is a false alarm. So the expectation is DECLARED by the scenario, and the
+   * number of checks is fixed by that declaration rather than by what happens to render.
+   *
+   * The flag cannot be used to hide a button that went missing, because declaring it
+   * asserts the ABSENCE: a state that says it has no primary button and grows one fails
+   * just as loudly as one that says it has a button and loses it.
+   */
+  function universalChecks(options) {
+    var expectsButton = !(options && options.noPrimaryButton);
     var text = cardText();
 
     // The token must be gone from the address bar by the time anything is rendered.
@@ -693,32 +838,55 @@ DRIVER = r"""
     // COMPUTED geometry, not just class presence. The auth card overrides UiButton's
     // pill radius from a global stylesheet, and global-vs-scoped rules of equal
     // specificity are decided by injection order — which is not something to assume.
+    //
+    // LOW-1 (Quinn): these four used to sit inside `if (btn) { … }`, so removing the
+    // primary button DROPPED NINE CHECKS across the suite instead of failing one. That is
+    // how her FR-552 dead end surfaced as "the suite must not silently shrink" — the right
+    // alarm for the wrong reason, pointing a reader at a harness regression. The count is
+    // constant now: no button is a FAILURE of the first check and a recorded failure of
+    // the other three, not their disappearance.
     var btn = document.querySelector('.au-btn');
-    if (btn) {
-      var style = getComputedStyle(btn);
+    var card = document.querySelector('.au-card');
+    if (!expectsButton) {
+      check('this state declares no primary button, and has none', !btn,
+            'a .au-btn appeared in a state declared to have none');
+    } else {
+      check('the card offers a primary button', !!btn, 'no .au-btn rendered');
+      var btnBox = btn ? btn.getBoundingClientRect() : null;
       check('primary button uses the auth card 12px radius, not the marketing pill',
-            style.borderRadius === '12px', 'computed: ' + style.borderRadius);
+            !!btn && getComputedStyle(btn).borderRadius === '12px',
+            btn ? 'computed: ' + getComputedStyle(btn).borderRadius : 'no button');
       check('primary button clears the 44px touch target',
-            btn.getBoundingClientRect().height >= 44,
-            'height: ' + btn.getBoundingClientRect().height);
+            !!btnBox && btnBox.height >= 44,
+            btnBox ? 'height: ' + btnBox.height : 'no button');
       check('primary button is full width inside the card',
-            Math.abs(btn.getBoundingClientRect().width -
-                     document.querySelector('.au-card').clientWidth +
-                     (parseFloat(getComputedStyle(document.querySelector('.au-card')).paddingLeft) +
-                      parseFloat(getComputedStyle(document.querySelector('.au-card')).paddingRight))) < 2,
-            'button ' + btn.getBoundingClientRect().width);
+            !!btnBox && !!card &&
+            Math.abs(btnBox.width - card.clientWidth +
+                     (parseFloat(getComputedStyle(card).paddingLeft) +
+                      parseFloat(getComputedStyle(card).paddingRight))) < 2,
+            btnBox ? 'button ' + btnBox.width : 'no button');
     }
 
     // The card must not be full-bleed — the surrounding --sc-base margin is what marks
-    // it as a focused task (design 13).
-    var card = document.querySelector('.au-card');
-    if (card) {
-      check('card is not full-bleed', card.getBoundingClientRect().width < window.innerWidth,
-            'card ' + card.getBoundingClientRect().width + ' vs viewport ' + window.innerWidth);
-    }
+    // it as a focused task (design 13). Same treatment as the button geometry above: a
+    // missing card is a failure, not a vanished check.
+    check('card is not full-bleed',
+          !!card && card.getBoundingClientRect().width < window.innerWidth,
+          card ? 'card ' + card.getBoundingClientRect().width + ' vs viewport ' +
+                 window.innerWidth
+               : 'no .au-card rendered');
   }
 
   function has(text, needle) { return text.indexOf(needle) !== -1; }
+
+  /**
+   * The password typed by BOTH halves of the sign-in enumeration pair.
+   *
+   * `login` answers `UNAUTHENTICATED` for an unknown address and for a wrong password
+   * alike, so from the client's side the two scenarios differ in exactly one input: the
+   * address. Shared here rather than written twice so they cannot drift apart.
+   */
+  var REJECTED_PASSWORD = 'whatever-they-typed';
 
   // ---------------------------------------------------------------------- scenarios --
   var SCENARIOS = {
@@ -740,7 +908,9 @@ DRIVER = r"""
       check('token sent as a variable, not inlined in the query',
             calls.length > 0 && calls[0].variables.token === 'SC-TESTTOKEN-verify' &&
             calls[0].query.indexOf('mutation VerifyEmail($token') !== -1);
-      universalChecks();
+      // V1 is a spinner: there is nothing to press yet, and that is correct. Declared,
+      // so the geometry checks below still RUN and still count.
+      universalChecks({ noPrimaryButton: true });
     },
 
     'verify-success': async function () {
@@ -853,6 +1023,7 @@ DRIVER = r"""
             lower.indexOf('for this address') === -1);
       check('a rate-limited resend stays on the recovery form',
             document.querySelector('input[type="email"]') !== null);
+      forwardPathCheck('a rate-limited resend');
       universalChecks();
     },
 
@@ -869,6 +1040,7 @@ DRIVER = r"""
       check('a failed resend says so honestly', has(text, "couldn't send"));
       check('a failed resend stays on the recovery form',
             document.querySelector('input[type="email"]') !== null);
+      forwardPathCheck('a resend that failed');
       universalChecks();
     },
 
@@ -1108,6 +1280,7 @@ DRIVER = r"""
       var input = document.querySelector('input[type="email"]');
       check('errored field is marked invalid', input.getAttribute('aria-invalid') === 'true');
       check('errored field points at its message', !!input.getAttribute('aria-describedby'));
+      forwardPathCheck('sign-in field validation');
       universalChecks();
     },
 
@@ -1125,10 +1298,24 @@ DRIVER = r"""
 
     'signin-rejected-unknown': async function () {
       await wait(400);
-      fillSignIn('nobody-has-this-address@nowhere.test', 'whatever-they-typed');
+      // ONE VARIABLE. The pair differs in the ADDRESS and in nothing else — the password
+      // string is shared, because the property under test is "the render does not vary
+      // with who the user is", and a second difference in the fixture would show up as a
+      // difference in the comparison and have to be normalised away. Normalising is where
+      // leaks hide (see MEDIUM-2 on the email mask); holding the variable constant is
+      // free. Signing the `value` attribute is what made this visible.
+      fillSignIn('nobody-has-this-address@nowhere.test', REJECTED_PASSWORD);
       await wait(50);
+      // BEFORE SUBMIT. Cody's helper extraction and Sana's computed placeholder both lived
+      // here: a bound attribute keyed on the address the user is typing, on screen the
+      // whole time the form is up, and gone by the time the settled state is recorded.
+      recordSurface('signin-rejected-unknown-presubmit');
       markSubmit();
       submit();
+      // IN FLIGHT. The reply is gated, so this is a real paint of the submitting state.
+      check('the in-flight state was reached', await settleInFlight());
+      recordSurface('signin-rejected-unknown-inflight');
+      releaseGate();
       check('the rejection settled', await settle('Invalid email or password'));
       var text = cardText();
       check('rejection banner shown', has(text, 'Invalid email or password'));
@@ -1147,13 +1334,18 @@ DRIVER = r"""
       // A REAL address with a wrong password. The service answers identically to the
       // unknown-address case above and pads the timing; this asserts the client does not
       // undo that. Compared in EQUIVALENCE_GROUPS.
-      fillSignIn('pastor@yourchurch.org', 'not-the-right-one');
+      fillSignIn('pastor@yourchurch.org', REJECTED_PASSWORD);
       await wait(50);
+      recordSurface('signin-rejected-wrong-password-presubmit');
       markSubmit();
       submit();
+      check('the in-flight state was reached', await settleInFlight());
+      recordSurface('signin-rejected-wrong-password-inflight');
+      releaseGate();
       check('the rejection settled', await settle('Invalid email or password'));
       check('rejection banner shown', has(cardText(), 'Invalid email or password'));
       recordBranch('signin-rejected-wrong-password');
+      forwardPathCheck('rejected credentials (wrong password)');
       universalChecks();
     },
 
@@ -1264,6 +1456,61 @@ DRIVER = r"""
       check('the stored hint carries only role, org and expiry',
             Object.keys(JSON.parse(window.localStorage.getItem('selahcue.session') || '{}'))
               .sort().join(',') === 'expiresAt,orgId,role');
+      csrfChecks();
+    },
+
+    'signin-next-honoured': async function () {
+      // The whole round trip: the guard writes `?next=`, sign-in reads it back through
+      // `safeNextPath`, and the visitor lands where they were going. `/support` is a real
+      // route that needs no session, so this measures the redirect and nothing else.
+      await wait(400);
+      fillSignIn('pastor@yourchurch.org', 'a-good-passphrase');
+      await wait(50);
+      submit();
+      await wait(1500);
+      check('a sanitised ?next= is honoured', location.pathname === '/support',
+            'pathname: ' + location.pathname);
+      check('the page it landed on has content', cardText().length > 0 ||
+            pageText().replace(/\s+/g, ' ').trim().length > 40,
+            'the destination rendered nothing');
+      // NOT `universalChecks()`: that asserts the bare-auth chrome (no site nav, exactly
+      // one h1), and this scenario deliberately ends on an ordinary marketing route.
+      csrfChecks();
+    },
+
+    'signin-next-hostile': async function () {
+      // The open-redirect guard, asserted AT ITS CALL SITE rather than only in
+      // `redirect.test.ts`. `?next=https://evil.example/pay` is the attack the module's
+      // header describes: sign in on the real SelahCue with the real padlock, land on a
+      // page you have every reason to trust.
+      await wait(400);
+      fillSignIn('pastor@yourchurch.org', 'a-good-passphrase');
+      await wait(50);
+      submit();
+      await wait(1500);
+      check('an off-site ?next= is refused and the default is used',
+            location.pathname === '/account', 'pathname: ' + location.pathname);
+      check('the browser never left this origin', location.hostname === '127.0.0.1',
+            'host: ' + location.host);
+      csrfChecks();
+    },
+
+    'signin-next-unmatched': async function () {
+      // MEDIUM-4 (Cody): `?next=/does-not-exist` used to resolve with ZERO matched
+      // components and render a blank page — a dead end after a SUCCESSFUL sign-in,
+      // reachable from a link. The router now has a catch-all, so the destination is a
+      // real page with a way onward.
+      await wait(400);
+      fillSignIn('pastor@yourchurch.org', 'a-good-passphrase');
+      await wait(50);
+      submit();
+      await wait(1500);
+      check('an unmatched ?next= lands somewhere with content',
+            has(pageText(), "We couldn't find that page"),
+            'page said: ' + pageText().replace(/\s+/g, ' ').slice(0, 120));
+      check('and offers a way forward',
+            document.querySelectorAll('a[href="/"], a[href="/support"]').length > 0,
+            'no onward link rendered');
       csrfChecks();
     },
 
@@ -1379,6 +1626,7 @@ DRIVER = r"""
       check('never speculates about the address', !has(text.toLowerCase(), 'address'));
       check('keeps the user on the form',
             document.querySelectorAll('.au-card input[type="password"]').length === 2);
+      forwardPathCheck('signup rejected for a short password');
       universalChecks();
     },
 
@@ -1393,6 +1641,7 @@ DRIVER = r"""
       var box = document.querySelector('.au-card input[type="checkbox"]');
       check('the checkbox is marked invalid', box.getAttribute('aria-invalid') === 'true');
       check('the checkbox points at its message', !!box.getAttribute('aria-describedby'));
+      forwardPathCheck('signup rejected for unaccepted terms');
       universalChecks();
     },
 
@@ -1408,6 +1657,7 @@ DRIVER = r"""
       // exactly like a bad password — and the handoff's field list omits the field.
       check('NO mutation dispatched without a country', calls.length === 0, 'calls=' + calls.length);
       check('asks for the country', has(cardText(), 'Select your country'));
+      forwardPathCheck('signup rejected for a missing country');
       universalChecks();
     },
 
@@ -1415,8 +1665,12 @@ DRIVER = r"""
       await wait(400);
       fillSignup({ email: 'brand-new-address@yourchurch.org' });
       await wait(80);
+      recordSurface('signup-new-presubmit');
       markSubmit();
       submit();
+      check('the in-flight state was reached', await settleInFlight());
+      recordSurface('signup-new-inflight');
+      releaseGate();
       check('the accepted state settled', await settle('Check your email to finish setting up'));
       var text = cardText();
       check('accepted state title', has(text, 'Check your email to finish setting up'));
@@ -1446,8 +1700,12 @@ DRIVER = r"""
       // learn nothing. Compared against signup-new in EQUIVALENCE_GROUPS.
       fillSignup({ email: 'second-attempt@yourchurch.org' });
       await wait(80);
+      recordSurface('signup-existing-presubmit');
       markSubmit();
       submit();
+      check('the in-flight state was reached', await settleInFlight());
+      recordSurface('signup-existing-inflight');
+      releaseGate();
       check('the accepted state settled', await settle('Check your email to finish setting up'));
       var text = cardText();
       check('accepted state title', has(text, 'Check your email to finish setting up'));
@@ -1455,7 +1713,10 @@ DRIVER = r"""
       // Checked against text with the address REMOVED. A probe address containing the
       // word being searched for makes the assertion pass or fail on the fixture rather
       // than on the copy — which is exactly what happened on the first run here.
-      var withoutAddress = text.replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, '').toLowerCase();
+      // LOW-2 (Quinn): this re-declared, character for character, the exact mask that
+      // `EMAIL_IN_VALUE` was fixed to replace — the unanchored form that is greedy over
+      // `/` and `?` and swallows a destination along with the address. One definition.
+      var withoutAddress = text.replace(EMAIL_IN_VALUE, '').toLowerCase();
       check('never says the address is already registered',
             withoutAddress.indexOf('already') === -1 && withoutAddress.indexOf('taken') === -1 &&
             withoutAddress.indexOf('in use') === -1, 'card said: ' + withoutAddress);
@@ -1575,6 +1836,7 @@ DRIVER = r"""
       var input = document.querySelector('input[type="email"]');
       check('errored field is marked invalid', input.getAttribute('aria-invalid') === 'true');
       check('the field is still on screen to be corrected', !!input);
+      forwardPathCheck('a malformed address on forgot-password');
       universalChecks();
     },
 
@@ -1582,8 +1844,16 @@ DRIVER = r"""
       await wait(400);
       type('input[type="email"]', 'pastor@yourchurch.org');
       await wait(50);
+      // THE VIEW THIS MATTERS MOST FOR. `ForgotPasswordView` unmounts its email field on
+      // the way to the sent state, so the settled recording could never see a bound
+      // attribute on it. That is where Cody's `looksRegistered(value)` helper and Sana's
+      // computed placeholder both rendered, both passing the whole gate.
+      recordSurface('forgot-registered-presubmit');
       markSubmit();
       submit();
+      check('the in-flight state was reached', await settleInFlight());
+      recordSurface('forgot-registered-inflight');
+      releaseGate();
       check('the sent state settled', await settle('Check your inbox'));
       var text = cardText();
       check('sent state title', has(text, 'Check your inbox'));
@@ -1603,8 +1873,12 @@ DRIVER = r"""
       // that away; it is not built. Compared against forgot-registered.
       type('input[type="email"]', 'nobody-has-this@nowhere.test');
       await wait(50);
+      recordSurface('forgot-unregistered-presubmit');
       markSubmit();
       submit();
+      check('the in-flight state was reached', await settleInFlight());
+      recordSurface('forgot-unregistered-inflight');
+      releaseGate();
       check('the sent state settled', await settle('Check your inbox'));
       var text = cardText();
       check('sent state title', has(text, 'Check your inbox'));
@@ -1648,6 +1922,7 @@ DRIVER = r"""
       check('rate-limit copy never implies the account exists',
             lower.indexOf('this account') === -1 && lower.indexOf('your account') === -1 &&
             lower.indexOf('for this address') === -1);
+      forwardPathCheck('rate-limited reset request');
       universalChecks();
     },
 
@@ -1810,6 +2085,10 @@ SCENARIOS: list[tuple[str, str]] = [
     ("signin-unverified", "/signin"),
     ("signin-resend", "/signin"),
     ("signin-success", "/signin"),
+    # The `?next=` round trip, end to end — the half `redirect.test.ts` cannot reach.
+    ("signin-next-honoured", "/signin?next=%2Fsupport"),
+    ("signin-next-hostile", "/signin?next=https%3A%2F%2Fevil.example%2Fpay"),
+    ("signin-next-unmatched", "/signin?next=%2Fdoes-not-exist"),
     ("session-lifecycle", "/signin"),
     ("signout-failure", "/signin"),
     # ------------------------------------------------------------ create account --
@@ -1864,29 +2143,42 @@ SCENARIOS: list[tuple[str, str]] = [
 #            an address-keyed destination passed all of them (Quinn)
 COMPARED_FACETS = ("card", "page", "ops", "tone", "attrs")
 
-# REPORTED, NOT GATED — and the reason is worth stating plainly.
+# The facets that mean something at a moment OTHER than the settled one. `ops` and
+# `elapsed` are excluded: a request sequence and a duration are only meaningful once the
+# interaction has finished.
+SURFACE_FACETS = ("card", "page", "tone", "attrs")
+
+# GATED, at a WIDE PAIRED DELTA — a decision reversed on this round's evidence.
 #
 #   elapsed  virtual milliseconds from submit until the terminal copy is actually on
 #            screen, found by polling.
 #
-# This facet was briefly a gate and it is not one any more. It DOES detect a real timing
-# oracle: with an address-keyed 900ms delay planted in the sign-in view it reported 924ms
-# against 55ms while every text and colour facet passed, which is exactly the channel it
-# was added for. But on IDENTICAL code it also produced 24ms against 345ms for the two
-# signup branches — a 321ms spread from nothing but poll granularity and Chrome's
-# scheduling. Its noise floor is larger than any tolerance tight enough to be useful.
+# This was INFO-only, on the argument that its noise floor was "wider than any useful
+# threshold". Vera falsified the operative half of that: she planted this ledger's own
+# documented mutation — an address-keyed `setTimeout(900)` in the sign-in submit path — and
+# the harness exited 0 with 0 FAIL, printing `elapsed: 920 vs 20` as its only trace, which
+# nothing machine-reads. A demonstrated miss of a real oracle shape.
 #
-# The options were to widen the tolerance past the noise (leaving it unable to catch
-# anything smaller than the noise, i.e. most of the way to vacuous) or to stop gating on
-# it. Gating on it as it stands would produce intermittent red on correct code, and a gate
-# that cries wolf is worse than no gate — it teaches people to re-run until green, which
-# is precisely the habit that let a stale-bundle false green survive earlier in this work.
+# The measurements do not support leaving it ungated. Three reviewers took a baseline
+# independently and all three read a constant: Vera 18/18 paired readings at exactly 20 vs
+# 20 across three runs, Quinn "a constant 20 vs 20 on every run", Cody 20/20 on all three
+# groups. The recorded worst spread on CORRECT code is 321ms, and that was at load 41;
+# under the same load the planted 900ms mutant still read a delta of 869ms. A paired-delta
+# gate at 600ms fires on every planted mutant on record and on none of the recorded clean
+# runs, anyone's.
 #
-# So the number is recorded and PRINTED for every group, where a reviewer can see it and a
-# real divergence would stand out. The deterministic control on this channel is
-# `tests/authViews.test.ts`, which refuses a timer or an address literal in these three
-# views at all — it is exact, it never flakes, and it is mutation-verified.
-REPORTED_FACETS = ("elapsed",)
+# THE HONEST CAVEAT, because the original reasoning about flakiness was not wrong in kind:
+# every one of those readings comes from a DEVELOPER MACHINE. Nobody has measured a CI
+# runner's variance, and with this repository's Actions minutes exhausted nobody could. So
+# 600ms is calibrated on local runs only. If CI turns this red on correct code, WIDEN IT —
+# to 1500ms, which still catches every mutant on record — rather than removing the gate,
+# and record the measurement that justified the change here. A gate that cries wolf is
+# genuinely worse than no gate; a gate that is known to miss a demonstrated attack is
+# worse still.
+#
+# Paired DELTA rather than an absolute ceiling, because the absolute number is a property
+# of the machine and the difference between two branches is a property of the code.
+ELAPSED_MAX_PAIRED_DELTA_MS = 600
 
 EQUIVALENCE_GROUPS: list[tuple[str, list[str]]] = [
     (
@@ -1901,6 +2193,36 @@ EQUIVALENCE_GROUPS: list[tuple[str, list[str]]] = [
         "FR-529: forgot-password looks the same for a registered and an unregistered address",
         ["forgot-registered", "forgot-unregistered"],
     ),
+]
+
+# THE SAME THREE PAIRS, AT THE TWO MOMENTS THE SETTLED COMPARISON COULD NOT SEE.
+#
+# This is the round's central fix, and it is the reason the source-level bans in
+# `tests/authViews.test.ts` can go back to being tripwires rather than pretending to be the
+# boundary. Four demonstrated leaks passed BOTH gates, and every one of them lived in a
+# window nothing sampled:
+#
+#   Cody   an ordinary helper extraction — `function looksRegistered(value: string)` — put
+#          the inspection on a parameter no name list has ever heard of, bound to a
+#          `:placeholder` on a field that is unmounted by the time the settled state is
+#          recorded. Observed on screen: "This address has an account" versus "Enter your
+#          email".
+#   Sana   a computed `:placeholder` keyed on the address as the user types it, rendering
+#          "This address has no account" for the whole time the form is up. Passed
+#          `npm test` 110/110, `npm run build`, and 1384 checks / 0 FAIL.
+#   Quinn  an address-keyed `au-note` rendered only while `state === 'submitting'` — a
+#          window that, with the old synchronous fixtures, never painted at all.
+#
+# Extending the regexes would have caught the shapes and not the class. Comparing what the
+# two branches RENDER, at every moment one of them is on screen, catches all four without
+# knowing anything about how the source is written — which is the property the ban can
+# never have.
+SURFACE_GROUPS: list[tuple[str, list[str]]] = [
+    (label + " [before submit]", [f"{name}-presubmit" for name in scenarios])
+    for label, scenarios in EQUIVALENCE_GROUPS
+] + [
+    (label + " [in flight]", [f"{name}-inflight" for name in scenarios])
+    for label, scenarios in EQUIVALENCE_GROUPS
 ]
 
 
@@ -1948,11 +2270,17 @@ def check_bundle_is_current() -> str | None:
         path = MARKETING / name
         if path.is_file():
             candidates.append(path.stat().st_mtime)
+    # LOW-9 (Cody): `VITE_API_BASE_URL` is a BUILD-TIME constant (`graphql.ts:140`), so an
+    # env file changes the bundle without touching any input watched above — the same class
+    # as LOW-4, one input short. Only `.env.example` exists today, so this is pre-emptive.
+    for env_file in sorted(MARKETING.glob(".env*")):
+        if env_file.is_file():
+            candidates.append(env_file.stat().st_mtime)
     sources = max(candidates)
     if sources > built:
         return (
             f"the bundle at {DIST} is OLDER than its sources (src/, public/, index.html, "
-            f"vite.config.ts, tsconfig.app.json, package.json, package-lock.json) "
+            f"vite.config.ts, tsconfig.app.json, package.json, package-lock.json, .env*) "
             f"({sources - built:.0f}s stale). Run `npm run build` first — this run would "
             "otherwise report on code that is not in the bundle."
         )
@@ -2044,11 +2372,13 @@ def main() -> int:
 
     # The cross-scenario half of the suite. Counted into `total` like any other check, so
     # losing a group trips the EXPECTED_MIN_CHECKS floor rather than passing quietly.
-    for label, scenarios in EQUIVALENCE_GROUPS:
-        for facet in COMPARED_FACETS:
+    def compare(label: str, scenarios: list[str], facets: tuple[str, ...]) -> int:
+        """One string-equality check per facet. Returns how many checks it ran."""
+        ran = 0
+        for facet in facets:
             keys = [f"{name}|{facet}" for name in scenarios]
             missing = [key for key in keys if key not in records]
-            total += 1
+            ran += 1
             if missing:
                 # Not a pass. A recording that never arrived means the scenario did not
                 # reach the state it was meant to compare, and an absent value must never
@@ -2067,13 +2397,45 @@ def main() -> int:
                 body.append(
                     f"FAIL [enumeration] {label} ({facet}) -- these differ:\n      {detail}"
                 )
+        return ran
 
-        # Printed for the reviewer, never gated. See REPORTED_FACETS for why.
-        for facet in REPORTED_FACETS:
-            values = [
-                f"{name}={records.get(f'{name}|{facet}', '?')}" for name in scenarios
-            ]
-            body.append(f"INFO [enumeration] {label} ({facet}): {' vs '.join(values)}")
+    for label, scenarios in EQUIVALENCE_GROUPS:
+        total += compare(label, scenarios, COMPARED_FACETS)
+
+        # `elapsed`, GATED at a wide paired delta. See ELAPSED_MAX_PAIRED_DELTA_MS for the
+        # measurements behind the number and the standing caveat about CI variance.
+        total += 1
+        readings: list[int] = []
+        unreadable = []
+        for name in scenarios:
+            raw = records.get(f"{name}|elapsed")
+            if raw is None or not raw.lstrip("-").isdigit() or int(raw) < 0:
+                unreadable.append(f"{name}={raw}")
+            else:
+                readings.append(int(raw))
+        shown = " vs ".join(
+            f"{name}={records.get(f'{name}|elapsed', '?')}" for name in scenarios
+        )
+        if unreadable:
+            # A missing or -1 reading means a branch never settled, which is not a pass.
+            body.append(f"FAIL [enumeration] {label} (elapsed) -- no usable reading: {shown}")
+        else:
+            delta = max(readings) - min(readings)
+            if delta > ELAPSED_MAX_PAIRED_DELTA_MS:
+                body.append(
+                    f"FAIL [enumeration] {label} (elapsed) -- the two branches settled "
+                    f"{delta}ms apart, over the {ELAPSED_MAX_PAIRED_DELTA_MS}ms budget. "
+                    f"Readings: {shown}"
+                )
+            else:
+                body.append(
+                    f"PASS [enumeration] {label} (elapsed) -- {delta}ms apart "
+                    f"(budget {ELAPSED_MAX_PAIRED_DELTA_MS}ms): {shown}"
+                )
+
+    # And the same pairs at the two moments the settled comparison could not see.
+    for label, scenarios in SURFACE_GROUPS:
+        total += compare(label, scenarios, SURFACE_FACETS)
 
     fails = [line for line in body if line.startswith("FAIL")]
     for line in body:

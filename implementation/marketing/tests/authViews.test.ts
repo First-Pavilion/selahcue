@@ -127,10 +127,20 @@ function codeOnly(view: string): string {
 /**
  * Blank out the CONTENTS of string and template literals, keeping the quotes.
  *
- * For the shape-based bans only. `EMAIL_REQUIRED = 'Enter your email address.'` is prose
- * that happens to contain `address.`, and flagging it would make the member-access ban
- * unusable and therefore deleted. The quotes are kept so the ban on comparing an address
- * to a literal still has something to anchor on.
+ * FOR `tryBlocks` ONLY, and the scope matters. This was briefly used by the address ban as
+ * well, to stop prose like `'Enter your email address. Try again.'` tripping the
+ * member-access rule — and it silently BROKE the ban, because in a `.vue` file every bound
+ * attribute is a double-quoted string:
+ *
+ *     :placeholder="email.startsWith('nobody') ? 'This address has no account' : '…'"
+ *     :style="{ color: submittedEmail.split('@')[0] === 'x' ? red : black }"
+ *
+ * Blanking those blanks exactly the place Cody's original leak lived, so the ban would
+ * have kept passing while claiming to cover the one channel it was extended for. Caught by
+ * re-planting Quinn's inline-style mutation and noticing `npm test` stayed green when it
+ * should not have. The address ban reads the raw text instead, and excludes prose by
+ * requiring real code SHAPE — no whitespace around the member access, which `address. Try`
+ * has and `email.split` does not.
  */
 function withoutStringContents(code: string): string {
   return code
@@ -235,11 +245,11 @@ const ALLOWED_ADDRESS_MEMBERS = new Set(['value', 'trim'])
 const INSPECTOR_METHODS =
   'test|exec|includes|indexOf|lastIndexOf|search|match|startsWith|endsWith|has|localeCompare'
 
-const ADDRESS_MEMBER = new RegExp(
-  `(?<![.\\w$])(?:${ADDRESS_REFS})(?:\\.value)?\\s*\\.\\s*(\\w+)`,
-  'g',
-)
-const ADDRESS_INDEXED = new RegExp(`(?<![.\\w$])(?:${ADDRESS_REFS})(?:\\.value)?\\s*\\[`, 'g')
+// NO `\s*` around the dot, deliberately. That is what separates code from prose: real code
+// writes `email.split`, and an English sentence writes `address. Try again`. Without it the
+// ban fires on every message constant that ends a sentence with the word "address".
+const ADDRESS_MEMBER = new RegExp(`(?<![.\\w$])(?:${ADDRESS_REFS})(?:\\.value)?\\.(\\w+)`, 'g')
+const ADDRESS_INDEXED = new RegExp(`(?<![.\\w$])(?:${ADDRESS_REFS})(?:\\.value)?\\[`, 'g')
 const ADDRESS_AS_ARGUMENT = new RegExp(
   `\\.\\s*(?:${INSPECTOR_METHODS})\\s*\\(\\s*(?:${ADDRESS_REFS})\\b`,
   'g',
@@ -273,18 +283,14 @@ const ADDRESS_LITERAL = /[\w.+%-]+@[\w.-]+\.[A-Za-z]{2,}['"`]/
  * match" and leaving a reader to guess.
  */
 function addressInspections(code: string): string[] {
-  const shapes = withoutStringContents(code)
   const found: string[] = []
-
-  for (const [whole, member] of shapes.matchAll(ADDRESS_MEMBER)) {
+  for (const [whole, member] of code.matchAll(ADDRESS_MEMBER)) {
     if (!ALLOWED_ADDRESS_MEMBERS.has(member)) found.push(whole.trim())
   }
-  for (const [whole] of shapes.matchAll(ADDRESS_INDEXED)) found.push(whole.trim())
-  for (const [whole] of shapes.matchAll(ADDRESS_AS_ARGUMENT)) found.push(whole.trim())
-  // These two need the quote, so they run over the text WITH its literals intact.
+  for (const [whole] of code.matchAll(ADDRESS_INDEXED)) found.push(whole.trim())
+  for (const [whole] of code.matchAll(ADDRESS_AS_ARGUMENT)) found.push(whole.trim())
   for (const [whole] of code.matchAll(ADDRESS_VS_LITERAL)) found.push(whole.trim())
   for (const [whole] of code.matchAll(LITERAL_VS_ADDRESS)) found.push(whole.trim())
-
   return found
 }
 
@@ -473,6 +479,12 @@ describe('no auth view can fake, delay or vary an outcome', () => {
       "'error@test.com' === email.value",
       // Bracket indexing.
       "email.value[0] === 'n'",
+      // INSIDE A BOUND ATTRIBUTE, which in a .vue file is a double-quoted string. This is
+      // where Cody's original leak lived and where an earlier version of this ban lost its
+      // reach without noticing.
+      `:placeholder="email.startsWith('nobody') ? 'This address has no account' : 'x'"`,
+      `:style="{ color: submittedEmail.split('@')[0] === 'second-attempt' ? red : black }"`,
+      `{{ email.endsWith('yourchurch.org') ? 'Checking your account…' : 'Sending…' }}`,
     ]
     for (const shape of banned) {
       assert.ok(
@@ -491,6 +503,12 @@ describe('no auth view can fake, delay or vary an outcome', () => {
       'submittedEmail.value = address',
       "errors.email = 'Enter your email address. Try again.'",
       'emailError.value = validateEmail(email.value)',
+      // PROSE, not code. A message constant that ends a sentence with the word "address"
+      // must not fire the member rule, or the ban becomes unusable and gets deleted
+      // instead of fixed.
+      "const EMAIL_REQUIRED = 'Enter your email address.'",
+      "const HINT = 'Check the email address. Then try again.'",
+      "const NOTE = 'We could not reach that address [see support].'",
     ]) {
       assert.deepEqual(
         addressInspections(allowed),

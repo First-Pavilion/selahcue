@@ -89,6 +89,44 @@ describe('non-values and loops', () => {
     }
   })
 
+  test('the refusal survives a change of case or a trailing slash', () => {
+    // MEDIUM-3 (Cody). The comparison was case-sensitive and exact; vue-router is neither.
+    // Verified against the router vendored in this branch:
+    //
+    //     router.resolve('/SIGNIN')  -> matched: 1  name: signin
+    //     router.resolve('/signin/') -> matched: 1  name: signin
+    //
+    // So `?next=/signin/` produced exactly the loop this module documents itself as
+    // existing to prevent, and `?next=/reset/` dropped a freshly-signed-in user onto the
+    // "this link didn't work" state with no token.
+    for (const route of ['/signin', '/signup', '/forgot-password', '/verify', '/reset']) {
+      for (const variant of [
+        route.toUpperCase(),
+        `${route}/`,
+        `${route.toUpperCase()}/`,
+        `${route}/?x=1`,
+      ]) {
+        assert.equal(
+          safeNextPath(variant, FALLBACK),
+          FALLBACK,
+          `${variant} resolves to an auth route and must not be a destination`,
+        )
+      }
+    }
+    // Mixed case, spelled out, because the loop above only ever produces two casings.
+    assert.equal(safeNextPath('/SignIn', FALLBACK), FALLBACK)
+    assert.equal(safeNextPath('/Forgot-Password/', FALLBACK), FALLBACK)
+  })
+
+  test('normalising for the COMPARISON does not rewrite what is returned', () => {
+    // A destination that legitimately depends on case must come back unchanged. Lowercase
+    // the value on the way out and `/account/Devices` becomes a different page.
+    assert.equal(safeNextPath('/account/Devices', FALLBACK), '/account/Devices')
+    assert.equal(safeNextPath('/Support/', FALLBACK), '/Support/')
+    // And `/` must survive the trailing-slash strip rather than becoming ''.
+    assert.equal(safeNextPath('/', FALLBACK), '/')
+  })
+
   test('a route that merely starts with an auth route name is still allowed', () => {
     // The refusal is on the whole path, not a prefix, so a legitimate future route is not
     // caught by accident.

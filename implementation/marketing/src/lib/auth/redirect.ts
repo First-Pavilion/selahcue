@@ -23,8 +23,34 @@ import type { QueryTokenValue } from './tokenParam.ts'
  * Not for safety — for termination. `/signin?next=/signin` would sign someone in and
  * return them to the sign-in page, where the guard is not involved and nothing tells them
  * why they are back. A loop with no error message is the hardest kind to report.
+ *
+ * Stored lowercase and without a trailing slash, because that is the form `matchPath`
+ * normalises a candidate into. See it for why.
  */
 const NON_DESTINATIONS = ['/signin', '/signup', '/forgot-password', '/verify', '/reset']
+
+/**
+ * Normalise a path the way vue-router MATCHES one.
+ *
+ * MEDIUM-3 (Cody). The comparison used to be case-sensitive and exact, and vue-router is
+ * neither. Verified against the router vendored in this branch:
+ *
+ *     router.resolve('/SIGNIN')  -> matched: 1  name: signin
+ *     router.resolve('/signin/') -> matched: 1  name: signin
+ *
+ * So `?next=/signin/` produced exactly the loop this module documents itself as existing
+ * to prevent — sign in, land back on the sign-in page, with nothing saying why. And
+ * `?next=/reset/` was worse: it dropped a freshly-signed-in user onto the "this link
+ * didn't work" state with no token in the URL.
+ *
+ * Only the COMPARISON is normalised. The value handed back to the caller is the original,
+ * so a destination that legitimately depends on case is not rewritten on the way through.
+ */
+function matchPath(path: string): string {
+  const lowered = path.toLowerCase()
+  // One trailing slash, and only when something remains — `'/'` must stay `'/'`.
+  return lowered.length > 1 && lowered.endsWith('/') ? lowered.slice(0, -1) : lowered
+}
 
 /**
  * C0 controls and DEL.
@@ -63,7 +89,7 @@ export function safeNextPath(value: QueryTokenValue, fallback: string): string {
   if (candidate.includes('\\')) return fallback
   if (hasControlCharacter(candidate)) return fallback
 
-  const path = candidate.split(/[?#]/)[0]
+  const path = matchPath(candidate.split(/[?#]/)[0])
   if (NON_DESTINATIONS.includes(path)) return fallback
 
   return candidate
