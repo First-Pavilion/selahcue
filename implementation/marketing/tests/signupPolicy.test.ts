@@ -110,6 +110,14 @@ describe('country — the field the handoff omits entirely', () => {
     assert.ok(COUNTRY_CODES.includes('US'))
     assert.ok(COUNTRY_CODES.includes('NG'))
     assert.ok(COUNTRY_CODES.length > 200, `expected a full ISO list, got ${COUNTRY_CODES.length}`)
+    // POSITIVE VALUES FIRST. The sweep below allows `''`, which is a free pass: Quinn
+    // replaced the whole body of `guessCountry` with `return ''` and `npx vue-tsc -b`,
+    // `npm test` and `npm run test:states` all stayed green — the country pre-selection
+    // could die for every user with no gate noticing. These two rows are what make the
+    // function's actual job load-bearing.
+    assert.equal(guessCountry('en-GB'), 'GB')
+    assert.equal(guessCountry('en-US'), 'US')
+
     for (const locale of ['en-GB', 'en-US', 'fr', 'not-a-locale', '']) {
       const guess = guessCountry(locale)
       assert.ok(
@@ -146,9 +154,43 @@ describe('org name', () => {
   })
 
   test('collapseWhitespace matches the service transform', () => {
+    // THE SCOPE OF THIS TEST, stated plainly, because it used to overclaim.
+    //
+    // Every fixture here is drawn from the region where JavaScript and Python already
+    // agree — spaces, tabs, newlines. That made "matches the service transform" a claim
+    // this test could not falsify: it passed for the old `/\s+/` implementation, which
+    // disagreed with Python on six characters. Sana found the divergence by inspection,
+    // not by this test.
+    //
+    // So these stay as the ordinary-input regression they always were, and the CLAIM is
+    // tested where it can actually fail: `tests/serviceText.test.ts` compares the two
+    // classifications over all 1,114,112 code points against CPython's own answer. This
+    // one asserts the shape of the collapse; that one asserts the character set.
     assert.equal(collapseWhitespace('  Grace   Community  Church '), 'Grace Community Church')
     assert.equal(collapseWhitespace('\n\tGrace\n'), 'Grace')
     assert.equal(collapseWhitespace('    '), '')
+
+    // One fixture FROM the divergence set, so the two files fail together if this
+    // function is ever pointed back at a JavaScript-native whitespace rule.
+    assert.equal(
+      collapseWhitespace('\u001c\u001c\u001c'),
+      '',
+      'an all-separator org name is empty to the server and must be empty here',
+    )
+    assert.equal(collapseWhitespace('Grace\u0085Community'), 'Grace Community')
+    assert.equal(
+      collapseWhitespace('Grace\ufeffCommunity'),
+      'Grace\ufeffCommunity',
+      'U+FEFF is not whitespace to Python, so collapsing it would validate a different string',
+    )
+  })
+
+  test('an org name of only information separators is refused, as the server refuses it', () => {
+    // The end-to-end consequence of the divergence, at the surface a user meets it on.
+    // Before the fix this passed validation, was sent, and came back as an
+    // undifferentiated VALIDATION_FAILED with nothing pointing at the field.
+    assert.ok(validateSignup({ ...VALID, orgName: '\u001c\u001c\u001c' }).orgName)
+    assert.ok(validateSignup({ ...VALID, orgName: '\u0085' }).orgName)
   })
 })
 

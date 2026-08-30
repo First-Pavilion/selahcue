@@ -32,6 +32,7 @@
 import { COUNTRY_CODES } from './countries.ts'
 import { validateEmail } from './emailPolicy.ts'
 import { passwordLength, validateNewPassword, type NewPasswordErrors } from './passwordPolicy.ts'
+import { serviceCollapse } from './serviceText.ts'
 
 /** `CustomerOrg.name` max_length. */
 export const MAX_ORG_NAME_LENGTH = 200
@@ -53,12 +54,21 @@ export const TERMS_REQUIRED = 'Accept the terms to continue.'
  * Collapse whitespace exactly as the service does.
  *
  * `" ".join(value.strip().split())` — so `"  Grace   Community  "` is `"Grace Community"`,
- * and a name of only spaces is empty. The length check below runs on the COLLAPSED value
- * because that is what the server stores and validates; measuring the raw input would
- * reject a name the server would have accepted.
+ * and a name of only whitespace is empty. The length check below runs on the COLLAPSED
+ * value because that is what the server stores and validates; measuring the raw input
+ * would reject a name the server would have accepted.
+ *
+ * "Exactly as the service does" was FALSE until PR #17. This used `value.trim()` and
+ * `/\s+/`, and JavaScript's whitespace set is not Python's: five characters Python strips
+ * that JavaScript does not (U+001C..U+001F, U+0085) and one the other way (U+FEFF). An
+ * org name of three U+001C survived this collapse, passed `ORG_NAME_REQUIRED`, and
+ * collapsed to `""` on the server — the undifferentiated `VALIDATION_FAILED` this whole
+ * module exists to prevent, produced by the module itself. `serviceText.ts` now holds the
+ * one definition of the set; this function is a thin caller of it rather than a second
+ * copy of the rule.
  */
 export function collapseWhitespace(value: string): string {
-  return value.trim().split(/\s+/).filter(Boolean).join(' ')
+  return serviceCollapse(value)
 }
 
 /**

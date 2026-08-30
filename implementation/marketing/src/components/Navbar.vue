@@ -22,18 +22,41 @@ const signOutError = ref('')
  * working credential, on a machine that in this product is frequently a shared church
  * office PC. `signOut` rejects when the session survived, and this shows that.
  */
+const SIGN_OUT_FAILED = "We couldn't sign you out. Check your connection and try again."
+
 const handleSignOut = async () => {
   if (signOutPending.value) return
   signOutPending.value = true
   signOutError.value = ''
+
+  // ONE call inside the try, for the same reason `SignInView`'s `submit` was rewritten
+  // (PR #17, HIGH-1). `await router.push('/')` used to live in here, so a rejected
+  // navigation — a lazy route whose chunk a deploy removed, a guard that threw — was
+  // reported as "We couldn't sign you out" over a revocation the server had already
+  // performed. That message is worse than merely wrong: this product runs on shared
+  // church-office machines, and it tells someone their session is still live when it is
+  // not, so they stay logged in on purpose. `tests/authViews.test.ts` refuses the shape.
+  let revoked = false
   try {
     await signOut()
-    isMobileMenuOpen.value = false
-    await router.push('/')
+    revoked = true
   } catch {
-    signOutError.value = "We couldn't sign you out. Check your connection and try again."
+    signOutError.value = SIGN_OUT_FAILED
   } finally {
     signOutPending.value = false
+  }
+  if (!revoked) return
+
+  // ---- the session is GONE. Nothing below may suggest otherwise. ----
+  isMobileMenuOpen.value = false
+  try {
+    await router.push('/')
+  } catch {
+    // The revocation succeeded and only the navigation failed. A full document load is
+    // both the honest outcome (they end up signed out, on the home page) and the actual
+    // remedy for the usual cause, which is a running page pointing at chunks a deploy
+    // has already removed.
+    window.location.assign('/')
   }
 }
 

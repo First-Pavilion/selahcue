@@ -28,6 +28,8 @@
  * tested directly under `node --test`.
  */
 
+import { serviceStrip } from './serviceText.ts'
+
 /** `ACCOUNT_MIN_PASSWORD_LENGTH` (settings.py:273). */
 export const MIN_PASSWORD_LENGTH = 10
 
@@ -71,11 +73,15 @@ export function validateNewPassword(password: string, confirmPassword: string): 
     errors.password = PASSWORD_TOO_SHORT
   } else if (length > MAX_PASSWORD_LENGTH) {
     errors.password = PASSWORD_TOO_LONG
-  } else if (password.trim() === '') {
+  } else if (serviceStrip(password) === '') {
     // Long enough, but `_validate_password`'s `not password.strip()` guard still rejects
     // it. A password of twelve spaces is the second way to be wrongly told your link is
     // dead. Note the guard is checked only AFTER length so that a short all-space entry
     // still gets the primary length message.
+    //
+    // `serviceStrip`, not `.trim()` (Sana, PR #17): a password of twelve U+001C passed
+    // this check and failed `not password.strip()` on the server, which is the same
+    // mis-attribution one character class over. See `serviceText.ts`.
     errors.password = PASSWORD_ONLY_SPACES
   }
 

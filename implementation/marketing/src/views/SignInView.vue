@@ -55,6 +55,8 @@ type SignInState =
   | 'notReady'
   /** A fresh verification link has been requested. */
   | 'resent'
+  /** `login` SUCCEEDED and the redirect afterwards did not. See `submit()`. */
+  | 'signedIn'
 
 const route = useRoute()
 const router = useRouter()
@@ -72,6 +74,14 @@ const bannerBody = ref('')
 
 const resendPending = ref(false)
 const resendError = ref('')
+
+/**
+ * Where the visitor was going when the post-login navigation failed.
+ *
+ * Already sanitised by `safeNextPath` before it is stored, so binding it to an `href` is
+ * safe: it is an absolute same-site path or the `/account` fallback, never a URL.
+ */
+const landingFallback = ref('/account')
 
 const controller = new AbortController()
 let unmounted = false
@@ -91,6 +101,11 @@ const UNREACHABLE_BODY =
 
 const RATE_LIMITED_TITLE = 'Too many attempts'
 const RATE_LIMITED_BODY = 'Wait a few minutes, then try again.'
+
+const LANDED_NOWHERE_TITLE = "You're signed in"
+const LANDED_NOWHERE_BODY =
+  "Your sign-in worked, but this page couldn't open the next one — that usually means the " +
+  'site updated while you were typing. Continue below to load it fresh.'
 
 const RESEND_FAILED = "We couldn't send a link just now. Please try again in a moment."
 const RESEND_RATE_LIMITED =
@@ -124,51 +139,108 @@ function validate(): boolean {
   return Object.keys(next).length === 0
 }
 
+/**
+ * The outcome of the `login` call and NOTHING ELSE.
+ *
+ * This type exists because of a real defect, not for tidiness. `await router.replace(...)`
+ * used to sit inside the same `try` as `signIn`, so a rejected NAVIGATION fell into the
+ * handler below, missed every `instanceof ApiError` branch, and rendered
+ * "Invalid email or password" over a login that had already succeeded. Cody reproduced the
+ * rejection against this branch's own vue-router:
+ *
+ *     /account       -> REJECTED: Failed to fetch dynamically imported module
+ *     /guard-throws  -> REJECTED: guard blew up
+ *
+ * `/account` is a lazy route (`router/index.ts:52`), so a stale `index.html` served after a
+ * deploy — the single most ordinary SPA failure there is — pointed the user at a chunk that
+ * no longer existed and told them their password was wrong. It never was. Retrying did the
+ * same thing every time, and the honest next step (reload) is the one thing the message
+ * argued against.
+ *
+ * So the `try` now wraps ONE call. The failure handler can only ever be handed an error
+ * that came out of `login`, which is what makes "the server rejected these credentials" a
+ * sound thing for it to say. Moving anything else back inside is refused by
+ * `tests/authViews.test.ts` ("no auth view navigates inside a try block").
+ */
+type LoginOutcome = { ok: true } | { ok: false; error: unknown }
+
+async function callLogin(): Promise<LoginOutcome> {
+  try {
+    await signIn(email.value.trim(), password.value, { signal: controller.signal })
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error }
+  }
+}
+
+/** Everything that can be said when `login` itself rejected. */
+async function reportLoginFailure(error: unknown): Promise<void> {
+  if (error instanceof ApiError && error.code === 'POLICY_DENIED') {
+    state.value = 'notReady'
+    // Reached only AFTER `check_password` returned true, so this plaintext is a CORRECT
+    // password — the one that is worth least to leave sitting in component state for as
+    // long as the tab is open. Every other exit already dropped it; this branch returned
+    // before reaching the line that does (Cody, LOW-7).
+    password.value = ''
+    void focusHeading()
+    return
+  }
+
+  state.value = 'form'
+  if (error instanceof ApiError && error.code === 'NETWORK') {
+    // A dropped connection is NOT a credential failure. Saying "invalid email or
+    // password" here would send someone to reset a password that was never wrong.
+    bannerTitle.value = UNREACHABLE_TITLE
+    bannerBody.value = UNREACHABLE_BODY
+  } else if (error instanceof ApiError && error.code === 'RATE_LIMITED') {
+    bannerTitle.value = RATE_LIMITED_TITLE
+    bannerBody.value = RATE_LIMITED_BODY
+  } else {
+    // UNAUTHENTICATED and everything else the server rejected. Note there is no branch
+    // inside this branch: unknown email, wrong password and lockout land here together
+    // and are indistinguishable, exactly as the service arranged.
+    bannerTitle.value = REJECTED_TITLE
+    bannerBody.value = REJECTED_BODY
+  }
+  // §3b: keep the email, clear the password, return focus to it.
+  password.value = ''
+  await nextTick()
+  document.querySelector<HTMLInputElement>('input[type="password"]')?.focus()
+}
+
 async function submit(): Promise<void> {
   if (state.value === 'submitting') return
   clearBanner()
   if (!validate()) return
 
   state.value = 'submitting'
-  try {
-    await signIn(email.value.trim(), password.value, { signal: controller.signal })
-    if (unmounted) return
-    // Drop the plaintext rather than leave it in component state for as long as the tab
-    // is open. The session is a cookie now; this value has served its purpose.
-    password.value = ''
-    // `safeNextPath` refuses anything that is not a same-site path, so a crafted
-    // `?next=https://evil.example` cannot turn this redirect into an open redirect.
-    await router.replace(safeNextPath(route.query.next, '/account'))
+  const outcome = await callLogin()
+  if (unmounted || controller.signal.aborted) return
+
+  if (!outcome.ok) {
+    await reportLoginFailure(outcome.error)
     return
-  } catch (error) {
-    if (unmounted || controller.signal.aborted) return
+  }
 
-    if (error instanceof ApiError && error.code === 'POLICY_DENIED') {
-      state.value = 'notReady'
-      void focusHeading()
-      return
-    }
+  // ---- from here the credentials are known GOOD. Nothing below may say otherwise. ----
 
-    state.value = 'form'
-    if (error instanceof ApiError && error.code === 'NETWORK') {
-      // A dropped connection is NOT a credential failure. Saying "invalid email or
-      // password" here would send someone to reset a password that was never wrong.
-      bannerTitle.value = UNREACHABLE_TITLE
-      bannerBody.value = UNREACHABLE_BODY
-    } else if (error instanceof ApiError && error.code === 'RATE_LIMITED') {
-      bannerTitle.value = RATE_LIMITED_TITLE
-      bannerBody.value = RATE_LIMITED_BODY
-    } else {
-      // UNAUTHENTICATED and everything else the server rejected. Note there is no branch
-      // inside this branch: unknown email, wrong password and lockout land here together
-      // and are indistinguishable, exactly as the service arranged.
-      bannerTitle.value = REJECTED_TITLE
-      bannerBody.value = REJECTED_BODY
-    }
-    // §3b: keep the email, clear the password, return focus to it.
-    password.value = ''
-    await nextTick()
-    document.querySelector<HTMLInputElement>('input[type="password"]')?.focus()
+  // Drop the plaintext rather than leave it in component state for as long as the tab is
+  // open. The session is a cookie now; this value has served its purpose.
+  password.value = ''
+  // `safeNextPath` refuses anything that is not a same-site path, so a crafted
+  // `?next=https://evil.example` cannot turn this redirect into an open redirect.
+  landingFallback.value = safeNextPath(route.query.next, '/account')
+
+  try {
+    await router.replace(landingFallback.value)
+  } catch {
+    if (unmounted) return
+    // The sign-in worked and the destination did not load. Say exactly that, and offer a
+    // plain `href` rather than a router link: a full document load is what fetches a fresh
+    // `index.html`, which is the actual remedy when the running page is pointing at chunks
+    // a deploy has already removed. A router link would retry the same missing module.
+    state.value = 'signedIn'
+    void focusHeading()
   }
 }
 
@@ -325,6 +397,32 @@ onBeforeUnmount(() => {
       </AuthBanner>
     </template>
 
+    <!-- ================================= signed in, but the next page did not load -->
+    <!-- HIGH-1 from the PR #17 review. This state exists so that a failed navigation is
+         never reported as a failed sign-in. It is reachable only after `login` returned
+         successfully, so the copy states that plainly and offers the one action that
+         actually fixes the usual cause — a full document load, via `href` rather than a
+         router link, because the running page is the thing that is stale. -->
+    <template v-else-if="state === 'signedIn'">
+      <StatusDisc tone="brand" glyph="✓" />
+      <h1 ref="heading" tabindex="-1" class="au-title">{{ LANDED_NOWHERE_TITLE }}</h1>
+      <p class="au-body">{{ LANDED_NOWHERE_BODY }}</p>
+      <div class="au-actions">
+        <UiButton
+          :href="landingFallback"
+          variant="primary"
+          size="lg"
+          class="au-btn au-btn-primary"
+        >
+          Continue to your account
+        </UiButton>
+      </div>
+      <AuthBanner kind="info" title="Your session is already active">
+        You do not need to sign in again. Devices you have already activated kept
+        presenting throughout.
+      </AuthBanner>
+    </template>
+
     <!-- ============================================================ fresh link sent -->
     <template v-else>
       <StatusDisc tone="brand" glyph="✉" />
@@ -357,7 +455,7 @@ onBeforeUnmount(() => {
       <template v-if="state === 'form' || state === 'submitting'">
         <span>New to SelahCue?</span><router-link to="/signup">Create an account</router-link>
       </template>
-      <template v-else-if="state === 'notReady'">
+      <template v-else-if="state === 'notReady' || state === 'signedIn'">
         <span>Need a hand?</span><router-link to="/support">Contact support</router-link>
       </template>
       <template v-else>

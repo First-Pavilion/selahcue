@@ -1,0 +1,161 @@
+{
+  "_comment": [
+    "ONE definition of what the SERVER accepts, consumed by both sides of the mirror.",
+    "TypeScript: tests/emailPolicy.test.ts asserts validateEmail() agrees with serverAccepts on every row.",
+    "Python:     scripts/service_text_reference.py re-derives serverAccepts from Django and fails on drift.",
+    "serverAccepts is Django 6.1 validate_email() applied to _normalize_email(address) == (raw or '').strip().lower().",
+    "Do not edit a verdict by hand. Re-derive it with the reference script."
+  ],
+  "cases": [
+    {
+      "address": "pastor@yourchurch.org",
+      "serverAccepts": true,
+      "note": "an ordinary address"
+    },
+    {
+      "address": "  Pastor@YourChurch.ORG  ",
+      "serverAccepts": true,
+      "note": "normalised (stripped and lowercased) before validation"
+    },
+    {
+      "address": "a+tag@example.co.uk",
+      "serverAccepts": true,
+      "note": "plus-tagging, which the client must never reject"
+    },
+    {
+      "address": "first.last@sub.domain.example",
+      "serverAccepts": true,
+      "note": "a dotted local part and a deep domain"
+    },
+    {
+      "address": "someone@church.online",
+      "serverAccepts": true,
+      "note": "a long modern TLD"
+    },
+    {
+      "address": "a@my-church.org",
+      "serverAccepts": true,
+      "note": "an internal hyphen is fine"
+    },
+    {
+      "address": "x@y.io",
+      "serverAccepts": true,
+      "note": "the shortest real address shape"
+    },
+    {
+      "address": "\"quoted\"@example.com",
+      "serverAccepts": true,
+      "note": "the RFC quoted-string local part"
+    },
+    {
+      "address": "user@localhost",
+      "serverAccepts": true,
+      "note": "Django allowlists bare localhost"
+    },
+    {
+      "address": "user@[192.168.1.1]",
+      "serverAccepts": true,
+      "note": "the IPv4 literal form"
+    },
+    {
+      "address": "a@b.12",
+      "serverAccepts": true,
+      "note": "an all-digit TLD"
+    },
+    {
+      "address": "a@b.-xy",
+      "serverAccepts": true,
+      "note": "a LEADING hyphen in the TLD is accepted; the trailing one is not"
+    },
+    {
+      "address": "a@b.c",
+      "serverAccepts": false,
+      "note": "PR #17 (Cody): a one-character TLD, the truncated-TLD typo"
+    },
+    {
+      "address": "a@b..com",
+      "serverAccepts": false,
+      "note": "PR #17 (Cody): a double-tapped dot"
+    },
+    {
+      "address": "a@-b.com",
+      "serverAccepts": false,
+      "note": "PR #17 (Cody): a leading hyphen in a domain label"
+    },
+    {
+      "address": "a@b-.com",
+      "serverAccepts": false,
+      "note": "PR #17 (Cody): a trailing hyphen in a domain label"
+    },
+    {
+      "address": "a@b.xy-",
+      "serverAccepts": false,
+      "note": "a trailing hyphen in the TLD"
+    },
+    {
+      "address": "a@b",
+      "serverAccepts": false,
+      "note": "no dot in the domain at all"
+    },
+    {
+      "address": "a@",
+      "serverAccepts": false,
+      "note": "nothing after the at-sign"
+    },
+    {
+      "address": "@example.com",
+      "serverAccepts": false,
+      "note": "nothing before the at-sign"
+    },
+    {
+      "address": "nobody",
+      "serverAccepts": false,
+      "note": "no at-sign at all"
+    },
+    {
+      "address": "",
+      "serverAccepts": false,
+      "note": "empty"
+    },
+    {
+      "address": "a b@example.com",
+      "serverAccepts": false,
+      "note": "a space in the local part"
+    },
+    {
+      "address": "a@exam ple.com",
+      "serverAccepts": false,
+      "note": "a space in the domain"
+    },
+    {
+      "address": "a..b@example.com",
+      "serverAccepts": false,
+      "note": "consecutive dots in the local part"
+    },
+    {
+      "address": ".a@example.com",
+      "serverAccepts": false,
+      "note": "a leading dot in the local part"
+    },
+    {
+      "address": "a.@example.com",
+      "serverAccepts": false,
+      "note": "a trailing dot in the local part"
+    },
+    {
+      "address": "\"quoted string\"@example.com",
+      "serverAccepts": false,
+      "note": "a space inside the quoted local part is NOT permitted"
+    },
+    {
+      "address": "josé@example.com",
+      "serverAccepts": false,
+      "note": "a non-ASCII local part"
+    },
+    {
+      "address": "a@xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.com",
+      "serverAccepts": false,
+      "note": "a domain label over the 63-character limit"
+    }
+  ]
+}
