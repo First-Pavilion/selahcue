@@ -49,6 +49,12 @@ import {
   type NewPasswordErrors,
 } from '@/lib/auth/passwordPolicy.ts'
 import { takeLandingToken } from '@/lib/auth/useLandingToken.ts'
+import {
+  CHECK_SPAM_NOTE,
+  NEWEST_LINK_BODY,
+  NEWEST_LINK_TITLE,
+  RESEND_FAILED
+} from '@/lib/auth/messages.ts'
 
 type ResetState =
   /** R1 / R2 — the form, with or without client-side errors. */
@@ -339,9 +345,7 @@ onBeforeUnmount(() => {
           </UiButton>
         </div>
       </form>
-      <p v-if="requestFailed" class="au-note" role="alert">
-        We couldn't send a link just now. Please try again in a moment.
-      </p>
+      <p v-if="requestFailed" class="au-note" role="alert">{{ RESEND_FAILED }}</p>
     </template>
 
     <!-- ============================================= fresh link sent (V5 analogue) -->
@@ -361,11 +365,10 @@ onBeforeUnmount(() => {
         </UiButton>
       </div>
       <p class="au-note">
-        Didn't arrive? Check your spam folder, then request another link.
+        {{ CHECK_SPAM_NOTE }}
       </p>
-      <AuthBanner kind="info" title="Only the newest link works">
-        Sending a new link cancels the previous one. Use the most recent email you
-        received.
+      <AuthBanner kind="info" :title="NEWEST_LINK_TITLE">
+        {{ NEWEST_LINK_BODY }}
       </AuthBanner>
     </template>
 

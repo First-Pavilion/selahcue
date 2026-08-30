@@ -75,7 +75,9 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # pairs at two new moments — before submit and in flight — times four facets), 6 in-flight
 # reach checks, 3 re-gated `elapsed` comparisons, 9 forward-path checks on failure states
 # that had none, 3 whole scenarios for the `?next=` round trip, and one declared
-# button-expectation check. `verify-loading` gives 3 back by declaring itself button-less.
+# button-expectation check, and one scenario (32 checks) for the permanent-input-error
+# path MEDIUM-5 reported, plus two of the coverage gaps Quinn named — C-008's live-looking
+# stale hint, and RATE_LIMITED actually rendering at sign-in. `verify-loading` gives 3 back by declaring itself button-less.
 #
 # WHAT THIS NUMBER IS AND IS NOT (Quinn, LOW-1): it counts LINES PUSHED TO `results`, not
 # assertions — she verified that by pushing two non-assertion INFO lines and watching the
@@ -83,7 +85,7 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # loop, all of which pass together whenever `cardText()` returns `''`, the floor is weaker
 # evidence than its size suggests. It catches a driver regression that runs FEWER checks;
 # it is not a measure of coverage, and it should not be read as one.
-EXPECTED_MIN_CHECKS = 1483
+EXPECTED_MIN_CHECKS = 1556
 
 
 def find_chrome() -> str | None:
@@ -135,6 +137,29 @@ DRIVER = r"""
   // Mutable state a couple of scenarios need across calls within one page load.
   var registerAttempts = 0;
   var signedOut = false;
+
+  /**
+   * C-008's NAMED CASE, which was never scripted (Quinn).
+   *
+   * The criterion is "the session hint ALONE never grants entry", and both scenarios that
+   * exercised the guard's refusal ran with no hint present at all — so they proved the
+   * guard refuses an ABSENT hint, which is not the interesting half. The case that matters
+   * is a live-LOOKING hint in localStorage with a dead server session: the hint is
+   * attacker-writable, and it goes stale in exactly the direction that matters, claiming a
+   * session that a password change or a sign-out elsewhere revoked minutes ago.
+   *
+   * Written here, in the driver, because it must exist BEFORE the app module boots — the
+   * route guard runs on the very first navigation.
+   */
+  var plantedHint = null;
+  if (SCENARIO === 'account-stale-hint') {
+    plantedHint = JSON.stringify({
+      role: 'ADMIN',
+      orgId: 'org-harness',
+      expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString()
+    });
+    window.localStorage.setItem('selahcue.session', plantedHint);
+  }
 
   function UNAUTHENTICATED() { return json({ errors: [{ extensions: { code: 'UNAUTHENTICATED' } }] }); }
   function LOGIN_IN(days) {
@@ -277,10 +302,22 @@ DRIVER = r"""
     'forgot-form':         function () { return RESET_REQUESTED(); },
     'forgot-bad-email':    function () { return RESET_REQUESTED(); },
     'forgot-failure':      function () { return json({ errors: [{ extensions: { code: 'INTERNAL' } }] }); },
+    // MEDIUM-5 (Cody): a PERMANENT input error that the client's mirror let through. The
+    // address here is well-formed as far as the client is concerned, so this is the
+    // genuine client/server disagreement the mirror narrows to — and it must not be
+    // reported as "try again in a moment".
+    'forgot-server-rejects-address':
+                           function () { return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] }); },
     'forgot-rate-limited': function () { return json({ errors: [{ extensions: { code: 'RATE_LIMITED' } }] }); },
 
     // --------------------------------------------------------------- route guard --
     'account-guarded':     function () { return UNAUTHENTICATED(); },
+    // A hint that looks alive, over a session the server says is dead.
+    'account-stale-hint':  function () { return UNAUTHENTICATED(); },
+    // RATE_LIMITED at sign-in. `RATE_LIMITED_TITLE`/`_BODY` were dead strings as far as
+    // the estate was concerned (Quinn), and rate limiting is a likely production state on
+    // a sign-in form — where the copy must not imply the account exists.
+    'signin-rate-limited': function () { return json({ errors: [{ extensions: { code: 'RATE_LIMITED' } }] }); },
     'account-allowed':     function () { return VIEWER_OK(); },
 
     // ------------------------------------------------------------ session refresh --
@@ -1889,6 +1926,29 @@ DRIVER = r"""
       universalChecks();
     },
 
+    'forgot-server-rejects-address': async function () {
+      await wait(400);
+      type('input[type="email"]', 'pastor@yourchurch.org');
+      await wait(50);
+      submit();
+      await wait(700);
+      var text = cardText();
+      // The defect: `VALIDATION_FAILED` fell into the resend copy — "try again in a
+      // moment" — a TRANSIENT message for an error that will never clear. The user
+      // retries forever and no link ever comes: the FR-552 dead end reached through a
+      // typo the client failed to catch.
+      check('a permanent input error is NOT reported as transient',
+            !has(text, 'try again in a moment'), 'card said: ' + text);
+      check('it is reported on the field, where it can be corrected',
+            has(text, 'Enter a valid email address.'), 'card said: ' + text);
+      var input = document.querySelector('input[type="email"]');
+      check('and the field is marked invalid',
+            !!input && input.getAttribute('aria-invalid') === 'true');
+      check('the sent state is never shown for a failure', !has(text, 'Check your inbox'));
+      forwardPathCheck('an address the server refused');
+      universalChecks();
+    },
+
     'forgot-failure': async function () {
       await wait(400);
       type('input[type="email"]', 'pastor@yourchurch.org');
@@ -1941,6 +2001,54 @@ DRIVER = r"""
             location.search.indexOf('next=/account') !== -1,
             'search: ' + location.search);
       csrfChecks();
+    },
+
+    'account-stale-hint': async function () {
+      await wait(1200);
+      // The premise, read from what the driver PLANTED rather than from storage — by the
+      // time this runs the app has already acted on it, and reading storage here would
+      // measure the outcome and call it the setup.
+      check('the harness really planted a live-looking hint',
+            !!plantedHint && plantedHint.indexOf('expiresAt') !== -1 &&
+            Date.parse(JSON.parse(plantedHint).expiresAt) - Date.now() > 20 * 24 * 3600 * 1000,
+            'planted: ' + plantedHint);
+      check('the guard asked the SERVER rather than trusting the hint',
+            calls.some(function (c) { return c.op === 'AccountViewer'; }),
+            'ops: ' + calls.map(function (c) { return c.op; }).join(','));
+      check('a stale hint does not grant entry', location.pathname === '/signin',
+            'pathname: ' + location.pathname);
+      check('and the visitor is told why', has(pageText(), "You've been signed out"));
+      // And the good behaviour this scenario incidentally proves: a hint the server has
+      // contradicted is DROPPED, so the navbar stops painting "Account" for someone whose
+      // session is gone. Nothing asserted this before.
+      check('a hint the server contradicted is dropped rather than left to mislead',
+            window.localStorage.getItem('selahcue.session') === null,
+            'hint after: ' + window.localStorage.getItem('selahcue.session'));
+      csrfChecks();
+    },
+
+    'signin-rate-limited': async function () {
+      await wait(400);
+      fillSignIn('pastor@yourchurch.org', REJECTED_PASSWORD);
+      await wait(50);
+      submit();
+      await wait(700);
+      var text = cardText();
+      check('the rate-limit banner is shown', has(text, 'Too many attempts'));
+      check('it says what to do', has(text, 'Wait a few minutes'));
+      // THE POINT of this copy: a limiter that spent its budget before looking the account
+      // up is not evidence the account is real, so nothing here may imply it is.
+      check('it never implies the account exists',
+            !has(text.toLowerCase(), 'this account') &&
+            !has(text.toLowerCase(), 'your account') &&
+            !has(text.toLowerCase(), 'that address'),
+            'card said: ' + text);
+      check('it is NOT reported as a credential failure',
+            !has(text, 'Invalid email or password'), 'card said: ' + text);
+      check('the password was cleared',
+            document.querySelector('input[type="password"]').value === '');
+      forwardPathCheck('rate-limited sign-in');
+      universalChecks();
     },
 
     'account-allowed': async function () {
@@ -2082,6 +2190,7 @@ SCENARIOS: list[tuple[str, str]] = [
     ("signin-rejected-unknown", "/signin"),
     ("signin-rejected-wrong-password", "/signin"),
     ("signin-unreachable", "/signin"),
+    ("signin-rate-limited", "/signin"),
     ("signin-unverified", "/signin"),
     ("signin-resend", "/signin"),
     ("signin-success", "/signin"),
@@ -2108,9 +2217,11 @@ SCENARIOS: list[tuple[str, str]] = [
     ("forgot-registered", "/forgot-password"),
     ("forgot-unregistered", "/forgot-password"),
     ("forgot-failure", "/forgot-password"),
+    ("forgot-server-rejects-address", "/forgot-password"),
     ("forgot-rate-limited", "/forgot-password"),
     # ---------------------------------------------------------------- route guard --
     ("account-guarded", "/account"),
+    ("account-stale-hint", "/account"),
     ("account-allowed", "/account"),
     ("session-refresh", "/signin"),
     ("session-no-refresh", "/signin"),

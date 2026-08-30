@@ -129,7 +129,7 @@ let csrfBootstrap: Promise<void> | null = null
  * regardless on the best-effort path below — so the only thing this trades away is a few
  * seconds before an honest error appears.
  */
-const CSRF_BOOTSTRAP_TIMEOUT_MS = 5000
+export const CSRF_BOOTSTRAP_TIMEOUT_MS = 5000
 
 function apiBaseUrl(): string {
   // `import.meta.env` is a Vite BUILD-TIME construct. It does not exist under plain Node,
@@ -211,6 +211,33 @@ function ensureCsrfCookie(send: typeof fetch): Promise<void> {
 }
 
 /**
+ * Wait for `work`, or for `signal` to abort — whichever happens first.
+ *
+ * RESOLVES on abort rather than rejecting: the caller's abort is turned into the caller's
+ * own `AbortError` by the check that follows this call, and having two places raise it
+ * would mean two different errors for one cancellation. `work` is left running, which is
+ * the point — it is shared.
+ *
+ * The listener is removed either way, so a long-lived signal does not accumulate one per
+ * request.
+ */
+async function raceAgainstAbort(work: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return work
+  if (signal.aborted) return
+
+  let onAbort = (): void => {}
+  const abandoned = new Promise<void>((resolve) => {
+    onAbort = () => resolve()
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  try {
+    await Promise.race([work, abandoned])
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
+}
+
+/**
  * Classify a GraphQL error envelope.
  *
  * Mirrors `safe_graphql_error`, which maps every code it does not recognise onto
@@ -268,7 +295,17 @@ export async function graphqlRequest<TData>(
 
   // Seeded before the timeout starts, so a slow bootstrap does not eat the mutation's
   // budget and report a healthy API as unreachable.
-  if (needsCsrfBootstrap()) await ensureCsrfCookie(send)
+  //
+  // Raced against the CALLER's signal (Vera, PR #17). The seed keeps its own deadline and
+  // its own controller — it is shared by every request that arrives while it is in flight,
+  // so one caller's cancellation must never abort a seed the others are still waiting on.
+  // What was wrong was that a caller who abandoned the request at 500ms still sat out the
+  // seed's full 5s: measured, the rejection surfaced at 5,001ms. Racing settles THIS
+  // caller's wait without touching the shared GET, and the re-check below turns it into
+  // the caller's own AbortError. Nothing user-visible depends on it today — the views
+  // abort only on unmount — but any future cancel or retry affordance would inherit a
+  // wait of up to 4.5 seconds on a promise the user already walked away from.
+  if (needsCsrfBootstrap()) await raceAgainstAbort(ensureCsrfCookie(send), options.signal)
 
   // The bootstrap is awaited, so re-check: the user may have navigated away during it.
   if (options.signal?.aborted) {

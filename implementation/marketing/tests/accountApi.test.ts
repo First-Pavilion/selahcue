@@ -14,6 +14,7 @@ import {
   ACCOUNT_GRAPHQL_PATH,
   ApiError,
   CSRF_BOOTSTRAP_PATH,
+  CSRF_BOOTSTRAP_TIMEOUT_MS,
 } from '../src/lib/api/graphql.ts'
 import {
   accountViewer,
@@ -77,6 +78,18 @@ function withoutDocument(): void {
 }
 
 afterEach(withoutDocument)
+
+/**
+ * Let the async chain under test make progress without letting TIME pass.
+ *
+ * With `t.mock.timers` enabled, `setTimeout` no longer advances on its own, so the only
+ * way a promise chain moves is by draining the microtask queue. Twenty turns is far more
+ * than any path here needs and costs microseconds.
+ */
+async function flushMicrotasks(): Promise<void> {
+  for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
+}
+
 
 describe('registerCustomerUser', () => {
   test('nests every field under `input`, camel-cased to match the schema', async () => {
@@ -342,11 +355,20 @@ describe('CSRF bootstrap', () => {
     assert.deepEqual(calls, ['GET', 'POST'])
   })
 
-  test('a hung bootstrap is bounded and the mutation still gets its answer', async () => {
+  test('a hung bootstrap is bounded and the mutation still gets its answer', async (t) => {
     // LOW-1 (Sana). The bootstrap is awaited BEFORE the mutation's timer starts, so
     // nothing else bounds it — a proxy that accepts the connection and never answers
     // would leave "Signing in…" on screen forever. Not an error, not a retry, just a
     // spinner: the FR-552 dead end reached from an unusual direction.
+    //
+    // LOW-3 (Vera): this test used to WAIT OUT the real five seconds, and was ~93% of the
+    // unit suite's wall time on its own (0.4s at baseline, 5.4s with it). The test is
+    // valuable; the cost model was not — every future deadline test written this way adds
+    // its whole deadline to every `npm test` run. Node 22's mock timers keep both bounds
+    // assertable and make the assertions STRONGER than the wall clock ever did: instead of
+    // "somewhere between 4.5 and 9 seconds", it now pins that the mutation has NOT been
+    // issued one millisecond before the deadline and HAS been just after it.
+    t.mock.timers.enable({ apis: ['setTimeout'] })
     withDocument('')
 
     const seen: string[] = []
@@ -354,7 +376,7 @@ describe('CSRF bootstrap', () => {
       seen.push(String(init.method))
       if (init.method === 'GET') {
         // Never resolves on its own. It must be the bootstrap's OWN deadline that ends
-        // this, which is exactly what the assertion below is checking.
+        // this, which is exactly what the assertions below are checking.
         return new Promise<Response>((_resolve, reject) => {
           init.signal?.addEventListener(
             'abort',
@@ -369,18 +391,66 @@ describe('CSRF bootstrap', () => {
       })
     }) as unknown as typeof fetch
 
-    const startedAt = Date.now()
-    assert.equal(await logout(false, { fetchImpl: impl }), true)
-    const elapsed = Date.now() - startedAt
+    const pending = logout(false, { fetchImpl: impl })
+    // Let the GET be dispatched before any time passes.
+    await flushMicrotasks()
+    assert.deepEqual(seen, ['GET'], 'the bootstrap must be issued before the mutation')
 
-    // Bounded, and by the bootstrap's 5s rather than by luck. Asserting an upper bound
-    // AND a lower one: without the lower bound this passes just as well if the bootstrap
-    // were skipped entirely, which is the other way to be wrong here.
-    assert.ok(elapsed >= 4500, `the bootstrap did not run to its deadline (${elapsed}ms)`)
-    assert.ok(elapsed < 9000, `the bootstrap was not bounded (${elapsed}ms)`)
-    // And the mutation still happened: a timed-out seed degrades via the best-effort
-    // path rather than taking the request down with it.
+    // THE LOWER BOUND, and it is the one that matters: without it this test passes just as
+    // well for a bootstrap that was skipped entirely. One millisecond short of the
+    // deadline, the mutation must still be waiting.
+    t.mock.timers.tick(CSRF_BOOTSTRAP_TIMEOUT_MS - 1)
+    await flushMicrotasks()
+    assert.deepEqual(seen, ['GET'], 'the mutation ran before the bootstrap deadline expired')
+
+    // THE UPPER BOUND: at the deadline the seed is abandoned and the mutation proceeds. A
+    // timed-out seed degrades via the best-effort path rather than taking the request down.
+    t.mock.timers.tick(1)
+    assert.equal(await pending, true)
     assert.deepEqual(seen, ['GET', 'POST'])
+  })
+
+  test('a caller who abandons the request does not sit out the seed deadline', async (t) => {
+    // Vera's LOW on `graphql.ts`. The seed keeps its own 5s deadline and its own
+    // controller — correctly, because the promise is shared and one caller's cancellation
+    // must not abort a seed the others are waiting on. What was wrong was that the caller
+    // was held to that deadline anyway: an abort fired at 500ms surfaced its rejection at
+    // 5,001ms. Nothing user-visible depends on it today, because the views abort only on
+    // unmount; any future cancel or retry affordance would inherit the wait.
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    withDocument('')
+
+    const seen: string[] = []
+    const impl = (async (input: unknown, init: RequestInit = {}) => {
+      seen.push(String(init.method))
+      if (init.method === 'GET') {
+        return new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener(
+            'abort',
+            () => reject(init.signal?.reason ?? new DOMException('Aborted', 'AbortError')),
+            { once: true },
+          )
+        })
+      }
+      return new Response(JSON.stringify({ data: { logout: { revoked: true } } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+
+    const controller = new AbortController()
+    const pending = logout(false, { fetchImpl: impl, signal: controller.signal })
+    await flushMicrotasks()
+    assert.deepEqual(seen, ['GET'])
+
+    // Abandoned well inside the seed's deadline, and NO time is allowed to pass after it.
+    // If the caller were still held to the seed, this would hang rather than reject —
+    // which is exactly the shape of the defect.
+    controller.abort()
+    await assert.rejects(() => pending, { name: 'AbortError' })
+
+    // And the mutation was never issued, which is the part that must not regress.
+    assert.deepEqual(seen, ['GET'], 'an abandoned caller must issue no mutation')
   })
 
   test('a caller who already aborted gets no requests at all, bootstrap included', async () => {

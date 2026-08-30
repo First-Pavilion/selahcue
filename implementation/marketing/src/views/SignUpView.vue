@@ -46,6 +46,15 @@ import { ApiError } from '@/lib/api/graphql.ts'
 import { countryOptions, guessCountry } from '@/lib/auth/countries.ts'
 import { MIN_PASSWORD_LENGTH } from '@/lib/auth/passwordPolicy.ts'
 import {
+  CHECK_SPAM_NOTE,
+  NEWEST_LINK_BODY,
+  NEWEST_LINK_TITLE,
+  RATE_LIMITED_BODY,
+  RATE_LIMITED_TITLE,
+  RESEND_FAILED,
+  RESEND_RATE_LIMITED
+} from '@/lib/auth/messages.ts'
+import {
   collapseWhitespace,
   detectTimezone,
   newIdempotencyKey,
@@ -107,8 +116,6 @@ let idempotencyKey = ''
 const UNREACHABLE_TITLE = "We couldn't create your account just now"
 const UNREACHABLE_BODY =
   "We couldn't reach SelahCue. Check your connection and try again — nothing has been created."
-const RATE_LIMITED_TITLE = 'Too many attempts'
-const RATE_LIMITED_BODY = 'Wait a few minutes, then try again.'
 /**
  * Deliberately says NOTHING about the email address.
  *
@@ -121,9 +128,6 @@ const RATE_LIMITED_BODY = 'Wait a few minutes, then try again.'
 const REJECTED_TITLE = "We couldn't create your account"
 const REJECTED_BODY = 'Please check the details above and try again.'
 
-const RESEND_FAILED = "We couldn't send a link just now. Please try again in a moment."
-const RESEND_RATE_LIMITED =
-  'Too many requests for a new link. Wait a few minutes, then try again.'
 
 async function focusHeading(): Promise<void> {
   await nextTick()
@@ -411,7 +415,7 @@ onBeforeUnmount(() => {
         </UiButton>
       </div>
       <p v-if="resendError" class="au-note" role="alert">{{ resendError }}</p>
-      <p v-else class="au-note">Didn't arrive? Check your spam folder, then request another link.</p>
+      <p v-else class="au-note">{{ CHECK_SPAM_NOTE }}</p>
       <AuthBanner kind="info" title="Nothing is waiting on this">
         SelahCue runs a full service offline without an account. Verifying only unlocks plan,
         license and device management.
@@ -433,8 +437,8 @@ onBeforeUnmount(() => {
           Back to sign in
         </UiButton>
       </div>
-      <AuthBanner kind="info" title="Only the newest link works">
-        Sending a new link cancels the previous one. Use the most recent email you received.
+      <AuthBanner kind="info" :title="NEWEST_LINK_TITLE">
+        {{ NEWEST_LINK_BODY }}
       </AuthBanner>
     </template>
 

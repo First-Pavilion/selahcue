@@ -45,6 +45,15 @@ import { ApiError } from '@/lib/api/graphql.ts'
 import { validateEmail } from '@/lib/auth/emailPolicy.ts'
 import { signIn } from '@/lib/auth/sessionStore.ts'
 import { safeNextPath } from '@/lib/auth/redirect.ts'
+import {
+  CHECK_SPAM_NOTE,
+  NEWEST_LINK_BODY,
+  NEWEST_LINK_TITLE,
+  RATE_LIMITED_BODY,
+  RATE_LIMITED_TITLE,
+  RESEND_FAILED,
+  RESEND_RATE_LIMITED
+} from '@/lib/auth/messages.ts'
 
 type SignInState =
   /** The form, with or without field-level errors. */
@@ -99,17 +108,12 @@ const UNREACHABLE_TITLE = "We couldn't sign you in just now"
 const UNREACHABLE_BODY =
   "We couldn't reach SelahCue. Check your connection and try again — your account is unaffected."
 
-const RATE_LIMITED_TITLE = 'Too many attempts'
-const RATE_LIMITED_BODY = 'Wait a few minutes, then try again.'
 
 const LANDED_NOWHERE_TITLE = "You're signed in"
 const LANDED_NOWHERE_BODY =
   "Your sign-in worked, but this page couldn't open the next one — that usually means the " +
   'site updated while you were typing. Continue below to load it fresh.'
 
-const RESEND_FAILED = "We couldn't send a link just now. Please try again in a moment."
-const RESEND_RATE_LIMITED =
-  'Too many requests for a new link. Wait a few minutes, then try again.'
 
 /** Shown when the route guard bounced someone here because their session had ended. */
 const arrivedExpired = computed(() => route.query.reason === 'expired')
@@ -444,9 +448,9 @@ onBeforeUnmount(() => {
           Back to sign in
         </UiButton>
       </div>
-      <p class="au-note">Didn't arrive? Check your spam folder, then request another link.</p>
-      <AuthBanner kind="info" title="Only the newest link works">
-        Sending a new link cancels the previous one. Use the most recent email you received.
+      <p class="au-note">{{ CHECK_SPAM_NOTE }}</p>
+      <AuthBanner kind="info" :title="NEWEST_LINK_TITLE">
+        {{ NEWEST_LINK_BODY }}
       </AuthBanner>
     </template>
 

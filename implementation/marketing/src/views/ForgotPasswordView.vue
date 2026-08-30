@@ -32,7 +32,14 @@ import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import { requestPasswordReset } from '@/lib/api/account.ts'
 import { ApiError } from '@/lib/api/graphql.ts'
-import { validateEmail } from '@/lib/auth/emailPolicy.ts'
+import { EMAIL_INVALID, validateEmail } from '@/lib/auth/emailPolicy.ts'
+import {
+  CHECK_SPAM_NOTE,
+  NEWEST_LINK_BODY,
+  NEWEST_LINK_TITLE,
+  RESEND_FAILED,
+  RESEND_RATE_LIMITED
+} from '@/lib/auth/messages.ts'
 
 type ForgotState = 'form' | 'submitting' | 'sent'
 
@@ -48,16 +55,6 @@ const sentToEmail = ref('')
 const controller = new AbortController()
 let unmounted = false
 
-const REQUEST_FAILED = "We couldn't send a link just now. Please try again in a moment."
-/**
- * Says nothing about the address, deliberately.
- *
- * A limiter that spent its budget before looking the account up cannot be evidence the
- * account is real — and copy like "too many requests for this account" would say it is.
- * "Too many requests" describes what the caller did, not what the server knows.
- */
-const REQUEST_RATE_LIMITED =
-  'Too many requests for a new link. Wait a few minutes, then try again.'
 
 async function focusHeading(): Promise<void> {
   await nextTick()
@@ -86,10 +83,27 @@ async function submit(): Promise<void> {
     // the request genuinely did not happen, and "check your inbox" would send someone to
     // wait for an email that is not coming.
     state.value = 'form'
+
+    if (error instanceof ApiError && error.code === 'VALIDATION_FAILED') {
+      // MEDIUM-5 (Cody): this used to fall into `RESEND_FAILED` — "try again in a moment",
+      // a TRANSIENT message for a PERMANENT error. The user retries forever and no link
+      // ever comes, which is the FR-552 dead end reached through a typo.
+      //
+      // Attributing it to the field is not a guess here, and that is worth being precise
+      // about. `request_password_reset` takes ONE input and validates it before it does
+      // anything else (`services.py:1117`), so `VALIDATION_FAILED` from this mutation can
+      // only mean the address was malformed. It CANNOT mean "no such account": the service
+      // returns `accepted: true` for a registered and an unregistered address alike and
+      // pads the miss branch, so there is no unknown-address error to be confused with.
+      // The message says nothing the shape of the address does not already say.
+      emailError.value = EMAIL_INVALID
+      return
+    }
+
     requestError.value =
       error instanceof ApiError && error.code === 'RATE_LIMITED'
-        ? REQUEST_RATE_LIMITED
-        : REQUEST_FAILED
+        ? RESEND_RATE_LIMITED
+        : RESEND_FAILED
   }
 }
 
@@ -165,9 +179,9 @@ onBeforeUnmount(() => {
           Back to sign in
         </UiButton>
       </div>
-      <p class="au-note">Didn't arrive? Check your spam folder, then request another link.</p>
-      <AuthBanner kind="info" title="Only the newest link works">
-        Sending a new link cancels the previous one. Use the most recent email you received.
+      <p class="au-note">{{ CHECK_SPAM_NOTE }}</p>
+      <AuthBanner kind="info" :title="NEWEST_LINK_TITLE">
+        {{ NEWEST_LINK_BODY }}
       </AuthBanner>
     </template>
 

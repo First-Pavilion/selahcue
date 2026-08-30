@@ -36,6 +36,13 @@ import { resendVerification, verifyEmail } from '@/lib/api/account.ts'
 import { ApiError } from '@/lib/api/graphql.ts'
 import { validateEmail } from '@/lib/auth/emailPolicy.ts'
 import { takeLandingToken } from '@/lib/auth/useLandingToken.ts'
+import {
+  CHECK_SPAM_NOTE,
+  NEWEST_LINK_BODY,
+  NEWEST_LINK_TITLE,
+  RESEND_FAILED,
+  RESEND_RATE_LIMITED
+} from '@/lib/auth/messages.ts'
 
 type VerifyState =
   /** V1 — the mutation is in flight. */
@@ -78,7 +85,6 @@ const resendPending = ref(false)
 const resendError = ref('')
 const sentToEmail = ref('')
 
-const RESEND_FAILED = "We couldn't send a link just now. Please try again in a moment."
 /**
  * Deliberately says nothing about the address.
  *
@@ -88,8 +94,6 @@ const RESEND_FAILED = "We couldn't send a link just now. Please try again in a m
  * that and hand back the enumeration oracle. "Too many requests" is the honest framing:
  * it describes what the caller did, not what the server knows.
  */
-const RESEND_RATE_LIMITED =
-  'Too many requests for a new link. Wait a few minutes, then try again.'
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -312,11 +316,10 @@ onBeforeUnmount(() => {
         </UiButton>
       </div>
       <p class="au-note">
-        Didn't arrive? Check your spam folder, then request another link.
+        {{ CHECK_SPAM_NOTE }}
       </p>
-      <AuthBanner kind="info" title="Only the newest link works">
-        Sending a new link cancels the previous one. Use the most recent email you
-        received.
+      <AuthBanner kind="info" :title="NEWEST_LINK_TITLE">
+        {{ NEWEST_LINK_BODY }}
       </AuthBanner>
     </template>
 
