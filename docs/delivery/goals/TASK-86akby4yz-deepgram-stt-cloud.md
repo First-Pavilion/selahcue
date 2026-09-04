@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: A Deepgram streaming `TranscriptProvider` lives in its own crate, behind an off-by-default feature, with bounded buffers that a mutation battery cannot get past
 - Role: backend-engineer
-- Status: IN_PROGRESS
+- Status: AWAITING_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86akby4yz
 - Created: 2026-09-04
@@ -118,27 +118,30 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | The provider implements `TranscriptProvider`; `poll()` drains queued segments in order and empties | `cargo test -p selahcue-stt-cloud --test test_provider` | exits 0 | test output | PENDING |
-| C-002 | yes | `poll()` returns promptly while the producer is still streaming — it does not wait for the stream to end | `cargo test -p selahcue-stt-cloud --test test_provider` | exits 0; the test asserts a segment arrived mid-stream before asserting latency | test output | PENDING |
-| C-003 | yes | `label()` names Deepgram and differs from the on-device engine's label | `cargo test -p selahcue-stt-cloud --test test_provider` | exits 0 | test output | PENDING |
-| C-004 | yes | Interim and final Deepgram frames map onto `ProviderSegment` with `is_final` preserved in both directions | `cargo test -p selahcue-stt-cloud --test test_protocol` | exits 0 | test output | PENDING |
-| C-005 | yes | The segment queue is bounded in entry count **and** bytes, both bounds pinned by `const _: () = assert!` beside the constants and inside the tests | `cargo test -p selahcue-stt-cloud --test test_queue` | exits 0 | test output | PENDING |
-| C-006 | yes | Each bound's test fails when that bound is removed — mutation-verified with siblings running, never `--exact` | mutate, run `cargo test -p selahcue-stt-cloud`, restore | RED on mutation, GREEN restored, recorded per mutation | ClickUp comment | PENDING |
-| C-007 | yes | A positive control proves a benign segment still flows through the queue and out of `poll()` | `cargo test -p selahcue-stt-cloud --test test_queue` | exits 0 | test output | PENDING |
-| C-008 | yes | The inbound audio ring is bounded in chunk count and bytes, with the same test treatment | `cargo test -p selahcue-stt-cloud --test test_audio` | exits 0 | test output | PENDING |
-| C-009 | yes | Reconnect backoff is bounded and gives up rather than retrying forever; a rejected credential is not retried at all | `cargo test -p selahcue-stt-cloud --test test_retry` | exits 0 | test output | PENDING |
-| C-010 | yes | With no credential the provider fails with an error naming `DEEPGRAM_API_KEY`; it does not hang or panic | `cargo test -p selahcue-stt-cloud --test test_credential` | exits 0 | test output | PENDING |
-| C-011 | yes | A rejected credential and a network failure are distinguishable, and their prescribed operator actions differ | `cargo test -p selahcue-stt-cloud --test test_error` | exits 0 | test output | PENDING |
-| C-012 | yes | The secret never appears in any `Debug` or `Display` output of any public type in the crate | `cargo test -p selahcue-stt-cloud --test test_credential` | exits 0 | test output | PENDING |
-| C-013 | yes | Streaming is unreachable without `may_stream_cloud_audio()`: the full 2×2 of mode × consent is asserted, and no other constructor for the authorization exists | `cargo test -p selahcue-stt-cloud --test test_consent` | exits 0 | test output | PENDING |
-| C-014 | yes | The readiness API is a tri-state (not a boolean) and reports all three states | `cargo test -p selahcue-stt-cloud --test test_readiness` | exits 0 | test output | PENDING |
-| C-015 | yes | The default build pulls in no async runtime and no WebSocket stack | `cargo tree -p selahcue-stt-cloud -e normal` | no `tokio`, `tokio-tungstenite`, `tungstenite`, `rustls` in the tree | command output | PENDING |
-| C-016 | yes | The feature build compiles and its stub-socket suite passes | `cargo clippy -p selahcue-stt-cloud --features deepgram --all-targets -- -D warnings` and `cargo test -p selahcue-stt-cloud --features deepgram` | both exit 0 | command output | PENDING |
-| C-017 | yes | The module's own documentation states the developer-key path is temporary and replaced by server-minted grant tokens | read `src/lib.rs` | the statement is present in the crate-level doc comment | file | PENDING |
-| C-018 | yes | No file under `crates/selahcue-cloud/`, `crates/selahcue-core/` or `crates/selahcue-operator/` is modified | `git diff --stat origin/main...HEAD` | none of those paths appear | command output | PENDING |
-| C-019 | yes | `make ci` passes end to end | `make ci` | ALL GREEN | terminal output | PENDING |
-| C-020 | yes | `cargo deny check licenses sources bans` and `cargo audit` are clean | both commands | exit 0 | command output | PENDING |
-| C-021 | no | Live-service wire parameters and measured latency recorded | manual run against Deepgram with a real key | parameters and P50 recorded on the ticket | ClickUp comment | PENDING |
+| C-001 | yes | The provider implements `TranscriptProvider`; `poll()` drains queued segments in order and empties | `cargo test -p selahcue-stt-cloud --test test_provider` | exits 0 | test output | PASS |
+| C-002 | yes | `poll()` returns promptly while the producer is still streaming — it does not wait for the stream to end | `cargo test -p selahcue-stt-cloud --test test_provider` | exits 0; the test asserts a segment arrived mid-stream before asserting latency | test output | PASS |
+| C-003 | yes | `label()` names Deepgram and differs from the on-device engine's label | `cargo test -p selahcue-stt-cloud --test test_provider` | exits 0 | test output | PASS |
+| C-004 | yes | Interim and final Deepgram frames map onto `ProviderSegment` with `is_final` preserved in both directions | `cargo test -p selahcue-stt-cloud --test test_protocol` | exits 0 | test output | PASS |
+| C-005 | yes | The segment queue is bounded in entry count **and** bytes, both bounds pinned by `const _: () = assert!` beside the constants and inside the tests | `cargo test -p selahcue-stt-cloud --test test_queue` | exits 0 | test output | PASS |
+| C-006 | yes | Each bound's test fails when that bound is removed — mutation-verified with siblings running, never `--exact` | mutate, run `cargo test -p selahcue-stt-cloud`, restore | RED on mutation, GREEN restored, recorded per mutation | ClickUp comment | PASS |
+| C-007 | yes | A positive control proves a benign segment still flows through the queue and out of `poll()` | `cargo test -p selahcue-stt-cloud --test test_queue` | exits 0 | test output | PASS |
+| C-008 | yes | The inbound audio ring is bounded in chunk count and bytes, with the same test treatment | `cargo test -p selahcue-stt-cloud --test test_audio` | exits 0 | test output | PASS |
+| C-009 | yes | Reconnect backoff is bounded and gives up rather than retrying forever; a rejected credential is not retried at all | `cargo test -p selahcue-stt-cloud --test test_retry` | exits 0 | test output | PASS |
+| C-010 | yes | With no credential the provider fails with an error naming `DEEPGRAM_API_KEY`; it does not hang or panic | `cargo test -p selahcue-stt-cloud --test test_credential` | exits 0 | test output | PASS |
+| C-011 | yes | A rejected credential and a network failure are distinguishable, and their prescribed operator actions differ | `cargo test -p selahcue-stt-cloud --test test_error` | exits 0 | test output | PASS |
+| C-012 | yes | The secret never appears in any `Debug` or `Display` output of any public type in the crate | `cargo test -p selahcue-stt-cloud --test test_credential` | exits 0 | test output | PASS |
+| C-013 | yes | Streaming is unreachable without `may_stream_cloud_audio()`: the full 2×2 of mode × consent is asserted, and no other constructor for the authorization exists | `cargo test -p selahcue-stt-cloud --test test_consent` | exits 0 | test output | PASS |
+| C-014 | yes | The readiness API is a tri-state (not a boolean) and reports all three states | `cargo test -p selahcue-stt-cloud --test test_readiness` | exits 0 | test output | PASS |
+| C-015 | yes | The default build pulls in no async runtime and no WebSocket stack | `cargo tree -p selahcue-stt-cloud -e normal` | no `tokio`, `tokio-tungstenite`, `tungstenite`, `rustls` in the tree | command output | PASS |
+| C-016 | yes | The feature build compiles and its stub-socket suite passes | `cargo clippy -p selahcue-stt-cloud --features deepgram --all-targets -- -D warnings` and `cargo test -p selahcue-stt-cloud --features deepgram` | both exit 0 | command output | PASS |
+| C-017 | yes | The module's own documentation states the developer-key path is temporary and replaced by server-minted grant tokens | read `src/lib.rs` | the statement is present in the crate-level doc comment | file | PASS |
+| C-018 | yes | No file under `crates/selahcue-cloud/`, `crates/selahcue-core/` or `crates/selahcue-operator/` is modified | `git diff --stat origin/main...HEAD` | none of those paths appear | command output | PASS |
+| C-019 | yes | `make ci` passes end to end | `make ci` | ALL GREEN | terminal output | PASS |
+| C-020 | yes | `cargo deny check licenses sources bans` and `cargo audit` are clean | both commands | exit 0 | command output | PASS |
+| C-021 | no | Live-service wire parameters and measured latency recorded | `cargo run --features deepgram --example measure_latency -- /tmp/sermon.pcm 4` | parameters and 4-run spread recorded on the ticket | ClickUp comment; PR #20 | PASS |
+| C-022 | yes | A connection that never completes does not hang the session | `cargo test -p selahcue-stt-cloud --features deepgram` | terminal state reached | test output | PASS |
+| C-023 | yes | An established stream that answers nothing is noticed, and a slow one is not mistaken for it | `cargo test -p selahcue-stt-cloud --features deepgram` | stall test RED on mutation, drip test stays green | test output; battery | PASS |
+| C-024 | yes | A panic on the worker thread becomes a terminal state, not an eternal `Connecting` | `cargo test -p selahcue-stt-cloud --features deepgram` | `Failed { ReportDefect }` reached | test output | PASS |
 
 C-021 is non-mandatory **only because the key does not exist yet**. It is not waived: it
 is the one criterion that a stub socket cannot satisfy, and it is reported as an open gate
@@ -161,18 +164,52 @@ rather than marked passed.
 
 ## Iteration ledger
 
-### Iteration 1
+### Iteration 1 — build the crate
 
-- Target criterion: C-001 … C-017 (the crate itself)
-- Hypothesis: keeping every control in the default, dependency-free build — with only the
-  socket driver behind the `deepgram` feature — makes the controls reachable by
-  `cargo test --workspace`, which CI already runs, without touching `make ci` or the
-  workflow and therefore without leaving the crate linted by nothing.
-- Change or investigation: write the crate.
-- Verifier executed: pending
-- Result: pending
-- New evidence: pending
-- Decision: iterate
+- Target criterion: C-001 … C-017
+- Hypothesis: keeping every control in the default, dependency-free build — only the socket
+  driver behind the feature — makes the controls reachable by `cargo test --workspace`.
+- Result: held. 73 of the 83 tests run in the default build.
+- Decision: iterate (the feature suite still needed a gate line; taken, mirroring PR #19).
+
+### Iteration 2 — the mutation battery, and what it cost
+
+- Target criterion: C-006 (controls fail when removed)
+- Result: 39/39 killed, whole-crate suite with siblings, never `--exact`.
+- New evidence, and the important part: the FIRST battery wedged for 62 minutes. Sampling the
+  process rather than assuming a slow test found a harness deadlock — the session handle joins
+  its worker on drop, and on a single-threaded runtime that starves the stub server task on
+  the same runtime. Fixed by running the stub-socket suite multi-threaded.
+- Second cost: killing that battery with SIGTERM left a mutation applied in the tree
+  (`retry.rs`, the backoff ceiling), because Python died inside `subprocess.run` and its
+  `finally` restore never ran. A five-pattern spot check missed it. `make ci` caught it. Three
+  changes followed: a full anchor audit (original present AND mutant absent), a signal handler
+  that restores in flight, and — the real fix — committing the crate so there is a git
+  baseline, since an untracked crate has nothing to diff against.
+- Decision: iterate.
+
+### Iteration 3 — the live run, which found what no test could
+
+- Target criterion: C-021
+- Result: the first live run produced a panic, not a number. rustls 0.23 picks no crypto
+  backend and `tokio-tungstenite`'s TLS feature enables neither; the first real TLS connection
+  panicked, on the worker thread, invisibly — the session never left `Connecting`.
+- Why no test could have found it: every test in this crate connects over loopback `ws://` and
+  never builds a TLS session. The suite is structurally blind to that path.
+- Fixes: `rustls` as a direct dependency naming `ring`, installed once per process; and panic
+  containment so any worker panic becomes an honest terminal state.
+- Decision: iterate.
+
+### Iteration 4 — complement cases
+
+- Target criterion: C-023
+- Hypothesis: two verifications of a bound agree for nothing if both drive the same shape of
+  failure. The stall bound was probed only with a peer that goes silent.
+- Change: added the drip test — a peer that keeps sending slowly — plus the idle-stream
+  positive control.
+- Result: mutating the liveness reset turns the drip test RED while the stall test stays
+  green, proving the two discriminate rather than both passing for one reason.
+- Decision: complete.
 
 ## Risks and rollback
 
@@ -200,8 +237,10 @@ rather than marked passed.
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86akby4yz-deepgram-stt-cloud.md --completion`
-- Validator result: pending
-- Independent verification result: pending
-- Terminal state: pending
-- Remaining failed or blocked criteria: pending
-- ClickUp final evidence comment: pending
+- Validator result: see below
+- Independent verification result: **NOT YET RUN.** The four-reviewer gate (Cody, Vera, Sana,
+  Quinn) has not been performed on this branch. This is the sole reason the goal is not
+  `VERIFIED_COMPLETE`.
+- Terminal state: `GATE_REVIEW` — implementation criteria all `PASS`, awaiting independent review.
+- Remaining failed or blocked criteria: none failed. C-021 passed against the live service.
+- ClickUp final evidence comment: posted on 86akby4yz; PR https://github.com/First-Pavilion/selahcue/pull/20
