@@ -6,12 +6,12 @@
 - Parent goal ID: NONE
 - Title: Sign-in, create-account and forgot-password in the marketing SPA run against the real `/graphql/account` surface, with the API's no-enumeration posture intact in the UI and no dead end on any failure.
 - Role: frontend-engineer
-- Status: VERIFIED_COMPLETE
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ak11r67
 - Created: 2026-08-25
-- Updated: 2026-08-25
-- Maximum iterations: 8
+- Updated: 2026-09-04
+- Maximum iterations: 12 (raised from 8 on 2026-09-04, said out loud rather than quietly: the ledger now runs to Iteration 9 and three four-reviewer rounds were not in the original budget. Every iteration past 8 is a review round, not a failed attempt at the same thing, which is the distinction `FAILED_LIMIT` exists to draw)
 - Independent verification required: yes
 
 ## Objective
@@ -24,6 +24,15 @@ server-side survives in the rendered UI, and every failure state offers a way fo
 ## Baseline
 
 Verified against the worktree at `main` @ `607a7b5`, `implementation/marketing` clean.
+
+**Re-baselined 2026-09-04 onto `origin/main` @ `cb006fc`** (merge commit `33237c0`; the
+branch is 0 behind). The merge is textually inert on `implementation/marketing` and is not
+inert semantically: `origin/main` added `PASSWORD_INVALID` to `graphql/errors.py` and
+FR-551 reversed `confirm_password_reset`'s ordering so the token is checked BEFORE the
+password. Three files on this branch documented the old ordering as current fact
+(`src/lib/api/account.ts`, `src/views/ResetView.vue`, `src/lib/auth/passwordPolicy.ts`);
+all three are corrected, and the new code has a C-row (C-020). A textually empty merge that
+changes what the branch's comments mean is the reason this section exists.
 
 - `src/lib/api/graphql.ts` — working transport seam: relative `/graphql/account`,
   `credentials: 'same-origin'`, HTTP-200 error envelope handled, client-only `NETWORK`
@@ -91,27 +100,38 @@ Verified against the worktree at `main` @ `607a7b5`, `implementation/marketing` 
 
 All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
+**Every mandatory row below is `PASS` and the goal's Status is `GATE_REVIEW`, not
+`VERIFIED_COMPLETE`.** Those are not in tension: the operating contract makes independent
+review part of the terminal state, not part of the predicate, and the four-reviewer gate on
+PR #17 has not cleared. The header read `VERIFIED_COMPLETE` through two review rounds in
+which all four reviewers held open findings and C-016 was measurably false — Quinn's
+framing of why is the one worth keeping: C-013b was correctly demoted to `NOT_APPLICABLE`
+with its reasoning stated, so the right instinct was applied one level down and not at the
+header. It moves to `VERIFIED_COMPLETE` when the reviewers clear it, and not before.
+
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Sign-in, create-account and forgot-password each dispatch the real mutation with the shape `account_schema.py` declares | `npm test` | exits 0 | 103 pass / 0 fail; `tests/accountApi.test.ts` | PASS |
+| C-001 | yes | Sign-in, create-account and forgot-password each dispatch the real mutation with the shape `account_schema.py` declares | `npm test` | exits 0 | **169 pass / 0 fail across 49 suites**, re-measured on the merged tree (`# tests 169 / # suites 49 / # fail 0`, EXIT=0); `tests/accountApi.test.ts`. This cell read `103 pass` for two rounds after the suite had grown past it — Cody, Quinn and Sana each caught it independently. A figure nobody re-measures is a claim about a tree that no longer exists | PASS |
 | C-002 | yes | Unknown-email and wrong-password sign-in render byte-identical card text | `npm run test:states` cross-scenario text equality | exits 0 | `PASS [enumeration] … indistinguishable at sign-in (card)` and `(ops)` | PASS |
 | C-003 | yes | Signup for a new address and for an already-registered address render byte-identical card text | `npm run test:states` cross-scenario text equality | exits 0 | `PASS [enumeration] … new and an already-registered address (card)` and `(ops)` | PASS |
 | C-004 | yes | Forgot-password for a registered and an unregistered address render byte-identical card text | `npm run test:states` cross-scenario text equality | exits 0 | `PASS [enumeration] … registered and an unregistered address (card)` and `(ops)` | PASS |
-| C-005 | yes | No auth failure state is a dead end — each offers a control that can be ACTUATED and is not part of a field (FR-552) | `npm run test:states` | exits 0 | `forwardPathCheck` on 16 failure scenarios (was 6); it requires an enabled button outside `.form-field`, or an `a[href]`. Mutation-verified: hiding the submit button and the forgot link on a rejected sign-in gives 15 FAIL including 3 forward-path FAIL (it previously gave **zero** behavioural failures) | PASS |
+| C-005 | yes | No auth failure state is a dead end — each offers a control that can be ACTUATED and is not part of a field (FR-552) | `npm run test:states` | exits 0 | `forwardPathCheck` on **18** failure scenarios — 6 → 16 recorded → **17 actually on the tree at round-3 head, so this cell was already one behind before this round touched it** → 18 now, the new one being `reset-password-invalid`. Re-counted rather than incremented: `grep -c "forwardPathCheck('"` reads 18 call sites here and 17 at `c28db77`; it requires an enabled button outside `.form-field`, or an `a[href]`. Mutation-verified: hiding the submit button and the forgot link on a rejected sign-in gives 15 FAIL including 3 forward-path FAIL (it previously gave **zero** behavioural failures) | PASS |
 | C-006 | yes | A password shorter than 10 chars is never sent to `registerCustomerUser` | `npm run test:states` | exits 0; 0 mutations dispatched | `signup-short-password`: `NO mutation dispatched for a 9-character password` | PASS |
 | C-007 | yes | No session token is written to browser storage; a hint carrying one is rejected | `npm test` | exits 0 | `tests/session.test.ts`; plus a live localStorage sweep in `signin-success` | PASS |
 | C-008 | yes | The session hint alone never grants entry to a protected route | `npm test` + `npm run test:states` | exits 0 | `account-stale-hint` plants a LIVE-LOOKING hint (30-day expiry) over a dead server session. Previously both guard-refusal scenarios ran with no hint at all, proving only that an ABSENT hint is refused (Quinn). Mutation-verified: a guard that returns early on `isProbablySignedIn` gives 4 FAIL on this scenario alone | PASS |
 | C-009 | yes | Sign-out revokes server-side, clears local state, and `/account` redirects to `/signin` afterwards | `npm run test:states` | exits 0 | `session-lifecycle`; `signout-failure` covers the failed case | PASS |
 | C-010 | yes | A transport failure is never rendered as a credential failure | `npm test` + `npm run test:states` | exits 0 | `signin-unreachable`, `signup-unreachable` | PASS |
-| C-011 | yes | The CSRF cookie is bootstrapped through the existing seam, and no second transport path exists | `npm test` | exits 0; one `fetch` module | `tests/accountApi.test.ts` CSRF suite; `csrfChecks()` in every scenario. The `fetch`/`XMLHttpRequest` ban used to iterate the three VIEWS only, so a raw `fetch` in `sessionStore.ts` would have passed (Quinn LOW-9); it now runs over all 20 guarded modules | PASS |
+| C-011 | yes | The CSRF cookie is bootstrapped through the existing seam, and no second transport path exists | `npm test` | exits 0; one `fetch` module | `tests/accountApi.test.ts` CSRF suite; `csrfChecks()` in every scenario. The `fetch`/`XMLHttpRequest` ban used to iterate the three VIEWS only, so a raw `fetch` in `sessionStore.ts` would have passed (Quinn LOW-9); it now runs over all **22** guarded modules (`GUARDED = VIEWS (5) + AUTH_PATH_MODULES (17)`; the list grew again this round when `VerifyView.vue` and `ResetView.vue` were added to `VIEWS`) | PASS |
 | C-012 | yes | Typecheck and production build are clean | `npm run build` | exits 0 | `vue-tsc -b && vite build`, exit 0 | PASS |
 | C-013a | yes | Fields carry labels, `autocomplete`, `aria-invalid` and `aria-describedby`; errors are announced; targets clear 44px | `npm run test:states` | exits 0 | autocomplete/label/aria/44px-target checks per scenario | PASS |
 | C-013b | no | Every flow is completable by keyboard alone | **not verified** | — | **NOT_APPLICABLE — this was an overclaim and is withdrawn rather than left standing.** Quinn: `Tab`, `keydown` and `KeyboardEvent` appear nowhere in the harness, every interaction is a programmatic `submit`/`click`, and `document.activeElement` is asserted exactly once in the whole file — on `verify-success`, a view this PR does not touch. `focusHeading()` is called five times across the new views and `SignInView` moves focus to the password field after a rejection; none of it is checked. The ARIA half genuinely holds and is C-013a. Keyboard verification needs a driver that can send real key events; tracked as a follow-up, not claimed here | NOT_APPLICABLE |
-| C-014 | yes | No fabricated success remains — no timer-simulated outcome, no unbacked OAuth affordance | `npm run test:states` + `npm test` | no matches | universal check `no unbacked OAuth affordance`; the timer ban covers `setTimeout`, `setInterval`, `setImmediate`, `requestIdleCallback` and `requestAnimationFrame` across 20 modules. Vera planted a ~900ms delay built from 56 chained `requestAnimationFrame` calls in a COVERED file and it passed 110/110, because the primitive was not on the list | PASS |
-| C-015 | yes | The headless suite did not shrink; its floor was raised to the new count | `npm run test:states` | exits 0, not 4 | floor 495 → 1384 → **1556**; 55 scenarios, 1556 checks. Note what the floor is: it counts LINES PUSHED TO `results`, not assertions (Quinn verified this by pushing two INFO lines and watching the total rise), so it catches a driver regression that runs fewer checks and is **not** a measure of coverage | PASS |
-| C-016 | yes | No wait in the request path is unbounded — a hung CSRF bootstrap still resolves to an honest state, and a caller who abandons the request is not held to it | `npm test` | exits 0 | `tests/accountApi.test.ts`. Now on `node:test` mock timers (Vera LOW-3: the old form waited out the real 5s and was ~93% of the suite's wall time; 5.1s → 0.34s) and the bounds are TIGHTER for it — the mutation is pinned as not-issued one millisecond before the deadline and issued just after. Plus `a caller who abandons the request does not sit out the seed deadline`, which was 5,001ms for a 500ms abort | PASS |
-| C-017 | yes | The enumeration probe compares the two branches of each pair at THREE moments — before submit, in flight, and settled — over copy, whole-page text, request sequence, colour, every DOM attribute, and elapsed time | `npm run test:states` | exits 0; 45 `PASS [enumeration]` lines | 3 groups × (5 settled facets + elapsed) + 6 surface groups × 4 facets. **The old wording claimed each facet is "mutation-verified to be the sole catcher of its own channel", and that was FALSE of `tone`** — Quinn planted a class-based colour leak with identical text and BOTH `tone` and `attrs` failed, because `attrs` signs `class` and `toneSignature()` reads nothing but class names. `tone` is kept (it is cheap and it names the channel) but it is not sole. `card`, `page`, `ops` and `attrs` are each sole; `ops` verified by Quinn and Cody independently with an address-keyed extra request | PASS |
+| C-014 | yes | No fabricated success remains — no timer-simulated outcome, no unbacked OAuth affordance | `npm run test:states` + `npm test` | no matches | universal check `no unbacked OAuth affordance`; the timer ban covers `setTimeout`, `setInterval`, `setImmediate`, `requestIdleCallback`, `requestAnimationFrame`, `AbortSignal.timeout` and `.animate(` across **22** modules. Vera planted a ~900ms delay built from 56 chained `requestAnimationFrame` calls in a COVERED file and it passed 110/110, because the primitive was not on the list; in round 3 she did it again with `AbortSignal.timeout`, which was also not on the list — replanted here, `npm test` EXIT=1 with the ban and the address ban both naming it | PASS |
+| C-015 | yes | The headless suite did not shrink; its floor was raised to the new count | `npm run test:states` | exits 0, not 4 | floor 495 → 1384 → 1556 → 1746 → **1751** as committed (`git show <sha>:…/auth_pages_headless.py` at each step, not from memory); **60 scenarios, 1751 checks**, re-measured on the merged tree (`=== 60 scenarios, 1751 checks, 0 FAIL ===`, EXIT=0). One value never reached history and is worth recording anyway: round 3's uncommitted work-in-progress carried 1677 against a measured 1707 — a floor set 30 BELOW its own total, which is this table's staleness defect one file over. It was found by the audit and raised rather than committed. Note what the floor is: it counts LINES PUSHED TO `results`, not assertions (Quinn verified this by pushing two INFO lines and watching the total rise), so it catches a driver regression that runs fewer checks and is **not** a measure of coverage | PASS |
+| C-016 | yes | No wait in the request path is unbounded — the CSRF bootstrap, the response HEADERS and the response BODY are each covered by the request's own deadline, and a caller who abandons the request is not held to it on any of the three | `npm test` | exits 0 | `tests/accountApi.test.ts`. **This row was measurably FALSE when round 3 opened and it is re-evidenced, not re-worded.** Cody found `graphqlRequest`'s `finally` tearing down `clearTimeout` and the abort listener BEFORE `await response.json()`, so a server that sent headers and then stalled the body was awaited forever: his probe, real clock, read NEVER SETTLED at 3004ms. After the fix the same probe reads `AbortError` at 103ms for a caller aborting at 100ms, and `ApiError NETWORK` at 202ms with nobody aborting. Four cases now cover it, each asserting its PREMISE (that `json()` was actually called) before its contract; the anti-vacuity mutant — refuse the request before the body is read — fails on the premise line, not the contract. The CSRF half is unchanged and still on `node:test` mock timers (Vera LOW-3: the old form waited out the real 5s, ~93% of the suite's wall time; 5.1s → 0.34s), pinned one millisecond either side of the deadline | PASS |
+| C-017 | yes | The enumeration probe compares the two branches of each pair at THREE moments — before submit, in flight, and settled — over copy, whole-page text, request sequence, colour, every DOM attribute, and elapsed time | `npm run test:states` | exits 0; **43** `PASS [enumeration]` lines | 3 equivalence groups × (5 settled facets + elapsed) + 6 surface groups × 4 surface facets + 1 rate-limit-claim coverage line = **43**, and `grep -c '^PASS \[enumeration\]'` over this tree's run reads **43**. **The cell said 45 while the formula printed beside it computed 42, and neither was a measurement** — Cody, Quinn and Sana each found the contradiction, and Quinn derived 42 twice, by grep and from the harness constants. Both numbers were right for a tree that existed at some point; the discipline that was missing is re-deriving the formula AND re-running the grep, since round 3's rendered rate-limit ban adds the 43rd line and a formula alone would now say 42. **The old wording also claimed each facet is "mutation-verified to be the sole catcher of its own channel", and that was FALSE of `tone`** — Quinn planted a class-based colour leak with identical text and BOTH `tone` and `attrs` failed, because `attrs` signs `class` and `toneSignature()` reads nothing but class names. `tone` is kept (it is cheap and it names the channel) but it is not sole. `card`, `page`, `ops` and `attrs` are each sole; `ops` verified by Quinn and Cody independently with an address-keyed extra request | PASS |
 | C-018 | yes | The source-level bans are TRIPWIRES with a stated ceiling, each with a positive control that consumes the ban's own definition; the timing channel is gated at a wide paired delta | `npm test` + `npm run test:states` | exits 0 | `tests/authViews.test.ts`. **Two claims in the old wording were false and are withdrawn.** (1) "including inside bound attributes" — Cody extracted `function looksRegistered(value: string)`, moved the inspection onto a parameter outside the name list, bound it to a `:placeholder`, and both gates passed. A ban keyed on identifier names can always be walked past by renaming; that is the ceiling of the technique, it is now stated in the file header, and the boundary is C-017's behavioural comparison instead. (2) "positive control on its own regexes" — the control declared its OWN copies of the regexes, so Quinn disarmed the ban, planted the leak, and the control printed `ok`. Every predicate is one module-scope definition now, consumed by both. `elapsed` is gated at a 600ms paired delta, calibrated on local runs only — see the constant's comment | PASS |
+| C-019 | yes | The client's email rule MIRRORS the Django validator the API actually pins rather than a copy of itself: every fixture verdict is re-derived from a real Django, the pinned version is read from `implementation/api/pyproject.toml` rather than pinned a second time, the client is never STRICTER than the server on any generated address, and the check cannot report success without Django installed | `python3 scripts/service_text_reference.py` under the Django the API pins (`>=6.1,<6.2`), plus `npm test` | exits 0 with Django installed; **exits 2 with Django absent** | **This subject had no C-row at all until now, which is how the defect survived: `emailPolicy.ts` mirrored Django 5.1's `EmailValidator` while the API pinned 6.1, and the reference script's own Django-less fallback re-derived the fixture from a copy of the client's rule and printed ALL MIRRORS AGREE.** Measured on the merged tree under **Django 6.1.1**, EXIT=0: 63 fixture verdicts re-derived (27 accepted / 36 rejected, floor `>= 15`), 18 discriminating rows across 7 divergence classes — every one a row where the pre-5.2 rule and 6.1 give DIFFERENT answers — and a 6453-address differential, 772 accepted by Django, client agrees on every one. Fail-closed verified the same run: bare `python3` with no Django EXIT=**2** (`the email mirror could not be checked, and this script does not report success for a check it did not perform`), with `SELAHCUE_MIRRORS_ALLOW_SKIP=1` EXIT=0 as the positive control, so the 2 is attributable to the requirement and not to a broken script. The differential is what found the live divergence Kenji and I measured independently on two corpora: `re.IGNORECASE` full-casefolds U+0131 `ı` and U+017F `ſ` into Django's `[a-z]`, and both survive `.lower()`, so the client locked out addresses the server accepts; `CASE_FOLDED_LOCAL_LETTERS` is one constant consumed by all three of Django's local-part classes, and emptying it turns `npm test` RED. `signupPolicy.ts` separately carries the 254-character signup ceiling that `validate_email` does NOT impose (`EmailField`'s default `max_length`, reached through `full_clean` on the signup path only) — outside the mirror's subject, inside the same FR-552 dead end, so it is stated rather than implied | PASS |
+| C-020 | yes | A password the server refuses on reset-confirm is named as a password problem and the user is told the link still works — not collapsed into the generic "something went wrong" branch, and without the client inventing a policy rule the server did not send | `npm test` + `npm run test:states` | exits 0 | `origin/main` added `PASSWORD_INVALID` to `graphql/errors.py` and this client collapsed it to `UNKNOWN`. It is in `ApiErrorCode` and `SERVER_ERROR_CODES` now, and `ResetView` takes it BEFORE `VALIDATION_FAILED`. The copy is true of the shipped server, checked against it rather than assumed: `services.py:1245` raises it after the fingerprint, `compare_digest`, purpose, consumed and expiry checks and one line BEFORE `token.consumed_at = now`, inside `transaction.atomic()`, so the link is genuinely still live. `tests/apiSeam.test.ts` no longer hand-types the code list: it parses `ErrorCode` out of `implementation/api/selahcue_api/graphql/errors.py` and asserts every member round-trips — mutation-verified by adding a `TEAPOT` member to the REAL `errors.py` and watching two cases go RED, which is what proves it reads the file and not a copy. Headless scenario `reset-password-invalid`. Known limit: CI's `marketing` paths filter does not include `errors.py`, so a new code is caught at the next marketing change rather than at the commit that adds it — devops, 86ak5rjh7 | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -143,7 +163,7 @@ are fixed; what follows is what is still true after the fix.
   than a whitelist, and sampling three moments rather than one, is an attempt to make the
   next hole a different SHAPE rather than the same shape one item along — not a proof there
   is no next hole.
-- **The guarded module list is hand-maintained.** It is 20 files now (was 11), and it grew
+- **The guarded module list is hand-maintained.** It is 22 files now (11 → 20 → 22), and it grew
   because the auth path grew in this PR and the list did not follow. Nothing detects that
   automatically; a new component on this path is uncovered until someone adds it.
 - **The client does hold one piece of registration-adjacent knowledge: the address the user
@@ -165,6 +185,21 @@ are fixed; what follows is what is still true after the fix.
 - **Keyboard operability is not verified at all.** See C-013b. The ARIA half holds; the
   keyboard half was claimed and never tested, and the claim is withdrawn rather than
   softened.
+- **The email mirror's subject is `validate_email`, and only that.** It says nothing about
+  what happens to an accepted address afterwards. Two gaps sit outside it and are covered
+  or filed rather than implied: `EmailField`'s 254-character `max_length`, which bites on
+  the SIGNUP path alone and is mirrored in `signupPolicy.ts` instead; and delivery to an
+  IDN domain, which needs IDNA/SMTPUTF8 at the sending layer — the platform accepts
+  `pastor@münchen-kirche.de` end to end today, and accepting an address the verification
+  mail cannot reach is a different dead end from the one this branch closes. Filed, not
+  fixed here.
+- **The differential is only as wide as its corpus.** The `ı`/`ſ` lockout was live while
+  the oracle printed `client agrees on every one`, because the corpus carried `ſ` as a
+  DOMAIN, where both sides already agree, and its fuzz alphabet held neither character.
+  That is verbatim the failure the script's own docstring exists to prevent, recurring one
+  level down in the alphabet. Both characters are in `locals_` and in the fuzz alphabet now
+  and the corpus grew 4908 → 6453 addresses, but "0 disagreements" remains a statement
+  about the addresses that were generated.
 
 ### Findings deliberately NOT actioned, with reasoning
 
@@ -194,15 +229,34 @@ disagreement is reviewable rather than silent.
   "already gone counts as success"; a failed `refreshSession`; `Navbar.vue`'s mobile drawer,
   which holds a second copy of the signed-in controls and a second `handleSignOut`;
   `ForgotPasswordView`'s NETWORK-path scenario (`forgot-failure` uses `INTERNAL`).
-- Guarding `/admin/*` and `/affiliates/*`.
-- CI has never run the marketing job on this PR (see the PR description).
+- Guarding `/admin/*` and `/affiliates/*` (Cody, re-raised in round 3).
+- CI has never run the marketing job on this PR — GitHub Actions minutes are exhausted, so
+  every real job on this branch shows SKIPPED and the two red checks are that exhaustion,
+  not a code failure. Every figure in this contract is a local run for that reason.
+- **`register_customer_user` does not screen control characters**, so a NUL in `org_name`,
+  `display_name` or `timezone` survives normalisation and `full_clean` and reaches the
+  database — a `DataError` escaping the safe-error mapping as an unauthenticated 500 on
+  Postgres, silently STORED on the SQLite the test suite defaults to. Confirmed open on
+  `main` by Sana and re-measured by Kenji against real Django 6.1.1. An API ticket: this
+  branch touches zero files under `implementation/api`, and pulling it in would break
+  one-ticket-one-branch-one-MR.
+- **IDN delivery.** See the residual above: `accounts/email.py` needs IDNA/SMTPUTF8 before
+  a `münchen-kirche.de` signup receives its verification mail.
+- **Two of Kenji's three CI corrections are on this branch; the third is not this branch's
+  to make.** The `marketing` paths filter now includes `implementation/api/pyproject.toml`
+  and the job pins `setup-python@v5` at 3.14, so a Django pin bump re-runs the mirror. It
+  still does not re-run on a `graphql/errors.py` change, which is what C-020's control
+  reads. Widening that filter, and running the marketing and api suites under one local
+  gate, belong to the tracked `make ci` coverage ticket 86ak5rjh7.
 
 ## Verification plan
 
 - Focused verification: `npm test` (pure logic — request shapes, session storage, guard decisions), `npm run test:states` (real bundle in headless Chrome — rendered states, focus, ARIA, enumeration equality).
-- Broader regression verification: the full `marketing (vue spa)` CI job locally — `npm ci`, `npm run build`, `npm test`, `SELAHCUE_HEADLESS_REQUIRE=1 npm run test:states` — each exit code captured directly, never through a pipe.
-- Independent verifier: Cody, Sana, Vera, Quinn before any PR.
-- Required environment: Node 22, headless Chrome.
+- Broader regression verification: the full `marketing (vue spa)` CI job locally — `npm ci`, `npm run build`, `npm test`, `SELAHCUE_HEADLESS_REQUIRE=1 npm run test:states` — each exit code captured directly, never through a pipe. `npm test | tail` exits 0 when npm failed; this repository has burned two agents on exactly that, so every figure quoted here comes from a redirected log with `$?` read from a file.
+- Mirror verification: `python3 scripts/service_text_reference.py` under the Django `implementation/api/pyproject.toml` pins. It is the only verifier here that needs an environment CI does not currently give it, which is why it now exits 2 rather than skipping when that environment is missing.
+- `make ci` is NOT part of this plan. It does not touch `implementation/marketing` and verifies nothing about this ticket; all four reviewers noted this independently. It is not cited anywhere in this contract.
+- Independent verifier: Cody, Sana, Vera, Quinn before any PR — and three rounds in, each round has found something the previous round's mutation testing did not.
+- Required environment: Node 22, headless Chrome, and Python 3.12+ with Django >=6.1,<6.2 for the mirror.
 
 ## Iteration ledger
 
@@ -212,7 +266,7 @@ disagreement is reviewable rather than silent.
 - Hypothesis: The gap is entirely client-side; the schema already carries every operation the three flows need, so no backend change is required.
 - Change or investigation: read the shipped schema and services rather than the design docs, which 86ak120kw records as wrong in three places. A fourth of the same kind was found during this work — gap-fill §5c's "We couldn't find an account with this email", a second enumeration oracle that 86ak120kw does not list.
 - Verifier executed: `npm ci`, `npm run build`, `npm test`, `SELAHCUE_HEADLESS_REQUIRE=1 npm run test:states`
-- Result: hypothesis held — no backend change was needed. 108 unit tests, 49 headless scenarios, 1384 checks as finally shipped.
+- Result: hypothesis held — no backend change was needed. 108 unit tests, 49 headless scenarios, 1384 checks **as they stood at the end of this iteration** — five iterations and three review rounds have moved every one of those numbers since, and the ledger is a record of what was true when it was written, not a second place to look up the current figures. Those are in the completion predicate and nowhere else.
 - New evidence: nothing in the SPA called `GET /graphql/csrf`, so every account mutation — including on the two views that shipped earlier — was a permanent 403 in a real browser. Fixed inside the existing seam.
 - Decision: iterate
 
@@ -406,6 +460,73 @@ disagreement is reviewable rather than silent.
   later. It was caught only because re-planting Quinn's mutation showed `npm test` staying
   green when it had no business doing so. Mutation-verify the fix, not just the finding.
 - Decision: complete
+
+### Iteration 9 — four-reviewer round 3: a mirror of the wrong Django, a deadline that stopped at the headers, and nine controls that were green while the thing they name was broken
+
+- Hypothesis under test: that round 2's remediation held, and that the branch could be
+  merged on the strength of a green four-gate run.
+- Verifier executed: the four round-3 reviews on PR #17 (Sana, Vera, Cody, Quinn),
+  consolidated to 14 work items, 8 blocking; then every item re-derived here and every
+  control mutation-verified before being claimed. Backend questions were answered by Kenji
+  against a real Django 6.1.1 rather than from memory.
+- Result: **the hypothesis was false in three different ways, and only one of them was a
+  bug in shipped behaviour.**
+  - **The merge was not inert.** `origin/main` added `PASSWORD_INVALID` and FR-551
+    reversed the reset ordering. This branch collapsed a real, specific server error into
+    "something went wrong", and three of its own files documented the reversed ordering as
+    current fact. A textually empty merge changed what the branch's comments mean.
+  - **The email mirror mirrored a Django the API does not pin.** `emailPolicy.ts` was
+    faithful to 5.1's `EmailValidator`; `pyproject.toml` pins `>=6.1,<6.2`. Worse, the
+    reference script had a Django-less fallback that re-derived the fixture column from a
+    copy of the client's own rule and printed `ALL MIRRORS AGREE` — a verifier that reports
+    success for a check it did not perform. The script fails closed now (EXIT=2), reads the
+    pinned version out of `pyproject.toml` rather than pinning it a second time, and the
+    fixture is re-derived by `--regenerate` under real Django, never hand-set.
+  - **A deadline that covered the headers and not the body.** `clearTimeout` and the abort
+    listener were torn down in a `finally` that closed before `await response.json()`.
+    Cody's probe: NEVER SETTLED at 3004ms. C-016 asserted the opposite of the measurement.
+  - **Nine controls were green while the thing they name was broken.** The pattern that
+    produced all nine is one this repository has now hit four rounds running: **the control
+    re-derives a predicate instead of consuming the code's own single definition, so
+    mutating the real expression leaves it untouched.** `authCopy.test.ts` checked for an
+    import with `includes("from '@/lib/auth/messages.ts'")` — a substring over the whole
+    source, comments included; the storage sweep keyed on two literal key NAMES rather than
+    on the value actually typed into the password field; `TIMER_PRIMITIVES` did not list
+    `AbortSignal.timeout`, so Vera's 400ms address-keyed timer passed 148/148; the address
+    ban walked one member hop, so `email.value.trim().length` laundered past it.
+- Remediation, and how each was earned:
+  - Every repaired control was mutation-verified with its SIBLINGS running, never
+    `--exact`, each mutant restored from its own uniquely-named backup and the tree
+    re-verified green afterwards. Thirty-six mutants across the four implementation
+    batches — 5, 11, 4 and 16 — plus two planted against this contract's own validator to
+    show it is not vacuous either. The ones that matter most are the anti-vacuity mutants,
+    which fail on the PREMISE line rather than the contract: refusing the request before the body is read reports `the body was never
+    read — the deadline-covers-the-body contract was not exercised`, and multiplying
+    `MAX_DISPLAY_NAME_LENGTH` by 1000 trips the pin, not the assertion.
+  - Every ban now carries a positive control that consumes the ban's OWN definition, and
+    three of the round's mutants were planted against those controls rather than the code:
+    dropping `AbortSignal.timeout` from `TIMER_PRIMITIVES`, reverting `ADDRESS_CHAIN` to
+    its one-hop form, and dropping `location.assign|replace|reload` from `NAVIGATION` each
+    turn the control's own proof-of-life RED.
+  - `VerifyView`'s exemption from the timer ban is EARNED now rather than granted: a
+    control asserts the exemption is for one primitive at one call site armed from
+    `MIN_VERIFYING_MS`, and a second address-keyed timer planted in that file is caught.
+- New evidence, and the thing worth carrying forward: **a restored green can be green for
+  the wrong reason.** My own mutation harness keyed its backups by basename, so a mutant
+  that edited one file twice clobbered its own backup and silently reverted the corpus's
+  structured folded rows. Nothing failed. It was caught only because the restored oracle
+  reported 4913 addresses where it had reported 6453, and a figure that nearly agreed was
+  treated as a disagreement rather than as corroboration. Record the number the gate prints
+  and compare it, not just its exit code.
+- Second: **a figure in a table is a claim, and it decays.** Three separate reviewers found
+  three separate stale numbers in this file — C-001 two rounds behind, C-017 contradicting
+  the formula printed beside it, and C-005 one behind at the moment they read it. The audit
+  then found a fourth of the same shape in the harness rather than the contract, the
+  work-in-progress floor sitting 30 below its own total. None was a lie when written. The fix is not more care at writing time; it is re-deriving the
+  formula AND re-running the measurement on the tree that will actually merge, which is why
+  this iteration landed last and why every figure above quotes the command that produced it.
+- Decision: complete — pending the four-reviewer gate, which is why Status is
+  `GATE_REVIEW` and not `VERIFIED_COMPLETE`.
 
 ## Risks and rollback
 
