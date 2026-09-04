@@ -150,9 +150,13 @@ pub const RESPONSES_PATH: &str = "/v1/responses";
 /// or maliciously-grown transcript file cannot become an arbitrarily large request body.
 pub const MAX_TRANSCRIPT_CHARS: usize = 400_000;
 
-/// The most response body this module will parse. Anything larger is rejected before
+/// The most response body this module will **parse**. Anything larger is rejected before
 /// `serde_json` allocates a tree for it.
-pub const MAX_RESPONSE_BYTES: usize = 512 * 1024;
+///
+/// Distinct from [`crate::transport::MAX_TRANSPORT_RESPONSE_BYTES`] (4 MB), which bounds the
+/// **socket read**. Two caps at two layers, named for what each bounds — they were both
+/// called `MAX_PARSED_RESPONSE_BYTES` and whichever happened to be in scope was the one you got.
+pub const MAX_PARSED_RESPONSE_BYTES: usize = 512 * 1024;
 
 /// Outline points kept from one response.
 pub const MAX_POINTS: usize = 32;
@@ -193,7 +197,7 @@ const _: () = assert!(
     "test_openai feeds 500 scriptures to prove the scripture cap bites"
 );
 const _: () = assert!(
-    MAX_ITEM_CHARS < MAX_RESPONSE_BYTES,
+    MAX_ITEM_CHARS < MAX_PARSED_RESPONSE_BYTES,
     "an entry cap at or above the whole-body cap could never be reached"
 );
 
@@ -537,20 +541,20 @@ fn take_strings(
 /// Every input here is untrusted: it is whatever a third party put on the wire. Missing
 /// fields degrade to empty, wrong types degrade to empty, and nothing panics.
 pub fn parse_draft(body: &str, inc: &IncludeInNotes) -> Result<(NoteDraft, ClampLog), NoteError> {
-    if body.len() > MAX_RESPONSE_BYTES {
+    if body.len() > MAX_PARSED_RESPONSE_BYTES {
         // Refused BEFORE serde_json builds a tree, so an oversized body costs one
         // length check rather than a proportional allocation.
         return Err(NoteError::Malformed(format!(
-            "provider response exceeded the {MAX_RESPONSE_BYTES}-byte cap"
+            "provider response exceeded the {MAX_PARSED_RESPONSE_BYTES}-byte cap"
         )));
     }
     let root: serde_json::Value =
         serde_json::from_str(body).map_err(|e| NoteError::Malformed(e.to_string()))?;
 
     let text = extract_output_text(&root)?;
-    if text.len() > MAX_RESPONSE_BYTES {
+    if text.len() > MAX_PARSED_RESPONSE_BYTES {
         return Err(NoteError::Malformed(format!(
-            "provider output text exceeded the {MAX_RESPONSE_BYTES}-byte cap"
+            "provider output text exceeded the {MAX_PARSED_RESPONSE_BYTES}-byte cap"
         )));
     }
     let d: serde_json::Value =

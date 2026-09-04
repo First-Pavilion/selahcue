@@ -16,7 +16,7 @@
 
 use selahcue_cloud::openai::{
     bounded_transcript, draft_schema, map_error_status, parse_draft, Bound, OpenAiNoteProvider,
-    DEFAULT_MODEL, MAX_ITEM_CHARS, MAX_OUTPUT_TOKENS, MAX_POINTS, MAX_RESPONSE_BYTES,
+    DEFAULT_MODEL, MAX_ITEM_CHARS, MAX_OUTPUT_TOKENS, MAX_PARSED_RESPONSE_BYTES, MAX_POINTS,
     MAX_SCRIPTURES, MAX_SECTION_ITEMS, MAX_SUB_POINTS, MAX_TRANSCRIPT_CHARS, OUTLINE_HEADING,
     PROVIDER_LABEL,
 };
@@ -138,6 +138,14 @@ impl HttpTransport for ArcTransport {
     }
 }
 
+/// A model id that is deliberately **not** [`DEFAULT_MODEL`].
+///
+/// Constructing the test provider with the default made the model assertion weak: hard-coding
+/// `"model": DEFAULT_MODEL` into the request body and ignoring `self.model` entirely passed,
+/// because the expected and the accidental value were the same string. A sentinel separates
+/// "the configured model reaches the wire" from "the default happens to be right".
+const SENTINEL_MODEL: &str = "sentinel-model-not-the-default";
+
 /// A provider over a shared, inspectable transport, plus the handle to inspect it.
 fn inspectable_provider() -> (
     OpenAiNoteProvider<ArcTransport>,
@@ -147,7 +155,7 @@ fn inspectable_provider() -> (
     let p = OpenAiNoteProvider::new(
         ArcTransport(t.clone()),
         Token::new("sk-test-not-a-real-key"),
-        DEFAULT_MODEL,
+        SENTINEL_MODEL,
     );
     (p, t)
 }
@@ -352,16 +360,31 @@ fn the_outgoing_request_names_the_model_it_is_documented_to_use() {
     p.generate(&request_with(all_on(), TRANSCRIPT)).unwrap();
     let (_req, body) = sole_request(&t);
 
+    // Two separate claims, deliberately not conflated.
+    //
+    // (1) The CONFIGURED model reaches the wire. The sentinel differs from the default, so
+    //     this fails if the body hard-codes a constant instead of reading `self.model`.
     assert_eq!(
         body["model"].as_str(),
-        Some(DEFAULT_MODEL),
-        "the request must ask for the documented model"
+        Some(SENTINEL_MODEL),
+        "the request must ask for the model the provider was configured with"
     );
+    assert_ne!(
+        SENTINEL_MODEL, DEFAULT_MODEL,
+        "premise: the sentinel must differ from the default, or the assertion above cannot \
+         distinguish reading `self.model` from hard-coding the constant"
+    );
+
+    // (2) The DEFAULT is the model confirmed against the account and written into the docs.
     assert_eq!(
         DEFAULT_MODEL, "gpt-5.6-terra",
-        "the documented model changed; \
-        update PROVIDER-TRADEOFFS.md and the openai.rs docs in the SAME change"
+        "the documented model changed; update PROVIDER-TRADEOFFS.md and the openai.rs docs \
+         in the SAME change"
     );
+
+    // And the production constructor uses that default rather than anything else.
+    let from_default = provider(MockTransport::responding(200, envelope(&full_draft_json())));
+    assert_eq!(from_default.model(), DEFAULT_MODEL);
 }
 
 #[test]
@@ -743,6 +766,52 @@ fn the_api_key_never_appears_in_an_error_a_draft_or_a_debug_rendering() {
 }
 
 #[test]
+fn no_status_arm_anywhere_in_the_mapping_echoes_the_response_body() {
+    // Sana, review round 2 (F-1). The no-echo property belongs to the WHOLE mapping, but the
+    // tests pinned it only at the arms that happened to have a captured fixture — so echoing
+    // the body in the `default` arm (and, at an earlier head, the 5xx arm) survived the entire
+    // suite green. The doc on `map_error_status` claimed "never echoed"; the tests enforced it
+    // where someone had thought to look.
+    //
+    // Feed the REAL 401 body — the one containing key material — to every arm, including the
+    // ones that would never receive it in production. The property under test is "this function
+    // does not echo bodies", not "these particular statuses do not".
+    let body = fixtures::ERR_401_INVALID_KEY;
+    let statuses = [
+        200, 301, 400, 401, 402, 403, 404, 418, 429, 500, 502, 503, 599,
+    ];
+    assert_eq!(
+        statuses.len(),
+        13,
+        "premise: every arm of the match is covered"
+    );
+
+    for status in statuses {
+        let err = map_error_status(status, body);
+        let rendered = format!("{err}  {err:?}");
+        assert!(
+            !rendered.contains(LEAKED_KEY_FRAGMENT),
+            "status {status} echoed the key fragment from the response body: {rendered}"
+        );
+        assert!(
+            !rendered.contains("sk-proj-"),
+            "status {status} echoed a key prefix: {rendered}"
+        );
+        assert!(
+            !rendered.contains("platform.openai.com"),
+            "status {status} echoed provider body text: {rendered}"
+        );
+    }
+
+    // POSITIVE CONTROL: the sweep really did produce errors carrying messages, rather than
+    // passing because every arm returned something empty.
+    assert!(
+        !map_error_status(418, body).to_string().is_empty(),
+        "the mapping must still produce a message — otherwise the sweep above proves nothing"
+    );
+}
+
+#[test]
 fn a_429_is_not_flattened_out_of_money_is_terminal_a_rate_limit_is_transient() {
     // OpenAI overloads 429. Mapping both to QuotaExceeded — as a bare `402 | 429` arm
     // would — turns a two-second throttle into "your monthly quota is exhausted".
@@ -910,7 +979,7 @@ fn an_oversized_transcript_is_bounded_before_it_is_sent() {
 
 #[test]
 fn an_oversized_response_body_is_refused_before_it_is_parsed() {
-    let huge = "x".repeat(MAX_RESPONSE_BYTES + 1);
+    let huge = "x".repeat(MAX_PARSED_RESPONSE_BYTES + 1);
     let err = parse_draft(&huge, &all_on()).unwrap_err();
     match err {
         NoteError::Malformed(m) => assert!(m.contains("cap"), "{m}"),

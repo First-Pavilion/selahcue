@@ -50,8 +50,7 @@ pub trait HttpTransport {
 /// Set above the parse-side caps so the two do not collide: a body between the parse cap
 /// and this one is still *read*, and then refused by the parser with a precise error,
 /// which is a better diagnostic than a truncated read.
-#[cfg(feature = "http")]
-pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_TRANSPORT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 /// The production transport over `reqwest` (blocking, rustls TLS). Compiled only with
 /// the `http` feature so the default workspace build/tests stay light and offline.
@@ -72,29 +71,40 @@ impl ReqwestTransport {
     }
 }
 
-/// Read a response body with a hard ceiling, instead of `text()`'s read-to-end.
+/// Read at most `cap` bytes from `r`, refusing anything larger.
 ///
-/// Takes `MAX_RESPONSE_BYTES + 1` so "exactly at the cap" is distinguishable from "over
-/// it" — reading exactly the cap and stopping would silently truncate a body that was
-/// legitimately that size, and a silently truncated JSON body surfaces as a confusing
-/// parse error rather than as the size problem it is.
+/// **Deliberately free of `reqwest`** — it takes `impl Read`, so it compiles in the default
+/// build and a test can drive it with a `Cursor` or a deliberately-failing reader. The
+/// previous version took a `reqwest::blocking::Response`, which meant it existed only under
+/// the `http` feature: linted there, but executed by no gate at all. A bound nothing runs is
+/// the same category of thing as a control nothing exercises.
 ///
-/// The error message carries the cap and nothing from the body: a response body is
+/// Reads `cap + 1` so **"exactly at the cap" is distinguishable from "over it"**. Stopping at
+/// exactly `cap` would silently truncate a body that was legitimately that size, and a
+/// silently truncated JSON body surfaces as a confusing parse error rather than as the size
+/// problem it actually is.
+///
+/// The error carries the cap and **nothing from the body**: a response body is
 /// attacker-influenced and, on at least one real provider, contains key material.
-#[cfg(feature = "http")]
-fn read_bounded(resp: reqwest::blocking::Response) -> Result<HttpResponse, TransportError> {
+pub fn read_capped(r: impl std::io::Read, cap: usize) -> Result<Vec<u8>, TransportError> {
     use std::io::Read;
-    let status = resp.status().as_u16();
     let mut buf = Vec::new();
-    let mut limited = resp.take((MAX_RESPONSE_BYTES as u64) + 1);
-    limited
+    r.take((cap as u64) + 1)
         .read_to_end(&mut buf)
         .map_err(|e| TransportError(e.to_string()))?;
-    if buf.len() > MAX_RESPONSE_BYTES {
+    if buf.len() > cap {
         return Err(TransportError(format!(
-            "response exceeded the {MAX_RESPONSE_BYTES}-byte transport cap"
+            "response exceeded the {cap}-byte transport cap"
         )));
     }
+    Ok(buf)
+}
+
+/// Read a response body with a hard ceiling, instead of `text()`'s read-to-end.
+#[cfg(feature = "http")]
+fn read_bounded(resp: reqwest::blocking::Response) -> Result<HttpResponse, TransportError> {
+    let status = resp.status().as_u16();
+    let buf = read_capped(resp, MAX_TRANSPORT_RESPONSE_BYTES)?;
     // Bodies are untrusted bytes; decode lossily rather than failing on bad UTF-8, so a
     // mangled response becomes a parse error the caller can map, not a transport error
     // that would trigger the degraded-fallback path for the wrong reason.

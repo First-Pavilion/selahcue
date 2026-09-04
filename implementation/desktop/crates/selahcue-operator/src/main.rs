@@ -2793,20 +2793,20 @@ const DIRECT_NOTES_COMPILED: bool = false;
 /// treated identically, so it does not matter whether the `.env` loader (86akby6yy) unsets a blank
 /// value or exports it empty. Nothing here touches the key beyond asking whether it exists.
 #[cfg(feature = "openai-notes")]
-fn direct_notes_provider() -> Option<NotesProviderView> {
+fn direct_notes_provider() -> Direct {
     let present = std::env::var(selahcue_cloud::openai::API_KEY_ENV)
         .map(|k| !k.trim().is_empty())
         .unwrap_or(false);
-    present.then(|| NotesProviderView {
+    Direct(present.then(|| NotesProviderView {
         kind: selahcue_cloud::openai::PROVIDER_KIND.to_string(),
         name: selahcue_cloud::openai::PROVIDER_LABEL.to_string(),
         model: selahcue_cloud::openai::DEFAULT_MODEL.to_string(),
         developer_key: true,
-    })
+    }))
 }
 #[cfg(not(feature = "openai-notes"))]
-fn direct_notes_provider() -> Option<NotesProviderView> {
-    None
+fn direct_notes_provider() -> Direct {
+    Direct(None)
 }
 
 /// The hosted-service descriptor, or `None` when it is not configured.
@@ -2817,15 +2817,16 @@ fn direct_notes_provider() -> Option<NotesProviderView> {
 /// `"key_missing"` exists to fix on the direct side. The symmetric state is `"token_missing"`, and
 /// the derivation below is a plain match precisely so adding it is one arm and not a refactor. It
 /// is not built here because Phase 1 has no hosted service to be half-configured against.
-fn hosted_notes_provider(account_token_set: bool) -> Option<NotesProviderView> {
-    let base = cloud_base_url()?;
-    let _ = base;
-    account_token_set.then(|| NotesProviderView {
+fn hosted_notes_provider(account_token_set: bool) -> Hosted {
+    let Some(_base) = cloud_base_url() else {
+        return Hosted(None);
+    };
+    Hosted(account_token_set.then(|| NotesProviderView {
         kind: "selahcue_hosted".to_string(),
         name: selahcue_cloud::client::CLOUD_PROVIDER_LABEL.to_string(),
         model: String::new(),
         developer_key: false,
-    })
+    }))
 }
 
 /// Resolve the four-state status from **already-resolved inputs**. The hosted service wins when
@@ -2846,11 +2847,35 @@ fn hosted_notes_provider(account_token_set: bool) -> Option<NotesProviderView> {
 ///
 /// Taking the resolved inputs as parameters makes all four states reachable by a test, so the
 /// control asserts something. `notes_status` is then the thin wrapper that supplies the real ones.
+///
+/// # Why [`Hosted`] and [`Direct`] are newtypes
+///
+/// Extracting this function fixed the logic and moved the untested thing one layer up: with two
+/// bare `Option<NotesProviderView>` parameters, **swapping them at the call site still compiled**,
+/// and every test passed — because in a Phase 1 build both are `None`, so the swap is invisible
+/// until the Phase 2 build where both can be `Some` and precedence inverts. The newtypes make that
+/// swap a type error rather than a test we would have to remember to write, which is the same move
+/// as `NoteSection::flat`/`outline`: prefer an illegal state that cannot be built over one that is
+/// merely asserted against.
+///
+/// **The producers return these types; the call site does not wrap.** Wrapping at the call site
+/// was tried first and did not work — `Hosted(direct_notes_provider())` still typechecks, because
+/// both producers returned a bare `Option<NotesProviderView>` and the newtype was applied to
+/// whichever value was handed to it. The identity has to travel from where the value is *made*,
+/// or the constructor is just a label the caller can misapply. Verified by swapping the two
+/// producer calls and confirming it fails to compile.
+/// The hosted-service provider, if configured. A newtype, not a bare `Option`, so it cannot
+/// be passed where [`Direct`] is expected — see [`notes_status_from`].
+struct Hosted(Option<NotesProviderView>);
+/// The direct developer-key provider, if configured.
+struct Direct(Option<NotesProviderView>);
+
 fn notes_status_from(
-    hosted: Option<NotesProviderView>,
-    direct: Option<NotesProviderView>,
+    hosted: Hosted,
+    direct: Direct,
     direct_compiled: bool,
 ) -> (String, Option<NotesProviderView>) {
+    let (hosted, direct) = (hosted.0, direct.0);
     if let Some(hosted) = hosted {
         return ("hosted".to_string(), Some(hosted));
     }
@@ -2992,25 +3017,20 @@ mod providers_view_tests {
     /// `notes_status_from` directly: `notes_status` reads build-time constants, so in any
     /// one compilation it can only ever return ONE of these four and a test calling it
     /// reaches nothing else.
-    fn all_four_states() -> Vec<(
-        &'static str,
-        Option<NotesProviderView>,
-        Option<NotesProviderView>,
-        bool,
-    )> {
+    fn all_four_states() -> Vec<(&'static str, Hosted, Direct, bool)> {
         vec![
-            ("not_configured", None, None, false),
-            ("key_missing", None, None, true),
+            ("not_configured", Hosted(None), Direct(None), false),
+            ("key_missing", Hosted(None), Direct(None), true),
             (
                 "direct_provider",
-                None,
-                Some(a_provider("openai", true)),
+                Hosted(None),
+                Direct(Some(a_provider("openai", true))),
                 true,
             ),
             (
                 "hosted",
-                Some(a_provider("selahcue_hosted", false)),
-                None,
+                Hosted(Some(a_provider("selahcue_hosted", false))),
+                Direct(None),
                 false,
             ),
         ]
@@ -3052,8 +3072,8 @@ mod providers_view_tests {
         // Precedence has to be asserted, not assumed: it is what keeps the panel's report and
         // `run_note_generation`'s actual choice in agreement.
         let (status, provider) = notes_status_from(
-            Some(a_provider("selahcue_hosted", false)),
-            Some(a_provider("openai", true)),
+            Hosted(Some(a_provider("selahcue_hosted", false))),
+            Direct(Some(a_provider("openai", true))),
             true,
         );
         assert_eq!(status, "hosted");

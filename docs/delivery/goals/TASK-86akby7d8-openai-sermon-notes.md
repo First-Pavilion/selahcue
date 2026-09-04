@@ -184,8 +184,10 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
   callable; `gpt-6-astra`, which the public docs list, is **not on this account**.
 - Verifier executed: `GET /v1/models` → HTTP 200, 118 models.
 - Result: hypothesis wrong; the account is the authority, not the docs.
-- New evidence: a live generation then returned **429 `insufficient_quota`** — the account has
-  no credits. C-021 is blocked and no live draft can be produced.
+- New evidence: a live generation then returned **429 `insufficient_quota`** — the account had
+  no credits, so C-021 was blocked at this point and no live draft could be produced.
+  **Superseded by iteration 7**: the owner added credits and C-021 now passes. This entry is
+  kept as the record of what was true at the time, not as current state.
 - Decision: iterate; report the gate rather than assert an unverified success.
 
 ### Iteration 4 — the 401 leak
@@ -304,9 +306,11 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 ## Risks and rollback
 
-- **Risks:** the model has never produced a real draft, so prompt and schema quality are
-  unproven (C-021). `main.rs` is shared with lane A. The `openai-notes` feature pulls `reqwest`,
-  lengthening `make ci`.
+- **Risks:** prompt and schema quality rest on **one transcript, one run per model** (C-021,
+  iteration 7) — enough to confirm the path works end to end and to settle the default, not
+  enough to call the prompt good in general. Section population is non-deterministic (86akc0tua).
+  The prompt is not yet robust across the models a picker would offer (86akbzxyc). `main.rs` is
+  shared with lane A. The `openai-notes` feature pulls `reqwest`, lengthening `make ci`.
 - **Rollback or recovery:** both features are off by default, so reverting is deleting two
   feature lines; the default build path is unchanged and covered by the existing suites. The
   view rename is pinned by a test, so a revert is a failing test rather than a silent
