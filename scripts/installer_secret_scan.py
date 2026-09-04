@@ -67,9 +67,20 @@ import tempfile
 # string is knowable now and a scan already looking for it is one less thing to remember.
 #
 # IF A SIGNATURE EVER TURNS UP LEGITIMATELY in a default-feature build, that is a security
-# decision to record -- the shipping path is a server-minted grant token and a proxied notes
-# service (see the `dev-keys` comment in selahcue-operator/Cargo.toml), so a provider endpoint
-# in the shipped operator means that plan changed. It is never a string to quietly delete.
+# decision to record. It is never a string to quietly delete. But the two endpoints differ, and
+# an earlier version of this comment got one of them wrong in a way that would have misdirected
+# whoever answered the alarm:
+#
+#   * `api.openai.com` -- the shipping path is a PROXIED notes service, so this endpoint in a
+#     shipped operator does mean the plan changed. Treat a red here as a real finding.
+#   * `api.deepgram.com` -- HAS A KNOWN EXPIRY. The recorded plan has the desktop obtain a
+#     server-minted grant token (`POST /v1/stt/session`) and then stream DIRECTLY to Deepgram
+#     (`wss://api.deepgram.com/v1/listen`). So when 86akby3xu wires that into a shipped
+#     artefact, this endpoint becomes legitimately present in a default build and this gate
+#     goes red on a CORRECT build. That red is the plan working, not the plan changing.
+#     Revisit this row then, by recorded security decision (Sana owns it). The other three
+#     Deepgram-adjacent needles -- `DEEPGRAM_API_KEY`, the loader prefix and the path suffix --
+#     stay, because none of them belongs in a shipped artefact under any plan.
 # --------------------------------------------------------------------------------------
 SIGNATURES: tuple[tuple[str, str], ...] = (
     ("selahcue dev-keys:", "dev_env.rs loader diagnostics (3x) — the loader's own signature"),
@@ -80,9 +91,18 @@ SIGNATURES: tuple[tuple[str, str], ...] = (
     ("OPENAI_API_KEY", "loadable credential variable name"),
 )
 
-# The floor Quinn's manual scan on PR #18 established (0/6 default, 6/6 dev-keys). Asserted at
-# run time so emptying or trimming SIGNATURES fails loudly instead of turning this whole gate
-# vacuous -- the mutation "delete the string list" must go RED, not green.
+# The required floor. Asserted at run time so emptying or trimming SIGNATURES fails loudly
+# instead of turning this whole gate vacuous -- the mutation "delete the string list" must go
+# RED, not green.
+#
+# WHAT HAS ACTUALLY BEEN OBSERVED, stated precisely because a future editor of this set will
+# trust this line: a `dev-keys` build carries **4 of these 6**, and a default build carries 0.
+# Reproduced twice (independently, on a real 70 MB operator binary): the loader prefix, the
+# `.env` path suffix, `DEEPGRAM_API_KEY` and `OPENAI_API_KEY` are present; the two ENDPOINT
+# strings are in no source file at any feature state, so no build can contain them yet.
+# They are PRE-EMPTIVE -- declared ahead of the code, exercised by the positive control, and
+# never yet observed in an artefact. An earlier note here cited "6/6", which is not
+# reproducible for this set; do not read it as evidence that all six have been seen.
 REQUIRED_SIGNATURES: frozenset[str] = frozenset(
     {
         "selahcue dev-keys:",
@@ -99,6 +119,13 @@ REQUIRED_SIGNATURES: frozenset[str] = frozenset(
 # to check by hand.
 ENCODINGS: tuple[str, ...] = ("utf-8", "utf-16-le")
 
+# PINNED, for the same reason REQUIRED_SIGNATURES is. Every injection case and the positive
+# control iterate ENCODINGS, so DELETING a member does not fail anything -- it silently shrinks
+# coverage and the suite still passes (measured: 26 cases become 20, exit 0). A premise that
+# can be removed without a red is not a control, and the claim "an NSIS-encoded string cannot
+# slip past" rests on this one. `every_encoding_is_declared` in the self-test asserts it.
+REQUIRED_ENCODINGS: frozenset[str] = frozenset({"utf-8", "utf-16-le"})
+
 OPERATOR = "implementation/desktop/crates/selahcue-operator"
 
 # --------------------------------------------------------------------------------------
@@ -110,7 +137,32 @@ OPERATOR = "implementation/desktop/crates/selahcue-operator"
 # different needle: add its key bytes as another signature source, not another walk of the tree.
 #
 # `min_bytes` is the "did I actually read a build output" floor. A 0-byte or truncated
-# placeholder matching one of these globs must FAIL, not pass silently.
+# placeholder matching one of these globs must FAIL, not pass silently. In a fresh worktree
+# the sidecar and the NDI dll are zero-byte placeholders (see ci.yml's create-only `stage()`),
+# so without this floor a glob matching one of them would "scan" nothing and report clean.
+#
+# WHY THIS LIST IS THE PRIMARY CONTROL AND THE INSTALLER IS NOT. Scanning the UNCOMPRESSED
+# inputs is stronger than scanning `*-setup.exe`, because these are the artefacts the installer
+# packages: if they are clean, the compressed copies of them are clean. That argument holds
+# ONLY IF nothing is packaged that is not scanned here, so the enumeration is written down:
+#
+#   packaged component            | covered by
+#   ------------------------------+------------------------------------------------------
+#   selahcue-operator.exe         | target 1, directly
+#   dist/ frontend (HTML/JS/CSS)  | target 1, TRANSITIVELY -- `frontendDist` embeds it INTO
+#                                 |   the operator binary; it is not a separate bundle file
+#   whisper.cpp / STT             | target 1, TRANSITIVELY -- `--features stt` links it in
+#   selahcue-output-<triple>.exe  | target 2, directly
+#   Processing.NDI.Lib.x64.dll    | target 3, directly
+#   icons (5x png/ico)            | NOT SCANNED, deliberately -- committed source rather than
+#                                 |   build output, and no accident this control models puts a
+#                                 |   credential in a PNG. A decision to overturn, not an
+#                                 |   oversight: an unmentioned exclusion reads as a gap.
+#   STT model weights             | NOT BUNDLED -- downloaded on first use
+#   NSIS stub, WebView2 bootstrap | third-party, out of scope
+#
+# The transitive rows are the ones that get lost. Before adding a target for a new bundle
+# component, check whether it is already INSIDE one of these binaries.
 # --------------------------------------------------------------------------------------
 TARGETS: tuple[tuple[str, int, str], ...] = (
     # PRIMARY. Uncompressed, and the only artefact that can contain dev_env.rs's own strings.
@@ -121,8 +173,26 @@ TARGETS: tuple[tuple[str, int, str], ...] = (
         1_000_000,
         "native output window (bundled sidecar)",
     ),
-    # SECONDARY, and weak on its own: NSIS compresses its payload, so this cannot see a signature
-    # inside the packaged binaries. It catches one in the installer's own script/strings.
+    # The NDI runtime, staged into the bundle as a Tauri `resources` entry. Scanning it does
+    # NOT close a credential-leak path and should not be described as one: the dll comes from
+    # the public NDI redistributable, our compiler never touches it, and a `dev-keys` signature
+    # cannot reach it through the feature flag. What it catches is BUILD-PLUMBING ERROR -- the
+    # staging step copies whatever happens to sit at that path, so a substituted or wrong file
+    # would otherwise enter the bundle unexamined. It is here so that "everything packaged is
+    # scanned uncompressed" is true rather than nearly true, because that claim is what makes
+    # the compression limitation above acceptable.
+    (
+        f"{OPERATOR}/binaries/Processing.NDI.Lib.x64.dll",
+        1_000_000,
+        "NDI runtime (bundled resource)",
+    ),
+    # SECONDARY, and weak on its own: Tauri's NSIS template sets `SetCompressor /SOLID` (lzma)
+    # and this repo overrides nothing, so BOTH the packaged binaries AND the install script's
+    # own string table are inside the compressed block and invisible here. What this target
+    # actually sees in plaintext is the stub, the PE headers/manifest and the version-info
+    # resources -- which is where the UTF-16LE leg earns its place. Keep it for that, and do
+    # not mistake a clean result here for a clean bundle; the three uncompressed targets above
+    # are what carry that claim.
     (
         f"{OPERATOR}/target/release/bundle/nsis/*-setup.exe",
         1_000_000,
@@ -424,6 +494,41 @@ def self_test() -> int:
             scan(_targets("clean/selahcue-operator.exe"))
         except ScanError as exc:
             failures.append(f"a_clean_artefact_passes: a benign artefact was rejected: {exc}")
+
+        # --- every declared target has a real floor -------------------------------------
+        # Pinning the premise: `zero_byte_artefact` below proves the floor bites, but only for
+        # the target IT declares. A target added with `min_bytes=0` would match a fresh
+        # worktree's zero-byte placeholder and scan nothing while reporting clean -- this
+        # repo's exact recurring defect, a control that cannot fail. This makes that
+        # unaddable rather than merely unlikely.
+        cases += 1
+        floorless = [(pat, lbl) for pat, mb, lbl in TARGETS if mb < 1]
+        if floorless:
+            failures.append(
+                "every_target_has_a_size_floor: these targets would accept a zero-byte "
+                f"placeholder as a clean scan: {floorless}"
+            )
+
+        # --- the ENCODING set has not shrunk either ---------------------------------------
+        cases += 1
+        missing_enc = REQUIRED_ENCODINGS - set(ENCODINGS)
+        if missing_enc:
+            failures.append(
+                "every_encoding_is_declared: ENCODINGS lost "
+                + ", ".join(sorted(missing_enc))
+                + ". Dropping an encoding shrinks every injection case and the positive control "
+                "silently -- the suite would still pass while covering less."
+            )
+        # And the needle FLOOR, so the "12 needles" the verification story leans on is a
+        # measured number rather than an assertion in a comment.
+        cases += 1
+        probes = len(needles(SIGNATURES))
+        floor = len(REQUIRED_SIGNATURES) * len(REQUIRED_ENCODINGS)
+        if probes < floor:
+            failures.append(
+                f"needle_floor: the scan builds {probes} needles, below the required {floor} "
+                f"({len(REQUIRED_SIGNATURES)} signatures x {len(REQUIRED_ENCODINGS)} encodings)."
+            )
 
         # --- the declared set has not shrunk --------------------------------------------
         cases += 1
