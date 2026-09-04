@@ -38,6 +38,13 @@ cloud-live = ["selahcue-cloud/http", "selahcue-cloud/keyring"]
 # path is a server-minted Deepgram grant token and a proxied sermon-notes service — so nothing
 # should come to depend on it. Enable for local AI work: `cargo run --features dev-keys`.
 dev-keys = []
+# Direct OpenAI GPT sermon-note generation with a DEVELOPER key (86akby7d8, Phase 1).
+# OFF by default, so a stock build contains no direct-to-provider path at all and the
+# Providers & Privacy panel honestly reports notes as unavailable. This is deliberately
+# throwaway: the shipping path proxies notes through the SelahCue platform API, and this
+# feature is deleted when that lands. Enable with a key in the repo-root `.env`
+# (86akby6yy) or exported in the shell.
+openai-notes = ["selahcue-cloud/openai", "selahcue-cloud/http"]
 
 [dependencies]
 tauri = { version = "2", features = [] }

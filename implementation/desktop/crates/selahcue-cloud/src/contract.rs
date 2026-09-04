@@ -130,10 +130,9 @@ impl NoteDraftDto {
             sections: self
                 .sections
                 .iter()
-                .map(|s| NoteSection {
-                    heading: s.heading.clone(),
-                    items: s.items.clone(),
-                })
+                // The hosted v1 contract has no hierarchy of its own: its sections are
+                // flat. `points` stays empty rather than being faked out of `items`.
+                .map(|s| NoteSection::flat(s.heading.clone(), s.items.clone()))
                 .collect(),
             scriptures: self.scriptures.clone(),
         }
@@ -141,6 +140,10 @@ impl NoteDraftDto {
 }
 
 /// Wire form of [`NoteSection`].
+///
+/// The hosted v1 contract carries flat sections only. When the hosted service grows an
+/// outline it gains a `points` field here and [`NoteDraftDto::to_core`] switches on which
+/// arrived — the core type already models both, so that is an additive change.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NoteSectionDto {
     pub heading: String,

@@ -2678,6 +2678,26 @@ struct QuotaView {
     resets_label: String,
 }
 
+/// Who is generating the sermon notes, for the panel's FR-132 disclosure.
+///
+/// `Some` exactly when notes can actually be generated, `None` exactly when they cannot. That tie
+/// is the point: there is no way to report the feature as available without naming the provider
+/// behind it, and no way to name a provider while reporting the feature unavailable. It is asserted
+/// in both directions by `notes_provider_matches_availability_in_both_directions`.
+#[derive(serde::Serialize)]
+struct NotesProviderView {
+    /// Machine-readable: `"openai"` | `"selahcue_hosted"`. Branch on this, not on the display name.
+    kind: String,
+    /// Human-readable provider name — this is the string the disclosure renders (FR-132).
+    name: String,
+    /// The model actually called. Empty for the hosted service, which owns its own model choice.
+    model: String,
+    /// True when the credential is a developer key on this machine rather than an account with the
+    /// hosted service. Surfaced so the panel can say the throwaway posture out loud instead of
+    /// implying a shipped, supported configuration.
+    developer_key: bool,
+}
+
 /// The full Providers & Privacy panel state (node 338:124). `quota` is `None` until a live cloud
 /// fetch returns one — never a fabricated figure (the server owns the count, and it does not exist
 /// yet), matching the console's "no guessed numbers" convention.
@@ -2694,9 +2714,36 @@ struct ProvidersView {
     preferred_translation: String,
     translations: Vec<TranslationOption>,
     include: IncludeView,
-    /// `"available"` when a base URL + token are present, else `"not_configured"`.
+    /// How notes are served right now. Four honest states:
+    ///
+    /// - `"not_configured"` — no direct-provider path is compiled in and no hosted service is
+    ///   configured. A stock build. Nothing can generate notes.
+    /// - `"key_missing"` — a direct-provider path IS compiled in, but no developer key is present.
+    ///   Distinct from the above on purpose: "you have not supplied a key" is actionable where
+    ///   "unavailable" is not, and collapsing the two is the same under-reporting bug one level down.
+    /// - `"direct_provider"` — a third-party provider is configured on this machine via a developer
+    ///   key (Phase 1, OpenAI).
+    /// - `"hosted"` — the SelahCue hosted service is configured (base URL + account token). Phase 2.
+    ///
+    /// This replaces the old two-state `"available"` / `"not_configured"`, which could only describe
+    /// the hosted service. See `notes_available` for why that mattered.
     cloud_status: String,
-    cloud_connected: bool,
+    /// **Renamed from `cloud_connected`, and the rename is the point.**
+    ///
+    /// The old field meant "the SelahCue hosted service is reachable" and was derived from
+    /// `cloud_base_url().is_some() && account_token_set` — both properties of a service this phase
+    /// does not build. With GPT wired directly it stayed `false` while generation actually worked,
+    /// so the panel rendered "coming soon" over a working feature: the screen denying a feature
+    /// while producing its output, on the one screen whose entire job is trust.
+    ///
+    /// The field now means **note generation can run right now** — true for `"direct_provider"` and
+    /// `"hosted"`, false for the other two. Keeping the old name would have left a field called
+    /// `cloud_connected` reading `true` for a local developer key with nothing connected to any
+    /// cloud, which is a fresh instance of exactly the representation-vs-reality drift this change
+    /// exists to remove. `cloud_status == "hosted"` is what now carries hosted connectivity.
+    notes_available: bool,
+    /// Who serves the notes. `Some` iff `notes_available`.
+    notes_provider: Option<NotesProviderView>,
     account_token_set: bool,
     quota: Option<QuotaView>,
 }
@@ -2734,11 +2781,77 @@ fn cloud_base_url() -> Option<String> {
     None
 }
 
+/// Whether a direct third-party note provider is compiled into this build at all.
+#[cfg(feature = "openai-notes")]
+const DIRECT_NOTES_COMPILED: bool = true;
+#[cfg(not(feature = "openai-notes"))]
+const DIRECT_NOTES_COMPILED: bool = false;
+
+/// The direct-provider descriptor, or `None` when no usable developer key is present.
+///
+/// Reads `OPENAI_API_KEY` as a plain environment variable. An absent variable and an empty one are
+/// treated identically, so it does not matter whether the `.env` loader (86akby6yy) unsets a blank
+/// value or exports it empty. Nothing here touches the key beyond asking whether it exists.
+#[cfg(feature = "openai-notes")]
+fn direct_notes_provider() -> Option<NotesProviderView> {
+    let present = std::env::var(selahcue_cloud::openai::API_KEY_ENV)
+        .map(|k| !k.trim().is_empty())
+        .unwrap_or(false);
+    present.then(|| NotesProviderView {
+        kind: selahcue_cloud::openai::PROVIDER_KIND.to_string(),
+        name: selahcue_cloud::openai::PROVIDER_LABEL.to_string(),
+        model: selahcue_cloud::openai::DEFAULT_MODEL.to_string(),
+        developer_key: true,
+    })
+}
+#[cfg(not(feature = "openai-notes"))]
+fn direct_notes_provider() -> Option<NotesProviderView> {
+    None
+}
+
+/// The hosted-service descriptor, or `None` when it is not configured.
+///
+/// **A known gap, left for Phase 2 rather than built now.** This requires a base URL *and* an
+/// account token, and returns `None` if either is absent — so a build with a base URL but no token
+/// collapses into the generic unconfigured state, which is the same lossy collapse that
+/// `"key_missing"` exists to fix on the direct side. The symmetric state is `"token_missing"`, and
+/// the derivation below is a plain match precisely so adding it is one arm and not a refactor. It
+/// is not built here because Phase 1 has no hosted service to be half-configured against.
+fn hosted_notes_provider(account_token_set: bool) -> Option<NotesProviderView> {
+    let base = cloud_base_url()?;
+    let _ = base;
+    account_token_set.then(|| NotesProviderView {
+        kind: "selahcue_hosted".to_string(),
+        name: selahcue_cloud::client::CLOUD_PROVIDER_LABEL.to_string(),
+        model: String::new(),
+        developer_key: false,
+    })
+}
+
+/// Resolve the four-state note-provider status. The hosted service wins when configured: it is the
+/// shipping path, and the direct developer key is the stand-in for its absence.
+fn notes_status(account_token_set: bool) -> (String, Option<NotesProviderView>) {
+    if let Some(hosted) = hosted_notes_provider(account_token_set) {
+        return ("hosted".to_string(), Some(hosted));
+    }
+    if let Some(direct) = direct_notes_provider() {
+        return ("direct_provider".to_string(), Some(direct));
+    }
+    if DIRECT_NOTES_COMPILED {
+        // The feature is in, the key is not. Say which — "unavailable" would send someone
+        // looking for a missing build rather than a missing line in `.env`.
+        return ("key_missing".to_string(), None);
+    }
+    ("not_configured".to_string(), None)
+}
+
 fn providers_view_of(
     cfg: &selahcue_core::providers::ProvidersConfig,
     account_token_set: bool,
 ) -> ProvidersView {
-    let cloud_connected = cloud_base_url().is_some() && account_token_set;
+    let (cloud_status, notes_provider) = notes_status(account_token_set);
+    // Derived from the provider, not computed alongside it, so the two cannot disagree.
+    let notes_available = notes_provider.is_some();
     let inc = cfg.settings.include;
     ProvidersView {
         transcription_mode: cfg.settings.transcription_mode.as_str().to_string(),
@@ -2759,14 +2872,187 @@ fn providers_view_of(
             notable_quotations: inc.notable_quotations,
             short_summary: inc.short_summary,
         },
-        cloud_status: if cloud_connected {
-            "available".to_string()
-        } else {
-            "not_configured".to_string()
-        },
-        cloud_connected,
+        cloud_status,
+        notes_available,
+        notes_provider,
         account_token_set,
+        // Stays None. There is no metering in this phase, so there is no number to show, and the
+        // panel's honest placeholder is the correct output. A generation counter or session tally
+        // would be a fabricated meter — the exact thing settings.js refuses to render.
         quota: None,
+    }
+}
+
+/// Providers & Privacy view contract (86akby7d8).
+///
+/// `dist/settings.js` reads these field names. They are pinned here so a rename is a failing test
+/// and a deliberate two-sided change, rather than something the frontend discovers at runtime by
+/// rendering `undefined`.
+#[cfg(test)]
+mod providers_view_tests {
+    use super::*;
+
+    fn view() -> serde_json::Value {
+        let cfg = selahcue_core::providers::ProvidersConfig::default();
+        serde_json::to_value(providers_view_of(&cfg, false)).expect("view serialises")
+    }
+
+    #[test]
+    fn the_frontend_contract_field_names_are_pinned() {
+        let v = view();
+        let obj = v.as_object().expect("the view is a JSON object");
+        let mut got: Vec<&str> = obj.keys().map(String::as_str).collect();
+        got.sort_unstable();
+
+        let mut expected = vec![
+            "transcription_mode",
+            "on_device",
+            "cloud_transcription_consent",
+            "cloud_notes_consent",
+            "offline_by_default",
+            "any_cloud_enabled",
+            "notes_template",
+            "notes_templates",
+            "preferred_translation",
+            "translations",
+            "include",
+            "cloud_status",
+            "notes_available",
+            "notes_provider",
+            "account_token_set",
+            "quota",
+        ];
+        expected.sort_unstable();
+        assert_eq!(
+            got, expected,
+            "the providers view surface changed; settings.js reads these names and must be \
+             updated in the SAME merge request"
+        );
+
+        // The six include-flags are part of the same contract.
+        let mut inc: Vec<&str> = v["include"]
+            .as_object()
+            .expect("`include` is an object in the view contract")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        inc.sort_unstable();
+        assert_eq!(
+            inc,
+            vec![
+                "chapter_markers",
+                "notable_quotations",
+                "prayer_points",
+                "scripture_extraction",
+                "short_summary",
+                "social_excerpts",
+            ]
+        );
+    }
+
+    #[test]
+    fn notes_provider_matches_availability_in_both_directions() {
+        // The invariant that would catch a regression of the trust bug this change fixes: the
+        // panel can never claim notes are available without naming who provides them, and can
+        // never name a provider while reporting notes unavailable.
+        for token_set in [false, true] {
+            let (status, provider) = notes_status(token_set);
+            let available = provider.is_some();
+            assert_eq!(
+                available,
+                status == "direct_provider" || status == "hosted",
+                "status {status:?} disagrees with whether a provider was named"
+            );
+
+            let cfg = selahcue_core::providers::ProvidersConfig::default();
+            let v = serde_json::to_value(providers_view_of(&cfg, token_set))
+                .expect("the view serialises");
+            assert_eq!(
+                v["notes_available"]
+                    .as_bool()
+                    .expect("notes_available is a bool"),
+                !v["notes_provider"].is_null(),
+                "notes_available and notes_provider must agree in BOTH directions"
+            );
+        }
+    }
+
+    #[test]
+    fn the_status_is_always_one_of_the_four_defined_states() {
+        for token_set in [false, true] {
+            let (status, _) = notes_status(token_set);
+            assert!(
+                ["not_configured", "key_missing", "direct_provider", "hosted"]
+                    .contains(&status.as_str()),
+                "unknown cloud_status {status:?}; settings.js branches on this set"
+            );
+        }
+    }
+
+    /// A stock build — no direct-provider path compiled in — must report notes as genuinely
+    /// unavailable. The fix for the trust bug must not invert into OVER-reporting.
+    #[cfg(not(feature = "openai-notes"))]
+    #[test]
+    fn a_default_build_reports_notes_unavailable_and_names_no_provider() {
+        let v = view();
+        assert_eq!(v["cloud_status"], "not_configured");
+        assert_eq!(v["notes_available"], serde_json::json!(false));
+        assert!(v["notes_provider"].is_null());
+    }
+
+    /// With the direct path compiled in, the status must never collapse back to the stock
+    /// `"not_configured"` — that is the distinction the whole four-state design exists to keep.
+    /// Which of the two feature-on states applies depends on whether a key happens to be exported
+    /// in the test environment, so both are accepted; what is asserted is that the two builds are
+    /// distinguishable at all.
+    #[cfg(feature = "openai-notes")]
+    #[test]
+    fn a_build_with_the_direct_path_never_reports_the_stock_not_configured_state() {
+        let (status, provider) = notes_status(false);
+        assert_ne!(
+            status, "not_configured",
+            "a build that CAN reach a provider must not report the state of one that cannot"
+        );
+        assert!(
+            status == "key_missing" || status == "direct_provider",
+            "unexpected status {status:?}"
+        );
+        assert_eq!(provider.is_some(), status == "direct_provider");
+    }
+
+    #[test]
+    fn quota_is_null_and_no_meter_is_fabricated() {
+        // A negative requirement, tested because a well-meaning implementation invents one: a
+        // generation counter, a session tally, anything. There is no metering in this phase, so
+        // the honest placeholder is the correct output.
+        assert!(view()["quota"].is_null(), "quota must stay null in Phase 1");
+    }
+
+    #[test]
+    fn a_draft_carries_its_sub_points_through_to_the_frontend() {
+        use selahcue_core::providers::{NoteDraft, NotePoint, NoteSection};
+        let draft = NoteDraft {
+            title: "t".into(),
+            summary: None,
+            sections: vec![NoteSection::outline(
+                "Main points",
+                vec![NotePoint {
+                    text: "parent".into(),
+                    sub_points: vec!["child".into()],
+                }],
+            )],
+            scriptures: Vec::new(),
+        };
+        let j = draft_json(&draft);
+        assert_eq!(j["sections"][0]["points"][0]["text"], "parent");
+        assert_eq!(j["sections"][0]["points"][0]["sub_points"][0], "child");
+        assert!(
+            j["sections"][0]["items"]
+                .as_array()
+                .expect("items is an array")
+                .is_empty(),
+            "sub-points must NOT also be flattened into items"
+        );
     }
 }
 
@@ -2931,7 +3217,15 @@ fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
         "title": d.title,
         "summary": d.summary,
         "sections": d.sections.iter().map(|s| serde_json::json!({
-            "heading": s.heading, "items": s.items,
+            "heading": s.heading,
+            "items": s.items(),
+            // FR-122 points/sub-points. Emitted as a nested structure, NOT flattened into
+            // `items` with an indent prefix: subordination has to survive the wire as a fact
+            // the renderer can read, or the hierarchy is a typographic convention and nothing
+            // downstream can tell a sub-point from a point.
+            "points": s.points().iter().map(|p| serde_json::json!({
+                "text": p.text, "sub_points": p.sub_points,
+            })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "scriptures": d.scriptures,
     })
@@ -2961,8 +3255,28 @@ async fn run_note_generation(
                 selahcue_cloud::generate_sermon_notes(&cfg, &transcript, true, &client, &local)
             }
             _ => {
-                // No account/endpoint yet — honour the gate first (ConsentRequired if not opted in),
-                // then report NotConfigured.
+                // No hosted account/endpoint. Try the direct developer-key provider when it is
+                // compiled in — this mirrors `notes_status`, where hosted wins and direct is the
+                // stand-in for its absence, so what the panel reports and what actually runs are
+                // decided by the same precedence.
+                #[cfg(feature = "openai-notes")]
+                {
+                    let transport =
+                        selahcue_cloud::transport::ReqwestTransport::new().map_err(|e| {
+                            selahcue_core::providers::NoteError::Transport(e.to_string())
+                        })?;
+                    if let Some(client) = selahcue_cloud::OpenAiNoteProvider::from_env(transport) {
+                        return selahcue_cloud::generate_sermon_notes(
+                            &cfg,
+                            &transcript,
+                            true,
+                            &client,
+                            &local,
+                        );
+                    }
+                }
+                // Honour the gate first (ConsentRequired if not opted in), then report the honest
+                // NotConfigured state.
                 cfg.build_note_request(&transcript, true)?;
                 Err(selahcue_core::providers::NoteError::NotConfigured)
             }
@@ -2974,15 +3288,62 @@ async fn run_note_generation(
     })?
 }
 
-#[cfg(not(feature = "cloud-live"))]
+/// Direct OpenAI GPT generation with a developer key (Phase 1, `openai-notes`).
+///
+/// **Deliberately throwaway** — the shipping path proxies notes through the SelahCue platform API,
+/// and this whole function goes when that lands. It is a sibling of the `cloud-live` path above,
+/// not a replacement: when both are compiled the hosted service wins, matching `notes_status`.
+///
+/// The consent gate is untouched. `generate_sermon_notes` calls `build_note_request` first, so
+/// nothing is sent without cloud-notes consent and an explicit Generate, and the request carries
+/// the completed transcript only.
+#[cfg(feature = "openai-notes")]
+async fn run_openai_note_generation(
+    cfg: selahcue_core::providers::ProvidersConfig,
+    transcript: String,
+) -> Result<selahcue_cloud::GenerationOutcome, selahcue_core::providers::NoteError> {
+    // Offload the BLOCKING request so a slow provider (up to the transport timeout) never stalls a
+    // Tokio worker and starves other async Tauri commands.
+    tauri::async_runtime::spawn_blocking(move || {
+        let local = selahcue_cloud::LocalNoteProvider::new();
+        let transport = selahcue_cloud::transport::ReqwestTransport::new()
+            .map_err(|e| selahcue_core::providers::NoteError::Transport(e.to_string()))?;
+        match selahcue_cloud::OpenAiNoteProvider::from_env(transport) {
+            Some(client) => {
+                selahcue_cloud::generate_sermon_notes(&cfg, &transcript, true, &client, &local)
+            }
+            None => {
+                // No developer key. Honour the gate first so the UI still distinguishes
+                // ConsentRequired from NotConfigured, then report the honest state.
+                cfg.build_note_request(&transcript, true)?;
+                Err(selahcue_core::providers::NoteError::NotConfigured)
+            }
+        }
+    })
+    .await
+    .map_err(|e| {
+        selahcue_core::providers::NoteError::Transport(format!("worker join error: {e}"))
+    })?
+}
+
+#[cfg(all(not(feature = "cloud-live"), feature = "openai-notes"))]
+async fn run_note_generation(
+    cfg: selahcue_core::providers::ProvidersConfig,
+    transcript: String,
+    _state: &State<'_, AppState>,
+) -> Result<selahcue_cloud::GenerationOutcome, selahcue_core::providers::NoteError> {
+    run_openai_note_generation(cfg, transcript).await
+}
+
+#[cfg(all(not(feature = "cloud-live"), not(feature = "openai-notes")))]
 async fn run_note_generation(
     cfg: selahcue_core::providers::ProvidersConfig,
     transcript: String,
     _state: &State<'_, AppState>,
 ) -> Result<selahcue_cloud::GenerationOutcome, selahcue_core::providers::NoteError> {
     // Offline build: honour the consent gate (so the UI still gets ConsentRequired vs
-    // NotConfigured correctly), then report the honest "not configured" state — the live
-    // SelahCue service is not compiled in.
+    // NotConfigured correctly), then report the honest "not configured" state — neither the live
+    // SelahCue service nor a direct provider is compiled in.
     cfg.build_note_request(&transcript, true)?;
     Err(selahcue_core::providers::NoteError::NotConfigured)
 }
@@ -3007,6 +3368,19 @@ async fn generate_sermon_notes(
             "ok": true,
             "degraded": outcome.degraded,
             "provider": outcome.provider_label,
+            // FR-123 / FR-128. `ai_generated` comes from the provider that actually SERVED the
+            // draft, so a degraded outcome from the offline scaffold is not mislabelled as model
+            // output; `disclosure` is Some exactly when `ai_generated`, so the warning cannot be
+            // separated from the thing it warns about.
+            "ai_generated": outcome.ai_generated,
+            "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
+            "disclosure": outcome.disclosure,
+            // FR-135. A degraded outcome carries its OWN notice. The fabrication disclosure does
+            // not apply to the offline scaffold — it invents nothing — but the operator asked for
+            // AI notes and did not get them, and a scaffold shown in silence reads as though it
+            // were the notes they asked for. `degraded_notice` is Some exactly when `degraded`.
+            "degraded_notice": outcome.degraded
+                .then_some(selahcue_core::providers::DEGRADED_FALLBACK_NOTICE),
             "draft": draft_json(&outcome.draft),
             "quota": outcome.quota.map(|q| serde_json::json!({
                 "used": q.used, "limit": q.limit, "remaining": q.remaining(), "resets_label": q.resets_label,

@@ -274,6 +274,7 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	$(CARGO) clippy $(WS) -p selahcue-lan --features server --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-app --features server --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-scripture --features download --all-targets -- -D warnings
+	$(CARGO) clippy $(WS) -p selahcue-cloud --features openai --all-targets -- -D warnings
 	$(CARGO) clippy $(OP) --all-targets -- -D warnings
 	$(CARGO) test $(WS) --workspace --no-fail-fast
 	sh scripts/import_guards.sh
@@ -285,6 +286,10 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	$(CARGO) test $(WS) -p selahcue-data --features encryption --no-fail-fast
 	$(CARGO) test $(WS) -p selahcue-desktop --features encryption --no-fail-fast
 	$(CARGO) test $(WS) -p selahcue-scripture --features download --no-fail-fast
+	# The OpenAI note provider (86akby7d8) is behind an off-by-default feature, so the default
+	# workspace run above does NOT cover it. Lint + test it explicitly: an off-by-default feature
+	# that no gate ever compiles is exactly how selahcue-stt ended up linted by nothing.
+	$(CARGO) test $(WS) -p selahcue-cloud --features openai --no-fail-fast
 	$(CARGO) check $(OP)
 	$(CARGO) test $(OP) --no-fail-fast
 	$(CARGO) test $(OP) --features dev-keys --no-fail-fast

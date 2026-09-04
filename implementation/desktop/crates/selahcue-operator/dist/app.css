@@ -6863,3 +6863,54 @@
 @media (max-width: 880px) {
   .pp-trans-grid, .pp-fields, .pp-inc-cols { grid-template-columns: 1fr; }
 }
+
+/* --- Providers & Privacy: AI disclosure + FR-122 sub-points (86akby7d8) --------------- */
+/* Every colour below is an existing Design 2.0 token. The gold/warn pair is already the
+   console's "read this before you act on it" register, which is exactly what an AI draft
+   and a degraded fallback both are. */
+
+/* The AI-generated label (FR-123), sat in the draft header beside the title. */
+.pp-gen-ai-label {
+  margin-left: auto;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--sc-gold);
+  background: var(--sc-gold-soft);
+  border: 1px solid var(--sc-warn-border);
+}
+
+/* The fabrication warning (FR-128) and the degraded-fallback notice (FR-135). Same
+   treatment because they carry the same weight: read this before you use the draft. */
+.pp-gen-disclosure,
+.pp-gen-degraded {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--sc-warn);
+  border-radius: 4px;
+  background: var(--sc-warn-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--sc-text-secondary);
+}
+
+/* FR-122 sub-points render as a nested list inside their parent point, so subordination
+   is visible as structure rather than implied by an indent character inside the text. */
+.pp-gen-point { font-weight: 500; }
+.pp-gen-sublist {
+  margin: 4px 0 6px 0;
+  padding-left: 18px;
+  list-style: circle;
+}
+.pp-gen-sublist > li {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--sc-text-secondary);
+}
+
+/* "DEVELOPER KEY" — the throwaway Phase 1 posture stated on the card, not implied. */
+.pp-badge-dev { color: var(--sc-gold); background: var(--sc-gold-soft); border-color: var(--sc-warn-border); }

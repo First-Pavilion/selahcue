@@ -302,10 +302,14 @@ STUB = r"""
   var dClone = function(){ return JSON.parse(JSON.stringify(D)); };
   var dEdit = function(){ D.can_undo = true; D.can_redo = false; return dClone(); };
   // Providers & Privacy (Settings, node 338:124) — the operator-local ProvidersView the
-  // providers_* commands return. Mirrors the REAL backend default in a build without `cloud-live`:
-  // on-device is the private default, cloud is OFF, cloud_status is "not_configured", cloud_connected
-  // is false, and quota is null (the live SelahCue service does not exist yet). The driver mutates P
-  // through the commands and flips the cloud_connected/quota fixtures to exercise the honest states.
+  // providers_* commands return. Mirrors the REAL backend default in a stock build: on-device is the
+  // private default, cloud is OFF, cloud_status is "not_configured", notes_available is false,
+  // notes_provider is null and quota is null. The driver flips cloud_status / notes_provider / quota
+  // to exercise each of the four honest states (86akby7d8).
+  //
+  // `notes_available` is DERIVED here, exactly as the backend derives it from notes_provider, so the
+  // stub cannot drift into a combination the backend can never produce and let a broken renderer
+  // pass against it.
   var P = {
     transcription_mode:"on_device",
     on_device:{ready:true, state:"ready", model:"Small", detail:"ggml-small.en.bin"},
@@ -316,14 +320,16 @@ STUB = r"""
     preferred_translation:"KJV",
     translations:[{code:"KJV",name:"King James Version"},{code:"WEB",name:"World English Bible"},{code:"ASV",name:"American Standard Version"}],
     include:{prayer_points:true, scripture_extraction:true, social_excerpts:false, chapter_markers:true, notable_quotations:true, short_summary:true},
-    cloud_status:"not_configured", cloud_connected:false, account_token_set:false, quota:null
+    cloud_status:"not_configured", notes_provider:null, notes_available:false,
+    account_token_set:false, quota:null
   };
   var ppView = function(){
     P.any_cloud_enabled = !!(P.cloud_transcription_consent || P.cloud_notes_consent);
-    P.cloud_status = P.cloud_connected ? "available" : "not_configured";
+    // The backend's invariant, mirrored: notes_available is true exactly when a provider is named.
+    P.notes_available = !!P.notes_provider;
     return JSON.parse(JSON.stringify(P));
   };
-  window.__pp = P; // exposed so the driver can flip cloud_connected / quota to exercise honest states
+  window.__pp = P; // exposed so the driver can flip cloud_status / notes_provider / quota
   window.__TAURI__ = { core: { invoke: function(cmd, args){
     window.__calls.push({cmd:cmd, args:args});
     if (cmd === "builtin_themes") return Promise.resolve([{name:"Classic", theme:JSON.parse(JSON.stringify(T))}]);
@@ -677,16 +683,33 @@ STUB = r"""
         return Promise.resolve({ok:false, error:"consent_required", message:"cloud notes consent is off"});
       var g = window.__ppGen || "not_configured";
       if (g === "ok") return Promise.resolve({
-        ok:true, degraded:false, provider:"SelahCue AI",
+        ok:true, degraded:false, provider:"OpenAI",
+        // FR-123/128: a model draft is labelled and carries the fabrication warning. `disclosure`
+        // is non-null exactly when `ai_generated`, mirroring the backend.
+        ai_generated:true, ai_label:"AI-generated draft",
+        disclosure:"AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.",
+        degraded_notice:null,
         draft:{title:"Grace That Feeds", summary:"A sermon on provision and grace.",
-          sections:[{heading:"Prayer points", items:["Thank God for provision","Pray for the hungry"]}],
+          sections:[
+            // FR-122: an outline section carries `points` with nested sub_points and NO items.
+            {heading:"Main points", items:[], points:[
+              {text:"The crowd came back for the wrong reason", sub_points:["They ate of the loaves","A full church is not a fed one"]},
+              {text:"Jesus does not shame the hunger", sub_points:["He redirects it"]}
+            ]},
+            // A flat section carries `items` and NO points.
+            {heading:"Prayer points", items:["Thank God for provision","Pray for the hungry"], points:[]}
+          ],
           scriptures:["Isaiah 61:5","John 6:35"]},
-        quota:{used:13, limit:40, remaining:27, resets_label:"Sep 1"}
+        quota:null   // no metering in Phase 1 — the backend returns null even on success
       });
       if (g === "degraded") return Promise.resolve({
-        ok:true, degraded:true, provider:"SelahCue AI",
+        ok:true, degraded:true, provider:"Local (offline)",
+        // The offline scaffold is NOT a model: no AI label, no fabrication warning — but it does
+        // carry its own notice, because the operator asked for AI notes and did not get them.
+        ai_generated:false, ai_label:"AI-generated draft", disclosure:null,
+        degraded_notice:"The AI provider could not be reached, so this is an offline outline built from your transcript — not AI-generated notes. The headings are placeholders for you to fill in. Try again when you are back online.",
         draft:{title:"Offline outline", summary:null,
-          sections:[{heading:"Outline", items:["point one"]}], scriptures:[]},
+          sections:[{heading:"Outline", items:["point one"], points:[]}], scriptures:[]},
         quota:null
       });
       if (g === "quota_exceeded") return Promise.resolve({ok:false, error:"quota_exceeded", message:"monthly limit reached"});
@@ -4744,10 +4767,15 @@ DRIVER = r"""
       planSelectedId = null;
       planRenderBuilder(planView); // leave the surface on the driver's own fixture
 
-      // === Settings → Providers & Privacy (Figma 338:124, backend 86ajy034h) — the panel renders
-      // REAL providers_view() state and each control invokes the right command. HONESTY is the whole
-      // point of this screen: in this build cloud_status="not_configured", quota=null,
-      // cloud_connected=false → honest "coming soon" + placeholder quota, NEVER a fabricated "12/40".
+      // === Settings → Providers & Privacy (Figma 338:124, backend 86ajy034h + 86akby7d8) — the panel
+      // renders REAL providers_view() state and each control invokes the right command. HONESTY is
+      // the whole point of this screen, and it now cuts BOTH ways: a stock build
+      // (cloud_status="not_configured", notes_available=false, quota=null) must show "coming soon"
+      // and a placeholder quota and NEVER a fabricated "12/40" — AND a build that can genuinely
+      // generate notes must NOT be shown as unavailable. Under-reporting broke this contract as
+      // badly as over-reporting: with GPT wired directly the old `cloud_connected` stayed false
+      // while real drafts came back, so the panel denied a feature while printing its output.
+      // All four cloud_status states are exercised below.
       // ==================================================================================
       var ppCall = function(cmd){ return window.__calls.filter(function(c){return c.cmd===cmd;}); };
       var ppLast = function(cmd){ var a=ppCall(cmd); return a.length?a[a.length-1]:null; };
@@ -4805,10 +4833,10 @@ DRIVER = r"""
          "PP C-002: selecting On-device revokes cloud-transcription consent (audio never leaves the device)");
       ok(el("pp-radio-ondevice").getAttribute("aria-checked")==="true", "PP C-002: On-device is selected again");
 
-      // (3) SelahCue AI — honest status FIRST (no fabricated pills/quota before any live connection).
+      // (3) AI sermon notes — honest status FIRST (no fabricated pills/quota with nothing configured).
       var aiStatus = document.querySelector(".pp-ai-status");
       ok(!!aiStatus && !/Cloud connected/.test(aiStatus.textContent) && !/Available/.test(aiStatus.textContent),
-         "PP C-006: with cloud_connected=false the Available / Cloud-connected pills are NOT shown");
+         "PP C-006: with notes_available=false the Available / Cloud-connected pills are NOT shown");
       ok(!!aiStatus.querySelector(".pp-pill-muted") && /Coming soon/.test(aiStatus.textContent),
          "PP C-006: an honest 'Coming soon' pill is shown instead");
       ok(!/12\s*\/\s*40/.test(el("surface-settings").textContent),
@@ -4816,8 +4844,11 @@ DRIVER = r"""
       var ppQuota = document.querySelector(".pp-quota");
       ok(!!ppQuota && ppQuota.classList.contains("pp-quota-empty") && /Not available yet/.test(ppQuota.textContent),
          "PP C-006: the quota shows an honest placeholder (null quota → 'Not available yet'), not numbers");
-      ok(!!document.querySelector(".pp-badge-included") && /INCLUDED/.test(document.querySelector(".pp-ai-head").textContent),
-         "PP C-001: the SelahCue AI provider card renders with the INCLUDED badge");
+      // 86akby7d8: with nothing configured the card must NOT claim a provider or an included plan.
+      ok(!document.querySelector(".pp-badge-included") && !document.querySelector(".pp-badge-dev"),
+         "PP C-010: with no provider configured, neither the INCLUDED nor the DEVELOPER KEY badge is shown");
+      ok(!/no accounts, keys or billing to manage/i.test(el("surface-settings").textContent),
+         "PP C-010: the 'no accounts, keys or billing to manage' claim is gone — it is false once a developer key generates the notes");
 
       // (3) selects — options + selected value from the backend; each change invokes its command.
       var tSel = el("pp-template");
@@ -4892,8 +4923,24 @@ DRIVER = r"""
       ok(ppCall("set_cloud_consent").some(function(c){return c.args.kind==="notes" && c.args.enabled===true;}),
          "PP C-005: 'Opt in & generate' grants cloud-notes consent (set_cloud_consent{notes,true})");
       var genRes2 = el("pp-gen-result");
-      ok(!!genRes2 && genRes2.getAttribute("role")==="status" && /coming soon/i.test(genRes2.textContent),
-         "PP C-005: with consent on but the service not configured, Generate shows an honest 'coming soon'");
+      ok(!!genRes2 && genRes2.getAttribute("role")==="status" && /isn.t available in this build/i.test(genRes2.textContent),
+         "PP C-005: with consent on but nothing configured, Generate says so honestly (role=status, not an error)");
+      // 86akby7d8: the SAME not_configured error code means two different things, and the panel
+      // tells them apart from the status it already holds. "we haven't built it" and "you haven't
+      // supplied a key" ask different things of the reader; collapsing them wastes their time.
+      window.__pp.cloud_status = "key_missing";
+      document.querySelector('.nav-item[data-surface="settings"]').click();
+      await sleep(60);
+      el("pp-generate").click();
+      await sleep(70);
+      var genKey = el("pp-gen-result");
+      ok(!!genKey && /OPENAI_API_KEY/.test(genKey.textContent) && /\.env/.test(genKey.textContent),
+         "PP C-010: under key_missing the SAME not_configured code renders the actionable missing-key message instead");
+      ok(!/isn.t available in this build/i.test(genKey.textContent),
+         "PP C-010: ...and NOT the generic 'not available in this build' copy — the two states stay distinguishable");
+      window.__pp.cloud_status = "not_configured";
+      document.querySelector('.nav-item[data-surface="settings"]').click();
+      await sleep(60);
       ok(el("pp-consent-notes").checked===true, "PP C-005: the consent switch now reflects the granted consent");
       // Now simulate a configured service returning a draft.
       window.__ppGen = "ok";
@@ -4904,8 +4951,34 @@ DRIVER = r"""
          "PP C-005: a successful generation renders the returned draft (title + sections)");
       ok(genOk.querySelectorAll(".pp-gen-list li").length > 0 && /Isaiah 61:5/.test(genOk.textContent),
          "PP C-005: the draft renders section items + scriptures");
-      ok(/\/\s*40/.test(document.querySelector(".pp-quota").textContent) && /27 remaining/.test(document.querySelector(".pp-quota").textContent),
-         "PP C-006: a server-returned quota drives the meter (real numbers only, after a live response)");
+
+      // --- 86akby7d8: FR-123 label, FR-128 disclosure, FR-122 sub-points ------------------
+      var aiLabel = genOk.querySelector(".pp-gen-ai-label");
+      ok(!!aiLabel && getComputedStyle(aiLabel).display !== "none" && /AI-generated/i.test(aiLabel.textContent),
+         "PP C-011 (FR-123): a model draft is VISIBLY labelled AI-generated (computed display, not just present)");
+      var disc = genOk.querySelector(".pp-gen-disclosure");
+      ok(!!disc && getComputedStyle(disc).display !== "none",
+         "PP C-011 (FR-128): the fabrication-risk disclosure is rendered with the draft");
+      ok(/invent/i.test(disc.textContent) && /Check every/i.test(disc.textContent),
+         "PP C-011 (FR-128): the disclosure actually warns that the model can invent things and asks for review");
+      // The retention/DPA language is Phase 2 (86akby942) and must NOT appear yet: naming a provider
+      // is safe without the DPA work, describing its retention posture is not.
+      ok(!/retention|retain|training data|processing agreement|DPA/i.test(disc.textContent),
+         "PP C-011: the disclosure makes NO retention or data-processing claim (that is gated on the DPA ticket)");
+      // FR-122: sub-points render nested INSIDE their parent point, not flattened into one list.
+      var pt = genOk.querySelector(".pp-gen-point");
+      ok(!!pt && /crowd came back/.test(pt.textContent),
+         "PP C-012 (FR-122): outline points render");
+      var sub = genOk.querySelector(".pp-gen-point > .pp-gen-sublist");
+      ok(!!sub && sub.querySelectorAll("li").length === 2,
+         "PP C-012 (FR-122): sub-points render as a NESTED list inside their parent point, not flattened");
+      ok(genOk.querySelectorAll(".pp-gen-sublist > li")[0].textContent === "They ate of the loaves",
+         "PP C-012 (FR-122): a sub-point is attached to the right parent point");
+      // quota is null even on the SUCCESS path in this phase — no meter is conjured from a working
+      // generation. This is the negative requirement a well-meaning implementation invents past.
+      var qAfter = document.querySelector(".pp-quota");
+      ok(qAfter.classList.contains("pp-quota-empty"),
+         "PP C-006: a successful generation with no metering leaves the honest quota placeholder alone");
 
       // (C-005 — the terminal generate outcomes each surface honestly; consent is on from the opt-in above.)
       window.__ppGen = "quota_exceeded"; el("pp-generate").click(); await sleep(70);
@@ -4926,22 +4999,90 @@ DRIVER = r"""
       var gD = el("pp-gen-result");
       ok(gD.classList.contains("pp-gen-ok") && /Local draft/.test(gD.textContent),
          "PP C-005: a degraded generation renders the draft with a 'Local draft' badge (FR-135)");
+      // 86akby7d8: the offline scaffold is NOT a model, so it carries no AI label and no fabrication
+      // warning — but it must NOT be shown in silence either, or a scaffold reads as though it were
+      // the AI notes the operator asked for.
+      ok(!gD.querySelector(".pp-gen-ai-label"),
+         "PP C-011: a degraded offline draft is NOT labelled AI-generated (it invents nothing — the label would be a false claim)");
+      ok(!gD.querySelector(".pp-gen-disclosure"),
+         "PP C-011: a degraded offline draft carries no fabrication warning, which does not apply to it");
+      var degNote = gD.querySelector(".pp-gen-degraded");
+      ok(!!degNote && getComputedStyle(degNote).display !== "none" && /could not be reached/i.test(degNote.textContent),
+         "PP C-011 (FR-135): a degraded draft says IN WORDS that the provider was unreachable and this is not the AI draft asked for");
+      ok(/not AI-generated notes/i.test(degNote.textContent),
+         "PP C-011 (FR-135): the degraded notice is explicit that these are not AI-generated notes");
       ok(gD.getAttribute("role")==="status",
          "PP C-005 (L1): a success after an error is announced as role=status, not a lingering alert");
       window.__ppGen = "ok"; // restore for any later reads
 
-      // (C-006 positive) flip the backend to a connected+quota state and re-activate: the pills + meter appear.
-      window.__pp.cloud_connected = true;
+      // === (C-010) THE FOUR PROVIDER STATES — 86akby7d8 ==================================
+      // The panel's rendered state must match the backend's reported state in every one of them.
+      // Asserted on COMPUTED display and rendered text, never on class names alone.
+      var ppReactivate = async function () {
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        await sleep(60);
+        return document.querySelector(".pp-ai-status");
+      };
+
+      // (a) "key_missing" — the direct path is COMPILED IN but no developer key is present. This is
+      // the state a fresh checkout is in. It must be distinguishable from "not_configured": the
+      // feature exists and the reader can do something about it.
+      window.__pp.cloud_status = "key_missing"; window.__pp.notes_provider = null;
+      var sKey = await ppReactivate();
+      ok(!/Coming soon/.test(sKey.textContent),
+         "PP C-010: key_missing is NOT reported as 'Coming soon' — the feature is built, the key is not");
+      ok(/No key configured/i.test(sKey.textContent),
+         "PP C-010: key_missing names the actual problem (a missing key)");
+      ok(/OPENAI_API_KEY/.test(el("surface-settings").textContent) || /developer API key/i.test(el("surface-settings").textContent),
+         "PP C-010: key_missing tells the reader what to supply");
+      ok(!/Available/.test(sKey.textContent),
+         "PP C-010: key_missing must NOT claim the feature is available — the fix must not invert into over-reporting");
+
+      // (b) "direct_provider" — a developer key IS configured. Notes really are generated, so the
+      // panel must NOT show 'coming soon', must name the provider (FR-132), and must say the key is
+      // a developer key rather than implying a shipped, supported configuration.
+      window.__pp.cloud_status = "direct_provider";
+      window.__pp.notes_provider = {kind:"openai", name:"OpenAI", model:"gpt-5.6-terra", developer_key:true};
+      var sDirect = await ppReactivate();
+      ok(!/Coming soon/.test(sDirect.textContent),
+         "PP C-010: with a provider configured the panel does NOT say 'coming soon' — this is THE trust bug this ticket fixes");
+      ok(/Available/.test(sDirect.textContent),
+         "PP C-010: direct_provider reports the feature as available");
+      ok(/OpenAI/.test(document.querySelector(".pp-ai-head").textContent),
+         "PP C-010: the panel NAMES OpenAI as the provider generating the notes (FR-132)");
+      ok(!/SelahCue AI/.test(document.querySelector(".pp-ai-head").textContent),
+         "PP C-010: the card no longer claims 'SelahCue AI' when OpenAI generates the notes");
+      ok(!!document.querySelector(".pp-badge-dev") && /DEVELOPER KEY/.test(document.querySelector(".pp-ai-head").textContent),
+         "PP C-010: the throwaway developer-key posture is stated on the card, not implied");
+      ok(/gpt-5\.6-terra/.test(document.querySelector(".pp-ai-status").textContent),
+         "PP C-010: the model actually in use is disclosed");
+      // quota STAYS null in this phase — a working provider must not conjure a meter.
+      var qDirect = document.querySelector(".pp-quota");
+      ok(qDirect.classList.contains("pp-quota-empty") && !/\d+\s*\/\s*\d+/.test(qDirect.textContent),
+         "PP C-010: with generation WORKING and no metering, quota is still the honest placeholder — no fabricated meter");
+
+      // (c) "hosted" — Phase 2. The hosted service is reachable; the pills say so, and the developer
+      // -key language is absent because it does not apply.
+      window.__pp.cloud_status = "hosted";
+      window.__pp.notes_provider = {kind:"selahcue_hosted", name:"SelahCue AI", model:"", developer_key:false};
+      var sHosted = await ppReactivate();
+      ok(/Available/.test(sHosted.textContent) && /Cloud connected/.test(sHosted.textContent) && !/Coming soon/.test(sHosted.textContent),
+         "PP C-010: hosted renders the Available + Cloud-connected pills");
+      ok(!document.querySelector(".pp-badge-dev"),
+         "PP C-010: hosted does NOT show the developer-key badge");
+
+      // (d) a real quota, when a hosted server ever reports one, still drives the meter.
       window.__pp.quota = {used:13, limit:40, remaining:27, resets_label:"Sep 1"};
-      document.querySelector('.nav-item[data-surface="settings"]').click();
-      await sleep(60);
-      var aiStatus2 = document.querySelector(".pp-ai-status");
-      ok(/Available/.test(aiStatus2.textContent) && /Cloud connected/.test(aiStatus2.textContent) && !/Coming soon/.test(aiStatus2.textContent),
-         "PP C-006: when cloud_connected=true the Available + Cloud-connected pills render (and 'Coming soon' is gone)");
+      await ppReactivate();
       var q2 = document.querySelector(".pp-quota");
       ok(!q2.classList.contains("pp-quota-empty") && /13/.test(q2.textContent) && /\/\s*40/.test(q2.textContent),
-         "PP C-006: a real quota renders the used/limit meter");
-      window.__pp.cloud_connected = false; window.__pp.quota = null; // restore honest default
+         "PP C-006: a real server-reported quota renders the used/limit meter");
+
+      // restore the honest stock-build default for everything after this block
+      window.__pp.cloud_status = "not_configured"; window.__pp.notes_provider = null; window.__pp.quota = null;
+      await ppReactivate();
+      ok(/Coming soon/.test(document.querySelector(".pp-ai-status").textContent),
+         "PP C-010: back at not_configured the honest 'coming soon' returns (the four states are reversible, not sticky)");
 
       // (C-007) excluded sections are absent.
       ok(!/Bring your own key/i.test(el("surface-settings").textContent) && !/Text-to-Speech/i.test(el("surface-settings").textContent) && !/BYOK/i.test(el("surface-settings").textContent),

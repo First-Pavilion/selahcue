@@ -13,6 +13,13 @@ default = []
 # build + tests stay light and deterministic (they use the in-crate MockTransport);
 # the operator/desktop build turns it on to reach the live SelahCue service.
 http = ["dep:reqwest"]
+# Direct OpenAI GPT sermon-note generation with a DEVELOPER key (86akby7d8, Phase 1).
+# Off by default: the shipping path proxies notes through the SelahCue platform API, so
+# a default build must not contain a direct-to-provider path at all. It pulls NO new
+# dependency (serde_json + the existing HttpTransport seam are enough) -- the gate is
+# about posture, not weight. Unlike `http`, this feature IS compiled, linted and tested
+# in `make ci` and CI; a feature nothing builds is how selahcue-stt ended up unlinted.
+openai = []
 # OS-secret-store-backed token (Keychain / Credential Manager / Secret Service) via
 # the same `keyring` crate the DB key uses. Off by default so tests use the
 # in-memory store and need no OS keychain.
