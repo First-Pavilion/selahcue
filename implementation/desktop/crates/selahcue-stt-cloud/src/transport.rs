@@ -76,6 +76,20 @@ pub struct SessionConfig {
     /// is flowing, Deepgram answers continuously — including empty interim results during
     /// silence in the room — so silence from the peer *then* is genuinely anomalous.
     pub stall_timeout: Duration,
+    /// How long any single socket **write** may take before it counts as a transport failure.
+    ///
+    /// The other two timeouts bound a peer that does not SEND. This one bounds a peer that
+    /// does not READ — present, handshaken, and simply not consuming. TCP backpressure then
+    /// wedges `send().await` forever, and that wedge is invisible three times over: the stall
+    /// check shares the branch the write is in so it never runs, the stop flag is only read at
+    /// a tick, and `Drop` joins the wedged worker and hangs whichever thread dropped the
+    /// session — in the operator console, plausibly the UI thread.
+    ///
+    /// Memory stays bounded throughout, because the ring goes on dropping oldest exactly as
+    /// designed. That is precisely why nothing reports it. Found by Sana on 86akby4yz by
+    /// asking the complement question on the write side of a duplex socket, where the three
+    /// earlier silent failures were all on the read side.
+    pub write_timeout: Duration,
     /// How long to wait for the socket to open before calling it a transport failure.
     ///
     /// Without this, a peer that accepts the TCP connection but never completes the WebSocket
@@ -101,6 +115,7 @@ impl Default for SessionConfig {
             audio_poll_interval: Duration::from_millis(20),
             keep_alive_after: Duration::from_secs(5),
             connect_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(5),
             stall_timeout: Duration::from_secs(30),
             reset_backoff_after: Duration::from_secs(30),
         }
@@ -354,6 +369,31 @@ fn is_credential_rejection(status: u16) -> bool {
     matches!(status, 401 | 403)
 }
 
+/// Write one message, or give up on it.
+///
+/// **Every** socket write goes through here, the stop path's close-flush included. A write
+/// that cannot complete is reported as a retryable transport failure, so the reconnect and
+/// give-up machinery engages instead of the task sitting on an await that will never return.
+///
+/// On timeout the socket is discarded rather than reused: cancelling a `send` mid-flush can
+/// leave the framing layer's write buffer partially drained, and the only safe thing to do
+/// with a stream in that state is to open a new one. `pump`'s caller does exactly that.
+async fn send_bounded(
+    socket: &mut Socket,
+    message: Message,
+    limit: Duration,
+    spec: &RequestSpec,
+) -> Result<(), DeepgramError> {
+    match tokio::time::timeout(limit, socket.send(message)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(DeepgramError::transport(e, Some(spec.credential()))),
+        Err(_) => Err(DeepgramError::transport(
+            format!("Deepgram stopped reading: a socket write did not complete within {limit:?}"),
+            Some(spec.credential()),
+        )),
+    }
+}
+
 /// Forward audio, read transcripts, until the socket ends or a stop is requested.
 async fn pump(
     mut socket: Socket,
@@ -373,26 +413,51 @@ async fn pump(
         tokio::select! {
             _ = ticker.tick() => {
                 if stop.load(Ordering::SeqCst) {
-                    // Ask Deepgram to flush before closing, so trailing words survive.
-                    let _ = socket.send(Message::Text(CLOSE_STREAM.to_string())).await;
-                    let _ = socket.close(None).await;
+                    // Ask Deepgram to flush before closing, so trailing words survive — but
+                    // BOUNDED. Against a peer that has stopped reading, an unbounded flush
+                    // here re-wedges the worker immediately after it noticed the stop flag,
+                    // and `stop()`/`Drop` still hangs the thread that called it. A courtesy
+                    // flush is not worth a hung console.
+                    //
+                    // HONEST NOTE ON COVERAGE: this particular bound is defence in depth and
+                    // is NOT independently covered by a test. Mutation-checked on 2026-09-04:
+                    // removing *only* these two timeouts leaves the suite GREEN. The reason is
+                    // structural — this branch runs before any audio send, so reaching it with
+                    // an unwritable socket needs a narrow state (buffers full, no write in
+                    // flight, ring empty) that the harness cannot construct reliably; any
+                    // earlier wedge is caught by `send_bounded` first. Both F-1 regression
+                    // tests do redden against the true pre-fix code, where neither bound
+                    // existed. Kept because the state is reachable in principle and the bound
+                    // costs nothing — but do not read the green suite as proof of this line.
+                    let _ = tokio::time::timeout(
+                        config.write_timeout,
+                        socket.send(Message::Text(CLOSE_STREAM.to_string())),
+                    )
+                    .await;
+                    let _ = tokio::time::timeout(config.write_timeout, socket.close(None)).await;
                     return Ok(());
                 }
                 let chunks = audio.drain();
                 if chunks.is_empty() {
                     if last_sent.elapsed() >= config.keep_alive_after {
-                        socket
-                            .send(Message::Text(KEEP_ALIVE.to_string()))
-                            .await
-                            .map_err(|e| DeepgramError::transport(e, Some(spec.credential())))?;
+                        send_bounded(
+                            &mut socket,
+                            Message::Text(KEEP_ALIVE.to_string()),
+                            config.write_timeout,
+                            spec,
+                        )
+                        .await?;
                         last_sent = Instant::now();
                     }
                 } else {
                     for chunk in chunks {
-                        socket
-                            .send(Message::Binary(chunk.as_bytes().to_vec()))
-                            .await
-                            .map_err(|e| DeepgramError::transport(e, Some(spec.credential())))?;
+                        send_bounded(
+                            &mut socket,
+                            Message::Binary(chunk.as_bytes().to_vec()),
+                            config.write_timeout,
+                            spec,
+                        )
+                        .await?;
                     }
                     last_sent = Instant::now();
                     audio_sent_since_heard = true;

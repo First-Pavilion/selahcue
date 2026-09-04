@@ -84,6 +84,7 @@ fn config_for(endpoint: DeepgramEndpoint, retry: RetryPolicy) -> SessionConfig {
         audio_poll_interval: Duration::from_millis(5),
         keep_alive_after: Duration::from_millis(50),
         connect_timeout: Duration::from_secs(5),
+        write_timeout: Duration::from_millis(300),
         stall_timeout: Duration::from_secs(30),
         reset_backoff_after: Duration::from_secs(30),
     }
@@ -861,4 +862,164 @@ async fn a_slow_but_steady_peer_is_healthy_rather_than_stalled() {
     session.stop();
     feeder.abort();
     server.abort();
+}
+
+/// A stub that completes the WebSocket handshake and then **never reads**. Holding the stream
+/// without polling it fills the kernel buffers and applies TCP backpressure to the client.
+async fn non_reading_peer(listener: TcpListener) {
+    let Ok((stream, _)) = listener.accept().await else {
+        return;
+    };
+    if let Ok(socket) = tokio_tungstenite::accept_async(stream).await {
+        // Hold it open and consume nothing. Dropping it would send a RST and let the writer
+        // fail fast, which is the opposite of the condition under test.
+        std::future::pending::<()>().await;
+        drop(socket);
+    }
+}
+
+/// Feed audio hard enough to fill the socket buffers of a peer that is not draining them.
+fn flood_audio(ring: AudioRing) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            // Maximum-size chunks: the ring accepts them and the writer must put them on a
+            // socket nobody is reading.
+            ring.push(AudioChunk::from_pcm_i16(&vec![0i16; 32_000]));
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_that_stops_reading_is_noticed_rather_than_wedging_the_writer() {
+    // F-1, Sana, 86akby4yz. The complement of the three read-side failures, on the WRITE side.
+    // The peer is present and handshaken and simply does not consume, so `send().await` wedges
+    // on TCP backpressure. Nothing reports it: the stall check lives in the same select branch
+    // as the write so it never runs, and the stop flag is only read at a tick.
+    //
+    // Memory stays bounded the whole time — the ring drops oldest exactly as designed — which
+    // is why a bounded-memory suite is blind to this. It is a liveness defect, not a leak.
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = tokio::spawn(non_reading_peer(listener));
+
+    let config = config_for(
+        DeepgramEndpoint::custom(format!("ws://127.0.0.1:{port}/v1/listen")),
+        RetryPolicy {
+            max_attempts: 1,
+            initial_backoff: Duration::from_millis(20),
+            max_backoff: Duration::from_millis(20),
+        },
+    );
+
+    let ring = AudioRing::new();
+    let status = SessionStatus::new();
+    let session = CloudSttSession::start(
+        &authorised(),
+        Credential::developer_key(TEST_SECRET).expect("fixture key"),
+        config,
+        ring.clone(),
+        SegmentQueue::new(),
+        status.clone(),
+    )
+    .expect("the session starts");
+
+    // Exercised before contract: the socket really opened, so this is the write-side wedge and
+    // not the connect timeout under another name.
+    assert!(
+        within(Duration::from_secs(10), || status.get().is_streaming()
+            || status.get().is_terminal())
+        .await,
+        "the session never got past connecting (it is {:?})",
+        status.get()
+    );
+
+    let feeder = flood_audio(ring);
+
+    assert!(
+        within(Duration::from_secs(20), || status.get().is_terminal()).await,
+        "a peer that stops reading left the session at {:?} — the writer is wedged on TCP \
+         backpressure, the stall check never runs because it shares that branch, and the \
+         session will sit there for the rest of the service reporting nothing",
+        status.get()
+    );
+
+    match status.get() {
+        SessionState::Failed { action, message } => {
+            assert_eq!(action, OperatorAction::CheckNetwork);
+            assert!(
+                !message.contains(TEST_SECRET),
+                "the credential reached the failure message: {message}"
+            );
+        }
+        other => panic!("expected a terminal network failure, got {other:?}"),
+    }
+
+    feeder.abort();
+    session.stop();
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stop_returns_promptly_against_a_peer_that_stops_reading() {
+    // The second half of F-1, and the one that reaches a human. `stop()` and `Drop` join the
+    // worker, so a wedged worker hangs whichever thread dropped the session — in 86akby7th,
+    // plausibly the console's UI thread. The stop path's own close-flush must therefore be
+    // bounded too: noticing the stop flag and then wedging on the courtesy flush is the same
+    // hang one line later.
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = tokio::spawn(non_reading_peer(listener));
+
+    let config = config_for(
+        DeepgramEndpoint::custom(format!("ws://127.0.0.1:{port}/v1/listen")),
+        RetryPolicy {
+            max_attempts: 8,
+            initial_backoff: Duration::from_secs(30),
+            max_backoff: Duration::from_secs(30),
+        },
+    );
+
+    let ring = AudioRing::new();
+    let status = SessionStatus::new();
+    let session = CloudSttSession::start(
+        &authorised(),
+        Credential::developer_key(TEST_SECRET).expect("fixture key"),
+        config,
+        ring.clone(),
+        SegmentQueue::new(),
+        status.clone(),
+    )
+    .expect("the session starts");
+
+    assert!(
+        within(Duration::from_secs(10), || status.get().is_streaming()).await,
+        "the session never began streaming, so the stop below would not be against a wedged \
+         writer and this test would prove nothing"
+    );
+    let feeder = flood_audio(ring);
+    // Let the writer actually get stuck before asking it to stop.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // `stop()` joins the worker. Run it off-thread with a bounded wait so a hang fails this
+    // test rather than hanging the suite — the failure mode under test is precisely a hang.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        session.stop();
+        let _ = tx.send(());
+    });
+
+    let returned = rx.recv_timeout(Duration::from_secs(15)).is_ok();
+    feeder.abort();
+    server.abort();
+
+    assert!(
+        returned,
+        "stop() did not return against a peer that stopped reading — it joined a worker wedged \
+         on a socket write, so the caller's thread is hung too"
+    );
 }
