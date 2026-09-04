@@ -254,3 +254,68 @@ fn the_cap_still_bites_while_a_deadline_is_live() {
         "an over-cap body under a live deadline must be refused for SIZE: {err}"
     );
 }
+
+/// Drips key-shaped marker bytes forever, so a timeout fires with attacker-influenced content
+/// sitting in the buffer — the state in which an echo would leak. Counts what it emitted so the
+/// test can prove that state was actually reached.
+struct MarkerDrip {
+    emitted: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl std::io::Read for MarkerDrip {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let m = b"sk-proj-TIMEOUT-MARKER-";
+        let n = m.len().min(buf.len());
+        buf[..n].copy_from_slice(&m[..n]);
+        self.emitted
+            .fetch_add(n, std::sync::atomic::Ordering::SeqCst);
+        Ok(n)
+    }
+}
+
+#[test]
+fn a_timeout_refusal_leaks_nothing_from_the_body() {
+    // Sana F-3. The two timeout branches were born unpinned for the no-echo property: adding a
+    // body-prefix echo to both of them passed the entire suite, exit 0. The drip tests assert the
+    // error SAYS "timed out" and never that it does not say anything else, and the size-refusal
+    // leak test only covers the cap branch.
+    //
+    // A **live-short** deadline, not an already-expired one: the buffer has to accumulate
+    // attacker-controlled content BEFORE expiry, or the assertion fires on an empty buffer and
+    // proves nothing about echoing. That is the same trap as a test whose setup makes its own
+    // assertion unreachable.
+    let emitted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let soon = std::time::Instant::now() + std::time::Duration::from_millis(20);
+    let err = read_capped(
+        MarkerDrip {
+            emitted: emitted.clone(),
+        },
+        usize::MAX,
+        Some(soon),
+    )
+    .expect_err("must time out");
+
+    // PREMISE, pinned rather than assumed. "Live-short" is a timing argument, and on a loaded
+    // machine the deadline could elapse before the first read returns — leaving an empty buffer
+    // and a vacuously-passing test. Assert the leak-able state was actually reached.
+    let n = emitted.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        n > 0,
+        "no bytes were ever emitted, so the timeout fired on an empty buffer and this test \
+         proves nothing about echoing"
+    );
+
+    assert!(
+        err.to_string().contains("timed out"),
+        "positive control — the DEADLINE branch fired, not the cap branch: {err}"
+    );
+    let rendered = format!("{err}  {err:?}");
+    assert!(
+        !rendered.contains("sk-proj-"),
+        "the timeout error echoed body content: {rendered}"
+    );
+    assert!(
+        !rendered.contains("MARKER"),
+        "the timeout error echoed body content: {rendered}"
+    );
+}

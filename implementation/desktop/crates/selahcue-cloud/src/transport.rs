@@ -1,6 +1,23 @@
 //! The HTTP transport seam. The client depends on this trait, not on any concrete
 //! network library, so tests inject a deterministic [`crate::mock::MockTransport`]
 //! and the production build injects [`ReqwestTransport`] (behind the `http` feature).
+//!
+//! # Convention: an error branch lands with its no-echo assertion in the same commit
+//!
+//! Response bodies are attacker-influenced, and on at least one real provider a 401 body
+//! contains a partially-masked copy of the API key that was sent. So no error raised anywhere in
+//! this crate may quote a response body. That is a property of *every* branch, and it has now
+//! been rediscovered three times in one review cycle, each time on a branch or fixture that
+//! existed before its pin did:
+//!
+//! - status arms that had no captured fixture, so the sweep never reached them;
+//! - a fixture that could drift until it no longer contained the markers asserted absent;
+//! - a **newly added** branch — the timeout returns below — born unpinned.
+//!
+//! The rule that stops a fourth: **when you add an error branch, add its no-echo assertion in
+//! the same commit.** Not in the same PR, not "when the file is next open" — the same commit,
+//! because every instance so far is a gap that opened between writing the branch and getting
+//! round to pinning it.
 
 /// A minimal HTTP response: status code + raw body text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,15 +131,33 @@ impl ReqwestTransport {
 /// # Why this takes a deadline (PERF-2)
 ///
 /// This function replaced `reqwest`'s own `text()`, and that swap **introduced a hang** that
-/// `text()` did not have. `reqwest`'s blocking `Read` impl applies the client timeout **per
-/// read-wait, not as a running total**, so a peer that sends headers and then drips bytes — one
-/// byte every few seconds — resets the clock on every read and never trips it. Measured: a drip
-/// server was still being read **172 seconds past** a 60-second client deadline, while the
-/// pre-change `text()` path errored at exactly 30.0s under an identical drip.
+/// `text()` did not have. Measured: a drip server was still being read **172 seconds past** a
+/// 60-second client deadline, while the pre-change `text()` path errored at exactly 30.0s under
+/// an identical drip.
 ///
-/// A **zero-byte** stall does cut at the client deadline, which is why this was invisible: every
-/// probe written for the original bound tested silence, and silence was the one shape that worked.
-/// "It fails rather than hanging" was true for the case that had been tried and false in general.
+/// **Which phase owns which bound — the precise version, because the loose one is dangerous.**
+/// `reqwest`'s client timeout *is* a running total over the **response head**: connect, send,
+/// status line and headers. Measured, a peer that sends a valid status line and then drips header
+/// bytes forever is cut off at exactly the client deadline, by `reqwest`, with no help from here.
+/// It degrades to **per read-wait** only over the **body**, and only once the body read is taken
+/// out from under `reqwest`'s own bookkeeping — which is exactly what replacing `text()` with this
+/// loop did.
+///
+/// So this is **not an inherited `reqwest` weakness**. The gap was created by moving the read
+/// here, and it is re-created by any future change that takes a read into its own hands. That is
+/// the thing to watch for, not `reqwest`. Saying "reqwest's timeout is per-wait" without the split
+/// invites a reader to conclude this deadline is redundant *wherever* `reqwest` is involved and
+/// delete it; over the body it is the only bound there is.
+///
+/// | peer behaviour              | phase         | outcome                          |
+/// |-----------------------------|---------------|----------------------------------|
+/// | headers done, body drips    | body read     | 60.0s — this function's deadline  |
+/// | status line, headers drip   | response head | 60.0s — `reqwest`'s client timeout |
+///
+/// A **zero-byte** stall also cuts at the client deadline, which is why the hang was invisible:
+/// every probe written for the original bound tested silence, and silence was the one shape that
+/// already worked. "It fails rather than hanging" was true for the case that had been tried and
+/// false in general.
 ///
 /// So the loop owns its own deadline. It is checked before every read and after every chunk, which
 /// bounds total elapsed time regardless of how the bytes are paced.
