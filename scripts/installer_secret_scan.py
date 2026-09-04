@@ -84,10 +84,20 @@ import tempfile
 #     and then streams DIRECTLY to `wss://api.deepgram.com/v1/listen`. That endpoint is
 #     therefore SUPPOSED to be in the shipped operator once 86akby3xu lands.
 #
-#     ACTION WHEN 86akby3xu LANDS: DELETE the `api.deepgram.com` row from SIGNATURES and from
-#     REQUIRED_SIGNATURES. Do not suppress it, do not add an exception branch, and do not
-#     override the gate -- deleting the row is the recorded decision, and it is a data change,
-#     which is the whole point of this table. Sana owns the sign-off.
+#     ACTION WHEN 86akby3xu LANDS -- FOUR EDITS, all data, none of them logic. Review measured
+#     this: an earlier version of this note said "delete the row, it is a data change", and
+#     following it literally left the suite red with a bare AssertionError and then a
+#     self_test_case_floor message blaming a deleted CASE BLOCK, which is not what happened. An
+#     instruction that breaks the suite is worse than no instruction, so here is the whole edit:
+#
+#       1. delete the `api.deepgram.com` row from SIGNATURES (below);
+#       2. delete `"api.deepgram.com"` from REQUIRED_SIGNATURES;
+#       3. decrement REQUIRED_SIGNATURE_COUNT (8 -> 7);
+#       4. lower SELF_TEST_CASE_FLOOR by 2 -- each signature generates one injection case per
+#          encoding, and there are 2 encodings.
+#
+#     Do not suppress it, do not add an exception branch, and do not override the gate. Sana
+#     owns the sign-off.
 #
 #     This is written down because a gate with a SCHEDULED FALSE POSITIVE is worse than no gate
 #     at that moment: the first person to hit it learns that this gate cries wolf, and the
@@ -123,13 +133,21 @@ SIGNATURES: tuple[tuple[str, str], ...] = (
 # RED, not green.
 #
 # WHAT HAS ACTUALLY BEEN OBSERVED, stated precisely because a future editor of this set will
-# trust this line: a `dev-keys` build carries **4 of these 6**, and a default build carries 0.
-# Reproduced twice (independently, on a real 70 MB operator binary): the loader prefix, the
-# `.env` path suffix, `DEEPGRAM_API_KEY` and `OPENAI_API_KEY` are present; the two ENDPOINT
-# strings are in no source file at any feature state, so no build can contain them yet.
-# They are PRE-EMPTIVE -- declared ahead of the code, exercised by the positive control, and
-# never yet observed in an artefact. An earlier note here cited "6/6", which is not
-# reproducible for this set; do not read it as evidence that all six have been seen.
+# trust this line -- and because this very line has now been stale twice, which is how the
+# original "6/6" error propagated from the ticket into the code in the first place. UPDATE IT
+# WHEN THE SET CHANGES.
+#
+# Measured on real binaries, reproduced independently: a `dev-keys` build carries **6 of these
+# 8**, a default build **0 of 8**. Present: the loader prefix, the `.env` path suffix,
+# `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, `.env.sample`, `repo-root .env`.
+#
+# ABSENT, and PRE-EMPTIVE: the two ENDPOINT strings. They are in no source file **on
+# `origin/main` at 3f3072e** -- deliberately scoped to that SHA, because both already exist on
+# the two unmerged lane branches this gate blocks (`wss://api.deepgram.com/v1/listen` on
+# feat/86akby4yz, `https://api.openai.com` on feat/86akby7d8). So "no build can contain them"
+# is true of main today and STOPS BEING TRUE when those lanes land -- which is the point of
+# declaring them early, and also why an unqualified version of this sentence would be
+# re-falsified by the first person to grep a lane branch.
 REQUIRED_SIGNATURES: frozenset[str] = frozenset(
     {
         "selahcue dev-keys:",
@@ -193,7 +211,24 @@ REQUIRED_SIGNATURE_COUNT = 8
 REQUIRED_ENCODING_COUNT = 2
 REQUIRED_TARGET_COUNT = 4
 # Floor on the self-test's own case count (see self_test_case_floor).
-SELF_TEST_CASE_FLOOR = 37
+#
+# WHEN TO STOP PINNING. This number is itself a bare literal that nothing pins, and adding a
+# fourth literal to guard it would only move the regress one step. So the regress stops here --
+# but that is only sound if EVERY declared collection actually reaches this floor, which means
+# every collection must GENERATE CASES PROPORTIONAL TO ITS SIZE.
+#
+#   * a collection that generates cases (SIGNATURES x ENCODINGS, and now TARGETS) has TWO
+#     independent pins: its own REQUIRED_*_COUNT, and this floor, because shrinking it drops
+#     cases. Defeating it takes edits in both places.
+#   * a collection that generates NO cases has only its count pin, and review proved that is
+#     not enough: TARGETS was in this class, and shrinking it together with REQUIRED_TARGETS and
+#     REQUIRED_TARGET_COUNT kept the suite green while the gate shipped a poisoned artefact.
+#
+# So the rule is not "pin everything and then pin the pins". It is: make every collection
+# generate cases, then one floor covers all of them, and the last unpinned number is a number
+# whose only effect is to be too low -- which every other case would then have to be deleted to
+# exploit. RAISE THIS when cases are added; it may only ever go up.
+SELF_TEST_CASE_FLOOR = 41
 
 # --------------------------------------------------------------------------------------
 # THE DECLARED TARGETS. Also one place, and also shaped for growth.
@@ -289,9 +324,26 @@ REQUIRED_TARGETS: frozenset[str] = frozenset(
     }
 )
 
-assert len(REQUIRED_SIGNATURES) >= REQUIRED_SIGNATURE_COUNT
-assert len(REQUIRED_ENCODINGS) >= REQUIRED_ENCODING_COUNT
-assert len(REQUIRED_TARGETS) >= REQUIRED_TARGET_COUNT
+# THESE THREE ARE DELIBERATELY REDUNDANT with `the_pins_themselves_have_not_shrunk` in the
+# self-test, and the redundancy is LOAD-BEARING IN BOTH DIRECTIONS. Do not tidy either away:
+#
+#   * `python -O` strips `assert` entirely, so under -O these three vanish and the inline
+#     self-test case is the only thing left standing (verified: it still catches a shrunk
+#     REQUIRED_SIGNATURES under -O);
+#   * these fire at IMPORT, so they also protect the production scan path, which never runs the
+#     self-test at all.
+#
+# Deleting either side alone leaves a green suite. That is what makes them look like duplicates.
+assert len(REQUIRED_SIGNATURES) >= REQUIRED_SIGNATURE_COUNT, (
+    f"REQUIRED_SIGNATURES has {len(REQUIRED_SIGNATURES)}, floor is {REQUIRED_SIGNATURE_COUNT}. "
+    "Removing a signature means lowering REQUIRED_SIGNATURE_COUNT deliberately."
+)
+assert len(REQUIRED_ENCODINGS) >= REQUIRED_ENCODING_COUNT, (
+    f"REQUIRED_ENCODINGS has {len(REQUIRED_ENCODINGS)}, floor is {REQUIRED_ENCODING_COUNT}."
+)
+assert len(REQUIRED_TARGETS) >= REQUIRED_TARGET_COUNT, (
+    f"REQUIRED_TARGETS has {len(REQUIRED_TARGETS)}, floor is {REQUIRED_TARGET_COUNT}."
+)
 
 CHUNK = 8 << 20  # 8 MiB. Bounded memory: an installer of any size is read in fixed-size pieces.
 
@@ -554,7 +606,21 @@ def _artefact(path: pathlib.Path, payload: bytes = b"", size: int = 1_200_000) -
     return path
 
 
-def _targets(pattern: str, min_bytes: int = 1_000_000) -> tuple[tuple[str, int, str], ...]:
+def _targets(
+    pattern: str, min_bytes: int = MIN_ARTEFACT_BYTES
+) -> tuple[tuple[str, int, str], ...]:
+    """A synthetic target, defaulting to THE DEPLOYED FLOOR.
+
+    This default used to be its own literal `1_000_000`, which quietly made every behavioural
+    case insensitive to the real floor: lowering MIN_ARTEFACT_BYTES *and* ARTEFACT_FLOOR_MINIMUM
+    together (two edits) let four 1 KB stubs pass as "read and proven scannable" with a fully
+    green 41-case suite. Review measured that end to end.
+
+    Consuming the deployed constant makes `undersized_artefact` a BEHAVIOURAL check on it: drop
+    the floor to the fixture's own size and that case stops going red, so the suite fails. That
+    closes the two-edit residual without adding a third literal to be edited alongside them --
+    a threshold guarded only by more thresholds never terminates.
+    """
     return ((pattern, min_bytes, "self-test artefact"),)
 
 
@@ -619,18 +685,31 @@ def self_test() -> int:
         # repo's exact recurring defect, a control that cannot fail. This makes that
         # unaddable rather than merely unlikely.
         cases += 1
-        # Asserted against the INDEPENDENT literal, on the DEPLOYED table. Comparing against
-        # MIN_ARTEFACT_BYTES made this vacuous, and driving it through `_targets()` would test
-        # the helper's default rather than what actually ships.
-        floorless = [
-            (pat, mb, lbl) for pat, mb, lbl in TARGETS if mb < ARTEFACT_FLOOR_MINIMUM
-        ]
-        if floorless:
-            failures.append(
-                "every_target_has_a_size_floor: these DEPLOYED targets accept an artefact "
-                f"below ARTEFACT_FLOOR_MINIMUM ({ARTEFACT_FLOOR_MINIMUM:,} bytes), so a "
-                f"placeholder or truncated stub would scan clean: {floorless}"
-            )
+        # ONE CASE PER DEPLOYED TARGET, and that shape is the whole point -- see WHEN TO STOP
+        # PINNING beside SELF_TEST_CASE_FLOOR.
+        #
+        # The previous form was a single aggregate case, so TARGETS generated NO cases and the
+        # case floor was never load-bearing for it. Review defeated that end to end: shrinking
+        # TARGETS + REQUIRED_TARGETS + REQUIRED_TARGET_COUNT together (4 -> 3) kept the suite at
+        # 37/37 while the mutant printed `== installer secret scan: OK ==` on a POISONED DLL.
+        # Two byte floors moved to 1024 in two edits did the same to four 1 KB stubs.
+        #
+        # Generating a case per row fixes both at once: dropping a target drops a case and the
+        # floor bites, and each case reads ITS OWN row's min_bytes, so the byte floors come free
+        # rather than needing a third literal to guard them.
+        for pattern, min_bytes, label in TARGETS:
+            cases += 1
+            if pattern not in REQUIRED_TARGETS:
+                failures.append(
+                    f"target_is_required[{label}]: `{pattern}` is scanned but is not in "
+                    "REQUIRED_TARGETS, so removing it later would go unnoticed."
+                )
+            if min_bytes < ARTEFACT_FLOOR_MINIMUM:
+                failures.append(
+                    f"target_has_a_size_floor[{label}]: min_bytes={min_bytes:,} is below "
+                    f"ARTEFACT_FLOOR_MINIMUM ({ARTEFACT_FLOOR_MINIMUM:,}), so a placeholder or "
+                    f"truncated stub would scan clean."
+                )
 
         # --- EVERY file a glob matches is scanned, not just the first ---------------------
         # `resolve()` returning `matches[:1]` survived the whole suite: every case used a glob
@@ -951,7 +1030,9 @@ def self_test() -> int:
     if cases < SELF_TEST_CASE_FLOOR:
         failures.append(
             f"self_test_case_floor: ran {cases} cases, floor is {SELF_TEST_CASE_FLOOR}. "
-            "A case block was removed — restore it or lower the floor deliberately."
+            "Something that GENERATES cases got smaller — a signature, an encoding, a target, "
+            "or a case block itself. Restore it, or lower this floor deliberately as part of "
+            "the documented edit for removing that thing."
         )
 
     if failures:
