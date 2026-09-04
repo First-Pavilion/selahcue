@@ -60,6 +60,30 @@ mod media_store;
 /// phase — the module's own docs name what replaces it.
 mod dev_env;
 
+/// The single lock guarding **all** process-environment mutation in this test binary.
+///
+/// `std::env::set_var`/`remove_var` are process-global while `cargo test` runs tests as threads,
+/// so two tests touching the same variable race. `dev_env::tests` had its own private lock; the
+/// model-override tests in `providers_view_tests` mutate the same names
+/// (`OPENAI_API_KEY`, `SELAHCUE_OPENAI_MODEL`), so a second private lock would guard nothing
+/// against the first.
+///
+/// Today the two never compile together — `make ci` runs `--features dev-keys` and
+/// `--features openai-notes` as separate invocations — so the race is latent rather than live.
+/// It becomes real the moment anyone runs `--features dev-keys,openai-notes`, and a flake that
+/// only appears under a feature combination nobody routinely builds is the worst kind to leave
+/// armed. One lock, hoisted here where both modules can reach it.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Acquire [`ENV_LOCK`], recovering from a poisoned mutex so one failing test does not cascade.
+#[cfg(test)]
+pub(crate) fn env_locked() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Where the operator commands are dispatched: a remote host output window, or an
 /// in-process demo controller.
 enum Backend {
@@ -3252,6 +3276,49 @@ mod providers_view_tests {
         // PREMISE: at least one driven value is NOT the default, or the loop above could pass
         // against an implementation that always reports the constant.
         assert_ne!("gpt-5.6-luna", selahcue_cloud::openai::DEFAULT_MODEL);
+    }
+
+    /// The complement of Sana's F-4, on the other side of the seam.
+    ///
+    /// F-4 pinned `environment -> model_from_env` in the cloud crate. This pins
+    /// `environment -> direct_notes_provider -> the view`. Both were unpinned for the same reason:
+    /// the tests either side drive the value **by argument**, which is the copy, so the wiring
+    /// expression that reads the environment was asserted by nothing.
+    ///
+    /// Verified before writing this: mutating `direct_notes_provider` to pass `DEFAULT_MODEL`
+    /// instead of `model_from_env()` left the operator suite fully green. Under that mutation QA
+    /// sets luna, the REQUEST correctly uses luna, and the PANEL says terra — so the one surface
+    /// QA reads to confirm the switch is the one that lies. That is precisely the
+    /// "unfalsifiable from outside" failure the model field exists to prevent.
+    #[cfg(feature = "openai-notes")]
+    #[test]
+    fn the_environment_reaches_the_view_not_only_the_request() {
+        let _guard = crate::env_locked();
+        let cfg = selahcue_core::providers::ProvidersConfig::default();
+
+        std::env::set_var(selahcue_cloud::openai::API_KEY_ENV, "sk-proj-test-key");
+        std::env::set_var(selahcue_cloud::openai::MODEL_ENV, "sentinel-model-from-env");
+        let direct = direct_notes_provider();
+        std::env::remove_var(selahcue_cloud::openai::MODEL_ENV);
+        std::env::remove_var(selahcue_cloud::openai::API_KEY_ENV);
+
+        let (status, provider) = notes_status_from(Hosted(None), direct, true);
+        assert_eq!(
+            status, "direct_provider",
+            "premise: an exported key must name a provider, or the model assertion below cannot run"
+        );
+        let v = serde_json::to_value(providers_view_from(&cfg, false, status, provider))
+            .expect("the view serialises");
+        assert_eq!(
+            v["notes_provider"]["model"], "sentinel-model-from-env",
+            "the panel reported a model other than the one exported — QA cannot tell a failed \
+             override from a stale display, which makes the whole switch unverifiable"
+        );
+        assert_ne!(
+            "sentinel-model-from-env",
+            selahcue_cloud::openai::DEFAULT_MODEL,
+            "premise: the sentinel must differ from the default"
+        );
     }
 
     #[test]

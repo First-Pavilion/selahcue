@@ -136,6 +136,8 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-029 | yes | The developer-key presence check is asserted without touching process env | `cargo test --features openai-notes` | `a_missing_or_blank_key_names_no_direct_provider` passes; `present = true` goes RED | mutation log | PASS |
 | C-030 | yes | A peer that **drips** bytes is cut off, not merely one that goes silent | `cargo test -p selahcue-cloud --test test_transport` | `a_peer_that_drips_bytes_forever_is_cut_off_at_the_deadline` passes; removing the deadline checks makes the test **hang** rather than fail, which is the finding | mutation log | PASS |
 | C-031 | yes | Both timeout error branches are pinned against echoing the response body | `cargo test -p selahcue-cloud --test test_transport` | `a_timeout_refusal_leaks_nothing_from_the_body` passes; echoing a body prefix in either branch, or both, goes RED. Its premise (content actually accumulated before expiry) is itself pinned — an already-expired deadline fails the premise rather than passing vacuously | mutation log | PASS |
+| C-032 | yes | The environment actually reaches model selection — the wiring, not the resolver | `cargo test -p selahcue-cloud --features openai` | `the_environment_actually_reaches_model_selection` passes; `model_from_env` feeding `resolve_model(None)` goes RED (it survived BOTH suites before) | mutation log | PASS |
+| C-033 | yes | The environment reaches the **view**, not only the request | `cargo test --features openai-notes` (operator) | `the_environment_reaches_the_view_not_only_the_request` passes; `direct_notes_provider` passing `DEFAULT_MODEL` goes RED (it was green before) | mutation log | PASS |
 | C-021 | no | A real GPT draft is produced against the live API through the shipped Rust path | live run, 2026-09-04, `gpt-5.6-terra` and `gpt-5.6-luna` on a 1,431-word sermon | a structured FR-122 draft returns and the bounded parser handles it | Both models returned all 8 enabled sections, 4 points, 13 sub-points, and honoured the disabled `social_excerpts` toggle. All 16 references verified against the bundled KJV. **One transcript, one run each — not a claim that the prompt is good in general.** | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
@@ -354,6 +356,21 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
   C-031. Sana also independently confirmed the PERF-2 control hangs rather than passes when the
   deadline checks are removed, that reverting `saturating_add` reddens immediately, and that the
   wire-cost control is the only test that dies against the unbounded-read mutation.
+- Security round 6 (Sana, at `82a1bb2`): clear, conditional on the three-OS matrix, with F-4 (Low)
+  in-PR. F-4: the *wiring* `environment -> model_from_env` was unpinned — the named test drove
+  `resolve_model(Some(..))`, the copy, so `model_from_env` feeding `resolve_model(None)` survived
+  **both** suites. That is the capability's whole justification going unguarded, and it landed in
+  the newest code after four rounds had trained everyone on this exact pattern — which is the
+  pattern's signature, not inattention. Remediation is C-032, taken as Sana wrote it.
+- **Found by applying the complement question to F-4 itself (C-033).** Sana pinned the cloud side
+  of the seam; the *operator* side was unpinned identically, because its test also drives the model
+  by argument. Verified before fixing: mutating `direct_notes_provider` to pass `DEFAULT_MODEL`
+  left the operator suite fully green — QA sets luna, the request correctly uses luna, and the
+  **panel says terra**, so the one surface QA reads to confirm the switch is the one that lies.
+  Also hoisted a single crate-level `ENV_LOCK`: `dev_env::tests` had a private lock and the model
+  tests mutate the same variable names, so two private locks would each be correct alone and guard
+  nothing against each other. Latent today (the features never compile together in `make ci`) and
+  live under `--features dev-keys,openai-notes`, which now runs 97 green.
 - Performance round 1 (Vera, at `f1c648c` and `9845bba`): one **blocking** finding, PERF-2, and it
   is a hole **this PR introduced**. Replacing `reqwest`'s `text()` with the hand-rolled
   `read_capped` loop broke the response deadline: reqwest's blocking `Read` applies the client

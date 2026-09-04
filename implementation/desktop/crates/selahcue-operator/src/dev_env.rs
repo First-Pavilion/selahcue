@@ -543,12 +543,14 @@ mod tests {
     /// take it too. It previously could not: the lock was feature-gated, so the one test that
     /// runs without `dev-keys` mutated the process environment unsynchronised while sibling
     /// tests were calling `std::env::temp_dir()` on other threads (Cody, PR #18 F11).
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
+    /// Delegates to the crate-level lock rather than owning a private one.
+    ///
+    /// This module is no longer the only place that mutates the process environment in tests:
+    /// the model-override tests (86akby7d8) touch `OPENAI_API_KEY` and `SELAHCUE_OPENAI_MODEL`
+    /// too. Two private locks would each be correct on their own and guard nothing against each
+    /// other, which is a race that looks like a passing test until it does not.
     fn locked() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        crate::env_locked()
     }
 
     /// A private temp file, unique per test and per run, matching the operator's house pattern

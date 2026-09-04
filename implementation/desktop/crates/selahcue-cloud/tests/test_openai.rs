@@ -15,10 +15,10 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_cloud::openai::{
-    bounded_transcript, draft_schema, map_error_status, parse_draft, Bound, OpenAiNoteProvider,
-    DEFAULT_MODEL, MAX_ITEM_CHARS, MAX_OUTPUT_TOKENS, MAX_PARSED_RESPONSE_BYTES, MAX_POINTS,
-    MAX_SCRIPTURES, MAX_SECTION_ITEMS, MAX_SUB_POINTS, MAX_TRANSCRIPT_CHARS, OUTLINE_HEADING,
-    PROVIDER_LABEL,
+    bounded_transcript, draft_schema, map_error_status, model_from_env, parse_draft, Bound,
+    OpenAiNoteProvider, DEFAULT_MODEL, MAX_ITEM_CHARS, MAX_OUTPUT_TOKENS,
+    MAX_PARSED_RESPONSE_BYTES, MAX_POINTS, MAX_SCRIPTURES, MAX_SECTION_ITEMS, MAX_SUB_POINTS,
+    MAX_TRANSCRIPT_CHARS, MODEL_ENV, OUTLINE_HEADING, PROVIDER_LABEL,
 };
 use selahcue_cloud::transport::{HttpResponse, HttpTransport, TransportError};
 use selahcue_cloud::{
@@ -418,6 +418,40 @@ fn the_model_resolves_from_an_env_value_and_falls_back_to_the_default() {
 
     // PREMISE: the bound is above any real id, so it never bites in practice.
     assert!(DEFAULT_MODEL.chars().count() < MAX_MODEL_LEN);
+}
+
+#[test]
+fn the_environment_actually_reaches_model_selection() {
+    // Sana F-4. The chain is: environment -> model_from_env -> resolve_model -> request body.
+    // The last two links were pinned; the FIRST was not. Mutating `model_from_env` to feed
+    // `resolve_model(None)` — the env value ignored entirely — survived BOTH suites, because the
+    // wire test drives `resolve_model(Some(..))`: the copy, not the path production takes.
+    //
+    // Under that mutation QA sets SELAHCUE_OPENAI_MODEL=gpt-5.6-luna, the loader exports it, terra
+    // runs anyway, and nothing goes red — the exact silent no-op the standing rule cites as the
+    // reason this name was admitted to the allowlist at all. The capability's whole justification
+    // was unguarded.
+    //
+    // Only this test touches MODEL_ENV, and the lock keeps that true if another ever does.
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    std::env::set_var(MODEL_ENV, "sentinel-model-from-env");
+    let got = model_from_env();
+    std::env::remove_var(MODEL_ENV);
+
+    assert_eq!(
+        got, "sentinel-model-from-env",
+        "SELAHCUE_OPENAI_MODEL was exported but ignored — QA switches models and silently gets \
+         the default"
+    );
+    // POSITIVE CONTROL: with the variable unset it falls back, so the assertion above is not
+    // satisfied by a function that returns its argument regardless.
+    assert_eq!(model_from_env(), DEFAULT_MODEL);
+    assert_ne!(
+        "sentinel-model-from-env", DEFAULT_MODEL,
+        "premise: the sentinel must differ from the default"
+    );
 }
 
 #[test]
