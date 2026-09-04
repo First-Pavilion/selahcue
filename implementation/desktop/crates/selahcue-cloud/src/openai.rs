@@ -86,17 +86,27 @@ pub const API_KEY_ENV: &str = "OPENAI_API_KEY";
 /// reasoning are where the better models actually separate. Paying two dollars a year
 /// to be on the right side of that is not a trade worth agonising over.
 ///
-/// **Benchmarked against `gpt-5.6-luna` on real output, 2026-09-04**, on a 1,431-word sermon
-/// through this exact prompt and schema. Structurally the two tied — both returned 4 points,
-/// 13 sub-points and all 8 enabled sections, both honoured the disabled `social_excerpts`
-/// toggle, and every scripture reference either produced verified against the bundled KJV.
-/// Terra won on the thing that matters for presentation: its point headings are short,
-/// slide-usable lines with the reference appended consistently, whereas luna returned
-/// **manually numbered** headings ("1. ", "2. ") — which render as "1. 1." inside an ordered
-/// list — and packed each point's explanation into its heading, blurring the very point /
-/// sub-point separation FR-122 asks for. Luna was faster (14.6s vs 17.8s) and is 10× cheaper,
-/// so it is a real option if cost ever becomes an axis; on this evidence terra is the better
-/// default and the original reasoning holds.
+/// **Benchmarked against `gpt-5.6-luna` on real output, 2026-09-04** — on **one 1,431-word
+/// sermon, one run each**, through this exact prompt and schema. That is enough to confirm a
+/// default and **not** enough to call it a general result; treat it as the reason the default
+/// is what it is, not as a measurement of either model.
+///
+/// Structurally the two tied: both returned 4 points, 13 sub-points and all 8 enabled sections,
+/// both honoured the disabled `social_excerpts` toggle, and every scripture reference either
+/// produced verified against the bundled KJV. Terra won on the thing that matters for
+/// presentation: its point headings are short, slide-usable lines with the reference appended
+/// consistently, whereas luna returned **manually numbered** headings ("1. ", "2. ") — which
+/// render as "1. 1." inside an ordered list — and packed each point's explanation into its
+/// heading, blurring the very point / sub-point separation FR-122 asks for. Luna was faster
+/// (14.6s vs 17.8s) and is 10× cheaper, so it is a real option if cost ever becomes an axis;
+/// on this evidence terra is the better default and the original reasoning holds.
+///
+/// **Section population is not deterministic, and the "all 8 sections" figure above is one
+/// run.** An *earlier* terra run on the same transcript with the same flags returned an empty
+/// `chapter_markers` despite the toggle being on, and the empty section was dropped — so that
+/// run produced 7. Quoting only the clean run would overstate what was observed. This is not a
+/// correctness bug (an empty section is correctly not rendered) but it does mean "the toggles
+/// asked for it" and "the draft contains it" are different statements. Tracked as 86akc0tua.
 ///
 /// # Why a constant and not an environment variable
 ///

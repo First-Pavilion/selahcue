@@ -276,6 +276,10 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	$(CARGO) clippy $(WS) -p selahcue-scripture --features download --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-cloud --features openai --all-targets -- -D warnings
 	$(CARGO) clippy $(OP) --all-targets -- -D warnings
+	# The operator's `openai-notes` feature gates the provider construction and the four-state
+	# status derivation. Without this line NOTHING compiles it -- which is exactly the
+	# selahcue-stt problem this PR cites as its own justification for the cloud-side line above.
+	$(CARGO) clippy $(OP) --features openai-notes --all-targets -- -D warnings
 	$(CARGO) test $(WS) --workspace --no-fail-fast
 	sh scripts/import_guards.sh
 	$(CARGO) test $(WS) -p selahcue-licensing --release --no-fail-fast
@@ -293,6 +297,7 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	$(CARGO) check $(OP)
 	$(CARGO) test $(OP) --no-fail-fast
 	$(CARGO) test $(OP) --features dev-keys --no-fail-fast
+	$(CARGO) test $(OP) --features openai-notes --no-fail-fast
 	python3 scripts/operator_headless.py
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 	@echo ""

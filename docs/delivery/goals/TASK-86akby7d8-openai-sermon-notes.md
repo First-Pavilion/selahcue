@@ -126,6 +126,11 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-018 | yes | `PROVIDER-TRADEOFFS.md` records that the owner selected GPT and that its Haiku recommendation is superseded | review | superseded block present with evidence and the non-benchmark caveat | `docs/research/PROVIDER-TRADEOFFS.md` | PASS |
 | C-019 | yes | `make ci` passes | `make ci` | ALL GREEN | run output | PASS |
 | C-020 | yes | The new feature is actually linted and tested by the gates, not merely added | review of `Makefile` + `ci.yml` | `--features openai` clippy + test lines present in both | diff | PASS |
+| C-022 | yes | The outgoing request is asserted, not just the response: model, endpoint, `strict`, `max_output_tokens` and bearer presence | `cargo test -p selahcue-cloud --features openai` | 4 request tests pass; Cody's 5 mutations (model swap, cap deleted, `strict` false, bearer dropped, wrong endpoint) all RED | mutation log in PR body | PASS |
+| C-023 | yes | The availability invariant is exercised in **all four** states, not one | `cargo test` (operator) | `notes_provider_matches_...in_all_four_states` passes with a positive control that all four occurred; violating the hosted or direct arm goes RED | test output | PASS |
+| C-024 | yes | The operator's `openai-notes` feature is compiled by a gate | review of `Makefile` + `ci.yml` | clippy + test lines present in both | diff | PASS |
+| C-025 | yes | `NotesProviderView`'s keys are pinned, including the FR-132 `name` | `cargo test` (operator) | `the_notes_provider_object_keys_are_pinned` passes | test output | PASS |
+| C-026 | yes | The response body is bounded **at the socket**, not only before parsing | review + `cargo clippy --features openai,http` | `read_bounded` replaces `text()`; cap is a hard ceiling on the read | `transport.rs` | PASS |
 | C-021 | no | A real GPT draft is produced against the live API through the shipped Rust path | live run, 2026-09-04, `gpt-5.6-terra` and `gpt-5.6-luna` on a 1,431-word sermon | a structured FR-122 draft returns and the bounded parser handles it | Both models returned all 8 enabled sections, 4 points, 13 sub-points, and honoured the disabled `social_excerpts` toggle. All 16 references verified against the bundled KJV. **One transcript, one run each — not a claim that the prompt is good in general.** | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
@@ -227,6 +232,47 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Result: a new under-reporting bug closed before it shipped.
 - Decision: complete pending review.
 
+### Iteration 8 — review remediation: the request nobody asserted
+
+- Target criterion: C-022.
+- Hypothesis (held right up to the review): driving the transport and asserting hard on what came
+  back was sufficient coverage of the provider.
+- Change or investigation: it was not. `MockTransport` exposes `recorded()`, `request_count()` and
+  `had_bearer`; `tests/test_openai.rs` called **none of them**, so nothing checked what actually
+  left the machine. Five mutations survived: swapping the model, deleting `max_output_tokens`,
+  flipping `strict` to `false`, **dropping the bearer entirely**, and pointing at
+  `/v1/chat/completions`. The model identity is this change's headline verified fact — confirmed
+  against the account and written into three documents — and no test asserted the request named it.
+  `tests/test_client.rs` already asserts on `recorded()` in exactly the right way; the precedent was
+  in a file that had been read.
+- Verifier executed: 4 new request tests; then each of the 5 mutations run against the whole crate
+  suite with siblings.
+- Result: 5/5 RED.
+- New evidence: the general lesson is that "the test drove the code" and "the test checked what the
+  code did" are different claims, and a suite can be thorough on one side of a seam while asserting
+  nothing on the other.
+- Decision: iterate.
+
+### Iteration 9 — the control that guarded nothing
+
+- Target criterion: C-023.
+- Hypothesis: `notes_provider_matches_availability_in_both_directions` guarded the invariant.
+- Change or investigation: it reached exactly **one** of four states. `cloud_base_url()` is a literal
+  `None` without `cloud-live` and `DIRECT_NOTES_COMPILED` is `false` without `openai-notes`, so
+  `notes_status()` can only return `("not_configured", None)` in the test build, and the
+  `for token_set in [false, true]` loop could not move it. Both the `hosted` and `direct_provider`
+  arms could be made to violate the invariant outright and the test stayed green — a dead control
+  inside the very test written to prevent the trust bug. Extracted `notes_status_from`, which takes
+  the resolved inputs, so all four states are reachable; added a positive control asserting all four
+  were produced, and a precedence test.
+- Verifier executed: 5 mutations — hosted arm naming no provider, direct arm naming no provider,
+  `key_missing` collapsing to `not_configured`, precedence inverted, `notes_available` decoupled.
+- Result: 5/5 RED.
+- New evidence: this is the CLAUDE.md "control reading a copy" trap in a new shape — not a
+  duplicated predicate, but a control whose *inputs* were build-time constants, so the loop that
+  looked like state coverage was iterating over a variable nothing depended on.
+- Decision: iterate.
+
 ### Iteration 7 — the live run, once credits existed
 
 - Target criterion: C-021.
@@ -284,4 +330,9 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
   credits. The honest scope of C-021 is "one draft generated successfully from one transcript on
   each of two models", which is **not** the same claim as "the prompt is good".
 - Remaining failed or blocked criteria: none.
+- Review round 1 (Cody, at `756e754`): approve with comments. Independently re-ran all 11 original
+  mutations (RED confirmed), verified `build_note_request` byte-identical to `origin/main`, and
+  re-ran the headless gate rather than trusting the reported figure. It then ran mutations the
+  author had not, and found a coherent gap: the suite asserted the **response** exhaustively and the
+  **request** not at all. Remediation is C-022..C-026.
 - ClickUp final evidence comment: pending.

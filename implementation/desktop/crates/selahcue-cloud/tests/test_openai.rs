@@ -16,8 +16,9 @@
 
 use selahcue_cloud::openai::{
     bounded_transcript, draft_schema, map_error_status, parse_draft, Bound, OpenAiNoteProvider,
-    DEFAULT_MODEL, MAX_ITEM_CHARS, MAX_POINTS, MAX_RESPONSE_BYTES, MAX_SCRIPTURES,
-    MAX_SECTION_ITEMS, MAX_SUB_POINTS, MAX_TRANSCRIPT_CHARS, OUTLINE_HEADING, PROVIDER_LABEL,
+    DEFAULT_MODEL, MAX_ITEM_CHARS, MAX_OUTPUT_TOKENS, MAX_POINTS, MAX_RESPONSE_BYTES,
+    MAX_SCRIPTURES, MAX_SECTION_ITEMS, MAX_SUB_POINTS, MAX_TRANSCRIPT_CHARS, OUTLINE_HEADING,
+    PROVIDER_LABEL,
 };
 use selahcue_cloud::transport::{HttpResponse, HttpTransport, TransportError};
 use selahcue_cloud::{
@@ -116,6 +117,39 @@ impl HttpTransport for ForbiddenTransport {
     fn get(&self, url: &str, _bearer: Option<&str>) -> Result<HttpResponse, TransportError> {
         panic!("egress! a request left the device: GET {url} — the consent gate did not hold");
     }
+}
+
+/// Shares one `MockTransport` between the test and the provider, so the test can inspect
+/// what was actually sent after the call. Same wrapper `test_client.rs` uses.
+#[derive(Clone)]
+struct ArcTransport(std::sync::Arc<MockTransport>);
+
+impl HttpTransport for ArcTransport {
+    fn post_json(
+        &self,
+        url: &str,
+        body: &str,
+        bearer: Option<&str>,
+    ) -> Result<HttpResponse, TransportError> {
+        self.0.post_json(url, body, bearer)
+    }
+    fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError> {
+        self.0.get(url, bearer)
+    }
+}
+
+/// A provider over a shared, inspectable transport, plus the handle to inspect it.
+fn inspectable_provider() -> (
+    OpenAiNoteProvider<ArcTransport>,
+    std::sync::Arc<MockTransport>,
+) {
+    let t = std::sync::Arc::new(MockTransport::responding(200, envelope(&full_draft_json())));
+    let p = OpenAiNoteProvider::new(
+        ArcTransport(t.clone()),
+        Token::new("sk-test-not-a-real-key"),
+        DEFAULT_MODEL,
+    );
+    (p, t)
 }
 
 fn envelope(draft_json: &str) -> String {
@@ -279,6 +313,139 @@ fn build_note_request_is_the_only_way_to_reach_the_provider() {
         serialised.contains("Sermon transcript"),
         "the body must actually carry the completed transcript"
     );
+}
+
+// ===========================================================================
+// 1b · What actually leaves the machine
+//
+// The suite used to assert nothing about the outgoing request — it drove the transport
+// and then only ever looked at what came back. Five separate mutations survived that
+// gap: swapping the model, deleting `max_output_tokens`, flipping `strict` to false,
+// dropping the bearer, and pointing at the wrong endpoint. Model identity is this
+// change's headline verified fact, and nothing checked that the request names it.
+//
+// `MockTransport::recorded()` was there the whole time and `test_client.rs` already
+// uses it exactly this way.
+// ===========================================================================
+
+/// The single recorded request, parsed. Fails loudly if egress did not happen at all,
+/// so an assertion below can never pass vacuously against a transport that was skipped.
+fn sole_request(t: &MockTransport) -> (selahcue_cloud::mock::RecordedRequest, serde_json::Value) {
+    let recorded = t.recorded();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "expected exactly one outgoing request, got {}",
+        recorded.len()
+    );
+    let req = recorded[0].clone();
+    let body: serde_json::Value =
+        serde_json::from_str(&req.body).expect("the request body must be valid JSON");
+    (req, body)
+}
+
+#[test]
+fn the_outgoing_request_names_the_model_it_is_documented_to_use() {
+    // `gpt-5.6-terra` is confirmed against the account and written into three documents.
+    // Without this assertion, none of that reaches the wire.
+    let (p, t) = inspectable_provider();
+    p.generate(&request_with(all_on(), TRANSCRIPT)).unwrap();
+    let (_req, body) = sole_request(&t);
+
+    assert_eq!(
+        body["model"].as_str(),
+        Some(DEFAULT_MODEL),
+        "the request must ask for the documented model"
+    );
+    assert_eq!(
+        DEFAULT_MODEL, "gpt-5.6-terra",
+        "the documented model changed; \
+        update PROVIDER-TRADEOFFS.md and the openai.rs docs in the SAME change"
+    );
+}
+
+#[test]
+fn the_outgoing_request_carries_auth_and_goes_to_the_responses_endpoint() {
+    let (p, t) = inspectable_provider();
+    p.generate(&request_with(all_on(), TRANSCRIPT)).unwrap();
+    let (req, _body) = sole_request(&t);
+
+    assert_eq!(req.method, "POST");
+    assert!(
+        req.had_bearer,
+        "the request went out with NO Authorization header — it would 401 in production \
+         and no other test in this file would notice"
+    );
+    assert_eq!(
+        req.url, "https://api.openai.com/v1/responses",
+        "the Responses API is not interchangeable with /v1/chat/completions: the request \
+         shape (`input`, `text.format`, `max_output_tokens`) and the response shape \
+         (`output[].content[]`) both differ, so a wrong endpoint fails at runtime only"
+    );
+}
+
+#[test]
+fn the_outgoing_request_pins_strict_structured_output_and_an_output_cap() {
+    let (p, t) = inspectable_provider();
+    p.generate(&request_with(all_on(), TRANSCRIPT)).unwrap();
+    let (_req, body) = sole_request(&t);
+
+    // `strict: true` is what makes the include-flags actually determine the response
+    // shape. With it false the model may return whatever it likes, and the toggle
+    // guarantee quietly degrades to a request rather than a contract.
+    assert_eq!(
+        body["text"]["format"]["strict"],
+        serde_json::json!(true),
+        "structured output must be STRICT, or the toggles stop being enforceable"
+    );
+    assert_eq!(
+        body["text"]["format"]["type"],
+        serde_json::json!("json_schema")
+    );
+    assert_eq!(
+        body["text"]["format"]["name"],
+        serde_json::json!("sermon_notes")
+    );
+
+    // Without an output cap a runaway generation bills and buffers without end.
+    assert_eq!(
+        body["max_output_tokens"].as_u64(),
+        Some(u64::from(MAX_OUTPUT_TOKENS)),
+        "the output cap must reach the wire"
+    );
+
+    // The schema on the wire is the one built from the operator's flags, not a stub.
+    let props = body["text"]["format"]["schema"]["properties"]
+        .as_object()
+        .expect("the schema must carry properties");
+    assert!(props.contains_key("points") && props.contains_key("prayer_points"));
+}
+
+#[test]
+fn the_outgoing_request_carries_the_transcript_and_no_audio() {
+    let (p, t) = inspectable_provider();
+    p.generate(&request_with(all_on(), "the completed transcript text"))
+        .unwrap();
+    let (req, body) = sole_request(&t);
+
+    assert!(
+        req.body.contains("the completed transcript text"),
+        "the request must carry the completed transcript"
+    );
+    // FR-132, asserted on the bytes that actually left rather than on the type.
+    for forbidden in ["audio", "pcm", "wav", "waveform", "samples"] {
+        assert!(
+            !req.body.contains(forbidden),
+            "the outgoing body mentions {forbidden:?}"
+        );
+    }
+    let roles: Vec<&str> = body["input"]
+        .as_array()
+        .expect("input is an array")
+        .iter()
+        .filter_map(|m| m["role"].as_str())
+        .collect();
+    assert_eq!(roles, vec!["developer", "user"]);
 }
 
 // ===========================================================================

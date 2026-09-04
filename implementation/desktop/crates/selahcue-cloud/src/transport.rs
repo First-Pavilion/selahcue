@@ -39,6 +39,20 @@ pub trait HttpTransport {
     fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError>;
 }
 
+/// The most response body the production transport will read off the socket.
+///
+/// **This is the bound that actually holds.** A cap applied after the body is in hand
+/// bounds *parsing*, not memory: by then an unbounded read has already allocated
+/// whatever the peer chose to send. `reqwest`'s `text()` reads to end-of-stream, so a
+/// hostile or malfunctioning server could hand us gigabytes before any check ran.
+/// Reading through `Read::take` refuses at the socket instead.
+///
+/// Set above the parse-side caps so the two do not collide: a body between the parse cap
+/// and this one is still *read*, and then refused by the parser with a precise error,
+/// which is a better diagnostic than a truncated read.
+#[cfg(feature = "http")]
+pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
 /// The production transport over `reqwest` (blocking, rustls TLS). Compiled only with
 /// the `http` feature so the default workspace build/tests stay light and offline.
 #[cfg(feature = "http")]
@@ -58,6 +72,38 @@ impl ReqwestTransport {
     }
 }
 
+/// Read a response body with a hard ceiling, instead of `text()`'s read-to-end.
+///
+/// Takes `MAX_RESPONSE_BYTES + 1` so "exactly at the cap" is distinguishable from "over
+/// it" — reading exactly the cap and stopping would silently truncate a body that was
+/// legitimately that size, and a silently truncated JSON body surfaces as a confusing
+/// parse error rather than as the size problem it is.
+///
+/// The error message carries the cap and nothing from the body: a response body is
+/// attacker-influenced and, on at least one real provider, contains key material.
+#[cfg(feature = "http")]
+fn read_bounded(resp: reqwest::blocking::Response) -> Result<HttpResponse, TransportError> {
+    use std::io::Read;
+    let status = resp.status().as_u16();
+    let mut buf = Vec::new();
+    let mut limited = resp.take((MAX_RESPONSE_BYTES as u64) + 1);
+    limited
+        .read_to_end(&mut buf)
+        .map_err(|e| TransportError(e.to_string()))?;
+    if buf.len() > MAX_RESPONSE_BYTES {
+        return Err(TransportError(format!(
+            "response exceeded the {MAX_RESPONSE_BYTES}-byte transport cap"
+        )));
+    }
+    // Bodies are untrusted bytes; decode lossily rather than failing on bad UTF-8, so a
+    // mangled response becomes a parse error the caller can map, not a transport error
+    // that would trigger the degraded-fallback path for the wrong reason.
+    Ok(HttpResponse {
+        status,
+        body: String::from_utf8_lossy(&buf).into_owned(),
+    })
+}
+
 #[cfg(feature = "http")]
 impl HttpTransport for ReqwestTransport {
     fn post_json(
@@ -75,9 +121,7 @@ impl HttpTransport for ReqwestTransport {
             req = req.bearer_auth(t);
         }
         let resp = req.send().map_err(|e| TransportError(e.to_string()))?;
-        let status = resp.status().as_u16();
-        let body = resp.text().map_err(|e| TransportError(e.to_string()))?;
-        Ok(HttpResponse { status, body })
+        read_bounded(resp)
     }
 
     fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError> {
@@ -86,8 +130,6 @@ impl HttpTransport for ReqwestTransport {
             req = req.bearer_auth(t);
         }
         let resp = req.send().map_err(|e| TransportError(e.to_string()))?;
-        let status = resp.status().as_u16();
-        let body = resp.text().map_err(|e| TransportError(e.to_string()))?;
-        Ok(HttpResponse { status, body })
+        read_bounded(resp)
     }
 }

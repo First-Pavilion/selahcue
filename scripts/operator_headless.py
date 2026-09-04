@@ -310,6 +310,13 @@ STUB = r"""
   // `notes_available` is DERIVED here, exactly as the backend derives it from notes_provider, so the
   // stub cannot drift into a combination the backend can never produce and let a broken renderer
   // pass against it.
+  //
+  // WARNING: this stub is a HAND-WRITTEN MIRROR of the Rust ProvidersView. It cannot catch a field
+  // rename on the backend -- it would simply keep serving the old name and every assertion below
+  // would keep passing against a shape production no longer produces. The guards against that are
+  // the two Rust tests `the_frontend_contract_field_names_are_pinned` and
+  // `the_notes_provider_object_keys_are_pinned` (selahcue-operator/src/main.rs). If either fails,
+  // the corresponding names HERE and in dist/settings.js must be changed in the same MR.
   var P = {
     transcription_mode:"on_device",
     on_device:{ready:true, state:"ready", model:"Small", detail:"ggml-small.en.bin"},

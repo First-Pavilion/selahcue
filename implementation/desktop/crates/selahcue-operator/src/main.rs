@@ -2828,21 +2828,50 @@ fn hosted_notes_provider(account_token_set: bool) -> Option<NotesProviderView> {
     })
 }
 
-/// Resolve the four-state note-provider status. The hosted service wins when configured: it is the
-/// shipping path, and the direct developer key is the stand-in for its absence.
-fn notes_status(account_token_set: bool) -> (String, Option<NotesProviderView>) {
-    if let Some(hosted) = hosted_notes_provider(account_token_set) {
+/// Resolve the four-state status from **already-resolved inputs**. The hosted service wins when
+/// configured: it is the shipping path, and the direct developer key is the stand-in for its absence.
+///
+/// # Why this is separated from the lookups
+///
+/// `notes_status` below reads `cloud_base_url()` and the environment, and in any one build those are
+/// effectively constants — without `cloud-live` the base URL is a literal `None`, and without
+/// `openai-notes` the direct provider is a literal `None`. So `notes_status` can only ever return
+/// **one** of the four states in a given compilation, and a test calling it cannot reach the other
+/// three however many arguments it varies.
+///
+/// That is not hypothetical: the first version of the invariant test looped over `account_token_set`
+/// believing it was covering the state space, and reached exactly one state. Both the `hosted` and
+/// `direct_provider` arms could be made to violate the invariant outright and the test stayed green —
+/// a dead control inside the very test meant to prevent the trust bug this change exists to fix.
+///
+/// Taking the resolved inputs as parameters makes all four states reachable by a test, so the
+/// control asserts something. `notes_status` is then the thin wrapper that supplies the real ones.
+fn notes_status_from(
+    hosted: Option<NotesProviderView>,
+    direct: Option<NotesProviderView>,
+    direct_compiled: bool,
+) -> (String, Option<NotesProviderView>) {
+    if let Some(hosted) = hosted {
         return ("hosted".to_string(), Some(hosted));
     }
-    if let Some(direct) = direct_notes_provider() {
+    if let Some(direct) = direct {
         return ("direct_provider".to_string(), Some(direct));
     }
-    if DIRECT_NOTES_COMPILED {
+    if direct_compiled {
         // The feature is in, the key is not. Say which — "unavailable" would send someone
         // looking for a missing build rather than a missing line in `.env`.
         return ("key_missing".to_string(), None);
     }
     ("not_configured".to_string(), None)
+}
+
+/// The four-state status for this build, from the real lookups.
+fn notes_status(account_token_set: bool) -> (String, Option<NotesProviderView>) {
+    notes_status_from(
+        hosted_notes_provider(account_token_set),
+        direct_notes_provider(),
+        DIRECT_NOTES_COMPILED,
+    )
 }
 
 fn providers_view_of(
@@ -2950,43 +2979,131 @@ mod providers_view_tests {
         );
     }
 
+    fn a_provider(kind: &str, developer_key: bool) -> NotesProviderView {
+        NotesProviderView {
+            kind: kind.to_string(),
+            name: "Test Provider".to_string(),
+            model: "test-model".to_string(),
+            developer_key,
+        }
+    }
+
+    /// Every input combination, and the state each must produce. Drives
+    /// `notes_status_from` directly: `notes_status` reads build-time constants, so in any
+    /// one compilation it can only ever return ONE of these four and a test calling it
+    /// reaches nothing else.
+    fn all_four_states() -> Vec<(
+        &'static str,
+        Option<NotesProviderView>,
+        Option<NotesProviderView>,
+        bool,
+    )> {
+        vec![
+            ("not_configured", None, None, false),
+            ("key_missing", None, None, true),
+            (
+                "direct_provider",
+                None,
+                Some(a_provider("openai", true)),
+                true,
+            ),
+            (
+                "hosted",
+                Some(a_provider("selahcue_hosted", false)),
+                None,
+                false,
+            ),
+        ]
+    }
+
     #[test]
-    fn notes_provider_matches_availability_in_both_directions() {
-        // The invariant that would catch a regression of the trust bug this change fixes: the
-        // panel can never claim notes are available without naming who provides them, and can
-        // never name a provider while reporting notes unavailable.
-        for token_set in [false, true] {
-            let (status, provider) = notes_status(token_set);
+    fn notes_provider_matches_availability_in_both_directions_in_all_four_states() {
+        // The control that would catch a regression of the trust bug: the panel can never claim
+        // notes are available without naming who provides them, and can never name a provider
+        // while reporting notes unavailable.
+        //
+        // The earlier version of this test looped over `account_token_set` and reached exactly
+        // ONE state, so both the hosted and direct arms could be made to violate the invariant
+        // outright while it stayed green.
+        let mut seen: Vec<&str> = Vec::new();
+        for (expected, hosted, direct, compiled) in all_four_states() {
+            let (status, provider) = notes_status_from(hosted, direct, compiled);
+            assert_eq!(status, expected, "wrong state for this input combination");
+
             let available = provider.is_some();
             assert_eq!(
                 available,
                 status == "direct_provider" || status == "hosted",
                 "status {status:?} disagrees with whether a provider was named"
             );
-
-            let cfg = selahcue_core::providers::ProvidersConfig::default();
-            let v = serde_json::to_value(providers_view_of(&cfg, token_set))
-                .expect("the view serialises");
-            assert_eq!(
-                v["notes_available"]
-                    .as_bool()
-                    .expect("notes_available is a bool"),
-                !v["notes_provider"].is_null(),
-                "notes_available and notes_provider must agree in BOTH directions"
-            );
+            seen.push(expected);
         }
+        // POSITIVE CONTROL: all four states were actually produced. Without this the loop
+        // could pass having exercised one row, which is exactly how it failed before.
+        assert_eq!(
+            seen,
+            vec!["not_configured", "key_missing", "direct_provider", "hosted"],
+            "the invariant must be exercised in ALL four states"
+        );
+    }
+
+    #[test]
+    fn hosted_wins_over_a_direct_provider_when_both_are_configured() {
+        // Precedence has to be asserted, not assumed: it is what keeps the panel's report and
+        // `run_note_generation`'s actual choice in agreement.
+        let (status, provider) = notes_status_from(
+            Some(a_provider("selahcue_hosted", false)),
+            Some(a_provider("openai", true)),
+            true,
+        );
+        assert_eq!(status, "hosted");
+        assert_eq!(
+            provider.expect("a provider is named").kind,
+            "selahcue_hosted",
+            "the hosted service is the shipping path and must win"
+        );
     }
 
     #[test]
     fn the_status_is_always_one_of_the_four_defined_states() {
-        for token_set in [false, true] {
-            let (status, _) = notes_status(token_set);
+        for (expected, hosted, direct, compiled) in all_four_states() {
+            let (status, _) = notes_status_from(hosted, direct, compiled);
             assert!(
                 ["not_configured", "key_missing", "direct_provider", "hosted"]
                     .contains(&status.as_str()),
                 "unknown cloud_status {status:?}; settings.js branches on this set"
             );
+            assert_eq!(status, expected);
         }
+        // And the real build-time derivation also lands in the set.
+        for token_set in [false, true] {
+            let (status, _) = notes_status(token_set);
+            assert!(
+                ["not_configured", "key_missing", "direct_provider", "hosted"]
+                    .contains(&status.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn the_notes_provider_object_keys_are_pinned() {
+        // settings.js reads these, and `name` is the FR-132 disclosure string — the one the
+        // panel renders to say who generated the notes. The headless stub is a hand-written
+        // mirror, so it would not catch a rename here either; this is the only guard.
+        let v = serde_json::to_value(a_provider("openai", true)).expect("serialises");
+        let mut got: Vec<&str> = v
+            .as_object()
+            .expect("notes_provider is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec!["developer_key", "kind", "model", "name"],
+            "the notes_provider surface changed; settings.js and scripts/operator_headless.py \
+             read these names and must be updated in the SAME merge request"
+        );
     }
 
     /// A stock build — no direct-provider path compiled in — must report notes as genuinely

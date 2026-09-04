@@ -584,6 +584,14 @@ jobs:
       - name: Test (dev-keys)
         if: ${{ !cancelled() }}
         run: cargo test --features dev-keys --no-fail-fast
+      # The `openai-notes` feature gates the direct-provider construction and the four-state
+      # status derivation (86akby7d8). The default build above compiles NEITHER, so without
+      # this step that code has the same "linted by nothing" problem as selahcue-stt.
+      - name: Clippy + test (openai-notes feature)
+        if: ${{ !cancelled() }}
+        run: |
+          cargo clippy --features openai-notes --all-targets -- -D warnings
+          cargo test --features openai-notes --no-fail-fast
       # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
       # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
       # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-
