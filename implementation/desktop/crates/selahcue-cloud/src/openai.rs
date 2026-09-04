@@ -841,7 +841,8 @@ impl<T: HttpTransport> OpenAiNoteProvider<T> {
     ///
     /// The `model` parameter is a **constructor seam**, not a configuration surface:
     /// it lets a test pin the model it asserts on. Production construction goes through
-    /// [`OpenAiNoteProvider::from_env`], which always uses [`DEFAULT_MODEL`].
+    /// [`OpenAiNoteProvider::from_env`], which resolves the model via [`model_from_env`] --
+    /// [`MODEL_ENV`] when QA has set it, [`DEFAULT_MODEL`] otherwise.
     pub fn new(transport: T, api_key: crate::secret::Token, model: impl Into<String>) -> Self {
         OpenAiNoteProvider {
             transport,

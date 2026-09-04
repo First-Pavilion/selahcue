@@ -3604,7 +3604,7 @@ async fn run_note_generation(
     let base = cloud_base_url();
     let token = state.secrets.get(ACCOUNT_TOKEN_NAME).ok().flatten();
     // Offload the BLOCKING reqwest call onto a blocking thread so a slow/unreachable endpoint
-    // (up to the 30s transport timeout) never stalls a Tokio worker and starves other async
+    // (up to the 60s transport timeout) never stalls a Tokio worker and starves other async
     // Tauri commands (honours the offload contract in selahcue-cloud/src/transport.rs).
     tauri::async_runtime::spawn_blocking(move || {
         let local = selahcue_cloud::LocalNoteProvider::new();
