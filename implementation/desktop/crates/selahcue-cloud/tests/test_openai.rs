@@ -777,6 +777,17 @@ fn no_status_arm_anywhere_in_the_mapping_echoes_the_response_body() {
     // ones that would never receive it in production. The property under test is "this function
     // does not echo bodies", not "these particular statuses do not".
     let body = fixtures::ERR_401_INVALID_KEY;
+
+    // PREMISE: the fixture still carries the material whose absence every assertion
+    // below claims to prove. Without this, re-capturing or tidying the fixture
+    // silently turns the whole sweep vacuous.
+    assert!(
+        body.contains(LEAKED_KEY_FRAGMENT)
+            && body.contains("sk-proj-")
+            && body.contains("platform.openai.com"),
+        "the 401 fixture no longer contains the leak markers; the sweep below would pass vacuously"
+    );
+
     let statuses = [
         200, 301, 400, 401, 402, 403, 404, 418, 429, 500, 502, 503, 599,
     ];
@@ -803,11 +814,27 @@ fn no_status_arm_anywhere_in_the_mapping_echoes_the_response_body() {
         );
     }
 
-    // POSITIVE CONTROL: the sweep really did produce errors carrying messages, rather than
-    // passing because every arm returned something empty.
+    // The control that used to sit here asserted `!map_error_status(418, body).to_string()
+    // .is_empty()`. It was removed rather than kept, because it could not fail: `NoteError`'s
+    // Display always prefixes its own wording, so `to_string()` is non-empty for every variant
+    // and no mutation could redden it — gutting the `other` arm to `Malformed(String::new())`
+    // passed the whole suite. It was added as a hedge against the sweep degenerating into
+    // asserting emptiness, and that degeneration is unreachable, so it guarded nothing.
+    //
+    // The reachable vacuity is fixture drift, and the premise at the top of this function is
+    // what catches it: stripping the markers from `ERR_401_INVALID_KEY` left all 31 tests green
+    // while every absence assertion here exercised nothing.
+    //
+    // Replaced with a control that CAN fail. "Do not echo the body" is satisfiable by returning
+    // nothing at all, and an error carrying no information is useless to the operator staring at
+    // a failed generation. This pins the other half — our own wording is present and identifies
+    // the status — and unlike its predecessor it reddens: gutting the arm to
+    // `Malformed(String::new())` fails here.
+    let rendered = map_error_status(418, body).to_string();
     assert!(
-        !map_error_status(418, body).to_string().is_empty(),
-        "the mapping must still produce a message — otherwise the sweep above proves nothing"
+        rendered.contains("418"),
+        "the mapping must say something of its own that identifies the failure, not merely \
+         decline to quote the provider: {rendered:?}"
     );
 }
 
