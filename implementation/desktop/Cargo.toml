@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/selahcue-core", "crates/selahcue-data", "crates/selahcue-lan", "crates/selahcue-engine", "crates/selahcue-present", "crates/selahcue-gpu", "crates/selahcue-desktop", "crates/selahcue-app", "crates/selahcue-scripture", "crates/selahcue-cloud", "crates/selahcue-import", "crates/selahcue-licensing"]
+members = ["crates/selahcue-core", "crates/selahcue-data", "crates/selahcue-lan", "crates/selahcue-engine", "crates/selahcue-present", "crates/selahcue-gpu", "crates/selahcue-desktop", "crates/selahcue-app", "crates/selahcue-scripture", "crates/selahcue-cloud", "crates/selahcue-import", "crates/selahcue-licensing", "crates/selahcue-stt-cloud"]
 # The Tauri operator shell is a GUI app (webview) that cannot be runtime-tested in the
 # headless build env and pulls a heavy toolchain-dependent dependency tree. It is kept
 # out of the default workspace so the core stays fast + green; it is its own package,

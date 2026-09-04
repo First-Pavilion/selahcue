@@ -1,0 +1,55 @@
+[package]
+name = "selahcue-stt-cloud"
+publish.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Cloud streaming transcription behind the core's TranscriptProvider seam (ADR-0019): a Deepgram live-streaming client whose credential is injected, whose buffers are bounded in both directions, and whose real WebSocket transport is off by default so the workspace build stays synchronous and dependency-light."
+
+[features]
+default = []
+# The real Deepgram WebSocket transport (async: tokio + tokio-tungstenite + rustls).
+# OFF by default so the default workspace build pulls in NO async runtime and NO
+# WebSocket stack — everything that can be decided without a socket (frame parsing,
+# interim-vs-final mapping, both bounded buffers, the consent gate, the retry policy,
+# error classification, readiness) lives in the default build and is therefore covered
+# by the `cargo test --workspace` that CI already runs.
+deepgram = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
+
+[dependencies]
+selahcue-core = { path = "../selahcue-core" }
+# Deepgram's wire format is JSON. Synchronous and already ubiquitous in this workspace,
+# so parsing stays in the default build where the tests can reach it.
+serde_json = "1"
+
+# --- `deepgram` feature: the async TLS WebSocket transport ---
+# Every crate here is ALREADY in `Cargo.lock` via `selahcue-lan --features server` and
+# `selahcue-cloud --features http`, and `webpki-roots`' CDLA-Permissive-2.0 licence is
+# already allowlisted in `deny.toml`. Pinned to the same majors the LAN transport uses so
+# the workspace does not carry two copies of a TLS stack.
+tokio = { version = "1", optional = true, default-features = false, features = [
+    "rt",
+    # The session builds its own current-thread runtime, so production does not need this.
+    # The stub-socket suite does: a test that blocks a runtime thread joining the worker while
+    # the stub server is a task on the SAME single-threaded runtime deadlocks — the server can
+    # never answer, so the worker never returns, so the join never completes.
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "sync",
+    "time",
+    "macros",
+] }
+tokio-tungstenite = { version = "0.24", optional = true, default-features = false, features = [
+    "connect",
+    "handshake",
+    "rustls-tls-webpki-roots",
+] }
+futures-util = { version = "0.3", optional = true, default-features = false, features = [
+    "sink",
+    "std",
+] }
+
+[lints]
+workspace = true
