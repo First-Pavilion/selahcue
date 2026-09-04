@@ -228,7 +228,7 @@ REQUIRED_TARGET_COUNT = 4
 # generate cases, then one floor covers all of them, and the last unpinned number is a number
 # whose only effect is to be too low -- which every other case would then have to be deleted to
 # exploit. RAISE THIS when cases are added; it may only ever go up.
-SELF_TEST_CASE_FLOOR = 41
+SELF_TEST_CASE_FLOOR = 42
 
 # --------------------------------------------------------------------------------------
 # THE DECLARED TARGETS. Also one place, and also shaped for growth.
@@ -644,6 +644,9 @@ def _expect_red(fn, case: str) -> tuple[str | None, ScanError | None]:
 def self_test() -> int:
     failures: list[str] = []
     cases = 0
+    # Cases that could not RUN on this platform, kept separately and counted TOWARD the floor.
+    # See self_test_case_floor for why this must not be "just don't count them".
+    skipped: list[str] = []
 
     with tempfile.TemporaryDirectory(prefix="selahcue-scan-selftest-") as tmp:
         root = pathlib.Path(tmp)
@@ -731,6 +734,33 @@ def self_test() -> int:
             failures.append(
                 "every_glob_match_is_scanned: a glob matched two artefacts and the poisoned "
                 "SECOND one was not read — resolve() is dropping matches."
+            )
+
+        # --- a filename containing a SPACE resolves ---------------------------------------
+        # Not hypothetical: the real bundle is `SelahCue Operator_0.1.0_x64-setup.exe`, because
+        # tauri.conf's productName has a space in it. `pathlib.glob` handles that; a shell-glob
+        # or `ls`-based resolver would likely not, and the break would be a clean-looking
+        # "matched NO file" red rather than a silent pass -- the fail-closed design working.
+        # This case exists so a future rewrite of resolve() cannot quietly reintroduce it.
+        cases += 1
+        spaced = root / "spaced"
+        _artefact(spaced / "SelahCue Operator_0.1.0_x64-setup.exe", b"selahcue dev-keys: y")
+        c, exc = _expect_red(
+            lambda: scan(_targets("spaced/*-setup.exe")), "filename_with_a_space_resolves"
+        )
+        # ASSERT THE RIGHT RED. The first draft of this case checked only that the gate failed,
+        # and a space-blind resolver fails too -- with "matched NO file" -- so the case passed
+        # while proving nothing. Both outcomes are red; only one of them is detection.
+        if c:
+            failures.append(
+                "filename_with_a_space_resolves: the gate PASSED on a poisoned artefact whose "
+                "name contains a space."
+            )
+        elif "developer-key signature is present" not in str(exc):
+            failures.append(
+                "filename_with_a_space_resolves: the gate failed, but NOT by detecting the "
+                f"signature (got: {str(exc)[:110]}). resolve() is probably dropping the file "
+                "rather than reading it, which is a clean-looking red for the wrong reason."
             )
 
         # --- the pins themselves have not shrunk -----------------------------------------
@@ -868,7 +898,8 @@ def self_test() -> int:
             if c:
                 failures.append(c)
         else:
-            print("   unreadable_file: SKIPPED — this platform/user ignores mode 000 "
+            skipped.append("unreadable_file (this platform/user ignores mode 000)")
+            print("   unreadable_file: SKIPPED - this platform/user ignores mode 000 "
                   "(the directory case above covers the same fail-closed branch)")
         os.chmod(unreadable, 0o644)
 
@@ -1027,9 +1058,21 @@ def self_test() -> int:
     # The last unguarded collection in this file: the suite's own case count. Deleting a whole
     # case block lowers the total and the run stays green, which is this pattern one final level
     # up. Raise this floor when cases are added; it is only ever allowed to go up.
-    if cases < SELF_TEST_CASE_FLOOR:
+    # SKIPPED CASES COUNT TOWARD THE FLOOR, and this is not a loophole -- it is what makes the
+    # floor platform-invariant. `unreadable_file` self-skips wherever mode 000 is not enforced,
+    # which is exactly the platform this gate RUNS on: Windows produces one case fewer than a
+    # developer's Mac. Comparing bare `cases` against a floor set from a local run therefore
+    # fails the build on Windows for a reason that has nothing to do with the code -- a
+    # self-inflicted red on a correct build, which is the same defect class as a gate with a
+    # scheduled false positive. Review caught this before it shipped; it was live on the
+    # previous head.
+    #
+    # A skipped case is still ACCOUNTED FOR: it is named in the log and in this total, so
+    # deleting the case block drops the count exactly as removing a running case would.
+    if cases + len(skipped) < SELF_TEST_CASE_FLOOR:
         failures.append(
-            f"self_test_case_floor: ran {cases} cases, floor is {SELF_TEST_CASE_FLOOR}. "
+            f"self_test_case_floor: ran {cases} cases + {len(skipped)} skipped, floor is "
+            f"{SELF_TEST_CASE_FLOOR}. "
             "Something that GENERATES cases got smaller — a signature, an encoding, a target, "
             "or a case block itself. Restore it, or lower this floor deliberately as part of "
             "the documented edit for removing that thing."
@@ -1040,7 +1083,8 @@ def self_test() -> int:
         for f in failures:
             print(f"  - {f}", file=sys.stderr)
         return 1
-    print(f"installer_secret_scan self-test: {cases} cases passed")
+    tail = f", {len(skipped)} skipped ({'; '.join(skipped)})" if skipped else ""
+    print(f"installer_secret_scan self-test: {cases} cases passed{tail}")
     return 0
 
 
@@ -1051,6 +1095,17 @@ def main() -> int:
     )
     ap.add_argument("--root", default=None, help="repository root (default: this script's parent)")
     args = ap.parse_args()
+
+    # The Windows runner rendered this script's em-dashes as replacement characters, which is
+    # cosmetic -- but only because the encoding happened to be lenient. On a stdout encoding that
+    # cannot map a character, `print` RAISES, and this gate would die while emitting the
+    # `EXPIRES: DELETE this row at 86akby3xu` line, which exists precisely to be read off a red
+    # build. The mechanism would fail exactly when it is needed, and the failure would look like
+    # a broken gate rather than a legitimate red. Never let output encoding decide a gate.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
 
     if args.self_test:
         return self_test()
