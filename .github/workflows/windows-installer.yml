@@ -31,6 +31,14 @@
 # rlib. Source-level controls (`#[cfg(debug_assertions)]`, the source guard, the profile
 # scan) are kept for better error messages but every one of them has been defeated in review
 # by a spelling nobody enumerated; do not rely on them here.
+#
+# A SECOND, SIBLING SCAN *IS* WIRED IN, at the bottom of this job: `scripts/installer_secret_scan.py`
+# guards a DIFFERENT secret -- the `dev-keys` developer AI-provider loader in
+# selahcue-operator/src/dev_env.rs -- and it scans the BUILT artefacts this workflow ships,
+# which is the move the paragraph above asks for. Two scans, one implemented: when 86ak5mn1d /
+# 86ak5mn1t make a bundled binary link selahcue-licensing, the entitlement-key scan slots in as
+# another signature source over the SAME artefact list, not another walk of the tree. Both
+# scans run before the upload step, so a failing artefact is never published.
 # ---------------------------------------------------------------------------------------
 name: windows-installer
 
@@ -55,6 +63,12 @@ jobs:
             implementation/desktop/crates/selahcue-operator
       # MSVC dev shell so dumpbin + lib (used to generate the NDI import library) are on PATH.
       - uses: ilammy/msvc-dev-cmd@v1
+      # Interpreter for the shipped-artefact secret scan at the bottom of this job. Pinned, and
+      # installed even though windows-latest ships a Python: the runner image's version floats,
+      # and the `python3` spelling is not reliably on PATH on Windows at all.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       # whisper-rs (STT) compiles whisper.cpp: needs cmake + libclang (bindgen). windows-latest
       # ships both; assert them and export LIBCLANG_PATH so a future image change fails fast here
@@ -133,6 +147,40 @@ jobs:
       - name: Build the installer (--features stt)
         working-directory: implementation/desktop/crates/selahcue-operator
         run: cargo tauri build --features stt
+
+      # ---------------------------------------------------------------------------------
+      # EFFECT-LEVEL GATE: developer AI-provider keys must not be in what we ship.
+      #
+      # TWO STEPS, NOT ONE, and the order matters. The self-test proves this gate's own
+      # failure modes still bite -- a glob that matches nothing, a zero-byte placeholder, an
+      # unreadable file, a neutered positive control -- BEFORE its verdict is allowed to mean
+      # anything. A scan that silently examines nothing passes forever, and that is the exact
+      # failure mode this guard family keeps hitting. Same shape as the `--self-test` then run
+      # pairs for check_workflows.py and ci_alarm.py in ci.yml.
+      #
+      # Both run before the upload below, so an artefact that fails is never published.
+      # ---------------------------------------------------------------------------------
+      # `$LASTEXITCODE` is checked explicitly rather than left to the runner's pwsh epilogue.
+      # It would in fact propagate, but a gate whose failure depends on a wrapper detail the
+      # reader has to look up is a gate someone will later "simplify" into a no-op -- and this
+      # repo has already lost a gate to a swallowed exit code once.
+      - name: Self-test the shipped-artefact scanner (its own failure modes must bite)
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        run: |
+          python scripts/installer_secret_scan.py --self-test
+          if ($LASTEXITCODE -ne 0) {
+            throw "The shipped-artefact scanner failed its OWN self-test. Its verdict on the real artefacts cannot be trusted, so this build stops here."
+          }
+
+      - name: Developer-key signatures absent from the shipped artefacts (effect-level gate)
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        run: |
+          python scripts/installer_secret_scan.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "A developer-key signature is present in an artefact this workflow ships, or the scan could not prove it read one. See the step log for the artefact path and the matched string."
+          }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
