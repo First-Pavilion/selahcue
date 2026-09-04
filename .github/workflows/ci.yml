@@ -562,6 +562,21 @@ jobs:
       - name: Test
         if: ${{ !cancelled() }}
         run: cargo test --no-fail-fast
+      # `dev-keys` (86akby6yy) is OFF by default, so the four steps above compile none of the
+      # `.env` loader and none of its tests. One of those tests is a SECURITY control: it asserts
+      # at the WRITE boundary that no name outside the two-entry allowlist reaches the process
+      # environment, which is what stops the loader injecting an arbitrary environment from a
+      # `.env` file. Sana's PR #18 review (F1) found that control missing, and the mutation that
+      # exposed it left the whole suite green -- so this is exactly the kind of gap a gate has to
+      # cover rather than a developer remembering `make ci`. `selahcue-stt` is the standing
+      # example of what happens otherwise: its own lint policy is unenforced because no CI job
+      # compiles it. Runs on all three OSes, like the steps above.
+      - name: Clippy (dev-keys)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features dev-keys --all-targets -- -D warnings
+      - name: Test (dev-keys)
+        if: ${{ !cancelled() }}
+        run: cargo test --features dev-keys --no-fail-fast
       # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
       # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
       # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-
