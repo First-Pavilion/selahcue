@@ -211,6 +211,53 @@ rather than marked passed.
   green, proving the two discriminate rather than both passing for one reason.
 - Decision: complete.
 
+### Iteration 5 — resumption after a session-limit kill: the battery v2, run whole, from position 1
+
+- Target criterion: C-006, re-verified against the post-review head (Cody F1-F4, Sana F-1),
+  which added four controls the iteration 2 battery (39 cases) never saw: F1's userinfo
+  refusal, F2's two admissibility (vacuity) probes, F3's crypto-provider install, and F4's
+  hang-vs-kill distinction applied to the pre-existing connect-timeout case, plus F-1's write
+  bound. `lane-a-battery-v2.py` (scratchpad) enumerates 43 named mutations against this head.
+- Context: the prior session was killed by a session limit mid-battery. On resumption, `git
+  status` showed `transport.rs` modified and uncommitted — not new work, but mutation #36
+  ("backoff reset needs a durable connection") left applied in the tree, because the kill
+  bypassed the script's SIGTERM/SIGINT restore handler (a hard process kill, not a signal it
+  can catch). Restored to HEAD by direct edit (not `git checkout`, to avoid an unreviewed
+  discard of uncommitted state) and confirmed byte-identical to the mutation's own recorded
+  "old" string.
+- Second finding: the battery process itself was not actually dead. `ps` showed
+  `lane-a-battery-v2.py` (PID 85604, PPID 1 — reparented to init) still running, stdout/stderr
+  attached directly to `scratchpad/battery-v2.txt`, mid-way through the 43-case list it had
+  started from position 1 at 18:06:44 (the same run, not a resume — the script has no resume
+  logic, one pass through `M` in order). Restarting a second battery in parallel would have
+  raced both processes over the same source files with no locking. Left it running and
+  monitored to exit instead of relaunching.
+- Result: the orphaned process completed on its own. Final tally: **43/43 killed, 0 HANGS**,
+  exit code 0. Both builds (`default`, `feature=deepgram`) confirmed GREEN in the script's own
+  post-battery restore-and-confirm step. Working tree confirmed clean (`git status --porcelain`
+  empty) immediately after — every mutation's `finally` block restored its file.
+- The line worth keeping precise: the `finally`-block restore guarantee holds for the script's
+  *own* failures (an anchor miss, a test panic, a normal exit) — not for the process being
+  killed out from under it. Mutation #36's leftover in iteration context above is exactly that
+  case: a hard kill does not run Python's `finally`, only `SIGTERM`/`SIGINT` do, and the session
+  limit did not deliver either. The signal handler and the `finally` block are two different
+  safety nets for two different failure modes, and only one of them fired here.
+- `make ci`, run after this iteration, was checked against the clock rather than assumed clean:
+  `battery-v2.txt`'s last write (the script's own final summary line, `flush=True` on every
+  print) is filesystem-timestamped 18:46:38; `make ci`'s own log file was created (i.e., the
+  run began) at 18:47:41 — a 63-second gap with `lsof` showing nothing holding the battery
+  output file open in between. `make ci` therefore ran over a tree the battery was no longer
+  touching, not one it was mutating underneath it.
+- Note on v1 vs v2: v1 (39 cases, iteration 2) counted a 300s subprocess timeout as a kill
+  ("RED(hang)") — v2 exists specifically because Cody's F4 named that as self-deception: a
+  hang and a failure are indistinguishable in a bare pass count, so v2 tracks them separately
+  and only counts genuine test-assertion RED as a kill. The connect-timeout mutation that hung
+  under v1 is re-checked under v2 ("Cody F4 re-check") and kills cleanly with 0 hangs this
+  time — the earlier hang was the harness's own single-threaded-runtime defect (fixed in
+  iteration 2), not a property of this mutation.
+- Decision: complete. C-006 now covers all 43 named controls at the post-review head, not the
+  39 recorded before Cody/Sana's fixes landed.
+
 ## Risks and rollback
 
 - Risks:
