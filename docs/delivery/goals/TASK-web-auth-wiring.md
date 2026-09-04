@@ -34,6 +34,19 @@ password. Three files on this branch documented the old ordering as current fact
 all three are corrected, and the new code has a C-row (C-020). A textually empty merge that
 changes what the branch's comments mean is the reason this section exists.
 
+**Re-baselined again, immediately before the push, onto `origin/main` @ `3f3072e`** (merge
+commit `239fc69`; the branch is 0 behind). Between the batch that wrote this contract and the
+push, PR #18 (`86akby6yy`, the operator dev-env loader) landed and put the branch 6 behind.
+It touches zero files under `implementation/marketing` and zero under `implementation/api`
+— including the three files the mirrors READ (`graphql/errors.py`, `pyproject.toml`,
+`apps/accounts/services.py`), all unchanged — so unlike `33237c0` this merge is inert both
+textually and semantically on this PR's surface. It is *not* inert on the diff: `#18` edits
+`.github/workflows/ci.yml` and `.gitignore`, which this branch also edits, so both files
+auto-merged and were checked hunk by hunk rather than assumed (both sides' additions
+present, no conflict markers, the YAML still parses). Every figure below was re-measured on
+this merged tree, not carried over: a gate result is evidence about the tree it ran on, and
+"the branch was green six commits ago" is the claim this section exists to refuse.
+
 - `src/lib/api/graphql.ts` — working transport seam: relative `/graphql/account`,
   `credentials: 'same-origin'`, HTTP-200 error envelope handled, client-only `NETWORK`
   code, never logs.
