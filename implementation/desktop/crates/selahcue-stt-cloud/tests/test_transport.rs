@@ -86,7 +86,11 @@ fn config_for(endpoint: DeepgramEndpoint, retry: RetryPolicy) -> SessionConfig {
         connect_timeout: Duration::from_secs(5),
         write_timeout: Duration::from_millis(300),
         stall_timeout: Duration::from_secs(30),
-        reset_backoff_after: Duration::from_secs(30),
+        // Strictly greater than `stall_timeout` — see `SessionConfig::reset_backoff_after`
+        // and `SessionConfig::validate`. Every test below either uses this pair unchanged or
+        // lowers `stall_timeout` alone, so this stays the wide margin in both cases; V-2's own
+        // tests construct the equal/inverted pairs explicitly rather than through this helper.
+        reset_backoff_after: Duration::from_secs(60),
     }
 }
 
@@ -1116,6 +1120,217 @@ async fn a_slow_but_adequate_reader_is_not_torn_down() {
         "a peer that reads slowly but keeps pace was torn down as if it had stopped reading \
          (it is {:?}) — cloud transcription would drop on any congested church network",
         status.get()
+    );
+
+    feeder.abort();
+    session.stop();
+    server.abort();
+}
+
+// --- V-2 (86akby4yz): stall_timeout vs reset_backoff_after -----------------------------------
+//
+// `SessionConfig::default()` shipped both at 30 seconds. A stall failure cannot fire before
+// `stall_timeout` has elapsed, so an equal (or inverted) pair means every stall failure also
+// satisfies the reset condition in `run()` — `attempt` returns to 0 forever, and
+// `RetryPolicy`'s "it gives up" guarantee is unreachable against a peer that accepts audio and
+// answers nothing. Cody's review named exactly why a 43/43 mutation battery could not have
+// caught this: mutation testing only detects the removal of an assertion that already exists,
+// and there was never an assertion about this composition — `test_retry.rs` tests the pure
+// policy in isolation, and every test in this file either left `reset_backoff_after` at the
+// shared default without varying it against `stall_timeout`, or used `max_attempts: 1`, which
+// can never observe a reset happening at all. The three tests below close that gap:
+//
+// 1. `a_reset_backoff_not_strictly_greater_than_stall_timeout_is_refused` — the composition
+//    itself, pure and clockless. It calls `SessionConfig::validate` directly, the same
+//    expression `CloudSttSession::start` consumes, not a re-derived copy of it.
+// 2. `a_session_with_an_unsafe_reset_ratio_never_opens_a_socket` — proves `start` actually
+//    calls `validate` rather than the pure test above merely proving the predicate works in
+//    isolation.
+// 3. `a_healthy_ratio_still_gives_up_against_a_peer_that_never_answers` — the positive control:
+//    a correctly separated ratio, against the same kind of silent peer, still reaches
+//    `Failed{GaveUp}` through several real reconnect cycles, so "gives up" stays distinguishable
+//    from "gives up on everything".
+
+#[test]
+fn a_reset_backoff_not_strictly_greater_than_stall_timeout_is_refused() {
+    let base = config_for(DeepgramEndpoint::default(), RetryPolicy::default());
+
+    let equal = SessionConfig {
+        stall_timeout: Duration::from_secs(30),
+        reset_backoff_after: Duration::from_secs(30),
+        ..base.clone()
+    };
+    assert!(
+        equal.validate().is_err(),
+        "an equal stall_timeout/reset_backoff_after pair was accepted; every stall failure \
+         would also satisfy the reset condition and the retry policy could never give up — \
+         this is the exact shape 86akby4yz's V-2 shipped with"
+    );
+
+    let inverted = SessionConfig {
+        stall_timeout: Duration::from_secs(30),
+        reset_backoff_after: Duration::from_secs(10),
+        ..base.clone()
+    };
+    assert!(
+        inverted.validate().is_err(),
+        "reset_backoff_after shorter than stall_timeout was accepted, which is strictly worse \
+         than the equal case and was not refused"
+    );
+
+    // Positive control: a config on the correct side of the boundary is not refused, so the
+    // check above is testing the boundary rather than rejecting everything it is given.
+    let healthy = SessionConfig {
+        stall_timeout: Duration::from_secs(30),
+        reset_backoff_after: Duration::from_secs(60),
+        ..base
+    };
+    assert!(
+        healthy.validate().is_ok(),
+        "a correctly separated ratio (reset_backoff_after strictly greater than \
+         stall_timeout) was refused, so this check is not testing the boundary it claims to"
+    );
+
+    // The shipped default itself must pass its own check.
+    assert!(
+        SessionConfig::default().validate().is_ok(),
+        "SessionConfig::default() fails its own validation"
+    );
+}
+
+#[test]
+fn a_session_with_an_unsafe_reset_ratio_never_opens_a_socket() {
+    // No listener needed: `start()` must refuse before any network activity at all, so this
+    // targets a port nothing is listening on and still expects an immediate, synchronous Err.
+    let mut config = config_for(
+        DeepgramEndpoint::custom("ws://127.0.0.1:1/v1/listen"),
+        RetryPolicy::default(),
+    );
+    config.stall_timeout = Duration::from_secs(30);
+    config.reset_backoff_after = Duration::from_secs(30); // equal — the exact V-2 shape
+
+    let outcome = CloudSttSession::start(
+        &authorised(),
+        Credential::developer_key(TEST_SECRET).expect("fixture key"),
+        config,
+        AudioRing::new(),
+        SegmentQueue::new(),
+        SessionStatus::new(),
+    );
+
+    match outcome {
+        Err(selahcue_stt_cloud::DeepgramError::InvalidConfig { detail }) => {
+            assert!(
+                detail.contains("stall_timeout") && detail.contains("reset_backoff_after"),
+                "the refusal message does not name which two settings are in conflict: {detail}"
+            );
+        }
+        other => panic!(
+            "a session with an equal stall_timeout/reset_backoff_after pair was allowed to \
+             start ({other:?}); it would reconnect forever against a peer that accepts audio \
+             and answers nothing, never reaching Failed{{GaveUp}}"
+        ),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_healthy_ratio_still_gives_up_against_a_peer_that_never_answers() {
+    // The positive control matching Cody's own reproduction shape: same silent-peer stub, same
+    // general timing scale as the equal-ratio repro he ran, but with reset_backoff_after
+    // separated from stall_timeout by a wide margin. If this test failed to give up, the fix
+    // below would have disabled the reset mechanism entirely rather than correcting it — "gives
+    // up" would be indistinguishable from "gives up on everything".
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let port = listener.local_addr().expect("local addr").port();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let audio_bytes = Arc::new(AtomicUsize::new(0));
+
+    let server_accepted = Arc::clone(&accepted);
+    let server_audio = Arc::clone(&audio_bytes);
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            server_accepted.fetch_add(1, Ordering::SeqCst);
+            // Handshake normally, read every byte, answer nothing — Cody's and Vera's stub.
+            if let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await {
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Message::Binary(bytes) = message {
+                        server_audio.fetch_add(bytes.len(), Ordering::SeqCst);
+                    }
+                }
+            }
+        }
+    });
+
+    let mut config = config_for(
+        DeepgramEndpoint::custom(format!("ws://127.0.0.1:{port}/v1/listen")),
+        RetryPolicy {
+            max_attempts: 3,
+            initial_backoff: Duration::from_millis(20),
+            max_backoff: Duration::from_millis(40),
+        },
+    );
+    config.stall_timeout = Duration::from_millis(150);
+    config.reset_backoff_after = Duration::from_secs(2); // >> stall_timeout; passes validate()
+
+    let ring = AudioRing::new();
+    let status = SessionStatus::new();
+    let session = CloudSttSession::start(
+        &authorised(),
+        Credential::developer_key(TEST_SECRET).expect("fixture key"),
+        config,
+        ring.clone(),
+        SegmentQueue::new(),
+        status.clone(),
+    )
+    .expect("a correctly separated ratio starts");
+
+    // Keep audio flowing for the whole test, across every reconnect, so the stall bound stays
+    // armed on each connection rather than lapsing into the (correctly) untested idle case.
+    let feeder_ring = ring.clone();
+    let feeder = tokio::spawn(async move {
+        loop {
+            feeder_ring.push(AudioChunk::from_pcm_i16(&[0; 160]));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    assert!(
+        within(Duration::from_secs(10), || status.get().is_terminal()).await,
+        "a healthy stall/reset ratio never reached a terminal state against a peer that never \
+         answers (it is {:?}); the fix for V-2 must not have disabled the give-up path \
+         entirely while correcting it",
+        status.get()
+    );
+
+    match status.get() {
+        SessionState::Failed { action, message } => {
+            assert_eq!(action, OperatorAction::CheckNetwork);
+            assert!(
+                message.contains("gave up"),
+                "the terminal message does not say it gave up: {message}"
+            );
+        }
+        other => panic!("expected a give-up failure, got {other:?}"),
+    }
+
+    // Exercised before contract: several real reconnect cycles happened (not one lucky
+    // failure), and the peer genuinely received audio each time, so the stall bound was armed
+    // on every attempt rather than firing on an idle link.
+    let tries = accepted.load(Ordering::SeqCst);
+    assert!(
+        tries >= 2,
+        "the client only connected {tries} time(s), so this did not exercise repeated \
+         reconnect cycles and the reset-ratio fix went unexercised"
+    );
+    assert!(
+        audio_bytes.load(Ordering::SeqCst) > 0,
+        "the stub never received audio, so the stall bound never armed and this test did not \
+         exercise the failure mode V-2 is about"
     );
 
     feeder.abort();

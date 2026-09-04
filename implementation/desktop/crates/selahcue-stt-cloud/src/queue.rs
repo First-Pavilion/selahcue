@@ -177,8 +177,27 @@ impl SegmentQueue {
     }
 
     /// Retained transcript-text bytes (never exceeds [`MAX_QUEUED_SEGMENT_BYTES`]).
+    ///
+    /// **Logical length** (`text.len()` summed across queued segments) — the number the byte
+    /// bound is defined in terms of, but not, by itself, proof of how much memory is actually
+    /// retained. See [`SegmentQueue::retained_capacity_bytes`].
     pub fn retained_bytes(&self) -> usize {
         self.lock().retained_bytes
+    }
+
+    /// Total backing-allocation **capacity** across every retained segment's text, in bytes —
+    /// the actual memory held, as distinct from [`SegmentQueue::retained_bytes`]'s logical
+    /// length.
+    ///
+    /// The two can diverge: `String::truncate` (unlike the reallocating truncation this queue
+    /// actually performs — see `truncate_segment`) sets length without shrinking capacity, so
+    /// a queue built on it could report a bounded `retained_bytes()` while holding an
+    /// unbounded `retained_capacity_bytes()`. This reads `String::capacity()` directly off the
+    /// retained segments — the entity the bound is supposed to be limiting — rather than a
+    /// count `truncate_segment` could satisfy without actually releasing anything (86akby4yz,
+    /// V-1).
+    pub fn retained_capacity_bytes(&self) -> usize {
+        self.lock().segments.iter().map(|s| s.text.capacity()).sum()
     }
 
     /// The queue's own bound verdict — the same expression its eviction loop consumes.
@@ -209,13 +228,24 @@ impl SegmentQueue {
 
 /// Truncate a segment's text to [`MAX_SEGMENT_TEXT_LEN`] on a UTF-8 boundary (never panics,
 /// never splits a codepoint).
+///
+/// Reallocates rather than calling `String::truncate` in place. `truncate` only sets the
+/// logical length — it keeps the original backing allocation, capacity and all. Text arrives
+/// here from `parse_results`' `.to_string()` and `to_segment`'s `.clone()`, with capacity
+/// roughly the size of the transcript that produced it, and a transcript can arrive up to
+/// `MAX_FRAME_BYTES` (256 KB). Truncating in place would therefore keep the full 256 KB
+/// allocation alive behind a 2,000-byte segment: `retained_bytes` (which counts
+/// `text.len()`) would report the bound as held while the process actually retained roughly
+/// 130x that, under exactly the flood this bound exists to catch (86akby4yz, V-1).
+/// `s[..end].to_string()` allocates fresh, at exactly `end` bytes — the same pattern
+/// `selahcue_core::transcript::bounded_text` already uses.
 fn truncate_segment(mut segment: ProviderSegment) -> ProviderSegment {
     if segment.text.len() > MAX_SEGMENT_TEXT_LEN {
         let mut end = MAX_SEGMENT_TEXT_LEN;
         while end > 0 && !segment.text.is_char_boundary(end) {
             end -= 1;
         }
-        segment.text.truncate(end);
+        segment.text = segment.text[..end].to_string();
     }
     segment
 }

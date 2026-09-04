@@ -68,6 +68,9 @@ fn only_a_transport_failure_is_retried() {
             detail: "bad frame".to_string(),
         },
         DeepgramError::GaveUp { attempts: 5 },
+        DeepgramError::InvalidConfig {
+            detail: "reset_backoff_after must exceed stall_timeout".to_string(),
+        },
     ] {
         assert!(
             !terminal.is_retryable(),

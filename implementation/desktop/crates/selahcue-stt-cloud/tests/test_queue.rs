@@ -266,6 +266,67 @@ fn truncation_never_splits_a_codepoint() {
 }
 
 #[test]
+fn a_flood_of_near_frame_cap_transcripts_does_not_retain_far_more_than_it_reports() {
+    // V-1 (86akby4yz). `truncate_segment` used to call `String::truncate` in place, which sets
+    // the logical length but keeps the ORIGINAL backing allocation. A transcript can arrive up
+    // to MAX_FRAME_BYTES (256 KB, `protocol.rs`) before this queue ever sees it and is
+    // truncated down to MAX_SEGMENT_TEXT_LEN (2,000 bytes) on admission — so the queue could
+    // report a bounded `retained_bytes()` while each entry actually held onto its full
+    // original allocation, off by roughly 130x under exactly this flood (Vera measured ~130x
+    // on a max-size-frame flood; Cody independently confirmed the mechanism by reading
+    // `String::truncate`'s own contract).
+    //
+    // `retained_bytes()` is the logical length — the value the bug corrupts — so a test that
+    // reads only that would pass against the defect (the "control reads a copy of the real
+    // predicate" trap this repo records under 86ak643rc). This asserts the real allocation
+    // instead: `retained_capacity_bytes()` reads `String::capacity()` directly off the
+    // retained segments, which is the entity the byte bound is actually meant to limit.
+    const NEAR_FRAME_CAP: usize = 250_000; // just under Deepgram's 256 KB frame cap
+
+    let queue = SegmentQueue::new();
+    let huge = "x".repeat(NEAR_FRAME_CAP);
+    // Comfortably past where the byte budget binds (≈66 entries at 2,000 bytes truncated
+    // each), so eviction genuinely happens rather than this flood merely filling the queue.
+    for _ in 0..(MAX_QUEUED_SEGMENTS / 2) {
+        // `seg()` → `ProviderSegment::final_text(&huge, ..)` → `.into()` on `&str` allocates a
+        // fresh, exact-capacity 250,000-byte `String` every call — the same shape a large
+        // incoming transcript arrives in via `parse_results`' `.to_string()` / `to_segment`'s
+        // `.clone()`, not a string this test already shrank for it.
+        queue.push(seg(&huge));
+    }
+
+    // Exercised before contract, same discipline as every other bounded-memory test here.
+    assert!(
+        queue.dropped_for_bound() > 0,
+        "the flood evicted nothing, so this test never reached the truncation path it is \
+         supposed to be measuring"
+    );
+    assert!(queue.is_within_bounds());
+    assert!(
+        queue.retained_bytes() <= MAX_QUEUED_SEGMENT_BYTES,
+        "the logical length itself exceeds the byte budget: {}",
+        queue.retained_bytes()
+    );
+
+    // The entity the defect corrupts: actual retained allocation, not the logical length that
+    // both hides the bug and satisfies the assertion above either way. Pre-fix, each entry
+    // keeps its ~250,000-byte original allocation behind a ~2,000-byte logical length, so this
+    // number would run into the tens of megabytes against a 128 KB budget. Post-fix,
+    // `truncate_segment` reallocates exactly (`s[..end].to_string()`, matching
+    // `selahcue_core::transcript::bounded_text`), so capacity tracks length precisely and this
+    // holds the same bound `retained_bytes()` does.
+    assert!(
+        queue.retained_capacity_bytes() <= MAX_QUEUED_SEGMENT_BYTES,
+        "retained_capacity_bytes()={} but retained_bytes()={} (budget {MAX_QUEUED_SEGMENT_BYTES}); \
+         the queue is holding allocations far larger than the truncated text it reports — \
+         truncate_segment kept the original ~{NEAR_FRAME_CAP}-byte backing allocation instead \
+         of reallocating exactly",
+        queue.retained_capacity_bytes(),
+        queue.retained_bytes()
+    );
+}
+
+#[test]
 fn clones_share_one_queue() {
     // The transport pushes through a clone while the provider drains through another. If
     // clones did not share, every bound above would be tested on a queue nothing else uses.

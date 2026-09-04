@@ -75,6 +75,10 @@ pub struct SessionConfig {
     /// that down would be a false alarm on a service that is merely between items. While audio
     /// is flowing, Deepgram answers continuously — including empty interim results during
     /// silence in the room — so silence from the peer *then* is genuinely anomalous.
+    ///
+    /// By construction, a stall failure cannot fire before a connection has been open for at
+    /// least this long. [`SessionConfig::validate`] depends on that fact to keep a stall from
+    /// masquerading as a durable connection — see [`SessionConfig::reset_backoff_after`].
     pub stall_timeout: Duration,
     /// How long any single socket **write** may take before it counts as a transport failure.
     ///
@@ -118,8 +122,38 @@ pub struct SessionConfig {
     /// and immediately drops would reset the counter every cycle and reconnect forever, which
     /// is the exact behaviour [`RetryPolicy`] exists to prevent. A connection only "counts"
     /// once it has stayed up this long.
+    ///
+    /// # Must exceed `stall_timeout` — enforced, not just documented
+    ///
+    /// `run()` resets the backoff counter after *any* connection that survived this long,
+    /// "whatever the reason" it then failed. A stall failure cannot fire before
+    /// [`SessionConfig::stall_timeout`] has elapsed, so if this value is not strictly greater
+    /// than `stall_timeout`, **every** stall failure also satisfies the reset condition:
+    /// `attempt` returns to 0 on every cycle, and [`RetryPolicy`]'s stated guarantee — bounded,
+    /// it gives up — becomes unreachable against exactly the failure mode `stall_timeout`
+    /// exists to catch (a peer that accepts audio and answers nothing). This was shipped with
+    /// both defaults equal to 30 seconds and found in review (86akby4yz, V-2).
+    ///
+    /// [`SessionConfig::validate`] refuses any config where this is not true, so the defect
+    /// cannot be reintroduced by a future hand-built config — not just the shipped default,
+    /// which is additionally pinned at compile time below.
     pub reset_backoff_after: Duration,
 }
+
+/// Default [`SessionConfig::stall_timeout`], seconds.
+const DEFAULT_STALL_TIMEOUT_SECS: u64 = 30;
+
+/// Default [`SessionConfig::reset_backoff_after`], seconds. Deliberately **not** equal to
+/// [`DEFAULT_STALL_TIMEOUT_SECS`] — see the pin below and `SessionConfig::reset_backoff_after`.
+const DEFAULT_RESET_BACKOFF_AFTER_SECS: u64 = 60;
+
+const _: () = assert!(
+    DEFAULT_RESET_BACKOFF_AFTER_SECS > DEFAULT_STALL_TIMEOUT_SECS,
+    "the shipped reset_backoff_after must exceed the shipped stall_timeout, or a stall \
+     failure (which cannot fire before stall_timeout has elapsed) always also satisfies the \
+     backoff-reset condition and give-up becomes unreachable — this is the exact defect \
+     86akby4yz's V-2 found with both defaults equal to 30 seconds"
+);
 
 impl Default for SessionConfig {
     fn default() -> Self {
@@ -131,9 +165,36 @@ impl Default for SessionConfig {
             keep_alive_after: Duration::from_secs(5),
             connect_timeout: Duration::from_secs(10),
             write_timeout: Duration::from_secs(5),
-            stall_timeout: Duration::from_secs(30),
-            reset_backoff_after: Duration::from_secs(30),
+            stall_timeout: Duration::from_secs(DEFAULT_STALL_TIMEOUT_SECS),
+            reset_backoff_after: Duration::from_secs(DEFAULT_RESET_BACKOFF_AFTER_SECS),
         }
+    }
+}
+
+impl SessionConfig {
+    /// Refuse a configuration whose backoff-reset timing could never tell a bare-minimum
+    /// stall failure apart from a genuinely durable connection.
+    ///
+    /// This is the runtime counterpart to the compile-time pin on the *shipped defaults*
+    /// above: that `const _` assertion only protects `SessionConfig::default()`, but
+    /// `SessionConfig`'s fields are public and constructed directly by tests today and by
+    /// whatever 86akby7th wires up next, so a hand-built value is not something a `const`
+    /// assertion can reach. Calling this from [`CloudSttSession::start`] is what makes the bad
+    /// composition unrepresentable *in a running session*, not merely tested for one
+    /// particular set of numbers (86akby4yz, V-2).
+    pub fn validate(&self) -> Result<(), DeepgramError> {
+        if self.reset_backoff_after <= self.stall_timeout {
+            return Err(DeepgramError::InvalidConfig {
+                detail: format!(
+                    "reset_backoff_after ({:?}) must be strictly greater than stall_timeout \
+                     ({:?}); otherwise a stall failure can never be distinguished from a \
+                     durable connection, the backoff counter resets on every stall, and cloud \
+                     transcription can reconnect forever without ever giving up",
+                    self.reset_backoff_after, self.stall_timeout
+                ),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -198,7 +259,8 @@ impl CloudSttSession {
     ///
     /// Returns before the socket is open; watch `status` for progress. Failing fast here
     /// covers only what can be known without a network round trip: consent, the credential's
-    /// shape, and endpoint confidentiality.
+    /// shape, endpoint confidentiality, and the stall/reset timing relationship
+    /// ([`SessionConfig::validate`]).
     pub fn start(
         authorization: &StreamAuthorization,
         credential: Credential,
@@ -207,6 +269,7 @@ impl CloudSttSession {
         queue: SegmentQueue,
         status: SessionStatus,
     ) -> Result<Self, DeepgramError> {
+        config.validate()?;
         let spec = RequestSpec::build(
             authorization,
             &config.endpoint,

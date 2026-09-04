@@ -79,6 +79,15 @@ pub enum DeepgramError {
     /// Reconnection was attempted the bounded number of times and gave up. The session has
     /// stopped cleanly; it is not still retrying in the background.
     GaveUp { attempts: u32 },
+    /// The [`crate::transport::SessionConfig`] itself cannot be started safely. Refused before
+    /// any network activity — this is not something a reconnect could ever fix, so it is not
+    /// retryable, and it is ours to fix, not the operator's.
+    ///
+    /// Currently the only check: `reset_backoff_after` must exceed `stall_timeout`, or a
+    /// stall failure — which cannot fire before `stall_timeout` has elapsed — always also
+    /// satisfies the backoff-reset condition, and give-up becomes unreachable (86akby4yz,
+    /// V-2). See `SessionConfig::validate`.
+    InvalidConfig { detail: String },
 }
 
 impl DeepgramError {
@@ -121,9 +130,9 @@ impl DeepgramError {
             DeepgramError::Transport { .. } | DeepgramError::GaveUp { .. } => {
                 OperatorAction::CheckNetwork
             }
-            DeepgramError::InsecureEndpoint { .. } | DeepgramError::Protocol { .. } => {
-                OperatorAction::ReportDefect
-            }
+            DeepgramError::InsecureEndpoint { .. }
+            | DeepgramError::Protocol { .. }
+            | DeepgramError::InvalidConfig { .. } => OperatorAction::ReportDefect,
         }
     }
 
@@ -179,6 +188,9 @@ impl std::fmt::Display for DeepgramError {
                 "gave up reconnecting to Deepgram after {attempts} attempts; cloud \
                  transcription has stopped"
             ),
+            DeepgramError::InvalidConfig { detail } => {
+                write!(f, "invalid Deepgram session configuration: {detail}")
+            }
         }
     }
 }
