@@ -6,11 +6,11 @@
 - Parent goal ID: EPIC-86ajp08py
 - Title: The Windows installer build fails when a developer-key signature is present in a shipped artefact, and the scan proves it read a real artefact
 - Role: devops-engineer
-- Status: DRAFT
+- Status: IN_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86akc041v
 - Created: 2026-09-04
-- Updated: 2026-09-04
+- Updated: 2026-09-04 (review round 1 applied)
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -35,6 +35,14 @@ Verified at `origin/main` = `3f3072edc158310182d18910e3a7dccabfb66a08` (PR #18 m
   `!cancelled()` step). `windows-installer.yml` uses no `!cancelled()` today.
 - Precedent family: `scripts/dev_key_not_in_release.sh` + `scripts/dev_key_scan.py`; the
   `--self-test` then run pattern is established by `check_workflows.py` and `ci_alarm.py`.
+
+### Baseline addendum — state at review round 1
+
+Head `c18841d` + this round's fixes. **4** declared targets (operator binary, sidecar, NDI
+runtime, NSIS bundle), **6** signatures x **2** encodings = 12 needles, **33** self-test cases.
+The scanner's arithmetic was independently verified exhaustively in review (2,000 randomised
+files across five chunk sizes, plus every needle position at nine more): zero mismatches. The
+defects found in this round were all in the TESTS, not the scanner.
 
 ## Inputs and evidence sources
 
@@ -89,20 +97,22 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | The workflow scans the built operator artefact and fails when any set member is present | `installer_secret_scan.py --self-test` case `injected_signature_is_caught` | non-zero exit naming path + string | self-test output | PENDING |
-| C-002 | yes | The scan FAILS when the artefact is missing, the glob matches nothing, or the file cannot be read — each tested | self-test cases `missing_target`, `glob_matches_nothing`, `unreadable_file` | non-zero exit for each | self-test output | PENDING |
-| C-003 | yes | The positive control proves detection for EVERY string in the set, not just one | self-test case `positive_control_covers_every_signature` | every signature x encoding asserted | self-test output | PENDING |
-| C-004 | yes | If the positive control does not fire, the build fails | self-test case `dead_matcher_fails_closed` | non-zero exit | self-test output | PENDING |
-| C-005 | yes | Evidence in the workflow log shows a real file of non-trivial size was examined | run scanner over a real artefact | per-artefact path + byte size printed | scanner stdout | PENDING |
-| C-006 | yes | Strings are a declared set in ONE place; adding a provider is a data change | read `SIGNATURES` table | single tuple; scanning logic references no literal | script source | PENDING |
-| C-007 | yes | Set includes all six required strings | self-test case `required_signatures_are_declared` | all six present | self-test output | PENDING |
-| C-008 | yes | The scan never modifies what it reads (non-truncation) | self-test case `scan_never_mutates_the_artefact` | size + sha256 unchanged after full run incl. positive control | self-test output | PENDING |
-| C-009 | yes | Mutation-verified: nonexistent path, empty string list, zero-byte file each go RED | self-test cases + manual mutation run | non-zero exit for each | ClickUp evidence comment | PENDING |
-| C-010 | yes | The script explains why this is effect-level and what it does NOT close | read script header | states the compressed-installer and runtime-loader limits | script source | PENDING |
-| C-011 | yes | Lines 24-33 comment stays accurate; every build step keeps `--release` | `git diff` review | comment consistent, no `--release` removed | PR diff | PENDING |
-| C-012 | yes | `check_workflows.py` and `actionlint` pass on the edited workflow | both tools over `.github/workflows/` | exit 0 | command output | PENDING |
-| C-013 | yes | No `Makefile` change, no file under `implementation/` | `git diff --name-only origin/main...HEAD` | only the script, the workflow, this contract | command output | PENDING |
-| C-014 | yes | Independent review: Cody, Vera, Sana, Quinn; Sana confirms F5 | review pipeline | no unremediated blocking findings | review artifact URL | PENDING |
+| C-001 | yes | The workflow scans the built operator artefact and fails when any set member is present | `installer_secret_scan.py --self-test` case `injected_signature_is_caught` | non-zero exit naming path + string | self-test `injected_signature_is_caught` (12 pairs); real-artefact demo exit 1 naming path+string+offset | PASS |
+| C-002 | yes | The scan FAILS when the artefact is missing, the glob matches nothing, or the file cannot be read — each tested | self-test cases `missing_target`, `glob_matches_nothing`, `unreadable_file` | non-zero exit for each | `missing_target`, `glob_matches_nothing`, `unreadable_file`, `target_is_a_directory` — verbatim messages in ClickUp evidence comment. NOTE: `unreadable_file` self-skips where mode 000 is not enforced (Windows), and says so loudly; `target_is_a_directory` covers the same fail-closed branch on every platform | PASS |
+| C-003 | yes | The positive control proves detection for EVERY string in the set, not just one | self-test case `positive_control_covers_every_signature` | every signature x encoding asserted | `positive_control_covers_every_signature` — ADDED this round; it did not exist when this row was written. Mutation `probes[:1]` now dies by name | PASS |
+| C-004 | yes | If the positive control does not fire, the build fails | self-test case `dead_matcher_fails_closed` | non-zero exit | `dead_matcher_fails_closed`; mutation M2 killed | PASS |
+| C-005 | yes | Evidence in the workflow log shows a real file of non-trivial size was examined | run scanner over a real artefact | per-artefact path + byte size printed | per-artefact path, byte count and sha256 printed; 21,685,872 bytes / sha256 3c70a8b2… on the real-binary demo | PASS |
+| C-006 | yes | Strings are a declared set in ONE place; adding a provider is a data change | read `SIGNATURES` table | single tuple; scanning logic references no literal | AST walk: zero signature literals in any scanning function | PASS |
+| C-007 | yes | Set includes all six required strings | self-test case `required_signatures_are_declared` | all six present | `required_signatures_are_declared` + module-level count floor; shrinking BOTH lists now fires the assert | PASS |
+| C-008 | yes | The scan never modifies what it reads (non-truncation) | self-test case `scan_never_mutates_the_artefact` | size + sha256 unchanged after full run incl. positive control | `scan_never_mutates_the_artefact`: 2,048,050 bytes unchanged; mutation writing in place truncates to 701 bytes and the case fails | PASS |
+| C-009 | yes | Mutation-verified: nonexistent path, empty string list, zero-byte file each go RED | self-test cases + manual mutation run | non-zero exit for each | 17 mutations across two batteries, every one killed by a NAMED case | PASS |
+| C-010 | yes | The script explains why this is effect-level and what it does NOT close | read script header | states the compressed-installer and runtime-loader limits | header states the literal-free runtime loader and the `SetCompressor /SOLID` compression limits | PASS |
+| C-011 | yes | Lines 24-33 comment stays accurate; every build step keeps `--release` | `git diff` review | comment consistent, no `--release` removed | lines 24-33 intact and extended; both build steps keep release | PASS |
+| C-012 | yes | `check_workflows.py` and `actionlint` pass on the edited workflow | both tools over `.github/workflows/` | exit 0 | actionlint 1.7.12 exit 0; check_workflows.py exit 0 | PASS |
+| C-013 | yes | No `Makefile` change, no file under `implementation/` | `git diff --name-only origin/main...HEAD` | only the script, the workflow, this contract | 3 files; ci.yml and Makefile untouched; 0 under implementation/ | PASS |
+| C-014 | yes | Independent review: Cody, Vera, Sana, Quinn; Sana confirms F5 | review pipeline | no unremediated blocking findings | Sana PASS (F5 confirmed); Vera PASS (measured); Cody 2 High/5 Med/8 Low — both High fixed; Quinn GATE_REVIEW — F1-F4 fixed; Cody/Quinn re-review of the fixes outstanding | PENDING |
+| C-015 | yes | Every collection the suite iterates is pinned, so it cannot be silently shortened | self-test `every_required_target_is_declared`, `every_encoding_is_declared`, `every_target_has_a_size_floor`, `the_pins_themselves_have_not_shrunk`, `self_test_case_floor`, `every_glob_match_is_scanned` | each mutation dies by its named case | second mutation battery: 10/10 previously-surviving mutations killed | PASS |
+| C-016 | yes | The gate runs for real on a windows-latest runner, not merely parses | dispatched `windows-installer.yml` run | both gate steps execute and report | run 33874171169 (3-target head); re-dispatch pending on final head | PENDING |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -146,9 +156,9 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 ## Final evaluation
 
-- Validator command: pending
-- Validator result: pending
+- Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py <path>`
+- Validator result: OK (structural)
 - Independent verification result: pending
-- Terminal state: pending
+- Terminal state: GATE_REVIEW — C-014 partial (Cody/Quinn re-review pending), C-016 pending the re-dispatched Windows run
 - Remaining failed or blocked criteria: pending
 - ClickUp final evidence comment: pending

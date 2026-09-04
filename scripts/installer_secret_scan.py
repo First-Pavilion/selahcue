@@ -145,6 +145,44 @@ REQUIRED_ENCODINGS: frozenset[str] = frozenset({"utf-8", "utf-16-le"})
 
 OPERATOR = "implementation/desktop/crates/selahcue-operator"
 
+# The "did I actually read a build output" floor, defined ONCE. It was previously repeated as a
+# literal in every target row and re-spelled as `< 1` in the control that guards it, so a row
+# with `min_bytes = 1` satisfied the control while accepting any non-empty placeholder. The
+# control and the table now consume the same definition, which is the only way the control can
+# be said to guard the table rather than a copy of it.
+MIN_ARTEFACT_BYTES = 1_000_000
+
+# DELIBERATELY A SECOND LITERAL, and not `= MIN_ARTEFACT_BYTES`. This is the absolute floor the
+# tunable above must itself satisfy.
+#
+# The first attempt at this control consumed MIN_ARTEFACT_BYTES, which felt right -- one
+# definition, both sides -- and was wrong: lowering the constant moved the control with it, so
+# `MIN_ARTEFACT_BYTES = 1` passed a green suite while every target accepted any non-empty stub.
+# That is the "control reads a copy" trap, re-introduced by the fix for a different instance of
+# the same trap.
+#
+# Sharing ONE definition is right when the control must track a CONJUNCTION in the code under
+# test. It is wrong for a THRESHOLD, where the control's whole job is to be an independent
+# opinion about how low the threshold may go. Lowering the real floor now requires editing this
+# number too -- two edits, and this comment sits on the second one.
+ARTEFACT_FLOOR_MINIMUM = 1_000_000
+
+# NOTHING GUARDED THE GUARDS. `REQUIRED_SIGNATURES` pins `SIGNATURES`, `REQUIRED_ENCODINGS` pins
+# `ENCODINGS`, `REQUIRED_TARGETS` pins `TARGETS` -- and until these floors existed, all three
+# pins could themselves be shortened, taking the set they guard with them. Review demonstrated
+# the set shrinking 6 -> 2 with a fully green self-test.
+#
+# The regress has to stop at a literal integer somewhere, so it stops here: a bare count with no
+# other reason to change, in the repo's own `const _: () = assert!(LOADABLE.len() == 2)` idiom
+# from dev_env.rs. Growing a set is free; shrinking one means editing a number that says what it
+# is for. `the_pins_themselves_have_not_shrunk` asserts these at run time too, because `assert`
+# is stripped under `python -O`.
+REQUIRED_SIGNATURE_COUNT = 6
+REQUIRED_ENCODING_COUNT = 2
+REQUIRED_TARGET_COUNT = 4
+# Floor on the self-test's own case count (see self_test_case_floor).
+SELF_TEST_CASE_FLOOR = 33
+
 # --------------------------------------------------------------------------------------
 # THE DECLARED TARGETS. Also one place, and also shaped for growth.
 #
@@ -183,11 +221,11 @@ OPERATOR = "implementation/desktop/crates/selahcue-operator"
 # --------------------------------------------------------------------------------------
 TARGETS: tuple[tuple[str, int, str], ...] = (
     # PRIMARY. Uncompressed, and the only artefact that can contain dev_env.rs's own strings.
-    (f"{OPERATOR}/target/release/selahcue-operator.exe", 1_000_000, "operator console binary"),
+    (f"{OPERATOR}/target/release/selahcue-operator.exe", MIN_ARTEFACT_BYTES, "operator console binary"),
     # The sidecar the installer bundles, staged by the workflow from the desktop build.
     (
         f"{OPERATOR}/binaries/selahcue-output-*.exe",
-        1_000_000,
+        MIN_ARTEFACT_BYTES,
         "native output window (bundled sidecar)",
     ),
     # The NDI runtime, staged into the bundle as a Tauri `resources` entry. Scanning it does
@@ -200,7 +238,7 @@ TARGETS: tuple[tuple[str, int, str], ...] = (
     # the compression limitation above acceptable.
     (
         f"{OPERATOR}/binaries/Processing.NDI.Lib.x64.dll",
-        1_000_000,
+        MIN_ARTEFACT_BYTES,
         "NDI runtime (bundled resource)",
     ),
     # SECONDARY, and weak on its own: Tauri's NSIS template sets `SetCompressor /SOLID` (lzma)
@@ -212,12 +250,49 @@ TARGETS: tuple[tuple[str, int, str], ...] = (
     # are what carry that claim.
     (
         f"{OPERATOR}/target/release/bundle/nsis/*-setup.exe",
-        1_000_000,
+        MIN_ARTEFACT_BYTES,
         "NSIS installer bundle",
     ),
 )
 
+# PINNED, and this is the set that matters MOST. The header above says the uncompressed-inputs
+# approach "holds ONLY IF nothing is packaged that is not scanned here" -- and until this
+# existed, nothing enforced that sentence. Commenting out the operator-binary row left the
+# self-test reporting 29 cases passed, exit 0, and a tree scanning only the compressed installer
+# would print "== installer secret scan: OK ==" while proving almost nothing.
+#
+# This is the same defect the ENCODINGS pin closed, found one collection along, because fixing
+# an instance of this pattern draws attention to the instance and not to the class. The general
+# form: ANY collection the suite merely ITERATES is a premise, and a premise that can be
+# shortened without a red is not a control.
+#
+# A target may be ADDED freely. Removing one of these requires deleting it here too, which is a
+# deliberate act with a diff that says so.
+REQUIRED_TARGETS: frozenset[str] = frozenset(
+    {
+        f"{OPERATOR}/target/release/selahcue-operator.exe",
+        f"{OPERATOR}/binaries/selahcue-output-*.exe",
+        f"{OPERATOR}/binaries/Processing.NDI.Lib.x64.dll",
+        f"{OPERATOR}/target/release/bundle/nsis/*-setup.exe",
+    }
+)
+
+assert len(REQUIRED_SIGNATURES) >= REQUIRED_SIGNATURE_COUNT
+assert len(REQUIRED_ENCODINGS) >= REQUIRED_ENCODING_COUNT
+assert len(REQUIRED_TARGETS) >= REQUIRED_TARGET_COUNT
+
 CHUNK = 8 << 20  # 8 MiB. Bounded memory: an installer of any size is read in fixed-size pieces.
+
+
+def declared_target_gaps(targets: tuple[tuple[str, int, str], ...]) -> set[str]:
+    """REQUIRED_TARGETS absent from `targets`.
+
+    ONE definition, consumed by `main()` on the production path and by
+    `every_required_target_is_declared` in the self-test. Deliberately not re-derived in the
+    control: a control that re-assembles the predicate it is guarding tests its own copy, and
+    this file has already been bitten by exactly that.
+    """
+    return set(REQUIRED_TARGETS) - {pattern for pattern, _min_bytes, _label in targets}
 
 
 class ScanError(Exception):
@@ -392,8 +467,23 @@ def run_scan(
                 print(f"== {label}: {path}")
                 print(f"   {before[0]:,} bytes, sha256 {before[1]}")
                 for text, enc, off in hits:
-                    poisoned.append(f"`{text}` ({enc}) at offset {off} in {path}")
-                positive_control(path, signatures, workdir)
+                    # Reported HERE, not buffered to the end. A later target failing to resolve
+                    # used to short-circuit the drain and swallow this line entirely.
+                    line = f"`{text}` ({enc}) at offset {off} in {path}"
+                    print(f"  DEVELOPER KEY SIGNATURE PRESENT: {line}", file=sys.stderr)
+                    poisoned.append(line)
+                try:
+                    positive_control(path, signatures, workdir)
+                except OSError as exc:
+                    # Same escape already fixed for digest(), one function along: an OSError
+                    # here exited non-zero but as a raw traceback rather than this gate's
+                    # banner, so nothing failed open -- the operator just could not tell what
+                    # broke.
+                    raise ScanError(
+                        f"{label}: cannot build the positive control from `{path}`: {exc}. "
+                        f"Without a working control, a clean verdict on this artefact proves "
+                        f"nothing."
+                    ) from exc
                 try:
                     after = digest(path)
                 except OSError as exc:
@@ -410,8 +500,6 @@ def run_scan(
                 scanned.append(path)
 
     if poisoned:
-        for line in poisoned:
-            print(f"  DEVELOPER KEY SIGNATURE PRESENT: {line}", file=sys.stderr)
         raise ScanError(
             "a developer-key signature is present in an artefact "
             "this workflow ships. A `dev-keys` build reads the repo-root `.env` at startup and "
@@ -519,11 +607,69 @@ def self_test() -> int:
         # repo's exact recurring defect, a control that cannot fail. This makes that
         # unaddable rather than merely unlikely.
         cases += 1
-        floorless = [(pat, lbl) for pat, mb, lbl in TARGETS if mb < 1]
+        # Asserted against the INDEPENDENT literal, on the DEPLOYED table. Comparing against
+        # MIN_ARTEFACT_BYTES made this vacuous, and driving it through `_targets()` would test
+        # the helper's default rather than what actually ships.
+        floorless = [
+            (pat, mb, lbl) for pat, mb, lbl in TARGETS if mb < ARTEFACT_FLOOR_MINIMUM
+        ]
         if floorless:
             failures.append(
-                "every_target_has_a_size_floor: these targets would accept a zero-byte "
-                f"placeholder as a clean scan: {floorless}"
+                "every_target_has_a_size_floor: these DEPLOYED targets accept an artefact "
+                f"below ARTEFACT_FLOOR_MINIMUM ({ARTEFACT_FLOOR_MINIMUM:,} bytes), so a "
+                f"placeholder or truncated stub would scan clean: {floorless}"
+            )
+
+        # --- EVERY file a glob matches is scanned, not just the first ---------------------
+        # `resolve()` returning `matches[:1]` survived the whole suite: every case used a glob
+        # matching exactly one file, so "scans all matches" was never expressed. A second
+        # sidecar -- or a stale build output beside a fresh one -- would have gone unread.
+        cases += 1
+        multi = root / "multi"
+        # resolve() sorts, so the POISONED file must sort LAST or `matches[:1]` still finds it
+        # and the case proves nothing. "aarch64" < "x86_64", so the clean one goes first.
+        # (First attempt had these the other way round and the mutation survived.)
+        _artefact(multi / "selahcue-output-aarch64-pc-windows-msvc.exe")
+        _artefact(multi / "selahcue-output-x86_64-pc-windows-msvc.exe", b"selahcue dev-keys: x")
+        assert sorted(q.name for q in multi.iterdir())[-1].startswith("selahcue-output-x86_64")
+        c, exc = _expect_red(
+            lambda: scan(_targets("multi/selahcue-output-*.exe")),
+            "every_glob_match_is_scanned",
+        )
+        if c:
+            failures.append(
+                "every_glob_match_is_scanned: a glob matched two artefacts and the poisoned "
+                "SECOND one was not read — resolve() is dropping matches."
+            )
+
+        # --- the pins themselves have not shrunk -----------------------------------------
+        cases += 1
+        undersized = [
+            f"{name} has {have}, floor is {want}"
+            for name, have, want in (
+                ("REQUIRED_SIGNATURES", len(REQUIRED_SIGNATURES), REQUIRED_SIGNATURE_COUNT),
+                ("REQUIRED_ENCODINGS", len(REQUIRED_ENCODINGS), REQUIRED_ENCODING_COUNT),
+                ("REQUIRED_TARGETS", len(REQUIRED_TARGETS), REQUIRED_TARGET_COUNT),
+            )
+            if have < want
+        ]
+        if undersized:
+            failures.append(
+                "the_pins_themselves_have_not_shrunk: " + "; ".join(undersized)
+                + ". A pin that can be shortened does not pin anything."
+            )
+
+        # --- H1: the TARGET set has not shrunk -------------------------------------------
+        # The set the whole design argument rests on. Consumes declared_target_gaps() rather
+        # than re-deriving the comparison, so mutating that predicate breaks this case too.
+        cases += 1
+        target_gaps = declared_target_gaps(TARGETS)
+        if target_gaps:
+            failures.append(
+                "every_required_target_is_declared: TARGETS no longer covers "
+                + ", ".join(sorted(target_gaps))
+                + ". Everything packaged must be scanned uncompressed — dropping a target "
+                "leaves a component in the bundle that nothing reads."
             )
 
         # --- the ENCODING set has not shrunk either ---------------------------------------
@@ -658,7 +804,12 @@ def self_test() -> int:
             failures.append(c)
 
         cases += 1
-        trimmed = tuple(s for s in SIGNATURES if s[0] != "api.deepgram.com")
+        # The victim is DERIVED, not named. This case used to hardcode `api.deepgram.com` --
+        # the exact row the expiry note above instructs a future maintainer to delete -- so
+        # following that instruction broke this case and made the "it is a data change" claim
+        # false. Any single required row can now be removed without repointing this.
+        victim = sorted(REQUIRED_SIGNATURES)[0]
+        trimmed = tuple(s for s in SIGNATURES if s[0] != victim)
         c, _exc = _expect_red(
             lambda: scan(_targets("clean/selahcue-operator.exe"), trimmed), "shrunken_signature_set"
         )
@@ -686,25 +837,71 @@ def self_test() -> int:
         finally:
             globals()["scan_file"] = real_scan_file
 
+        # --- H2: the positive control verifies EVERY signature, not just the first --------
+        # `dead_matcher_fails_closed` kills the matcher entirely, so it cannot tell "verifies
+        # 12 pairs" from "verifies 1". This one can: the matcher is made to report only the
+        # FIRST needle it finds. A control that checked `probes[:1]` would be satisfied and go
+        # green; the real one must notice the other eleven are unaccounted for.
+        cases += 1
+        _real_sf = globals()["scan_file"]
+        globals()["scan_file"] = lambda path, signatures: _real_sf(path, signatures)[:1]
+        try:
+            c, exc = _expect_red(
+                lambda: scan(_targets("clean/selahcue-operator.exe")),
+                "positive_control_covers_every_signature",
+            )
+            if c:
+                failures.append(
+                    "positive_control_covers_every_signature: the control accepted a matcher "
+                    "that reported ONE signature-encoding pair out of "
+                    f"{len(needles(SIGNATURES))}. Its own docstring calls a set where only the "
+                    "first entry is verified 'a set whose rest is decoration' — that is "
+                    "currently what it is."
+                )
+            elif "POSITIVE CONTROL FAILED" not in str(exc):
+                failures.append(
+                    "positive_control_covers_every_signature: went red, but not via the "
+                    f"positive control (got: {str(exc)[:100]})"
+                )
+        finally:
+            globals()["scan_file"] = _real_sf
+
         # --- a signature straddling a chunk boundary is still found ----------------------
         # Without the overlap in scan_file, this scan would have a silent blind spot every
         # CHUNK bytes. CHUNK is shrunk here so the case is fast rather than 8 MiB of I/O.
+        # Two things the previous version got wrong, both caught in review:
+        #   * it re-spelled the chunk size as a bare `512` beside `globals()["CHUNK"] = 512`,
+        #     so the placement was a COPY of the value under test and an unrelated edit could
+        #     silently disarm it;
+        #   * it used a SHORT needle and pinned only that an overlap EXISTS, not that it is big
+        #     enough. `overlap = max - 2` survived it, and that is a real blind spot: the
+        #     longest needle placed at exactly CHUNK - len + 1 straddles by the maximum and is
+        #     missed entirely.
+        # Both the chunk size and the needle are now derived from what is under test.
         cases += 1
         real_chunk = globals()["CHUNK"]
-        globals()["CHUNK"] = 512
+        probe_chunk = 512
+        globals()["CHUNK"] = probe_chunk
         try:
+            longest, longest_text, longest_enc = max(
+                needles(SIGNATURES), key=lambda probe: len(probe[0])
+            )
+            # The single worst placement: one byte of the needle lands in the first chunk, so
+            # only an overlap of at least len-1 can recover it.
+            prefix = probe_chunk - len(longest) + 1
             straddle = root / "boundary" / "selahcue-operator.exe"
             straddle.parent.mkdir(parents=True, exist_ok=True)
-            needle = b"selahcue dev-keys:"
             straddle.write_bytes(
-                b"\xcc" * (512 - len(needle) // 2) + needle + b"\xcc" * 4096
+                b"\xcc" * prefix + longest + b"\xcc" * (probe_chunk * 2)
             )
             hits = real_scan_file(straddle, SIGNATURES)
-            if not any(t == "selahcue dev-keys:" for t, _e, _o in hits):
+            if not any(t == longest_text and e == longest_enc for t, e, _o in hits):
                 failures.append(
-                    "signature_across_a_chunk_boundary_is_found: MISSED a signature split "
-                    "across the chunk boundary — the overlap in scan_file is broken, and this "
-                    "scan has a blind spot every CHUNK bytes."
+                    "signature_across_a_chunk_boundary_is_found: MISSED the longest needle "
+                    f"(`{longest_text}` / {longest_enc}, {len(longest)} bytes) placed at "
+                    f"offset {prefix} of a {probe_chunk}-byte chunk. The overlap in scan_file "
+                    f"is smaller than the longest needle, so this scan has a blind spot every "
+                    f"CHUNK bytes."
                 )
         finally:
             globals()["CHUNK"] = real_chunk
@@ -736,6 +933,15 @@ def self_test() -> int:
 
         quiet.close()
 
+    # The last unguarded collection in this file: the suite's own case count. Deleting a whole
+    # case block lowers the total and the run stays green, which is this pattern one final level
+    # up. Raise this floor when cases are added; it is only ever allowed to go up.
+    if cases < SELF_TEST_CASE_FLOOR:
+        failures.append(
+            f"self_test_case_floor: ran {cases} cases, floor is {SELF_TEST_CASE_FLOOR}. "
+            "A case block was removed — restore it or lower the floor deliberately."
+        )
+
     if failures:
         print("installer_secret_scan self-test FAILED:", file=sys.stderr)
         for f in failures:
@@ -757,6 +963,20 @@ def main() -> int:
         return self_test()
 
     root = pathlib.Path(args.root) if args.root else pathlib.Path(__file__).resolve().parent.parent
+    # Checked on the DEPLOYED table, which the self-test never touches: every self-test case
+    # drives run_scan() with synthetic targets, so this cannot live inside run_scan() without
+    # breaking all of them. Without it, deleting a row from TARGETS left the gate reporting OK
+    # on whatever remained.
+    gaps = declared_target_gaps(TARGETS)
+    if gaps:
+        print(
+            "INSTALLER SECRET SCAN FAILED: TARGETS no longer covers "
+            + ", ".join(sorted(gaps))
+            + ". Everything packaged must be scanned uncompressed; a dropped target leaves a "
+            "bundled component that nothing reads.",
+            file=sys.stderr,
+        )
+        return 1
     try:
         run_scan(root, TARGETS, SIGNATURES)
     except ScanError as exc:

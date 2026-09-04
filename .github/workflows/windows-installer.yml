@@ -155,8 +155,15 @@ jobs:
       # failure modes still bite -- a glob that matches nothing, a zero-byte placeholder, an
       # unreadable file, a neutered positive control -- BEFORE its verdict is allowed to mean
       # anything. A scan that silently examines nothing passes forever, and that is the exact
-      # failure mode this guard family keeps hitting. Same shape as the `--self-test` then run
-      # pairs for check_workflows.py and ci_alarm.py in ci.yml.
+      # failure mode this guard family keeps hitting.
+      #
+      # THE SHAPE IS BORROWED FROM ci.yml's `--self-test` then run pairs (check_workflows.py,
+      # ci_alarm.py) BUT THE COVERAGE IS NOT THE SAME, and an earlier version of this comment
+      # claimed it was. Those run on EVERY PUSH. This workflow is workflow_dispatch-only, so a
+      # change that quietly makes the scanner vacuous is caught whenever someone next builds an
+      # installer -- likely during a release, which is the worst moment to learn the gate has
+      # been dead for weeks. Running `--self-test` in regular CI is tracked as 86akc4ec5; it
+      # waits because ci.yml is contended.
       #
       # Both run before the upload below, so an artefact that fails is never published.
       # ---------------------------------------------------------------------------------
