@@ -5,11 +5,11 @@
  * Design: `docs/design/AUTH-LANDING-PAGES-HANDOFF.md` §5 + §8.2.
  * Figma: R1 `747:143` · R2 `747:173` · R3 `749:124` · R4 `749:150` · R6 `749:198` · R7 `749:217`.
  *
- * THE TRAP THIS VIEW EXISTS TO AVOID
- * ----------------------------------
- * `confirm_password_reset` (`apps/accounts/services.py:726`) calls `_validate_password`
- * at line 732 — BEFORE it looks up the token at line 733 — and BOTH raise the same
- * `VALIDATION_FAILED`. So if this page submitted an unvalidated password:
+ * THE TRAP THIS VIEW EXISTS TO AVOID — AND WHAT CHANGED UNDER IT
+ * -------------------------------------------------------------
+ * `confirm_password_reset` USED TO call `_validate_password` before it looked up the
+ * token, with BOTH raising the same `VALIDATION_FAILED`. So a page that submitted an
+ * unvalidated password produced:
  *
  *   user types a 6-character password
  *     → server rejects the PASSWORD
@@ -18,10 +18,32 @@
  *     → user's link was fine. They request a new one, type the same short password,
  *       hit the same wall, and conclude the product is broken.
  *
- * `validateNewPassword` therefore gates every submit, and no request outside 10–200
- * characters (or an all-whitespace one, which the server also rejects) is ever sent.
- * WITH that guard — and only with it — a `VALIDATION_FAILED` from this mutation can be
- * honestly attributed to the token, which is what makes R4 truthful.
+ * FR-551 (PR #16) reversed that order at the source. The token is validated first
+ * (`apps/accounts/services.py:1185`–`1206`: fingerprint, purpose, consumed, expiry — all
+ * one collapsed `VALIDATION_FAILED`), and the password is checked afterwards at
+ * `services.py:1245`, raising the DISTINCT `PASSWORD_INVALID` from behind a token already
+ * found live. This file's comment claimed the old ordering as current fact until round 3;
+ * it was false from the day #16 landed, which is why the claim now carries the line
+ * numbers it was checked against.
+ *
+ * Two consequences for this view, and both are implemented below:
+ *
+ * 1. `PASSWORD_INVALID` gets its OWN state. It is not R4 (the link demonstrably works —
+ *    the server had to find it live to reach the password check) and it is not R7 (nothing
+ *    went wrong on our side; the request was answered correctly). Letting it fall into R7
+ *    told the user to try again later about a failure that is permanent until they change
+ *    what they typed.
+ * 2. That state may not name a rule. `PASSWORD_INVALID` carries no policy detail on
+ *    purpose (`graphql/errors.py:28`), and this client has already enforced 10–200
+ *    characters before sending — so whatever the server refused, it is NOT something this
+ *    page can identify. "That password wasn't accepted" is the whole of what is known.
+ *
+ * `validateNewPassword` still gates every submit, and no request outside 10–200
+ * characters (or an all-whitespace one, which the server also rejects) is ever sent. It is
+ * no longer the only thing standing between a short password and a false "your link is
+ * dead" — the server's ordering is — but it is what keeps a rejectable password from
+ * spending a round trip and a rate-limit slot, and it is the only place that can tell the
+ * user which rule they broke.
  *
  * WHY R5 IS NOT BUILT
  * -------------------
@@ -67,6 +89,12 @@ type ResetState =
   | 'updated'
   /** R7 — our side failed; the link is untouched. */
   | 'serverError'
+  /**
+   * `PASSWORD_INVALID` — the server refused the PASSWORD, from behind a token it had
+   * already looked up and found live (`services.py:1245`). No Figma frame: the code did
+   * not exist when the R-series was drawn, and DEC-017 sanctioned it afterwards.
+   */
+  | 'passwordRejected'
   /** Extrapolated from V6 — opened without `?token=`. Not an error. */
   | 'missing'
   /** Extrapolated from V5 — a fresh reset link has been requested. */
@@ -74,6 +102,19 @@ type ResetState =
 
 const state = ref<ResetState>('form')
 const heading = ref<HTMLElement | null>(null)
+
+/**
+ * The states that render the form, and the states that render a danger banner above it.
+ * ONE definition each, consumed by the template rather than restated in it: the `v-if`
+ * that mounts the form and the `v-if` that suppresses the info banner are two readings of
+ * the same fact, and adding `passwordRejected` to one and not the other is exactly the
+ * kind of half-edit this file has already shipped once.
+ */
+const FORM_STATES: readonly ResetState[] = ['form', 'submitting', 'serverError', 'passwordRejected']
+const BANNERED_STATES: readonly ResetState[] = ['serverError', 'passwordRejected']
+
+const showsForm = computed(() => FORM_STATES.includes(state.value))
+const showsErrorBanner = computed(() => BANNERED_STATES.includes(state.value))
 
 // Held outside reactive state — a single-use credential that grants account takeover.
 // `takeLandingToken` has already removed it from the address bar.
@@ -126,8 +167,15 @@ async function submitNewPassword(): Promise<void> {
     }
   } catch (error) {
     if (unmounted || controller.signal.aborted) return
-    if (error instanceof ApiError && error.code === 'VALIDATION_FAILED') {
-      // Safe to attribute to the token ONLY because the password was validated above.
+    if (error instanceof ApiError && error.code === 'PASSWORD_INVALID') {
+      // The server got as far as the password, which means it had already found the token
+      // live — and the raise happens inside the `transaction.atomic()` that wraps
+      // `confirm_password_reset`, so `consumed_at` rolls back and the link is still
+      // usable. Both halves of the copy below are therefore true, and neither is guessed.
+      state.value = 'passwordRejected'
+    } else if (error instanceof ApiError && error.code === 'VALIDATION_FAILED') {
+      // Since FR-551 this is a TOKEN failure and nothing else: the password check runs
+      // after the token lookup and raises `PASSWORD_INVALID`, handled above.
       state.value = 'invalid'
     } else {
       // Transport failure, rate limiting, INTERNAL — none of which say anything about
@@ -184,8 +232,8 @@ onBeforeUnmount(() => {
 
 <template>
   <AuthShell>
-    <!-- ============================== R1 / R2 / R3 / R7 — the form and its states -->
-    <template v-if="state === 'form' || state === 'submitting' || state === 'serverError'">
+    <!-- ================ R1 / R2 / R3 / R7 + PASSWORD_INVALID — the form and its states -->
+    <template v-if="showsForm">
       <!-- R7: a danger banner ABOVE the title, per §5.7. -->
       <AuthBanner
         v-if="state === 'serverError'"
@@ -195,6 +243,20 @@ onBeforeUnmount(() => {
       >
         Something went wrong on our side. Your password has not been changed and this link
         still works until it expires.
+      </AuthBanner>
+
+      <!-- PASSWORD_INVALID. Same shape as R7, opposite meaning: the request was answered
+           correctly and the answer was no. It names the password and does NOT name a rule,
+           because the server sends none and this page has already checked the rules it
+           knows — see the header. -->
+      <AuthBanner
+        v-else-if="state === 'passwordRejected'"
+        kind="danger"
+        title="That password wasn't accepted"
+        alert
+      >
+        Your password has not been changed and this reset link still works. Choose a
+        different password and try again.
       </AuthBanner>
 
       <h1 ref="heading" tabindex="-1" class="au-title au-title-form">Choose a new password</h1>
@@ -249,7 +311,7 @@ onBeforeUnmount(() => {
            CustomerSession but deliberately NOT any DeviceToken, so an activated machine
            in the building keeps presenting. That is the never-blank guarantee, stated
            where it matters most. -->
-      <AuthBanner v-if="state !== 'serverError'" kind="info" title="This signs you out everywhere">
+      <AuthBanner v-if="!showsErrorBanner" kind="info" title="This signs you out everywhere">
         Updating your password ends every active SelahCue session on this account. Devices
         you have already activated keep presenting offline — live output is never
         interrupted.

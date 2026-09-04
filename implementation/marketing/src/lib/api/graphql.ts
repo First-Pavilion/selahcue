@@ -60,12 +60,38 @@ export type ApiErrorCode =
   | 'POLICY_DENIED'
   | 'RATE_LIMITED'
   | 'NOT_IMPLEMENTED'
+  /**
+   * The new password failed the server's password policy, and NOTHING ELSE about the
+   * request was wrong. Added by FR-551 / DEC-017 (`errors.py:30`), raised from exactly one
+   * place — `confirm_password_reset`, `services.py:1245` — and only AFTER the reset token
+   * has been looked up and found live. It is therefore not an enumeration oracle, and on
+   * the client it is the one error code that means "your link is fine, your password is
+   * not". Collapsing it to `UNKNOWN` sent /reset to R7, which tells the user something
+   * went wrong on OUR side about a failure that is permanent until they change what they
+   * typed.
+   *
+   * It deliberately carries no policy detail (`errors.py:28`): a view rendering this code
+   * may say the password was refused, and must not say which rule refused it.
+   */
+  | 'PASSWORD_INVALID'
   | 'INTERNAL'
   /** Client-only: the request never got a usable answer (offline, DNS, TLS, timeout, proxy, non-JSON body). */
   | 'NETWORK'
   /** Client-only: a well-formed error envelope carrying a code this client does not know. */
   | 'UNKNOWN'
 
+/**
+ * The codes the server can actually send. This list is a COPY of `ErrorCode` in
+ * `selahcue_api/graphql/errors.py`, and a copy is a thing that drifts: `PASSWORD_INVALID`
+ * was added there by PR #16 and was missing here for the whole of round 3, so a real,
+ * permanent, actionable error classified as `UNKNOWN` and /reset rendered R7 for it with
+ * every gate green.
+ *
+ * It is a copy on purpose — the shipped bundle must not read a Python file — but it is no
+ * longer an UNCHECKED copy. `tests/apiSeam.test.ts` parses `errors.py` and asserts every
+ * member of that enum round-trips through `classifyErrors`, so the next code added on the
+ * server fails this project's own test suite instead of degrading silently here.
+ */
 const SERVER_ERROR_CODES: ReadonlySet<string> = new Set([
   'UNAUTHENTICATED',
   'PERMISSION_DENIED',
@@ -75,6 +101,7 @@ const SERVER_ERROR_CODES: ReadonlySet<string> = new Set([
   'POLICY_DENIED',
   'RATE_LIMITED',
   'NOT_IMPLEMENTED',
+  'PASSWORD_INVALID',
   'INTERNAL',
 ])
 

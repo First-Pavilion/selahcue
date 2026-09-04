@@ -97,10 +97,27 @@ export async function verifyEmail(token: string, options?: GraphQLRequestOptions
  * Set a new password from a reset token.
  *
  * CALLER CONTRACT: validate `newPassword` with `validateNewPassword` first.
- * `confirm_password_reset` checks the password at `services.py:732` BEFORE it looks at
- * the token, and raises the SAME `VALIDATION_FAILED` for both — so an unvalidated short
- * password comes back indistinguishable from a dead link, and the user is told to go get
- * a new link they do not need. `submitNewPassword` in `ResetView.vue` enforces this.
+ *
+ * THE ORDERING THIS COMMENT USED TO STATE IS NO LONGER TRUE, and the correction is the
+ * point. It read: "`confirm_password_reset` checks the password at `services.py:732`
+ * BEFORE it looks at the token, and raises the SAME `VALIDATION_FAILED` for both". FR-551
+ * (PR #16, merged into this branch at `33237c0`) reversed exactly that. The function now
+ * validates the token first — fingerprint, purpose, consumed, expiry, `services.py:1185`
+ * to `1206`, every failure the one collapsed `VALIDATION_FAILED` — and only then the
+ * password, at `services.py:1245`, where it raises the DISTINCT `PASSWORD_INVALID`.
+ *
+ * So the two failures are separable now, and the caller MUST separate them: a
+ * `VALIDATION_FAILED` from this mutation is a token failure, and `PASSWORD_INVALID` is a
+ * live link with a password the policy refused. `PASSWORD_INVALID` is reachable ONLY from
+ * behind a token already found live, and the raise happens inside the enclosing
+ * `transaction.atomic()`, so the token is not consumed — a view may tell the user their
+ * link still works, and `ResetView.vue` does.
+ *
+ * The pre-flight guard survives the reorder for two reasons that never depended on it: a
+ * password this client can reject costs no round trip and no rate-limit budget, and it is
+ * the only thing able to say WHICH rule failed — `PASSWORD_INVALID` deliberately carries
+ * no policy detail (`graphql/errors.py:28`). `submitNewPassword` in `ResetView.vue`
+ * enforces it.
  */
 export async function confirmPasswordReset(
   token: string,

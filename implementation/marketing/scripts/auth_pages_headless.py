@@ -49,6 +49,7 @@ Exit codes:
 from __future__ import annotations
 
 import http.server
+import json
 import os
 import re
 import shutil
@@ -85,7 +86,24 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # loop, all of which pass together whenever `cardText()` returns `''`, the floor is weaker
 # evidence than its size suggests. It catches a driver regression that runs FEWER checks;
 # it is not a measure of coverage, and it should not be read as one.
-EXPECTED_MIN_CHECKS = 1556
+#
+# 1556 -> 1707 in review round 3. What was added: the rendered rate-limit claim ban (4
+# phrases x 6 states that reach a rate-limited screen = 24), the 6 markers recording that
+# those states were scanned at all, 1 cross-scenario check asserting every rate-limited
+# scenario was among them, and THREE NEW SCENARIOS -- `signup-rate-limited`,
+# `signup-resend-rate-limited` and `signin-resend-rate-limited` -- which exist because
+# three of the six rate-limit call sites were reached by no scenario at all.
+#
+# THAT ROUND SET THE FLOOR TO 1677 AND THE SUITE ACTUALLY RAN 1707. Not a failure — a
+# floor that is 30 short is still a floor — but 30 checks could then be deleted without
+# the alarm sounding, which is the property the number exists to have. Recorded rather
+# than quietly corrected, because "the constant drifted below the measurement" is the same
+# class of defect as the stale error table this batch is fixing, and the fix is the same:
+# re-measure, do not remember.
+#
+# 1707 -> 1746 with `reset-password-invalid` (W-03), the scenario that renders
+# PASSWORD_INVALID. Measured on the tree that ships it, twice.
+EXPECTED_MIN_CHECKS = 1746
 
 
 def find_chrome() -> str | None:
@@ -105,6 +123,82 @@ def find_chrome() -> str | None:
     return None
 
 
+# ------------------------------------------------------------------- shared auth copy ---
+# ONE DEFINITION, READ NOT RESTATED.
+#
+# `src/lib/auth/messages.ts` owns the phrases rate-limit copy may never say, and the
+# rate-limit copy itself. Both are read out of that source here and injected into the
+# driver, for the reason MEDIUM-6 keeps re-teaching: a list restated in a second place is a
+# second thing to forget to update, and the check that reads the stale copy still passes.
+#
+# The specific defect this closes: `tests/authCopy.test.ts` scanned the CONSTANTS in
+# messages.ts for these phrases. A view that appended to a constant at one of its four call
+# sites — `RESEND_RATE_LIMITED + ' for that address'` — left every constant clean and
+# rendered a forbidden phrase, and both gates stayed green. A forbidden string is only
+# forbidden where the scanner looks; this makes the scanner look at the rendered page.
+MESSAGES_TS = MARKETING / "src" / "lib" / "auth" / "messages.ts"
+
+# WHICH scenarios must actually reach a rate-limited state and be scanned.
+#
+# A ban that never fires is indistinguishable from a ban that fires and holds, so the
+# coverage is asserted rather than assumed -- but a bare COUNT was not enough, and the
+# mutation that proved it is worth recording. Appending " for this account" to
+# `SignInView`'s `RESEND_RATE_LIMITED` passed BOTH gates with the count at 3: the sign-in
+# rate-limit scenario exercises the BANNER (`RATE_LIMITED_TITLE`), and the resend branch on
+# the same page was reached by nothing. Six call sites across four views render rate-limit
+# copy; three of them were being scanned, and a count of three said "covered".
+#
+# So the rule is derived from the scenario list instead of written as a number: every
+# scenario whose name says it is a rate-limited state must have been scanned. Adding such a
+# scenario automatically requires it to render rate-limit copy, and a scenario that stops
+# rendering it fails here instead of quietly leaving a call site unscanned.
+RATE_LIMIT_CLAIM_SCENARIOS_MIN = 6
+
+
+def rate_limited_scenarios() -> list[str]:
+    return [name for name, _ in SCENARIOS if "rate-limited" in name]
+
+
+def read_ts_string_array(source: str, name: str) -> list[str]:
+    """Pull `export const NAME = ['a', 'b'] as const` out of the TypeScript."""
+    match = re.search(
+        r"export const " + re.escape(name) + r"\s*=\s*\[(.*?)\]", source, re.S
+    )
+    if not match:
+        print(f"FAIL: could not find {name} in {MESSAGES_TS}")
+        raise SystemExit(2)
+    return re.findall(r"'([^']*)'", match.group(1))
+
+
+def read_ts_string(source: str, name: str) -> str:
+    """Pull `export const NAME = '...'` (or a two-line continuation) out of the TypeScript."""
+    match = re.search(
+        r"export const " + re.escape(name) + r"\s*=\s*\n?\s*(['\"])(.*?)\1", source, re.S
+    )
+    if not match:
+        print(f"FAIL: could not find {name} in {MESSAGES_TS}")
+        raise SystemExit(2)
+    return match.group(2)
+
+
+def shared_copy() -> dict:
+    source = MESSAGES_TS.read_text(encoding="utf-8")
+    phrases = read_ts_string_array(source, "ADDRESS_CLAIM_PHRASES")
+    if len(phrases) < 4:
+        print(f"FAIL: ADDRESS_CLAIM_PHRASES has only {len(phrases)} entries")
+        raise SystemExit(2)
+    return {
+        "claims": phrases,
+        # The copy whose PRESENCE marks a state as rate-limited. Read from the module for
+        # the same reason as the phrases: a trigger built from a stale copy stops firing
+        # silently, and a scan that never triggers passes.
+        "rateLimitMarkers": [
+            read_ts_string(source, "RESEND_RATE_LIMITED"),
+            read_ts_string(source, "RATE_LIMITED_TITLE"),
+        ],
+    }
+
+
 # --------------------------------------------------------------------------- driver ---
 # Injected into <head> so it runs BEFORE the app module. It must, because it has to
 # capture the scenario name out of the query string before the view scrubs the query,
@@ -115,6 +209,29 @@ DRIVER = r"""
 (function () {
   var QS = new URLSearchParams(location.search);
   var SCENARIO = QS.get('__scenario') || '';
+  // Injected from src/lib/auth/messages.ts at serve time -- see shared_copy(). Not typed
+  // out here, so this scan and tests/authCopy.test.ts read the SAME list.
+  var SHARED_COPY = __SHARED_COPY__;
+
+  /*
+   * A DETERMINISTIC BROWSER LOCALE, for the one scenario that asserts what the form does
+   * with it. Set here because the driver runs before the app module, and `guessCountry()`
+   * is called during SignUpView's setup -- by the time a scenario function runs, the
+   * pre-selection has already happened.
+   *
+   * `guessCountry` is well covered as a FUNCTION (`tests/signupPolicy.test.ts` pins
+   * en-GB -> GB and en-US -> US) and was UNWIRED IN PLACE: dropping
+   * `const country = ref(guessCountry())` to `ref('')` and removing the now-unused import
+   * passed `npm test` 148/148 and this suite at 58 scenarios / 1677 checks / 0 FAIL. Same
+   * shape as MEDIUM-2's `safeNextPath`: the unit test proves the rule, and nothing proved
+   * the form consults it.
+   */
+  if (SCENARIO === 'signup-locale-preselect') {
+    try {
+      Object.defineProperty(navigator, 'language', { get: function () { return 'en-GB'; } });
+      Object.defineProperty(navigator, 'languages', { get: function () { return ['en-GB']; } });
+    } catch (e) { /* a browser that refuses the override fails the assertion below */ }
+  }
   // Captured before the app boots: whether this page was opened WITH a token decides
   // which scrubbing assertion applies below.
   var HAD_TOKEN = QS.get('token') !== null;
@@ -211,6 +328,10 @@ DRIVER = r"""
     },
     'reset-success':       function () { return json({ data: { confirmPasswordReset: { reset: true } } }); },
     'reset-invalid':       function () { return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] }); },
+    // FR-551 / DEC-017. `confirm_password_reset` reaches its password check only after the
+    // token has been looked up and found live, so this envelope is the server saying "the
+    // link works, the password does not" — the one reset failure that is neither R4 nor R7.
+    'reset-password-invalid': function () { return json({ errors: [{ extensions: { code: 'PASSWORD_INVALID' } }] }); },
     'reset-unreachable':   function () { throw new TypeError('Failed to fetch'); },
     'reset-fresh-link':    function (op) {
       if (op === 'ConfirmPasswordReset') return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] });
@@ -292,6 +413,20 @@ DRIVER = r"""
     'signup-resend':       function (op) {
       if (op === 'RegisterCustomerUser') return REGISTERED();
       return json({ data: { resendVerificationEmail: { accepted: true } } });
+    },
+    // The three rate-limit call sites no scenario used to reach. Found by mutation:
+    // appending " for this account" to SignInView's RESEND_RATE_LIMITED passed BOTH gates,
+    // because `signin-rate-limited` exercises the sign-in banner (RATE_LIMITED_TITLE), not
+    // the resend branch. Six call sites render rate-limit copy; three were scanned.
+    'signup-locale-preselect': function () { return REGISTERED(); },
+    'signup-rate-limited': function () { return json({ errors: [{ extensions: { code: 'RATE_LIMITED' } }] }); },
+    'signup-resend-rate-limited': function (op) {
+      if (op === 'RegisterCustomerUser') return REGISTERED();
+      return json({ errors: [{ extensions: { code: 'RATE_LIMITED' } }] });
+    },
+    'signin-resend-rate-limited': function (op) {
+      if (op === 'Login') return json({ errors: [{ extensions: { code: 'POLICY_DENIED' } }] });
+      return json({ errors: [{ extensions: { code: 'RATE_LIMITED' } }] });
     },
 
     // ----------------------------------------------------------- forgot password --
@@ -867,6 +1002,80 @@ DRIVER = r"""
     check('copy never says 8 characters', lower.indexOf('8 character') === -1);
     // 86ak120kw correction 1, and its §5c twin. Neither error may exist on any auth page.
     check('copy never claims an address is taken', lower.indexOf('already have an account with') === -1);
+
+    /*
+     * THE RATE-LIMIT CLAIM BAN, READ OFF THE RENDERED PAGE.
+     *
+     * MEDIUM (Quinn): `tests/authCopy.test.ts` forbids these phrases BY NAME, and scans
+     * only `messages.ts`. Appending to the constant at one of its four call sites —
+     * `RESEND_RATE_LIMITED + ' for that address'` — leaves the constant clean, ships a page
+     * that says it, and passes both gates. A forbidden string is only forbidden where the
+     * scanner looks.
+     *
+     * So this looks at what the page SAYS -- specifically at the DOM subtree that carries
+     * the rate-limit message, found by locating the message text in the live document and
+     * scanning that element and its container.
+     *
+     * SCOPED THERE ON PURPOSE, and the first run is why. Scanning the whole page failed on
+     * `verify-rate-limited`, on the sentence "If you have already confirmed this address,
+     * sign in as normal" -- which is CONDITIONAL, says the same thing whoever is reading it,
+     * and is the exact wording `lib/api/account.ts` documents as the safe form. Banning the
+     * phrase page-wide is a rule about the wrong thing: the property is that the rate-limit
+     * OUTCOME reveals nothing, not that four word-pairs never appear near it.
+     *
+     * The MESSAGE ELEMENT ITSELF is the span, and not its parent -- widening to the parent
+     * put the same conditional sentence back in scope, because the parent of the resend
+     * error in `VerifyView` is the template block that also holds the "Already verified?"
+     * banner. What this catches is the defect's actual shape: an append at a call site
+     * (`RESEND_RATE_LIMITED + ' for that address'`) renders INSIDE the message element,
+     * whichever of the four call sites produced it.
+     *
+     * A leak added as a SIBLING of the message is out of this check's scope and stays the
+     * business of the behavioural comparison in EQUIVALENCE_GROUPS/SURFACE_GROUPS, which
+     * compares everything the two branches render and needs no phrase list at all. This is
+     * a tripwire on the message; that is the boundary.
+     *
+     * The trigger is the rate-limit copy being ON SCREEN, taken from the same module as the
+     * phrases -- not the scenario's name -- so a new rate-limited surface is covered the day
+     * it renders that copy rather than the day someone remembers to name it.
+     */
+    function rateLimitCopyScope() {
+      var scope = '';
+      var all = document.querySelectorAll('body *');
+      for (var m = 0; m < SHARED_COPY.rateLimitMarkers.length; m++) {
+        var marker = SHARED_COPY.rateLimitMarkers[m].toLowerCase();
+        for (var e = 0; e < all.length; e++) {
+          var el = all[e];
+          var own = (el.innerText || el.textContent || '').toLowerCase();
+          if (own.indexOf(marker) === -1) continue;
+          // Innermost only: an ancestor containing the marker also contains the whole card,
+          // which is how the page-wide version picked up unrelated conditional copy.
+          var deeper = false;
+          for (var k = 0; k < el.children.length; k++) {
+            var kid = el.children[k];
+            if ((kid.innerText || kid.textContent || '').toLowerCase().indexOf(marker) !== -1) {
+              deeper = true;
+            }
+          }
+          if (deeper) continue;
+          scope += ' ' + own;
+        }
+      }
+      return scope.toLowerCase();
+    }
+
+    var rateLimitScope = rateLimitCopyScope();
+    if (rateLimitScope.trim() !== '') {
+      // Recorded so the Python half can assert this branch was actually reached. A
+      // conditional ban that never fires passes exactly like one that fires and holds.
+      results.push('PASS [' + SCENARIO + '] RATE-LIMIT STATE SCANNED for address claims');
+      for (var c = 0; c < SHARED_COPY.claims.length; c++) {
+        check('rate-limit copy claims nothing about the address: "' + SHARED_COPY.claims[c] + '"',
+              rateLimitScope.indexOf(SHARED_COPY.claims[c]) === -1,
+              'the rendered rate-limit message says "' + SHARED_COPY.claims[c] + '", which ' +
+              'tells the caller what the server knows about the address');
+      }
+    }
     check('no unbacked OAuth affordance (DEC-007 chose email/password)',
           text.indexOf('Continue with Google') === -1 && text.indexOf('Google') === -1);
 
@@ -1217,6 +1426,63 @@ DRIVER = r"""
       check('R4 reassures the password is unchanged', has(text, 'Your password has not changed'));
       check('R4 offers a fresh link', has(text, 'Send a new reset link'));
       check('R4 offers an email field', document.querySelector('input[type="email"]') !== null);
+      universalChecks();
+    },
+
+    /*
+     * PASSWORD_INVALID, rendered.
+     *
+     * The client-side guard means this page never sends a password it can itself reject,
+     * so the only way to reach this state in the wild is a password the SERVER refuses and
+     * the client does not — which is precisely the case where the client cannot say why.
+     * The three negatives below are the whole finding: before this branch existed,
+     * PASSWORD_INVALID classified as UNKNOWN and the page rendered R7, telling the user
+     * something had gone wrong on our side about a failure that is permanent until they
+     * type something different.
+     */
+    'reset-password-invalid': async function () {
+      await wait(500);
+      var fields = document.querySelectorAll('input[type="password"]');
+      fields[0].value = 'a-good-passphrase'; fields[0].dispatchEvent(new Event('input', { bubbles: true }));
+      fields[1].value = 'a-good-passphrase'; fields[1].dispatchEvent(new Event('input', { bubbles: true }));
+      await wait(50);
+      submit();
+      await wait(600);
+      var text = cardText();
+
+      // The premise: the client passed this password, so the rejection really did come
+      // from the server. Without it every assertion below could be satisfied by a page
+      // that never made the call.
+      check('the mutation was dispatched (the client did not reject this password)',
+            calls.length === 1 && calls[0].op === 'ConfirmPasswordReset',
+            'calls=' + JSON.stringify(calls.map(function (c) { return c.op; })));
+
+      check('PASSWORD_INVALID does NOT show R4 — the link was live, or the server could ' +
+            'not have reached the password check',
+            !has(text, "This reset link didn't work"));
+      check('PASSWORD_INVALID does NOT show R7 — nothing went wrong on our side',
+            !has(text, "We couldn't update your password"));
+      check('PASSWORD_INVALID does NOT claim success', !has(text, 'Password updated'));
+
+      check('the password is named as the problem', has(text, "That password wasn't accepted"));
+      check('the link is stated to still work', has(text, 'this reset link still works'));
+      check('the password is stated unchanged', has(text, 'Your password has not been changed'));
+
+      var banner = document.querySelector('.au-banner-danger');
+      check('the rejection is announced', !!banner && banner.getAttribute('role') === 'alert');
+      // `PASSWORD_INVALID` carries no policy detail on purpose (`graphql/errors.py:28`) and
+      // the client already enforced the rules it knows, so any number here would be
+      // invented. The field hint below still says "At least 10 characters" — that is the
+      // rule, not a claim about what failed — which is why this is scoped to the banner.
+      check('the banner invents no rule the server did not send',
+            !!banner && !/\d+\s*character/i.test(banner.innerText || banner.textContent || ''));
+
+      check('the user is left on the form, able to type a different password',
+            document.querySelectorAll('input[type="password"]').length === 2 &&
+            !document.querySelectorAll('input[type="password"]')[0].disabled);
+      check('the plaintext password is not rendered anywhere',
+            pageText().indexOf('a-good-passphrase') === -1);
+      forwardPathCheck('password rejected by the server');
       universalChecks();
     },
 
@@ -1843,6 +2109,82 @@ DRIVER = r"""
       universalChecks();
     },
 
+    // The three states that reach the rate-limit call sites nothing else rendered. Each
+    // one exists so `universalChecks`'s rendered claim ban has that call site's output to
+    // look at; without them the ban was scanning three of six sites and passing.
+    'signup-locale-preselect': async function () {
+      await wait(400);
+      var select = document.querySelector('.au-card select');
+      check('the country field is a select', !!select);
+      // THE POINT: with a GB browser the form arrives on GB. `ref('')` fails this, and so
+      // does a `guessCountry` that has been reduced to `return ''`.
+      check('the country is pre-selected from the browser locale',
+            !!select && select.value === 'GB',
+            'expected GB for navigator.language=' + navigator.language +
+            ', got ' + (select ? JSON.stringify(select.value) : 'no select'));
+      // And it is a REAL option, not a value the select cannot show.
+      check('the pre-selected country is a real option',
+            !!select && Array.prototype.some.call(select.options, function (o) {
+              return o.value === 'GB'; }));
+      // The label came from Intl.DisplayNames rather than being the bare code -- the other
+      // half of the countries.ts gap (`countryOptions` had no test of any kind).
+      var chosen = select && Array.prototype.filter.call(select.options, function (o) {
+        return o.value === 'GB'; })[0];
+      check('the option shows a country NAME, not the two-letter code',
+            !!chosen && chosen.textContent.trim() !== 'GB',
+            'label was ' + (chosen ? JSON.stringify(chosen.textContent.trim()) : 'absent'));
+      check('made no API call on arrival', calls.length === 0, 'calls=' + calls.length);
+      universalChecks();
+    },
+
+    'signup-rate-limited': async function () {
+      await wait(400);
+      fillSignup({});
+      await wait(80);
+      submit();
+      await wait(900);
+      var text = cardText();
+      check('shows the rate-limit banner', has(text, 'Too many attempts'));
+      check('tells the caller to wait', has(text, 'Wait a few minutes'));
+      check('did not claim the account was created',
+            !has(text, 'Check your email to finish setting up'));
+      universalChecks();
+    },
+
+    'signup-resend-rate-limited': async function () {
+      await wait(400);
+      fillSignup({});
+      await wait(80);
+      submit();
+      await wait(900);
+      check('reached the accepted state', has(cardText(), 'Check your email to finish setting up'));
+      var button = Array.prototype.filter.call(
+        document.querySelectorAll('.au-card button'),
+        function (b) { return b.textContent.indexOf('Resend verification email') !== -1; })[0];
+      check('the resend control exists', !!button);
+      if (button) button.click();
+      await wait(800);
+      check('the resend rate limit is reported', has(cardText(), 'Too many requests for a new link'));
+      universalChecks();
+    },
+
+    'signin-resend-rate-limited': async function () {
+      await wait(400);
+      fillSignIn('pastor@yourchurch.org', 'a-good-passphrase');
+      await wait(50);
+      submit();
+      await wait(700);
+      check('reached the not-ready state', has(cardText(), "isn't ready to sign in yet"));
+      var button = Array.prototype.filter.call(
+        document.querySelectorAll('.au-card button'),
+        function (b) { return b.textContent.indexOf('Send a verification link') !== -1; })[0];
+      check('the resend control exists', !!button);
+      if (button) button.click();
+      await wait(700);
+      check('the resend rate limit is reported', has(cardText(), 'Too many requests for a new link'));
+      universalChecks();
+    },
+
     // ========================================================= forgot password ==
     'forgot-form': async function () {
       await wait(400);
@@ -2151,7 +2493,8 @@ class SpaHandler(http.server.SimpleHTTPRequestHandler):
 
         html = (DIST / "index.html").read_text(encoding="utf-8")
         # Injected at </head>, so it runs before the app's module script.
-        html = html.replace("</head>", DRIVER + "</head>", 1)
+        driver = DRIVER.replace("__SHARED_COPY__", json.dumps(shared_copy()))
+        html = html.replace("</head>", driver + "</head>", 1)
         body = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -2180,6 +2523,7 @@ SCENARIOS: list[tuple[str, str]] = [
     ("reset-mismatch", f"/reset?token={RESET_TOKEN}"),
     ("reset-success", f"/reset?token={RESET_TOKEN}"),
     ("reset-invalid", f"/reset?token={RESET_TOKEN}"),
+    ("reset-password-invalid", f"/reset?token={RESET_TOKEN}"),
     ("reset-unreachable", f"/reset?token={RESET_TOKEN}"),
     ("reset-missing", "/reset"),
     ("reset-fresh-link", f"/reset?token={RESET_TOKEN}"),
@@ -2193,6 +2537,7 @@ SCENARIOS: list[tuple[str, str]] = [
     ("signin-rate-limited", "/signin"),
     ("signin-unverified", "/signin"),
     ("signin-resend", "/signin"),
+    ("signin-resend-rate-limited", "/signin"),
     ("signin-success", "/signin"),
     # The `?next=` round trip, end to end — the half `redirect.test.ts` cannot reach.
     ("signin-next-honoured", "/signin?next=%2Fsupport"),
@@ -2211,6 +2556,9 @@ SCENARIOS: list[tuple[str, str]] = [
     ("signup-rejected", "/signup"),
     ("signup-idempotency", "/signup"),
     ("signup-resend", "/signup"),
+    ("signup-locale-preselect", "/signup"),
+    ("signup-rate-limited", "/signup"),
+    ("signup-resend-rate-limited", "/signup"),
     # ----------------------------------------------------------- forgot password --
     ("forgot-form", "/forgot-password"),
     ("forgot-bad-email", "/forgot-password"),
@@ -2547,6 +2895,33 @@ def main() -> int:
     # And the same pairs at the two moments the settled comparison could not see.
     for label, scenarios in SURFACE_GROUPS:
         total += compare(label, scenarios, SURFACE_FACETS)
+
+    # THE COVERAGE HALF of the rendered rate-limit scan. The ban inside `universalChecks`
+    # only runs when the page is showing rate-limit copy, so a change that stopped those
+    # states rendering — or stopped the markers matching — would silently retire the check
+    # and every gate would stay green. Counted, and counted into `total`, so losing it trips
+    # the floor as well as failing here.
+    scanned = {
+        line.split("[", 1)[1].split("]", 1)[0]
+        for line in body
+        if "RATE-LIMIT STATE SCANNED for address claims" in line
+    }
+    expected = set(rate_limited_scenarios())
+    total += 1
+    unscanned = sorted(expected - scanned)
+    if not unscanned and len(scanned) >= RATE_LIMIT_CLAIM_SCENARIOS_MIN:
+        body.append(
+            f"PASS [enumeration] the rendered rate-limit claim ban ran on all "
+            f"{len(scanned)} rate-limited states: {' '.join(sorted(scanned))}"
+        )
+    else:
+        body.append(
+            f"FAIL [enumeration] the rendered rate-limit claim ban did not run on "
+            f"{unscanned or 'enough states'} (scanned {len(scanned)}, floor "
+            f"{RATE_LIMIT_CLAIM_SCENARIOS_MIN}). A conditional ban that never fires passes "
+            "exactly like one that fires and holds -- check those states still render the "
+            "rate-limit copy the markers in messages.ts name."
+        )
 
     fails = [line for line in body if line.startswith("FAIL")]
     for line in body:

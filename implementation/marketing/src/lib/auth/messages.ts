@@ -29,11 +29,34 @@
 export const RESEND_FAILED = "We couldn't send a link just now. Please try again in a moment."
 
 /**
- * Says nothing about the address, deliberately.
+ * The claims rate-limit copy may never make, in ONE place.
  *
  * A limiter that spent its budget before looking the account up cannot be evidence the
  * account is real — and copy like "too many requests for this account" would say it is.
  * "Too many requests" describes what the caller did, not what the server knows.
+ *
+ * THIS LIST HAS TWO CONSUMERS AND HAD TO, because the version that had one was walked past.
+ * `tests/authCopy.test.ts` checked these phrases against the CONSTANTS in this file, so a
+ * view that wrote `RESEND_RATE_LIMITED + ' for that address'` at ONE of its four call sites
+ * shipped a page rendering a forbidden phrase with both gates green: the constant was
+ * clean, and nothing looked at what the page actually said.
+ *
+ * So `scripts/auth_pages_headless.py` reads this array straight out of this source file and
+ * checks it against the RENDERED text of every rate-limited state. A forbidden string is
+ * only forbidden where the scanner looks, and the scanner now looks at the output.
+ *
+ * Kept as one exported array rather than repeated in each consumer so that adding a phrase
+ * strengthens both checks at once, and so neither can drift from the other.
+ */
+export const ADDRESS_CLAIM_PHRASES = [
+  'this account',
+  'your account',
+  'that address',
+  'this address',
+] as const
+
+/**
+ * Says nothing about the address, deliberately. See `ADDRESS_CLAIM_PHRASES`.
  */
 export const RESEND_RATE_LIMITED =
   'Too many requests for a new link. Wait a few minutes, then try again.'
