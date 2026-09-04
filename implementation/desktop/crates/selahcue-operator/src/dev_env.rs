@@ -66,7 +66,7 @@
 //!
 //! * It lives in the operator **binary**, not in a library crate, so nothing can take it as a
 //!   dependency and no other crate's guarantees are widened by it.
-//! * It will only ever set the two names in [`LOADABLE`]. Every other assignment in the file is
+//! * It will only ever set — **or unset** — the three names in [`LOADABLE`]. Every other assignment in the file is
 //!   parsed and then thrown away. It cannot be used to inject an arbitrary environment.
 //! * It never sets a variable to an empty value, so a missing key stays missing and the feature
 //!   that needs it can say which one — instead of handing a provider an empty credential and
@@ -81,6 +81,7 @@
 //! ```text
 //! std::env::var("DEEPGRAM_API_KEY")   // 86akby4yz — Deepgram streaming transcription
 //! std::env::var("OPENAI_API_KEY")     // 86akby7d8 — OpenAI sermon notes
+//! std::env::var("SELAHCUE_OPENAI_MODEL") // 86akby7d8 — QA model switch, NOT a credential
 //! ```
 //!
 //! Absent means absent: `env::var` returns `NotPresent`, never `Ok("")`. A lane that needs a key
@@ -105,23 +106,76 @@ pub const DEEPGRAM_API_KEY: &str = "DEEPGRAM_API_KEY";
 #[cfg(any(feature = "dev-keys", test))]
 pub const OPENAI_API_KEY: &str = "OPENAI_API_KEY";
 
+/// The GPT model sermon-note generation should ask for. Consumed by 86akby7d8.
+///
+/// **This is the third name, and it is not a credential — which is the whole basis on which the
+/// allowlist was widened to admit it.** The owner asked for physical QA to be able to switch
+/// between `gpt-5.6-luna` and `gpt-5.6-terra` without a rebuild. The alternative was to leave it
+/// out and read it from the environment anyway, which would have been strictly worse: the loader
+/// would read the line from `.env`, discard it, and QA would see the default model while
+/// believing they had changed it — a silent no-op that looks exactly like success.
+///
+/// So the widening is the *fix* for that footgun rather than a convenience. The rule the list
+/// exists to enforce is unchanged: a name gets in only when leaving it out would produce a
+/// misleading outcome, and it is reviewed on that basis. Note what it is not — it carries no
+/// secret, so admitting it does not enlarge the credential surface the module docs are about.
+#[cfg(any(feature = "dev-keys", test))]
+pub const SELAHCUE_OPENAI_MODEL: &str = "SELAHCUE_OPENAI_MODEL";
+
 /// **The only names this loader will ever set.** Not a default, not a starting point — the
 /// complete set. An assignment in `.env` for any other name is read and discarded, which is what
 /// keeps this from being a general "inject an arbitrary environment from a file" mechanism. See
 /// the module docs for why that distinction is load-bearing rather than tidy.
 ///
-/// Adding a third name is a deliberate, reviewable act. Adding one to make some unrelated
-/// configuration convenient is the mistake this list exists to make visible.
+/// # The standing rule for adding a name
+///
+/// **Categorical: this loader never carries a credential name beyond the two it exists for.** New
+/// credentials go through the platform path. There is no exception process, because an exception
+/// process is how a two-name allowlist becomes a general environment injector one justified case
+/// at a time.
+///
+/// **Per addition**, a non-credential name may be added only when *leaving it out would produce a
+/// misleading outcome* — not merely an inconvenient one — and the addition must, in a single
+/// commit: name its consumer, show that its failure mode on a hostile value is bounded and
+/// honest, move every pin and posture statement that describes the old shape, and pass security
+/// review before merge.
+///
+/// **There is no numeric cap, deliberately — a maximum invites filling to it.** The real bound is
+/// this module's deletion date. Pressure to add a fourth name is evidence that the value belongs
+/// in `ProvidersSettings` (persisted, operator-visible, surviving the loader) rather than here;
+/// 86akbzxyc already puts model choice there. This whole mechanism is scaffolding for the
+/// developer-key phase and dies with it.
+///
+/// [`SELAHCUE_OPENAI_MODEL`] is the third name and the only entry that is **not** a credential. It
+/// was admitted because omitting it was the more dangerous option: the loader would have read the
+/// line from `.env`, discarded it, and left physical QA switching models with no effect and no
+/// signal — a silent no-op indistinguishable from success. Its scope is exactly that: physical-QA
+/// convenience for the developer-key phase.
+///
+/// **Note the widening grows the CLEAR set, not just the write set.** Since `aeddf2d` the loader
+/// `remove_var`s a name it reports missing, so a blank `SELAHCUE_OPENAI_MODEL=` in `.env` will
+/// **unset** any value the operator was launched with. Harmless for a model name — it falls back
+/// to the compiled default — but "the loader may unset this variable" is the surprising half of
+/// admitting any future name, and it is the half to check first.
 #[cfg(any(feature = "dev-keys", test))]
-const LOADABLE: [&str; 2] = [DEEPGRAM_API_KEY, OPENAI_API_KEY];
+const LOADABLE: [&str; 3] = [DEEPGRAM_API_KEY, OPENAI_API_KEY, SELAHCUE_OPENAI_MODEL];
 
 /// Pin the premise at compile time, beside the constant, per the repo's testing rules. Several
 /// tests hard-code what they expect the allowlist to contain -- most importantly
 /// `NEVER_EXPORTED`, which cannot see a name it was never told to look for. Widening the
 /// allowlist must therefore break the build here and force those to be revisited, rather than
 /// quietly making them vacuous.
+///
+/// It did exactly that when the third name was added (86akby7d8): this assertion failed the build,
+/// and all eleven hard-coded expectations it guards were revisited one by one rather than the
+/// change being discovered later.
+///
+/// **The property this proves — that a widening cannot be silent — IS the control.** A widening
+/// that merely updates this number to make the build pass has defeated it. If you are changing
+/// this line, the question to answer is not "what number makes it compile" but "which assertions
+/// downstream now describe a shape that no longer exists".
 #[cfg(any(feature = "dev-keys", test))]
-const _: () = assert!(LOADABLE.len() == 2);
+const _: () = assert!(LOADABLE.len() == 3);
 
 /// The repo-root `.env`, resolved at **compile time** from this crate's manifest directory
 /// (`<root>/implementation/desktop/crates/selahcue-operator` — four levels down).
@@ -557,14 +611,18 @@ mod tests {
     }
 
     #[test]
-    fn both_allowlisted_names_are_taken_when_the_file_supplies_them() {
-        let contents = format!("{DEEPGRAM_API_KEY}={PROBE}-dg\n{OPENAI_API_KEY}={PROBE}-oa\n");
+    fn every_allowlisted_name_is_taken_when_the_file_supplies_them() {
+        let contents = format!(
+            "{DEEPGRAM_API_KEY}={PROBE}-dg\n{OPENAI_API_KEY}={PROBE}-oa\n\
+             {SELAHCUE_OPENAI_MODEL}=gpt-5.6-luna\n"
+        );
         let planned = plan(&contents, |_| false);
         assert_eq!(
             planned.to_set,
             vec![
                 (DEEPGRAM_API_KEY, format!("{PROBE}-dg")),
                 (OPENAI_API_KEY, format!("{PROBE}-oa")),
+                (SELAHCUE_OPENAI_MODEL, "gpt-5.6-luna".to_string()),
             ],
             "the allowlist is refusing names it is supposed to accept, which would make every \
              'was not taken' assertion in this file vacuous"
@@ -596,7 +654,7 @@ mod tests {
         );
         assert_eq!(
             planned.missing,
-            vec![DEEPGRAM_API_KEY, OPENAI_API_KEY],
+            vec![DEEPGRAM_API_KEY, OPENAI_API_KEY, SELAHCUE_OPENAI_MODEL],
             "a blank value must be reported as missing so the startup line can name it"
         );
     }
@@ -659,14 +717,20 @@ mod tests {
              embeds the ENTIRE value in the panic message, so this would print a live \
              credential to stderr (Sana, PR #18 F2)"
         );
-        assert_eq!(planned.missing, vec![DEEPGRAM_API_KEY, OPENAI_API_KEY]);
+        assert_eq!(
+            planned.missing,
+            vec![DEEPGRAM_API_KEY, OPENAI_API_KEY, SELAHCUE_OPENAI_MODEL]
+        );
     }
 
     #[test]
     fn an_absent_file_reports_both_names_missing_rather_than_failing() {
         let planned = plan("", |_| false);
         assert!(planned.to_set.is_empty());
-        assert_eq!(planned.missing, vec![DEEPGRAM_API_KEY, OPENAI_API_KEY]);
+        assert_eq!(
+            planned.missing,
+            vec![DEEPGRAM_API_KEY, OPENAI_API_KEY, SELAHCUE_OPENAI_MODEL]
+        );
     }
 
     // ---- the environment wins over the file ----------------------------------------------
@@ -692,7 +756,7 @@ mod tests {
         assert_eq!(planned.kept, vec![DEEPGRAM_API_KEY]);
         assert_eq!(
             planned.missing,
-            vec![OPENAI_API_KEY],
+            vec![OPENAI_API_KEY, SELAHCUE_OPENAI_MODEL],
             "an exported variable must count as resolved, not missing"
         );
     }
@@ -778,7 +842,7 @@ mod tests {
             "the quoted, export-prefixed assignment did not survive parsing, or the commented-out \
              one did"
         );
-        assert_eq!(planned.missing, vec![OPENAI_API_KEY]);
+        assert_eq!(planned.missing, vec![OPENAI_API_KEY, SELAHCUE_OPENAI_MODEL]);
     }
 
     // ---- the control this ticket exists to install -----------------------------------------
@@ -836,14 +900,18 @@ mod tests {
         use super::*;
 
         #[test]
-        fn a_dev_keys_build_makes_both_variables_readable() {
+        fn a_dev_keys_build_makes_every_variable_readable() {
             let _guard = locked();
             let path = temp_env_file(
                 "enabled",
-                &format!("{DEEPGRAM_API_KEY}={PROBE}-dg\n{OPENAI_API_KEY}={PROBE}-oa\n"),
+                &format!(
+                    "{DEEPGRAM_API_KEY}={PROBE}-dg\n{OPENAI_API_KEY}={PROBE}-oa\n\
+                     {SELAHCUE_OPENAI_MODEL}=gpt-5.6-luna\n"
+                ),
             );
             std::env::remove_var(DEEPGRAM_API_KEY);
             std::env::remove_var(OPENAI_API_KEY);
+            std::env::remove_var(SELAHCUE_OPENAI_MODEL);
 
             let report = load_from(&path);
 
@@ -857,7 +925,18 @@ mod tests {
                 Some(format!("{PROBE}-oa")),
                 "{OPENAI_API_KEY} is not readable by the rest of the application"
             );
-            assert_eq!(report.resolved, vec![DEEPGRAM_API_KEY, OPENAI_API_KEY]);
+            // The model is NOT a credential, but it travels the same path, so it is asserted
+            // readable exactly like the keys — a per-variable exception would be harder to reason
+            // about than uniform handling.
+            assert_eq!(
+                std::env::var(SELAHCUE_OPENAI_MODEL).ok(),
+                Some("gpt-5.6-luna".to_string()),
+                "{SELAHCUE_OPENAI_MODEL} is not readable, so QA could not switch model"
+            );
+            assert_eq!(
+                report.resolved,
+                vec![DEEPGRAM_API_KEY, OPENAI_API_KEY, SELAHCUE_OPENAI_MODEL]
+            );
             assert!(report.missing.is_empty());
             assert!(startup_lines(&report)
                 .iter()
@@ -865,6 +944,7 @@ mod tests {
 
             std::env::remove_var(DEEPGRAM_API_KEY);
             std::env::remove_var(OPENAI_API_KEY);
+            std::env::remove_var(SELAHCUE_OPENAI_MODEL);
         }
 
         #[test]
@@ -881,7 +961,10 @@ mod tests {
                     && std::env::var_os(OPENAI_API_KEY).is_none(),
                 "a missing .env must leave the variables unset, never set to an empty string"
             );
-            assert_eq!(report.missing, vec![DEEPGRAM_API_KEY, OPENAI_API_KEY]);
+            assert_eq!(
+                report.missing,
+                vec![DEEPGRAM_API_KEY, OPENAI_API_KEY, SELAHCUE_OPENAI_MODEL]
+            );
             let lines = startup_lines(&report);
             assert!(lines.iter().any(|l| l.contains(DEEPGRAM_API_KEY)));
             assert!(lines.iter().any(|l| l.contains(OPENAI_API_KEY)));
@@ -924,7 +1007,7 @@ mod tests {
             // below -- the one that tells the next person what to do -- would never be printed.
             assert_eq!(
                 LOADABLE.as_slice(),
-                [DEEPGRAM_API_KEY, OPENAI_API_KEY].as_slice(),
+                [DEEPGRAM_API_KEY, OPENAI_API_KEY, SELAHCUE_OPENAI_MODEL].as_slice(),
                 "the allowlist changed. NEVER_EXPORTED below is hard-coded and cannot see a \
                  newly admitted name -- revisit the two together before touching this assertion."
             );
@@ -1071,7 +1154,7 @@ mod tests {
             // to check. An empty `missing` would make it pass while asserting nothing.
             assert_eq!(
                 report.missing,
-                vec![DEEPGRAM_API_KEY, OPENAI_API_KEY],
+                vec![DEEPGRAM_API_KEY, OPENAI_API_KEY, SELAHCUE_OPENAI_MODEL],
                 "neither name was reported missing, so the invariant loop below is vacuous"
             );
 
@@ -1169,7 +1252,7 @@ mod tests {
             );
             assert_eq!(
                 report.missing,
-                vec![DEEPGRAM_API_KEY, OPENAI_API_KEY],
+                vec![DEEPGRAM_API_KEY, OPENAI_API_KEY, SELAHCUE_OPENAI_MODEL],
                 "a NUL-bearing value must be reported as missing so the operator names it"
             );
             assert!(

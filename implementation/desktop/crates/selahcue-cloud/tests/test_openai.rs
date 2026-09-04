@@ -388,6 +388,83 @@ fn the_outgoing_request_names_the_model_it_is_documented_to_use() {
 }
 
 #[test]
+fn the_model_resolves_from_an_env_value_and_falls_back_to_the_default() {
+    use selahcue_cloud::openai::{resolve_model, MAX_MODEL_LEN};
+
+    // Absent and blank mean the same thing — deliberately one meaning for "unset", not two.
+    for none_ish in [None, Some(""), Some("   "), Some("\t\n")] {
+        assert_eq!(
+            resolve_model(none_ish),
+            DEFAULT_MODEL,
+            "{none_ish:?} must fall back to the shipped default"
+        );
+    }
+
+    // A supplied value is used verbatim, trimmed. This is what QA actually does.
+    assert_eq!(resolve_model(Some("gpt-5.6-luna")), "gpt-5.6-luna");
+    assert_eq!(resolve_model(Some("  gpt-5.6-luna  ")), "gpt-5.6-luna");
+
+    // NOT validated against a known-model list: OpenAI's catalogue moves, and a stale allowlist
+    // would reject a model the account can call. An unknown one is passed through and surfaces as
+    // a visible 404 -> NotConfigured rather than a silent fallback.
+    assert_eq!(
+        resolve_model(Some("gpt-9-not-yet-invented")),
+        "gpt-9-not-yet-invented"
+    );
+
+    // Bounded before it is stored, so an absurd `.env` line cannot become an unbounded field.
+    let absurd = "m".repeat(MAX_MODEL_LEN * 10);
+    assert_eq!(resolve_model(Some(&absurd)).chars().count(), MAX_MODEL_LEN);
+
+    // PREMISE: the bound is above any real id, so it never bites in practice.
+    assert!(DEFAULT_MODEL.chars().count() < MAX_MODEL_LEN);
+}
+
+#[test]
+fn an_env_supplied_model_reaches_the_request_body() {
+    // R4 sentinel discipline, now that the model has two legitimate values: drive it BY VALUE so
+    // hardcoding either one stays RED.
+    for model in ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-9-not-yet-invented"] {
+        let t = std::sync::Arc::new(MockTransport::responding(200, envelope(&full_draft_json())));
+        let p = OpenAiNoteProvider::new(
+            ArcTransport(t.clone()),
+            Token::new("sk-test-not-a-real-key"),
+            selahcue_cloud::openai::resolve_model(Some(model)),
+        );
+        p.generate(&request_with(all_on(), TRANSCRIPT)).unwrap();
+        let (_req, body) = sole_request(&t);
+        assert_eq!(
+            body["model"].as_str(),
+            Some(model),
+            "the env-supplied model must reach the wire; QA cannot verify a switch otherwise"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_model_is_a_visible_terminal_state_not_a_silent_fallback() {
+    // The failure QA will actually hit after a typo in `.env`. It must be told the model was
+    // rejected, not quietly served worse notes by the offline scaffold.
+    let cfg = config_with_consent(all_on());
+    let err = generate_sermon_notes(
+        &cfg,
+        TRANSCRIPT,
+        true,
+        &provider(MockTransport::responding(404, fixtures::ERR_404_NO_MODEL)),
+        &LocalNoteProvider::new(),
+    )
+    .expect_err("a rejected model must surface, not degrade");
+    assert_eq!(
+        err,
+        NoteError::NotConfigured,
+        "404 model_not_found must be terminal — falling back would hide a typo indefinitely"
+    );
+    // And it still does not echo the provider's body, which names the model.
+    let rendered = format!("{err}  {err:?}");
+    assert!(!rendered.contains("gpt-9-does-not-exist"), "{rendered}");
+}
+
+#[test]
 fn the_outgoing_request_carries_auth_and_goes_to_the_responses_endpoint() {
     let (p, t) = inspectable_provider();
     p.generate(&request_with(all_on(), TRANSCRIPT)).unwrap();

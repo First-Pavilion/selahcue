@@ -2802,12 +2802,17 @@ const DIRECT_NOTES_COMPILED: bool = false;
 /// Absent and blank are treated identically, so it does not matter whether the `.env` loader
 /// unsets an empty value or exports it empty.
 #[cfg(feature = "openai-notes")]
-fn direct_provider_from_key(key: Option<&str>) -> Direct {
+fn direct_provider_from_key(key: Option<&str>, model: &str) -> Direct {
     let present = key.is_some_and(|k| !k.trim().is_empty());
     Direct(present.then(|| NotesProviderView {
         kind: selahcue_cloud::openai::PROVIDER_KIND.to_string(),
         name: selahcue_cloud::openai::PROVIDER_LABEL.to_string(),
-        model: selahcue_cloud::openai::DEFAULT_MODEL.to_string(),
+        // The model ACTUALLY in use, not the compiled default. QA switches model via `.env` and
+        // reads this off the panel to confirm the switch took — so if it reported the constant, an
+        // operator who set luna would see terra and be unable to tell a failed override from a
+        // stale display. That makes the feature unfalsifiable from outside, which is worse than
+        // not having it.
+        model: model.to_string(),
         developer_key: true,
     }))
 }
@@ -2818,6 +2823,7 @@ fn direct_notes_provider() -> Direct {
         std::env::var(selahcue_cloud::openai::API_KEY_ENV)
             .ok()
             .as_deref(),
+        &selahcue_cloud::openai::model_from_env(),
     )
 }
 
@@ -3200,19 +3206,52 @@ mod providers_view_tests {
     fn a_missing_or_blank_key_names_no_direct_provider() {
         for absent in [None, Some(""), Some("   "), Some("\t\n")] {
             assert!(
-                direct_provider_from_key(absent).0.is_none(),
+                direct_provider_from_key(absent, selahcue_cloud::openai::DEFAULT_MODEL)
+                    .0
+                    .is_none(),
                 "key {absent:?} must NOT produce a provider — claiming one without a key is the \
                  over-reporting inversion the scope amendment forbids"
             );
         }
         // POSITIVE CONTROL: a real key does produce one, so the assertions above are not
         // satisfied by a function that always returns None.
-        let present = direct_provider_from_key(Some("sk-proj-anything")).0;
+        let present = direct_provider_from_key(
+            Some("sk-proj-anything"),
+            selahcue_cloud::openai::DEFAULT_MODEL,
+        )
+        .0;
         let present = present.expect("a non-empty key must name a provider");
         assert_eq!(present.kind, selahcue_cloud::openai::PROVIDER_KIND);
         assert_eq!(present.name, selahcue_cloud::openai::PROVIDER_LABEL);
         assert_eq!(present.model, selahcue_cloud::openai::DEFAULT_MODEL);
         assert!(present.developer_key, "a .env key is a developer key");
+    }
+
+    /// QA sets a model in `.env` and reads it off the panel to confirm the switch took. If the
+    /// view showed the compiled default, the feature would be unfalsifiable from the outside.
+    #[cfg(feature = "openai-notes")]
+    #[test]
+    fn the_view_reports_the_model_actually_in_use_not_the_compiled_default() {
+        let cfg = selahcue_core::providers::ProvidersConfig::default();
+
+        // Both real tiers, driven through the FULL view — not just the provider — because the
+        // panel is what QA reads.
+        for model in ["gpt-5.6-luna", "gpt-5.6-terra"] {
+            let direct = direct_provider_from_key(Some("sk-proj-test"), model);
+            let (status, provider) = notes_status_from(Hosted(None), direct, true);
+            assert_eq!(status, "direct_provider");
+            let v = serde_json::to_value(providers_view_from(&cfg, false, status, provider))
+                .expect("the view serialises");
+            assert_eq!(
+                v["notes_provider"]["model"], model,
+                "the panel must show the model actually configured; showing the default would \
+                 leave QA unable to tell a failed override from a stale display"
+            );
+        }
+
+        // PREMISE: at least one driven value is NOT the default, or the loop above could pass
+        // against an implementation that always reports the constant.
+        assert_ne!("gpt-5.6-luna", selahcue_cloud::openai::DEFAULT_MODEL);
     }
 
     #[test]

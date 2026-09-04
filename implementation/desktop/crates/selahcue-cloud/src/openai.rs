@@ -62,6 +62,24 @@ pub const PROVIDER_LABEL: &str = "OpenAI";
 /// Machine-readable provider kind for the operator view (`notes_provider.kind`).
 pub const PROVIDER_KIND: &str = "openai";
 
+/// The environment variable overriding [`DEFAULT_MODEL`], so physical QA can switch model without
+/// a rebuild. Read as a string literal for the same reason as [`API_KEY_ENV`].
+///
+/// **Not a credential**, which is the entire basis on which the loader's allowlist was widened to
+/// carry it. Absent or blank means "use the default" — deliberately one meaning, not two: the
+/// loader already leaves a blank value unset, so `env::var` reports `NotPresent` either way and
+/// nothing here needs to distinguish them.
+pub const MODEL_ENV: &str = "SELAHCUE_OPENAI_MODEL";
+
+/// Upper bound on an env-supplied model id.
+///
+/// The same reasoning as `MAX_TRANSLATION_CODE_LEN` in the core: a value that arrives from outside
+/// the binary is bounded before it is stored, so a wire-legal but absurd `.env` line cannot become
+/// unbounded memory or an unbounded request field. Real ids are well under this — `gpt-5.6-terra`
+/// is 13 characters — so the bound never bites in practice, which is exactly the shape a bound
+/// should have.
+pub const MAX_MODEL_LEN: usize = 64;
+
 /// The environment variable carrying the developer key. Read as a **string literal**
 /// rather than importing the operator's `dev_env::OPENAI_API_KEY` const: that const is
 /// `#[cfg(any(feature = "dev-keys", test))]`, and depending on it would drag this crate
@@ -108,23 +126,27 @@ pub const API_KEY_ENV: &str = "OPENAI_API_KEY";
 /// correctness bug (an empty section is correctly not rendered) but it does mean "the toggles
 /// asked for it" and "the draft contains it" are different statements. Tracked as 86akc0tua.
 ///
-/// # Why a constant and not an environment variable
+/// # The default, and how it is overridden
 ///
-/// The obvious move is `SELAHCUE_OPENAI_MODEL`, and it would be a trap. The `.env`
-/// loader (86akby6yy) allowlists exactly two names — `DEEPGRAM_API_KEY` and
-/// `OPENAI_API_KEY` — and parses everything else in the file only to discard it. A third
-/// variable would therefore be read from a shell export but **silently ignored in
-/// `.env`**, which is the file everyone would put it in. Widening that allowlist is not
-/// on the table: the two-name limit is one of the loader's stated security mitigations.
+/// This is the **default**, not the only possibility: [`MODEL_ENV`] overrides it, so physical QA
+/// can switch between tiers without a rebuild.
 ///
-/// So the choice was a constant or a real setting. Model choice is genuinely an operator
-/// preference — the same kind of thing as `notes_template` — and it belongs on
-/// [`selahcue_core::providers::ProvidersSettings`], persisted and surfaced in the
-/// providers view, where it can be changed from the UI. That expands the frontend
-/// contract, so it is its own ticket rather than a hunk of this one. Until then a
-/// constant is the honest option: changing it is a rebuild, which in a developer-key
-/// phase is not a hardship, and nothing pretends to be configurable while quietly
-/// refusing to be.
+/// That override was originally rejected here, and the reasoning is worth keeping because it was
+/// right at the time: the `.env` loader (86akby6yy) allowlisted exactly two names and discarded
+/// every other assignment, so `SELAHCUE_OPENAI_MODEL` in `.env` would have been read and thrown
+/// away — a silent no-op looking exactly like success, which is the worst possible outcome for a
+/// QA operator with no way to tell the difference. The conclusion drawn was "do not offer it".
+///
+/// The owner then asked for it, so **the footgun was fixed rather than avoided**: the allowlist
+/// was widened to admit this one name, deliberately and under security review, and it is the only
+/// entry there that is not a credential. `selahcue-operator/src/dev_env.rs` carries the standing
+/// rule for that list — categorically no further credential names, and no numeric cap because a
+/// maximum invites filling to it.
+///
+/// **This remains scaffolding.** Model choice is properly an operator preference, the same kind of
+/// thing as `notes_template`, and belongs on [`selahcue_core::providers::ProvidersSettings`] where
+/// it is persisted and surfaced in the UI — 86akbzxyc. The `.env` override is physical-QA
+/// convenience for the developer-key phase and dies with the loader.
 pub const DEFAULT_MODEL: &str = "gpt-5.6-terra";
 
 /// API root. Overridable so a test or a proxy can point elsewhere; never carries a key.
@@ -775,6 +797,32 @@ fn error_code(body: &str) -> Option<String> {
 // The provider
 // ---------------------------------------------------------------------------
 
+/// Resolve the model id from `value`, falling back to [`DEFAULT_MODEL`].
+///
+/// Free-standing and taking the value, so a test can drive every case without mutating the process
+/// environment under a parallel runner — the same shape the operator's `direct_provider_from_key`
+/// takes, and for the same reason.
+///
+/// **Deliberately not validated against a hardcoded list of known models.** OpenAI's catalogue
+/// moves faster than our releases; a stale allowlist here would reject a model the account can
+/// actually call, which is a worse failure than passing an unknown one through. An unknown model
+/// returns HTTP 404 `model_not_found`, which [`map_error_status`] maps to
+/// [`NoteError::NotConfigured`] — a terminal, visible state, not a silent fall-back to the local
+/// scaffold. That is the honest handling: the operator is told the configured model was rejected
+/// rather than quietly getting worse notes.
+pub fn resolve_model(value: Option<&str>) -> String {
+    match value.map(str::trim).filter(|v| !v.is_empty()) {
+        // Bounded before it is stored, not after.
+        Some(v) => v.chars().take(MAX_MODEL_LEN).collect(),
+        None => DEFAULT_MODEL.to_string(),
+    }
+}
+
+/// The model this build will ask for, from the environment or the default.
+pub fn model_from_env() -> String {
+    resolve_model(std::env::var(MODEL_ENV).ok().as_deref())
+}
+
 /// A [`NoteProvider`] backed by OpenAI GPT over an injected [`HttpTransport`].
 ///
 /// Holds the developer key in a [`crate::secret::Token`], which redacts itself in
@@ -824,7 +872,7 @@ impl<T: HttpTransport> OpenAiNoteProvider<T> {
         Some(OpenAiNoteProvider::new(
             transport,
             crate::secret::Token::new(key),
-            DEFAULT_MODEL,
+            model_from_env(),
         ))
     }
 
