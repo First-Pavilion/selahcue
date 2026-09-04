@@ -39,7 +39,7 @@ Verified at `origin/main` = `3f3072edc158310182d18910e3a7dccabfb66a08` (PR #18 m
 ### Baseline addendum — state at review round 1
 
 Head `c18841d` + this round's fixes. **4** declared targets (operator binary, sidecar, NDI
-runtime, NSIS bundle), **8** signatures x **2** encodings = 16 needles, **37** self-test cases.
+runtime, NSIS bundle), **8** signatures x **2** encodings = 16 needles, **43** self-test cases.
 The scanner's arithmetic was independently verified exhaustively in review (2,000 randomised
 files across five chunk sizes, plus every needle position at nine more): zero mismatches. The
 defects found in this round were all in the TESTS, not the scanner.
@@ -110,9 +110,10 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-011 | yes | Lines 24-33 comment stays accurate; every build step keeps `--release` | `git diff` review | comment consistent, no `--release` removed | lines 24-33 intact and extended; both build steps keep release | PASS |
 | C-012 | yes | `check_workflows.py` and `actionlint` pass on the edited workflow | both tools over `.github/workflows/` | exit 0 | actionlint 1.7.12 exit 0; check_workflows.py exit 0 | PASS |
 | C-013 | yes | No `Makefile` change, no file under `implementation/` | `git diff --name-only origin/main...HEAD` | only the script, the workflow, this contract | 3 files; ci.yml and Makefile untouched; 0 under implementation/ | PASS |
-| C-014 | yes | Independent review: Cody, Vera, Sana, Quinn; Sana confirms F5 | review pipeline | no unremediated blocking findings | Sana PASS (F5 confirmed); Vera PASS (measured); Cody 2 High/5 Med/8 Low — both High fixed; Quinn GATE_REVIEW — F1-F4 fixed; Cody/Quinn re-review of the fixes outstanding | PENDING |
+| C-014 | yes | Independent review: Cody, Vera, Sana, Quinn; Sana confirms F5 | review pipeline | no unremediated blocking findings | Sana PASS (F5 confirmed); Vera PASS (measured); Cody 2 High/5 Med/8 Low all fixed; Quinn PASS at dd336e1 — 19 mutations + collection batteries, all killed by a named case | PASS |
 | C-015 | yes | Every collection the suite iterates is pinned, so it cannot be silently shortened | self-test `every_required_target_is_declared`, `every_encoding_is_declared`, `every_target_has_a_size_floor`, `the_pins_themselves_have_not_shrunk`, `self_test_case_floor`, `every_glob_match_is_scanned` | each mutation dies by its named case | second mutation battery: 10/10 previously-surviving mutations killed | PASS |
-| C-016 | yes | The gate runs for real on a windows-latest runner, not merely parses | dispatched `windows-installer.yml` run | both gate steps execute and report | run 33874171169 (3-target head); re-dispatch pending on final head | PENDING |
+| C-016 | yes | The gate runs for real on a windows-latest runner, not merely parses | dispatched `windows-installer.yml` run | both gate steps execute and report | run 33879290775 @ dd336e1: success; 4 artefacts, 16/16 control pairs each, 0/8 present; NDI dll 29,863,120 B = 30x the floor; self-test 41 passed + 1 skipped = 42 vs floor 42 | PASS |
+| C-017 | yes | Every relaxation of an acceptance criterion is itself constrained | self-test `only_known_cases_may_skip` | a skip not in ALLOWED_SKIPS fails the suite | bogus-skip mutations killed by name; allowlist not a ceiling, so no threshold regress | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -180,6 +181,21 @@ checked against the wrong expected case name. The harness now parse-checks each 
 validates its live tables before a result is trusted. Instrument versus subject, at the third
 level.
 
+**L7 — A fix that WIDENS an acceptance criterion must constrain the new width.** Every other
+defect in this list was a control that failed to CATCH something. Counting skipped cases toward
+the case floor was correct — it is what makes the floor platform-invariant — but it made
+`skipped` a second way to satisfy that floor, and nothing constrained what went into it:
+deleting a case block *and* appending one bogus entry passed. The fix is an ALLOWLIST, not a
+ceiling; a ceiling is a magnitude and a magnitude can always be raised in step with what it
+guards, which would re-open the threshold regress L1 closed. When you loosen a criterion, ask
+what the loosening now admits.
+
+**L8 — Being right in advance is not the same as having checked.** The compression arithmetic
+predicted the NDI dll was far above the size floor. It is 29,863,120 bytes, 30x the floor and
+the largest of the four artefacts — exactly as predicted. Declining to bank that inference cost
+one Windows build and bought a measurement. The same day, an inference about the self-test case
+count that was *not* checked on Windows would have failed a correct build.
+
 **L6 — A redundancy you rely on must be explicit.** `.env.sample` and `repo-root .env` are
 redundant today because anything carrying them also emits `selahcue dev-keys:`. That is a
 coupling assumption about a startup message: tidying one `eprintln!` would break the redundancy
@@ -204,6 +220,6 @@ silently and take the only detection with it. Both are declared rows now.
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py <path>`
 - Validator result: OK (structural)
 - Independent verification result: pending
-- Terminal state: GATE_REVIEW — C-014 partial (Cody/Quinn re-review pending), C-016 pending the re-dispatched Windows run
+- Terminal state: VERIFIED_COMPLETE pending the delta-only reviewer confirmation on this head and the final Windows dispatch
 - Remaining failed or blocked criteria: pending
 - ClickUp final evidence comment: pending

@@ -31,6 +31,21 @@ that is how a control gets trusted past its reach:
     own is close to no evidence.
   * ANOTHER PROVIDER. The set below is a floor, not a ceiling -- see SIGNATURES.
 
+WHAT A FINDING REPORTS, AND WHAT IT DELIBERATELY DOES NOT. A hit prints the DECLARED MARKER
+string, its encoding, its byte offset and the artefact path -- and never the surrounding bytes.
+That is a design choice, not an accident of formatting, and it should survive edits to the
+reporting code:
+
+  * every needle is a KNOWN, PUBLIC marker from SIGNATURES below (a hostname, a variable NAME, a
+    diagnostic phrase). None of them is itself a credential, so echoing one leaks nothing.
+  * the bytes AROUND a hit are exactly where a real credential would sit -- `DEEPGRAM_API_KEY`
+    matches the variable name, and the value follows it. Printing context would turn a CI log,
+    which is far more widely readable than the artefact, into the disclosure.
+  * so the only content-derived values emitted are a byte COUNT and a whole-file SHA-256, both
+    of which identify the artefact without revealing any part of it.
+
+If you add reporting here, keep that line: say WHAT was found and WHERE, never what was near it.
+
 THE POSITIVE CONTROL IS THE POINT. A scan that silently examines nothing passes forever, and this
 guard family has hit that failure mode repeatedly. So this refuses to report success unless it
 can show it read a real artefact: a glob that matches nothing, a path that is not a regular file,
@@ -228,7 +243,12 @@ REQUIRED_TARGET_COUNT = 4
 # generate cases, then one floor covers all of them, and the last unpinned number is a number
 # whose only effect is to be too low -- which every other case would then have to be deleted to
 # exploit. RAISE THIS when cases are added; it may only ever go up.
-SELF_TEST_CASE_FLOOR = 42
+SELF_TEST_CASE_FLOOR = 43
+
+# The ONLY cases permitted to self-skip. Not a count -- a set of names, so it cannot be widened
+# by lowering a number. `unreadable_file` skips wherever mode 000 is unenforced (Windows, root);
+# the directory case covers the same fail-closed branch on every platform.
+ALLOWED_SKIPS: frozenset[str] = frozenset({"unreadable_file"})
 
 # --------------------------------------------------------------------------------------
 # THE DECLARED TARGETS. Also one place, and also shaped for growth.
@@ -645,7 +665,8 @@ def self_test() -> int:
     failures: list[str] = []
     cases = 0
     # Cases that could not RUN on this platform, kept separately and counted TOWARD the floor.
-    # See self_test_case_floor for why this must not be "just don't count them".
+    # See self_test_case_floor for why this must not be "just don't count them", and
+    # `only_known_cases_may_skip` for why what goes IN here is constrained by NAME.
     skipped: list[str] = []
 
     with tempfile.TemporaryDirectory(prefix="selahcue-scan-selftest-") as tmp:
@@ -898,7 +919,7 @@ def self_test() -> int:
             if c:
                 failures.append(c)
         else:
-            skipped.append("unreadable_file (this platform/user ignores mode 000)")
+            skipped.append("unreadable_file")
             print("   unreadable_file: SKIPPED - this platform/user ignores mode 000 "
                   "(the directory case above covers the same fail-closed branch)")
         os.chmod(unreadable, 0o644)
@@ -1069,6 +1090,31 @@ def self_test() -> int:
     #
     # A skipped case is still ACCOUNTED FOR: it is named in the log and in this total, so
     # deleting the case block drops the count exactly as removing a running case would.
+    # AN ALLOWLIST, NOT A CEILING, and the distinction is the whole point.
+    #
+    # Counting skips toward the floor made `skipped` a SECOND way to satisfy it, and nothing
+    # constrained what went in: deleting a case block AND appending one bogus entry passed at
+    # 41 + 1 = 42. The entry was visible in the output and read by no assertion -- information
+    # present in the log, absent from any check.
+    #
+    # The obvious fix is a SELF_TEST_SKIP_CEILING. Do not: that re-opens the threshold regress
+    # this file spent two commits closing, because a ceiling is a magnitude and a magnitude can
+    # always be raised in step with the thing it guards. An allowlist has no regress -- it is
+    # not a number. Adding a skip means adding a NAME here, in a diff that says what it is.
+    #
+    # THE SHAPE, recorded because it is new to this file's collection: every earlier defect was
+    # a control that failed to CATCH something. This one was a fix that WIDENED an acceptance
+    # criterion -- correctly, to make the floor platform-invariant -- and did not constrain the
+    # new width. When you loosen a criterion, ask what the loosening now admits.
+    cases += 1
+    unexpected_skips = [name for name in skipped if name not in ALLOWED_SKIPS]
+    if unexpected_skips:
+        failures.append(
+            "only_known_cases_may_skip: " + ", ".join(unexpected_skips) + " is not in "
+            "ALLOWED_SKIPS. A skip is how a case stops running while still counting toward the "
+            "floor, so an unlisted one is a deleted case wearing a disguise."
+        )
+
     if cases + len(skipped) < SELF_TEST_CASE_FLOOR:
         failures.append(
             f"self_test_case_floor: ran {cases} cases + {len(skipped)} skipped, floor is "
