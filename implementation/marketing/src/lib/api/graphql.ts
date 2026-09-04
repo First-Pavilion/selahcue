@@ -265,6 +265,44 @@ async function raceAgainstAbort(work: Promise<void>, signal?: AbortSignal): Prom
 }
 
 /**
+ * Await `body` under `signal`, rejecting the moment `signal` aborts.
+ *
+ * WHY THIS EXISTS AT ALL, given that the same signal was handed to `fetch`. Aborting a
+ * signal after the headers have landed is specified to error the response's body stream,
+ * so a conforming `fetch` does end `response.json()` on its own. This function does not
+ * trust that, for two reasons that are both real here: the transport is INJECTABLE
+ * (`options.fetchImpl`), so the object carrying `json()` is whatever the caller handed
+ * us and need not honour a signal at all; and a body that arrives through a proxy,
+ * a service worker or a polyfilled `Response` is exactly the population most likely to
+ * stall in the first place. A deadline that only holds when the transport cooperates is
+ * not a deadline. This one settles the WAIT regardless — the read itself is left running
+ * and unobserved, which costs nothing and cannot deadlock the caller.
+ *
+ * The rejection carries the signal's own reason, so the caller-abort and deadline cases
+ * stay distinguishable one frame up: a cancellation must surface as the caller's
+ * `AbortError`, never as an `ApiError`.
+ */
+function readUnderDeadline<T>(body: Promise<T>, signal: AbortSignal): Promise<T> {
+  const reason = (): unknown => signal.reason ?? new DOMException('Aborted', 'AbortError')
+  if (signal.aborted) {
+    // Already over before the body was even offered. Attach a sink so abandoning the read
+    // cannot surface later as an unhandled rejection.
+    void body.then(
+      () => {},
+      () => {},
+    )
+    return Promise.reject(reason())
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(reason())
+    signal.addEventListener('abort', onAbort, { once: true })
+    body.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort)
+    })
+  })
+}
+
+/**
  * Classify a GraphQL error envelope.
  *
  * Mirrors `safe_graphql_error`, which maps every code it does not recognise onto
@@ -360,35 +398,54 @@ export async function graphqlRequest<TData>(
   const endpoint = `${apiBaseUrl()}${ACCOUNT_GRAPHQL_PATH}`
   const payload = JSON.stringify({ query, variables })
 
+  // ONE try/finally around BOTH the headers and the body, and the teardown is at the end
+  // of it. This used to be two: the timer was cleared and the caller's abort listener
+  // removed in a `finally` that fired the instant HEADERS arrived, and `response.json()`
+  // then ran with no deadline and no cancellation behind it. A server that answered and
+  // then stalled the body left this promise unsettled forever — measured at 3,000ms with a
+  // 200ms deadline and a caller abort at 100ms — and `SignInView.submit` awaits it, so the
+  // page held at `aria-busy` with the button disabled and no banner and no way forward.
+  // That is precisely the dead end FR-552 exists to prevent, and it was reached through
+  // the one gap the deadline did not cover. Headers arriving is not an answer; the body is
+  // the answer, and the deadline has to survive until it is in hand.
   let response: Response
+  let envelope: GraphQLEnvelope<TData>
   try {
-    response = await send(endpoint, {
-      method: 'POST',
-      headers,
-      // Same-origin: carries the session cookie for the authenticated surfaces that
-      // come later, and sends nothing at all if a deployment moves the API off-origin.
-      credentials: 'same-origin',
-      // Belt and braces with the page-level policy: a request URL must never become a
-      // referrer that leaks the page's own token-bearing URL.
-      referrerPolicy: 'no-referrer',
-      body: payload,
-      signal: controller.signal,
-    })
-  } catch (error) {
-    // A caller-driven abort is passed through untouched; anything else is transport.
-    if (options.signal?.aborted) throw error
-    throw new ApiError('NETWORK', 'The request did not reach the API.')
+    try {
+      response = await send(endpoint, {
+        method: 'POST',
+        headers,
+        // Same-origin: carries the session cookie for the authenticated surfaces that
+        // come later, and sends nothing at all if a deployment moves the API off-origin.
+        credentials: 'same-origin',
+        // Belt and braces with the page-level policy: a request URL must never become a
+        // referrer that leaks the page's own token-bearing URL.
+        referrerPolicy: 'no-referrer',
+        body: payload,
+        signal: controller.signal,
+      })
+    } catch (error) {
+      // A caller-driven abort is passed through untouched; anything else is transport.
+      if (options.signal?.aborted) throw error
+      throw new ApiError('NETWORK', 'The request did not reach the API.')
+    }
+
+    try {
+      envelope = (await readUnderDeadline(
+        response.json(),
+        controller.signal,
+      )) as GraphQLEnvelope<TData>
+    } catch (error) {
+      // Same rule as the headers, for the same reason: a deliberate cancellation is not a
+      // failure and must not be dressed up as one. Everything else — an HTML error page,
+      // an empty body, gzip truncation, a proxy in the way, a body that simply stopped
+      // arriving — is the same thing to a caller: no answer came back.
+      if (options.signal?.aborted) throw error
+      throw new ApiError('NETWORK', 'The API response could not be read.')
+    }
   } finally {
     clearTimeout(timeout)
     options.signal?.removeEventListener('abort', abortFromCaller)
-  }
-
-  let envelope: GraphQLEnvelope<TData>
-  try {
-    envelope = (await response.json()) as GraphQLEnvelope<TData>
-  } catch {
-    // HTML error page, empty body, gzip truncation, a proxy in the way: not an answer.
-    throw new ApiError('NETWORK', 'The API response could not be read.')
   }
 
   // Checked BEFORE `response.ok`: the API returns its error envelope on 200 for GraphQL

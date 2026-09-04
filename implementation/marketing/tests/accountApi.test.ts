@@ -463,3 +463,193 @@ describe('CSRF bootstrap', () => {
     assert.equal(calls.length, 0, 'an aborted caller must not cause a CSRF GET either')
   })
 })
+
+/**
+ * The request deadline has to cover the BODY, not just the headers.
+ *
+ * Cody measured the defect against the real module (PR #17, round 3): a transport whose
+ * headers arrive at once and whose body never does left `graphqlRequest` unsettled after
+ * 3,000ms with a 200ms deadline and a caller abort at 100ms. `clearTimeout` and the
+ * caller's abort listener were torn down in the `finally` of the fetch `try`, which fires
+ * the moment headers land — so by the time `await response.json()` ran there was no
+ * deadline and no cancellation left. `SignInView.submit` awaits that promise, so the page
+ * sits at `aria-busy`, button disabled, no banner and no way forward: the FR-552 dead end
+ * arrived at from the one direction nothing in this suite could see, because every faked
+ * reply in `tests/` is a fully-buffered `new Response(...)` whose `json()` always resolves.
+ *
+ * These four run on mock timers for the reason the bootstrap tests do: a wall-clock
+ * version of the first test costs its whole deadline on every `npm test`, and pinning the
+ * millisecond BEFORE the deadline as well as the one after is a stronger assertion than
+ * "it eventually rejected" ever was.
+ */
+describe('the response body is read under the request deadline', () => {
+  /** Short, and short on purpose: with mock timers nothing here waits for it. */
+  const BODY_DEADLINE_MS = 200
+
+  const LOGIN_REPLY = {
+    data: { login: { expiresAt: '2026-09-24T10:00:00+00:00', role: 'ADMIN', orgId: 'org-1' } },
+  }
+
+  /**
+   * A transport that answers with HEADERS AT ONCE and a body that does whatever `body`
+   * says — the one shape `recorder` cannot express, because `new Response(...)` is always
+   * fully buffered and its `json()` therefore always resolves.
+   *
+   * `jsonCalls` is the premise accessor. Every test below asserts it BEFORE its contract,
+   * so a request refused before it ever reached the body cannot pass as a bounded one.
+   */
+  function headersThenBody(body: () => Promise<unknown>): {
+    jsonCalls: () => number
+    impl: typeof fetch
+  } {
+    let calls = 0
+    const impl = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: () => {
+          calls += 1
+          return body()
+        },
+      }) as unknown as Response) as unknown as typeof fetch
+    return { jsonCalls: () => calls, impl }
+  }
+
+  /** Names how a rejection arrived, so an assertion failure says which mechanism fired. */
+  function outcomeOf(error: unknown): string {
+    return error instanceof ApiError ? `ApiError ${error.code}` : `${(error as Error).name}`
+  }
+
+  /** Never settles by itself. Only the deadline or the caller can end a wait on this. */
+  function neverSettles(): Promise<never> {
+    return new Promise<never>(() => {})
+  }
+
+  test('a server that sends headers and then stalls the body is refused at the deadline', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { jsonCalls, impl } = headersThenBody(neverSettles)
+
+    const settledAs: string[] = []
+    const settled = login('pastor@yourchurch.org', 'a-good-passphrase', {
+      fetchImpl: impl,
+      timeoutMs: BODY_DEADLINE_MS,
+    }).then(
+      () => settledAs.push('resolved'),
+      (error: unknown) => settledAs.push(outcomeOf(error)),
+    )
+
+    await flushMicrotasks()
+    // PREMISE FIRST. Without this the test passes just as well for a request refused
+    // before `json()` was ever called — and the body read, which is the whole subject,
+    // would go unexercised while the assertions below still went green.
+    assert.equal(
+      jsonCalls(),
+      1,
+      'the body was never read — the deadline-covers-the-body contract was not exercised',
+    )
+
+    // LOWER BOUND, and it is the one that stops this being a test of "rejects eventually".
+    // One millisecond short of the deadline the wait must still be open.
+    t.mock.timers.tick(BODY_DEADLINE_MS - 1)
+    await flushMicrotasks()
+    assert.deepEqual(settledAs, [], 'the request settled before its own deadline')
+
+    // UPPER BOUND: at the deadline the stalled body is abandoned and the caller is told
+    // the truth — NETWORK, "we could not get an answer", which is what SignInView needs
+    // to leave `submitting` and show a banner instead of spinning forever.
+    t.mock.timers.tick(1)
+    // Drained, not awaited: under the defect this promise NEVER settles, and `await`ing
+    // it would hang the runner instead of failing it. The assertion below is what reports.
+    await flushMicrotasks()
+    assert.deepEqual(settledAs, ['ApiError NETWORK'])
+    await settled
+  })
+
+  test("a caller's abort still reaches a body that has already started arriving", async (t) => {
+    // The other half of the same teardown. The listener that forwards the caller's
+    // cancellation was removed at the same moment the timer was cleared, so a view that
+    // unmounted while the body was streaming could not cancel anything — and, worse, the
+    // promise it abandoned never settled at all.
+    //
+    // NO TIME PASSES in this test. If the abort did not reach the body read, only the
+    // deadline could end this wait, and the deadline is never ticked.
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { jsonCalls, impl } = headersThenBody(neverSettles)
+
+    const controller = new AbortController()
+    const settledAs: string[] = []
+    const settled = login('pastor@yourchurch.org', 'a-good-passphrase', {
+      fetchImpl: impl,
+      timeoutMs: BODY_DEADLINE_MS,
+      signal: controller.signal,
+    }).then(
+      () => settledAs.push('resolved'),
+      (error: unknown) => settledAs.push(outcomeOf(error)),
+    )
+
+    await flushMicrotasks()
+    assert.equal(jsonCalls(), 1, 'the body was never read — this asserts nothing about it')
+
+    controller.abort()
+    await flushMicrotasks()
+    // AbortError, not `ApiError NETWORK`: a deliberate cancellation is not a failure and
+    // views must not render an error state for one. That contract is stated at the top of
+    // `graphqlRequest`, and it has to hold on the body path too, not only on the headers.
+    assert.deepEqual(settledAs, ['AbortError'])
+    await settled
+  })
+
+  test('positive control: headers that never arrive are refused at the same deadline', async (t) => {
+    // Proves the deadline mechanism is LIVE rather than merely present. Without it,
+    // "refused at 200ms" above would be indistinguishable from a transport that happens
+    // to reject for some unrelated reason of its own.
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const impl = (async (_input: unknown, init: RequestInit = {}) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener(
+          'abort',
+          () => reject(init.signal?.reason ?? new DOMException('Aborted', 'AbortError')),
+          { once: true },
+        )
+      })) as unknown as typeof fetch
+
+    const settledAs: string[] = []
+    const settled = login('pastor@yourchurch.org', 'a-good-passphrase', {
+      fetchImpl: impl,
+      timeoutMs: BODY_DEADLINE_MS,
+    }).then(
+      () => settledAs.push('resolved'),
+      (error: unknown) => settledAs.push(outcomeOf(error)),
+    )
+
+    await flushMicrotasks()
+    t.mock.timers.tick(BODY_DEADLINE_MS - 1)
+    await flushMicrotasks()
+    assert.deepEqual(settledAs, [], 'the headers deadline fired early')
+
+    t.mock.timers.tick(1)
+    await flushMicrotasks()
+    assert.deepEqual(settledAs, ['ApiError NETWORK'])
+    await settled
+  })
+
+  test('positive control: an ordinary buffered body resolves with no time passing at all', async (t) => {
+    // The other direction, and the one that would catch a "fix" that simply made every
+    // request fail. Mock timers are enabled and never ticked, so this resolves on the
+    // microtask queue alone: the deadline machinery costs a healthy request nothing.
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { calls, impl } = recorder(() => LOGIN_REPLY)
+
+    const metadata = await login('pastor@yourchurch.org', 'a-good-passphrase', {
+      fetchImpl: impl,
+      timeoutMs: BODY_DEADLINE_MS,
+    })
+
+    assert.deepEqual(metadata, {
+      expiresAt: '2026-09-24T10:00:00+00:00',
+      role: 'ADMIN',
+      orgId: 'org-1',
+    })
+    assert.equal(posts(calls).length, 1)
+  })
+})
