@@ -275,6 +275,7 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	$(CARGO) clippy $(WS) -p selahcue-app --features server --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-scripture --features download --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-cloud --features openai --all-targets -- -D warnings
+	$(CARGO) clippy $(WS) -p selahcue-stt-cloud --features deepgram --all-targets -- -D warnings
 	$(CARGO) clippy $(OP) --all-targets -- -D warnings
 	# The operator's `openai-notes` feature gates the provider construction and the four-state
 	# status derivation. Without this line NOTHING compiles it -- which is exactly the
@@ -294,6 +295,11 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# workspace run above does NOT cover it. Lint + test it explicitly: an off-by-default feature
 	# that no gate ever compiles is exactly how selahcue-stt ended up linted by nothing.
 	$(CARGO) test $(WS) -p selahcue-cloud --features openai --no-fail-fast
+	# The Deepgram streaming transport (86akby4yz) is behind an off-by-default feature, so the
+	# workspace run above does NOT build it. Lint + test it explicitly: an off-by-default feature
+	# that no gate ever compiles is exactly how selahcue-stt ended up linted by nothing. The
+	# suite here talks to a local stub socket on loopback, never to the live Deepgram service.
+	$(CARGO) test $(WS) -p selahcue-stt-cloud --features deepgram --no-fail-fast
 	$(CARGO) check $(OP)
 	$(CARGO) test $(OP) --no-fail-fast
 	$(CARGO) test $(OP) --features dev-keys --no-fail-fast

@@ -321,6 +321,7 @@ jobs:
           cargo clippy -p selahcue-app --features server --all-targets -- -D warnings
           cargo clippy -p selahcue-scripture --features download --all-targets -- -D warnings
           cargo clippy -p selahcue-cloud --features openai --all-targets -- -D warnings
+          cargo clippy -p selahcue-stt-cloud --features deepgram --all-targets -- -D warnings
       - name: Test (workspace, incl. GPU parity where an adapter exists)
         if: ${{ !cancelled() }}
         # --no-fail-fast: without it cargo stops at the first failing test BINARY, so a
@@ -421,6 +422,15 @@ jobs:
       - name: Test (cloud openai feature — OpenAI note provider, stub transport only)
         if: ${{ !cancelled() }}
         run: cargo test -p selahcue-cloud --features openai --no-fail-fast
+      # The Deepgram streaming transport (86akby4yz) is behind an off-by-default feature, so the
+      # workspace run does not build it. An off-by-default feature no gate compiles is how
+      # selahcue-stt ended up linted and tested by nothing; this keeps that from repeating.
+      # Its own step, NOT appended to the clippy block above: the comment on the Clippy steps
+      # explains why a clippy failure sharing a `run:` block aborts before `cargo test` runs.
+      # Loopback stub socket only — this never reaches the live Deepgram service.
+      - name: Test (cloud STT deepgram feature — stub socket on loopback)
+        if: ${{ !cancelled() }}
+        run: cargo test -p selahcue-stt-cloud --features deepgram --no-fail-fast
       - name: Test (at-rest encryption — SQLCipher + vendored OpenSSL)
         # The vendored OpenSSL build needs perl+nasm on Windows; covered on the
         # other two OSes (the feature is platform-independent Rust).
