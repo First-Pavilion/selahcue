@@ -79,11 +79,18 @@ Verified against `origin/main` at `cb006fc6ce12df1f03341203c3894da2c6c57429` on 
 
 ### Assumptions and unknowns
 
-- **UNKNOWN (blocking live proof):** the OpenAI account has **no credits** — every generation
-  returns HTTP 429 `insufficient_quota`. No live draft has ever been produced. Model *identity*
-  is verified against the account; model *output quality* is not. Owner action.
-- **ASSUMED:** `gpt-5.6-terra` produces better FR-122 structure than `gpt-5.6-luna`. Reasoned
-  from the research document and tier positioning, **not measured**. Revisit with evidence.
+- **RESOLVED 2026-09-04:** the owner added credits and the live path was exercised end to end
+  through the shipped Rust code (not a Python stand-in). See iteration 7.
+- **VERIFIED, narrowly:** `gpt-5.6-terra` produces better FR-122 structure than `gpt-5.6-luna` —
+  measured, no longer assumed. But measured on **one transcript, one run each**. That is enough
+  to confirm a default and not enough to call the prompt good in general; see the known
+  non-determinism in iteration 7.
+- **UNKNOWN (new, from the live run):** section population is **not deterministic**. The first
+  terra run returned an empty `chapter_markers` despite the toggle being on, and the section was
+  dropped; the second run populated it. An enabled section can therefore silently vanish. Not a
+  correctness bug — an empty section is correctly not rendered — but it means "the toggles ask
+  for it" and "the draft contains it" are not the same statement, and only the first is under
+  our control.
 
 ## Dependencies and approvals
 
@@ -119,7 +126,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-018 | yes | `PROVIDER-TRADEOFFS.md` records that the owner selected GPT and that its Haiku recommendation is superseded | review | superseded block present with evidence and the non-benchmark caveat | `docs/research/PROVIDER-TRADEOFFS.md` | PASS |
 | C-019 | yes | `make ci` passes | `make ci` | ALL GREEN | run output | PASS |
 | C-020 | yes | The new feature is actually linted and tested by the gates, not merely added | review of `Makefile` + `ci.yml` | `--features openai` clippy + test lines present in both | diff | PASS |
-| C-021 | no | A real GPT draft is produced against the live API | run the probe once the account has credits | a structured FR-122 draft returns | OpenAI account has no credits: every generation returns HTTP 429 `insufficient_quota`. Owner action. Not claimed. | BLOCKED |
+| C-021 | no | A real GPT draft is produced against the live API through the shipped Rust path | live run, 2026-09-04, `gpt-5.6-terra` and `gpt-5.6-luna` on a 1,431-word sermon | a structured FR-122 draft returns and the bounded parser handles it | Both models returned all 8 enabled sections, 4 points, 13 sub-points, and honoured the disabled `social_excerpts` toggle. All 16 references verified against the bundled KJV. **One transcript, one run each — not a claim that the prompt is good in general.** | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -220,6 +227,35 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Result: a new under-reporting bug closed before it shipped.
 - Decision: complete pending review.
 
+### Iteration 7 — the live run, once credits existed
+
+- Target criterion: C-021.
+- Hypothesis: the prompt and schema, never having met a real model, would work as written.
+- Change or investigation: built a **throwaway** example driving the real `OpenAiNoteProvider`
+  over `ReqwestTransport` — the shipped instruction, schema, transport and bounded parser, called
+  the way the operator calls them — and ran a 1,431-word sermon through `gpt-5.6-terra` and
+  `gpt-5.6-luna`. Deleted afterwards: **the suite stays on mocks**, because a test that needs
+  network and credits breaks CI for everyone and bills the owner on every run.
+- Verifier executed: the live runs; then the produced references checked against the bundled KJV.
+- Result: **the path works.** Both models returned title, main + supporting scripture,
+  introduction, 4 points with 13 nested sub-points, illustrations, quotes, prayer points,
+  calls-to-action, key lessons, chapter markers and summary. `social_excerpts` was off and stayed
+  absent. `quota` came back `None`. `ai_generated` and the disclosure were both set. The parser
+  needed no change and **no mock fixture had to be corrected** — the real envelope matched the
+  shape the tests already assert.
+- New evidence, three things worth more than the pass itself:
+  1. **Non-determinism.** The first terra run omitted `chapter_markers` entirely; the second
+     produced 7. Same prompt, same transcript. Recorded as an UNKNOWN above rather than smoothed
+     over.
+  2. **A prompt gap the benchmark exposed.** Luna numbered its point headings by hand ("1. ",
+     "2. ") and packed explanations into them. The prompt never says not to. Terra inferred it;
+     luna did not. Left unfixed in this MR **on purpose** — Cody is mid-review at `8601ef4` and
+     terra is the default, so this is not a shipping defect today. Raised for a decision.
+  3. **Zero fabrications** on this transcript: all 16 references across the two runs resolve in
+     the bundled KJV. Encouraging, and no basis for relaxing FR-125 (86akby820) — one clean
+     transcript says nothing about the case that check exists for.
+- Decision: complete pending review.
+
 ## Risks and rollback
 
 - **Risks:** the model has never produced a real draft, so prompt and schema quality are
@@ -244,6 +280,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86akby7d8-openai-sermon-notes.md --completion`
 - Validator result: see PR body.
 - Independent verification result: pending the four-reviewer gate.
-- Terminal state: pending review; C-021 BLOCKED on owner action and explicitly not claimed.
-- Remaining failed or blocked criteria: C-021 (no OpenAI credits).
+- Terminal state: pending review. All 21 criteria PASS, including C-021 after the owner added
+  credits. The honest scope of C-021 is "one draft generated successfully from one transcript on
+  each of two models", which is **not** the same claim as "the prompt is good".
+- Remaining failed or blocked criteria: none.
 - ClickUp final evidence comment: pending.

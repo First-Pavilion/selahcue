@@ -107,10 +107,17 @@ Confidence = Low / Med / High. **No perfect-accuracy claims are made anywhere in
 >   cloud frontier models are "materially better for complex reasoning/structure" while cheap
 >   tiers are "good for simple summarization". Structure and long-context reasoning are the axis
 >   here, so the spend goes there.
-> - **Not benchmarked.** `terra` has **not** been quality-compared against `luna` on real output:
->   the OpenAI account had **no credits** at implementation time, so no live draft was ever
->   generated. The reasoning above is from this document and published tier positioning, not from
->   measurement, and should be revisited with evidence once a draft can actually be produced.
+> - **Benchmarked, 2026-09-04.** Both tiers were run on the same 1,431-word sermon through the
+>   shipped prompt and schema. **Structurally they tied** — 4 points, 13 sub-points and all 8
+>   enabled sections each, both honoured the disabled `social_excerpts` toggle, and **all 16
+>   scripture references across the two runs verified against the bundled KJV** (no fabrications
+>   on this transcript). Terra won on presentation quality: short, slide-usable point headings
+>   with the reference appended consistently, against luna's **manually numbered** headings
+>   ("1. ", "2. ") that would render as "1. 1." in an ordered list, and its habit of packing each
+>   point's explanation into the heading — blurring the point/sub-point separation FR-122 exists
+>   to create. Luna was faster (14.6s vs 17.8s) and is 10× cheaper, so it remains a real option
+>   if cost ever becomes an axis. **One transcript, one run each** — enough to confirm the choice,
+>   not enough to call it a general result.
 >
 > **Posture — this is deliberately throwaway.** The desktop calls OpenAI *directly* with a
 > **developer key** from the repo-root `.env` (ticket `86akby6yy`), behind an off-by-default

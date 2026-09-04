@@ -86,10 +86,17 @@ pub const API_KEY_ENV: &str = "OPENAI_API_KEY";
 /// reasoning are where the better models actually separate. Paying two dollars a year
 /// to be on the right side of that is not a trade worth agonising over.
 ///
-/// This has **not** been quality-benchmarked against `gpt-5.6-luna` on real output: the
-/// account had no credits at implementation time, so no live draft was ever produced.
-/// The reasoning above is from the research document and the published tier positioning,
-/// and it should be revisited with evidence once a draft can actually be generated.
+/// **Benchmarked against `gpt-5.6-luna` on real output, 2026-09-04**, on a 1,431-word sermon
+/// through this exact prompt and schema. Structurally the two tied — both returned 4 points,
+/// 13 sub-points and all 8 enabled sections, both honoured the disabled `social_excerpts`
+/// toggle, and every scripture reference either produced verified against the bundled KJV.
+/// Terra won on the thing that matters for presentation: its point headings are short,
+/// slide-usable lines with the reference appended consistently, whereas luna returned
+/// **manually numbered** headings ("1. ", "2. ") — which render as "1. 1." inside an ordered
+/// list — and packed each point's explanation into its heading, blurring the very point /
+/// sub-point separation FR-122 asks for. Luna was faster (14.6s vs 17.8s) and is 10× cheaper,
+/// so it is a real option if cost ever becomes an axis; on this evidence terra is the better
+/// default and the original reasoning holds.
 ///
 /// # Why a constant and not an environment variable
 ///
