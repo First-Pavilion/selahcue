@@ -79,6 +79,14 @@ pub const OPENAI_API_KEY: &str = "OPENAI_API_KEY";
 #[cfg(any(feature = "dev-keys", test))]
 const LOADABLE: [&str; 2] = [DEEPGRAM_API_KEY, OPENAI_API_KEY];
 
+/// Pin the premise at compile time, beside the constant, per the repo's testing rules. Several
+/// tests hard-code what they expect the allowlist to contain -- most importantly
+/// `NEVER_EXPORTED`, which cannot see a name it was never told to look for. Widening the
+/// allowlist must therefore break the build here and force those to be revisited, rather than
+/// quietly making them vacuous.
+#[cfg(any(feature = "dev-keys", test))]
+const _: () = assert!(LOADABLE.len() == 2);
+
 /// The repo-root `.env`, resolved at **compile time** from this crate's manifest directory
 /// (`<root>/implementation/desktop/crates/selahcue-operator` — four levels down).
 ///
@@ -189,8 +197,10 @@ fn assignments(contents: &str) -> Vec<(&str, &str)> {
 /// What a load of `contents` would do, given `already_set` to say which names the process
 /// environment already carries.
 ///
-/// Pure: it decides and reports, it does not act. The three rules that matter all live here —
-/// the allowlist, "an exported variable wins", and "a blank value is not a key".
+/// Pure: it decides and reports, it does not act. Four of the five rules live here — the
+/// allowlist, "an exported variable wins", "a blank value is not a key" and "a NUL-bearing value
+/// is not a key". The fifth, that the write boundary re-checks the allowlist rather than trusting
+/// this selection, necessarily lives in [`load_from`].
 #[cfg(any(feature = "dev-keys", test))]
 fn plan(contents: &str, already_set: impl Fn(&str) -> bool) -> Plan {
     let found = assignments(contents);
@@ -211,9 +221,18 @@ fn plan(contents: &str, already_set: impl Fn(&str) -> bool) -> Plan {
             .find(|(found_name, _)| *found_name == name)
             .map(|(_, value)| *value);
         match value {
-            // A whitespace-only value is not a key. Setting it would hand a provider an empty
-            // credential and turn a configuration mistake into an authentication error.
-            Some(value) if !value.trim().is_empty() => {
+            // Two ways a value is not a key:
+            //
+            // * whitespace-only -- setting it would hand a provider an empty credential and turn
+            //   a configuration mistake into an authentication error; and
+            // * NUL-bearing -- `std::env::set_var` PANICS on a value containing a NUL byte, and
+            //   the panic message embeds the ENTIRE value. Since the whole point of this module
+            //   is that the value is a live credential, that panic would print a real secret to
+            //   stderr. A NUL cannot appear in a key any provider would issue, so treating it as
+            //   absent loses nothing and the operator reports the variable as missing by name.
+            //   (Sana, PR #18 F2. The bytes reach us because NUL is valid UTF-8, so
+            //   `read_to_string` accepts a `.env` containing one.)
+            Some(value) if !value.trim().is_empty() && !value.contains('\0') => {
                 planned.to_set.push((name, value.to_string()));
             }
             _ => planned.missing.push(name),
@@ -427,6 +446,30 @@ mod tests {
             vec![DEEPGRAM_API_KEY, OPENAI_API_KEY],
             "a blank value must be reported as missing so the startup line can name it"
         );
+    }
+
+    #[test]
+    fn a_nul_bearing_value_is_not_treated_as_a_key() {
+        let hostile = format!("{DEEPGRAM_API_KEY}={PROBE}\0tail\n");
+
+        // POSITIVE CONTROL: the same line without the NUL IS taken, so the rejection below is
+        // about the NUL and not about the fixture being malformed.
+        let benign = format!("{DEEPGRAM_API_KEY}={PROBE}tail\n");
+        assert_eq!(
+            plan(&benign, |_| false).to_set.len(),
+            1,
+            "the fixture shape is no longer accepted at all, so the NUL assertion below proves \
+             nothing about NUL bytes"
+        );
+
+        let planned = plan(&hostile, |_| false);
+        assert!(
+            planned.to_set.is_empty(),
+            "a NUL-bearing value was planned for export. std::env::set_var panics on one and \
+             embeds the ENTIRE value in the panic message, so this would print a live \
+             credential to stderr (Sana, PR #18 F2)"
+        );
+        assert_eq!(planned.missing, vec![DEEPGRAM_API_KEY, OPENAI_API_KEY]);
     }
 
     #[test]
@@ -662,6 +705,117 @@ mod tests {
             let lines = startup_lines(&report);
             assert!(lines.iter().any(|l| l.contains(DEEPGRAM_API_KEY)));
             assert!(lines.iter().any(|l| l.contains(OPENAI_API_KEY)));
+        }
+
+        /// Names that must NEVER reach the process environment from a `.env`.
+        ///
+        /// **Hard-coded on purpose — do not derive this from [`LOADABLE`].** Deriving it would
+        /// make the list shrink exactly when someone widens the allowlist, so the test would go
+        /// quiet at the one moment it needs to speak. Written out, widening `LOADABLE` to admit
+        /// any of these turns the test below red.
+        const NEVER_EXPORTED: [&str; 3] = [
+            "AWS_SECRET_ACCESS_KEY",
+            "SELAHCUE_CLOUD_URL",
+            "SELAHCUE_DEV_ENV_UNALLOWLISTED_PROBE",
+        ];
+
+        /// The allowlist, asserted at the boundary that actually matters: the **process
+        /// environment** after the real [`load_from`] has run.
+        ///
+        /// Every other allowlist assertion in this file consumes [`plan`]'s verdict, which pins
+        /// the decision but says nothing about what crosses `std::env::set_var`. Sana's review of
+        /// PR #18 (F1) demonstrated the gap: widening only the write loop, while leaving "an
+        /// exported variable wins" and the blank-value rule untouched, kept the whole suite green
+        /// at 78/78. Reproduced here before this test was written, and it is green — so the
+        /// finding is real and this test is the thing that closes it.
+        ///
+        /// It deliberately reads `std::env::var_os` and never looks at a `Plan`, so it cannot be
+        /// satisfied by re-reading the layer that was already guarded.
+        #[test]
+        fn no_unallowlisted_name_reaches_the_process_environment() {
+            let _guard = locked();
+
+            // PREMISE PIN, in the test as well as beside the constant. NEVER_EXPORTED is
+            // hard-coded and structurally cannot see a name that was just admitted to the
+            // allowlist, so a widening would otherwise leave this test green for the worst
+            // possible reason. Changing the allowlist fails here first.
+            // Compared as SLICES, not arrays. `assert_eq!` on two differently-sized arrays is a
+            // type error, so widening the allowlist would fail to compile here and the message
+            // below -- the one that tells the next person what to do -- would never be printed.
+            assert_eq!(
+                LOADABLE.as_slice(),
+                [DEEPGRAM_API_KEY, OPENAI_API_KEY].as_slice(),
+                "the allowlist changed. NEVER_EXPORTED below is hard-coded and cannot see a \
+                 newly admitted name -- revisit the two together before touching this assertion."
+            );
+
+            let mut contents = format!("{DEEPGRAM_API_KEY}={PROBE}-dg\n");
+            for name in NEVER_EXPORTED {
+                contents.push_str(&format!("{name}={PROBE}-hostile\n"));
+            }
+            let path = temp_env_file("hostile", &contents);
+
+            std::env::remove_var(DEEPGRAM_API_KEY);
+            for name in NEVER_EXPORTED {
+                std::env::remove_var(name);
+            }
+
+            load_from(&path);
+
+            // POSITIVE CONTROL FIRST. If the loader did not run -- wrong path, unreadable file,
+            // a `load_from` that quietly does nothing -- then "the hostile names are absent"
+            // holds for a reason that has nothing to do with the allowlist.
+            assert_eq!(
+                std::env::var(DEEPGRAM_API_KEY).ok(),
+                Some(format!("{PROBE}-dg")),
+                "the loader did not export the allowlisted key from this fixture, so the \
+                 assertions below would pass whether or not the allowlist is enforced"
+            );
+
+            for name in NEVER_EXPORTED {
+                assert!(
+                    std::env::var_os(name).is_none(),
+                    "{name} was exported into the process environment from a .env file. The \
+                     allowlist is enforced when the plan is built but not where the write \
+                     happens, so this loader can inject an arbitrary environment -- which is the \
+                     one property that keeps it from widening the licensing dev-key bypass \
+                     route documented in scripts/dev_key_not_in_release.sh."
+                );
+            }
+
+            std::env::remove_var(DEEPGRAM_API_KEY);
+            for name in NEVER_EXPORTED {
+                std::env::remove_var(name);
+            }
+        }
+
+        /// A NUL-bearing value must not reach `set_var`, which panics with the **whole value** in
+        /// the message (Sana, PR #18 F2). With real credentials in `.env`, that panic prints a
+        /// live secret to stderr.
+        ///
+        /// The assertion that this test does not panic is the point; a panic here is a failure.
+        #[test]
+        fn a_nul_bearing_value_does_not_panic_and_is_not_exported() {
+            let _guard = locked();
+            let path = temp_env_file("nul", &format!("{DEEPGRAM_API_KEY}={PROBE}\0tail\n"));
+            std::env::remove_var(DEEPGRAM_API_KEY);
+
+            let report = load_from(&path);
+
+            assert!(
+                std::env::var_os(DEEPGRAM_API_KEY).is_none(),
+                "a NUL-bearing value was exported; set_var would have panicked and printed the \
+                 credential"
+            );
+            assert_eq!(
+                report.missing,
+                vec![DEEPGRAM_API_KEY, OPENAI_API_KEY],
+                "a NUL-bearing value must be reported as missing so the operator names it"
+            );
+            assert!(
+                startup_lines(&report).iter().all(|l| !l.contains(PROBE)),
+                "the rejected value reached a startup line"
+            );
         }
 
         #[test]

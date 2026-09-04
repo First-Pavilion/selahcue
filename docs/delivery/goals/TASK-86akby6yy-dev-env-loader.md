@@ -121,6 +121,9 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-014 | yes | The frozen FE↔BE contract is untouched and `dist/` is diff-clean | `git diff --cached --name-only origin/main` filtered for `dist/`, `settings.js`, the 9 commands, 11 fields, 4 error codes | no matches | diff is 912 insertions / 0 deletions across 7 files; `selahcue-core` and `selahcue-cloud` untouched | PASS |
 | C-015 | yes | `make ci` passes end to end on the branch | `make ci` | final line ALL GREEN, exit 0 | `MAKE_CI_EXIT=0`; `== local Rust/Flutter gate: ALL GREEN ==`; ran to completion through the Flutter tail (223 mobile tests) | PASS |
 | C-016 | yes | Branch is cut from `origin/main`, not behind it, and the MR is a Draft against `main` | `git merge-base --is-ancestor origin/main HEAD`; `gh pr view` | ancestor check passes; PR is Draft, base `main` | branch `feat/86akby6yy-dev-env-loader` cut from `cb006fc` | PASS |
+| C-017 | yes | The allowlist holds at the **write boundary**, not only in `plan` | Probe A — widen the write loop in `load_from` to export every assignment, keeping "exported wins" and the blank-value rule; whole suite, siblings, no `--exact` | suite RED via a test asserting on the process environment | `no_unallowlisted_name_reaches_the_process_environment` red: "AWS_SECRET_ACCESS_KEY was exported into the process environment from a .env file…". Pre-fix reproduction was green 81/81, confirming the finding | PASS |
+| C-018 | yes | A NUL-bearing value is treated as missing, so `set_var` cannot panic and print the credential | Probe C — remove the NUL guard; whole suite, siblings | suite RED; the removed guard's absence is observable | `a_nul_bearing_value_is_not_treated_as_a_key` and `a_nul_bearing_value_does_not_panic_and_is_not_exported` both red. Panic text observed under mutation embeds the whole value: ``failed to set environment variable `"DEEPGRAM_API_KEY"` to `"dev-env-loader-probe-4a91c7\0tail"`: file name contained an unexpected NUL byte`` — F2 confirmed empirically | PASS |
+| C-019 | yes | Widening `LOADABLE` is caught at both layers | Probe B — add an entitlement-style name plus its compile-time pin; whole suite, siblings | suite RED, including the new write-boundary test | ten tests red, among them `no_unallowlisted_name_reaches_the_process_environment`: "the allowlist changed. NEVER_EXPORTED below is hard-coded and cannot see a newly admitted name…" | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -154,6 +157,36 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
   planned NAMES only, so mutation M3b (stop matching the name when picking a line, which lets
   `AWS_SECRET_ACCESS_KEY`'s value be exported as `DEEPGRAM_API_KEY`) survived it. Every fixture
   value is now distinct and the assertion pins the name-to-value binding; M3b is killed.
+- Decision: complete
+
+### Iteration 2 — remediating Sana's review of PR #18
+
+- Target criterion: C-017 and C-018 (added below for the two findings).
+- Hypothesis: the allowlist was pinned only at the pure `plan` layer, so nothing asserted what
+  actually crosses `std::env::set_var`; and `set_var` panics on a NUL-bearing value with the whole
+  value in the message, which with live credentials in `.env` would print a real secret.
+- Change or investigation: **reproduced the finding before fixing it.** My first reproduction was
+  blunter than Sana's — it dropped "an exported variable wins" as well, so a different test caught
+  it and the suite went red for the wrong reason. Isolating the allowlist alone, keeping
+  "exported wins" and the blank-value rule exactly as they were, reproduced Sana's result
+  precisely: **81/81 green, exit 0**, with every non-allowlisted assignment in the file exported.
+  The finding is real and was confirmed independently rather than taken on trust.
+- Then: added `no_unallowlisted_name_reaches_the_process_environment`, which asserts on
+  `std::env::var_os` after the real `load_from` and never looks at a `Plan`; added a NUL guard in
+  `plan` with tests at both the pure and process-environment layers; and pinned the allowlist
+  premise both at compile time beside `LOADABLE` and inside the new test.
+- Verifier executed: three probes, each run against the whole crate suite with siblings and never
+  `--exact`, each restored and re-confirmed green afterwards.
+- Result: all three killed. See C-017/C-018.
+- New evidence: **two things I got wrong and corrected.**
+  1. `NEVER_EXPORTED` is hard-coded, which is deliberate — deriving it from `LOADABLE` would make
+     it shrink exactly when the allowlist widened. But that left the new test blind to a widening
+     that admitted a name the fixture never mentions, so the premise is now pinned explicitly.
+  2. The in-test pin was first written as `assert_eq!` between two fixed-size arrays, which is a
+     **type error** under widening, not an assertion failure — so the message written for whoever
+     widens the allowlist would never have printed. Comparing slices instead makes it a real red
+     with the explanatory text. Probe B went from "RED, no test named" to killing ten tests,
+     including the new one.
 - Decision: complete
 
 ## Risks and rollback
