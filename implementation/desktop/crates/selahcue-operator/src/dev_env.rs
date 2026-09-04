@@ -16,6 +16,25 @@
 //! When either of those lands, its half of this module goes with it. Do not build anything new
 //! on top of this, and do not extend it into a general configuration mechanism.
 //!
+//! # How to delete it — eight edits across seven files
+//!
+//! "It is designed to be deleted" is the whole justification for this module existing at all, so
+//! the removal has to be written down rather than left as an exercise (Cody, PR #18 F10). Grep
+//! for `dev-keys`, `dev_env` and `.env.sample`; the complete set today is:
+//!
+//! 1. `selahcue-operator/src/dev_env.rs` — this file; delete it.
+//! 2. `selahcue-operator/src/main.rs` — the `mod dev_env;` declaration and its doc comment.
+//! 3. `selahcue-operator/src/main.rs` — the `dev_env::load();` call at the top of `fn main`.
+//! 4. `selahcue-operator/Cargo.toml` — the `dev-keys` entry in `[features]` and its comment.
+//! 5. `Makefile` — the `cargo test $(OP) --features dev-keys` line in the `ci` target.
+//! 6. `.github/workflows/ci.yml` — the `Clippy (dev-keys)` and `Test (dev-keys)` steps in the
+//!    `operator` job, and the comment above them.
+//! 7. `.env.sample` — delete it.
+//! 8. `.gitignore` — the `!.env.sample` negation and its comment. **Leave `.env` ignored.**
+//!
+//! Deleting 1-4 without 5-6 leaves CI invoking a feature that no longer exists, which fails the
+//! operator job on all three runners. Do them together.
+//!
 //! # Why it is behind a feature, and why that feature can never ship
 //!
 //! Every line that opens a file lives behind `dev-keys`, which is **off by default**. Without
@@ -197,10 +216,21 @@ fn assignments(contents: &str) -> Vec<(&str, &str)> {
 /// What a load of `contents` would do, given `already_set` to say which names the process
 /// environment already carries.
 ///
-/// Pure: it decides and reports, it does not act. Four of the five rules live here — the
-/// allowlist, "an exported variable wins", "a blank value is not a key" and "a NUL-bearing value
-/// is not a key". The fifth, that the write boundary re-checks the allowlist rather than trusting
-/// this selection, necessarily lives in [`load_from`].
+/// Pure: it decides and reports, it does not act. **All four rules live here** — the allowlist,
+/// "an exported variable wins", "a blank value is not a key" and "a NUL-bearing value is not a
+/// key". [`load_from`] applies this selection verbatim and re-checks nothing.
+///
+/// An earlier revision of this comment claimed the write boundary re-checked the allowlist. It
+/// does not, and no such code was ever written — the fix for Sana's F1 was a test, not a runtime
+/// filter. A comment describing a control that does not exist is worse than no comment, because
+/// the next reader trusts it (Cody, PR #18 F9).
+///
+/// The re-check was declined deliberately: a filter in `load_from` would **invert the failure
+/// mode**, silently absorbing a future widening of the write loop and leaving the contradiction
+/// latent, where a test fails loudly. So the guarantee for every rule above is a test that
+/// asserts its effect on the **process environment** after `load_from` has run, never merely on
+/// the [`Plan`] this function returns. F1 and F8 are both what happens when a rule has only the
+/// latter.
 #[cfg(any(feature = "dev-keys", test))]
 fn plan(contents: &str, already_set: impl Fn(&str) -> bool) -> Plan {
     let found = assignments(contents);
@@ -343,6 +373,22 @@ mod tests {
     /// A value that could not plausibly be anything but this suite's own probe, so a "the value
     /// did not appear" assertion cannot pass by coincidence.
     const PROBE: &str = "dev-env-loader-probe-4a91c7";
+
+    /// `set_var`/`remove_var` are process-global, so every test that touches them takes this
+    /// first. Poisoning is recovered from rather than unwrapped: a panic in one such test should
+    /// fail that test, not cascade into the others.
+    ///
+    /// Declared out here rather than inside `mod enabled` so the **disabled** build's test can
+    /// take it too. It previously could not: the lock was feature-gated, so the one test that
+    /// runs without `dev-keys` mutated the process environment unsynchronised while sibling
+    /// tests were calling `std::env::temp_dir()` on other threads (Cody, PR #18 F11).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn locked() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     /// A private temp file, unique per test and per run, matching the operator's house pattern
     /// (`media_store`, `deck_library`) so the suite is safe under `cargo test`'s parallelism.
@@ -600,6 +646,7 @@ mod tests {
     #[cfg(not(feature = "dev-keys"))]
     #[test]
     fn a_build_without_dev_keys_does_not_read_a_key_file() {
+        let _guard = locked();
         let contents = format!("{DEEPGRAM_API_KEY}={PROBE}\n");
         let path = temp_env_file("disabled", &contents);
 
@@ -642,18 +689,6 @@ mod tests {
     #[cfg(feature = "dev-keys")]
     mod enabled {
         use super::*;
-        use std::sync::Mutex;
-
-        /// `set_var`/`remove_var` are process-global, so the tests that touch them run one at a
-        /// time. Poisoning is recovered from rather than unwrapped: a panic in one of these
-        /// tests should fail that test, not cascade into the others.
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-        fn locked() -> std::sync::MutexGuard<'static, ()> {
-            ENV_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-        }
 
         #[test]
         fn a_dev_keys_build_makes_both_variables_readable() {
@@ -786,6 +821,80 @@ mod tests {
             std::env::remove_var(DEEPGRAM_API_KEY);
             for name in NEVER_EXPORTED {
                 std::env::remove_var(name);
+            }
+        }
+
+        /// The blank-value rule, asserted where the effect happens.
+        ///
+        /// `a_blank_or_whitespace_value_leaves_the_variable_unset` pins this at the [`plan`]
+        /// layer, which is necessary and was not sufficient: Cody re-derived the write loop
+        /// keeping the allowlist, the NUL guard and exported-wins, and dropping **only** the
+        /// blank check — the whole suite stayed green at 81/81 while `DEEPGRAM_API_KEY` was
+        /// exported as an empty string and the startup line still called it missing (PR #18 F8).
+        ///
+        /// That is the F1 shape surviving in a sibling rule, so this is the same fix: read the
+        /// **process environment** after the real `load_from`, never a `Plan`.
+        ///
+        /// The failure it guards is specifically `Ok("")` rather than `NotPresent`. A lane that
+        /// gets an empty string sends an empty credential and is told it authenticated badly,
+        /// when in truth nobody set the key.
+        #[test]
+        fn a_blank_value_is_never_exported_as_an_empty_string() {
+            let _guard = locked();
+
+            // Each case pairs the blank variable with a REAL value on the other one, so the
+            // positive control comes from the very same file: "the blank one is unset" cannot
+            // pass because `load_from` failed to run on this fixture at all.
+            for (tag, contents, blank, filled, filled_value) in [
+                (
+                    "bare",
+                    format!("{DEEPGRAM_API_KEY}=\n{OPENAI_API_KEY}={PROBE}-oa\n"),
+                    DEEPGRAM_API_KEY,
+                    OPENAI_API_KEY,
+                    format!("{PROBE}-oa"),
+                ),
+                (
+                    "quoted-whitespace",
+                    format!("{DEEPGRAM_API_KEY}={PROBE}-dg\n{OPENAI_API_KEY}=\"   \"\n"),
+                    OPENAI_API_KEY,
+                    DEEPGRAM_API_KEY,
+                    format!("{PROBE}-dg"),
+                ),
+            ] {
+                let path = temp_env_file(tag, &contents);
+                std::env::remove_var(DEEPGRAM_API_KEY);
+                std::env::remove_var(OPENAI_API_KEY);
+
+                let report = load_from(&path);
+
+                // POSITIVE CONTROL FIRST.
+                assert_eq!(
+                    std::env::var(filled).ok(),
+                    Some(filled_value.clone()),
+                    "[{tag}] the loader did not export {filled} from this fixture, so the \
+                     blank-value assertion below would hold for the wrong reason"
+                );
+
+                // The assertion that matters. Deliberately does not print the value: this is a
+                // credential path, and `is_none()` vs `Some("")` is the whole distinction.
+                assert!(
+                    std::env::var_os(blank).is_none(),
+                    "[{tag}] {blank} was exported from a blank value. env::var now returns \
+                     Ok(\"\") instead of NotPresent, so a lane sends an empty credential and is \
+                     told it authenticated badly, when nobody set the key at all."
+                );
+
+                // The environment and the startup message must agree. Cody's mutation made them
+                // diverge -- exported, yet still reported missing -- and a divergence between
+                // what the operator DID and what it SAYS is its own defect.
+                assert!(
+                    report.missing.contains(&blank),
+                    "[{tag}] {blank} is absent from the environment but the startup report does \
+                     not name it, so the operator would stay silent about a key nobody supplied"
+                );
+
+                std::env::remove_var(DEEPGRAM_API_KEY);
+                std::env::remove_var(OPENAI_API_KEY);
             }
         }
 

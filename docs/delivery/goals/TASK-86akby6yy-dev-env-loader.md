@@ -124,6 +124,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-017 | yes | The allowlist holds at the **write boundary**, not only in `plan` | Probe A — widen the write loop in `load_from` to export every assignment, keeping "exported wins" and the blank-value rule; whole suite, siblings, no `--exact` | suite RED via a test asserting on the process environment | `no_unallowlisted_name_reaches_the_process_environment` red: "AWS_SECRET_ACCESS_KEY was exported into the process environment from a .env file…". Pre-fix reproduction was green 81/81, confirming the finding | PASS |
 | C-018 | yes | A NUL-bearing value is treated as missing, so `set_var` cannot panic and print the credential | Probe C — remove the NUL guard; whole suite, siblings | suite RED; the removed guard's absence is observable | `a_nul_bearing_value_is_not_treated_as_a_key` and `a_nul_bearing_value_does_not_panic_and_is_not_exported` both red. Panic text observed under mutation embeds the whole value: ``failed to set environment variable `"DEEPGRAM_API_KEY"` to `"dev-env-loader-probe-4a91c7\0tail"`: file name contained an unexpected NUL byte`` — F2 confirmed empirically | PASS |
 | C-019 | yes | Widening `LOADABLE` is caught at both layers | Probe B — add an entitlement-style name plus its compile-time pin; whole suite, siblings | suite RED, including the new write-boundary test | ten tests red, among them `no_unallowlisted_name_reaches_the_process_environment`: "the allowlist changed. NEVER_EXPORTED below is hard-coded and cannot see a newly admitted name…" | PASS |
+| C-020 | yes | **Every** rule in `plan` bites at the write boundary, not just the ones a finding named | four-way harness: re-derive the write loop from `assignments()`, drop one rule at a time, plus an all-rules-kept control; whole suite, siblings, no `--exact` | control GREEN; all four single-rule drops RED, each by a distinct named test | allowlist→`no_unallowlisted_name_...`, exported-wins→`an_exported_variable_survives_the_file`, NUL→`a_nul_bearing_value_does_not_panic...`, blank→`a_blank_value_is_never_exported_as_an_empty_string`. Pre-fix the blank drop was GREEN, confirming F8 | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -187,6 +188,39 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
      widens the allowlist would never have printed. Comparing slices instead makes it a real red
      with the explanatory text. Probe B went from "RED, no test named" to killing ten tests,
      including the new one.
+- Decision: complete
+
+### Iteration 3 — remediating Cody's review of PR #18
+
+- Target criterion: C-020 (added below).
+- Hypothesis: F1 was fixed as *one test for one rule* rather than as a class, so the same shape
+  should be expected to survive in `plan`'s other rules.
+- Change or investigation: rather than fix the one rule Cody named, built a four-way harness that
+  re-derives the write loop from `assignments()` and drops one rule at a time, plus a control that
+  keeps all four. The control is GREEN, so the harness is behaviour-equivalent and the per-rule
+  results mean something. Measured, before any fix:
+
+  | rule dropped at the write boundary | verdict | killed by |
+  |---|---|---|
+  | allowlist | RED | `no_unallowlisted_name_reaches_the_process_environment` |
+  | exported-wins | RED | `an_exported_variable_survives_the_file` |
+  | NUL | RED | `a_nul_bearing_value_does_not_panic_and_is_not_exported` |
+  | **blank** | **GREEN — the gap** | (none) |
+
+  So three of four rules already bit at the boundary and exactly one did not, confirming Cody's
+  F8 precisely. Added `a_blank_value_is_never_exported_as_an_empty_string`, which reads the
+  process environment after the real `load_from` and never a `Plan`.
+- Verifier executed: the same four-way harness re-run after the fix.
+- Result: **all four RED**, each by a distinct named test, control still GREEN.
+- New evidence: the divergence Cody observed is worth pinning in its own right — under the
+  mutation the variable was exported as `""` while the startup line still reported it missing.
+  The new test asserts the environment and the report agree, so "what the operator did" and
+  "what it says" cannot drift apart silently.
+- Also fixed: F9, a doc comment claiming `load_from` re-checks the allowlist. It never did — the
+  F1 fix was a test, not code, and Sana declined the runtime re-check deliberately. A comment
+  describing a control that does not exist is worse than none. F10, an eight-edit deletion note
+  across seven files, verified by grep rather than recalled. F11, the env lock hoisted out of
+  `mod enabled` so the disabled build's test can take it too.
 - Decision: complete
 
 ## Risks and rollback
