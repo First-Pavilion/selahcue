@@ -125,6 +125,9 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-018 | yes | A NUL-bearing value is treated as missing, so `set_var` cannot panic and print the credential | Probe C — remove the NUL guard; whole suite, siblings | suite RED; the removed guard's absence is observable | `a_nul_bearing_value_is_not_treated_as_a_key` and `a_nul_bearing_value_does_not_panic_and_is_not_exported` both red. Panic text observed under mutation embeds the whole value: ``failed to set environment variable `"DEEPGRAM_API_KEY"` to `"dev-env-loader-probe-4a91c7\0tail"`: file name contained an unexpected NUL byte`` — F2 confirmed empirically | PASS |
 | C-019 | yes | Widening `LOADABLE` is caught at both layers | Probe B — add an entitlement-style name plus its compile-time pin; whole suite, siblings | suite RED, including the new write-boundary test | ten tests red, among them `no_unallowlisted_name_reaches_the_process_environment`: "the allowlist changed. NEVER_EXPORTED below is hard-coded and cannot see a newly admitted name…" | PASS |
 | C-020 | yes | **Every** rule in `plan` bites at the write boundary, not just the ones a finding named | four-way harness: re-derive the write loop from `assignments()`, drop one rule at a time, plus an all-rules-kept control; whole suite, siblings, no `--exact` | control GREEN; all four single-rule drops RED, each by a distinct named test | allowlist→`no_unallowlisted_name_...`, exported-wins→`an_exported_variable_survives_the_file`, NUL→`a_nul_bearing_value_does_not_panic...`, blank→`a_blank_value_is_never_exported_as_an_empty_string`. Pre-fix the blank drop was GREEN, confirming F8 | PASS |
+| C-021 | yes | Every name reported missing is genuinely absent from the environment, including one exported blank before launch | `every_name_reported_missing_is_absent_from_the_environment`, written before the fix; then mutation — remove the cleanup loop | test RED on the unfixed tree; RED again when the cleanup is removed | pre-fix failure names the state exactly; post-fix mutation killed by that test | PASS |
+| C-022 | yes | An unreadable `.env` is not reported as an absent one | `an_unreadable_env_file_is_not_reported_as_a_missing_one`; mutation — collapse `Unreadable` into `Absent` | suite RED | killed by that test; positive control proves the ordinary advice still exists | PASS |
+| C-023 | yes | An inline comment never becomes part of a credential | `an_inline_comment_does_not_become_part_of_the_key`; mutation — remove the comment-stripping branch | suite RED | killed by that test; quoted values and bare `#` both asserted | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -221,6 +224,41 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
   describing a control that does not exist is worse than none. F10, an eight-edit deletion note
   across seven files, verified by grep rather than recalled. F11, the env lock hoisted out of
   `mod enabled` so the disabled build's test can take it too.
+- Decision: complete
+
+### Iteration 4 — remediating Quinn's QA defects (86akc1the) and a stale PR description
+
+- Target criteria: C-021 … C-023.
+- Highest priority was **not** a defect: the PR description still said the `dev-keys` tests were
+  gated by nothing outside `make ci` and that `ci.yml` had been left alone. Both were fixed at
+  `70b116b`. The owner was weighing the merge against that text, so it was corrected first. The
+  same stale claim was in the ClickUp handoff and is corrected there too.
+- **D1 — a control narrower than the claim it supports.** A variable exported *blank before
+  launch* and absent from the file reads back as `Ok("")` while the operator says it is "left
+  unset rather than empty". Nothing caught it because **every** blank-value test calls
+  `remove_var` first, establishing the precondition that makes its own assertion reachable. Not
+  vacuous — narrower than the invariant the module header states. Confirmed by writing the
+  general invariant test first and watching it fail on the unfixed tree.
+  Resolved in the direction of making the claim true rather than narrowing it, because
+  `selahcue-cloud` and `selahcue-stt-cloud` both trim defensively and one documents that leniency
+  as unnecessary *on the strength of this guarantee* — a latent defect held harmless by a
+  redundancy documented as redundant.
+- **D2** — an unreadable `.env` was folded into "absent", so the operator told a developer to add
+  keys to a file that already had them. `FileState` now distinguishes the two and the advice
+  changes with it.
+- **D3** — `KEY=abc # my dev key` exported the comment as part of the credential and reported it
+  available. Inline comments now end an unquoted value; a quoted value is verbatim; a `#` with no
+  preceding whitespace stays.
+- Verifier executed: a five-way mutation battery over the fixes and the pure guards, plus a
+  re-run of the four-way class battery.
+- Result: all five real mutations RED. See C-021 … C-023.
+- New evidence, and the reason it is worth recording: the D1 fix makes the *write-boundary* blank
+  mutation stop biting. That is **not** a weakened control — it is an equivalent mutant. With the
+  cleanup loop present, re-deriving the write loop without the blank check is behaviour-preserving
+  (the blank name is in `missing`, so the cleanup removes it again), and nothing can observe it.
+  The blank rule is now pinned twice and removing **either** mechanism alone is caught. The
+  interaction is documented beside the cleanup loop so the next person running the battery does
+  not read the survivor as a regression.
 - Decision: complete
 
 ## Risks and rollback

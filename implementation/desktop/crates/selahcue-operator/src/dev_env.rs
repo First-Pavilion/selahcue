@@ -35,6 +35,13 @@
 //! Deleting 1-4 without 5-6 leaves CI invoking a feature that no longer exists, which fails the
 //! operator job on all three runners. Do them together.
 //!
+//! **Two comments outside that list will go stale and no grep for `dev_env` will find them.**
+//! `selahcue-cloud`'s `direct_notes_provider` and `selahcue-stt-cloud`'s `Credential::new` both
+//! trim before testing presence, and both explain that leniency by reference to this loader's
+//! "absent means absent" guarantee. When this module goes, those comments are describing a
+//! promise nobody makes any more — and the leniency they justify becomes load-bearing rather
+//! than redundant. Re-word them; do not delete the trimming.
+//!
 //! # Why it is behind a feature, and why that feature can never ship
 //!
 //! Every line that opens a file lives behind `dev-keys`, which is **off by default**. Without
@@ -78,6 +85,16 @@
 //!
 //! Absent means absent: `env::var` returns `NotPresent`, never `Ok("")`. A lane that needs a key
 //! it cannot find should refuse to start and name the variable.
+//!
+//! That holds for **every** name this loader reports as missing, including one you exported blank
+//! yourself before launching — such a variable is actively **cleared**, because reporting a key
+//! missing while leaving an empty string in the environment makes the startup message a lie. The
+//! only environment value this loader ever removes is a blank one for a name it is reporting
+//! missing; a real credential you exported is never touched (see [`load_from`]).
+//!
+//! Do not weaken this on the grounds that consumers trim defensively. They do — and at least one
+//! of them documents that leniency as unnecessary *because of this guarantee*, so tidying it away
+//! on the strength of that comment would make the defect live again.
 
 /// Deepgram's own name for its API key, used unchanged so a developer who already has one
 /// exported for `deepgram`'s CLI or SDK needs no second spelling. Consumed by 86akby4yz.
@@ -127,6 +144,24 @@ const REPO_ROOT_ENV_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../
 /// Stated precisely because the weaker-sounding version is the true one: this is not a claim
 /// that nothing in the module is `&'static str` (the message literals are), it is a claim that
 /// no path exists from file contents into these three fields.
+/// What became of the file itself. Carries no path and no content — see [`Report`] for why the
+/// types here are deliberately incapable of holding either.
+#[cfg(any(feature = "dev-keys", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileState {
+    /// Read successfully (including a legitimately empty file).
+    Loaded,
+    /// Not there. The normal state for a fresh clone.
+    Absent,
+    /// Present but unreadable — bad permissions, or not valid UTF-8.
+    ///
+    /// Distinguished from `Absent` because collapsing the two produces the single most
+    /// misleading thing this module could say: "add your key to the repo-root .env" to a
+    /// developer whose key is already in it and whose file simply could not be parsed
+    /// (Quinn, PR #18 D2).
+    Unreadable,
+}
+
 #[cfg(any(feature = "dev-keys", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Report {
@@ -137,6 +172,9 @@ struct Report {
     resolved: Vec<&'static str>,
     /// Names still absent. These are what the startup message has to name.
     missing: Vec<&'static str>,
+    /// What became of the `.env` itself, so the message can tell "you have not written one yet"
+    /// apart from "yours could not be read".
+    file: FileState,
 }
 
 /// The decision a load would make, before anything is written to the process environment.
@@ -170,13 +208,37 @@ impl std::fmt::Debug for Plan {
 
 /// One matching pair of surrounding quotes removed, if there is one.
 #[cfg(any(feature = "dev-keys", test))]
-fn unquote(value: &str) -> &str {
+fn unquote(value: &str) -> Option<&str> {
     for quote in ['"', '\''] {
         if value.len() >= 2 && value.starts_with(quote) && value.ends_with(quote) {
-            return &value[1..value.len() - 1];
+            return Some(&value[1..value.len() - 1]);
         }
     }
-    value
+    None
+}
+
+/// The value an assignment carries, with an inline comment removed.
+///
+/// `KEY=abc # my dev key` used to export the literal `abc # my dev key` and report the key
+/// AVAILABLE — the provider then rejects it and the developer is debugging an authentication
+/// error caused by a comment (Quinn, PR #18 D3). That is precisely the "confusing authentication
+/// error instead of a clear configuration one" this module exists to avoid.
+///
+/// A comment must be preceded by whitespace, so a `#` **inside** a credential is only dropped
+/// when it genuinely looks like a comment. And a **quoted** value is taken verbatim: quoting is
+/// how a developer says "this `#` is part of my key".
+#[cfg(any(feature = "dev-keys", test))]
+fn value_of(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    if let Some(inner) = unquote(trimmed) {
+        return inner;
+    }
+    for (i, c) in trimmed.char_indices() {
+        if c == '#' && trimmed[..i].ends_with(char::is_whitespace) {
+            return trimmed[..i].trim_end();
+        }
+    }
+    trimmed
 }
 
 /// Every well-formed `NAME=VALUE` assignment in `contents`, in file order, with **no allowlist
@@ -208,7 +270,7 @@ fn assignments(contents: &str) -> Vec<(&str, &str)> {
         if name.is_empty() {
             continue;
         }
-        out.push((name, unquote(value.trim())));
+        out.push((name, value_of(value)));
     }
     out
 }
@@ -273,7 +335,7 @@ fn plan(contents: &str, already_set: impl Fn(&str) -> bool) -> Plan {
 
 /// The post-write summary: which allowlisted names are now readable, and which are not.
 #[cfg(any(feature = "dev-keys", test))]
-fn report_of(planned: &Plan, enabled: bool) -> Report {
+fn report_of(planned: &Plan, enabled: bool, file: FileState) -> Report {
     let resolved = LOADABLE
         .into_iter()
         .filter(|name| {
@@ -284,6 +346,7 @@ fn report_of(planned: &Plan, enabled: bool) -> Report {
         enabled,
         resolved,
         missing: planned.missing.clone(),
+        file,
     }
 }
 
@@ -303,11 +366,26 @@ fn startup_lines(report: &Report) -> Vec<String> {
             report.resolved.join(", ")
         ));
     }
+    if report.file == FileState::Unreadable {
+        lines.push(
+            "selahcue dev-keys: the repo-root .env could not be read — bad permissions, or not \
+             valid UTF-8. It was treated as EMPTY, so any keys it does contain were ignored. Fix \
+             the file; do not add them again."
+                .to_string(),
+        );
+    }
     for name in &report.missing {
+        // The advice has to match the situation. Telling someone to add a key to a file that
+        // already has it, because the file could not be parsed, is the most misleading thing
+        // this module could say (Quinn, PR #18 D2).
+        let advice = match report.file {
+            FileState::Unreadable => "Fix the unreadable .env above rather than re-adding it.",
+            _ => "Add it to the repo-root .env (see .env.sample).",
+        };
         lines.push(format!(
-            "selahcue dev-keys: {name} is not set. Add it to the repo-root .env (see \
-             .env.sample). It is left unset rather than empty, so the feature that needs it \
-             will refuse to start instead of sending an empty credential."
+            "selahcue dev-keys: {name} is not set. {advice} It is left unset rather than empty, \
+             so the feature that needs it will refuse to start instead of sending an empty \
+             credential."
         ));
     }
     lines
@@ -319,10 +397,15 @@ fn startup_lines(report: &Report) -> Vec<String> {
 /// exists to install: without the feature there is no `read_to_string` in the artefact.
 #[cfg(feature = "dev-keys")]
 fn load_from(path: &std::path::Path) -> Report {
-    // An absent or unreadable `.env` is a normal state, not an error: the repo ships it empty
-    // and a developer who has not filled it in yet should get the named-variable message below,
-    // not a failure to start.
-    let contents = std::fs::read_to_string(path).unwrap_or_default();
+    // An absent `.env` is a normal state, not an error: the repo ships it empty and a developer
+    // who has not filled it in yet should get the named-variable message below, not a failure to
+    // start. An UNREADABLE one is different and must not be silently folded into "absent" — see
+    // [`FileState::Unreadable`].
+    let (contents, file) = match std::fs::read_to_string(path) {
+        Ok(contents) => (contents, FileState::Loaded),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), FileState::Absent),
+        Err(_) => (String::new(), FileState::Unreadable),
+    };
     let planned = plan(&contents, |name| {
         std::env::var_os(name).is_some_and(|value| !value.to_string_lossy().trim().is_empty())
     });
@@ -331,7 +414,30 @@ fn load_from(path: &std::path::Path) -> Report {
         // of `main`, so no other thread exists yet to observe the environment mid-write.
         std::env::set_var(name, value);
     }
-    report_of(&planned, true)
+    // A name reported MISSING must actually BE missing. Without this, a variable exported blank
+    // before launch and absent from the file survives untouched: `plan` rightly declines to treat
+    // it as set, so the operator says "left unset rather than empty" while `env::var` hands a lane
+    // `Ok("")` (Quinn, PR #18 D1). The message and the environment disagreed.
+    //
+    // The removal is precisely targeted: a name only reaches `missing` when the environment holds
+    // nothing for it or holds something blank — anything non-blank became `kept` in `plan` and
+    // never gets here. So this can only ever clear a blank value, never a real credential.
+    //
+    // NOTE FOR ANYONE RE-RUNNING THE MUTATION BATTERY. This loop makes one previously-biting
+    // mutation stop biting, and that is not a weakened test. Re-deriving the write loop above
+    // WITHOUT the blank check used to leave `DEEPGRAM_API_KEY=""` in the environment; now this
+    // loop removes it again, because a blank name is in `missing`. The mutant is behaviour-
+    // preserving — an equivalent mutant — so nothing can observe it and no test should claim to.
+    // The blank rule is still pinned twice over, and removing EITHER mechanism alone is caught:
+    // delete `plan`'s blank guard and both `a_blank_or_whitespace_value_leaves_the_variable_unset`
+    // and `a_blank_value_is_never_exported_as_an_empty_string` go red; delete this loop and
+    // `every_name_reported_missing_is_absent_from_the_environment` goes red.
+    for name in &planned.missing {
+        if std::env::var_os(name).is_some() {
+            std::env::remove_var(name);
+        }
+    }
+    report_of(&planned, true, file)
 }
 
 /// The build without `dev-keys`: no file is opened and nothing is exported.
@@ -345,6 +451,7 @@ fn load_from(_path: &std::path::Path) -> Report {
         enabled: false,
         resolved: Vec::new(),
         missing: Vec::new(),
+        file: FileState::Absent,
     }
 }
 
@@ -495,6 +602,43 @@ mod tests {
     }
 
     #[test]
+    fn an_inline_comment_does_not_become_part_of_the_key() {
+        // POSITIVE CONTROL: the same value with no comment is taken whole, so the assertions
+        // below are about comment handling and not about the parser dropping tails generally.
+        assert_eq!(
+            plan(&format!("{DEEPGRAM_API_KEY}={PROBE}\n"), |_| false).to_set,
+            vec![(DEEPGRAM_API_KEY, PROBE.to_string())],
+            "the plain value is no longer parsed whole, so the comment assertions prove nothing"
+        );
+
+        let commented = format!("{DEEPGRAM_API_KEY}={PROBE} # my dev key\n");
+        assert_eq!(
+            plan(&commented, |_| false).to_set,
+            vec![(DEEPGRAM_API_KEY, PROBE.to_string())],
+            "an inline comment was exported as part of the credential. The provider then rejects \
+             it and the developer debugs an authentication error caused by a comment — the exact \
+             confusion this module exists to prevent (Quinn, PR #18 D3)"
+        );
+
+        // A `#` with no whitespace before it is part of the value: keys do contain punctuation,
+        // and only something that looks like a comment should be treated as one.
+        let hashed = format!("{DEEPGRAM_API_KEY}=abc#def\n");
+        assert_eq!(
+            plan(&hashed, |_| false).to_set,
+            vec![(DEEPGRAM_API_KEY, "abc#def".to_string())],
+            "a `#` inside a credential was dropped; only whitespace-preceded `#` is a comment"
+        );
+
+        // Quoting is how a developer says "this `#` is mine".
+        let quoted = format!("{DEEPGRAM_API_KEY}=\"{PROBE} # literal\"\n");
+        assert_eq!(
+            plan(&quoted, |_| false).to_set,
+            vec![(DEEPGRAM_API_KEY, format!("{PROBE} # literal"))],
+            "a quoted value must be taken verbatim, comment marker and all"
+        );
+    }
+
+    #[test]
     fn a_nul_bearing_value_is_not_treated_as_a_key() {
         let hostile = format!("{DEEPGRAM_API_KEY}={PROBE}\0tail\n");
 
@@ -559,7 +703,7 @@ mod tests {
     fn the_startup_lines_name_the_missing_variable_and_carry_no_value() {
         let contents = format!("{DEEPGRAM_API_KEY}={PROBE}\n");
         let planned = plan(&contents, |_| false);
-        let lines = startup_lines(&report_of(&planned, true));
+        let lines = startup_lines(&report_of(&planned, true, FileState::Loaded));
 
         // POSITIVE CONTROL: there is something to inspect and it names the exact variable.
         // Without this, "no value appeared" would also hold for an empty message.
@@ -607,6 +751,7 @@ mod tests {
             enabled: false,
             resolved: vec![DEEPGRAM_API_KEY],
             missing: vec![OPENAI_API_KEY],
+            file: FileState::Loaded,
         };
         assert!(
             startup_lines(&report).is_empty(),
@@ -896,6 +1041,112 @@ mod tests {
                 std::env::remove_var(DEEPGRAM_API_KEY);
                 std::env::remove_var(OPENAI_API_KEY);
             }
+        }
+
+        /// The invariant the module header actually states, asserted in general:
+        /// **every name in `report.missing` is absent from the process environment.**
+        ///
+        /// Every other blank-value test calls `remove_var` first, which establishes the very
+        /// precondition that makes its own assertion reachable. So the suite was not vacuous — it
+        /// was **narrower than the claim it appeared to support** (Quinn, PR #18 D1). The state
+        /// nothing covered: a variable exported **blank before launch** and absent from the file.
+        /// `plan` correctly declines to treat it as set, so it lands in `missing` and the operator
+        /// prints "It is left unset rather than empty" — while `env::var` still returns `Ok("")`,
+        /// because the loader had no reason to touch a variable it was not going to write.
+        ///
+        /// This test deliberately does **not** remove the variables under test beforehand. That
+        /// omission is the whole point.
+        #[test]
+        fn every_name_reported_missing_is_absent_from_the_environment() {
+            let _guard = locked();
+
+            // Exported blank before launch, and supplied by no file.
+            std::env::set_var(DEEPGRAM_API_KEY, "");
+            std::env::set_var(OPENAI_API_KEY, "   ");
+            let path = temp_env_file("already-blank", "# nothing here\n");
+
+            let report = load_from(&path);
+
+            // POSITIVE CONTROL: both really are reported missing, so the loop below has something
+            // to check. An empty `missing` would make it pass while asserting nothing.
+            assert_eq!(
+                report.missing,
+                vec![DEEPGRAM_API_KEY, OPENAI_API_KEY],
+                "neither name was reported missing, so the invariant loop below is vacuous"
+            );
+
+            for name in &report.missing {
+                assert!(
+                    std::env::var_os(name).is_none(),
+                    "{name} is reported MISSING but is still present in the environment. The \
+                     startup line tells the developer it is 'left unset rather than empty', and \
+                     the module header promises a lane `NotPresent` rather than Ok(\"\") — both \
+                     are false in this state. A lane is then saved only by defensive trimming in \
+                     selahcue-cloud and selahcue-stt-cloud, one of which documents that leniency \
+                     as unnecessary BECAUSE of this guarantee."
+                );
+            }
+
+            std::env::remove_var(DEEPGRAM_API_KEY);
+            std::env::remove_var(OPENAI_API_KEY);
+        }
+
+        /// An unreadable `.env` must not be reported as an absent one.
+        ///
+        /// Folding the two together produces the most misleading thing this module could say:
+        /// "add your key to the repo-root .env" to a developer whose key is already in it and
+        /// whose file merely failed to parse (Quinn, PR #18 D2).
+        #[test]
+        fn an_unreadable_env_file_is_not_reported_as_a_missing_one() {
+            let _guard = locked();
+            std::env::remove_var(DEEPGRAM_API_KEY);
+            std::env::remove_var(OPENAI_API_KEY);
+
+            // A real `.env` carrying real keys — that just happens not to be valid UTF-8.
+            let path = temp_env_file("unreadable", "");
+            let mut bytes = format!("{DEEPGRAM_API_KEY}={PROBE}\n").into_bytes();
+            bytes.push(0xff);
+            bytes.extend_from_slice(b"\n");
+            std::fs::write(&path, &bytes).unwrap();
+
+            let report = load_from(&path);
+            let lines = startup_lines(&report);
+
+            assert_eq!(
+                report.file,
+                FileState::Unreadable,
+                "a present-but-unparseable .env was classified as {:?}",
+                report.file
+            );
+            assert!(
+                lines.iter().any(|l| l.contains("could not be read")),
+                "nothing told the developer the file failed to parse; they will add keys to a \
+                 file that already has them. Lines were: {lines:?}"
+            );
+            assert!(
+                lines
+                    .iter()
+                    .filter(|l| l.contains(DEEPGRAM_API_KEY))
+                    .all(|l| !l.contains("Add it to the repo-root .env")),
+                "the operator told the developer to add a key that is already in the file it \
+                 could not read. Lines were: {lines:?}"
+            );
+
+            // POSITIVE CONTROL: the same names in a READABLE file give the ordinary advice, so
+            // the assertion above is about the unreadable state and not about the wording having
+            // been removed altogether.
+            let ok_path = temp_env_file("readable", "# no keys here\n");
+            let ok_lines = startup_lines(&load_from(&ok_path));
+            assert!(
+                ok_lines
+                    .iter()
+                    .any(|l| l.contains("Add it to the repo-root .env")),
+                "the ordinary advice has disappeared entirely, so the check above passes for the \
+                 wrong reason. Lines were: {ok_lines:?}"
+            );
+
+            std::env::remove_var(DEEPGRAM_API_KEY);
+            std::env::remove_var(OPENAI_API_KEY);
         }
 
         /// A NUL-bearing value must not reach `set_var`, which panics with the **whole value** in
