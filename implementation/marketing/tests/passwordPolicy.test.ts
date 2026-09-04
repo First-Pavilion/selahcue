@@ -14,7 +14,7 @@ import {
   PASSWORD_TOO_LONG,
   PASSWORD_TOO_SHORT,
   isSubmittableNewPassword,
-  passwordLength,
+  codePointLength,
   validateNewPassword,
 } from '../src/lib/auth/passwordPolicy.ts'
 
@@ -82,7 +82,7 @@ describe('the all-whitespace case', () => {
    */
   test('twelve spaces is long enough but still rejected, matching the server', () => {
     const spaces = ' '.repeat(12)
-    assert.equal(passwordLength(spaces), 12, 'long enough on length alone')
+    assert.equal(codePointLength(spaces), 12, 'long enough on length alone')
     assert.equal(validateNewPassword(spaces, spaces).password, PASSWORD_ONLY_SPACES)
     assert.equal(isSubmittableNewPassword(spaces, spaces), false)
   })
@@ -108,7 +108,7 @@ describe('length is counted in code points, like Python len()', () => {
   test('five astral characters measure 5, not 10', () => {
     const fiveEmoji = '\u{1F600}\u{1F601}\u{1F602}\u{1F603}\u{1F604}'
     assert.equal(fiveEmoji.length, 10, 'JS string length double-counts surrogate pairs')
-    assert.equal(passwordLength(fiveEmoji), 5, 'code-point count matches Python len()')
+    assert.equal(codePointLength(fiveEmoji), 5, 'code-point count matches Python len()')
     assert.equal(
       isSubmittableNewPassword(fiveEmoji, fiveEmoji),
       false,
