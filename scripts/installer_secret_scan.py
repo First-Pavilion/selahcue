@@ -71,21 +71,38 @@ import tempfile
 # an earlier version of this comment got one of them wrong in a way that would have misdirected
 # whoever answered the alarm:
 #
-#   * `api.openai.com` -- the shipping path is a PROXIED notes service, so this endpoint in a
-#     shipped operator does mean the plan changed. Treat a red here as a real finding.
-#   * `api.deepgram.com` -- HAS A KNOWN EXPIRY. The recorded plan has the desktop obtain a
-#     server-minted grant token (`POST /v1/stt/session`) and then stream DIRECTLY to Deepgram
-#     (`wss://api.deepgram.com/v1/listen`). So when 86akby3xu wires that into a shipped
-#     artefact, this endpoint becomes legitimately present in a default build and this gate
-#     goes red on a CORRECT build. That red is the plan working, not the plan changing.
-#     Revisit this row then, by recorded security decision (Sana owns it). The other three
-#     Deepgram-adjacent needles -- `DEEPGRAM_API_KEY`, the loader prefix and the path suffix --
-#     stay, because none of them belongs in a shipped artefact under any plan.
+# THE TWO ENDPOINT ROWS ARE NOT SYMMETRIC. They look alike and they are not, and getting this
+# backwards sends whoever answers the alarm hunting a breach that is not there:
+#
+#   * `api.openai.com` -- PERMANENT. Sermon notes ship through a PROXIED service, so this
+#     endpoint never belongs in a shipped artefact under any planned architecture. A red here
+#     is a real finding at any point in the future. Do not add an expiry to this row.
+#
+#   * `api.deepgram.com` -- HAS A SCHEDULED EXPIRY, and this gate WILL go red on a CORRECT
+#     build the day it arrives. The Phase 2 design deliberately keeps audio off our
+#     infrastructure: the desktop obtains a server-minted grant token (`POST /v1/stt/session`)
+#     and then streams DIRECTLY to `wss://api.deepgram.com/v1/listen`. That endpoint is
+#     therefore SUPPOSED to be in the shipped operator once 86akby3xu lands.
+#
+#     ACTION WHEN 86akby3xu LANDS: DELETE the `api.deepgram.com` row from SIGNATURES and from
+#     REQUIRED_SIGNATURES. Do not suppress it, do not add an exception branch, and do not
+#     override the gate -- deleting the row is the recorded decision, and it is a data change,
+#     which is the whole point of this table. Sana owns the sign-off.
+#
+#     This is written down because a gate with a SCHEDULED FALSE POSITIVE is worse than no gate
+#     at that moment: the first person to hit it learns that this gate cries wolf, and the
+#     habit of overriding it outlives the one legitimate red.
+#
+#     The other three Deepgram-adjacent needles -- `DEEPGRAM_API_KEY`, the loader prefix and
+#     the `.env` path suffix -- STAY. None of them belongs in a shipped artefact under any
+#     plan; only the hostname's status changes.
 # --------------------------------------------------------------------------------------
 SIGNATURES: tuple[tuple[str, str], ...] = (
     ("selahcue dev-keys:", "dev_env.rs loader diagnostics (3x) — the loader's own signature"),
-    ("api.deepgram.com", "Deepgram transcription endpoint — 86akby4yz"),
-    ("api.openai.com", "OpenAI sermon-notes endpoint — 86akby7d8"),
+    # EXPIRES — see THE DEEPGRAM ROW HAS A SCHEDULED EXPIRY above. Delete this row at 86akby3xu.
+    ("api.deepgram.com", "Deepgram endpoint — 86akby4yz; EXPIRES: DELETE this row at 86akby3xu"),
+    # Does NOT expire: notes stay proxied, so this endpoint never belongs in a shipped build.
+    ("api.openai.com", "OpenAI sermon-notes endpoint — 86akby7d8; permanent, notes stay proxied"),
     ("/../../../../.env", "REPO_ROOT_ENV_FILE — the compile-time repo-root .env path"),
     ("DEEPGRAM_API_KEY", "loadable credential variable name"),
     ("OPENAI_API_KEY", "loadable credential variable name"),
