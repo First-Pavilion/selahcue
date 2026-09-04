@@ -106,6 +106,16 @@ SIGNATURES: tuple[tuple[str, str], ...] = (
     ("/../../../../.env", "REPO_ROOT_ENV_FILE — the compile-time repo-root .env path"),
     ("DEEPGRAM_API_KEY", "loadable credential variable name"),
     ("OPENAI_API_KEY", "loadable credential variable name"),
+    # REDUNDANT TODAY, AND THAT IS THE POINT. Both of these are diagnostic text from the same
+    # module that emits `selahcue dev-keys:`, so today anything carrying one carries that too.
+    # Omitting them on that basis would make this gate depend on a COUPLING ASSUMPTION ABOUT A
+    # STARTUP MESSAGE: someone tidying that `eprintln!` breaks the redundancy silently, and the
+    # only detection goes with it. This repo was bitten by exactly that shape today -- a defect
+    # held harmless by a consumer that then documented its own leniency as unnecessary, on the
+    # strength of a guarantee that had a hole in it. A redundancy you rely on is made explicit,
+    # not assumed, and here that costs one row each.
+    (".env.sample", "loader diagnostics point at it — redundant with the prefix, deliberately"),
+    ("repo-root .env", "loader diagnostics phrase — substring of the longer variants too"),
 )
 
 # The required floor. Asserted at run time so emptying or trimming SIGNATURES fails loudly
@@ -128,6 +138,8 @@ REQUIRED_SIGNATURES: frozenset[str] = frozenset(
         "/../../../../.env",
         "DEEPGRAM_API_KEY",
         "OPENAI_API_KEY",
+        ".env.sample",
+        "repo-root .env",
     }
 )
 
@@ -177,11 +189,11 @@ ARTEFACT_FLOOR_MINIMUM = 1_000_000
 # from dev_env.rs. Growing a set is free; shrinking one means editing a number that says what it
 # is for. `the_pins_themselves_have_not_shrunk` asserts these at run time too, because `assert`
 # is stripped under `python -O`.
-REQUIRED_SIGNATURE_COUNT = 6
+REQUIRED_SIGNATURE_COUNT = 8
 REQUIRED_ENCODING_COUNT = 2
 REQUIRED_TARGET_COUNT = 4
 # Floor on the self-test's own case count (see self_test_case_floor).
-SELF_TEST_CASE_FLOOR = 33
+SELF_TEST_CASE_FLOOR = 37
 
 # --------------------------------------------------------------------------------------
 # THE DECLARED TARGETS. Also one place, and also shaped for growth.

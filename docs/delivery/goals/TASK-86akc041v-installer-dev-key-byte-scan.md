@@ -39,7 +39,7 @@ Verified at `origin/main` = `3f3072edc158310182d18910e3a7dccabfb66a08` (PR #18 m
 ### Baseline addendum — state at review round 1
 
 Head `c18841d` + this round's fixes. **4** declared targets (operator binary, sidecar, NDI
-runtime, NSIS bundle), **6** signatures x **2** encodings = 12 needles, **33** self-test cases.
+runtime, NSIS bundle), **8** signatures x **2** encodings = 16 needles, **37** self-test cases.
 The scanner's arithmetic was independently verified exhaustively in review (2,000 randomised
 files across five chunk sizes, plus every needle position at nine more): zero mismatches. The
 defects found in this round were all in the TESTS, not the scanner.
@@ -139,6 +139,51 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Result: pending
 - New evidence: pending
 - Decision: iterate
+
+## Lessons carried out of review round 1
+
+Recorded here rather than filed as bugs: all were found and fixed inside the review cycle on an
+unmerged branch, which is what review is for. They are kept because they are lessons, not
+incidents.
+
+**L1 — The single-definition rule is right for a conjunction and WRONG for a threshold.**
+`CLAUDE.md` teaches: give the predicate one definition that both the control and the code under
+test consume. Applied to `MIN_ARTEFACT_BYTES` it produced a vacuous control — lowering the
+constant moved the control with it, so `= 1` passed a green suite while every target accepted any
+non-empty stub. The distinction: a control tracking a **conjunction** must consume the same
+expression, because its job is to prove *that expression* is live. A control on a **threshold**
+exists to be an *independent opinion about how low the threshold may go*, so sharing the
+definition destroys the only thing it was for. `ARTEFACT_FLOOR_MINIMUM` is a deliberate second
+literal. It took a reviewer to catch this *after* the first fix, which is the evidence that it is
+a genuine trap rather than carelessness.
+
+**L2 — The most severe finding was suppressed by the least severe one.** `poisoned` was drained
+only at the end of `run_scan`, so a later target's glob miss raised `ScanError` and
+short-circuited it: the build went red naming a missing glob and never reported that a developer
+key was present in the shipped binary. Hits are now printed where they are found. A gate that
+detects the thing it exists to detect and then does not say so is worse than one that misses it,
+because the operator has a red build and the wrong cause.
+
+**L3 — A documented action that breaks the suite is worse than an undocumented one.** The
+Deepgram expiry note instructs a future maintainer to delete that row and calls it a data change.
+It was not: `shrunken_signature_set` hardcoded the very string the comment names, so following
+the instruction broke the suite. The victim is now derived from `REQUIRED_SIGNATURES`.
+
+**L4 — Fixing an instance of the vacuity pattern draws attention to the instance, not the
+class.** Pinning `ENCODINGS` left `TARGETS` unpinned, and `TARGETS` is what the design argument
+rests on. The general form: any collection the suite merely ITERATES is a premise, and a premise
+that can be shortened without a red is not a control.
+
+**L5 — A mutation harness that cannot prove it mutated manufactures false greens.** Two harness
+runs lied during this work: one mutant left an empty tuple in `TARGETS` and crashed, another was
+checked against the wrong expected case name. The harness now parse-checks each mutant and
+validates its live tables before a result is trusted. Instrument versus subject, at the third
+level.
+
+**L6 — A redundancy you rely on must be explicit.** `.env.sample` and `repo-root .env` are
+redundant today because anything carrying them also emits `selahcue dev-keys:`. That is a
+coupling assumption about a startup message: tidying one `eprintln!` would break the redundancy
+silently and take the only detection with it. Both are declared rows now.
 
 ## Risks and rollback
 
