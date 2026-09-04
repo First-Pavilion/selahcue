@@ -243,7 +243,7 @@ REQUIRED_TARGET_COUNT = 4
 # generate cases, then one floor covers all of them, and the last unpinned number is a number
 # whose only effect is to be too low -- which every other case would then have to be deleted to
 # exploit. RAISE THIS when cases are added; it may only ever go up.
-SELF_TEST_CASE_FLOOR = 43
+SELF_TEST_CASE_FLOOR = 44
 
 # The ONLY cases permitted to self-skip. Not a count -- a set of names, so it cannot be widened
 # by lowering a number. `unreadable_file` skips wherever mode 000 is unenforced (Windows, root);
@@ -377,6 +377,26 @@ def declared_target_gaps(targets: tuple[tuple[str, int, str], ...]) -> set[str]:
     this file has already been bitten by exactly that.
     """
     return set(REQUIRED_TARGETS) - {pattern for pattern, _min_bytes, _label in targets}
+
+
+def duplicate_skip_names(names: list[str]) -> list[str]:
+    """Every name in `names` that appears more than once, sorted.
+
+    `len(skipped) == len(set(skipped))` is the predicate this returns evidence for. ONE
+    definition, consumed both by the live end-of-run check in self_test() and by
+    `only_known_skips_are_unique`'s synthetic case, so a change to the predicate cannot
+    silently diverge from what the case proves -- the same reason `declared_target_gaps` is
+    factored out above rather than re-derived at each call site.
+
+    ALLOWED_SKIPS constrains WHICH names may self-skip; it says nothing about how MANY TIMES
+    each one may. Without this, `skipped` is a second way to satisfy SELF_TEST_CASE_FLOOR that
+    no assertion reads: delete a case block that would otherwise run, then append a SECOND
+    `"unreadable_file"` entry, and the floor is met with a name ALLOWED_SKIPS already permits.
+    """
+    counts: dict[str, int] = {}
+    for name in names:
+        counts[name] = counts.get(name, 0) + 1
+    return sorted(name for name, n in counts.items() if n > 1)
 
 
 class ScanError(Exception):
@@ -801,6 +821,35 @@ def self_test() -> int:
                 + ". A pin that can be shortened does not pin anything."
             )
 
+        # --- a skip name may not be counted twice ------------------------------------------
+        # ALLOWED_SKIPS constrains WHICH names may self-skip; it says nothing about how MANY
+        # TIMES. Without this, `skipped` is a second way to satisfy SELF_TEST_CASE_FLOOR that
+        # nothing reads: delete a case block that would otherwise run, then append a SECOND
+        # `"unreadable_file"` entry, and the floor is met with a name the allowlist already
+        # permits -- L7's escape route one notch further along.
+        #
+        # Tested against a SYNTHETIC list, not the live `skipped`: the live list gains a
+        # duplicate only on a platform this suite does not control (mode 000 unenforced, which
+        # produces at most ONE `unreadable_file` skip, never two) or a bug in the appender
+        # itself, and this case must run and mean something on every platform regardless of
+        # which branch that append site took.
+        cases += 1
+        dup_probe = duplicate_skip_names(["unreadable_file", "unreadable_file"])
+        if dup_probe != ["unreadable_file"]:
+            failures.append(
+                "only_known_skips_are_unique: duplicate_skip_names(['unreadable_file', "
+                "'unreadable_file']) returned "
+                f"{dup_probe!r}, expected ['unreadable_file']. A repeated ALLOWED name must be "
+                "caught by count, not just by membership."
+            )
+        no_dupes = duplicate_skip_names(["unreadable_file"])
+        if no_dupes:
+            failures.append(
+                "only_known_skips_are_unique: duplicate_skip_names(['unreadable_file']) "
+                f"returned {no_dupes!r} for a list with no repeat -- the positive control for "
+                "this case's own matcher is not exercised."
+            )
+
         # --- H1: the TARGET set has not shrunk -------------------------------------------
         # The set the whole design argument rests on. Consumes declared_target_gaps() rather
         # than re-deriving the comparison, so mutating that predicate breaks this case too.
@@ -919,6 +968,16 @@ def self_test() -> int:
             if c:
                 failures.append(c)
         else:
+            # DELIBERATELY A SECOND LITERAL, not `next(iter(ALLOWED_SKIPS))`. It looks like the
+            # "control reading a copy" shape this file works hard to avoid elsewhere, and
+            # someone will eventually want to tidy it into a single spelling. Do not: the
+            # duplication is what makes ALLOWED_SKIPS a DRIFT DETECTOR rather than a rubber
+            # stamp. If this string and the set drift apart -- a typo here, or the set edited
+            # without checking every append site -- `only_known_cases_may_skip` fails BY NAME on
+            # the very next run, because this call would then be appending a name the set does
+            # not contain. Reading the name back out of the set instead would make that
+            # impossible: the string could never disagree with itself. The two literals must
+            # independently say "unreadable_file" for the allowlist to be testing anything.
             skipped.append("unreadable_file")
             print("   unreadable_file: SKIPPED - this platform/user ignores mode 000 "
                   "(the directory case above covers the same fail-closed branch)")
@@ -1114,6 +1173,17 @@ def self_test() -> int:
             "ALLOWED_SKIPS. A skip is how a case stops running while still counting toward the "
             "floor, so an unlisted one is a deleted case wearing a disguise."
         )
+    # NAME is not enough on its own -- see only_known_skips_are_unique above, which proves this
+    # same helper live. `len(skipped) == len(set(skipped))` is the predicate; duplicate_skip_names
+    # is its evidence-bearing form, shared rather than re-derived, per CLAUDE.md on a control
+    # reading a copy.
+    repeated_skips = duplicate_skip_names(skipped)
+    if repeated_skips:
+        failures.append(
+            "only_known_cases_may_skip: " + ", ".join(repeated_skips) + " appeared more than "
+            "once in `skipped`. ALLOWED_SKIPS constrains NAMES, not COUNT -- a deleted case "
+            "block hiding behind a repeated allowed name is still a deleted case."
+        )
 
     if cases + len(skipped) < SELF_TEST_CASE_FLOOR:
         failures.append(
@@ -1129,8 +1199,12 @@ def self_test() -> int:
         for f in failures:
             print(f"  - {f}", file=sys.stderr)
         return 1
-    tail = f", {len(skipped)} skipped ({'; '.join(skipped)})" if skipped else ""
-    print(f"installer_secret_scan self-test: {cases} cases passed{tail}")
+    # Named `skip_note`, not `tail`: `scan_file` already owns `tail` as its chunk-overlap byte
+    # buffer. The two never collide at runtime -- different scopes -- but a reader running the
+    # no-echo audit this module's docstring invites (grep every `tail` for a place it could leak
+    # scanned bytes) hits this line and has to rule it out by hand. Named apart, it doesn't.
+    skip_note = f", {len(skipped)} skipped ({'; '.join(skipped)})" if skipped else ""
+    print(f"installer_secret_scan self-test: {cases} cases passed{skip_note}")
     return 0
 
 

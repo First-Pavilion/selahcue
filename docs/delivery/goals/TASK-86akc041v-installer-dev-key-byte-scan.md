@@ -10,7 +10,7 @@
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86akc041v
 - Created: 2026-09-04
-- Updated: 2026-09-04 (review round 1 applied)
+- Updated: 2026-09-04 (review round 2 delta batch applied: multiplicity fix, rename, comments, evidence corrections)
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -43,6 +43,21 @@ runtime, NSIS bundle), **8** signatures x **2** encodings = 16 needles, **43** s
 The scanner's arithmetic was independently verified exhaustively in review (2,000 randomised
 files across five chunk sizes, plus every needle position at nine more): zero mismatches. The
 defects found in this round were all in the TESTS, not the scanner.
+
+### Baseline addendum — state at review round 2 (delta-only batch)
+
+Head `181c78c` (four reviewers independently confirmed no blocking findings; three independently
+AST- or source-hashed every production function and constant byte-identical against dd336e1 —
+only `SELF_TEST_CASE_FLOOR` and `ALLOWED_SKIPS` changed, both self-test-only). This batch, on top
+of `181c78c`: closed Sana's multiplicity gap in `ALLOWED_SKIPS` (`duplicate_skip_names()` + case
+`only_known_skips_are_unique`), renamed `self_test`'s skip-summary `tail` to `skip_note` (Quinn),
+documented why `ALLOWED_SKIPS` and `skipped.append("unreadable_file")` stay two independent
+literals (Cody), corrected C-016 and C-014's evidence cells, and deferred Sana's canary-adjacency
+test to a follow-up ticket. **44** self-test cases (43 + the new multiplicity case), re-derived by
+running the suite rather than assumed; unchanged: 4 targets, 8 signatures x 2 encodings = 16
+needles. Production scanning code (`SIGNATURES`, `TARGETS`, `ENCODINGS`, `needles`, `scan_file`,
+`digest`, `resolve`, `positive_control`, `run_scan`, `main`) untouched this batch either —
+self-test, comments and this document only, same as round 2's `181c78c` delta.
 
 ## Inputs and evidence sources
 
@@ -110,10 +125,10 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-011 | yes | Lines 24-33 comment stays accurate; every build step keeps `--release` | `git diff` review | comment consistent, no `--release` removed | lines 24-33 intact and extended; both build steps keep release | PASS |
 | C-012 | yes | `check_workflows.py` and `actionlint` pass on the edited workflow | both tools over `.github/workflows/` | exit 0 | actionlint 1.7.12 exit 0; check_workflows.py exit 0 | PASS |
 | C-013 | yes | No `Makefile` change, no file under `implementation/` | `git diff --name-only origin/main...HEAD` | only the script, the workflow, this contract | 3 files; ci.yml and Makefile untouched; 0 under implementation/ | PASS |
-| C-014 | yes | Independent review: Cody, Vera, Sana, Quinn; Sana confirms F5 | review pipeline | no unremediated blocking findings | Sana PASS (F5 confirmed); Vera PASS (measured); Cody 2 High/5 Med/8 Low all fixed; Quinn PASS at dd336e1 — 19 mutations + collection batteries, all killed by a named case | PASS |
+| C-014 | yes | Independent review: Cody, Vera, Sana, Quinn; Sana confirms F5 | review pipeline | no unremediated blocking findings | Sana PASS (F5 confirmed); Vera PASS (measured); Cody 2 High/5 Med/8 Low all fixed; Quinn PASS at dd336e1 — 19 mutations + collection batteries, all killed by a named case. **Round 2 (delta-only, at `181c78c`):** all four independently confirmed no blocking findings; three of four independently AST-hashed or source-hashed every production function/constant and found them byte-identical, so the round-1 evidence still applies to the unchanged scanning behaviour — see the consolidated record at PR #21's review comment. This row was originally marked PASS before those round-1 confirmations had actually landed (status ran ahead of evidence — see Lesson L9); true now, recorded here as the correction | PASS |
 | C-015 | yes | Every collection the suite iterates is pinned, so it cannot be silently shortened | self-test `every_required_target_is_declared`, `every_encoding_is_declared`, `every_target_has_a_size_floor`, `the_pins_themselves_have_not_shrunk`, `self_test_case_floor`, `every_glob_match_is_scanned` | each mutation dies by its named case | second mutation battery: 10/10 previously-surviving mutations killed | PASS |
-| C-016 | yes | The gate runs for real on a windows-latest runner, not merely parses | dispatched `windows-installer.yml` run | both gate steps execute and report | run 33879290775 @ dd336e1: success; 4 artefacts, 16/16 control pairs each, 0/8 present; NDI dll 29,863,120 B = 30x the floor; self-test 41 passed + 1 skipped = 42 vs floor 42 | PASS |
-| C-017 | yes | Every relaxation of an acceptance criterion is itself constrained | self-test `only_known_cases_may_skip` | a skip not in ALLOWED_SKIPS fails the suite | bogus-skip mutations killed by name; allowlist not a ceiling, so no threshold regress | PASS |
+| C-016 | yes | The gate runs for real on a windows-latest runner, not merely parses | dispatched `windows-installer.yml` run on the batch-3 pushed head | both gate steps execute and report | **PENDING — marked on the final dispatch run against this batch's pushed head, not on `181c78c` (an intermediate head nobody merges) and not on a local forced-skip simulation.** The artefact-level numbers from run 33879290775 @ dd336e1 (4 artefacts, 16/16 control pairs each, 0/8 present, NDI dll 29,863,120 B = 30x the floor) carry forward — but on the strength of the invariance three reviewers independently measured (AST/source hash: every production function and constant byte-identical from dd336e1 through this head), not because the run is recent; evidence from an earlier commit is normally what a reviewer should challenge, and that invariance is the only thing making it sound here. The self-test number does **not** carry forward: this batch changes `self_test`'s own case count (43→44, see SELF_TEST_CASE_FLOOR below), so the pending dispatch must report 43 passed + 1 skipped = 44 on windows-latest, not the stale 41+1=42 | PENDING |
+| C-017 | yes | Every relaxation of an acceptance criterion is itself constrained | self-test `only_known_cases_may_skip`, `only_known_skips_are_unique` | a skip not in ALLOWED_SKIPS, or an allowed name repeated, fails the suite | Round 1: bogus-skip (wrong-name) mutations killed by name; allowlist not a ceiling, so no threshold regress. **Round 2 — Sana's multiplicity finding:** `ALLOWED_SKIPS` constrained which names could skip but not how many times, so deleting a case block and appending a *second* `"unreadable_file"` met the floor with an allowed name and no assertion read it. Closed by `duplicate_skip_names()` (`len(skipped) == len(set(skipped))`) consumed by both a new synthetic case (`only_known_skips_are_unique`) and the live end-of-run check. Mutation-verified three ways, all RED as named: (1) dead matcher (`duplicate_skip_names` returns `[]`) — killed by `only_known_skips_are_unique`'s own assertion; (2) over-report matcher (`return sorted(set(names))`) — killed by that same case's positive-control half; (3) the real exploit — forced Windows shape (`enforced = False`) plus `cases -= 1` plus a second `skipped.append("unreadable_file")` — killed by `only_known_cases_may_skip` naming the repeated entry. `SELF_TEST_CASE_FLOOR` raised 43→44 for the new case; re-derived by running the suite, not assumed | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -140,6 +155,33 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Result: pending
 - New evidence: pending
 - Decision: iterate
+
+### Iteration 2 — review round 2 delta batch (this batch, on top of `181c78c`)
+
+- Target criterion: C-014, C-016, C-017
+- Hypothesis: Sana's multiplicity gap in `ALLOWED_SKIPS` is closable with one predicate
+  (`len(skipped) == len(set(skipped))`) shared between a synthetic self-test case and the live
+  end-of-run check, without reopening the threshold regress L1/L7 already closed; the other five
+  items (rename, two comments, two evidence corrections, one deferral) carry no scan-behaviour
+  change.
+- Change or investigation: added `duplicate_skip_names()` and case `only_known_skips_are_unique`;
+  wired it into the existing `only_known_cases_may_skip` end-of-run check; renamed `tail` to
+  `skip_note`; added the two-literal-independence comment at the `skipped.append(...)` call site;
+  corrected C-016 and C-014 evidence cells; deferred Sana's canary-adjacency test with reasoning
+  recorded under "Follow-up work, deferred explicitly"; re-derived `SELF_TEST_CASE_FLOOR` (43→44)
+  by running the suite rather than assuming it.
+- Verifier executed: `python3 scripts/installer_secret_scan.py --self-test` (44 cases passed,
+  local/macOS); a forced Windows-shape local simulation (`enforced = False`) confirming 43 passed
+  + 1 skipped = 44, exact, zero slack; three targeted mutation batteries — dead matcher, over-report
+  matcher, and the real exploit shape (deleted case + duplicate allowed-name skip entry) — each
+  killed by the case named in its message; `python3 .github/scripts/check_workflows.py` (unaffected,
+  workflow file untouched this batch).
+- Result: all local verifiers green; RED confirmed and restored for all three mutations; Windows
+  dispatch on the pushed head not yet run.
+- New evidence: self-test case count 44 (was 43); floor re-derived, not assumed; mutation kill
+  list recorded in C-017's evidence cell.
+- Decision: iterate — push, then dispatch `windows-installer.yml` once on the new head; C-016
+  moves PASS only on that run's result.
 
 ## Lessons carried out of review round 1
 
@@ -201,6 +243,40 @@ redundant today because anything carrying them also emits `selahcue dev-keys:`. 
 coupling assumption about a startup message: tidying one `eprintln!` would break the redundancy
 silently and take the only detection with it. Both are declared rows now.
 
+**L9 — A completion-predicate row must not be marked PASS before the evidence it cites exists.**
+C-014 was marked PASS at a point when the confirmations its own evidence cell named had not yet
+arrived — later true, which is exactly why it went unnoticed rather than corrected. A completion
+predicate exists to prevent the status from running ahead of the evidence, not merely to end up
+correct in hindsight; a row confirmed after the fact by luck is indistinguishable, at the moment
+it is written, from one that will never be confirmed. Applied going forward in this same document:
+C-016 is left `PENDING`, not `PASS`, until the actual dispatch run against this batch's pushed
+head reports — not on the strength of the (real, verified) artefact-evidence invariance alone, and
+not on `181c78c`'s in-flight runs, which by the time they land are runs on an intermediate head.
+
+## Follow-up work, deferred explicitly
+
+**Sana's canary-adjacency test is deferred to a follow-up, not implemented in this batch.** Her
+proposal: build a fixture containing `DEEPGRAM_API_KEY=` followed by a high-entropy canary value,
+assert the scan goes red naming the marker, and assert the canary string itself appears in neither
+stdout nor stderr. This tests the property the no-leak docstring (added this round, see
+`installer_secret_scan.py`'s module header) currently only *documents* — "the log contains no
+artefact context" — rather than pinning today's nine call sites, so it survives a later refactor of
+where reporting happens.
+
+Reason for deferring rather than adding it to this batch: this batch's other five items are a
+mutation-verified security-control fix (the multiplicity gap), a rename, two comments and two
+evidence corrections — all either mechanical or already covered by an existing control's mutation
+battery. The canary-adjacency test is new test *surface* over the same reporting code the "nine
+production print sites" audit already checked by hand this round (Cody and Sana both enumerated
+them independently and agree: only a byte count and a whole-file SHA-256 are content-derived).
+Adding it now would be the only item in this batch requiring a fresh mutation-verification pass
+against reporting code rather than against the self-test's own bookkeeping, and would extend a
+batch whose stated shape is "self-test, comments and the goal contract only" into scanner-adjacent
+test logic — worth its own reviewed pass rather than folding it in.
+
+Tracked as a follow-up ticket linked from ClickUp task 86akc041v (see task comments) rather than
+left as an implied TODO in this document.
+
 ## Risks and rollback
 
 - Risks: the workflow is dispatch-only, so the gate cannot be proven on a real Windows
@@ -218,8 +294,12 @@ silently and take the only detection with it. Both are declared rows now.
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py <path>`
-- Validator result: OK (structural)
-- Independent verification result: pending
-- Terminal state: VERIFIED_COMPLETE pending the delta-only reviewer confirmation on this head and the final Windows dispatch
-- Remaining failed or blocked criteria: pending
-- ClickUp final evidence comment: pending
+- Validator result: OK (structural), re-run after this batch's edits
+- Independent verification result: round 2 delta-only confirmation from all four reviewers
+  recorded at `181c78c` (see PR #21 review comment); this batch's own change (the multiplicity
+  fix) has not yet had independent reviewer confirmation — it is a genuine behavioural change to
+  the self-test, not a no-op delta, so that claim cannot honestly be made without asking again
+- Terminal state: VERIFIED_COMPLETE pending (a) the Windows dispatch on this batch's pushed head,
+  and (b) reviewer confirmation of the one behavioural change in this batch (item 1)
+- Remaining failed or blocked criteria: C-016 PENDING (dispatch not yet run on the pushed head)
+- ClickUp final evidence comment: pending, to be posted after the dispatch run reports
