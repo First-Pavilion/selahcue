@@ -1,0 +1,688 @@
+//! Developer AI provider keys, read from the repo-root `.env` — **developer builds only**.
+//!
+//! # This is scaffolding, and it has a known replacement
+//!
+//! A provider key sitting on an engineer's workstation is exactly the thing that must never
+//! ship. Nothing here is the design; it is the shortest honest path to having the two AI
+//! features work at all while the platform side is built. The destinations are already agreed
+//! and already ticketed:
+//!
+//! * **Deepgram** — the desktop asks the SelahCue platform for a short-lived, server-minted
+//!   grant token (`POST /v1/stt/session`) and streams with that. Our Deepgram key never leaves
+//!   our server and never reaches a workstation.
+//! * **Sermon notes** — generation stays **proxied** through the SelahCue platform API, so the
+//!   OpenAI key lives server-side and the desktop authenticates as an account, not as us.
+//!
+//! When either of those lands, its half of this module goes with it. Do not build anything new
+//! on top of this, and do not extend it into a general configuration mechanism.
+//!
+//! # Why it is behind a feature, and why that feature can never ship
+//!
+//! Every line that opens a file lives behind `dev-keys`, which is **off by default**. Without
+//! the feature the loader does not exist in the compiled artefact at all — not disabled at
+//! runtime, not short-circuited, absent — so a release build cannot pick a key up from a stray
+//! `.env` on the machine it happens to run on.
+//!
+//! A `dev-keys` build is additionally unshippable for a second, independent reason:
+//! [`REPO_ROOT_ENV_FILE`] is resolved from `CARGO_MANIFEST_DIR` at compile time, so such a
+//! binary carries the build machine's source path. That is deliberate. It means a
+//! `dev-keys` artefact is obviously a developer artefact if one is ever found in the wild.
+//!
+//! # Why this is an allowlist and not a dotenv crate
+//!
+//! `scripts/dev_key_not_in_release.sh` records, at length, that a **runtime configuration
+//! loader** is the one route its byte scan cannot close: a loader that obtains key material at
+//! run time puts no literal key in the artefact, so the scan reports OK. The rule that closes
+//! it is a review-enforced "no config loader in `selahcue-licensing`".
+//!
+//! This module is a runtime configuration loader. It is therefore written to be the smallest
+//! possible one:
+//!
+//! * It lives in the operator **binary**, not in a library crate, so nothing can take it as a
+//!   dependency and no other crate's guarantees are widened by it.
+//! * It will only ever set the two names in [`LOADABLE`]. Every other assignment in the file is
+//!   parsed and then thrown away. It cannot be used to inject an arbitrary environment.
+//! * It never sets a variable to an empty value, so a missing key stays missing and the feature
+//!   that needs it can say which one — instead of handing a provider an empty credential and
+//!   surfacing an authentication error for what is really a configuration mistake.
+//! * An already-exported variable wins. The file fills gaps; it does not override the
+//!   environment the operator was launched with.
+//!
+//! # What the two AI lanes consume
+//!
+//! Ordinary process environment variables, set before Tauri starts. Neither lane parses a file:
+//!
+//! ```text
+//! std::env::var("DEEPGRAM_API_KEY")   // 86akby4yz — Deepgram streaming transcription
+//! std::env::var("OPENAI_API_KEY")     // 86akby7d8 — OpenAI sermon notes
+//! ```
+//!
+//! Absent means absent: `env::var` returns `NotPresent`, never `Ok("")`. A lane that needs a key
+//! it cannot find should refuse to start and name the variable.
+
+/// Deepgram's own name for its API key, used unchanged so a developer who already has one
+/// exported for `deepgram`'s CLI or SDK needs no second spelling. Consumed by 86akby4yz.
+#[cfg(any(feature = "dev-keys", test))]
+pub const DEEPGRAM_API_KEY: &str = "DEEPGRAM_API_KEY";
+
+/// OpenAI's own name for its API key, for the same reason. Consumed by 86akby7d8.
+#[cfg(any(feature = "dev-keys", test))]
+pub const OPENAI_API_KEY: &str = "OPENAI_API_KEY";
+
+/// **The only names this loader will ever set.** Not a default, not a starting point — the
+/// complete set. An assignment in `.env` for any other name is read and discarded, which is what
+/// keeps this from being a general "inject an arbitrary environment from a file" mechanism. See
+/// the module docs for why that distinction is load-bearing rather than tidy.
+///
+/// Adding a third name is a deliberate, reviewable act. Adding one to make some unrelated
+/// configuration convenient is the mistake this list exists to make visible.
+#[cfg(any(feature = "dev-keys", test))]
+const LOADABLE: [&str; 2] = [DEEPGRAM_API_KEY, OPENAI_API_KEY];
+
+/// The repo-root `.env`, resolved at **compile time** from this crate's manifest directory
+/// (`<root>/implementation/desktop/crates/selahcue-operator` — four levels down).
+///
+/// Compile-time rather than a runtime search for `.git` because it is deterministic and cannot
+/// be redirected by the working directory the operator happens to be launched from. The cost is
+/// that the build machine's source path is baked into the binary, which is acceptable — and
+/// useful — only because this constant exists solely in a `dev-keys` build.
+#[cfg(feature = "dev-keys")]
+const REPO_ROOT_ENV_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../.env");
+
+/// What a load attempt did, in variable **names** only.
+///
+/// The redaction here is structural rather than careful. Every field holds `&'static str`,
+/// while a value read from the file is either a `&str` borrowed from the file's contents or the
+/// owned `String` that borrow is copied into. Neither is `'static`, so no value can be stored
+/// in this type at all. Deriving `Debug` here is therefore safe, where deriving it on [`Plan`],
+/// which does hold values, would not be.
+///
+/// Stated precisely because the weaker-sounding version is the true one: this is not a claim
+/// that nothing in the module is `&'static str` (the message literals are), it is a claim that
+/// no path exists from file contents into these three fields.
+#[cfg(any(feature = "dev-keys", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Report {
+    /// Whether the loader ran at all. `false` in a build without `dev-keys`.
+    enabled: bool,
+    /// Names now readable from the process environment, whether this loader set them or they
+    /// were already exported.
+    resolved: Vec<&'static str>,
+    /// Names still absent. These are what the startup message has to name.
+    missing: Vec<&'static str>,
+}
+
+/// The decision a load would make, before anything is written to the process environment.
+///
+/// Separated from the write so the whole decision is testable as a pure function — no process
+/// environment, no temporary files, no ordering between tests.
+#[cfg(any(feature = "dev-keys", test))]
+struct Plan {
+    /// Names to write, with their values. **This is real key material.** It is why `Debug` is
+    /// implemented by hand below instead of derived.
+    to_set: Vec<(&'static str, String)>,
+    /// Names already in the environment, which `.env` must not clobber.
+    kept: Vec<&'static str>,
+    /// Names neither exported nor supplied by the file.
+    missing: Vec<&'static str>,
+}
+
+/// Hand-written so a key value cannot reach a log line, a panic message or a `dbg!` through the
+/// one route people forget. `#[derive(Debug)]` here would print the values verbatim.
+#[cfg(any(feature = "dev-keys", test))]
+impl std::fmt::Debug for Plan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&'static str> = self.to_set.iter().map(|(name, _)| *name).collect();
+        f.debug_struct("Plan")
+            .field("to_set", &names)
+            .field("kept", &self.kept)
+            .field("missing", &self.missing)
+            .finish()
+    }
+}
+
+/// One matching pair of surrounding quotes removed, if there is one.
+#[cfg(any(feature = "dev-keys", test))]
+fn unquote(value: &str) -> &str {
+    for quote in ['"', '\''] {
+        if value.len() >= 2 && value.starts_with(quote) && value.ends_with(quote) {
+            return &value[1..value.len() - 1];
+        }
+    }
+    value
+}
+
+/// Every well-formed `NAME=VALUE` assignment in `contents`, in file order, with **no allowlist
+/// applied**.
+///
+/// Deliberately minimal: comments, blank lines, an optional `export ` prefix, and one layer of
+/// surrounding quotes. No escape sequences, no `${...}` interpolation, no multi-line values. A
+/// richer parser would be more surface area for a module whose whole purpose is to be deleted,
+/// and none of the extra syntax buys a developer anything when the value is a flat API key.
+///
+/// This is the single definition of "what the file says" — [`plan`] consumes exactly this, and
+/// so does the control that proves the allowlist rejects a name rather than failing to parse it.
+#[cfg(any(feature = "dev-keys", test))]
+fn assignments(contents: &str) -> Vec<(&str, &str)> {
+    let mut out = Vec::new();
+    for raw in contents.trim_start_matches('\u{feff}').lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = match line.strip_prefix("export ") {
+            Some(rest) => rest.trim_start(),
+            None => line,
+        };
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        out.push((name, unquote(value.trim())));
+    }
+    out
+}
+
+/// What a load of `contents` would do, given `already_set` to say which names the process
+/// environment already carries.
+///
+/// Pure: it decides and reports, it does not act. The three rules that matter all live here —
+/// the allowlist, "an exported variable wins", and "a blank value is not a key".
+#[cfg(any(feature = "dev-keys", test))]
+fn plan(contents: &str, already_set: impl Fn(&str) -> bool) -> Plan {
+    let found = assignments(contents);
+    let mut planned = Plan {
+        to_set: Vec::new(),
+        kept: Vec::new(),
+        missing: Vec::new(),
+    };
+    for name in LOADABLE {
+        if already_set(name) {
+            planned.kept.push(name);
+            continue;
+        }
+        // Last assignment wins, the way a shell sourcing the file would behave.
+        let value = found
+            .iter()
+            .rev()
+            .find(|(found_name, _)| *found_name == name)
+            .map(|(_, value)| *value);
+        match value {
+            // A whitespace-only value is not a key. Setting it would hand a provider an empty
+            // credential and turn a configuration mistake into an authentication error.
+            Some(value) if !value.trim().is_empty() => {
+                planned.to_set.push((name, value.to_string()));
+            }
+            _ => planned.missing.push(name),
+        }
+    }
+    planned
+}
+
+/// The post-write summary: which allowlisted names are now readable, and which are not.
+#[cfg(any(feature = "dev-keys", test))]
+fn report_of(planned: &Plan, enabled: bool) -> Report {
+    let resolved = LOADABLE
+        .into_iter()
+        .filter(|name| {
+            planned.to_set.iter().any(|(set, _)| set == name) || planned.kept.contains(name)
+        })
+        .collect();
+    Report {
+        enabled,
+        resolved,
+        missing: planned.missing.clone(),
+    }
+}
+
+/// The lines to print at startup. **Names only** — see [`Report`] for why that is structural.
+///
+/// A missing key gets its own line naming that exact variable, because "some credential is
+/// missing" sends a developer to the wrong file.
+#[cfg(any(feature = "dev-keys", test))]
+fn startup_lines(report: &Report) -> Vec<String> {
+    if !report.enabled {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    if !report.resolved.is_empty() {
+        lines.push(format!(
+            "selahcue dev-keys: {} available (repo-root .env or the environment).",
+            report.resolved.join(", ")
+        ));
+    }
+    for name in &report.missing {
+        lines.push(format!(
+            "selahcue dev-keys: {name} is not set. Add it to the repo-root .env (see \
+             .env.sample). It is left unset rather than empty, so the feature that needs it \
+             will refuse to start instead of sending an empty credential."
+        ));
+    }
+    lines
+}
+
+/// Read `path` and export the allowlisted names it supplies.
+///
+/// **Only compiled with `dev-keys`.** The `cfg` split below is the whole control this ticket
+/// exists to install: without the feature there is no `read_to_string` in the artefact.
+#[cfg(feature = "dev-keys")]
+fn load_from(path: &std::path::Path) -> Report {
+    // An absent or unreadable `.env` is a normal state, not an error: the repo ships it empty
+    // and a developer who has not filled it in yet should get the named-variable message below,
+    // not a failure to start.
+    let contents = std::fs::read_to_string(path).unwrap_or_default();
+    let planned = plan(&contents, |name| {
+        std::env::var_os(name).is_some_and(|value| !value.to_string_lossy().trim().is_empty())
+    });
+    for (name, value) in &planned.to_set {
+        // Safe here in the only sense that matters for `set_var`: `load` is the first statement
+        // of `main`, so no other thread exists yet to observe the environment mid-write.
+        std::env::set_var(name, value);
+    }
+    report_of(&planned, true)
+}
+
+/// The build without `dev-keys`: no file is opened and nothing is exported.
+///
+/// Compiled **only under `cfg(test)`**, so that a plain release build carries neither this nor
+/// the real one. It exists so the disabled case has something to call and can assert on the
+/// process environment afterwards.
+#[cfg(all(not(feature = "dev-keys"), test))]
+fn load_from(_path: &std::path::Path) -> Report {
+    Report {
+        enabled: false,
+        resolved: Vec::new(),
+        missing: Vec::new(),
+    }
+}
+
+/// Called as the first statement of `main`, before any thread exists.
+///
+/// With `dev-keys`: reads the repo-root `.env`, exports what it is allowed to, and prints a line
+/// per missing variable. Without it: does nothing, and no `.env` reading is compiled in.
+#[cfg(feature = "dev-keys")]
+pub fn load() {
+    let report = load_from(std::path::Path::new(REPO_ROOT_ENV_FILE));
+    for line in startup_lines(&report) {
+        eprintln!("{line}");
+    }
+}
+
+/// The default build: a no-op, and deliberately a silent one. A binary without the feature must
+/// behave exactly as it did before this module existed.
+#[cfg(not(feature = "dev-keys"))]
+pub fn load() {}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// A value that could not plausibly be anything but this suite's own probe, so a "the value
+    /// did not appear" assertion cannot pass by coincidence.
+    const PROBE: &str = "dev-env-loader-probe-4a91c7";
+
+    /// A private temp file, unique per test and per run, matching the operator's house pattern
+    /// (`media_store`, `deck_library`) so the suite is safe under `cargo test`'s parallelism.
+    fn temp_env_file(tag: &str, contents: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "selahcue-dev-env-{}-{tag}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    // ---- the allowlist -------------------------------------------------------------------
+
+    #[test]
+    fn only_the_allowlisted_names_are_taken_from_the_file() {
+        // Every value is distinct so the assertion below pins the name-to-value BINDING, not
+        // just the set of names. A loader that matched the wrong line would otherwise export
+        // AWS_SECRET_ACCESS_KEY's value under DEEPGRAM_API_KEY and still satisfy a names-only
+        // check.
+        let contents = format!(
+            "{DEEPGRAM_API_KEY}={PROBE}-dg\n\
+             SELAHCUE_CLOUD_URL=https://example.invalid\n\
+             PATH=/tmp/hostile\n\
+             AWS_SECRET_ACCESS_KEY={PROBE}-aws\n"
+        );
+
+        // POSITIVE CONTROL, and the reason it consumes `assignments` rather than re-deciding:
+        // without it, "the loader ignored PATH" is indistinguishable from "the parser never
+        // understood the line". `plan` calls this same function, so mutating the parse breaks
+        // the control too, instead of leaving it vouching for a parser that stopped working.
+        let parsed = assignments(&contents);
+        let parsed_names: Vec<&str> = parsed.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            parsed_names,
+            vec![
+                DEEPGRAM_API_KEY,
+                "SELAHCUE_CLOUD_URL",
+                "PATH",
+                "AWS_SECRET_ACCESS_KEY"
+            ],
+            "the parser did not understand all four assignments, so the allowlist assertion \
+             below would pass without the allowlist doing any work"
+        );
+
+        let planned = plan(&contents, |_| false);
+        assert_eq!(
+            planned.to_set,
+            vec![(DEEPGRAM_API_KEY, format!("{PROBE}-dg"))],
+            "either a name outside LOADABLE was planned for export \u{2014} the loader is no \
+             longer an allowlist and can inject an arbitrary environment from the file \u{2014} or \
+             an allowlisted name was bound to some other line's value"
+        );
+    }
+
+    #[test]
+    fn both_allowlisted_names_are_taken_when_the_file_supplies_them() {
+        let contents = format!("{DEEPGRAM_API_KEY}={PROBE}-dg\n{OPENAI_API_KEY}={PROBE}-oa\n");
+        let planned = plan(&contents, |_| false);
+        assert_eq!(
+            planned.to_set,
+            vec![
+                (DEEPGRAM_API_KEY, format!("{PROBE}-dg")),
+                (OPENAI_API_KEY, format!("{PROBE}-oa")),
+            ],
+            "the allowlist is refusing names it is supposed to accept, which would make every \
+             'was not taken' assertion in this file vacuous"
+        );
+        assert!(planned.missing.is_empty());
+    }
+
+    // ---- absence is absence, never an empty key ------------------------------------------
+
+    #[test]
+    fn a_blank_or_whitespace_value_leaves_the_variable_unset() {
+        let blank = format!("{DEEPGRAM_API_KEY}=\n{OPENAI_API_KEY}=\"   \"\n");
+
+        // POSITIVE CONTROL: the same two lines with real values are taken, so "not taken" below
+        // is about the blank value and not about the lines being malformed.
+        let filled = format!("{DEEPGRAM_API_KEY}={PROBE}\n{OPENAI_API_KEY}={PROBE}\n");
+        assert_eq!(
+            plan(&filled, |_| false).to_set.len(),
+            2,
+            "the fixture shape is no longer accepted at all, so the blank-value assertion below \
+             proves nothing about blank values"
+        );
+
+        let planned = plan(&blank, |_| false);
+        assert!(
+            planned.to_set.is_empty(),
+            "an empty or whitespace-only value was exported; a provider would reject it and \
+             report an authentication error for what is really a missing key"
+        );
+        assert_eq!(
+            planned.missing,
+            vec![DEEPGRAM_API_KEY, OPENAI_API_KEY],
+            "a blank value must be reported as missing so the startup line can name it"
+        );
+    }
+
+    #[test]
+    fn an_absent_file_reports_both_names_missing_rather_than_failing() {
+        let planned = plan("", |_| false);
+        assert!(planned.to_set.is_empty());
+        assert_eq!(planned.missing, vec![DEEPGRAM_API_KEY, OPENAI_API_KEY]);
+    }
+
+    // ---- the environment wins over the file ----------------------------------------------
+
+    #[test]
+    fn an_already_exported_variable_is_not_clobbered_by_the_file() {
+        let contents = format!("{DEEPGRAM_API_KEY}={PROBE}\n");
+
+        // POSITIVE CONTROL: the identical file IS taken when the variable is unset, so the
+        // assertion below is about `already_set` and not about the file being unreadable.
+        assert_eq!(
+            plan(&contents, |_| false).to_set.len(),
+            1,
+            "the file is not being taken even with nothing exported, so 'kept' below would hold \
+             for the wrong reason"
+        );
+
+        let planned = plan(&contents, |name| name == DEEPGRAM_API_KEY);
+        assert!(
+            planned.to_set.is_empty(),
+            "the file overwrote a variable the operator was launched with"
+        );
+        assert_eq!(planned.kept, vec![DEEPGRAM_API_KEY]);
+        assert_eq!(
+            planned.missing,
+            vec![OPENAI_API_KEY],
+            "an exported variable must count as resolved, not missing"
+        );
+    }
+
+    // ---- no value ever escapes ------------------------------------------------------------
+
+    #[test]
+    fn the_startup_lines_name_the_missing_variable_and_carry_no_value() {
+        let contents = format!("{DEEPGRAM_API_KEY}={PROBE}\n");
+        let planned = plan(&contents, |_| false);
+        let lines = startup_lines(&report_of(&planned, true));
+
+        // POSITIVE CONTROL: there is something to inspect and it names the exact variable.
+        // Without this, "no value appeared" would also hold for an empty message.
+        assert!(
+            lines.iter().any(|line| line.contains(OPENAI_API_KEY)),
+            "no startup line named the missing variable {OPENAI_API_KEY}; a developer gets a \
+             generic failure instead of the name of the thing to fix. Lines were: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains(DEEPGRAM_API_KEY)),
+            "no startup line reported the variable that WAS resolved"
+        );
+
+        for line in &lines {
+            assert!(
+                !line.contains(PROBE),
+                "a key value reached a startup line: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_plan_debug_rendering_carries_names_but_no_values() {
+        let contents = format!("{DEEPGRAM_API_KEY}={PROBE}\n");
+        let planned = plan(&contents, |_| false);
+        let rendered = format!("{planned:?}");
+
+        // POSITIVE CONTROL: the rendering is not empty and does name the variable, so the
+        // redaction assertion below is not satisfied by a Debug impl that prints nothing.
+        assert!(
+            rendered.contains(DEEPGRAM_API_KEY),
+            "the Plan Debug rendering does not name the variable it planned, so the redaction \
+             check below would pass for a Debug impl that had simply stopped working: {rendered}"
+        );
+        assert!(
+            !rendered.contains(PROBE),
+            "the key value appeared in Plan's Debug output; a derived Debug would leak it into \
+             any log line, panic message or dbg! that touches a Plan: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_disabled_report_prints_nothing_at_all() {
+        let report = Report {
+            enabled: false,
+            resolved: vec![DEEPGRAM_API_KEY],
+            missing: vec![OPENAI_API_KEY],
+        };
+        assert!(
+            startup_lines(&report).is_empty(),
+            "a build without dev-keys printed a startup line; the default build must behave \
+             exactly as it did before this module existed"
+        );
+    }
+
+    // ---- parsing details -------------------------------------------------------------------
+
+    #[test]
+    fn comments_blank_lines_export_prefixes_and_quotes_are_handled() {
+        let contents = format!(
+            "\u{feff}# a comment\n\
+             \n\
+             export {DEEPGRAM_API_KEY}=\"{PROBE}\"\n\
+             #{OPENAI_API_KEY}={PROBE}-commented-out\n\
+             not-an-assignment\n"
+        );
+        let planned = plan(&contents, |_| false);
+        assert_eq!(
+            planned.to_set,
+            vec![(DEEPGRAM_API_KEY, PROBE.to_string())],
+            "the quoted, export-prefixed assignment did not survive parsing, or the commented-out \
+             one did"
+        );
+        assert_eq!(planned.missing, vec![OPENAI_API_KEY]);
+    }
+
+    // ---- the control this ticket exists to install -----------------------------------------
+
+    /// The one that matters: a build **without** `dev-keys` must not read a key file.
+    ///
+    /// Mutation-verified by deleting the `cfg(all(not(feature = "dev-keys"), test))` no-op above
+    /// and un-gating the real `load_from`, which is exactly "remove the feature guard". The
+    /// process-environment assertion then fails.
+    #[cfg(not(feature = "dev-keys"))]
+    #[test]
+    fn a_build_without_dev_keys_does_not_read_a_key_file() {
+        let contents = format!("{DEEPGRAM_API_KEY}={PROBE}\n");
+        let path = temp_env_file("disabled", &contents);
+
+        // POSITIVE CONTROL: this file is one the loader WOULD act on. Without it, a clean
+        // environment below would equally well mean the fixture was junk the loader could never
+        // have taken — which is the shape of vacuous test this repo keeps finding.
+        let planned = plan(&contents, |_| false);
+        assert_eq!(
+            planned.to_set,
+            vec![(DEEPGRAM_API_KEY, PROBE.to_string())],
+            "the fixture is no longer a file this loader would act on, so the assertion below \
+             would hold even if a disabled build did read it"
+        );
+
+        // Establish the precondition rather than assuming it: a developer may well have the
+        // real variable exported in their shell.
+        std::env::remove_var(DEEPGRAM_API_KEY);
+
+        let report = load_from(&path);
+
+        assert!(
+            std::env::var_os(DEEPGRAM_API_KEY).is_none(),
+            "a build WITHOUT the dev-keys feature read {} and exported {DEEPGRAM_API_KEY}. That \
+             is the entire control: a release build must not be able to pick a credential up \
+             from a file on the machine it happens to run on.",
+            path.display()
+        );
+        assert!(
+            !report.enabled,
+            "the disabled loader reported itself as having run"
+        );
+    }
+
+    /// The mirror image, compiled only with the feature on: the keys really do become readable.
+    ///
+    /// Run by `cargo test --features dev-keys` (wired into `make ci`). It touches the process
+    /// environment, but it can never race the disabled test above — the two live in mutually
+    /// exclusive `cfg` blocks and are never in the same binary. Its own siblings are serialised
+    /// through `ENV_LOCK`.
+    #[cfg(feature = "dev-keys")]
+    mod enabled {
+        use super::*;
+        use std::sync::Mutex;
+
+        /// `set_var`/`remove_var` are process-global, so the tests that touch them run one at a
+        /// time. Poisoning is recovered from rather than unwrapped: a panic in one of these
+        /// tests should fail that test, not cascade into the others.
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+        fn locked() -> std::sync::MutexGuard<'static, ()> {
+            ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
+
+        #[test]
+        fn a_dev_keys_build_makes_both_variables_readable() {
+            let _guard = locked();
+            let path = temp_env_file(
+                "enabled",
+                &format!("{DEEPGRAM_API_KEY}={PROBE}-dg\n{OPENAI_API_KEY}={PROBE}-oa\n"),
+            );
+            std::env::remove_var(DEEPGRAM_API_KEY);
+            std::env::remove_var(OPENAI_API_KEY);
+
+            let report = load_from(&path);
+
+            assert_eq!(
+                std::env::var(DEEPGRAM_API_KEY).ok(),
+                Some(format!("{PROBE}-dg")),
+                "{DEEPGRAM_API_KEY} is not readable by the rest of the application"
+            );
+            assert_eq!(
+                std::env::var(OPENAI_API_KEY).ok(),
+                Some(format!("{PROBE}-oa")),
+                "{OPENAI_API_KEY} is not readable by the rest of the application"
+            );
+            assert_eq!(report.resolved, vec![DEEPGRAM_API_KEY, OPENAI_API_KEY]);
+            assert!(report.missing.is_empty());
+            assert!(startup_lines(&report)
+                .iter()
+                .all(|line| !line.contains(PROBE)));
+
+            std::env::remove_var(DEEPGRAM_API_KEY);
+            std::env::remove_var(OPENAI_API_KEY);
+        }
+
+        #[test]
+        fn a_missing_file_leaves_the_variables_unset_and_names_them_both() {
+            let _guard = locked();
+            let path = temp_env_file("absent", "").with_file_name("no-such-.env");
+            std::env::remove_var(DEEPGRAM_API_KEY);
+            std::env::remove_var(OPENAI_API_KEY);
+
+            let report = load_from(&path);
+
+            assert!(
+                std::env::var_os(DEEPGRAM_API_KEY).is_none()
+                    && std::env::var_os(OPENAI_API_KEY).is_none(),
+                "a missing .env must leave the variables unset, never set to an empty string"
+            );
+            assert_eq!(report.missing, vec![DEEPGRAM_API_KEY, OPENAI_API_KEY]);
+            let lines = startup_lines(&report);
+            assert!(lines.iter().any(|l| l.contains(DEEPGRAM_API_KEY)));
+            assert!(lines.iter().any(|l| l.contains(OPENAI_API_KEY)));
+        }
+
+        #[test]
+        fn an_exported_variable_survives_the_file() {
+            let _guard = locked();
+            let path = temp_env_file(
+                "exported",
+                &format!("{DEEPGRAM_API_KEY}={PROBE}-from-file\n"),
+            );
+            std::env::set_var(DEEPGRAM_API_KEY, format!("{PROBE}-from-shell"));
+
+            let report = load_from(&path);
+
+            assert_eq!(
+                std::env::var(DEEPGRAM_API_KEY).ok(),
+                Some(format!("{PROBE}-from-shell")),
+                "the .env overwrote a variable the operator was launched with"
+            );
+            assert!(report.resolved.contains(&DEEPGRAM_API_KEY));
+
+            std::env::remove_var(DEEPGRAM_API_KEY);
+        }
+    }
+}
