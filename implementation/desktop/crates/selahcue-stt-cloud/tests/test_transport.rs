@@ -764,3 +764,101 @@ async fn a_panic_inside_the_worker_becomes_a_terminal_state_not_an_eternal_conne
     session.stop();
     server.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_but_steady_peer_is_healthy_rather_than_stalled() {
+    // The COMPLEMENT of the stall test, and the one that matters more in a church. Two
+    // verifications of a bound agree for nothing if both drive the same shape of failure:
+    // "stops sending" and "keeps sending slowly" are different peers, and only the first is
+    // conspicuous. A preacher pauses; a hymn plays; Deepgram answers less often. If the bound
+    // read a slow peer as a dead one it would drop cloud transcription during the quiet parts
+    // of a service — the parts where a stall is most likely and least warranted.
+    //
+    // This asserts the liveness clock resets on ANY frame, so a drip well inside the bound is
+    // health rather than a countdown that merely restarts late.
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let port = listener.local_addr().expect("local addr").port();
+    let frames_sent = Arc::new(AtomicUsize::new(0));
+
+    let server_frames = Arc::clone(&frames_sent);
+    let server = tokio::spawn(async move {
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        if let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await {
+            // A drip: one frame every 120 ms against a 400 ms bound. Slow, never silent.
+            for i in 0..12 {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                if socket
+                    .send(Message::Text(results(&format!("word {i}"), false)))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                server_frames.fetch_add(1, Ordering::SeqCst);
+            }
+            while socket.next().await.is_some() {}
+        }
+    });
+
+    let mut config = config_for(
+        DeepgramEndpoint::custom(format!("ws://127.0.0.1:{port}/v1/listen")),
+        brisk_retry(),
+    );
+    config.stall_timeout = Duration::from_millis(400);
+
+    let ring = AudioRing::new();
+    let queue = SegmentQueue::new();
+    let status = SessionStatus::new();
+    let session = CloudSttSession::start(
+        &authorised(),
+        Credential::developer_key(TEST_SECRET).expect("fixture key"),
+        config,
+        ring.clone(),
+        queue.clone(),
+        status.clone(),
+    )
+    .expect("the session starts");
+
+    assert!(
+        within(Duration::from_secs(10), || status.get().is_streaming()).await,
+        "the session never began streaming, so this control proves nothing"
+    );
+
+    // Audio flowing throughout, so the stall bound is armed rather than dormant — otherwise
+    // this test would pass simply because the bound was never eligible to fire.
+    let feeder_ring = ring.clone();
+    let feeder = tokio::spawn(async move {
+        for _ in 0..200 {
+            feeder_ring.push(AudioChunk::from_pcm_i16(&[0; 160]));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    // Well past the bound in total elapsed time, but never a gap that reaches it.
+    tokio::time::sleep(Duration::from_millis(1_400)).await;
+
+    // Exercised before contract: the drip really happened and really spanned more than the
+    // bound, so "still streaming" is a statement about a slow peer and not about a quiet test.
+    let sent = frames_sent.load(Ordering::SeqCst);
+    assert!(
+        sent >= 4,
+        "the stub only managed {sent} frames, so the drip did not span the stall bound and \
+         this test did not exercise it"
+    );
+
+    assert!(
+        status.get().is_streaming(),
+        "a slow but steady peer was torn down as a stall (it is {:?}) — cloud transcription \
+         would drop during exactly the quiet stretches of a service where Deepgram legitimately \
+         answers less often",
+        status.get()
+    );
+
+    session.stop();
+    feeder.abort();
+    server.abort();
+}
