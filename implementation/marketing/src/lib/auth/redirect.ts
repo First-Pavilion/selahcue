@@ -45,8 +45,22 @@ const NON_DESTINATIONS = ['/signin', '/signup', '/forgot-password', '/verify', '
  *
  * Only the COMPARISON is normalised. The value handed back to the caller is the original,
  * so a destination that legitimately depends on case is not rewritten on the way through.
+ *
+ * EXPORTED FOR THE CONTROL, and LOW-10 (Quinn) is why. Because `safeNextPath` returns the
+ * untouched candidate, this function is observable through exactly one channel — whether
+ * the normalised path lands in `NON_DESTINATIONS` — and only the CASE-FOLD half of it
+ * reaches that channel. Quinn mutated `lowered.length > 1` to `> 0`, which turns `'/'`
+ * into `''`, and all three gates stayed green: `''` is not a non-destination either, so
+ * the verdict never moved. The test that names the trailing-slash strip
+ * (`safeNextPath('/', FALLBACK) === '/'`) holds for ANY implementation of this function,
+ * because the value it inspects never passed through it. Cody's mutation of the other half
+ * (`.toLowerCase()` removed) DID go red, so this was a half-live control, not a dead one.
+ *
+ * Exporting it is the cheapest way to make the expression the control names the expression
+ * the control reads. It is not part of the module's contract with the app — `safeNextPath`
+ * is the only thing any caller in `src/` uses — and `tests/redirect.test.ts` says so.
  */
-function matchPath(path: string): string {
+export function matchPath(path: string): string {
   const lowered = path.toLowerCase()
   // One trailing slash, and only when something remains — `'/'` must stay `'/'`.
   return lowered.length > 1 && lowered.endsWith('/') ? lowered.slice(0, -1) : lowered

@@ -103,7 +103,14 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 #
 # 1707 -> 1746 with `reset-password-invalid` (W-03), the scenario that renders
 # PASSWORD_INVALID. Measured on the tree that ships it, twice.
-EXPECTED_MIN_CHECKS = 1746
+#
+# 1746 -> 1751 with W-05's credential sweep: `signin-success` traded two rows (a length
+# probe and the two-name token check) for seven — two canaries proving the reader reaches
+# sessionStorage and document.cookie, one proving the canaries were removed again, one
+# non-vacuity row, one asserting the scenario typed a credential at all, the value-based
+# sweep itself, and the old name-based check kept as a complement. Measured on the tree
+# that ships it, not derived from the arithmetic.
+EXPECTED_MIN_CHECKS = 1751
 
 
 def find_chrome() -> str | None:
@@ -243,6 +250,28 @@ DRIVER = r"""
   var csrfCalls = [];
   // Normalised text recorded for cross-scenario comparison. See ENUMERATION above.
   var records = [];
+  /**
+   * Every secret this scenario actually TYPED, recorded where the typing happens.
+   *
+   * W-05 (Quinn). The storage sweep in `signin-success` used to assert
+   * `stored.indexOf('sessionToken') === -1 && stored.indexOf('SC-SESSION') === -1` — an
+   * enumeration of two forbidden NAMES. She planted
+   * `window.localStorage.setItem('selahcue.lastCredential', password)` at the top of
+   * `sessionStore.signIn`, where the password is in scope, and every gate stayed green:
+   * build 0, `npm test` 0 at 132/0, `test:states` 0 at 55 scenarios / 1556 checks / 0
+   * FAIL. The visitor's plaintext password persisted on every sign-in, readable by any
+   * script on the origin, under a check whose stated job is "No token in storage,
+   * anywhere". Eleven lines above it the same scenario already asserted the password was
+   * gone from the RENDERED page — it simply never asked storage the same question.
+   *
+   * This is the same repair the attribute whitelist got: stop remembering a list of names
+   * and assert on the VALUE the scenario knows it handled. A name-based rule can only ever
+   * catch the leak someone already thought of.
+   *
+   * Nothing in the tree writes a password to storage today. This is a hole in the control,
+   * not a live leak.
+   */
+  var typedSecrets = [];
 
   function json(body, status) {
     return new Response(JSON.stringify(body), {
@@ -798,6 +827,84 @@ DRIVER = r"""
    * 403 in a real browser, including on the two views that shipped before this ticket.
    * These two checks are the standing proof that it is seeded, and seeded IN TIME.
    */
+  /**
+   * Everything a script on this origin can read back, as one string.
+   *
+   * THREE STORES, not one. `localStorage` was the only one swept, and the sweep was keyed
+   * to two token names besides (see `typedSecrets`). Measured on the tree at review time:
+   * `sessionStorage` appeared ZERO times across `src/`, `tests/` and `scripts/` — so it
+   * was not swept because nothing used it, which is precisely the state in which a new
+   * write lands unseen — and `document.cookie` is written by this harness and read by
+   * `graphql.ts` and was never swept at all.
+   *
+   * Built key by key rather than with `JSON.stringify(localStorage)`, for the reason the
+   * original sweep gives: that relies on Storage's named properties being own-enumerable,
+   * which is true in Chrome and not worth betting a security assertion on. An explicit
+   * walk cannot pass by returning "{}".
+   */
+  function originStorage() {
+    var parts = [];
+    var i;
+    for (i = 0; i < window.localStorage.length; i += 1) {
+      var localKey = window.localStorage.key(i);
+      parts.push('localStorage[' + localKey + ']=' + window.localStorage.getItem(localKey));
+    }
+    for (i = 0; i < window.sessionStorage.length; i += 1) {
+      var sessionKey = window.sessionStorage.key(i);
+      parts.push('sessionStorage[' + sessionKey + ']=' + window.sessionStorage.getItem(sessionKey));
+    }
+    parts.push('cookie=' + document.cookie);
+    return parts.join(';');
+  }
+
+  /**
+   * What a script on this origin could read after the visitor signed in.
+   *
+   * The order matters: the POSITIVE CONTROL runs first, because "no secret was found" and
+   * "the reader is broken" are the same result, and the second one has to be excluded
+   * before the first means anything.
+   */
+  function credentialStorageChecks() {
+    // POSITIVE CONTROL ON THE READER. A marker is planted in the two stores the app does
+    // not currently use — the two whose sweep would otherwise be vacuous — and the reader
+    // must find both. Removed immediately afterwards, and the removal is asserted, so the
+    // canary cannot be mistaken later for something the page wrote.
+    var canary = 'sweep-canary-' + SCENARIO;
+    window.sessionStorage.setItem('selahcue.sweepCanary', canary);
+    document.cookie = 'selahcue_sweep_canary=' + canary + '; path=/';
+    var probed = originStorage();
+    check('the sweep reads sessionStorage', probed.indexOf('sessionStorage[selahcue.sweepCanary]=' + canary) !== -1,
+          'sweep returned: ' + probed);
+    check('the sweep reads document.cookie', probed.indexOf('selahcue_sweep_canary=' + canary) !== -1,
+          'sweep returned: ' + probed);
+    window.sessionStorage.removeItem('selahcue.sweepCanary');
+    document.cookie = 'selahcue_sweep_canary=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+
+    var stored = originStorage();
+    check('the canary is gone before the real sweep', stored.indexOf(canary) === -1,
+          'sweep returned: ' + stored);
+    check('something WAS stored, so the sweep below is not vacuous',
+          stored.indexOf('localStorage[') !== -1 && stored.indexOf('csrftoken') !== -1,
+          'sweep returned: ' + stored);
+
+    // THE CHECK THAT MATTERS: the values this scenario actually typed, not a remembered
+    // list of names. `typedSecrets` is filled by `typeInto`, so it cannot disagree with
+    // what went into the form.
+    check('the scenario typed a credential, so the sweep has something to look for',
+          typedSecrets.length > 0);
+    var leaked = typedSecrets.filter(function (secret) { return stored.indexOf(secret) !== -1; });
+    check('nothing the visitor typed is readable from storage on this origin',
+          leaked.length === 0,
+          'found ' + leaked.length + ' typed secret(s) in: ' + stored);
+
+    // The old name-based rows, kept as a COMPLEMENT rather than as the control. They cover
+    // a token this scenario never typed and therefore cannot recognise by value; they are
+    // not, and never were, evidence about anything else.
+    check('no session token was written to any store on this origin',
+          stored.indexOf('sessionToken') === -1 && stored.indexOf('SC-SESSION') === -1,
+          'storage held: ' + stored);
+  }
+
   function csrfChecks() {
     if (calls.length === 0) {
       check('no CSRF bootstrap without a GraphQL call', csrfCalls.length === 0,
@@ -874,6 +981,15 @@ DRIVER = r"""
 
   function typeInto(el, value) {
     if (!el) return false;
+    // Recorded HERE rather than at each call site, because this is the one place a value
+    // enters the page and a per-scenario list would be one more thing to keep in step.
+    // Password fields only: a stored address would be a different (and much smaller)
+    // question from a stored credential, and banning it would fail a legitimate
+    // remember-my-email feature the moment anyone built one.
+    if (el.type === 'password' && typeof value === 'string' && value.length > 0 &&
+        typedSecrets.indexOf(value) === -1) {
+      typedSecrets.push(value);
+    }
     el.value = value;
     el.dispatchEvent(new Event('input', { bubbles: true }));
     return true;
@@ -1743,19 +1859,8 @@ DRIVER = r"""
             'pathname: ' + location.pathname);
       // The guard asks the server rather than trusting the hint it just wrote.
       check('the route guard probed the server', calls.some(function (c) { return c.op === 'AccountViewer'; }));
-      // No token in storage, anywhere. The hint is metadata only.
-      // Built key by key: `JSON.stringify(localStorage)` relies on Storage's named
-      // properties being own-enumerable, which is true in Chrome and not worth betting a
-      // security assertion on. An explicit sweep cannot pass by returning "{}".
-      var stored = '';
-      for (var i = 0; i < window.localStorage.length; i += 1) {
-        var storageKey = window.localStorage.key(i);
-        stored += storageKey + '=' + window.localStorage.getItem(storageKey) + ';';
-      }
-      check('something WAS stored, so the sweep below is not vacuous', stored.length > 0);
-      check('no session token was written to localStorage',
-            stored.indexOf('sessionToken') === -1 && stored.indexOf('SC-SESSION') === -1,
-            'localStorage held: ' + stored);
+      // No token AND no credential in storage, anywhere. The hint is metadata only.
+      credentialStorageChecks();
       check('the stored hint carries only role, org and expiry',
             Object.keys(JSON.parse(window.localStorage.getItem('selahcue.session') || '{}'))
               .sort().join(',') === 'expiresAt,orgId,role');

@@ -33,8 +33,8 @@
 
 import { COUNTRY_CODES } from './countries.ts'
 import { normalizeEmail, validateEmail } from './emailPolicy.ts'
-import { passwordLength, validateNewPassword, type NewPasswordErrors } from './passwordPolicy.ts'
-import { serviceCollapse } from './serviceText.ts'
+import { validateNewPassword, type NewPasswordErrors } from './passwordPolicy.ts'
+import { codePointLength, serviceCollapse } from './serviceText.ts'
 
 /** `CustomerOrg.name` max_length. */
 export const MAX_ORG_NAME_LENGTH = 200
@@ -185,7 +185,7 @@ export function validateSignup(fields: SignupFields): SignupErrors {
   const orgName = collapseWhitespace(fields.orgName)
   if (orgName === '') {
     errors.orgName = ORG_NAME_REQUIRED
-  } else if (passwordLength(orgName) > MAX_ORG_NAME_LENGTH) {
+  } else if (codePointLength(orgName) > MAX_ORG_NAME_LENGTH) {
     // Code points, not UTF-16 units — Django's max_length counts characters the way
     // Python does, so a name of emoji or non-BMP script measures double in JS `.length`
     // and would be rejected here while the server would have accepted it.
@@ -193,14 +193,14 @@ export function validateSignup(fields: SignupFields): SignupErrors {
   }
 
   const displayName = collapseWhitespace(fields.displayName)
-  if (passwordLength(displayName) > MAX_DISPLAY_NAME_LENGTH) {
+  if (codePointLength(displayName) > MAX_DISPLAY_NAME_LENGTH) {
     errors.displayName = DISPLAY_NAME_TOO_LONG
   }
 
   const email = validateEmail(fields.email)
   if (email) {
     errors.email = email
-  } else if (passwordLength(normalizeEmail(fields.email)) > MAX_SIGNUP_EMAIL_LENGTH) {
+  } else if (codePointLength(normalizeEmail(fields.email)) > MAX_SIGNUP_EMAIL_LENGTH) {
     // The shape is fine and `validate_email` would take it — it is the model field that
     // will not. Measured on the NORMALISED address, because the normalised string is what
     // `register_customer_user` assigns to the field and `full_clean` then measures; and in

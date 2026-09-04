@@ -36,11 +36,37 @@ import assert from 'node:assert/strict'
 import test, { describe } from 'node:test'
 import { readFileSync } from 'node:fs'
 
+/**
+ * Every view on the auth path — all five.
+ *
+ * LOW-8 (Cody): this was the three views that submit credentials, and `VerifyView.vue` and
+ * `ResetView.vue` were neither listed nor excluded with a reason. Both call auth mutations
+ * and both can navigate, so the shared-try ban, the address ban and the transport ban all
+ * mean the same thing on them as on the other three; the documented reason `VerifyView`
+ * sits outside the TIMER ban is its 300ms display floor, which says nothing about the
+ * other three bans. An omission that is not written down reads as a decision nobody made.
+ */
 const VIEWS = [
   'views/SignInView.vue',
   'views/SignUpView.vue',
   'views/ForgotPasswordView.vue',
+  'views/VerifyView.vue',
+  'views/ResetView.vue',
 ] as const
+
+/**
+ * The ONE file the timer ban does not run over, named here instead of being left out of
+ * `VIEWS` — and EARNED rather than granted.
+ *
+ * `VerifyView.vue` holds its spinner for a 300ms minimum (design §4.1), which is a display
+ * floor applied to every outcome equally, not an outcome being simulated. An exemption on
+ * a list is indistinguishable from an oversight, and it is also a hole: the file could
+ * gain a second, address-keyed timer and inherit the same pass. So the exemption comes
+ * with `theDisplayFloorIsTheOnlyTimer` below, which asserts what the exemption is FOR —
+ * one primitive, one call site, armed from the floor constant. Same treatment
+ * `lib/api/graphql.ts` gets for the same reason.
+ */
+const TIMER_BAN_EXEMPT: ReadonlySet<string> = new Set(['views/VerifyView.vue'])
 
 /**
  * Everything else on the auth path where a timer, an inspection or a second transport
@@ -248,7 +274,17 @@ const INSPECTOR_METHODS =
 // NO `\s*` around the dot, deliberately. That is what separates code from prose: real code
 // writes `email.split`, and an English sentence writes `address. Try again`. Without it the
 // ban fires on every message constant that ends a sentence with the word "address".
-const ADDRESS_MEMBER = new RegExp(`(?<![.\\w$])(?:${ADDRESS_REFS})(?:\\.value)?\\.(\\w+)`, 'g')
+//
+// W-06 (Vera): this used to capture ONE member — `(?:\.value)?\.(\w+)` — so it saw the
+// first hop and stopped. `email.value.trim().length` presented `trim`, which is on the
+// whitelist, and the `.length` that was doing the actual work was never examined. Her
+// 400ms oracle keyed on exactly that expression and passed both gates. The whitelist was
+// never the problem; reading only the first link of the chain was. So the WHOLE chain is
+// captured now — every member, past every call — and each hop is checked.
+const ADDRESS_CHAIN = new RegExp(
+  `(?<![.\\w$])(?:${ADDRESS_REFS})((?:\\.\\w+(?:\\([^()]*\\))?)+)`,
+  'g',
+)
 const ADDRESS_INDEXED = new RegExp(`(?<![.\\w$])(?:${ADDRESS_REFS})(?:\\.value)?\\[`, 'g')
 const ADDRESS_AS_ARGUMENT = new RegExp(
   `\\.\\s*(?:${INSPECTOR_METHODS})\\s*\\(\\s*(?:${ADDRESS_REFS})\\b`,
@@ -273,6 +309,16 @@ const LITERAL_VS_ADDRESS = new RegExp(
  * address past this and always will. A literal ban cannot see through concatenation. That
  * shape is caught behaviourally instead — it has to RENDER to be an oracle, and the
  * headless probe compares what renders.
+ *
+ * AND THE BEHAVIOURAL NET HAS ITS OWN LIMIT, which that sentence used to leave implied.
+ * W-14 (Sana): `auth_pages_headless.py` samples exactly TWO addresses per equivalence pair
+ * (`EQUIVALENCE_GROUPS` / `SURFACE_GROUPS`), so a branch keyed on a THIRD address renders
+ * identically for both sampled sides and passes both gates. The window-sampling and
+ * facet-sampling limits were already written down beside those groups; input sampling was
+ * the one axis that was not, which made "caught behaviourally instead" read as a closure
+ * rather than as a narrower net. It is a narrower net. The residual is not closable by any
+ * finite sample — adding a third address moves it to a fourth — so what is owed here is
+ * the honest statement, not another row.
  */
 const ADDRESS_LITERAL = /[\w.+%-]+@[\w.-]+\.[A-Za-z]{2,}['"`]/
 
@@ -284,8 +330,15 @@ const ADDRESS_LITERAL = /[\w.+%-]+@[\w.-]+\.[A-Za-z]{2,}['"`]/
  */
 function addressInspections(code: string): string[] {
   const found: string[] = []
-  for (const [whole, member] of code.matchAll(ADDRESS_MEMBER)) {
-    if (!ALLOWED_ADDRESS_MEMBERS.has(member)) found.push(whole.trim())
+  for (const [whole, chain] of code.matchAll(ADDRESS_CHAIN)) {
+    // EVERY hop, not the first. A whitelisted call is a step along the chain, never the
+    // end of the inspection — `.trim()` is allowed, `.trim().length` is an oracle.
+    for (const [, member] of chain.matchAll(/\.(\w+)/g)) {
+      if (!ALLOWED_ADDRESS_MEMBERS.has(member)) {
+        found.push(whole.trim())
+        break
+      }
+    }
   }
   for (const [whole] of code.matchAll(ADDRESS_INDEXED)) found.push(whole.trim())
   for (const [whole] of code.matchAll(ADDRESS_AS_ARGUMENT)) found.push(whole.trim())
@@ -294,13 +347,39 @@ function addressInspections(code: string): string[] {
   return found
 }
 
-/** Timing primitives. An outcome here comes from the API, never from a clock. */
+/**
+ * Timing primitives. An outcome here comes from the API, never from a clock.
+ *
+ * W-06 (Vera) is why the last two rows exist, and the measurement is worth stating because
+ * it falsifies what round 2 accepted. The elapsed-time gate in the headless harness is a
+ * 600ms backstop; below that band this list is the ONLY control, and round 2 accepted the
+ * band on the grounds that the tripwire bans every delay primitive. It did not. Vera
+ * planted, in `SignInView.vue`'s submit path:
+ *
+ *     if (email.value.trim().length > 25) {
+ *       await new Promise((r) => AbortSignal.timeout(400).addEventListener('abort', r))
+ *     }
+ *
+ * `npm test` EXIT=0 at 132/0 and `npm run test:states` EXIT=0 at 55/1556/0 FAIL, with the
+ * harness itself printing `PASS … 380ms apart (budget 600ms)`. A ready-made 400ms
+ * address-keyed oracle, announced as a pass by the gate written to catch it. Her positive
+ * controls confirm the machinery was otherwise live: the same key with `setTimeout(900)`
+ * failed BOTH gates.
+ *
+ * `AbortSignal.timeout` is the primitive that was missing. `.animate(` is added with it —
+ * a Web Animations timeline is a wall-clock delay with a promise on the end
+ * (`el.animate(…, 400).finished`), and it was the next one along the same shelf. Both are
+ * absent from `src/` today, so both are added while the tree is clean rather than after a
+ * second demonstration.
+ */
 const TIMER_PRIMITIVES = [
   'setTimeout',
   'setInterval',
   'setImmediate',
   'requestIdleCallback',
   'requestAnimationFrame',
+  'AbortSignal.timeout',
+  '.animate(',
 ] as const
 
 function timerUses(code: string): string[] {
@@ -334,8 +413,34 @@ function tryBlocks(code: string): string[] {
 /** The calls whose rejection means "the server said no". */
 const AUTH_CALL =
   /\b(?:signIn|signOut|refreshSession|confirmSession|requestPasswordReset|resendVerification|registerCustomerUser|confirmPasswordReset|verifyEmail|graphqlRequest)\s*\(/
-/** The calls whose rejection means "the page after this one did not load". */
-const NAVIGATION = /\brouter\s*\.\s*(?:replace|push|go|back|forward)\s*\(/
+/**
+ * The calls whose rejection means "the page after this one did not load".
+ *
+ * `router.*` is not the whole set, and LOW-1 (Cody) is why: `window.location.assign(...)`
+ * placed inside the credential `try` passed at 132/132. The ban was written against the
+ * router because that is what the defect used, and a navigation performed any other way
+ * lands in the same `catch` with the same consequence — a sign-in that succeeded rendering
+ * "Invalid email or password".
+ *
+ * So it now names the ways a page can be left, not one library's spelling of it: the
+ * router's methods, `location.assign` / `replace` / `reload`, an assignment to
+ * `location.href` or to `location` itself, and the History API. Each is exercised in the
+ * positive control below, which consumes THIS constant rather than restating it.
+ */
+const NAVIGATION = new RegExp(
+  [
+    // vue-router
+    String.raw`\brouter\s*\.\s*(?:replace|push|go|back|forward)\s*\(`,
+    // location.assign(…) / location.replace(…) / location.reload(…)
+    String.raw`\blocation\s*\.\s*(?:assign|replace|reload)\s*\(`,
+    // location.href = … / window.location.href = … / document.location.href = …
+    String.raw`\blocation\s*\.\s*href\s*=`,
+    // window.location = … (assigning the object itself navigates)
+    String.raw`\b(?:window|globalThis|self)\s*\.\s*location\s*=`,
+    // history.pushState / replaceState
+    String.raw`\bhistory\s*\.\s*(?:pushState|replaceState)\s*\(`,
+  ].join('|'),
+)
 
 /**
  * `try` blocks that wrap BOTH an auth call and a navigation — the HIGH-1 defect.
@@ -361,8 +466,12 @@ describe('no auth view can fake, delay or vary an outcome', () => {
     //
     // `VerifyView.vue` is deliberately out of scope: it legitimately holds its spinner for
     // a 300ms minimum (design §4.1), which is a display floor applied to every outcome
-    // equally, not an outcome being simulated.
+    // equally, not an outcome being simulated. The exemption is checked, not granted —
+    // see `the one exempt file is exempt for the reason it claims` below.
+    let scanned = 0
     for (const view of GUARDED) {
+      if (TIMER_BAN_EXEMPT.has(view)) continue
+      scanned += 1
       const text = codeOnly(view)
       codeIsIntact(view, text)
       const timers = timerUses(text)
@@ -372,6 +481,61 @@ describe('no auth view can fake, delay or vary an outcome', () => {
         `${view} uses ${timers.join(', ')}. Outcomes here come from the API, never a clock.`,
       )
     }
+    // The exemption set must not be able to empty the ban. Asserted here rather than
+    // trusted, because `TIMER_BAN_EXEMPT.has(view)` is a `continue` and a `continue` that
+    // fires on everything is a test that runs on nothing.
+    assert.equal(
+      scanned,
+      GUARDED.length - TIMER_BAN_EXEMPT.size,
+      'the timer ban skipped more files than the exemption set names',
+    )
+    assert.ok(scanned >= 20, `the timer ban ran over only ${scanned} files`)
+  })
+
+  test('the one exempt file is exempt for the reason it claims', () => {
+    // W-08/LOW-8. `VerifyView.vue` is the single file outside the timer ban, and a name on
+    // an exemption list is worth exactly nothing on its own: the file could grow a second,
+    // address-keyed timer tomorrow and inherit the same silence. So the exemption is
+    // narrowed to the thing it is for, the way `lib/api/graphql.ts` is treated below.
+    const view = 'views/VerifyView.vue'
+    assert.ok(TIMER_BAN_EXEMPT.has(view), 'this control names a file the ban does not skip')
+    const text = codeOnly(view)
+    codeIsIntact(view, text)
+
+    // ONE primitive, and it is `setTimeout`. Anything else appearing here is a new
+    // mechanism that has never been argued for.
+    assert.deepEqual(
+      timerUses(text),
+      ['setTimeout'],
+      'the exempt file gained a timing primitive that is not the display floor',
+    )
+
+    // ONE call site, to end of line rather than a balanced-paren match, for the same
+    // reason the transport control gives: `[^)]*` would stop at the arrow function's own
+    // paren and never examine the delay.
+    const timers = text.match(/setTimeout\([^\n]*/g) ?? []
+    assert.equal(timers.length, 1, `expected exactly the display floor, found ${timers.length}`)
+
+    // And it is armed from a PARAMETER, whose only caller computes it from the floor
+    // constant and the elapsed time — never from anything about the address. Both halves
+    // are asserted, because `sleep(ms)` on its own says nothing about what `ms` is.
+    assert.match(text, /function sleep\(ms: number\)/)
+    // The DECLARATION is removed first, or its own parameter list reads as a call site
+    // whose argument is `ms: number` — a control that fails on correct code gets deleted.
+    const calls = text.replace(/function\s+sleep\s*\([^)]*\)/g, ' ')
+    const callers = [...calls.matchAll(/(?<![.\w$])sleep\(([^)]*)\)/g)].map(([, argument]) =>
+      argument.trim(),
+    )
+    assert.ok(callers.length > 0, 'nothing calls `sleep` — this control now guards nothing')
+    for (const argument of callers) {
+      assert.match(
+        argument,
+        /MIN_VERIFYING_MS/,
+        `the display floor is armed from \`${argument}\`, which is not the floor constant`,
+      )
+    }
+    // The floor is a literal number, not something derived at runtime.
+    assert.match(text, /const MIN_VERIFYING_MS = 300\b/)
   })
 
   test('the timer ban actually matches the primitives it claims to', () => {
@@ -386,8 +550,21 @@ describe('no auth view can fake, delay or vary an outcome', () => {
     assert.deepEqual(timerUses('setInterval(poll, 50)'), ['setInterval'])
     assert.deepEqual(timerUses('setImmediate(finish)'), ['setImmediate'])
     assert.deepEqual(timerUses('requestIdleCallback(finish)'), ['requestIdleCallback'])
+    // W-06 (Vera): her mutant verbatim. This row is the one that was missing, and the
+    // whole 10-600ms band rested on it.
+    assert.deepEqual(
+      timerUses("await new Promise((r) => AbortSignal.timeout(400).addEventListener('abort', r))"),
+      ['AbortSignal.timeout'],
+    )
+    // The next primitive along the same shelf: a Web Animations timeline is a wall-clock
+    // delay with a promise on the end.
+    assert.deepEqual(timerUses('await card.animate(frames, 400).finished'), ['.animate('])
     // And nothing it should not: `nextTick` and `queueMicrotask` cannot express a delay.
     assert.deepEqual(timerUses('await nextTick(); queueMicrotask(paint)'), [])
+    // Nor the shapes that merely LOOK like the two new rows. An `AbortController` is not a
+    // clock, and a CSS class called `animated` is not a call.
+    assert.deepEqual(timerUses('const controller = new AbortController()'), [])
+    assert.deepEqual(timerUses(':class="{ animated: pending }"'), [])
   })
 
   test('the vacuity guard catches the over-strip it was written for', () => {
@@ -470,6 +647,11 @@ describe('no auth view can fake, delay or vary an outcome', () => {
       'email.value.at(0)',
       'address.length > 25',
       'email.value.normalize()',
+      // W-06 (Vera): the shape her 400ms oracle was keyed on. `trim` is whitelisted and
+      // `.length` was never reached, so the ban saw a legal expression and said nothing.
+      'email.value.trim().length > 25',
+      'submittedEmail.trim().toLowerCase() === "x"',
+      'sentToEmail.value.trim().slice(0, 3)',
       'email.value.replace(/x/, "")',
       // The inspector called ON something else, with the address as the ARGUMENT.
       '/^nobody/.test(email.value)',
@@ -498,6 +680,9 @@ describe('no auth view can fake, delay or vary an outcome', () => {
     for (const allowed of [
       'email.value.trim()',
       'email.trim()',
+      // A whitelisted call is still allowed when nothing follows it — otherwise the ban
+      // would forbid the one expression every one of these views legitimately writes.
+      'signIn(email.value.trim(), password.value)',
       'validateEmail(email.value)',
       "password.value === ''",
       'submittedEmail.value = address',
@@ -577,10 +762,53 @@ describe('no auth view can fake, delay or vary an outcome', () => {
       }`
     assert.equal(callAndNavigationShareATry(asFixed).length, 0, 'the fix must not be flagged')
 
+    // EVERY WAY OUT OF THE PAGE, not just the router's. LOW-1 (Cody): a raw
+    // `window.location.assign(...)` inside the credential try passed at 132/132, because
+    // the ban only knew `router.*`. One row per navigation primitive, each consuming
+    // `callAndNavigationShareATry` — so a primitive dropped from `NAVIGATION` fails here
+    // rather than silently widening what may share a try with an auth call.
+    for (const navigation of [
+      "await router.replace('/account')",
+      "window.location.assign('/account')",
+      "location.replace('/account')",
+      'location.reload()',
+      "location.href = '/account'",
+      "window.location.href = '/account'",
+      "window.location = '/account'",
+      "history.pushState({}, '', '/account')",
+      "history.replaceState({}, '', '/account')",
+    ]) {
+      const shared = `
+        try {
+          await signIn(email.value, password.value)
+          ${navigation}
+        } catch (error) {
+          bannerTitle.value = REJECTED_TITLE
+        }`
+      assert.equal(
+        callAndNavigationShareATry(shared).length,
+        1,
+        `the ban does not see \`${navigation}\` sharing a try with an auth call. One catch ` +
+          'cannot tell "the server rejected your password" from "the next page did not load".',
+      )
+    }
+
     // Each half alone is fine — otherwise the ban would be "no try blocks", which is a
     // different and much stupider rule.
     assert.equal(callAndNavigationShareATry('try { await signOut() } catch {}').length, 0)
     assert.equal(callAndNavigationShareATry("try { await router.push('/') } catch {}").length, 0)
+    assert.equal(
+      callAndNavigationShareATry("try { window.location.assign('/') } catch {}").length,
+      0,
+    )
+    // And nothing that merely MENTIONS a location: reading the URL is not navigating, and
+    // `tokenParam.ts` and `useLandingToken.ts` both read `location.href` legitimately.
+    assert.equal(
+      callAndNavigationShareATry("try { await signIn(a, b); const u = location.href } catch {}")
+        .length,
+      0,
+      'reading location.href is not a navigation and must not be flagged',
+    )
 
     // And a `}` inside a message must not end a block early, which would hide the
     // navigation from the ban.

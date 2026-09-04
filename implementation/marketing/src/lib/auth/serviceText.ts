@@ -72,6 +72,26 @@ const RUN = new RegExp(`[${SERVICE_WHITESPACE_CLASS}]+`, 'g')
 const LEADING = new RegExp(`^[${SERVICE_WHITESPACE_CLASS}]+`)
 const TRAILING = new RegExp(`[${SERVICE_WHITESPACE_CLASS}]+$`)
 
+/**
+ * Python's `len()`.
+ *
+ * MEDIUM/LOW-12 (Cody): this used to be `passwordLength` in `passwordPolicy.ts`, and
+ * `signupPolicy.validateSignup` called it on org names, display names and email addresses.
+ * The behaviour was right and the name was not, and a name that lies sends the next reader
+ * checking a `max_length` on `CustomerOrg.name` into a password module. Renamed and moved
+ * here, beside the other Python-semantics helpers, because that is what it is: one more
+ * place where a JavaScript builtin and its Python twin disagree.
+ *
+ * The disagreement is not pedantry. JavaScript's `.length` counts UTF-16 code units, so a
+ * surrogate pair measures 2; Python's `len()` counts characters, so it measures 1. Five
+ * emoji are 10 to JavaScript and 5 to Python. Using `.length` against a Django
+ * `max_length` rejects values the server would have accepted — the same mis-attribution
+ * this module was created to close, arriving through a different builtin.
+ */
+export function codePointLength(value: string): number {
+  return [...value].length
+}
+
 /** True when Python's `str.strip()` would treat this single character as whitespace. */
 export function isServiceWhitespace(character: string): boolean {
   return new RegExp(`^[${SERVICE_WHITESPACE_CLASS}]$`).test(character)

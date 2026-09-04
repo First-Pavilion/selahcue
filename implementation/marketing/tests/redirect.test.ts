@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict'
 import test, { describe } from 'node:test'
 
-import { safeNextPath } from '../src/lib/auth/redirect.ts'
+import { matchPath, safeNextPath } from '../src/lib/auth/redirect.ts'
 
 const FALLBACK = '/account'
 
@@ -125,6 +125,45 @@ describe('non-values and loops', () => {
     assert.equal(safeNextPath('/Support/', FALLBACK), '/Support/')
     // And `/` must survive the trailing-slash strip rather than becoming ''.
     assert.equal(safeNextPath('/', FALLBACK), '/')
+  })
+
+  test('the normalisation itself, because through safeNextPath half of it is invisible', () => {
+    // LOW-10 (Quinn). The row directly above this one carries the comment "`/` must
+    // survive the trailing-slash strip rather than becoming ''" — and it CANNOT check
+    // that, because `safeNextPath` returns the candidate it was handed, not `matchPath`'s
+    // output. Quinn changed `lowered.length > 1` to `> 0`, so `matchPath('/')` returned
+    // `''`, and all three gates stayed green: `''` is not in `NON_DESTINATIONS` either, so
+    // the only channel the function has to the outside never carried the difference.
+    //
+    // Cody's mutation of the OTHER half — deleting `.toLowerCase()` — did go red through
+    // that channel, which is why this is a half-live control being completed rather than a
+    // dead one being replaced. Both halves are asserted here on the expression itself.
+
+    // THE HALF THAT WAS INVISIBLE. `'/'` is one character and must not be stripped to ''.
+    assert.equal(matchPath('/'), '/', "'/' must survive the strip rather than becoming ''")
+    // ...and the strip must still happen when something remains, or `?next=/signin/`
+    // resolves to the sign-in page and is not recognised as one.
+    assert.equal(matchPath('/signin/'), '/signin')
+    assert.equal(matchPath('/account/devices/'), '/account/devices')
+    // Exactly ONE trailing slash, not a greedy strip — `//` never reaches here (it is
+    // refused as protocol-relative), and a rule that stripped runs would be a different one.
+    assert.equal(matchPath('/signin//'), '/signin/')
+
+    // THE HALF THAT WAS ALREADY LIVE, asserted here too so both are read from one place.
+    assert.equal(matchPath('/SIGNIN'), '/signin')
+    assert.equal(matchPath('/SignIn/'), '/signin')
+
+    // And the premise that makes the strip matter at all: the normalised form is what
+    // `NON_DESTINATIONS` is written in. If an entry there ever gained a trailing slash or
+    // a capital, the strip would be normalising into a set it no longer matches.
+    for (const route of ['/signin', '/signup', '/forgot-password', '/verify', '/reset']) {
+      assert.equal(
+        matchPath(`${route.toUpperCase()}/`),
+        route,
+        `${route} is stored in NON_DESTINATIONS in a form matchPath does not produce`,
+      )
+      assert.equal(safeNextPath(`${route.toUpperCase()}/`, FALLBACK), FALLBACK)
+    }
   })
 
   test('a route that merely starts with an auth route name is still allowed', () => {

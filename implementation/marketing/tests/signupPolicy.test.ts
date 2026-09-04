@@ -12,8 +12,10 @@ import assert from 'node:assert/strict'
 import test, { describe } from 'node:test'
 
 import {
+  DISPLAY_NAME_TOO_LONG,
   EMAIL_TOO_LONG,
   IDEMPOTENCY_KEY_PATTERN,
+  MAX_DISPLAY_NAME_LENGTH,
   MAX_ORG_NAME_LENGTH,
   MAX_SIGNUP_EMAIL_LENGTH,
   MAX_TIMEZONE_LENGTH,
@@ -35,6 +37,20 @@ import { COUNTRY_CODES, countryOptions, guessCountry } from '../src/lib/auth/cou
  */
 assert.equal(MIN_PASSWORD_LENGTH, 10, 'fixtures below assume the API minimum is 10')
 assert.equal(MAX_ORG_NAME_LENGTH, 200, 'fixtures below assume CustomerOrg.name is 200')
+/**
+ * LOW-9 (Quinn), and the reason this line is not optional. The display-name boundary
+ * fixtures are sized OFF `MAX_DISPLAY_NAME_LENGTH`, which is the only honest way to test a
+ * boundary — and it means multiplying the cap by a thousand moves the fixtures with it and
+ * every assertion still passes. She did exactly that, in the compiler-invisible form, and
+ * `npm run build`, `npm test` and `npm run test:states` were all green with the
+ * `DISPLAY_NAME_TOO_LONG` branch unreachable. Pinning the VALUE here is what turns that
+ * mutation red; the fixtures stay derived so they still test the boundary and not a number.
+ */
+assert.equal(
+  MAX_DISPLAY_NAME_LENGTH,
+  200,
+  'fixtures below assume CustomerUser.display_name is 200',
+)
 
 const VALID: SignupFields = {
   orgName: 'Grace Community Church',
@@ -195,6 +211,81 @@ describe('org name', () => {
     // undifferentiated VALIDATION_FAILED with nothing pointing at the field.
     assert.ok(validateSignup({ ...VALID, orgName: '\u001c\u001c\u001c' }).orgName)
     assert.ok(validateSignup({ ...VALID, orgName: '\u0085' }).orgName)
+  })
+})
+
+describe('display name — optional, but capped like every other CharField', () => {
+  /**
+   * LOW-9 (Quinn): `DISPLAY_NAME_TOO_LONG` had NO test of any kind. `validateSignup` gives
+   * `orgName` a required-check AND a cap and gives `displayName` only the cap, so the cap
+   * is the whole of the rule here — and an unexercised branch is not a rule, it is a
+   * sentence in a file. The boundary gets the same treatment org name already gets.
+   */
+  test('exactly at the cap submits, and one character over is refused', () => {
+    const atCap = 'a'.repeat(MAX_DISPLAY_NAME_LENGTH)
+    assert.deepEqual(validateSignup({ ...VALID, displayName: atCap }), {})
+
+    const overCap = 'a'.repeat(MAX_DISPLAY_NAME_LENGTH + 1)
+    assert.deepEqual(validateSignup({ ...VALID, displayName: overCap }), {
+      displayName: DISPLAY_NAME_TOO_LONG,
+    })
+    // The MESSAGE, not just the presence of one: it names the number the user has to get
+    // under, and a cap that drifted from the model would ship a number that is a lie.
+    assert.match(DISPLAY_NAME_TOO_LONG, /\b200 characters or fewer\b/)
+  })
+
+  test('length is measured collapsed and by code point, as the server measures it', () => {
+    // Both halves of the same rule org name gets, because `displayName` runs through the
+    // same `collapseWhitespace` and the same `codePointLength` and could lose either.
+    const padded = `   ${'a'.repeat(MAX_DISPLAY_NAME_LENGTH)}   `
+    assert.deepEqual(validateSignup({ ...VALID, displayName: padded }), {})
+
+    const emoji = '🎺'.repeat(MAX_DISPLAY_NAME_LENGTH)
+    assert.equal(emoji.length, MAX_DISPLAY_NAME_LENGTH * 2, 'the premise: JS counts these double')
+    assert.deepEqual(validateSignup({ ...VALID, displayName: emoji }), {})
+  })
+})
+
+describe('isSubmittableSignup answers in BOTH directions', () => {
+  /**
+   * LOW-9 (Quinn): the only assertion this export had was `=== true` for a valid form, and
+   * `Object.keys(...).length === 0` mutated to `>= 0` — always true — passed all three
+   * gates. A predicate tested in one direction is not tested: "the button is enabled when
+   * the form is good" and "the button is always enabled" are the same green.
+   *
+   * Driven off `validateSignup` rather than off a second list of bad forms, so the two
+   * cannot disagree about what invalid means: the row asserts the wrapper agrees with the
+   * function it wraps, on a form the function has just been shown to reject.
+   */
+  test('a valid form is submittable and each broken one is not', () => {
+    assert.equal(isSubmittableSignup(VALID), true)
+
+    const broken: Array<[string, Partial<SignupFields>]> = [
+      ['no org name', { orgName: '' }],
+      ['a display name over the cap', { displayName: 'a'.repeat(MAX_DISPLAY_NAME_LENGTH + 1) }],
+      ['a malformed address', { email: 'not-an-email' }],
+      ['a short password', { password: 'short', confirmPassword: 'short' }],
+      ['a mismatched confirmation', { confirmPassword: 'a-different-one' }],
+      ['no country', { country: '' }],
+      ['unticked terms', { agreeTerms: false }],
+    ]
+    for (const [why, override] of broken) {
+      const fields = { ...VALID, ...override }
+      // The premise, first: if `validateSignup` stopped rejecting this form the row below
+      // would be asserting that a VALID form is unsubmittable, which is a different and
+      // wrong test. Assert what went unexercised, not just the verdict.
+      assert.notDeepEqual(
+        validateSignup(fields),
+        {},
+        `validateSignup accepts a form with ${why} — the submittability row below no ` +
+          'longer exercises a rejection',
+      )
+      assert.equal(
+        isSubmittableSignup(fields),
+        false,
+        `isSubmittableSignup says a form with ${why} may be submitted`,
+      )
+    }
   })
 })
 
