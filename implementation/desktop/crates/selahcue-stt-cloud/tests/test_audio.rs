@@ -113,6 +113,20 @@ fn a_byte_flood_stays_within_the_byte_bound_before_the_chunk_cap_is_reached() {
         !ring.retains_chunk(&oldest),
         "the oldest chunk survived a byte flood"
     );
+    // ADMISSIBILITY, and the reason this line exists: every assertion above is satisfied
+    // trivially by an EMPTY ring. If `MAX_AUDIO_CHUNK_BYTES` ever exceeds the byte budget, the
+    // ring evicts each chunk the instant it admits it, no audio reaches the socket, and this
+    // test would still pass. A bounded-memory suite that is green while the feature transmits
+    // nothing is the worst possible version of a green test.
+    assert!(
+        !ring.is_empty(),
+        "the ring is empty after a flood of admissible chunks — it is dropping everything it \
+         accepts, so no audio would ever reach Deepgram while every bound reports success"
+    );
+    assert!(
+        ring.retained_bytes() > 0,
+        "the ring retains no bytes after a flood of admissible chunks"
+    );
 }
 
 #[test]

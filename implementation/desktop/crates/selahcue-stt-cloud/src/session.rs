@@ -106,6 +106,14 @@ impl DeepgramEndpoint {
 /// Whether the authority at the start of `rest` (`host[:port][/path]`) is this machine.
 fn is_loopback_authority(rest: &str) -> bool {
     let authority = rest.split('/').next().unwrap_or(rest);
+    // Userinfo is refused outright rather than parsed. In `ws://127.0.0.1:80@evil.com/` the
+    // real host is `evil.com` — everything before the `@` is userinfo — but a scan that splits
+    // on `:` first sees `127.0.0.1` and calls it loopback, sending the credential in clear text
+    // to an attacker-chosen host. This client never has a reason to send userinfo, so the safe
+    // reading of an authority containing `@` is "not loopback", not "parse it more carefully".
+    if authority.contains('@') {
+        return false;
+    }
     // `[::1]:9999` — an IPv6 literal keeps its brackets, so split the port off after them.
     let host = match authority.strip_prefix('[') {
         Some(after) => match after.split_once(']') {

@@ -89,6 +89,21 @@ pub struct SessionConfig {
     /// designed. That is precisely why nothing reports it. Found by Sana on 86akby4yz by
     /// asking the complement question on the write side of a duplex socket, where the three
     /// earlier silent failures were all on the read side.
+    ///
+    /// # Why five seconds, and the margin a future edit must not eat
+    ///
+    /// The stream needs **32 KB/s sustained** just to keep pace — 16 kHz mono signed-16-bit is
+    /// 256 kbps — so a link that cannot carry that cannot do cloud transcription at all. The
+    /// default bounds a single write of at most [`crate::MAX_AUDIO_CHUNK_BYTES`] (64 KB), so it
+    /// only fires below **~13 KB/s**, comfortably under what the audio already requires. Any
+    /// link fast enough to carry the stream completes a maximum-size write in about two
+    /// seconds.
+    ///
+    /// **That margin is the whole safety of this bound, so do not tune this value toward the
+    /// sustained rate.** Bring it near 32 KB/s and healthy sessions on poor church Wi-Fi start
+    /// being torn down as if the peer had stopped reading — and nothing in the suite goes red,
+    /// because a slow-but-adequate reader is a case that only exists here and in
+    /// `a_slow_but_adequate_reader_is_not_torn_down`.
     pub write_timeout: Duration,
     /// How long to wait for the socket to open before calling it a transport failure.
     ///
@@ -134,20 +149,42 @@ impl Default for SessionConfig {
 ///
 /// `install_default` returns `Err` if a provider is already installed — by the LAN transport,
 /// say, in the same process. That is success for our purposes, not failure.
-fn ensure_crypto_provider() {
+///
+/// **Returns whether a provider is installed afterwards**, which is the whole reason this is
+/// public and non-`()`. Without an observable, removing the body left the entire suite green:
+/// the only other way to discover a missing provider is a panic on the first real TLS
+/// connection, and no test here makes one.
+pub fn ensure_crypto_provider() -> bool {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
+    rustls::crypto::CryptoProvider::get_default().is_some()
 }
 
 /// A running Deepgram streaming session.
 ///
 /// Dropping it signals the worker to stop and waits for it, so a session cannot outlive the
 /// handle and keep streaming a church's audio after the operator thinks it stopped.
+/// How long [`CloudSttSession::stop`] waits for the worker before detaching it.
+///
+/// Every I/O the worker performs is itself bounded, so it normally exits in milliseconds. This
+/// exists for the case where it does not: an UNBOUNDED join hands the worker's liveness problem
+/// straight to whoever dropped the session — in the operator console, plausibly the UI thread.
+/// Leaking one thread that is about to die anyway is strictly better than freezing a console
+/// mid-service.
+///
+/// It also keeps this crate's own tests honest. A test asserting "this client does not hang"
+/// that itself hangs when the assertion fails reports nothing at all — the message never
+/// prints, and a hang and a failure become indistinguishable in a results count.
+pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
 #[derive(Debug)]
 pub struct CloudSttSession {
     stop: Arc<AtomicBool>,
+    /// Signalled by the worker as it returns, so shutdown can wait with a deadline —
+    /// `JoinHandle` has no timed join.
+    finished: std::sync::mpsc::Receiver<()>,
     join: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -176,9 +213,10 @@ impl CloudSttSession {
             &config.params,
             credential.clone(),
         )?;
-        ensure_crypto_provider();
+        let _ = ensure_crypto_provider();
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
+        let (finished_tx, finished) = std::sync::mpsc::channel();
         let join = std::thread::Builder::new()
             .name("selahcue-stt-cloud".to_string())
             .spawn(move || {
@@ -212,10 +250,13 @@ impl CloudSttSession {
                             .to_string(),
                     });
                 }
+                // Last thing the worker does: tell shutdown it is safe to join.
+                let _ = finished_tx.send(());
             })
             .map_err(|e| DeepgramError::transport(e, None))?;
         Ok(CloudSttSession {
             stop,
+            finished,
             join: Some(join),
         })
     }
@@ -228,8 +269,20 @@ impl CloudSttSession {
 
     fn shutdown(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
+        let Some(join) = self.join.take() else {
+            return;
+        };
+        // BOUNDED. See `SHUTDOWN_GRACE`: a worker wedged on I/O must not take the caller's
+        // thread down with it, and a test that hangs instead of failing proves nothing.
+        match self.finished.recv_timeout(SHUTDOWN_GRACE) {
+            Ok(()) => {
+                let _ = join.join();
+            }
+            Err(_) => {
+                // Detach. The thread is already stopping — every I/O it can be sitting on has
+                // its own timeout — and the process reclaims it regardless.
+                drop(join);
+            }
         }
     }
 }

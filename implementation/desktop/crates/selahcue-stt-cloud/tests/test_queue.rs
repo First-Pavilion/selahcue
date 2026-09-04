@@ -139,6 +139,17 @@ fn a_byte_flood_stays_within_the_byte_bound_before_the_entry_cap_is_reached() {
         !queue.retains_text(&oldest),
         "the oldest segment survived a byte flood — the byte budget is not evicting"
     );
+    // ADMISSIBILITY — see the equivalent assertion in `test_audio.rs`. Every line above is
+    // satisfied trivially by an empty queue.
+    assert!(
+        !queue.is_empty(),
+        "the queue is empty after a flood of admissible segments — it is evicting everything \
+         it admits, so the panel would stay blank while every bound reports success"
+    );
+    assert!(
+        queue.retained_bytes() > 0,
+        "the queue retains no bytes after a flood of admissible segments"
+    );
 }
 
 #[test]

@@ -76,6 +76,9 @@ pub mod session;
 #[cfg(feature = "deepgram")]
 pub mod transport;
 
+#[cfg(feature = "deepgram")]
+pub use transport::{ensure_crypto_provider, SHUTDOWN_GRACE};
+
 pub use audio::{AudioChunk, AudioRing, MAX_QUEUED_AUDIO_BYTES, MAX_QUEUED_AUDIO_CHUNKS};
 pub use credential::{
     developer_credential_from_env, Credential, CredentialScheme, DEEPGRAM_API_KEY_VAR,

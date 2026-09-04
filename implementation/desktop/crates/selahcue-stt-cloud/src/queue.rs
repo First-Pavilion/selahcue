@@ -64,6 +64,18 @@ const _: () = assert!(
     "a cap of one makes 'the oldest is evicted, the newest is kept' unstateable"
 );
 
+// ADMISSIBILITY — see the equivalent note in `audio.rs`. The two assertions above pin that the
+// budgets are independently reachable; this pins that a maximum-length segment can actually be
+// retained. Without it the eviction loop below could empty the queue on every push while every
+// bound stayed satisfied, and the `None => break` arm's comment — which claims the compile-time
+// assertions guarantee a single segment fits — would be false.
+const _: () = assert!(
+    MAX_SEGMENT_TEXT_LEN <= MAX_QUEUED_SEGMENT_BYTES,
+    "a segment truncated to the per-segment cap must still fit the queue's byte budget; \
+     otherwise every push evicts what it just admitted and the panel stays empty while the \
+     bounds report success"
+);
+
 #[derive(Debug, Default)]
 struct Inner {
     segments: VecDeque<ProviderSegment>,

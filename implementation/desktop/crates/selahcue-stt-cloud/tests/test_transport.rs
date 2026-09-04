@@ -1023,3 +1023,102 @@ async fn stop_returns_promptly_against_a_peer_that_stops_reading() {
          on a socket write, so the caller's thread is hung too"
     );
 }
+
+#[test]
+fn the_rustls_crypto_provider_is_actually_installed() {
+    // Cody F3. Removing the install left the entire suite green, because every test here
+    // connects over loopback `ws://` and never builds a TLS session — the only other way to
+    // discover a missing provider is a panic on the first real connection, which is exactly
+    // how it was found. The function returns the observable so the control has something to
+    // assert on.
+    assert!(
+        selahcue_stt_cloud::ensure_crypto_provider(),
+        "no rustls crypto provider is installed after ensure_crypto_provider(); the first real \
+         TLS connection would panic on the worker thread, where the session never leaves \
+         Connecting and nothing is reported"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_but_adequate_reader_is_not_torn_down() {
+    // The write-side complement of `a_slow_but_steady_peer_is_healthy_rather_than_stalled`,
+    // and the positive control the write bound was missing. The read side had both halves —
+    // peer stops, peer drips. The write side had only "peer stops reading"; a peer that reads
+    // SLOWLY but keeps pace had no test at all, which is the same blind spot one axis over.
+    //
+    // Without this, tuning `write_timeout` down toward the sustained rate would start tearing
+    // down healthy sessions on poor church Wi-Fi and nothing would go red.
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let port = listener.local_addr().expect("local addr").port();
+    let read = Arc::new(AtomicUsize::new(0));
+
+    let server_read = Arc::clone(&read);
+    let server = tokio::spawn(async move {
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        if let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await {
+            // Reads unhurriedly, but never stops — the peer is slow, not dead.
+            while let Some(Ok(message)) = socket.next().await {
+                if let Message::Binary(_) = message {
+                    server_read.fetch_add(1, Ordering::SeqCst);
+                }
+                tokio::time::sleep(Duration::from_millis(15)).await;
+            }
+        }
+    });
+
+    let config = config_for(
+        DeepgramEndpoint::custom(format!("ws://127.0.0.1:{port}/v1/listen")),
+        brisk_retry(),
+    );
+
+    let ring = AudioRing::new();
+    let status = SessionStatus::new();
+    let session = CloudSttSession::start(
+        &authorised(),
+        Credential::developer_key(TEST_SECRET).expect("fixture key"),
+        config,
+        ring.clone(),
+        SegmentQueue::new(),
+        status.clone(),
+    )
+    .expect("the session starts");
+
+    assert!(
+        within(Duration::from_secs(10), || status.get().is_streaming()).await,
+        "the session never began streaming, so this control proves nothing"
+    );
+
+    // Modest, sustained audio the slow reader can keep pace with.
+    let feeder_ring = ring.clone();
+    let feeder = tokio::spawn(async move {
+        for _ in 0..40 {
+            feeder_ring.push(AudioChunk::from_pcm_i16(&[0; 160]));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    });
+
+    // Well past `write_timeout` (300 ms in this configuration) in total elapsed time.
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+    // Exercised before contract: the peer really did receive audio, so "still streaming" is a
+    // statement about a slow reader and not about a link that carried nothing.
+    let received = read.load(Ordering::SeqCst);
+    assert!(
+        received > 0,
+        "the slow reader received no audio at all, so this test did not exercise the write path"
+    );
+    assert!(
+        status.get().is_streaming(),
+        "a peer that reads slowly but keeps pace was torn down as if it had stopped reading \
+         (it is {:?}) — cloud transcription would drop on any congested church network",
+        status.get()
+    );
+
+    feeder.abort();
+    session.stop();
+    server.abort();
+}

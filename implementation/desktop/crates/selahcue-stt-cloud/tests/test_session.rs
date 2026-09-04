@@ -135,6 +135,11 @@ fn a_cleartext_endpoint_is_refused_unless_the_peer_is_this_machine() {
         "ws://evil.example.com/v1/listen",
         "http://api.deepgram.com/v1/listen",
         "ws://127.0.0.1.evil.example.com/v1/listen",
+        // Userinfo: the real host is `evil.com`. A scan that splits on `:` before
+        // noticing the `@` sees `127.0.0.1` and calls it loopback.
+        "ws://127.0.0.1:80@evil.com/v1/listen",
+        "ws://127.0.0.1@evil.com/v1/listen",
+        "ws://localhost:9999@evil.com/v1/listen",
     ] {
         assert!(
             !DeepgramEndpoint::custom(exposed).is_confidential(),

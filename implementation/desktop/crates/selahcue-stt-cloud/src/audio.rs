@@ -58,6 +58,25 @@ const _: () = assert!(
     "a cap of one makes 'the oldest is dropped, the newest is kept' unstateable"
 );
 
+// ADMISSIBILITY — a different property from the two above, and the one whose absence is
+// dangerous rather than merely untested.
+//
+// The assertions above pin that the two budgets are independently REACHABLE. They say nothing
+// about whether a chunk that passes the admission check can actually be RETAINED. Raise
+// `MAX_AUDIO_CHUNK_BYTES` above `MAX_QUEUED_AUDIO_BYTES` and every one of them still holds,
+// the build stays green, and the ring evicts every chunk it admits the instant it accepts it —
+// so no audio ever reaches the socket while an empty ring satisfies every bound trivially.
+//
+// A bounded-memory suite that passes while the feature transmits nothing is the worst possible
+// version of a green test. This is also the premise `queue.rs`'s eviction loop relies on when
+// it treats an empty queue as unreachable.
+const _: () = assert!(
+    MAX_AUDIO_CHUNK_BYTES <= MAX_QUEUED_AUDIO_BYTES,
+    "a chunk large enough to be admitted must be small enough to be retained; otherwise the \
+     ring drops every chunk it accepts, no audio reaches the socket, and every bound above is \
+     satisfied trivially by an empty ring"
+);
+
 /// One buffer of PCM audio, already in the encoding Deepgram is told to expect:
 /// **signed 16-bit little-endian** ([`crate::session::Encoding::Linear16`]).
 ///
