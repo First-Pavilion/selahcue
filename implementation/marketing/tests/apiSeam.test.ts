@@ -9,6 +9,7 @@
  */
 import assert from 'node:assert/strict'
 import test, { describe } from 'node:test'
+import { readFileSync } from 'node:fs'
 
 import {
   ApiError,
@@ -60,6 +61,56 @@ function json(body: unknown, status = 200): Response {
   })
 }
 
+/**
+ * `ErrorCode` as the SERVER defines it, parsed out of `selahcue_api/graphql/errors.py`.
+ *
+ * WHY THIS READS A PYTHON FILE. `SERVER_ERROR_CODES` in `graphql.ts` is a hand-maintained
+ * copy of that enum, and this test used to be a THIRD copy: nine code names typed out
+ * here, vouching for nine code names typed out there. Two transcriptions of one fact agree
+ * with each other for exactly as long as nobody edits the original. PR #16 added
+ * `PASSWORD_INVALID` to `errors.py`; both copies stayed at nine; `classifyErrors` mapped a
+ * real, permanent, actionable error to `UNKNOWN`; `/reset` rendered "something went wrong
+ * on our side" for it; and this file printed `ok - every documented code from errors.py
+ * round-trips` while it happened. Adding a tenth name by hand would have rebuilt the same
+ * mechanism one code later.
+ *
+ * So the list is READ. The shipped bundle still cannot see Python — the client keeps its
+ * own copy, as it must — but the copy is now checked against the original by a test that
+ * fails the moment the two disagree, in either direction.
+ *
+ * RESIDUAL, stated because it bounds what this control proves: `npm test` runs when
+ * something in `implementation/marketing` changes, and CI's `marketing` job is
+ * path-filtered to that directory, so an API-ONLY commit that adds an error code will not
+ * re-run this test until the next marketing change. It closes the drift, not the delay.
+ * Adding `implementation/api/**` to that filter is the devops half and is tracked
+ * separately (86ak5rjh7).
+ */
+const ERRORS_PY = new URL('../../api/selahcue_api/graphql/errors.py', import.meta.url)
+
+function errorCodesFromTheServer(): string[] {
+  const source = readFileSync(ERRORS_PY, 'utf8')
+  const lines = source.split('\n')
+  const start = lines.findIndex((line) => line.startsWith('class ErrorCode('))
+  assert.notEqual(start, -1, `no 'class ErrorCode(' in ${ERRORS_PY.pathname} — has it moved?`)
+
+  const codes: string[] = []
+  for (const line of lines.slice(start + 1)) {
+    // The enum body is indented; the first unindented non-blank line ends it, so a
+    // constant defined AFTER the class (SAFE_MESSAGES, say) cannot leak in.
+    if (line.trim() !== '' && !line.startsWith(' ')) break
+    const member = /^ {4}([A-Z][A-Z0-9_]*) = "([A-Z][A-Z0-9_]*)"\s*$/.exec(line)
+    if (!member) continue
+    assert.equal(
+      member[1],
+      member[2],
+      'errors.py stopped using the member name as its wire value; classifyErrors compares ' +
+        'against the VALUE, so this parser and the client copy both need revisiting',
+    )
+    codes.push(member[2])
+  }
+  return codes
+}
+
 describe('classifyErrors', () => {
   test('reads the server code out of the error envelope', () => {
     const envelope = [
@@ -68,21 +119,40 @@ describe('classifyErrors', () => {
     assert.equal(classifyErrors(envelope), 'VALIDATION_FAILED')
   })
 
-  test('every documented code from errors.py round-trips', () => {
-    const codes = [
-      'UNAUTHENTICATED',
-      'PERMISSION_DENIED',
-      'VALIDATION_FAILED',
-      'NOT_FOUND',
-      'CONFLICT',
-      'POLICY_DENIED',
-      'RATE_LIMITED',
-      'NOT_IMPLEMENTED',
-      'INTERNAL',
-    ]
+  test('every code errors.py defines round-trips — the list is read, not transcribed', () => {
+    const codes = errorCodesFromTheServer()
+
+    // THE PREMISE, so a parser that silently matched nothing could not turn the loop below
+    // into a pass over an empty list. Pinned against the file's own contents, not against
+    // a remembered count: the number is allowed to grow, and this test is how the client
+    // finds out that it did.
+    assert.ok(
+      codes.length >= 10,
+      `parsed only ${codes.length} codes out of errors.py — the parser, not the enum, is ` +
+        'almost certainly what broke',
+    )
+    assert.ok(codes.includes('VALIDATION_FAILED'), 'the parse missed VALIDATION_FAILED')
+    assert.ok(
+      codes.includes('PASSWORD_INVALID'),
+      'PASSWORD_INVALID is gone from errors.py — /reset has a branch that can no longer ' +
+        'be reached, and ResetView needs revisiting before this assertion is relaxed',
+    )
+
     for (const code of codes) {
-      assert.equal(classifyErrors([{ extensions: { code } }]), code)
+      assert.equal(
+        classifyErrors([{ extensions: { code } }]),
+        code,
+        `errors.py can send ${code} and this client collapses it to UNKNOWN — add it to ` +
+          'SERVER_ERROR_CODES and to ApiErrorCode, and decide what every view does with it',
+      )
     }
+  })
+
+  test('PASSWORD_INVALID reaches the caller as itself, not as UNKNOWN', () => {
+    // Called out by name as well as by the sweep above. This is the code /reset uses to
+    // tell "your link is dead" (R4) apart from "your link is fine, your password is not",
+    // and a client that cannot see the difference tells the user the wrong one.
+    assert.equal(classifyErrors([{ extensions: { code: 'PASSWORD_INVALID' } }]), 'PASSWORD_INVALID')
   })
 
   test('an unrecognised code becomes UNKNOWN, not VALIDATION_FAILED', () => {
@@ -90,6 +160,14 @@ describe('classifyErrors', () => {
     // it a second time on the client would let a genuinely new server code masquerade as
     // a validation failure here too — and on /reset that means silently mis-blaming the
     // user's link.
+    // The negative control is only a control if TEAPOT really is unknown to the server.
+    // Otherwise this line would pass by asserting UNKNOWN about a code that ought to
+    // round-trip, and would keep passing after the sweep above stopped covering anything.
+    assert.ok(
+      !errorCodesFromTheServer().includes('TEAPOT'),
+      'errors.py now defines TEAPOT, so it is no longer an unrecognised code — pick ' +
+        'another one for this control',
+    )
     assert.equal(classifyErrors([{ extensions: { code: 'TEAPOT' } }]), 'UNKNOWN')
     assert.equal(classifyErrors([{ message: 'no extensions at all' }]), 'UNKNOWN')
     assert.equal(classifyErrors([]), 'UNKNOWN')
@@ -163,6 +241,21 @@ describe('transport failure is not a validation failure', () => {
     await assert.rejects(
       () => confirmPasswordReset('SC-PASSWORDRESET-x', 'a-good-passphrase', { fetchImpl: offline }),
       (error: unknown) => error instanceof ApiError && error.code !== 'VALIDATION_FAILED',
+    )
+  })
+
+  test('a rejected password reaches the reset view as PASSWORD_INVALID, not VALIDATION_FAILED', async () => {
+    // End to end through the seam the view actually calls, because that is what decides
+    // which of three states /reset renders. VALIDATION_FAILED here would show R4 ("this
+    // reset link didn't work") for a link the server had to find LIVE to get this far, and
+    // UNKNOWN would show R7 ("something went wrong on our side") for a request the server
+    // answered correctly.
+    const { impl } = recorder(() =>
+      json({ errors: [{ extensions: { code: 'PASSWORD_INVALID' } }] }),
+    )
+    await assert.rejects(
+      () => confirmPasswordReset('SC-PASSWORDRESET-live', 'a-good-passphrase', { fetchImpl: impl }),
+      (error: unknown) => error instanceof ApiError && error.code === 'PASSWORD_INVALID',
     )
   })
 })
