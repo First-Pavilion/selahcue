@@ -25,7 +25,7 @@ fn a_body_exactly_at_the_cap_is_accepted_whole() {
     // silently truncate a legitimately cap-sized body, and a truncated JSON body surfaces
     // as a confusing parse error rather than as the size problem it is.
     let body = vec![b'x'; CAP];
-    let got = read_capped(std::io::Cursor::new(body.clone()), CAP)
+    let got = read_capped(std::io::Cursor::new(body.clone()), CAP, None)
         .expect("a body exactly at the cap must be accepted, not refused");
     assert_eq!(got.len(), CAP);
     assert_eq!(got, body, "and it must arrive intact, not truncated");
@@ -34,7 +34,7 @@ fn a_body_exactly_at_the_cap_is_accepted_whole() {
 #[test]
 fn one_byte_over_the_cap_is_refused() {
     let body = vec![b'x'; CAP + 1];
-    let err = read_capped(std::io::Cursor::new(body), CAP)
+    let err = read_capped(std::io::Cursor::new(body), CAP, None)
         .expect_err("a body over the cap must be refused");
 
     // Off-by-one guard: this pair is the whole point of reading `cap + 1`. If the
@@ -53,7 +53,7 @@ fn a_refusal_leaks_nothing_from_the_body() {
     let secret = "sk-proj-SECRETKEYMATERIAL";
     let mut body = secret.as_bytes().to_vec();
     body.resize(CAP + 500, b'x');
-    let err = read_capped(std::io::Cursor::new(body), CAP).unwrap_err();
+    let err = read_capped(std::io::Cursor::new(body), CAP, None).unwrap_err();
     let rendered = format!("{err}  {err:?}");
     assert!(
         !rendered.contains(secret) && !rendered.contains("sk-proj-"),
@@ -89,16 +89,84 @@ fn a_stream_that_fails_partway_is_an_error_not_a_short_body() {
     // `Malformed` — a terminal state the operator sees — instead of `Transport`, which is
     // the one that correctly serves the degraded local draft. Getting this wrong routes a
     // dropped connection to the wrong recovery path.
-    let err = read_capped(FailsMidStream { sent: 0 }, CAP)
+    let err = read_capped(FailsMidStream { sent: 0 }, CAP, None)
         .expect_err("a mid-stream failure must be an error");
     assert!(err.to_string().contains("peer went away"), "{err}");
+}
+
+/// Counts the bytes actually pulled from the underlying stream, and refuses to serve an
+/// unbounded amount so a broken bound cannot hang the suite.
+struct CountingReader {
+    remaining: usize,
+    pulled: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl std::io::Read for CountingReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Ok(0);
+        }
+        let n = buf.len().min(self.remaining).min(64 * 1024);
+        for b in buf.iter_mut().take(n) {
+            *b = b'z';
+        }
+        self.remaining -= n;
+        self.pulled
+            .fetch_add(n, std::sync::atomic::Ordering::SeqCst);
+        Ok(n)
+    }
+}
+
+#[test]
+fn the_cap_bounds_what_is_read_off_the_wire_not_merely_what_is_returned() {
+    // THE control for this module, and the one the outcome assertions do not provide.
+    //
+    // Every other test here checks what `read_capped` RETURNS, and a post-hoc length check on a
+    // fully-buffered body returns exactly the same things — so deleting `.take(cap + 1)` and
+    // leaving an unbounded `read_to_end` passes all of them, green, exit 0. That mutation is the
+    // entire bug the function exists to prevent: memory is allocated before any check runs.
+    //
+    // So assert the ENTITY — how many bytes were pulled from the stream — rather than the
+    // outcome. A hostile peer offering far more than the cap must cost us the cap, not the offer.
+    let pulled = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let offered = 8 * 1024 * 1024; // what a hostile peer is willing to send
+    let reader = CountingReader {
+        remaining: offered,
+        pulled: pulled.clone(),
+    };
+
+    let err = read_capped(reader, CAP, None).expect_err("8 MB against a 1 KB cap must be refused");
+    let n = pulled.load(std::sync::atomic::Ordering::SeqCst);
+
+    assert!(
+        n <= CAP + 1,
+        "read_capped pulled {n} bytes off a stream offering {offered} against a {CAP}-byte cap; \
+         the bound must limit the READ, not just the returned value — an unbounded read_to_end \
+         followed by a length check produces an identical error while allocating everything"
+    );
+    assert!(err.to_string().contains(&CAP.to_string()));
+
+    // POSITIVE CONTROL: a stream inside the cap is read to completion, so the assertion above
+    // is not satisfied by a function that reads nothing.
+    let pulled2 = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let got = read_capped(
+        CountingReader {
+            remaining: 500,
+            pulled: pulled2.clone(),
+        },
+        CAP,
+        None,
+    )
+    .expect("a body under the cap must be accepted");
+    assert_eq!(got.len(), 500);
+    assert_eq!(pulled2.load(std::sync::atomic::Ordering::SeqCst), 500);
 }
 
 #[test]
 fn a_small_body_passes_through_untouched() {
     // POSITIVE CONTROL. Without it, every assertion above is satisfied by an implementation
     // that refuses everything.
-    let got = read_capped(std::io::Cursor::new(b"{\"ok\":true}".to_vec()), CAP).unwrap();
+    let got = read_capped(std::io::Cursor::new(b"{\"ok\":true}".to_vec()), CAP, None).unwrap();
     assert_eq!(got, b"{\"ok\":true}");
 }
 
@@ -116,3 +184,73 @@ const _: () = assert!(
     MAX_TRANSPORT_RESPONSE_BYTES > selahcue_cloud::openai::MAX_PARSED_RESPONSE_BYTES,
     "the socket ceiling must sit above the parse ceiling"
 );
+
+/// Always has one more byte, and never finishes. Models the peer that sends headers and then
+/// drips — the shape that evaded the client timeout entirely.
+struct DrippingReader;
+
+impl std::io::Read for DrippingReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        buf[0] = b'.';
+        Ok(1)
+    }
+}
+
+#[test]
+fn a_peer_that_drips_bytes_forever_is_cut_off_at_the_deadline() {
+    // PERF-2. This is the case every earlier probe missed: they all tested a peer that goes
+    // SILENT, and silence was the one shape reqwest's per-read timeout already handled. A peer
+    // that keeps sending — one byte at a time — resets that clock on every read and was measured
+    // still being read 172 seconds past a 60-second deadline.
+    //
+    // Deterministic and offline: no sleeping, no sockets, no wall-clock flakiness. An infinite
+    // reader against an already-expired deadline must refuse rather than run forever, and this
+    // test cannot pass by hanging — it would never finish.
+    let already_past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let err = read_capped(DrippingReader, usize::MAX, Some(already_past))
+        .expect_err("an expired deadline must refuse a dripping peer");
+    assert!(
+        err.to_string().contains("timed out"),
+        "the refusal must name the deadline, not the cap: {err}"
+    );
+
+    // And with a live-but-short deadline it still terminates, rather than only handling the
+    // already-expired special case.
+    let soon = std::time::Instant::now() + std::time::Duration::from_millis(50);
+    let t0 = std::time::Instant::now();
+    let err = read_capped(DrippingReader, usize::MAX, Some(soon))
+        .expect_err("a dripping peer must be cut off");
+    let elapsed = t0.elapsed();
+    assert!(err.to_string().contains("timed out"), "{err}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "the deadline must actually bound elapsed time; took {elapsed:?}"
+    );
+
+    // POSITIVE CONTROL: a generous deadline does not interfere with a normal body, so the
+    // assertions above are not satisfied by a function that refuses everything.
+    let far = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let got = read_capped(
+        std::io::Cursor::new(b"{\"ok\":true}".to_vec()),
+        CAP,
+        Some(far),
+    )
+    .expect("a normal body must still be read under a live deadline");
+    assert_eq!(got, b"{\"ok\":true}");
+}
+
+#[test]
+fn the_cap_still_bites_while_a_deadline_is_live() {
+    // The two bounds must not shadow each other: an over-cap body under a generous deadline is
+    // still a cap refusal, not a timeout.
+    let far = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let err = read_capped(DrippingReader, CAP, Some(far))
+        .expect_err("an infinite stream must hit the cap");
+    assert!(
+        err.to_string().contains(&CAP.to_string()) && !err.to_string().contains("timed out"),
+        "an over-cap body under a live deadline must be refused for SIZE: {err}"
+    );
+}

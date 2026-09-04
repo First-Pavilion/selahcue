@@ -2792,11 +2792,18 @@ const DIRECT_NOTES_COMPILED: bool = false;
 /// Reads `OPENAI_API_KEY` as a plain environment variable. An absent variable and an empty one are
 /// treated identically, so it does not matter whether the `.env` loader (86akby6yy) unsets a blank
 /// value or exports it empty. Nothing here touches the key beyond asking whether it exists.
+/// Decide the direct provider from a key value, without reading the environment.
+///
+/// Split out because the env read made the key check unassertable: `present.then(..)` mutated to
+/// `true.then(..)` — which is the **over-reporting inversion the scope amendment names in terms**,
+/// claiming a provider when no key exists — passed 74/74. A test cannot vary the process
+/// environment safely under a parallel test runner, so the decision takes the value instead.
+///
+/// Absent and blank are treated identically, so it does not matter whether the `.env` loader
+/// unsets an empty value or exports it empty.
 #[cfg(feature = "openai-notes")]
-fn direct_notes_provider() -> Direct {
-    let present = std::env::var(selahcue_cloud::openai::API_KEY_ENV)
-        .map(|k| !k.trim().is_empty())
-        .unwrap_or(false);
+fn direct_provider_from_key(key: Option<&str>) -> Direct {
+    let present = key.is_some_and(|k| !k.trim().is_empty());
     Direct(present.then(|| NotesProviderView {
         kind: selahcue_cloud::openai::PROVIDER_KIND.to_string(),
         name: selahcue_cloud::openai::PROVIDER_LABEL.to_string(),
@@ -2804,6 +2811,16 @@ fn direct_notes_provider() -> Direct {
         developer_key: true,
     }))
 }
+
+#[cfg(feature = "openai-notes")]
+fn direct_notes_provider() -> Direct {
+    direct_provider_from_key(
+        std::env::var(selahcue_cloud::openai::API_KEY_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
 #[cfg(not(feature = "openai-notes"))]
 fn direct_notes_provider() -> Direct {
     Direct(None)
@@ -2899,12 +2916,38 @@ fn notes_status(account_token_set: bool) -> (String, Option<NotesProviderView>) 
     )
 }
 
-fn providers_view_of(
+/// Build the view from an **already-resolved** status.
+///
+/// Split from [`providers_view_of`] for the same reason [`notes_status_from`] is split from
+/// [`notes_status`], and after the same mistake: the wrapper resolves its status from build-time
+/// constants, so in a test build `notes_provider` is always `None` and `notes_available` always
+/// `false`. Hardcoding `notes_available = false` — **which is the trust bug this whole change
+/// exists to fix** — passed 74/74 in both feature configurations, because the invariant was
+/// asserted three times and not one of those assertions consumed *this* expression: the four-state
+/// test drives `notes_status_from` directly, the default-build test asserts an all-false state
+/// that a hardcoded `false` satisfies, and the headless stub re-derives the rule in JavaScript.
+/// Three controls, all reading a copy.
+///
+/// Taking the resolved pair as parameters lets a test reach the state where `notes_available`
+/// must be **true**, which is the only place the expression can be caught being wrong.
+fn providers_view_from(
     cfg: &selahcue_core::providers::ProvidersConfig,
     account_token_set: bool,
+    cloud_status: String,
+    notes_provider: Option<NotesProviderView>,
 ) -> ProvidersView {
-    let (cloud_status, notes_provider) = notes_status(account_token_set);
-    // Derived from the provider, not computed alongside it, so the two cannot disagree.
+    // Derived from the provider rather than computed alongside it, so the two cannot disagree.
+    //
+    // That sentence used to sit here on its own, one line above this expression, asserting a
+    // guarantee that **nothing enforced**: hardcoding `notes_available = false` — which is exactly
+    // the trust bug this change exists to fix — left 74/74 green in both feature configurations.
+    // The invariant was asserted three times and every one of those controls read a copy rather
+    // than this expression.
+    //
+    // What enforces it now: `notes_available_is_true_in_the_view_when_a_provider_is_named` drives
+    // this function with a resolved provider present, which is the only state where this line can
+    // be caught being wrong. Mutating it to a constant `false` or `true` goes RED in both configs.
+    // If you change this derivation, that test is the one that should fail.
     let notes_available = notes_provider.is_some();
     let inc = cfg.settings.include;
     ProvidersView {
@@ -3106,6 +3149,73 @@ mod providers_view_tests {
     }
 
     #[test]
+    fn notes_available_is_true_in_the_view_when_a_provider_is_named() {
+        // The control the three existing invariant assertions could not provide. They all run in a
+        // build where `notes_status` can only produce `None`, so hardcoding
+        // `notes_available = false` — the trust bug itself — satisfied every one of them.
+        // Driving the resolved pair reaches the state where it must be TRUE.
+        let cfg = selahcue_core::providers::ProvidersConfig::default();
+
+        for (status, provider) in [
+            ("direct_provider", a_provider("openai", true)),
+            ("hosted", a_provider("selahcue_hosted", false)),
+        ] {
+            let v = serde_json::to_value(providers_view_from(
+                &cfg,
+                false,
+                status.to_string(),
+                Some(provider),
+            ))
+            .expect("the view serialises");
+
+            assert_eq!(
+                v["notes_available"],
+                serde_json::json!(true),
+                "a named provider must make notes_available TRUE in {status:?} — reporting false \
+                 here is precisely the bug this change exists to fix: the panel would render \
+                 'coming soon' over a working feature"
+            );
+            assert!(!v["notes_provider"].is_null());
+            assert_eq!(v["cloud_status"], status);
+        }
+
+        // And the other direction, through the same function, so one expression is pinned both ways.
+        for status in ["not_configured", "key_missing"] {
+            let v =
+                serde_json::to_value(providers_view_from(&cfg, false, status.to_string(), None))
+                    .expect("the view serialises");
+            assert_eq!(
+                v["notes_available"],
+                serde_json::json!(false),
+                "no provider must mean notes_available FALSE in {status:?} — the fix must not \
+                 invert into over-reporting"
+            );
+            assert!(v["notes_provider"].is_null());
+        }
+    }
+
+    /// The key check, driven by value rather than by the process environment.
+    #[cfg(feature = "openai-notes")]
+    #[test]
+    fn a_missing_or_blank_key_names_no_direct_provider() {
+        for absent in [None, Some(""), Some("   "), Some("\t\n")] {
+            assert!(
+                direct_provider_from_key(absent).0.is_none(),
+                "key {absent:?} must NOT produce a provider — claiming one without a key is the \
+                 over-reporting inversion the scope amendment forbids"
+            );
+        }
+        // POSITIVE CONTROL: a real key does produce one, so the assertions above are not
+        // satisfied by a function that always returns None.
+        let present = direct_provider_from_key(Some("sk-proj-anything")).0;
+        let present = present.expect("a non-empty key must name a provider");
+        assert_eq!(present.kind, selahcue_cloud::openai::PROVIDER_KIND);
+        assert_eq!(present.name, selahcue_cloud::openai::PROVIDER_LABEL);
+        assert_eq!(present.model, selahcue_cloud::openai::DEFAULT_MODEL);
+        assert!(present.developer_key, "a .env key is a developer key");
+    }
+
+    #[test]
     fn the_notes_provider_object_keys_are_pinned() {
         // settings.js reads these, and `name` is the FR-132 disclosure string — the one the
         // panel renders to say who generated the notes. The headless stub is a hand-written
@@ -3191,6 +3301,14 @@ mod providers_view_tests {
             "sub-points must NOT also be flattened into items"
         );
     }
+}
+
+fn providers_view_of(
+    cfg: &selahcue_core::providers::ProvidersConfig,
+    account_token_set: bool,
+) -> ProvidersView {
+    let (cloud_status, notes_provider) = notes_status(account_token_set);
+    providers_view_from(cfg, account_token_set, cloud_status, notes_provider)
 }
 
 fn account_token_is_set(state: &State<'_, AppState>) -> bool {

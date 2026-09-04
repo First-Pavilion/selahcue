@@ -104,31 +104,73 @@ impl ReqwestTransport {
     }
 }
 
-/// Read at most `cap` bytes from `r`, refusing anything larger.
+/// Read at most `cap` bytes from `r`, refusing anything larger, and giving up at `deadline`.
 ///
-/// **Deliberately free of `reqwest`** — it takes `impl Read`, so it compiles in the default
-/// build and a test can drive it with a `Cursor` or a deliberately-failing reader. The
-/// previous version took a `reqwest::blocking::Response`, which meant it existed only under
-/// the `http` feature: linted there, but executed by no gate at all. A bound nothing runs is
-/// the same category of thing as a control nothing exercises.
+/// **Deliberately free of `reqwest`** — it takes `impl Read`, so it compiles in the default build
+/// and a test can drive it with a `Cursor`, a failing reader, or a dripping one. An earlier version
+/// took a `reqwest::blocking::Response`, which meant it existed only under the `http` feature:
+/// linted there, executed by no gate at all.
 ///
-/// Reads `cap + 1` so **"exactly at the cap" is distinguishable from "over it"**. Stopping at
-/// exactly `cap` would silently truncate a body that was legitimately that size, and a
-/// silently truncated JSON body surfaces as a confusing parse error rather than as the size
-/// problem it actually is.
+/// # Why this takes a deadline (PERF-2)
 ///
-/// The error carries the cap and **nothing from the body**: a response body is
+/// This function replaced `reqwest`'s own `text()`, and that swap **introduced a hang** that
+/// `text()` did not have. `reqwest`'s blocking `Read` impl applies the client timeout **per
+/// read-wait, not as a running total**, so a peer that sends headers and then drips bytes — one
+/// byte every few seconds — resets the clock on every read and never trips it. Measured: a drip
+/// server was still being read **172 seconds past** a 60-second client deadline, while the
+/// pre-change `text()` path errored at exactly 30.0s under an identical drip.
+///
+/// A **zero-byte** stall does cut at the client deadline, which is why this was invisible: every
+/// probe written for the original bound tested silence, and silence was the one shape that worked.
+/// "It fails rather than hanging" was true for the case that had been tried and false in general.
+///
+/// So the loop owns its own deadline. It is checked before every read and after every chunk, which
+/// bounds total elapsed time regardless of how the bytes are paced.
+///
+/// Reads `cap + 1` so **"exactly at the cap" is distinguishable from "over it"**: stopping at
+/// exactly `cap` would silently truncate a legitimately cap-sized body, and a truncated JSON body
+/// surfaces as a confusing parse error rather than the size problem it is.
+///
+/// Errors carry the cap or the deadline and **nothing from the body**: a response body is
 /// attacker-influenced and, on at least one real provider, contains key material.
-pub fn read_capped(r: impl std::io::Read, cap: usize) -> Result<Vec<u8>, TransportError> {
+pub fn read_capped(
+    r: impl std::io::Read,
+    cap: usize,
+    deadline: Option<std::time::Instant>,
+) -> Result<Vec<u8>, TransportError> {
     use std::io::Read;
-    let mut buf = Vec::new();
-    r.take((cap as u64) + 1)
-        .read_to_end(&mut buf)
-        .map_err(|e| TransportError(e.to_string()))?;
-    if buf.len() > cap {
-        return Err(TransportError(format!(
-            "response exceeded the {cap}-byte transport cap"
-        )));
+    let expired = |d: Option<std::time::Instant>| d.is_some_and(|d| std::time::Instant::now() >= d);
+    // `saturating_add`: a caller may legitimately pass `usize::MAX` to mean "no size cap, bound
+    // me by the deadline alone", and `+ 1` on that overflows and panics in a debug build. Found by
+    // the PERF-2 drip test, which does exactly that.
+    let mut limited = r.take((cap as u64).saturating_add(1));
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8 * 1024];
+    loop {
+        if expired(deadline) {
+            return Err(TransportError(
+                "timed out reading the response body".to_string(),
+            ));
+        }
+        let n = limited
+            .read(&mut chunk)
+            .map_err(|e| TransportError(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        // Checked inside the loop, so an over-cap body is refused as soon as it crosses rather
+        // than after the whole thing is resident.
+        if buf.len() > cap {
+            return Err(TransportError(format!(
+                "response exceeded the {cap}-byte transport cap"
+            )));
+        }
+        if expired(deadline) {
+            return Err(TransportError(
+                "timed out reading the response body".to_string(),
+            ));
+        }
     }
     Ok(buf)
 }
@@ -137,7 +179,12 @@ pub fn read_capped(r: impl std::io::Read, cap: usize) -> Result<Vec<u8>, Transpo
 #[cfg(feature = "http")]
 fn read_bounded(resp: reqwest::blocking::Response) -> Result<HttpResponse, TransportError> {
     let status = resp.status().as_u16();
-    let buf = read_capped(resp, MAX_TRANSPORT_RESPONSE_BYTES)?;
+    // The body read gets its own deadline because the client timeout does not bound it (PERF-2).
+    // Worst case is therefore the head phase plus this budget rather than a single
+    // REQUEST_TIMEOUT_SECS — stated plainly rather than hidden, since the alternative is a bound
+    // that only holds for peers that stay silent.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS);
+    let buf = read_capped(resp, MAX_TRANSPORT_RESPONSE_BYTES, Some(deadline))?;
     // Bodies are untrusted bytes; decode lossily rather than failing on bad UTF-8, so a
     // mangled response becomes a parse error the caller can map, not a transport error
     // that would trigger the degraded-fallback path for the wrong reason.

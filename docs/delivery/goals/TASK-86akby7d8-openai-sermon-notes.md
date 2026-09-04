@@ -131,6 +131,10 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-024 | yes | The operator's `openai-notes` feature is compiled by a gate | review of `Makefile` + `ci.yml` | clippy + test lines present in both | diff | PASS |
 | C-025 | yes | `NotesProviderView`'s keys are pinned, including the FR-132 `name` | `cargo test` (operator) | `the_notes_provider_object_keys_are_pinned` passes | test output | PASS |
 | C-026 | yes | The response body is bounded **at the socket**, not only before parsing | review + `cargo clippy --features openai,http` | `read_bounded` replaces `text()`; cap is a hard ceiling on the read | `transport.rs` | PASS |
+| C-027 | yes | The transport cap bounds what is READ off the wire, not merely what is returned | `cargo test -p selahcue-cloud --test test_transport` | `the_cap_bounds_what_is_read_off_the_wire...` passes; deleting `.take(cap + 1)` goes RED (8.4 MB pulled vs a 1 KB cap) | mutation log | PASS |
+| C-028 | yes | `notes_available` is asserted in the state where it must be TRUE, so hardcoding it cannot pass | `cargo test` (operator, both feature configs) | `notes_available_is_true_in_the_view_when_a_provider_is_named` passes; hardcoding `false` (the trust bug) or `true` goes RED in both configs | mutation log | PASS |
+| C-029 | yes | The developer-key presence check is asserted without touching process env | `cargo test --features openai-notes` | `a_missing_or_blank_key_names_no_direct_provider` passes; `present = true` goes RED | mutation log | PASS |
+| C-030 | yes | A peer that **drips** bytes is cut off, not merely one that goes silent | `cargo test -p selahcue-cloud --test test_transport` | `a_peer_that_drips_bytes_forever_is_cut_off_at_the_deadline` passes; removing the deadline checks makes the test **hang** rather than fail, which is the finding | mutation log | PASS |
 | C-021 | no | A real GPT draft is produced against the live API through the shipped Rust path | live run, 2026-09-04, `gpt-5.6-terra` and `gpt-5.6-luna` on a 1,431-word sermon | a structured FR-122 draft returns and the bounded parser handles it | Both models returned all 8 enabled sections, 4 points, 13 sub-points, and honoured the disabled `social_excerpts` toggle. All 16 references verified against the bundled KJV. **One transcript, one run each — not a claim that the prompt is good in general.** | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
@@ -318,8 +322,9 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 ## Pause and escalation conditions
 
-- Live generation requires credits on the OpenAI account — **owner**. Escalated; C-021 stays
-  BLOCKED rather than being claimed.
+- Live generation required credits on the OpenAI account — **owner**. Escalated, and
+  **resolved**: credits were added and C-021 passed in iteration 7. Kept as the record of a
+  condition that was live, not as a current one.
 - The `status_error` body-echo and flat `402 | 429` mapping on the hosted client — **Diego**,
   as a follow-on ticket, with the captured evidence.
 - A model-choice **setting** on `ProvidersSettings` — **Diego**. It belongs there, it expands
@@ -330,10 +335,33 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86akby7d8-openai-sermon-notes.md --completion`
 - Validator result: see PR body.
 - Independent verification result: pending the four-reviewer gate.
-- Terminal state: pending review. All 21 criteria PASS, including C-021 after the owner added
-  credits. The honest scope of C-021 is "one draft generated successfully from one transcript on
+- Terminal state: pending review. **Every criterion in the table above** passes — including C-021
+  after the owner added credits, and C-027..C-029 after QA round 1. Deliberately not restated as a
+  number: this line has now been stale twice (it said 21 against a 26-row table, and I wrote 26
+  against a 29-row one while fixing that), because a count duplicated outside the table is a copy
+  that drifts. The table is the single source; `validate_goal_contract.py` reports the total. The honest scope of C-021 is "one draft generated successfully from one transcript on
   each of two models", which is **not** the same claim as "the prompt is good".
 - Remaining failed or blocked criteria: none.
+- Performance round 1 (Vera, at `f1c648c` and `9845bba`): one **blocking** finding, PERF-2, and it
+  is a hole **this PR introduced**. Replacing `reqwest`'s `text()` with the hand-rolled
+  `read_capped` loop broke the response deadline: reqwest's blocking `Read` applies the client
+  timeout **per read-wait, not as a running total**, so a peer that sends headers and then drips one
+  byte every few seconds resets the clock forever. Measured still reading **172 seconds past** a
+  60-second deadline, where the pre-change `text()` path errored at exactly 30.0s under an identical
+  drip. Every probe written for the original bound tested a **silent** peer, and silence was the one
+  shape that already worked — so "it fails rather than hanging" was true for the case tried and
+  false in general. Remediation is C-030. Vera also endorsed the 60s/10s constants against live runs
+  of 50/92/181-minute transcripts (18.0s, 24.6s, 16.6s — input length is not the axis), measured the
+  bounded-compute claims, and put the CI cost at ~5 runner-minutes with zero added wall-clock.
+- QA round 1 (Quinn, at `f1c648c`): no behavioural defect — every acceptance criterion met in
+  behaviour, and it could not make the shipped code do the wrong thing. It reproduced all 11
+  claimed mutations RED, ran 13 further ones nobody had, and confirmed the `ClampLog` bounded-memory
+  tests and the headless assertions are solid. It found **three surviving mutations**, all of them
+  controls that did not bite: the socket cap asserted outcomes a post-hoc length check produces
+  identically; `notes_available = notes_provider.is_some()` was asserted three times by controls
+  that each read a copy; and the key-presence check was unreachable behind a process-env read.
+  Remediation is C-027..C-029. The second is the same "a remediation relocates the untested thing"
+  pattern as Cody's R2/R3 — extracting `notes_status_from` moved the seam up rather than closing it.
 - Review round 1 (Cody, at `756e754`): approve with comments. Independently re-ran all 11 original
   mutations (RED confirmed), verified `build_note_request` byte-identical to `origin/main`, and
   re-ran the headless gate rather than trusting the reported figure. It then ran mutations the
