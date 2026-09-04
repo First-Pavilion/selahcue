@@ -39,6 +39,19 @@
 // rendered alone (FR-123/128). Nav + activation live in app.js (showSurface → settingsActivate);
 // this module owns the surface body and loads after app.js.
 //
+// The transcript Generate sends is `window.scCompletedTranscript`, a bridge app.js sets on every
+// poll from its own host-authoritative `view.transcript` (finalised segments only, never the
+// in-progress partial line) — this screen has no transcript store of its own. Below the floor in
+// `MIN_TRANSCRIPT_CHARS`, Generate refuses before any network call (Vera, PERF-3) instead of
+// billing for a draft fabricated from nothing.
+//
+// Generate does not send on click. It opens a review step (openGenPreview) that renders the EXACT
+// string about to be sent and waits for an explicit Confirm; Cancel sends nothing. That's what
+// makes the footnote under the button true rather than aspirational (F-5 — Sana/Quinn, both
+// blocking): the promise is "you'll see exactly what's sent and confirm before anything is
+// generated", so the preview is built from the same string, not a re-derived one, and nothing
+// reaches `invoke("generate_sermon_notes", …)` outside confirmGenerate().
+//
 // Excluded by product decision (present in the frame, NOT built here): Text-to-Speech (DEC-001) and
 // the "Advanced · Bring your own key / custom provider" row (hosted-only model).
 (function () {
@@ -374,12 +387,21 @@
     cols.appendChild(right);
     aiEl.appendChild(cols);
 
-    // --- Generate + result region ---
+    // --- Generate + review-before-send + result region ---
     var gen = el("button", "pp-generate", "✦   Generate Sermon Notes");
     gen.type = "button";
     gen.id = "pp-generate";
     gen.addEventListener("click", onGenerate);
     aiEl.appendChild(gen);
+
+    // The preview/confirm step (F-5, Sana/Quinn): built rather than left as a promise the copy
+    // below makes and the code doesn't keep. Populated by openGenPreview() with the EXACT string
+    // about to be sent — never re-derived at Confirm time — so what the operator reads here is
+    // guaranteed byte-identical to what leaves the device.
+    var preview = el("div", "pp-gen-preview");
+    preview.id = "pp-gen-preview";
+    preview.hidden = true;
+    aiEl.appendChild(preview);
 
     var result = el("div", "pp-gen-result");
     result.id = "pp-gen-result";
@@ -500,15 +522,102 @@
 
   // ---------- Generate flow (consent-gated end to end by the backend) ----------
   var generating = false;
+
+  // The floor below which a "transcript" is empty or near-empty noise rather than something
+  // worth a model call (Vera, PERF-3): an empty transcript was being sent and billed as a fully
+  // fabricated draft, on the same click a mis-wire (defect 1) used to make silently. This is NOT
+  // a calibrated "enough content to summarise" threshold — no such number exists anywhere in the
+  // product spec — it only catches the empty/blank-click case and near-empty noise, refused here,
+  // before any network call is made.
+  var MIN_TRANSCRIPT_CHARS = 20;
+
+  // This settings screen doesn't own a transcript; it reads the operator's completed transcript
+  // from the bridge app.js sets on every poll (syncTranscript → window.scCompletedTranscript),
+  // or an empty string when the app doesn't expose one (e.g. dist opened standalone).
   function onGenerate() {
     if (generating) return;
+    var previewEl = document.getElementById("pp-gen-preview");
+    if (previewEl && !previewEl.hidden) return; // already reviewing — Cancel/Confirm decide next
+    var transcript = (typeof window.scCompletedTranscript === "string") ? window.scCompletedTranscript : "";
+    var trimmed = transcript.trim();
+    if (trimmed.length === 0) {
+      showGenError("no_transcript", "Nothing has been transcribed yet, so nothing was sent.");
+      return;
+    }
+    if (trimmed.length < MIN_TRANSCRIPT_CHARS) {
+      showGenError("transcript_too_short", "The transcript is too short to generate sermon notes from, so nothing was sent.");
+      return;
+    }
+    openGenPreview(transcript);
+  }
+
+  // Renders the exact text about to be sent, plus who it's going to, and waits for an explicit
+  // Confirm click. Nothing is sent until that click — this is what makes the footnote below the
+  // button ("You'll see exactly what's sent and confirm before anything is generated.") true
+  // instead of aspirational.
+  function openGenPreview(transcript) {
+    var box = document.getElementById("pp-gen-preview");
+    var btn = document.getElementById("pp-generate");
+    if (!box) return;
+    box.textContent = "";
+
+    var np = view.notes_provider || null;
+    var providerName = np && np.name ? np.name : "the configured provider";
+
+    var heading = el("h3", "pp-gen-preview-title", "Review before sending");
+    heading.id = "pp-gen-preview-title";
+    heading.tabIndex = -1;
+    box.appendChild(heading);
+
+    box.appendChild(el("p", "pp-gen-preview-desc",
+      "This exact text (" + transcript.length + " characters) will be sent to " + providerName +
+      ". Nothing leaves this device until you press Confirm."));
+
+    // Untrusted transcript text → el() sets it via textContent, never innerHTML.
+    var text = el("div", "pp-gen-preview-text", transcript);
+    text.tabIndex = 0;
+    box.appendChild(text);
+
+    var actions = el("div", "pp-gen-preview-actions");
+    var cancel = el("button", "pp-gen-preview-cancel", "Cancel");
+    cancel.type = "button";
+    cancel.id = "pp-gen-preview-cancel";
+    cancel.addEventListener("click", function () { closeGenPreview(true); });
+    actions.appendChild(cancel);
+
+    var confirm = el("button", "pp-gen-preview-confirm", "Confirm — send to " + providerName);
+    confirm.type = "button";
+    confirm.id = "pp-gen-preview-confirm";
+    confirm.addEventListener("click", function () { confirmGenerate(transcript); });
+    actions.appendChild(confirm);
+    box.appendChild(actions);
+
+    box.setAttribute("role", "group");
+    box.setAttribute("aria-labelledby", "pp-gen-preview-title");
+    box.hidden = false;
+    if (btn) btn.hidden = true;
+    heading.focus();
+  }
+
+  function closeGenPreview(refocusButton) {
+    var box = document.getElementById("pp-gen-preview");
+    var btn = document.getElementById("pp-generate");
+    if (box) { box.hidden = true; box.textContent = ""; }
+    if (btn) {
+      btn.hidden = false;
+      if (refocusButton) btn.focus();
+    }
+  }
+
+  // The actual send — reachable ONLY from openGenPreview's Confirm button, and always with the
+  // SAME string the operator just read there (never re-read from window.scCompletedTranscript,
+  // which a live 1s poll could have advanced while the preview was open — "what you saw" and
+  // "what was sent" must be the same string, not just the same source).
+  function confirmGenerate(transcript) {
+    closeGenPreview(false);
     generating = true;
     var btn = document.getElementById("pp-generate");
     if (btn) { btn.setAttribute("aria-busy", "true"); btn.disabled = true; }
-    // This settings screen doesn't own a transcript; use the operator's completed transcript when
-    // the app exposes one, else an empty string. The backend enforces consent/config first, so
-    // nothing is fabricated and nothing leaves the device in the current build.
-    var transcript = (typeof window.scCompletedTranscript === "string") ? window.scCompletedTranscript : "";
     invoke("generate_sermon_notes", { transcript: transcript })
       .then(showGenResult)
       .catch(function (e) { showGenError("transport", String(e && e.message ? e.message : e)); })
@@ -637,10 +746,15 @@
       r.appendChild(optin);
       return;
     }
-    // quota_exceeded / transport / malformed → surface the message.
+    // quota_exceeded / transport / malformed / no_transcript / transcript_too_short → surface the
+    // message. The latter two (PERF-3) never reach here from a network response — onGenerate
+    // refuses before any call is made — so their label says exactly that: nothing was sent.
     r.className = "pp-gen-result pp-gen-err";
     r.setAttribute("role", "alert");
-    var label = code === "quota_exceeded" ? "Monthly limit reached" : "Couldn’t generate notes";
+    var label = code === "quota_exceeded" ? "Monthly limit reached"
+      : code === "no_transcript" ? "No transcript yet"
+      : code === "transcript_too_short" ? "Transcript too short"
+      : "Couldn’t generate notes";
     r.appendChild(el("span", "pp-gen-err-t", label + " — "));
     r.appendChild(el("span", null, message || ""));
   }

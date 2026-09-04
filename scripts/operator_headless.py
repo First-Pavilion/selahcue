@@ -70,7 +70,15 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # clear' (Cody L5), and PL AC-49's derived-range premise, without which a sweep over an
 # empty list would report 'all clear' forever (Quinn Q-N1). The REAL observed count, so
 # dropping either trips exit 4.)
-EXPECTED_MIN_CHECKS = 1121
+# (Raised 1121 -> 1179 for 86akby7d8's two blocking fixes, both mutation-verified RED/GREEN:
+# the "PP defect 1" checks drive window.scCompletedTranscript through the REAL app.js bridge
+# (render() with view.transcript segments, not a direct global poke) and would trip if that
+# wiring were ever silently removed again; the "PP F-5" / "PP PERF-3" checks assert Generate
+# never reaches generate_sermon_notes without an explicit Confirm on the review step showing
+# the exact text (plus the two focus-management a11y checks on that step), and that an
+# empty/below-minimum transcript is refused before any network call — the properties
+# Sana/Quinn/Vera made release-blocking. The REAL observed count.)
+EXPECTED_MIN_CHECKS = 1179
 
 
 def find_chrome():
@@ -4916,19 +4924,71 @@ DRIVER = r"""
       // (3) Generate — consent-gated end to end.
       ok(el("pp-consent-notes") && el("pp-consent-notes").getAttribute("role")==="switch" && el("pp-consent-notes").checked===false,
          "PP C-005: the cloud-notes consent switch reflects the backend (off) before opt-in");
+
+      // 86akby7d8 defect 1: the panel has no transcript store of its own — it reads app.js's
+      // bridge, window.scCompletedTranscript, set on every render() from the host-authoritative
+      // view.transcript (syncTranscript() in app.js) — exactly the FULL poll->render path the R3
+      // display checks above already exercise, not a shortcut. Before this fix nothing anywhere
+      // assigned that global, so it stayed "" and every Generate click sent an empty transcript.
+      // Drive it for real: render() with finalised segments, through the SAME render() the 1s
+      // poll invokes, then assert the bridge actually did its job before trusting it below.
+      var PP_TRANSCRIPT_SEGMENTS = [
+        { id: 601, text: "Good morning, church.", start_ms: 0, end_ms: 2000 },
+        { id: 602, text: "Turn with me to Isaiah sixty-one.", start_ms: 2000, end_ms: 5000 },
+        { id: 603, text: "This morning we consider what it means to be fed by grace, not by our own striving.", start_ms: 5000, end_ms: 9000 },
+      ];
+      var PP_TRANSCRIPT_FIXTURE =
+        "Good morning, church.\n" +
+        "Turn with me to Isaiah sixty-one.\n" +
+        "This morning we consider what it means to be fed by grace, not by our own striving.";
+      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS, partial_transcript: "and the crowd came back" }));
+      ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE,
+         "PP defect 1: render() with finalised segments populates window.scCompletedTranscript via the real app.js bridge, joined in order");
+      ok(window.scCompletedTranscript.indexOf("and the crowd came back") === -1,
+         "PP defect 1: the in-progress partial line is NEVER part of the completed transcript the bridge exposes");
+      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS })); // clear the partial, keep the segments
+      ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE,
+         "PP defect 1: the bridge is stable (same segments -> same completed transcript) once the partial clears");
+      // Persist into the mock's own view state too (not just this one-off render()): the REAL
+      // app.js 1s poll keeps running underneath this whole block (exactly as it does in the real
+      // app while the operator sits on Settings), and every reactivation below re-fetches
+      // invoke("view") — either would otherwise re-render from V's default (no transcript) and
+      // silently wipe window.scCompletedTranscript back to "" partway through this test.
+      V.transcript = PP_TRANSCRIPT_SEGMENTS;
+
+      // 86akby7d8 defect 2 / F-5 (Sana, escalated blocking by Quinn): Generate no longer sends on
+      // click — it opens a review step showing the exact text and waits for an explicit Confirm.
+      // This helper drives that two-step flow so the pre-existing outcome checks below don't have
+      // to duplicate it, and it re-asserts the core guarantee (no send without Confirm) on every
+      // single call site that exercises Generate — a regression back to send-on-click would fail
+      // here, not just in the dedicated F-5 block further down.
+      var ppGenerateAndConfirm = async function (waitAfterConfirm) {
+        var before = ppCall("generate_sermon_notes").length;
+        el("pp-generate").click();
+        await sleep(30);
+        ok(ppCall("generate_sermon_notes").length === before,
+           "PP F-5: clicking Generate alone never calls generate_sermon_notes — the review step opens first");
+        var confirmBtn = el("pp-gen-preview-confirm");
+        if (confirmBtn) confirmBtn.click();
+        await sleep(waitAfterConfirm || 70);
+      };
+
       // Generate with consent OFF → the backend returns consent_required → prompt to opt in.
       window.__ppGen = "not_configured";
-      el("pp-generate").click();
-      await sleep(70);
+      await ppGenerateAndConfirm(70);
       var genRes = el("pp-gen-result");
       ok(!!genRes && !genRes.hidden && genRes.getAttribute("role")==="alert" && /Turn on cloud processing/.test(genRes.textContent),
          "PP C-005: Generate with consent off surfaces a consent_required prompt (role=alert)");
       ok(!!el("pp-optin-retry"), "PP C-005: the consent_required prompt offers a one-click 'Opt in & generate'");
-      // Opt in & generate → grants notes consent then retries; the service is not configured → honest 'coming soon'.
+      // Opt in & generate → grants notes consent then retries (through the SAME review-and-confirm
+      // gate — opting in mid-flow does not bypass it); the service is not configured → 'coming soon'.
       el("pp-optin-retry").click();
-      await sleep(90);
+      await sleep(60);
       ok(ppCall("set_cloud_consent").some(function(c){return c.args.kind==="notes" && c.args.enabled===true;}),
          "PP C-005: 'Opt in & generate' grants cloud-notes consent (set_cloud_consent{notes,true})");
+      var confirmAfterOptin = el("pp-gen-preview-confirm");
+      if (confirmAfterOptin) confirmAfterOptin.click();
+      await sleep(60);
       var genRes2 = el("pp-gen-result");
       ok(!!genRes2 && genRes2.getAttribute("role")==="status" && /isn.t available in this build/i.test(genRes2.textContent),
          "PP C-005: with consent on but nothing configured, Generate says so honestly (role=status, not an error)");
@@ -4938,8 +4998,7 @@ DRIVER = r"""
       window.__pp.cloud_status = "key_missing";
       document.querySelector('.nav-item[data-surface="settings"]').click();
       await sleep(60);
-      el("pp-generate").click();
-      await sleep(70);
+      await ppGenerateAndConfirm(70);
       var genKey = el("pp-gen-result");
       ok(!!genKey && /OPENAI_API_KEY/.test(genKey.textContent) && /\.env/.test(genKey.textContent),
          "PP C-010: under key_missing the SAME not_configured code renders the actionable missing-key message instead");
@@ -4951,8 +5010,7 @@ DRIVER = r"""
       ok(el("pp-consent-notes").checked===true, "PP C-005: the consent switch now reflects the granted consent");
       // Now simulate a configured service returning a draft.
       window.__ppGen = "ok";
-      el("pp-generate").click();
-      await sleep(80);
+      await ppGenerateAndConfirm(80);
       var genOk = el("pp-gen-result");
       ok(!!genOk && genOk.classList.contains("pp-gen-ok") && /Grace That Feeds/.test(genOk.textContent),
          "PP C-005: a successful generation renders the returned draft (title + sections)");
@@ -4988,21 +5046,21 @@ DRIVER = r"""
          "PP C-006: a successful generation with no metering leaves the honest quota placeholder alone");
 
       // (C-005 — the terminal generate outcomes each surface honestly; consent is on from the opt-in above.)
-      window.__ppGen = "quota_exceeded"; el("pp-generate").click(); await sleep(70);
+      window.__ppGen = "quota_exceeded"; await ppGenerateAndConfirm(70);
       var gQ = el("pp-gen-result");
       ok(gQ.getAttribute("role")==="alert" && /Monthly limit reached/.test(gQ.textContent),
          "PP C-005: quota_exceeded surfaces 'Monthly limit reached' (role=alert)");
-      window.__ppGen = "transport"; el("pp-generate").click(); await sleep(70);
+      window.__ppGen = "transport"; await ppGenerateAndConfirm(70);
       var gT = el("pp-gen-result");
       ok(gT.getAttribute("role")==="alert" && /Couldn’t generate notes/.test(gT.textContent),
          "PP C-005: a transport failure (rejected invoke) surfaces 'Couldn’t generate notes' (role=alert)");
-      window.__ppGen = "malformed"; el("pp-generate").click(); await sleep(70);
+      window.__ppGen = "malformed"; await ppGenerateAndConfirm(70);
       var gM = el("pp-gen-result");
       ok(gM.getAttribute("role")==="alert" && /Couldn’t generate notes/.test(gM.textContent),
          "PP C-005: a malformed response surfaces 'Couldn’t generate notes' (role=alert)");
       // A degraded (local fallback) success renders the draft with a 'Local draft' badge — and,
       // following the errors above, the result region is role=status, NOT a lingering alert (L1).
-      window.__ppGen = "degraded"; el("pp-generate").click(); await sleep(80);
+      window.__ppGen = "degraded"; await ppGenerateAndConfirm(80);
       var gD = el("pp-gen-result");
       ok(gD.classList.contains("pp-gen-ok") && /Local draft/.test(gD.textContent),
          "PP C-005: a degraded generation renders the draft with a 'Local draft' badge (FR-135)");
@@ -5021,6 +5079,95 @@ DRIVER = r"""
       ok(gD.getAttribute("role")==="status",
          "PP C-005 (L1): a success after an error is announced as role=status, not a lingering alert");
       window.__ppGen = "ok"; // restore for any later reads
+
+      // === (F-5 / PERF-3) The review-and-confirm step is real, and an empty/below-minimum
+      // transcript is refused before any network call — 86akby7d8 ============================
+      // The footnote under Generate promises "You'll see exactly what's sent and confirm before
+      // anything is generated." Before this fix nothing enforced that: onGenerate sent on the
+      // same click (Sana F-5, escalated to release-blocking by Quinn — both read the shipped
+      // onGenerate themselves rather than take the gap on description). These checks fail if
+      // that regresses in EITHER direction: Generate reaching the network without an explicit
+      // Confirm, or Confirm sending something other than what the review step displayed.
+
+      // (a) PERF-3 (Vera): an empty transcript is refused before any network call, not sent —
+      // the guard that stops a mis-wire (defect 1) silently billing for a fabricated draft again.
+      // Driven through the REAL bridge (V.transcript + render()), not a direct global override —
+      // an empty FINALISED-segment list is what the host actually reports before any speech.
+      V.transcript = [];
+      render(Object.assign({}, baseView, { transcript: [] }));
+      ok(window.scCompletedTranscript === "", "PP defect 1: an empty transcript array bridges to \"\", not undefined or a stale value");
+      var genBeforeEmpty = ppCall("generate_sermon_notes").length;
+      el("pp-generate").click();
+      await sleep(40);
+      ok(ppCall("generate_sermon_notes").length === genBeforeEmpty,
+         "PP PERF-3: an empty transcript never reaches generate_sermon_notes — refused before the network call");
+      ok(el("pp-gen-preview").hidden === true,
+         "PP PERF-3: an empty transcript does not open the review step either — there is nothing to review");
+      var genEmptyRes = el("pp-gen-result");
+      ok(!!genEmptyRes && !genEmptyRes.hidden && /No transcript yet/.test(genEmptyRes.textContent),
+         "PP PERF-3: an empty transcript surfaces its own honest 'No transcript yet' state");
+
+      // (b) PERF-3: a below-floor, non-empty transcript (noise, not silence) is refused the same
+      // way, and distinguishably — the empty and near-empty cases say different true things.
+      V.transcript = [{ id: 701, text: "uh", start_ms: 0, end_ms: 300 }];
+      render(Object.assign({}, baseView, { transcript: V.transcript }));
+      ok(window.scCompletedTranscript === "uh", "PP defect 1: a single short segment bridges byte for byte");
+      el("pp-generate").click();
+      await sleep(40);
+      ok(ppCall("generate_sermon_notes").length === genBeforeEmpty,
+         "PP PERF-3: a below-minimum transcript never reaches generate_sermon_notes either");
+      var genShortRes = el("pp-gen-result");
+      ok(!!genShortRes && /too short/i.test(genShortRes.textContent) && !/No transcript yet/.test(genShortRes.textContent),
+         "PP PERF-3: a below-minimum (but non-empty) transcript surfaces 'too short', distinct from the empty case");
+
+      // (c) F-5: a real transcript opens a review step showing the EXACT string about to be sent,
+      // and calling generate_sermon_notes has still not happened.
+      V.transcript = PP_TRANSCRIPT_SEGMENTS;
+      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS }));
+      ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE, "PP defect 1: the fixture transcript is back via the real bridge before the review-step checks");
+      var genBeforeReview = ppCall("generate_sermon_notes").length;
+      el("pp-generate").click();
+      await sleep(40);
+      var previewBox = el("pp-gen-preview");
+      ok(!!previewBox && previewBox.hidden === false, "PP F-5: Generate opens the review step instead of sending");
+      // hidden-attr-vs-css-display trap (this webview): assert COMPUTED display, not just the
+      // cleared [hidden] attribute — a class display rule has defeated `hidden` here before.
+      ok(getComputedStyle(previewBox).display !== "none",
+         "PP F-5 (computed display): the review step is actually visible on screen, not defeated by a CSS display rule");
+      var previewText = previewBox.querySelector(".pp-gen-preview-text");
+      ok(!!previewText && previewText.textContent === PP_TRANSCRIPT_FIXTURE,
+         "PP F-5: the review step shows the EXACT text that will be sent, byte for byte");
+      ok(new RegExp(String(PP_TRANSCRIPT_FIXTURE.length) + " characters").test(previewBox.textContent),
+         "PP F-5: the review step states how much text is about to be sent");
+      ok(document.activeElement && document.activeElement.id === "pp-gen-preview-title",
+         "PP F-5 a11y: opening the review step moves focus into it (a screen reader hears 'Review before sending', not silence)");
+      ok(ppCall("generate_sermon_notes").length === genBeforeReview,
+         "PP F-5: opening the review step alone still has not called generate_sermon_notes");
+      ok(el("pp-generate").hidden === true,
+         "PP F-5: the Generate button is hidden while its own review step is open (no double-fire path)");
+
+      // (d) F-5: Cancel sends nothing and returns the panel to idle.
+      el("pp-gen-preview-cancel").click();
+      await sleep(30);
+      ok(ppCall("generate_sermon_notes").length === genBeforeReview,
+         "PP F-5: Cancel never calls generate_sermon_notes");
+      ok(el("pp-gen-preview").hidden === true, "PP F-5: Cancel closes the review step");
+      ok(el("pp-generate").hidden === false, "PP F-5: Cancel restores the Generate button");
+      ok(document.activeElement === el("pp-generate"),
+         "PP F-5 a11y: Cancel returns keyboard focus to Generate, not to whatever the browser defaults to");
+
+      // (e) F-5: Confirm sends the SAME string the review step displayed, and only once pressed.
+      el("pp-generate").click();
+      await sleep(40);
+      el("pp-gen-preview-confirm").click();
+      await sleep(70);
+      var sentCall = ppLast("generate_sermon_notes");
+      ok(!!sentCall && sentCall.args.transcript === PP_TRANSCRIPT_FIXTURE,
+         "PP F-5: Confirm sends the exact transcript the review step displayed — not a re-read that could have drifted");
+      ok(el("pp-gen-preview").hidden === true, "PP F-5: the review step closes once Confirm is pressed");
+      window.__ppGen = "ok"; // restore for any later reads
+      V.transcript = undefined; V.partial_transcript = undefined; // undo the persistent override above
+      render(baseView); // clears view.transcript back to the default so the trailing 1s poll stays consistent
 
       // === (C-010) THE FOUR PROVIDER STATES — 86akby7d8 ==================================
       // The panel's rendered state must match the backend's reported state in every one of them.

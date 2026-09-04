@@ -4048,6 +4048,18 @@
           all.length > MAX_TRANSCRIPT_ROWS ? all.slice(-MAX_TRANSCRIPT_ROWS) : all;
         const partial =
           typeof view.partial_transcript === "string" ? view.partial_transcript : "";
+        // Bridge to the Providers & Privacy "Generate" flow (settings.js), which owns no
+        // transcript store of its own and reads this global rather than a second channel
+        // (86akby7d8 defect 1: nothing ever set this before, so every Generate click sent ""
+        // and billed for a fully fabricated draft). FINALISED segments only — never `partial`,
+        // which by definition is not yet part of the "completed transcript" FR-132 promises is
+        // all that's ever sent. `all` is already the host-tailed bounded list
+        // (OPERATOR_TRANSCRIPT_TAIL), so this stays bounded exactly like the rendered log does:
+        // it is the recent tail, not a persisted full-service transcript — no such store exists
+        // on the frontend yet (that's FR-130's post-service workspace, not built here).
+        window.scCompletedTranscript = all
+          .map((s) => (s && typeof s.text === "string") ? s.text : "")
+          .join("\n");
         const empty = document.getElementById("transcript-empty");
         // The live in-progress line (streaming interim). Updated EVERY poll — before the log's
         // change-key early-return — so recognised words appear as they're spoken even when the
