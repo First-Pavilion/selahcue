@@ -78,7 +78,27 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # the exact text (plus the two focus-management a11y checks on that step), and that an
 # empty/below-minimum transcript is refused before any network call — the properties
 # Sana/Quinn/Vera made release-blocking. The REAL observed count.)
-EXPECTED_MIN_CHECKS = 1179
+# (Raised 1179 -> 1184 for the PR #19 four-reviewer remediation batch (86akby7d8), all four
+# mutation-verified RED/GREEN:
+#   M-1 (Cody) — two new "PP F-5 M-1 (computed display)" checks assert getComputedStyle(...)
+#   .display === "none" on #pp-gen-preview after Cancel AND after Confirm. The prior checks only
+#   read the `hidden` DOM property, which is exactly the direction this webview's [hidden]-vs-
+#   author-`display` trap bites; these read what is actually painted, backed by the
+#   .pp-gen-preview[hidden]{display:none} companion rule added to dist/app.css.
+#   L-1 (Sana, Quinn — independently) — "PP F-5 L-1" premise + negative check. The transcript is
+#   now advanced through the REAL render() path (PP_TRANSCRIPT_SEGMENTS_ADVANCED) WHILE the
+#   preview sits open, then the sent transcript is asserted to be the PREVIEWED fixture and NOT
+#   the advanced one — so a confirmGenerate regressed to re-read window.scCompletedTranscript at
+#   send time (instead of using the value it was handed) now has something to disagree with.
+#   L-2 (Quinn, Cody, Vera — independently) — "PP F-5 L-2" pins the new
+#   .pp-gen-preview-scope disclosure copy verbatim, so the preview says in words that it may be
+#   drawn from a recent window rather than the whole service.
+#   L-3 (Vera, note) — two "PP L-3" checks drive 125 segments (over MAX_TRANSCRIPT_ROWS=120)
+#   through the real render() path and assert window.scCompletedTranscript matches the SAME
+#   120-tail #transcript-log renders from, not the unsliced list — the bridge was changed from
+#   `all.map(...)` to `segs.map(...)` in app.js's syncTranscript() to make that true.
+# The REAL observed count (1179 + 5 + 2 = 1186).)
+EXPECTED_MIN_CHECKS = 1186
 
 
 def find_chrome():
@@ -4949,6 +4969,23 @@ DRIVER = r"""
       render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS })); // clear the partial, keep the segments
       ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE,
          "PP defect 1: the bridge is stable (same segments -> same completed transcript) once the partial clears");
+
+      // L-3 (Vera, note — 86akby7d8 remediation): the bridge must map the SAME capped list the
+      // DOM renders from (`segs`, MAX_TRANSCRIPT_ROWS=120), not the unsliced `all` — so if a host
+      // ever returns more than the DOM's own defensive cap, "what Generate sends" and "what the
+      // transcript log shows" never disagree about what "the transcript" is.
+      var PP_OVERCAP_SEGMENTS = [];
+      for (var ppOc = 0; ppOc < 125; ppOc++) {
+        PP_OVERCAP_SEGMENTS.push({ id: 900 + ppOc, text: "seg" + ppOc, start_ms: ppOc * 100, end_ms: ppOc * 100 + 90 });
+      }
+      render(Object.assign({}, baseView, { transcript: PP_OVERCAP_SEGMENTS }));
+      var ppOvercapExpected = PP_OVERCAP_SEGMENTS.slice(-120).map(function (s) { return s.text; }).join("\n");
+      ok(window.scCompletedTranscript === ppOvercapExpected,
+         "PP L-3: over the DOM's own 120-segment cap, the Generate bridge reflects the SAME tail #transcript-log renders, not the unsliced list");
+      ok(window.scCompletedTranscript.indexOf("seg0") === -1,
+         "PP L-3: ...specifically, the oldest over-cap segment is excluded — proving this is actually capped, not coincidentally equal");
+      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS })); // restore the fixture for the checks below
+
       // Persist into the mock's own view state too (not just this one-off render()): the REAL
       // app.js 1s poll keeps running underneath this whole block (exactly as it does in the real
       // app while the operator sits on Settings), and every reactivation below re-fetches
@@ -5139,6 +5176,16 @@ DRIVER = r"""
          "PP F-5: the review step shows the EXACT text that will be sent, byte for byte");
       ok(new RegExp(String(PP_TRANSCRIPT_FIXTURE.length) + " characters").test(previewBox.textContent),
          "PP F-5: the review step states how much text is about to be sent");
+      // L-2 (Quinn, Cody, Vera — independently): the preview is honest about the byte count but
+      // said nothing about SCOPE — window.scCompletedTranscript is the operator's bounded recent
+      // tail (app.js's syncTranscript), not a full-service store (that's FR-130, not built), so a
+      // 45-minute sermon previews as a confident, complete-looking draft built from its last few
+      // minutes. Pin the disclosure copy exactly — unpinned copy is how F-5's promise rotted once.
+      var previewScope = previewBox.querySelector(".pp-gen-preview-scope");
+      ok(!!previewScope && previewScope.textContent ===
+         "This is drawn from the most recently transcribed speech, not the whole service — for a " +
+         "long sermon, that may be just the last few minutes.",
+         "PP F-5 L-2: the review step discloses that this may be a recent window, not the whole service (exact copy pinned)");
       ok(document.activeElement && document.activeElement.id === "pp-gen-preview-title",
          "PP F-5 a11y: opening the review step moves focus into it (a screen reader hears 'Review before sending', not silence)");
       ok(ppCall("generate_sermon_notes").length === genBeforeReview,
@@ -5152,6 +5199,12 @@ DRIVER = r"""
       ok(ppCall("generate_sermon_notes").length === genBeforeReview,
          "PP F-5: Cancel never calls generate_sermon_notes");
       ok(el("pp-gen-preview").hidden === true, "PP F-5: Cancel closes the review step");
+      // M-1 (Cody): the DOM `hidden` property alone is not proof the panel left the layout — this
+      // webview's known trap is an author `display` rule outranking the UA `[hidden]{display:none}`
+      // rule, which is exactly the direction the check above cannot see. Assert COMPUTED display,
+      // the same discipline the OPEN-direction check a few lines up already applies.
+      ok(getComputedStyle(el("pp-gen-preview")).display === "none",
+         "PP F-5 M-1 (computed display): Cancel actually removes the panel from layout, not just the [hidden] attribute");
       ok(el("pp-generate").hidden === false, "PP F-5: Cancel restores the Generate button");
       ok(document.activeElement === el("pp-generate"),
          "PP F-5 a11y: Cancel returns keyboard focus to Generate, not to whatever the browser defaults to");
@@ -5159,12 +5212,34 @@ DRIVER = r"""
       // (e) F-5: Confirm sends the SAME string the review step displayed, and only once pressed.
       el("pp-generate").click();
       await sleep(40);
+      // L-1 (Sana and Quinn, independently): the check below used to compare the sent transcript
+      // to PP_TRANSCRIPT_FIXTURE without ever moving the transcript between preview-open and
+      // Confirm — so a captured value and a fresh re-read of window.scCompletedTranscript were
+      // trivially identical and the check could not fail under the mutation it claims to guard
+      // against (confirmGenerate re-reading the global instead of using the value it was handed).
+      // Advance the transcript through the REAL render() path while the preview sits open — exactly
+      // what the live 1s poll would do during a real review — so the two are actually different.
+      var PP_TRANSCRIPT_SEGMENTS_ADVANCED = PP_TRANSCRIPT_SEGMENTS.concat([
+        { id: 604, text: "And now the congregation begins to respond.", start_ms: 9000, end_ms: 12000 },
+      ]);
+      var PP_TRANSCRIPT_FIXTURE_ADVANCED =
+        PP_TRANSCRIPT_FIXTURE + "\nAnd now the congregation begins to respond.";
+      V.transcript = PP_TRANSCRIPT_SEGMENTS_ADVANCED;
+      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS_ADVANCED }));
+      // Positive control: prove the transcript genuinely advanced underneath the open preview
+      // before trusting the control below to have caught anything.
+      ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE_ADVANCED,
+         "PP F-5 L-1 (premise): the bridge really did advance past what the open preview is showing, while the preview stayed open");
       el("pp-gen-preview-confirm").click();
       await sleep(70);
       var sentCall = ppLast("generate_sermon_notes");
       ok(!!sentCall && sentCall.args.transcript === PP_TRANSCRIPT_FIXTURE,
          "PP F-5: Confirm sends the exact transcript the review step displayed — not a re-read that could have drifted");
+      ok(!!sentCall && sentCall.args.transcript !== PP_TRANSCRIPT_FIXTURE_ADVANCED,
+         "PP F-5 L-1: ...and specifically NOT the transcript that advanced underneath the open preview (a re-read-at-send regression sends this)");
       ok(el("pp-gen-preview").hidden === true, "PP F-5: the review step closes once Confirm is pressed");
+      ok(getComputedStyle(el("pp-gen-preview")).display === "none",
+         "PP F-5 M-1 (computed display): Confirm actually removes the panel from layout, not just the [hidden] attribute");
       window.__ppGen = "ok"; // restore for any later reads
       V.transcript = undefined; V.partial_transcript = undefined; // undo the persistent override above
       render(baseView); // clears view.transcript back to the default so the trailing 1s poll stays consistent

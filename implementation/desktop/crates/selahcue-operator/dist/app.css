@@ -6861,6 +6861,10 @@
 
 /* Review-before-send preview (F-5): what the operator sees between Generate and the actual send. */
 .pp-gen-preview { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 11px; border: 1px solid var(--sc-preview-border); background: var(--sc-preview-soft); }
+/* The class `display: flex` above outranks the UA `[hidden]{display:none}`, so without this the
+   panel stays laid out — an empty bordered box — after closeGenPreview() sets `hidden` (M-1,
+   Cody). Same trap and same fix as .pm-media-body[hidden] / .rcv[hidden] elsewhere in this file. */
+.pp-gen-preview[hidden] { display: none; }
 .pp-gen-preview-title { margin: 0; font-size: 13px; font-weight: 700; color: var(--sc-text); }
 .pp-gen-preview-title:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
 .pp-gen-preview-desc { margin: 0; font-size: 12px; font-weight: 500; color: var(--sc-text-secondary); line-height: 1.5; }

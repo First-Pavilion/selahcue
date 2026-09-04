@@ -573,6 +573,16 @@
       "This exact text (" + transcript.length + " characters) will be sent to " + providerName +
       ". Nothing leaves this device until you press Confirm."));
 
+    // L-2 (Quinn, Cody, Vera — independently): the description above is true but incomplete.
+    // `transcript` is window.scCompletedTranscript, which is the operator's bounded RECENT tail
+    // (app.js's syncTranscript(), not a full-service store — FR-130 is that store and isn't built
+    // yet), so after a long sermon this preview is honestly small while still reading as complete.
+    // Say so here, where the operator is actually looking, not only in a code comment or the PR
+    // body — a later engineer would find those; the operator reviewing THIS draft would not.
+    box.appendChild(el("p", "pp-gen-preview-desc pp-gen-preview-scope",
+      "This is drawn from the most recently transcribed speech, not the whole service — for a " +
+      "long sermon, that may be just the last few minutes."));
+
     // Untrusted transcript text → el() sets it via textContent, never innerHTML.
     var text = el("div", "pp-gen-preview-text", transcript);
     text.tabIndex = 0;

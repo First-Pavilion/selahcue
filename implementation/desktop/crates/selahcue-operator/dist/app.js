@@ -4057,7 +4057,13 @@
         // (OPERATOR_TRANSCRIPT_TAIL), so this stays bounded exactly like the rendered log does:
         // it is the recent tail, not a persisted full-service transcript — no such store exists
         // on the frontend yet (that's FR-130's post-service workspace, not built here).
-        window.scCompletedTranscript = all
+        //
+        // Maps `segs` (the same MAX_TRANSCRIPT_ROWS-capped list #transcript-log renders from),
+        // not the unsliced `all` (L-3, Vera): nothing bites today — the 240-segment core log
+        // bounds `all` upstream and the 400k clamp bounds the request downstream — but bridging
+        // from the same capped list keeps this bound symmetric with the DOM cap that exists for
+        // exactly the case (a misbehaving/older/newer host skipping its own tail) that cap is for.
+        window.scCompletedTranscript = segs
           .map((s) => (s && typeof s.text === "string") ? s.text : "")
           .join("\n");
         const empty = document.getElementById("transcript-empty");
