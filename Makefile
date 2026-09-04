@@ -287,6 +287,7 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	$(CARGO) test $(WS) -p selahcue-scripture --features download --no-fail-fast
 	$(CARGO) check $(OP)
 	$(CARGO) test $(OP) --no-fail-fast
+	$(CARGO) test $(OP) --features dev-keys --no-fail-fast
 	python3 scripts/operator_headless.py
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 	@echo ""

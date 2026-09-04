@@ -31,6 +31,13 @@ stt = ["dep:selahcue-stt"]
 # the shell honestly reports the cloud provider as "not configured" (the live service does not
 # exist yet). Enable to reach a real SelahCue endpoint (`SELAHCUE_CLOUD_URL` + stored token).
 cloud-live = ["selahcue-cloud/http", "selahcue-cloud/keyring"]
+# Developer AI provider keys read from the repo-root `.env` at startup (src/dev_env.rs). OFF by
+# default, and it must stay that way: with the feature off, the file read is not compiled into the
+# binary at all, so a release build cannot pick a credential up from a stray `.env` on the machine
+# it happens to run on. This is temporary scaffolding for the developer-key phase — the shipping
+# path is a server-minted Deepgram grant token and a proxied sermon-notes service — so nothing
+# should come to depend on it. Enable for local AI work: `cargo run --features dev-keys`.
+dev-keys = []
 
 [dependencies]
 tauri = { version = "2", features = [] }

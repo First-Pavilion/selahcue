@@ -55,6 +55,11 @@ use selahcue_present::{DeckId, SlideId};
 /// is strictly worse than shipping it unused.
 mod media_store;
 
+/// Developer AI provider keys from the repo-root `.env` (feature `dev-keys`; OFF by default, and
+/// the file read is not compiled in without it). Temporary scaffolding for the developer-key
+/// phase — the module's own docs name what replaces it.
+mod dev_env;
+
 /// Where the operator commands are dispatched: a remote host output window, or an
 /// in-process demo controller.
 enum Backend {
@@ -3027,6 +3032,9 @@ fn make_secret_store() -> Box<dyn selahcue_cloud::SecretStore + Send + Sync> {
 }
 
 fn main() {
+    // FIRST, before any thread exists: export the developer AI provider keys from the repo-root
+    // `.env`. A no-op — and no file read at all — in a build without the `dev-keys` feature.
+    dev_env::load();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {

@@ -8,6 +8,9 @@ target/
 *.log
 .env
 .env.*
+# ...but the sample MUST be committed: it is how a new developer learns which variables to
+# supply. It carries names only, never a value. See .env.sample and the operator's dev_env.rs.
+!.env.sample
 
 # Flutter/SwiftPM sometimes scaffolds an iOS SourcePackages dir at this level.
 implementation/build/
