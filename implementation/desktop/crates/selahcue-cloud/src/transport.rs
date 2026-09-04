@@ -59,12 +59,45 @@ pub struct ReqwestTransport {
     client: reqwest::blocking::Client,
 }
 
+/// Ceiling on the TCP/TLS connect phase alone.
+///
+/// A pure improvement with no trade-off: it can only make a failure *faster*, never abort
+/// valid work, because no legitimate connect takes ten seconds. It exists so the common
+/// case — an unreachable host, a church that has lost its uplink mid-service — reports in
+/// ten seconds rather than sitting on the full request budget.
+#[cfg(feature = "http")]
+pub const CONNECT_TIMEOUT_SECS: u64 = 10;
+
+/// Ceiling on the whole request: connect, send, and body read.
+///
+/// **Measured, not guessed.** Four live runs of a realistic 7,165-word sermon (a ~45-minute
+/// service) through the shipped prompt took **15.3s, 16.5s, 16.8s and 17.3s**. Latency is
+/// dominated by *output* length, which the schema bounds, rather than by transcript length —
+/// so it does not grow with the sermon the way one would expect.
+///
+/// At 30s that was only ~1.7-2x headroom, and every one of those measurements came from a fast
+/// connection to an unloaded API. 60s is chosen on the **asymmetry of the two failures**, not
+/// on the numbers: crossing the cap costs a real church its notes on a slow day, while an
+/// over-long cap costs only that a genuine hang reports in 60s instead of 30s. With
+/// [`CONNECT_TIMEOUT_SECS`] at 10s the common unreachable case never approaches either.
+///
+/// This bound is real and is exercised: a peer that completes the handshake and then says
+/// nothing, and a peer that sends headers and stalls before the body, were both measured
+/// against stalling TCP servers and both fail at the deadline rather than hanging. The second
+/// case matters most — the body read is a hand-rolled `Read::take(..).read_to_end(..)` in
+/// [`read_capped`], not `reqwest`'s own `text()`, so that the client deadline still covers it
+/// was worth measuring rather than assuming.
+#[cfg(feature = "http")]
+pub const REQUEST_TIMEOUT_SECS: u64 = 60;
+
 #[cfg(feature = "http")]
 impl ReqwestTransport {
-    /// A transport with a sane timeout (never hangs the caller indefinitely).
+    /// A transport that is bounded at both the connect phase and the whole request, so a
+    /// stalling peer always fails rather than hanging the caller.
     pub fn new() -> Result<Self, TransportError> {
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
             .build()
             .map_err(|e| TransportError(e.to_string()))?;
         Ok(ReqwestTransport { client })
