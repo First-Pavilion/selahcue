@@ -160,6 +160,85 @@
 
 /* --------------------------------------------------------------------- actions ----- */
 
+/* The "Forgot your password?" row inside a form — right-aligned under the password
+   field, matching Sign in `505:124`. A real link, not a button styled as one, because it
+   navigates. */
+.au-inline-link {
+  margin: -4px 0 4px;
+  text-align: right;
+  font-size: 13px;
+}
+
+.au-inline-link a {
+  color: var(--sc-primary);
+  text-decoration: none;
+}
+
+.au-inline-link a:hover {
+  text-decoration: underline;
+}
+
+/* The terms checkbox on create-account. The whole row is the label, and the 6px padding
+   plus the 20px line box carries it to the 44px effective target the auth handoff §12
+   requires — an 18px box on its own would be well under it. */
+.au-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 2px 0 6px;
+  /* 20px line box + 12px top + 12px bottom = 44px, the minimum effective target the auth
+     handoff §12 requires. The headless suite measures the computed height rather than
+     trusting this arithmetic, which is how the first attempt at 6px was caught. */
+  padding: 12px 0;
+  font-size: 13.5px;
+  line-height: 20px;
+  color: var(--sc-text-secondary);
+  cursor: pointer;
+}
+
+.au-check input {
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  flex-shrink: 0;
+  accent-color: var(--sc-primary);
+}
+
+.au-check a {
+  color: var(--sc-primary);
+}
+
+/* Select styled to match `.field-input` exactly — same well, same 44px height, so the
+   country row does not read as a different kind of control from the ones above it. */
+.au-select {
+  width: 100%;
+  height: 44px;
+  background: var(--sc-elevated);
+  border: 1px solid var(--sc-border);
+  border-radius: 10px;
+  padding: 0 14px;
+  font-family: var(--font-family);
+  font-size: 15px;
+  color: var(--sc-text);
+  box-sizing: border-box;
+}
+
+.au-select:focus {
+  outline: none;
+  border-color: var(--sc-primary);
+  box-shadow: 0 0 0 3px rgba(110, 92, 240, 0.25);
+}
+
+.au-field-error {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 0 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--sc-live);
+}
+
 .au-actions {
   display: flex;
   flex-direction: column;

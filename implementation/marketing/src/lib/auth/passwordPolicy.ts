@@ -3,20 +3,32 @@
  *
  * THIS IS A CORRECTNESS REQUIREMENT, NOT VALIDATION POLISH.
  *
- * `confirm_password_reset` (`selahcue_api/apps/accounts/services.py:726`) calls
- * `_validate_password` at line 732 — BEFORE it looks up the token at line 733 — and both
- * the password check and every token check raise the same `VALIDATION_FAILED`. The client
- * cannot tell them apart.
+ * THE ORDERING THIS HEADER USED TO STATE IS NO LONGER TRUE, and correcting it is the
+ * point. It read: "`confirm_password_reset` (`services.py:726`) calls `_validate_password`
+ * at line 732 — BEFORE it looks up the token at line 733 — and both raise the same
+ * `VALIDATION_FAILED`, so the client cannot tell them apart." FR-551 (PR #16, merged into
+ * this branch at `33237c0`) reversed exactly that, and this is the third copy of the claim
+ * this branch has had to correct after `account.ts` and `ResetView.vue`. On the merged
+ * tree the function validates the TOKEN first — fingerprint, purpose, consumed, expiry,
+ * `services.py:1185`-`1206`, all collapsed to one `VALIDATION_FAILED` — and only then the
+ * password, at `services.py:1245`, where it raises the DISTINCT `PASSWORD_INVALID`.
  *
- * So without this module: a user types a 6-character password, the server rejects the
- * PASSWORD, the page can only read "VALIDATION_FAILED" and shows R4 — "this reset link
- * didn't work". The user's link is perfectly fine. They go and request a new one, type
- * the same short password, hit the same wall, and conclude the product is broken.
+ * The module is not thereby redundant, and its reasons never depended on the ordering:
  *
- * With this module, no request outside the accepted range is ever sent, so a
- * `VALIDATION_FAILED` from that mutation can be honestly attributed to the token.
+ *   - `PASSWORD_INVALID` deliberately carries NO policy detail (`graphql/errors.py:26-28`),
+ *     so the server can say "that password was refused" and this module is the only thing
+ *     able to say WHICH rule refused it and what to type instead.
+ *   - A password this client can reject costs no round trip and no rate-limit slot.
+ *   - `register_customer_user` still collapses a bad password into the undifferentiated
+ *     `VALIDATION_FAILED` — `_validate_password`'s DEFAULT code — so on `/signup` the
+ *     original mis-attribution is live and this module is the whole of the defence.
  *
- * Mirrors `_validate_password` (services.py:273-279) exactly:
+ * What is gone is the claim that a short password on `/reset` reads as a dead link. It no
+ * longer does: `ResetView.vue` branches on `PASSWORD_INVALID` and says the link still
+ * works. See `lib/api/account.ts` for the caller contract.
+ *
+ * Mirrors `_validate_password` (services.py, `MIN_PASSWORD_LENGTH`..`MAX_PASSWORD_LENGTH`)
+ * exactly:
  *   - reject a password that is empty or ONLY whitespace (`not password.strip()`)
  *   - reject length outside MIN..MAX inclusive (`MIN <= len(password) <= MAX`)
  *   - nothing else — the rule is LENGTH ONLY. There is no complexity requirement.
@@ -27,6 +39,8 @@
  * Pure and dependency-free on purpose: no Vue, no DOM, no fetch — so it can be unit
  * tested directly under `node --test`.
  */
+
+import { codePointLength, serviceStrip } from './serviceText.ts'
 
 /** `ACCOUNT_MIN_PASSWORD_LENGTH` (settings.py:273). */
 export const MIN_PASSWORD_LENGTH = 10
@@ -42,14 +56,15 @@ export const PASSWORDS_DO_NOT_MATCH = 'Both passwords must match.'
 /**
  * Count characters the way Python's `len()` does — by code point, not UTF-16 code unit.
  *
- * This is not pedantry. JavaScript's `.length` counts surrogate pairs twice, so five
- * emoji measure 10 in JS and 5 in Python. Using `.length` would let a 5-emoji password
- * pass the client and be rejected by the server — reopening exactly the mis-attribution
- * this module exists to close, just for a narrower set of inputs.
+ * RE-EXPORTED, NOT DEFINED HERE. LOW-12 (Cody): this was called `passwordLength`, and
+ * `signupPolicy.validateSignup` called it on org names, display names and email addresses
+ * against three Django `max_length`s that have nothing to do with passwords. The behaviour
+ * was always right; the NAME sent a reader checking `CustomerOrg.name` into a password
+ * module. The definition now lives in `serviceText.ts` as `codePointLength`, beside the
+ * other places a JavaScript builtin and its Python twin disagree, and this line exists so
+ * a password caller can still get its length rule from its own policy module.
  */
-export function passwordLength(password: string): number {
-  return [...password].length
-}
+export { codePointLength } from './serviceText.ts'
 
 export interface NewPasswordErrors {
   password?: string
@@ -64,18 +79,22 @@ export interface NewPasswordErrors {
  */
 export function validateNewPassword(password: string, confirmPassword: string): NewPasswordErrors {
   const errors: NewPasswordErrors = {}
-  const length = passwordLength(password)
+  const length = codePointLength(password)
 
   if (length < MIN_PASSWORD_LENGTH) {
     // Covers the empty field too — the design uses one message for both.
     errors.password = PASSWORD_TOO_SHORT
   } else if (length > MAX_PASSWORD_LENGTH) {
     errors.password = PASSWORD_TOO_LONG
-  } else if (password.trim() === '') {
+  } else if (serviceStrip(password) === '') {
     // Long enough, but `_validate_password`'s `not password.strip()` guard still rejects
     // it. A password of twelve spaces is the second way to be wrongly told your link is
     // dead. Note the guard is checked only AFTER length so that a short all-space entry
     // still gets the primary length message.
+    //
+    // `serviceStrip`, not `.trim()` (Sana, PR #17): a password of twelve U+001C passed
+    // this check and failed `not password.strip()` on the server, which is the same
+    // mis-attribution one character class over. See `serviceText.ts`.
     errors.password = PASSWORD_ONLY_SPACES
   }
 

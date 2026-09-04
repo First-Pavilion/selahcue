@@ -8,6 +8,7 @@
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
     "test": "node --test \"tests/*.test.ts\"",
+    "test:mirrors": "python3 scripts/service_text_reference.py",
     "test:states": "npm run build && python3 scripts/auth_pages_headless.py"
   },
   "dependencies": {
