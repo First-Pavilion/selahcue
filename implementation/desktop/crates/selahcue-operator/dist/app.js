@@ -5889,7 +5889,12 @@
             emptySub.textContent =
               "Detections appear the moment a reference or quote is recognised" +
               (detHealth.provider ? " (" + detHealth.provider + ")" : "") +
-              ". Nothing stages or goes live on its own — it stays operator-confirmed (FR-115).";
+              ". Nothing stages or goes live on its own — it stays operator-confirmed (FR-115)." +
+              // 86akby7th: say when the running engine is not what Settings implies — e.g. Cloud
+              // was selected but consent/key/build made it unusable, or a live Cloud session
+              // failed over to on-device mid-service. Never silent: the operator must be able to
+              // tell from THIS screen, not only from re-opening Settings.
+              (detHealth.note ? " " + String(detHealth.note) : "");
           } else if (st === "idle") {
             emptyMsg.textContent = "Detection is not running.";
             emptySub.textContent =

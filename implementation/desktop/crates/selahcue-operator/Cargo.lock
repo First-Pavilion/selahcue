@@ -3516,6 +3516,7 @@ dependencies = [
  "selahcue-present",
  "selahcue-scripture",
  "selahcue-stt",
+ "selahcue-stt-cloud",
  "serde",
  "serde_json",
  "tauri",
@@ -3553,6 +3554,18 @@ dependencies = [
  "sha2",
  "ureq",
  "whisper-rs",
+]
+
+[[package]]
+name = "selahcue-stt-cloud"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "rustls",
+ "selahcue-core",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
@@ -4509,8 +4522,12 @@ checksum = "edc5f74e248dc973e0dbb7b74c7e0d6fcc301c694ff50049504004ef4d0cdcd9"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -4763,6 +4780,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.8.7",
+ "rustls",
+ "rustls-pki-types",
  "sha1",
  "thiserror 1.0.69",
  "utf-8",

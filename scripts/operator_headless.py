@@ -356,12 +356,21 @@ STUB = r"""
     translations:[{code:"KJV",name:"King James Version"},{code:"WEB",name:"World English Bible"},{code:"ASV",name:"American Standard Version"}],
     include:{prayer_points:true, scripture_extraction:true, social_excerpts:false, chapter_markers:true, notable_quotations:true, short_summary:true},
     cloud_status:"not_configured", notes_provider:null, notes_available:false,
-    account_token_set:false, quota:null
+    account_token_set:false, quota:null,
+    // Cloud (Deepgram) transcription readiness (86akby7th) — mirrors notes_provider/notes_available
+    // above, same reason: `transcription_available` is DERIVED from `transcription_provider` below,
+    // never set independently, so the stub cannot drift into a combination the backend can never
+    // produce. Guarded by the Rust tests `transcription_available_is_true_in_the_view_when_a_provider_is_named`
+    // and `the_transcription_provider_object_keys_are_pinned` — if either fails, the names here and
+    // in dist/settings.js must change in the same MR.
+    transcription_provider:null, transcription_available:false
   };
   var ppView = function(){
     P.any_cloud_enabled = !!(P.cloud_transcription_consent || P.cloud_notes_consent);
     // The backend's invariant, mirrored: notes_available is true exactly when a provider is named.
     P.notes_available = !!P.notes_provider;
+    // Same invariant, transcription side.
+    P.transcription_available = !!P.transcription_provider;
     return JSON.parse(JSON.stringify(P));
   };
   window.__pp = P; // exposed so the driver can flip cloud_status / notes_provider / quota

@@ -629,6 +629,22 @@ jobs:
       - name: Test (dev-keys,openai-notes)
         if: ${{ !cancelled() }}
         run: cargo test --features dev-keys,openai-notes --no-fail-fast
+      # Cloud (Deepgram) live transcription (86akby7th): `cloud-stt` wires the already-tested
+      # `selahcue-stt-cloud` streaming session into `listening.rs`'s capture path. It implies
+      # `stt` (mic capture lives in `selahcue-stt` regardless of which recognizer consumes it),
+      # so THIS is the first step in this job that compiles `stt` -- and therefore all of
+      # `listening.rs`, where the routing decision this ticket fixes actually lives -- at all.
+      # Without it, `listening.rs` would be exactly as "linted and tested by nothing" as
+      # `selahcue-stt` itself (the standing example every feature-gate comment in this job
+      # cites). No extra system deps: whisper-rs-sys's native build needs only a C/C++ toolchain
+      # + cmake, which all three GitHub-hosted runner images carry by default -- the same reason
+      # the `stt`-only build was never separately gated before now.
+      - name: Clippy (stt,cloud-stt)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features stt,cloud-stt --all-targets -- -D warnings
+      - name: Test (stt,cloud-stt)
+        if: ${{ !cancelled() }}
+        run: cargo test --features stt,cloud-stt --no-fail-fast
       # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
       # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
       # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-
