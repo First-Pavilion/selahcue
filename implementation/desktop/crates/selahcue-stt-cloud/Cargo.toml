@@ -15,7 +15,7 @@ default = []
 # interim-vs-final mapping, both bounded buffers, the consent gate, the retry policy,
 # error classification, readiness) lives in the default build and is therefore covered
 # by the `cargo test --workspace` that CI already runs.
-deepgram = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
+deepgram = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:rustls"]
 
 [dependencies]
 selahcue-core = { path = "../selahcue-core" }
@@ -41,6 +41,17 @@ tokio = { version = "1", optional = true, default-features = false, features = [
     "time",
     "macros",
 ] }
+# rustls is a DIRECT dependency, not just tokio-tungstenite's: rustls 0.23 refuses to pick a
+# crypto backend on its own, and tokio-tungstenite's `__rustls-tls` enables neither `ring` nor
+# `aws-lc-rs`. Without naming one here and installing it at startup, the first real TLS
+# connection panics on a worker thread. Same backend and version as `selahcue-lan --features
+# server`, so the workspace links one crypto stack rather than two.
+rustls = { version = "0.23", optional = true, default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+    "logging",
+] }
 tokio-tungstenite = { version = "0.24", optional = true, default-features = false, features = [
     "connect",
     "handshake",
@@ -53,3 +64,11 @@ futures-util = { version = "0.3", optional = true, default-features = false, fea
 
 [lints]
 workspace = true
+
+# Live-service latency measurement (86akby4yz acceptance criteria). Needs a real key, a
+# network and a paid third party, so it is an example rather than a test — the automated
+# suite talks only to a local stub socket.
+#   cargo run -p selahcue-stt-cloud --features deepgram --example measure_latency -- <pcm> [runs]
+[[example]]
+name = "measure_latency"
+required-features = ["deepgram"]

@@ -25,8 +25,9 @@
 //! - Nothing here can blank or delay live output. It touches no presenter, no renderer and no
 //!   control path — its only outputs are a bounded queue and a status cell.
 
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -38,7 +39,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use crate::audio::AudioRing;
 use crate::credential::Credential;
-use crate::error::DeepgramError;
+use crate::error::{DeepgramError, OperatorAction};
 use crate::protocol::{parse_frame, DeepgramFrame, CLOSE_STREAM, KEEP_ALIVE, MAX_FRAME_BYTES};
 use crate::provider::{SessionState, SessionStatus};
 use crate::queue::SegmentQueue;
@@ -106,6 +107,25 @@ impl Default for SessionConfig {
     }
 }
 
+/// Install rustls' crypto backend, once per process.
+///
+/// rustls 0.23 will not choose a provider for itself, and `tokio-tungstenite`'s TLS feature
+/// enables neither backend — so without this the **first real TLS connection panics**, on the
+/// worker thread, where the panic is invisible: the session simply never leaves `Connecting`.
+///
+/// Nothing in the stub-socket suite could catch this, because those tests connect over
+/// loopback `ws://` and never build a TLS session at all. It was found by running against the
+/// live service, which is the entire reason that measurement exists.
+///
+/// `install_default` returns `Err` if a provider is already installed — by the LAN transport,
+/// say, in the same process. That is success for our purposes, not failure.
+fn ensure_crypto_provider() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// A running Deepgram streaming session.
 ///
 /// Dropping it signals the worker to stop and waits for it, so a session cannot outlive the
@@ -141,6 +161,7 @@ impl CloudSttSession {
             &config.params,
             credential.clone(),
         )?;
+        ensure_crypto_provider();
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let join = std::thread::Builder::new()
@@ -160,7 +181,22 @@ impl CloudSttSession {
                         return;
                     }
                 };
-                runtime.block_on(run(spec, config, audio, queue, status, worker_stop));
+                // A panic here would otherwise kill the worker thread silently, leaving the
+                // console showing "connecting…" for the rest of the service with nothing ever
+                // resolving it. Silence is the one unacceptable failure mode, so a panic is
+                // converted into an honest terminal state. Defence in depth behind
+                // `ensure_crypto_provider`, which removes the panic we actually hit.
+                let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    runtime.block_on(run(spec, config, audio, queue, status.clone(), worker_stop))
+                }));
+                if outcome.is_err() {
+                    status.set(SessionState::Failed {
+                        action: OperatorAction::ReportDefect,
+                        message: "cloud transcription stopped unexpectedly; on-device \
+                                  transcription is unaffected"
+                            .to_string(),
+                    });
+                }
             })
             .map_err(|e| DeepgramError::transport(e, None))?;
         Ok(CloudSttSession {

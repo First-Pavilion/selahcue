@@ -685,3 +685,82 @@ async fn an_idle_stream_with_no_audio_is_not_torn_down_as_a_stall() {
     session.stop();
     server.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_panic_inside_the_worker_becomes_a_terminal_state_not_an_eternal_connecting() {
+    // Found the hard way. rustls 0.23 refuses to pick a crypto backend for itself, and the
+    // first real TLS connection panicked on the worker thread — where a panic is invisible.
+    // The session did not fail; it simply never left `Connecting`, forever. Nothing in this
+    // file could have caught it, because every other test here connects over loopback `ws://`
+    // and never builds a TLS session at all.
+    //
+    // `ensure_crypto_provider` removes that particular panic. This asserts the containment
+    // behind it: whatever panics, the operator is told, rather than left watching a spinner.
+    //
+    // A zero audio-poll interval is a real panic reachable through the public API —
+    // `tokio::time::interval` rejects a zero period — so this exercises the containment
+    // without a test-only injection hook.
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let port = listener.local_addr().expect("local addr").port();
+
+    let server = tokio::spawn(async move {
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        if let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await {
+            while socket.next().await.is_some() {}
+        }
+    });
+
+    let mut config = config_for(
+        DeepgramEndpoint::custom(format!("ws://127.0.0.1:{port}/v1/listen")),
+        brisk_retry(),
+    );
+    config.audio_poll_interval = Duration::ZERO;
+
+    // The worker's panic is expected and its backtrace is noise; keep the test output honest
+    // about what it is doing rather than letting a stray panic message look like a failure.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    let status = SessionStatus::new();
+    let session = CloudSttSession::start(
+        &authorised(),
+        Credential::developer_key(TEST_SECRET).expect("fixture key"),
+        config,
+        AudioRing::new(),
+        SegmentQueue::new(),
+        status.clone(),
+    )
+    .expect("the session starts; the panic happens on the worker");
+
+    let reached = within(Duration::from_secs(10), || status.get().is_terminal()).await;
+    std::panic::set_hook(previous);
+
+    assert!(
+        reached,
+        "a worker panic left the session at {:?} — the console would show that state for the \
+         rest of the service and never resolve it",
+        status.get()
+    );
+    match status.get() {
+        SessionState::Failed { action, message } => {
+            assert_eq!(
+                action,
+                OperatorAction::ReportDefect,
+                "a defect in our own code was reported as something the operator could fix"
+            );
+            assert!(
+                message.contains("on-device"),
+                "the message does not tell the operator that on-device transcription still \
+                 works: {message}"
+            );
+        }
+        other => panic!("expected a terminal defect state, got {other:?}"),
+    }
+
+    session.stop();
+    server.abort();
+}
