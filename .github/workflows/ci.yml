@@ -139,6 +139,15 @@ jobs:
             marketing:
               - 'implementation/marketing/**'
               - '.github/workflows/ci.yml'
+              # NOT a stray path. The marketing job re-derives the client's email rule
+              # from the Django the API pins, and installs that Django by READING this
+              # file. A commit that bumps the pin therefore changes what the marketing
+              # mirror has to agree with — and without this line an api-only commit does
+              # not re-run the marketing job at all, so the mirror goes stale until some
+              # unrelated marketing change happens to run it. That staleness is exactly
+              # the drift the mirror step exists to catch: the client transcribed Django
+              # <= 5.1 while the API pinned 6.1, and both gates stayed green for it.
+              - 'implementation/api/pyproject.toml'
       # Single source of truth for the compiler. Every Rust job installs exactly this
       # version, and scripts/check_toolchain.sh then asserts the running toolchain
       # matches it -- the same script `make ci` runs, which is what makes the local
@@ -715,6 +724,17 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: implementation/marketing/package-lock.json
+      # BOTH halves of the mirror check are derived from a Python runtime, so the runtime
+      # is pinned rather than inherited: the whitespace set comes out of CPython's own
+      # Unicode tables, and validating it under whatever interpreter a runner image
+      # happens to ship is a mirror checked against a different runtime from production's.
+      # 3.14 is what `api (django)` pins and what the API Dockerfile runs. It also avoids
+      # PEP 668 — `pip install` into a distro-managed python3 is refused as an
+      # externally-managed environment. Measured: the 29-code-point whitespace set is
+      # identical under 3.12 and 3.14.5, so this pin is a guard, not a fix.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
       - name: Install
         run: npm ci
       # `build` is vue-tsc -b && vite build, so this is the typecheck gate too.
@@ -722,6 +742,26 @@ jobs:
         run: npm run build
       - name: Tests
         run: npm test
+      # The client/server predicate mirrors, re-derived from the runtimes that decide:
+      # CPython for the whitespace set, and the PINNED Django for the email validator.
+      # It needs a real Django, so it gets one here from the API's own pin rather than a
+      # version pinned twice. The script fails closed on a missing Django all by itself;
+      # SELAHCUE_MIRRORS_REQUIRE=1 additionally outranks the opt-out, so a variable set
+      # elsewhere on a runner cannot downgrade this gate to a skip. A skip that reads as
+      # a pass is how the email mirror shipped with two wrong verdicts (PR #17, round 3).
+      - name: Install the pinned Django for the mirror check
+        run: |
+          python3 -m pip install --quiet --upgrade pip
+          # Anchored on a version specifier: the project DESCRIPTION in the same file
+          # begins "Django and Strawberry Platform API…", and a looser pattern installs that.
+          pin="$(grep -oE '"Django[<>=!~][^"]*"' ../../implementation/api/pyproject.toml | tr -d '"')"
+          test -n "$pin" || { echo "no Django pin found in the API pyproject"; exit 1; }
+          echo "installing $pin"
+          python3 -m pip install --quiet "$pin"
+      - name: Client/server mirrors
+        env:
+          SELAHCUE_MIRRORS_REQUIRE: "1"
+        run: npm run test:mirrors
       # Drives the real built bundle in headless Chrome (same pattern as
       # scripts/operator_headless.py). SELAHCUE_HEADLESS_REQUIRE=1 turns a missing
       # Chrome into a hard failure — without it the script skips, which on a runner

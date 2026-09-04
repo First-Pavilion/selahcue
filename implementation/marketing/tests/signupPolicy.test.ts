@@ -12,8 +12,11 @@ import assert from 'node:assert/strict'
 import test, { describe } from 'node:test'
 
 import {
+  EMAIL_TOO_LONG,
   IDEMPOTENCY_KEY_PATTERN,
   MAX_ORG_NAME_LENGTH,
+  MAX_SIGNUP_EMAIL_LENGTH,
+  MAX_TIMEZONE_LENGTH,
   collapseWhitespace,
   detectTimezone,
   isSubmittableSignup,
@@ -21,8 +24,9 @@ import {
   validateSignup,
   type SignupFields,
 } from '../src/lib/auth/signupPolicy.ts'
+import { MAX_EMAIL_LENGTH, serverWouldAcceptEmail } from '../src/lib/auth/emailPolicy.ts'
 import { MIN_PASSWORD_LENGTH } from '../src/lib/auth/passwordPolicy.ts'
-import { COUNTRY_CODES, guessCountry } from '../src/lib/auth/countries.ts'
+import { COUNTRY_CODES, countryOptions, guessCountry } from '../src/lib/auth/countries.ts'
 
 /**
  * PREMISE PIN. The fixtures below are sized against these constants, so a change to
@@ -194,6 +198,65 @@ describe('org name', () => {
   })
 })
 
+describe('email — the one signup rule `emailPolicy.ts` does not mirror', () => {
+  /**
+   * `validate_email` caps an address at 320 characters. The MODEL FIELD caps it at 254,
+   * and signup is the only surface that writes to the model field. Between those two
+   * numbers sits a band of addresses that pass every rule the client had and die at
+   * `full_clean` as an unattributed `VALIDATION_FAILED` — the FR-552 dead end reached
+   * through a legal address rather than a typo.
+   */
+  const local = (n: number) => 'a'.repeat(n - '@example.com'.length)
+  const at254 = `${local(MAX_SIGNUP_EMAIL_LENGTH)}@example.com`
+  const at255 = `${local(MAX_SIGNUP_EMAIL_LENGTH + 1)}@example.com`
+
+  test('the band this rule exists for is real, and the two caps are different numbers', () => {
+    // THE PREMISE, pinned first. If the model cap ever equalled the validator cap, every
+    // assertion below would still pass while testing nothing, because `validateEmail`
+    // would already have refused these addresses for their length.
+    assert.equal(MAX_SIGNUP_EMAIL_LENGTH, 254, 'EmailField() default max_length')
+    assert.ok(
+      MAX_SIGNUP_EMAIL_LENGTH < MAX_EMAIL_LENGTH,
+      'the model cap must be BELOW the validator cap or this rule is unreachable',
+    )
+    assert.equal(at254.length, MAX_SIGNUP_EMAIL_LENGTH)
+    assert.equal(at255.length, MAX_SIGNUP_EMAIL_LENGTH + 1)
+    // And both are addresses `validate_email` accepts — measured through the mirror, so
+    // this stays true if the mirror changes. That is what makes 255 a SIGNUP-only refusal.
+    assert.equal(serverWouldAcceptEmail(at254), true)
+    assert.equal(
+      serverWouldAcceptEmail(at255),
+      true,
+      'a 255-character address is valid to `validate_email`; only the model field refuses ' +
+        'it, which is the entire reason this check is here and not in emailPolicy.ts',
+    )
+  })
+
+  test('254 characters submits and 255 is refused with a message about the length', () => {
+    assert.deepEqual(validateSignup({ ...VALID, email: at254 }), {})
+    assert.deepEqual(validateSignup({ ...VALID, email: at255 }), { email: EMAIL_TOO_LONG })
+    assert.equal(isSubmittableSignup({ ...VALID, email: at255 }), false)
+  })
+
+  test('the length is measured on the normalised address, as the server measures it', () => {
+    // The server stores `_normalize_email(raw)`, and `full_clean` measures what is stored.
+    // Padding with whitespace must not change the verdict in either direction.
+    assert.deepEqual(validateSignup({ ...VALID, email: `   ${at254}   ` }), {})
+    assert.deepEqual(validateSignup({ ...VALID, email: `   ${at255}   ` }), {
+      email: EMAIL_TOO_LONG,
+    })
+  })
+
+  test('a malformed address is still called malformed, not long', () => {
+    // Ordering control. A 260-character address with a digit TLD is wrong in two ways and
+    // must be reported as the one the user can see.
+    const malformedAndLong = `${'a'.repeat(254)}@b.12`
+    assert.ok(malformedAndLong.length > MAX_SIGNUP_EMAIL_LENGTH)
+    assert.notEqual(validateSignup({ ...VALID, email: malformedAndLong }).email, EMAIL_TOO_LONG)
+    assert.ok(validateSignup({ ...VALID, email: malformedAndLong }).email)
+  })
+})
+
 describe('terms', () => {
   test('an unchecked box is a reported error, not a disabled button', () => {
     // A disabled primary action gives a keyboard user a dead control and no reason for
@@ -261,7 +324,159 @@ describe('the idempotency key', () => {
   })
 })
 
+/**
+ * Swap in an environment that names a specific zone, run `body`, put the real one back.
+ *
+ * `detectTimezone` reads a global, so proving it READS anything needs a global whose answer
+ * is known. Restored in a `finally` because a leaked stub would silently change what every
+ * later test in this process observes.
+ */
+function withTimeZone(zone: unknown, body: () => void): void {
+  const realIntl = globalThis.Intl
+  try {
+    Object.defineProperty(globalThis, 'Intl', {
+      value: {
+        ...realIntl,
+        DateTimeFormat: function DateTimeFormatStub() {
+          return { resolvedOptions: () => ({ timeZone: zone }) }
+        },
+      },
+      configurable: true,
+    })
+    body()
+  } finally {
+    Object.defineProperty(globalThis, 'Intl', { value: realIntl, configurable: true })
+  }
+}
+
+/**
+ * `countryOptions` had NO test of any kind, and it has the identical shape to the
+ * `detectTimezone` hole: an `Intl` read whose failure path returns something valid.
+ *
+ * Deleting the whole `Intl.DisplayNames` lookup leaves a select full of two-letter codes.
+ * Every option still submits, every existing assertion still passes, and the form is
+ * materially worse for every user — 249 codes to hunt through instead of names. Found while
+ * closing the timezone gap, because "check whether any other detection here has the same
+ * gap" is the actual lesson, not "fix this one function".
+ */
+describe('country options', () => {
+  test('the labels come from Intl.DisplayNames, not from the codes', () => {
+    // Stubbed rather than asserted against real ICU data, so the control means the same
+    // thing on a runner with a minimal ICU build as it does here. What is being proved is
+    // that the lookup's ANSWER reaches the option list.
+    const realIntl = globalThis.Intl
+    try {
+      Object.defineProperty(globalThis, 'Intl', {
+        value: {
+          ...realIntl,
+          DisplayNames: function DisplayNamesStub() {
+            return { of: (code: string) => `NAME_FOR_${code}` }
+          },
+        },
+        configurable: true,
+      })
+      const options = countryOptions()
+      const gb = options.find((option) => option.code === 'GB')
+      assert.ok(gb, 'GB is missing from the option list')
+      assert.equal(
+        gb.label,
+        'NAME_FOR_GB',
+        'the label did not come from Intl.DisplayNames. If the lookup has been removed, ' +
+          'the select shows two-letter codes and nothing else in the suite notices.',
+      )
+    } finally {
+      Object.defineProperty(globalThis, 'Intl', { value: realIntl, configurable: true })
+    }
+  })
+
+  test('every code is offered exactly once, and none of them is unselectable', () => {
+    const options = countryOptions()
+    assert.equal(options.length, COUNTRY_CODES.length)
+    assert.equal(new Set(options.map((option) => option.code)).size, COUNTRY_CODES.length)
+    // A label the select cannot render is as bad as a missing option.
+    for (const option of options) {
+      assert.ok(option.label !== '', `${option.code} has an empty label`)
+    }
+    // And every offered code must be one the form will actually accept, or the select can
+    // put the user into a state `validateSignup` refuses.
+    for (const option of options) {
+      assert.deepEqual(validateSignup({ ...VALID, country: option.code }), {})
+    }
+  })
+
+  test('a missing or throwing Intl.DisplayNames degrades to codes rather than an empty select', () => {
+    // The negative half. A select full of codes is worse than one full of names and far
+    // better than a form that cannot be submitted.
+    const realIntl = globalThis.Intl
+    try {
+      Object.defineProperty(globalThis, 'Intl', {
+        value: {
+          ...realIntl,
+          DisplayNames: function ThrowingDisplayNames() {
+            throw new Error('no DisplayNames here')
+          },
+        },
+        configurable: true,
+      })
+      const options = countryOptions()
+      assert.equal(options.length, COUNTRY_CODES.length)
+      const gb = options.find((option) => option.code === 'GB')
+      assert.ok(gb)
+      assert.equal(gb.label, 'GB')
+    } finally {
+      Object.defineProperty(globalThis, 'Intl', { value: realIntl, configurable: true })
+    }
+  })
+})
+
 describe('timezone', () => {
+  test('it reports the zone the environment names, not a constant', () => {
+    // POSITIVE VALUES FIRST. This is the same lesson `guessCountry` has written above it,
+    // about 150 lines up, under a comment with that exact heading — and it was not applied
+    // to the function next door.
+    //
+    // Quinn deleted the ENTIRE Intl lookup, leaving a bare `return 'UTC'`, and `npm test`,
+    // `npm run build` and `npm run test:states` all stayed green. The only assertion was
+    // "returns something the column will hold", and 'UTC' holds. Every org created outside
+    // Universal Time would have had its timers and schedules silently wrong from the first
+    // login, which is the thing this function exists to prevent.
+    withTimeZone('Africa/Lagos', () => assert.equal(detectTimezone(), 'Africa/Lagos'))
+    withTimeZone('America/New_York', () => assert.equal(detectTimezone(), 'America/New_York'))
+    // A zone that is NOT the fallback and not the first sample either, so "returns the
+    // last thing it was told" and "returns UTC" are both excluded.
+    withTimeZone('Pacific/Chatham', () => assert.equal(detectTimezone(), 'Pacific/Chatham'))
+  })
+
+  test('it falls back to UTC rather than failing the signup', () => {
+    // The other half, and the reason the positive control above is needed: every one of
+    // these paths returns 'UTC', so a function that ONLY ever returns 'UTC' passes all of
+    // them. They are the negative control, never the whole test.
+    withTimeZone(undefined, () => assert.equal(detectTimezone(), 'UTC'))
+    withTimeZone('', () => assert.equal(detectTimezone(), 'UTC'))
+    withTimeZone(42, () => assert.equal(detectTimezone(), 'UTC'))
+    // Over `CustomerOrg.timezone`'s max_length — sending it would fail the signup on a
+    // field the user cannot see.
+    withTimeZone('A'.repeat(MAX_TIMEZONE_LENGTH + 1), () => assert.equal(detectTimezone(), 'UTC'))
+    // Exactly at the limit is kept, so the bound is `>` and not `>=`.
+    const atLimit = 'A'.repeat(MAX_TIMEZONE_LENGTH)
+    withTimeZone(atLimit, () => assert.equal(detectTimezone(), atLimit))
+
+    const realIntl = globalThis.Intl
+    try {
+      Object.defineProperty(globalThis, 'Intl', {
+        value: {
+          DateTimeFormat: () => {
+            throw new Error('no Intl in this environment')
+          },
+        },
+        configurable: true,
+      })
+      assert.equal(detectTimezone(), 'UTC')
+    } finally {
+      Object.defineProperty(globalThis, 'Intl', { value: realIntl, configurable: true })
+    }
+  })
+
   test('always returns something the column will hold', () => {
     const zone = detectTimezone()
     assert.equal(typeof zone, 'string')

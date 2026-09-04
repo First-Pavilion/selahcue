@@ -15,3 +15,12 @@ implementation/build/
 # Visual-parity harness run artefacts (regenerated; bounded to MAX_RUNS_KEPT runs).
 /.visual-parity/
 .target/
+
+# Python bytecode caches. Nothing in the repo imports its Python tooling as a module —
+# every gate runs these files as scripts, and a script run leaves no cache. Investigating
+# one interactively does: `sys.path.insert(...)` + `import service_text_reference` to poke
+# at a single function is the ordinary way to check a claim about it, and CPython then
+# writes a __pycache__ next to the script. That directory is not an artefact of the build
+# and must never be committed, whichever session happens to create it.
+__pycache__/
+*.py[cod]

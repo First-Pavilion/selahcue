@@ -1,10 +1,17 @@
 {
   "_comment": [
     "ONE definition of what the SERVER accepts, consumed by both sides of the mirror.",
-    "TypeScript: tests/emailPolicy.test.ts asserts validateEmail() agrees with serverAccepts on every row.",
-    "Python:     scripts/service_text_reference.py re-derives serverAccepts from Django and fails on drift.",
+    "TypeScript: tests/emailPolicy.test.ts asserts emailPolicy agrees with serverAccepts on every row.",
+    "Python:     scripts/service_text_reference.py RE-DERIVES serverAccepts by calling the pinned",
+    "            Django's validate_email, and refuses to run at all if Django is absent or is not the",
+    "            version implementation/api/pyproject.toml pins. It never falls back to a copy of the",
+    "            client's rule -- the previous version did, and a copy can only ever agree with itself.",
     "serverAccepts is Django 6.1 validate_email() applied to _normalize_email(address) == (raw or '').strip().lower().",
-    "Do not edit a verdict by hand. Re-derive it with the reference script."
+    "The `divergence` tag names a class where Django <=5.1 and Django 6.1 give DIFFERENT answers.",
+    "  The script asserts every named class has at least one row, AND that the row really does",
+    "  discriminate -- rows inside the agreeing region cannot detect a wrong transcription, which",
+    "  is exactly how the first version of this file shipped two wrong verdicts.",
+    "Do not edit a verdict by hand. Re-derive it: service_text_reference.py --regenerate"
   ],
   "cases": [
     {
@@ -43,6 +50,11 @@
       "note": "the shortest real address shape"
     },
     {
+      "address": "a@1.com",
+      "serverAccepts": true,
+      "note": "a digit is fine in a NON-final label, unlike the TLD"
+    },
+    {
       "address": "\"quoted\"@example.com",
       "serverAccepts": true,
       "note": "the RFC quoted-string local part"
@@ -53,19 +65,213 @@
       "note": "Django allowlists bare localhost"
     },
     {
+      "address": "a@m\u00fcnchen.de",
+      "serverAccepts": true,
+      "note": "IDN domain. The first mirror REJECTED this and Django accepts it -- a customer locked out of every auth surface by a client-only rule",
+      "divergence": [
+        "idn-domain"
+      ]
+    },
+    {
+      "address": "a@\u00e9xample.com",
+      "serverAccepts": true,
+      "note": "IDN domain, accented first label",
+      "divergence": [
+        "idn-domain"
+      ]
+    },
+    {
+      "address": "a@b.c\u00e9",
+      "serverAccepts": true,
+      "note": "IDN TLD: `ul` is part of the TLD class, so a two-character accented TLD is valid",
+      "divergence": [
+        "idn-domain"
+      ]
+    },
+    {
+      "address": "a@xn--mnchen-3ya.de",
+      "serverAccepts": true,
+      "note": "the punycode form of the same domain"
+    },
+    {
+      "address": "a@b.xn--p1ai",
+      "serverAccepts": true,
+      "note": "digits are legal in a TLD ONLY through the xn-- alternative"
+    },
+    {
+      "address": "a@b.\ud83d\ude00",
+      "serverAccepts": false,
+      "note": "an astral code point is OUTSIDE `ul` (which stops at U+FFFF). Python compares code points; JavaScript needs the /u flag to agree, because both halves of the surrogate pair fall inside the range",
+      "divergence": [
+        "idn-domain"
+      ]
+    },
+    {
+      "address": "a@b.12",
+      "serverAccepts": false,
+      "note": "an all-digit TLD. Django <=5.1 ACCEPTED this and 6.1 rejects it; the first fixture recorded it as accepted, which is the defect this whole class exists for",
+      "divergence": [
+        "digit-in-tld"
+      ]
+    },
+    {
+      "address": "a@b.c0m",
+      "serverAccepts": false,
+      "note": "`.com` typed with a zero -- the TLD class is letters and `ul` only",
+      "divergence": [
+        "digit-in-tld"
+      ]
+    },
+    {
+      "address": "a@b.com1",
+      "serverAccepts": false,
+      "note": "a digit at the end of the TLD",
+      "divergence": [
+        "digit-in-tld"
+      ]
+    },
+    {
+      "address": "a@b.-xy",
+      "serverAccepts": false,
+      "note": "a LEADING hyphen in the TLD. Django <=5.1 accepted it, 6.1 refuses it, and the first fixture pinned it as accepted WITH A NOTE explaining the wrong behaviour",
+      "divergence": [
+        "leading-hyphen-tld"
+      ]
+    },
+    {
+      "address": "a@b.xy-",
+      "serverAccepts": false,
+      "note": "a trailing hyphen in the TLD"
+    },
+    {
+      "address": "a@b.com.",
+      "serverAccepts": false,
+      "note": "EmailValidator uses tld_no_fqdn_re, so the trailing dot of a fully qualified name is not allowed in an address"
+    },
+    {
+      "address": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com",
+      "serverAccepts": true,
+      "note": "exactly 320 characters -- the RFC 3696 limit, accepted",
+      "divergence": [
+        "length-cap"
+      ]
+    },
+    {
+      "address": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com",
+      "serverAccepts": false,
+      "note": "321 characters. Refused by len(value) > 320 before the address is parsed at all; the first mirror had no length check",
+      "divergence": [
+        "length-cap"
+      ]
+    },
+    {
       "address": "user@[192.168.1.1]",
       "serverAccepts": true,
       "note": "the IPv4 literal form"
     },
     {
-      "address": "a@b.12",
-      "serverAccepts": true,
-      "note": "an all-digit TLD"
+      "address": "user@[999.999.999.999]",
+      "serverAccepts": false,
+      "note": "literal SHAPE, impossible octets. literal_regex matches and validate_ipv46_address then rejects -- the first mirror checked shape only and accepted it",
+      "divergence": [
+        "ip-literal-semantics"
+      ]
     },
     {
-      "address": "a@b.-xy",
+      "address": "user@[1.2.3]",
+      "serverAccepts": false,
+      "note": "three octets: shaped like a literal, not an address",
+      "divergence": [
+        "ip-literal-semantics"
+      ]
+    },
+    {
+      "address": "user@[01.2.3.4]",
+      "serverAccepts": false,
+      "note": "a leading zero. CPython dropped the octal reading, so IPv4Address raises",
+      "divergence": [
+        "ip-literal-semantics"
+      ]
+    },
+    {
+      "address": "user@[::1]",
       "serverAccepts": true,
-      "note": "a LEADING hyphen in the TLD is accepted; the trailing one is not"
+      "note": "the IPv6 literal form"
+    },
+    {
+      "address": "user@[dead:beef::1]",
+      "serverAccepts": true,
+      "note": "a compressed IPv6 literal"
+    },
+    {
+      "address": "user@[::ffff:1.2.3.4]",
+      "serverAccepts": true,
+      "note": "an IPv4-mapped IPv6 literal"
+    },
+    {
+      "address": "user@[1::2::3]",
+      "serverAccepts": false,
+      "note": "two `::` runs is ambiguous and Python refuses it",
+      "divergence": [
+        "ip-literal-semantics"
+      ]
+    },
+    {
+      "address": "user@[0000:0000:0000:0000:0000:0000:0000:0001]",
+      "serverAccepts": true,
+      "note": "39 characters -- exactly MAX_IPV6_ADDRESS_LENGTH, accepted",
+      "divergence": [
+        "ip-literal-semantics"
+      ]
+    },
+    {
+      "address": "user@[00000:0000:0000:0000:0000:0000:0000:0001]",
+      "serverAccepts": false,
+      "note": "40 characters. Django caps the TEXT length before parsing, so this is refused for its length",
+      "divergence": [
+        "ip-literal-semantics"
+      ]
+    },
+    {
+      "address": "user@[IPv6:::1]",
+      "serverAccepts": false,
+      "note": "the tagged IPv6 form a reader would expect the dead branch to be about. Django has no such branch -- `I`, `P` and `v` are not in [A-F0-9:.] -- and it is rejected. NOT tagged as a divergence: the invented branch required DOUBLED brackets, so it never matched this either, and a row both rules reject proves nothing about the difference between them"
+    },
+    {
+      "address": "user@[[IPv6:::1]]",
+      "serverAccepts": false,
+      "note": "the shape the invented `[IPv6:...]` branch actually matched -- nested brackets. The old reference-script rule ACCEPTED this and Django rejects it, which is what makes this the row that discriminates. The client's copy of the branch was dead twice over: nested brackets AND a case-sensitive `IPv6` tested against an already-lowercased domain",
+      "divergence": [
+        "ipv6-tagged-branch"
+      ]
+    },
+    {
+      "address": "\"a@b\"@example.com",
+      "serverAccepts": true,
+      "note": "Django rsplits on the LAST at-sign, which is the only reason a quoted local part containing one works. An implementation splitting on the FIRST at-sign rejects this, so the row discriminates"
+    },
+    {
+      "address": "a@b@c.com",
+      "serverAccepts": false,
+      "note": "an unquoted second at-sign: the dot-atom class has no `@`, so this is refused however it is split"
+    },
+    {
+      "address": "a@b.\u0130",
+      "serverAccepts": true,
+      "note": "U+0130 lowercases to `i` PLUS a combining dot above -- two characters, so the TLD clears the {2,63} minimum it would fail as one",
+      "divergence": [
+        "case-fold-residual"
+      ]
+    },
+    {
+      "address": "A@B.\u212a",
+      "serverAccepts": false,
+      "note": "the Kelvin sign lowercases to a plain `k`: a one-character TLD, refused"
+    },
+    {
+      "address": "a@b.\u01c5",
+      "serverAccepts": false,
+      "note": "a title-case digraph lowercases to a single character, refused for length"
     },
     {
       "address": "a@b.c",
@@ -86,11 +292,6 @@
       "address": "a@b-.com",
       "serverAccepts": false,
       "note": "PR #17 (Cody): a trailing hyphen in a domain label"
-    },
-    {
-      "address": "a@b.xy-",
-      "serverAccepts": false,
-      "note": "a trailing hyphen in the TLD"
     },
     {
       "address": "a@b",
@@ -148,9 +349,34 @@
       "note": "a space inside the quoted local part is NOT permitted"
     },
     {
-      "address": "josé@example.com",
+      "address": "jos\u00e9@example.com",
       "serverAccepts": false,
-      "note": "a non-ASCII local part"
+      "note": "a non-ASCII local part: `ul` is in the DOMAIN classes only"
+    },
+    {
+      "address": "\u017fmith@example.com",
+      "serverAccepts": true,
+      "note": "U+017F LONG S in the LOCAL part. `ul` is a DOMAIN-side range and this is not it: Django's user_regex carries re.IGNORECASE, and Python's IGNORECASE is FULL CASE FOLDING, so the ASCII letter class silently contains this code point -- and `.lower()` leaves it alone, so it survives normalisation and reaches the class. The client's transcription of that class omitted it and refused the address on all four auth surfaces"
+    },
+    {
+      "address": "b\u0131lgi@example.com",
+      "serverAccepts": true,
+      "note": "U+0131 DOTLESS I, the ordinary Turkish letter, in the local part. Same fold, and the reason this class is a customer lockout rather than a curiosity"
+    },
+    {
+      "address": "\"\u017f\"@example.com",
+      "serverAccepts": true,
+      "note": "the same fold in the QUOTED-STRING alternative. Django's `!#-[` and `]-\\177` classes span the ASCII letters too, so all three local-part classes gain it -- swept against the installed 6.1.1 user_regex three times, against `x`, `\"x\"` and `\"\\x\"`, with the same result"
+    },
+    {
+      "address": "\u0130@example.com",
+      "serverAccepts": false,
+      "note": "the NEGATIVE control for that fold. U+0130 matches user_regex too, but `_normalize_email` lowercases first and it becomes `i` + U+0307 COMBINING DOT ABOVE, which the class does not contain. Rejected. Without this row, adding the whole folded set instead of the two that survive normalisation would look correct"
+    },
+    {
+      "address": "\u212a@example.com",
+      "serverAccepts": true,
+      "note": "the other half of that control: U+212A KELVIN SIGN lowercases to a plain `k`, so this is accepted -- as an ordinary `k`, by a class that never had to change. Normalisation does the work, not the fold"
     },
     {
       "address": "a@xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.com",

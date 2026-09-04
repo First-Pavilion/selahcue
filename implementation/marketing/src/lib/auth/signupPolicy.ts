@@ -24,13 +24,15 @@
  *   - display name    `CustomerUser.display_name` max_length=200
  *   - country         `CustomerOrg.country`       max_length=2, and `len(country) != 2` is an explicit reject
  *   - timezone        `CustomerOrg.timezone`      max_length=64
+ *   - email           `CustomerUser.email` and `CustomerOrg.primary_contact_email`, both
+ *                     bare `models.EmailField()`, whose default max_length is 254
  *   - password        10-200, length only (`passwordPolicy.ts`)
  *
  * Pure and dependency-free so it can be unit tested under `node --test`.
  */
 
 import { COUNTRY_CODES } from './countries.ts'
-import { validateEmail } from './emailPolicy.ts'
+import { normalizeEmail, validateEmail } from './emailPolicy.ts'
 import { passwordLength, validateNewPassword, type NewPasswordErrors } from './passwordPolicy.ts'
 import { serviceCollapse } from './serviceText.ts'
 
@@ -41,12 +43,37 @@ export const MAX_DISPLAY_NAME_LENGTH = 200
 /** `CustomerOrg.timezone` max_length. */
 export const MAX_TIMEZONE_LENGTH = 64
 
+/**
+ * `EmailField()`'s default max_length — a SIGNUP-ONLY ceiling, and the reason this constant
+ * lives here and not in `emailPolicy.ts`.
+ *
+ * `emailPolicy.ts` mirrors `validate_email`, which caps an address at 320 characters
+ * (RFC 3696). That is the whole rule on sign-in, forgot-password and resend, and its
+ * 320-character fixture row is correct.
+ *
+ * Signup writes the address as well as validating it. `register_customer_user` builds a
+ * `CustomerOrg` with `primary_contact_email=email` and a `CustomerUser` with `email=email`,
+ * both bare `models.EmailField()` — default `max_length=254` — and then calls `full_clean`
+ * on each inside the same `transaction.atomic()`. Measured against the pinned Django
+ * 6.1.1: `EmailField().clean` accepts a 254-character address and refuses 255 with
+ * "Ensure this value has at most 254 characters".
+ *
+ * Without this check, an address of 255-320 characters passes every client rule, reaches
+ * the server, fails `full_clean`, and comes back as the same undifferentiated
+ * `VALIDATION_FAILED` every other field raises — which on `/signup` is an unattributed
+ * banner and on the reset surfaces is the FR-552 dead end. It is the exact failure
+ * `emailPolicy.ts`'s header describes, arriving through the one rule that module does not
+ * mirror.
+ */
+export const MAX_SIGNUP_EMAIL_LENGTH = 254
+
 /** `validate_idempotency_key` (`graphql/context.py`), character for character. */
 export const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{12,128}$/
 
 export const ORG_NAME_REQUIRED = 'Enter your church or organisation name.'
 export const ORG_NAME_TOO_LONG = `Name must be ${MAX_ORG_NAME_LENGTH} characters or fewer.`
 export const DISPLAY_NAME_TOO_LONG = `Name must be ${MAX_DISPLAY_NAME_LENGTH} characters or fewer.`
+export const EMAIL_TOO_LONG = `Email address must be ${MAX_SIGNUP_EMAIL_LENGTH} characters or fewer.`
 export const COUNTRY_REQUIRED = 'Select your country.'
 export const TERMS_REQUIRED = 'Accept the terms to continue.'
 
@@ -171,7 +198,15 @@ export function validateSignup(fields: SignupFields): SignupErrors {
   }
 
   const email = validateEmail(fields.email)
-  if (email) errors.email = email
+  if (email) {
+    errors.email = email
+  } else if (passwordLength(normalizeEmail(fields.email)) > MAX_SIGNUP_EMAIL_LENGTH) {
+    // The shape is fine and `validate_email` would take it — it is the model field that
+    // will not. Measured on the NORMALISED address, because the normalised string is what
+    // `register_customer_user` assigns to the field and `full_clean` then measures; and in
+    // code points, because Django's `max_length` counts characters the way Python does.
+    errors.email = EMAIL_TOO_LONG
+  }
 
   // Trusts the select, but does not assume it: a country the API would reject is another
   // unattributable VALIDATION_FAILED.
