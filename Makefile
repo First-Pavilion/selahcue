@@ -274,8 +274,13 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	$(CARGO) clippy $(WS) -p selahcue-lan --features server --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-app --features server --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-scripture --features download --all-targets -- -D warnings
+	$(CARGO) clippy $(WS) -p selahcue-cloud --features openai --all-targets -- -D warnings
 	$(CARGO) clippy $(WS) -p selahcue-stt-cloud --features deepgram --all-targets -- -D warnings
 	$(CARGO) clippy $(OP) --all-targets -- -D warnings
+	# The operator's `openai-notes` feature gates the provider construction and the four-state
+	# status derivation. Without this line NOTHING compiles it -- which is exactly the
+	# selahcue-stt problem this PR cites as its own justification for the cloud-side line above.
+	$(CARGO) clippy $(OP) --features openai-notes --all-targets -- -D warnings
 	$(CARGO) test $(WS) --workspace --no-fail-fast
 	sh scripts/import_guards.sh
 	$(CARGO) test $(WS) -p selahcue-licensing --release --no-fail-fast
@@ -286,6 +291,10 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	$(CARGO) test $(WS) -p selahcue-data --features encryption --no-fail-fast
 	$(CARGO) test $(WS) -p selahcue-desktop --features encryption --no-fail-fast
 	$(CARGO) test $(WS) -p selahcue-scripture --features download --no-fail-fast
+	# The OpenAI note provider (86akby7d8) is behind an off-by-default feature, so the default
+	# workspace run above does NOT cover it. Lint + test it explicitly: an off-by-default feature
+	# that no gate ever compiles is exactly how selahcue-stt ended up linted by nothing.
+	$(CARGO) test $(WS) -p selahcue-cloud --features openai --no-fail-fast
 	# The Deepgram streaming transport (86akby4yz) is behind an off-by-default feature, so the
 	# workspace run above does NOT build it. Lint + test it explicitly: an off-by-default feature
 	# that no gate ever compiles is exactly how selahcue-stt ended up linted by nothing. The
@@ -294,6 +303,18 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	$(CARGO) check $(OP)
 	$(CARGO) test $(OP) --no-fail-fast
 	$(CARGO) test $(OP) --features dev-keys --no-fail-fast
+	$(CARGO) test $(OP) --features openai-notes --no-fail-fast
+	# `dev-keys` (86akby6yy) supplies a developer key from `.env`; `openai-notes` (86akby7d8)
+	# consumes it to build the real OpenAI provider and derive the four-state Providers &
+	# Privacy status. The two lines above compile and test each feature ALONE -- neither
+	# builds them together, so the combination is exactly as unlinted as selahcue-stt until
+	# this line: it is also the one build where this PR's shared `ENV_LOCK` has two
+	# independently-authored env-mutating test modules (dev_env's and the model-override
+	# tests') actually running in the same process, which is the race the lock exists to
+	# prevent. A developer running it by hand and getting green (97/97) is not a gate --
+	# nothing catches a regression here without a line that runs on every push.
+	$(CARGO) clippy $(OP) --features dev-keys,openai-notes --all-targets -- -D warnings
+	$(CARGO) test $(OP) --features dev-keys,openai-notes --no-fail-fast
 	python3 scripts/operator_headless.py
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 	@echo ""

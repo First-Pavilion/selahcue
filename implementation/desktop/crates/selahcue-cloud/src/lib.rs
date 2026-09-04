@@ -24,12 +24,19 @@ pub mod client;
 pub mod contract;
 pub mod local;
 pub mod mock;
+/// Direct OpenAI GPT note generation with a developer key (Phase 1, `openai` feature).
+/// Deliberately throwaway — the shipping path proxies notes through the SelahCue
+/// platform API. See the module docs.
+#[cfg(feature = "openai")]
+pub mod openai;
 pub mod secret;
 pub mod transport;
 
 pub use client::SelahCueCloudClient;
 pub use local::LocalNoteProvider;
 pub use mock::MockTransport;
+#[cfg(feature = "openai")]
+pub use openai::OpenAiNoteProvider;
 pub use secret::{InMemorySecretStore, SecretError, SecretStore, Token};
 pub use transport::{HttpResponse, HttpTransport, TransportError};
 
@@ -46,6 +53,28 @@ pub struct GenerationOutcome {
     pub degraded: bool,
     /// The monthly quota, when the serving provider reports one (cloud only).
     pub quota: Option<Quota>,
+    /// Whether a generative model produced this draft, and so whether it must be
+    /// labelled AI-generated (FR-123). Read from the **serving** provider, not the one
+    /// that was asked: a degraded outcome is served by the offline scaffold, which
+    /// invents nothing, and labelling it AI-generated would be a false statement.
+    pub ai_generated: bool,
+    /// The fabrication-risk disclosure (FR-128) — `Some` exactly when `ai_generated`.
+    ///
+    /// The two fields are set together in one place and the invariant
+    /// `disclosure.is_some() == ai_generated` is asserted in both directions, so a draft
+    /// can never claim to be model output without carrying the warning that goes with
+    /// it, nor carry the warning while denying it came from a model.
+    pub disclosure: Option<&'static str>,
+}
+
+/// Pair the AI-generated flag with its disclosure, so the two can never disagree.
+/// One expression, consumed by both the constructor and the test that guards it.
+fn disclosure_for(ai_generated: bool) -> Option<&'static str> {
+    if ai_generated {
+        Some(selahcue_core::providers::FABRICATION_DISCLOSURE)
+    } else {
+        None
+    }
 }
 
 /// Generate sermon notes end-to-end with consent gating and graceful fallback.
@@ -77,6 +106,8 @@ where
             provider_label: cloud.label().to_string(),
             degraded: false,
             quota,
+            ai_generated: cloud.is_generative(),
+            disclosure: disclosure_for(cloud.is_generative()),
         }),
         // Network blip / unreachable → fall back locally, clearly degraded.
         Err(NoteError::Transport(_)) => {
@@ -86,6 +117,8 @@ where
                 provider_label: local.label().to_string(),
                 degraded: true,
                 quota: None,
+                ai_generated: local.is_generative(),
+                disclosure: disclosure_for(local.is_generative()),
             })
         }
         // Honest terminal states surface to the UI unchanged.

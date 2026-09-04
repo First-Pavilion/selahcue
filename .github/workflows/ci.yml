@@ -320,6 +320,7 @@ jobs:
           cargo clippy -p selahcue-lan --features server --all-targets -- -D warnings
           cargo clippy -p selahcue-app --features server --all-targets -- -D warnings
           cargo clippy -p selahcue-scripture --features download --all-targets -- -D warnings
+          cargo clippy -p selahcue-cloud --features openai --all-targets -- -D warnings
           cargo clippy -p selahcue-stt-cloud --features deepgram --all-targets -- -D warnings
       - name: Test (workspace, incl. GPU parity where an adapter exists)
         if: ${{ !cancelled() }}
@@ -415,6 +416,12 @@ jobs:
       - name: Test (scripture download — feature-gated, loopback only)
         if: ${{ !cancelled() }}
         run: cargo test -p selahcue-scripture --features download --no-fail-fast
+      # The OpenAI note provider (86akby7d8) lives behind an off-by-default feature, so the
+      # workspace run does not build it. An off-by-default feature no gate compiles is how
+      # selahcue-stt ended up linted and tested by nothing; this keeps that from repeating.
+      - name: Test (cloud openai feature — OpenAI note provider, stub transport only)
+        if: ${{ !cancelled() }}
+        run: cargo test -p selahcue-cloud --features openai --no-fail-fast
       # The Deepgram streaming transport (86akby4yz) is behind an off-by-default feature, so the
       # workspace run does not build it. An off-by-default feature no gate compiles is how
       # selahcue-stt ended up linted and tested by nothing; this keeps that from repeating.
@@ -583,7 +590,7 @@ jobs:
         run: cargo test --no-fail-fast
       # `dev-keys` (86akby6yy) is OFF by default, so the four steps above compile none of the
       # `.env` loader and none of its tests. One of those tests is a SECURITY control: it asserts
-      # at the WRITE boundary that no name outside the two-entry allowlist reaches the process
+      # at the WRITE boundary that no name outside the three-entry allowlist reaches the process
       # environment, which is what stops the loader injecting an arbitrary environment from a
       # `.env` file. Sana's PR #18 review (F1) found that control missing, and the mutation that
       # exposed it left the whole suite green -- so this is exactly the kind of gap a gate has to
@@ -596,6 +603,32 @@ jobs:
       - name: Test (dev-keys)
         if: ${{ !cancelled() }}
         run: cargo test --features dev-keys --no-fail-fast
+      # The `openai-notes` feature gates the direct-provider construction and the four-state
+      # status derivation (86akby7d8). The default build above compiles NEITHER, so without
+      # this step that code has the same "linted by nothing" problem as selahcue-stt.
+      # TWO steps, not one `run:` block -- for exactly the reason the comment above the
+      # Format/Check/Clippy/Test steps gives: under `bash -e` a clippy failure aborts the
+      # block before `cargo test` ever runs, so one broken gate costs two gates' worth of
+      # information. Splitting them keeps that from being reintroduced here.
+      - name: Clippy (openai-notes feature)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features openai-notes --all-targets -- -D warnings
+      - name: Test (openai-notes feature)
+        if: ${{ !cancelled() }}
+        run: cargo test --features openai-notes --no-fail-fast
+      # `dev-keys` and `openai-notes` compiled and tested TOGETHER. Each is gated alone above;
+      # this is the one build where this PR's shared `ENV_LOCK` actually has two
+      # independently-authored env-mutating test modules (dev_env's and the model-override
+      # tests') running in the same process -- the exact combination the lock exists to keep
+      # safe. A by-hand run during review found it green (97/97); that is a data point, not a
+      # gate. Without this step nothing regresses it automatically, the same "no gate compiles
+      # it" gap this PR's own commit messages cite `selahcue-stt` as the standing example of.
+      - name: Clippy (dev-keys,openai-notes)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features dev-keys,openai-notes --all-targets -- -D warnings
+      - name: Test (dev-keys,openai-notes)
+        if: ${{ !cancelled() }}
+        run: cargo test --features dev-keys,openai-notes --no-fail-fast
       # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
       # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
       # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-

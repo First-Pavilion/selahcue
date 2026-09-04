@@ -5,14 +5,52 @@
 //   set_preferred_translation · set_include_flag · set_account_token / clear_account_token ·
 //   generate_sermon_notes
 //
-// HONESTY (this screen is about trust): only real state is rendered. In the current build the live
-// SelahCue cloud service does not exist, so `cloud_status` is "not_configured", `cloud_connected`
-// is false, and `quota` is null — the panel then shows an honest "coming soon" affordance and a
-// placeholder quota (NEVER a fabricated "12 / 40"). The Available / Cloud-connected pills appear
-// only when `cloud_connected` is true. Generate is consent-gated end to end: the backend returns
-// `consent_required` when cloud-notes consent is off (we prompt to opt in) and `not_configured`
-// when the service isn't wired yet (we say so honestly). Nav + activation live in app.js
-// (showSurface → settingsActivate); this module owns the surface body and loads after app.js.
+// HONESTY (this screen is about trust): only real state is rendered, and under-reporting breaks
+// that contract exactly as much as over-reporting does.
+//
+// `cloud_status` is one of FOUR states and the panel renders a different, true thing for each:
+//   "not_configured"  — no provider path is compiled in and no hosted service is configured.
+//                       Honest "coming soon". This is the stock build.
+//   "key_missing"     — a direct-provider path IS compiled in but no developer key is present.
+//                       NOT "coming soon" and NOT an error: the feature exists, the key does not,
+//                       and saying which is the difference between actionable and useless.
+//   "direct_provider" — a third-party provider (OpenAI) is configured on this machine via a
+//                       developer key. Notes really are generated. The panel says so, names the
+//                       provider (FR-132), and says the key is a developer key — because it is.
+//   "hosted"          — the SelahCue hosted service is configured. Phase 2.
+//
+// `notes_available` (RENAMED from `cloud_connected`) means "note generation can run right now" —
+// true for the last two states only. The old name meant "the hosted service is reachable", which
+// stayed false while GPT generated real drafts, so this panel rendered "coming soon" over a working
+// feature. A field called `cloud_connected` reading true for a local developer key would have been
+// the same lie with better manners, so it was renamed rather than redefined.
+//
+// `notes_provider` is null EXACTLY when `notes_available` is false. Never render an availability
+// claim without reading the provider out of it — the two are tied on the backend and asserted in
+// both directions, and that tie is what stops this screen advertising a feature it cannot name.
+//
+// `quota` is still null and there is still NO metering, so the placeholder stays — NEVER a
+// fabricated "12 / 40". A generation counter or session tally would be exactly the invented meter
+// this file refuses to draw.
+//
+// Generate is consent-gated end to end: the backend returns `consent_required` when cloud-notes
+// consent is off (we prompt to opt in) and `not_configured` when nothing can serve the request.
+// A returned draft carries `ai_generated` + `disclosure`; both are rendered together and neither is
+// rendered alone (FR-123/128). Nav + activation live in app.js (showSurface → settingsActivate);
+// this module owns the surface body and loads after app.js.
+//
+// The transcript Generate sends is `window.scCompletedTranscript`, a bridge app.js sets on every
+// poll from its own host-authoritative `view.transcript` (finalised segments only, never the
+// in-progress partial line) — this screen has no transcript store of its own. Below the floor in
+// `MIN_TRANSCRIPT_CHARS`, Generate refuses before any network call (Vera, PERF-3) instead of
+// billing for a draft fabricated from nothing.
+//
+// Generate does not send on click. It opens a review step (openGenPreview) that renders the EXACT
+// string about to be sent and waits for an explicit Confirm; Cancel sends nothing. That's what
+// makes the footnote under the button true rather than aspirational (F-5 — Sana/Quinn, both
+// blocking): the promise is "you'll see exactly what's sent and confirm before anything is
+// generated", so the preview is built from the same string, not a re-derived one, and nothing
+// reaches `invoke("generate_sermon_notes", …)` outside confirmGenerate().
 //
 // Excluded by product decision (present in the frame, NOT built here): Text-to-Speech (DEC-001) and
 // the "Advanced · Bring your own key / custom provider" row (hosted-only model).
@@ -60,7 +98,8 @@
         chapter_markers: false, notable_quotations: false, short_summary: false,
       },
       cloud_status: "not_configured",
-      cloud_connected: false,
+      notes_available: false,
+      notes_provider: null,
       account_token_set: false,
       quota: null,
     };
@@ -259,25 +298,48 @@
     id.appendChild(logo);
     var idcol = el("div", "pp-ai-idcol");
     var titlerow = el("div", "pp-ai-titlerow");
-    titlerow.appendChild(el("span", "pp-ai-title", "SelahCue AI"));
-    titlerow.appendChild(badge("pp-badge-included", "INCLUDED"));
+    // The provider is NAMED (FR-132), from the backend's own descriptor. Hardcoding "SelahCue AI"
+    // stopped being true the moment OpenAI generated the notes, and so did "no accounts, keys or
+    // billing to manage" — a developer key is an account, a key and a bill.
+    var np = view.notes_provider || null;
+    var status = view.cloud_status || "not_configured";
+    titlerow.appendChild(el("span", "pp-ai-title", np && np.name ? np.name : "AI sermon notes"));
+    if (np && np.developer_key) {
+      titlerow.appendChild(badge("pp-badge-dev", "DEVELOPER KEY"));
+    } else if (status === "hosted") {
+      titlerow.appendChild(badge("pp-badge-included", "INCLUDED"));
+    }
     idcol.appendChild(titlerow);
-    idcol.appendChild(el("span", "pp-ai-sub", "Sermon notes generated for you — no accounts, keys or billing to manage."));
+    idcol.appendChild(el("span", "pp-ai-sub", providerSubtitle(status, np)));
     id.appendChild(idcol);
     head.appendChild(id);
 
-    var status = el("div", "pp-ai-status");
-    if (view.cloud_connected) {
-      // ONLY when the backend confirms a live connection.
-      status.appendChild(pill("pp-pill-ok", "Available"));
-      status.appendChild(pill("pp-pill-info", "Cloud connected"));
+    var statusEl = el("div", "pp-ai-status");
+    if (view.notes_available && np) {
+      // ONLY when the backend confirms notes can actually be generated AND says by whom.
+      statusEl.appendChild(pill("pp-pill-ok", "Available"));
+      if (np.developer_key) {
+        var dev = pill("pp-pill-info", np.name + (np.model ? " · " + np.model : ""));
+        dev.title = "Notes are generated by " + np.name +
+          " using a developer key on this machine. This is not the shipping configuration.";
+        statusEl.appendChild(dev);
+      } else {
+        statusEl.appendChild(pill("pp-pill-info", "Cloud connected"));
+      }
+    } else if (status === "key_missing") {
+      // The feature is built in; the key is not there. Distinct from "coming soon", because the
+      // reader can do something about this one.
+      var nokey = pill("pp-pill-muted", "No key configured");
+      nokey.title = "Sermon-note generation is built into this app, but no developer API key was " +
+        "found. Add OPENAI_API_KEY to the .env file at the repository root.";
+      statusEl.appendChild(nokey);
     } else {
-      // Honest: the live SelahCue service isn't wired up in this build.
+      // Honest: no note provider is wired up in this build at all.
       var soon = pill("pp-pill-muted", "Coming soon");
-      soon.title = "The SelahCue cloud service isn’t available yet.";
-      status.appendChild(soon);
+      soon.title = "Sermon-note generation isn’t available in this build yet.";
+      statusEl.appendChild(soon);
     }
-    head.appendChild(status);
+    head.appendChild(statusEl);
     aiEl.appendChild(head);
 
     // --- consent banner (green) + actionable cloud-notes consent toggle ---
@@ -325,12 +387,21 @@
     cols.appendChild(right);
     aiEl.appendChild(cols);
 
-    // --- Generate + result region ---
+    // --- Generate + review-before-send + result region ---
     var gen = el("button", "pp-generate", "✦   Generate Sermon Notes");
     gen.type = "button";
     gen.id = "pp-generate";
     gen.addEventListener("click", onGenerate);
     aiEl.appendChild(gen);
+
+    // The preview/confirm step (F-5, Sana/Quinn): built rather than left as a promise the copy
+    // below makes and the code doesn't keep. Populated by openGenPreview() with the EXACT string
+    // about to be sent — never re-derived at Confirm time — so what the operator reads here is
+    // guaranteed byte-identical to what leaves the device.
+    var preview = el("div", "pp-gen-preview");
+    preview.id = "pp-gen-preview";
+    preview.hidden = true;
+    aiEl.appendChild(preview);
 
     var result = el("div", "pp-gen-result");
     result.id = "pp-gen-result";
@@ -342,6 +413,26 @@
     foot.appendChild(el("span", "pp-footnote-ico", "🔒"));
     foot.appendChild(el("span", null, "You’ll see exactly what’s sent and confirm before anything is generated."));
     aiEl.appendChild(foot);
+  }
+
+  // The one-line honest description of who generates the notes, per status. Kept beside the four
+  // states so adding a state without adding its copy is a visible omission rather than a silent
+  // fall-through to a sentence that is no longer true.
+  function providerSubtitle(status, np) {
+    if (status === "direct_provider" && np) {
+      return "Sermon notes are generated by " + np.name +
+        (np.model ? " (" + np.model + ")" : "") +
+        " using a developer key stored on this machine. This is a development setup, not the " +
+        "shipping configuration.";
+    }
+    if (status === "hosted" && np) {
+      return "Sermon notes are generated by " + np.name + " — no accounts, keys or billing to manage.";
+    }
+    if (status === "key_missing") {
+      return "Sermon-note generation is built in, but no developer API key was found on this " +
+        "machine, so nothing can be generated yet.";
+    }
+    return "Sermon-note generation isn’t available in this build yet.";
   }
 
   function renderQuota() {
@@ -377,7 +468,7 @@
       var numz = el("div", "pp-quota-num");
       numz.appendChild(el("span", "pp-quota-used pp-quota-dim", "—"));
       lz.appendChild(numz);
-      lz.appendChild(el("span", "pp-quota-cap", "Monthly usage appears once the SelahCue cloud service is connected."));
+      lz.appendChild(el("span", "pp-quota-cap", "Usage metering isn’t available yet — no generations are counted."));
       box.appendChild(lz);
       var rz = el("div", "pp-quota-right");
       var meterz = el("div", "pp-meter");
@@ -431,15 +522,112 @@
 
   // ---------- Generate flow (consent-gated end to end by the backend) ----------
   var generating = false;
+
+  // The floor below which a "transcript" is empty or near-empty noise rather than something
+  // worth a model call (Vera, PERF-3): an empty transcript was being sent and billed as a fully
+  // fabricated draft, on the same click a mis-wire (defect 1) used to make silently. This is NOT
+  // a calibrated "enough content to summarise" threshold — no such number exists anywhere in the
+  // product spec — it only catches the empty/blank-click case and near-empty noise, refused here,
+  // before any network call is made.
+  var MIN_TRANSCRIPT_CHARS = 20;
+
+  // This settings screen doesn't own a transcript; it reads the operator's completed transcript
+  // from the bridge app.js sets on every poll (syncTranscript → window.scCompletedTranscript),
+  // or an empty string when the app doesn't expose one (e.g. dist opened standalone).
   function onGenerate() {
     if (generating) return;
+    var previewEl = document.getElementById("pp-gen-preview");
+    if (previewEl && !previewEl.hidden) return; // already reviewing — Cancel/Confirm decide next
+    var transcript = (typeof window.scCompletedTranscript === "string") ? window.scCompletedTranscript : "";
+    var trimmed = transcript.trim();
+    if (trimmed.length === 0) {
+      showGenError("no_transcript", "Nothing has been transcribed yet, so nothing was sent.");
+      return;
+    }
+    if (trimmed.length < MIN_TRANSCRIPT_CHARS) {
+      showGenError("transcript_too_short", "The transcript is too short to generate sermon notes from, so nothing was sent.");
+      return;
+    }
+    openGenPreview(transcript);
+  }
+
+  // Renders the exact text about to be sent, plus who it's going to, and waits for an explicit
+  // Confirm click. Nothing is sent until that click — this is what makes the footnote below the
+  // button ("You'll see exactly what's sent and confirm before anything is generated.") true
+  // instead of aspirational.
+  function openGenPreview(transcript) {
+    var box = document.getElementById("pp-gen-preview");
+    var btn = document.getElementById("pp-generate");
+    if (!box) return;
+    box.textContent = "";
+
+    var np = view.notes_provider || null;
+    var providerName = np && np.name ? np.name : "the configured provider";
+
+    var heading = el("h3", "pp-gen-preview-title", "Review before sending");
+    heading.id = "pp-gen-preview-title";
+    heading.tabIndex = -1;
+    box.appendChild(heading);
+
+    box.appendChild(el("p", "pp-gen-preview-desc",
+      "This exact text (" + transcript.length + " characters) will be sent to " + providerName +
+      ". Nothing leaves this device until you press Confirm."));
+
+    // L-2 (Quinn, Cody, Vera — independently): the description above is true but incomplete.
+    // `transcript` is window.scCompletedTranscript, which is the operator's bounded RECENT tail
+    // (app.js's syncTranscript(), not a full-service store — FR-130 is that store and isn't built
+    // yet), so after a long sermon this preview is honestly small while still reading as complete.
+    // Say so here, where the operator is actually looking, not only in a code comment or the PR
+    // body — a later engineer would find those; the operator reviewing THIS draft would not.
+    box.appendChild(el("p", "pp-gen-preview-desc pp-gen-preview-scope",
+      "This is drawn from the most recently transcribed speech, not the whole service — for a " +
+      "long sermon, that may be just the last few minutes."));
+
+    // Untrusted transcript text → el() sets it via textContent, never innerHTML.
+    var text = el("div", "pp-gen-preview-text", transcript);
+    text.tabIndex = 0;
+    box.appendChild(text);
+
+    var actions = el("div", "pp-gen-preview-actions");
+    var cancel = el("button", "pp-gen-preview-cancel", "Cancel");
+    cancel.type = "button";
+    cancel.id = "pp-gen-preview-cancel";
+    cancel.addEventListener("click", function () { closeGenPreview(true); });
+    actions.appendChild(cancel);
+
+    var confirm = el("button", "pp-gen-preview-confirm", "Confirm — send to " + providerName);
+    confirm.type = "button";
+    confirm.id = "pp-gen-preview-confirm";
+    confirm.addEventListener("click", function () { confirmGenerate(transcript); });
+    actions.appendChild(confirm);
+    box.appendChild(actions);
+
+    box.setAttribute("role", "group");
+    box.setAttribute("aria-labelledby", "pp-gen-preview-title");
+    box.hidden = false;
+    if (btn) btn.hidden = true;
+    heading.focus();
+  }
+
+  function closeGenPreview(refocusButton) {
+    var box = document.getElementById("pp-gen-preview");
+    var btn = document.getElementById("pp-generate");
+    if (box) { box.hidden = true; box.textContent = ""; }
+    if (btn) {
+      btn.hidden = false;
+      if (refocusButton) btn.focus();
+    }
+  }
+
+  // The actual send — reachable ONLY from openGenPreview's Confirm button, and always with the
+  // SAME string the operator just read there (never re-read from window.scCompletedTranscript,
+  // which a live 1s poll could have advanced while the preview was open — "what you saw" and
+  // "what was sent" must be the same string, not just the same source).
+  function confirmGenerate(transcript) {
+    closeGenPreview(false);
     generating = true;
     var btn = document.getElementById("pp-generate");
     if (btn) { btn.setAttribute("aria-busy", "true"); btn.disabled = true; }
-    // This settings screen doesn't own a transcript; use the operator's completed transcript when
-    // the app exposes one, else an empty string. The backend enforces consent/config first, so
-    // nothing is fabricated and nothing leaves the device in the current build.
-    var transcript = (typeof window.scCompletedTranscript === "string") ? window.scCompletedTranscript : "";
     invoke("generate_sermon_notes", { transcript: transcript })
       .then(showGenResult)
       .catch(function (e) { showGenError("transport", String(e && e.message ? e.message : e)); })
@@ -470,15 +658,50 @@
     var d = res.draft || {};
     var hd = el("div", "pp-gen-hdr");
     hd.setAttribute("role", "status");
-    var provider = res.provider ? res.provider : "SelahCue AI";
+    var provider = res.provider ? res.provider : "AI sermon notes";
     hd.appendChild(el("span", "pp-gen-badge", (res.degraded ? "Local draft" : provider)));
     hd.appendChild(el("span", "pp-gen-title", d.title || "Sermon notes"));
+    // FR-123: a model draft is labelled as one. The backend sets `ai_generated` from the provider
+    // that actually SERVED the draft, so a degraded offline scaffold is not mislabelled as AI.
+    if (res.ai_generated) {
+      hd.appendChild(el("span", "pp-gen-ai-label", res.ai_label || "AI-generated draft"));
+    }
     r.appendChild(hd);
+    // FR-128: the fabrication warning travels WITH the draft, never separately and never omitted.
+    // The backend guarantees `disclosure` is non-null exactly when `ai_generated`, so this cannot
+    // render a label without its warning.
+    if (res.ai_generated && res.disclosure) {
+      var disc = el("p", "pp-gen-disclosure", res.disclosure);
+      disc.setAttribute("role", "note");
+      r.appendChild(disc);
+    }
+    // FR-135: a degraded draft says so in words, not just via a badge. The operator asked for AI
+    // notes and got an offline outline instead; showing the scaffold in silence would read as
+    // though it WERE the notes they asked for — the same under-reporting the AI label prevents,
+    // pointing the other way. `degraded_notice` is non-null exactly when `degraded`.
+    if (res.degraded && res.degraded_notice) {
+      var deg = el("p", "pp-gen-degraded", res.degraded_notice);
+      deg.setAttribute("role", "note");
+      r.appendChild(deg);
+    }
     if (d.summary) r.appendChild(el("p", "pp-gen-summary", d.summary));
     (d.sections || []).forEach(function (s) {
       r.appendChild(el("p", "pp-gen-sec-h", s.heading || ""));
       var ul = el("ul", "pp-gen-list");
       (s.items || []).forEach(function (it) { ul.appendChild(el("li", null, it)); });
+      // FR-122 points/sub-points. Sub-points render as a NESTED list inside their parent point, so
+      // the subordination the backend sent survives to the screen instead of being flattened into
+      // one indistinguishable list.
+      (s.points || []).forEach(function (pt) {
+        var li = el("li", "pp-gen-point", pt && pt.text ? pt.text : "");
+        var subs = (pt && pt.sub_points) || [];
+        if (subs.length) {
+          var sul = el("ul", "pp-gen-sublist");
+          subs.forEach(function (sp) { sul.appendChild(el("li", null, sp)); });
+          li.appendChild(sul);
+        }
+        ul.appendChild(li);
+      });
       r.appendChild(ul);
     });
     if (d.scriptures && d.scriptures.length) {
@@ -499,12 +722,20 @@
     var r = genResultEl();
     if (!r) return;
     if (code === "not_configured") {
-      // Honest "coming soon" — the live service isn't wired up in this build.
+      // Two different truths arrive under one error code, and the panel tells them apart using the
+      // status it already holds. "We haven't built it" and "you haven't supplied a key" call for
+      // different things from the reader, and collapsing them wastes their time.
       r.className = "pp-gen-result pp-gen-info";
       r.setAttribute("role", "status");
       r.appendChild(el("span", "pp-gen-info-ico", "☁"));
-      r.appendChild(el("span", null,
-        "SelahCue AI isn’t available yet — sermon-note generation is coming soon."));
+      if (view.cloud_status === "key_missing") {
+        r.appendChild(el("span", null,
+          "No developer API key was found, so nothing was generated. Add OPENAI_API_KEY to the " +
+          ".env file at the repository root and restart."));
+      } else {
+        r.appendChild(el("span", null,
+          "Sermon-note generation isn’t available in this build yet."));
+      }
       return;
     }
     if (code === "consent_required") {
@@ -525,10 +756,15 @@
       r.appendChild(optin);
       return;
     }
-    // quota_exceeded / transport / malformed → surface the message.
+    // quota_exceeded / transport / malformed / no_transcript / transcript_too_short → surface the
+    // message. The latter two (PERF-3) never reach here from a network response — onGenerate
+    // refuses before any call is made — so their label says exactly that: nothing was sent.
     r.className = "pp-gen-result pp-gen-err";
     r.setAttribute("role", "alert");
-    var label = code === "quota_exceeded" ? "Monthly limit reached" : "Couldn’t generate notes";
+    var label = code === "quota_exceeded" ? "Monthly limit reached"
+      : code === "no_transcript" ? "No transcript yet"
+      : code === "transcript_too_short" ? "Transcript too short"
+      : "Couldn’t generate notes";
     r.appendChild(el("span", "pp-gen-err-t", label + " — "));
     r.appendChild(el("span", null, message || ""));
   }

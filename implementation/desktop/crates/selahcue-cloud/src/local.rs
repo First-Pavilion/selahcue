@@ -39,6 +39,15 @@ impl NoteProvider for LocalNoteProvider {
         "Local (offline)"
     }
 
+    /// **Not** generative. There is no local model here: this provider slices sentences
+    /// the operator already has and names the headings the cloud path would have filled.
+    /// It cannot invent a quotation or misattribute a verse, so labelling its output
+    /// "AI-generated" and attaching a fabrication warning would be a false statement on
+    /// the one screen whose job is being truthful about what the machine did.
+    fn is_generative(&self) -> bool {
+        false
+    }
+
     fn generate(&self, req: &NoteRequest) -> Result<NoteDraft, NoteError> {
         let s = sentences(&req.transcript);
         let inc = &req.options.include;
@@ -63,31 +72,19 @@ impl NoteProvider for LocalNoteProvider {
         // scaffold useful without pretending to be AI analysis.
         let outline: Vec<String> = s.iter().take(8).cloned().collect();
         if !outline.is_empty() {
-            sections.push(NoteSection {
-                heading: "Outline".to_string(),
-                items: outline,
-            });
+            sections.push(NoteSection::flat("Outline", outline));
         }
         // Each enabled include-flag becomes an honest, empty-for-operator-to-fill
         // heading — the offline scaffold cannot generate these, but it names them so
         // the operator knows what the cloud path would add.
         if inc.prayer_points {
-            sections.push(NoteSection {
-                heading: "Prayer points".to_string(),
-                items: Vec::new(),
-            });
+            sections.push(NoteSection::flat("Prayer points", Vec::new()));
         }
         if inc.notable_quotations {
-            sections.push(NoteSection {
-                heading: "Notable quotations".to_string(),
-                items: Vec::new(),
-            });
+            sections.push(NoteSection::flat("Notable quotations", Vec::new()));
         }
         if inc.social_excerpts {
-            sections.push(NoteSection {
-                heading: "Social excerpts".to_string(),
-                items: Vec::new(),
-            });
+            sections.push(NoteSection::flat("Social excerpts", Vec::new()));
         }
 
         Ok(NoteDraft {

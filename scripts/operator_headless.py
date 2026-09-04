@@ -70,7 +70,35 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # clear' (Cody L5), and PL AC-49's derived-range premise, without which a sweep over an
 # empty list would report 'all clear' forever (Quinn Q-N1). The REAL observed count, so
 # dropping either trips exit 4.)
-EXPECTED_MIN_CHECKS = 1121
+# (Raised 1121 -> 1179 for 86akby7d8's two blocking fixes, both mutation-verified RED/GREEN:
+# the "PP defect 1" checks drive window.scCompletedTranscript through the REAL app.js bridge
+# (render() with view.transcript segments, not a direct global poke) and would trip if that
+# wiring were ever silently removed again; the "PP F-5" / "PP PERF-3" checks assert Generate
+# never reaches generate_sermon_notes without an explicit Confirm on the review step showing
+# the exact text (plus the two focus-management a11y checks on that step), and that an
+# empty/below-minimum transcript is refused before any network call — the properties
+# Sana/Quinn/Vera made release-blocking. The REAL observed count.)
+# (Raised 1179 -> 1184 for the PR #19 four-reviewer remediation batch (86akby7d8), all four
+# mutation-verified RED/GREEN:
+#   M-1 (Cody) — two new "PP F-5 M-1 (computed display)" checks assert getComputedStyle(...)
+#   .display === "none" on #pp-gen-preview after Cancel AND after Confirm. The prior checks only
+#   read the `hidden` DOM property, which is exactly the direction this webview's [hidden]-vs-
+#   author-`display` trap bites; these read what is actually painted, backed by the
+#   .pp-gen-preview[hidden]{display:none} companion rule added to dist/app.css.
+#   L-1 (Sana, Quinn — independently) — "PP F-5 L-1" premise + negative check. The transcript is
+#   now advanced through the REAL render() path (PP_TRANSCRIPT_SEGMENTS_ADVANCED) WHILE the
+#   preview sits open, then the sent transcript is asserted to be the PREVIEWED fixture and NOT
+#   the advanced one — so a confirmGenerate regressed to re-read window.scCompletedTranscript at
+#   send time (instead of using the value it was handed) now has something to disagree with.
+#   L-2 (Quinn, Cody, Vera — independently) — "PP F-5 L-2" pins the new
+#   .pp-gen-preview-scope disclosure copy verbatim, so the preview says in words that it may be
+#   drawn from a recent window rather than the whole service.
+#   L-3 (Vera, note) — two "PP L-3" checks drive 125 segments (over MAX_TRANSCRIPT_ROWS=120)
+#   through the real render() path and assert window.scCompletedTranscript matches the SAME
+#   120-tail #transcript-log renders from, not the unsliced list — the bridge was changed from
+#   `all.map(...)` to `segs.map(...)` in app.js's syncTranscript() to make that true.
+# The REAL observed count (1179 + 5 + 2 = 1186).)
+EXPECTED_MIN_CHECKS = 1186
 
 
 def find_chrome():
@@ -302,10 +330,21 @@ STUB = r"""
   var dClone = function(){ return JSON.parse(JSON.stringify(D)); };
   var dEdit = function(){ D.can_undo = true; D.can_redo = false; return dClone(); };
   // Providers & Privacy (Settings, node 338:124) — the operator-local ProvidersView the
-  // providers_* commands return. Mirrors the REAL backend default in a build without `cloud-live`:
-  // on-device is the private default, cloud is OFF, cloud_status is "not_configured", cloud_connected
-  // is false, and quota is null (the live SelahCue service does not exist yet). The driver mutates P
-  // through the commands and flips the cloud_connected/quota fixtures to exercise the honest states.
+  // providers_* commands return. Mirrors the REAL backend default in a stock build: on-device is the
+  // private default, cloud is OFF, cloud_status is "not_configured", notes_available is false,
+  // notes_provider is null and quota is null. The driver flips cloud_status / notes_provider / quota
+  // to exercise each of the four honest states (86akby7d8).
+  //
+  // `notes_available` is DERIVED here, exactly as the backend derives it from notes_provider, so the
+  // stub cannot drift into a combination the backend can never produce and let a broken renderer
+  // pass against it.
+  //
+  // WARNING: this stub is a HAND-WRITTEN MIRROR of the Rust ProvidersView. It cannot catch a field
+  // rename on the backend -- it would simply keep serving the old name and every assertion below
+  // would keep passing against a shape production no longer produces. The guards against that are
+  // the two Rust tests `the_frontend_contract_field_names_are_pinned` and
+  // `the_notes_provider_object_keys_are_pinned` (selahcue-operator/src/main.rs). If either fails,
+  // the corresponding names HERE and in dist/settings.js must be changed in the same MR.
   var P = {
     transcription_mode:"on_device",
     on_device:{ready:true, state:"ready", model:"Small", detail:"ggml-small.en.bin"},
@@ -316,14 +355,16 @@ STUB = r"""
     preferred_translation:"KJV",
     translations:[{code:"KJV",name:"King James Version"},{code:"WEB",name:"World English Bible"},{code:"ASV",name:"American Standard Version"}],
     include:{prayer_points:true, scripture_extraction:true, social_excerpts:false, chapter_markers:true, notable_quotations:true, short_summary:true},
-    cloud_status:"not_configured", cloud_connected:false, account_token_set:false, quota:null
+    cloud_status:"not_configured", notes_provider:null, notes_available:false,
+    account_token_set:false, quota:null
   };
   var ppView = function(){
     P.any_cloud_enabled = !!(P.cloud_transcription_consent || P.cloud_notes_consent);
-    P.cloud_status = P.cloud_connected ? "available" : "not_configured";
+    // The backend's invariant, mirrored: notes_available is true exactly when a provider is named.
+    P.notes_available = !!P.notes_provider;
     return JSON.parse(JSON.stringify(P));
   };
-  window.__pp = P; // exposed so the driver can flip cloud_connected / quota to exercise honest states
+  window.__pp = P; // exposed so the driver can flip cloud_status / notes_provider / quota
   window.__TAURI__ = { core: { invoke: function(cmd, args){
     window.__calls.push({cmd:cmd, args:args});
     if (cmd === "builtin_themes") return Promise.resolve([{name:"Classic", theme:JSON.parse(JSON.stringify(T))}]);
@@ -677,16 +718,33 @@ STUB = r"""
         return Promise.resolve({ok:false, error:"consent_required", message:"cloud notes consent is off"});
       var g = window.__ppGen || "not_configured";
       if (g === "ok") return Promise.resolve({
-        ok:true, degraded:false, provider:"SelahCue AI",
+        ok:true, degraded:false, provider:"OpenAI",
+        // FR-123/128: a model draft is labelled and carries the fabrication warning. `disclosure`
+        // is non-null exactly when `ai_generated`, mirroring the backend.
+        ai_generated:true, ai_label:"AI-generated draft",
+        disclosure:"AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.",
+        degraded_notice:null,
         draft:{title:"Grace That Feeds", summary:"A sermon on provision and grace.",
-          sections:[{heading:"Prayer points", items:["Thank God for provision","Pray for the hungry"]}],
+          sections:[
+            // FR-122: an outline section carries `points` with nested sub_points and NO items.
+            {heading:"Main points", items:[], points:[
+              {text:"The crowd came back for the wrong reason", sub_points:["They ate of the loaves","A full church is not a fed one"]},
+              {text:"Jesus does not shame the hunger", sub_points:["He redirects it"]}
+            ]},
+            // A flat section carries `items` and NO points.
+            {heading:"Prayer points", items:["Thank God for provision","Pray for the hungry"], points:[]}
+          ],
           scriptures:["Isaiah 61:5","John 6:35"]},
-        quota:{used:13, limit:40, remaining:27, resets_label:"Sep 1"}
+        quota:null   // no metering in Phase 1 — the backend returns null even on success
       });
       if (g === "degraded") return Promise.resolve({
-        ok:true, degraded:true, provider:"SelahCue AI",
+        ok:true, degraded:true, provider:"Local (offline)",
+        // The offline scaffold is NOT a model: no AI label, no fabrication warning — but it does
+        // carry its own notice, because the operator asked for AI notes and did not get them.
+        ai_generated:false, ai_label:"AI-generated draft", disclosure:null,
+        degraded_notice:"The AI provider could not be reached, so this is an offline outline built from your transcript — not AI-generated notes. The headings are placeholders for you to fill in. Try again when you are back online.",
         draft:{title:"Offline outline", summary:null,
-          sections:[{heading:"Outline", items:["point one"]}], scriptures:[]},
+          sections:[{heading:"Outline", items:["point one"], points:[]}], scriptures:[]},
         quota:null
       });
       if (g === "quota_exceeded") return Promise.resolve({ok:false, error:"quota_exceeded", message:"monthly limit reached"});
@@ -4744,10 +4802,15 @@ DRIVER = r"""
       planSelectedId = null;
       planRenderBuilder(planView); // leave the surface on the driver's own fixture
 
-      // === Settings → Providers & Privacy (Figma 338:124, backend 86ajy034h) — the panel renders
-      // REAL providers_view() state and each control invokes the right command. HONESTY is the whole
-      // point of this screen: in this build cloud_status="not_configured", quota=null,
-      // cloud_connected=false → honest "coming soon" + placeholder quota, NEVER a fabricated "12/40".
+      // === Settings → Providers & Privacy (Figma 338:124, backend 86ajy034h + 86akby7d8) — the panel
+      // renders REAL providers_view() state and each control invokes the right command. HONESTY is
+      // the whole point of this screen, and it now cuts BOTH ways: a stock build
+      // (cloud_status="not_configured", notes_available=false, quota=null) must show "coming soon"
+      // and a placeholder quota and NEVER a fabricated "12/40" — AND a build that can genuinely
+      // generate notes must NOT be shown as unavailable. Under-reporting broke this contract as
+      // badly as over-reporting: with GPT wired directly the old `cloud_connected` stayed false
+      // while real drafts came back, so the panel denied a feature while printing its output.
+      // All four cloud_status states are exercised below.
       // ==================================================================================
       var ppCall = function(cmd){ return window.__calls.filter(function(c){return c.cmd===cmd;}); };
       var ppLast = function(cmd){ var a=ppCall(cmd); return a.length?a[a.length-1]:null; };
@@ -4805,10 +4868,10 @@ DRIVER = r"""
          "PP C-002: selecting On-device revokes cloud-transcription consent (audio never leaves the device)");
       ok(el("pp-radio-ondevice").getAttribute("aria-checked")==="true", "PP C-002: On-device is selected again");
 
-      // (3) SelahCue AI — honest status FIRST (no fabricated pills/quota before any live connection).
+      // (3) AI sermon notes — honest status FIRST (no fabricated pills/quota with nothing configured).
       var aiStatus = document.querySelector(".pp-ai-status");
       ok(!!aiStatus && !/Cloud connected/.test(aiStatus.textContent) && !/Available/.test(aiStatus.textContent),
-         "PP C-006: with cloud_connected=false the Available / Cloud-connected pills are NOT shown");
+         "PP C-006: with notes_available=false the Available / Cloud-connected pills are NOT shown");
       ok(!!aiStatus.querySelector(".pp-pill-muted") && /Coming soon/.test(aiStatus.textContent),
          "PP C-006: an honest 'Coming soon' pill is shown instead");
       ok(!/12\s*\/\s*40/.test(el("surface-settings").textContent),
@@ -4816,8 +4879,11 @@ DRIVER = r"""
       var ppQuota = document.querySelector(".pp-quota");
       ok(!!ppQuota && ppQuota.classList.contains("pp-quota-empty") && /Not available yet/.test(ppQuota.textContent),
          "PP C-006: the quota shows an honest placeholder (null quota → 'Not available yet'), not numbers");
-      ok(!!document.querySelector(".pp-badge-included") && /INCLUDED/.test(document.querySelector(".pp-ai-head").textContent),
-         "PP C-001: the SelahCue AI provider card renders with the INCLUDED badge");
+      // 86akby7d8: with nothing configured the card must NOT claim a provider or an included plan.
+      ok(!document.querySelector(".pp-badge-included") && !document.querySelector(".pp-badge-dev"),
+         "PP C-010: with no provider configured, neither the INCLUDED nor the DEVELOPER KEY badge is shown");
+      ok(!/no accounts, keys or billing to manage/i.test(el("surface-settings").textContent),
+         "PP C-010: the 'no accounts, keys or billing to manage' claim is gone — it is false once a developer key generates the notes");
 
       // (3) selects — options + selected value from the backend; each change invokes its command.
       var tSel = el("pp-template");
@@ -4878,70 +4944,374 @@ DRIVER = r"""
       // (3) Generate — consent-gated end to end.
       ok(el("pp-consent-notes") && el("pp-consent-notes").getAttribute("role")==="switch" && el("pp-consent-notes").checked===false,
          "PP C-005: the cloud-notes consent switch reflects the backend (off) before opt-in");
+
+      // 86akby7d8 defect 1: the panel has no transcript store of its own — it reads app.js's
+      // bridge, window.scCompletedTranscript, set on every render() from the host-authoritative
+      // view.transcript (syncTranscript() in app.js) — exactly the FULL poll->render path the R3
+      // display checks above already exercise, not a shortcut. Before this fix nothing anywhere
+      // assigned that global, so it stayed "" and every Generate click sent an empty transcript.
+      // Drive it for real: render() with finalised segments, through the SAME render() the 1s
+      // poll invokes, then assert the bridge actually did its job before trusting it below.
+      var PP_TRANSCRIPT_SEGMENTS = [
+        { id: 601, text: "Good morning, church.", start_ms: 0, end_ms: 2000 },
+        { id: 602, text: "Turn with me to Isaiah sixty-one.", start_ms: 2000, end_ms: 5000 },
+        { id: 603, text: "This morning we consider what it means to be fed by grace, not by our own striving.", start_ms: 5000, end_ms: 9000 },
+      ];
+      var PP_TRANSCRIPT_FIXTURE =
+        "Good morning, church.\n" +
+        "Turn with me to Isaiah sixty-one.\n" +
+        "This morning we consider what it means to be fed by grace, not by our own striving.";
+      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS, partial_transcript: "and the crowd came back" }));
+      ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE,
+         "PP defect 1: render() with finalised segments populates window.scCompletedTranscript via the real app.js bridge, joined in order");
+      ok(window.scCompletedTranscript.indexOf("and the crowd came back") === -1,
+         "PP defect 1: the in-progress partial line is NEVER part of the completed transcript the bridge exposes");
+      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS })); // clear the partial, keep the segments
+      ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE,
+         "PP defect 1: the bridge is stable (same segments -> same completed transcript) once the partial clears");
+
+      // L-3 (Vera, note — 86akby7d8 remediation): the bridge must map the SAME capped list the
+      // DOM renders from (`segs`, MAX_TRANSCRIPT_ROWS=120), not the unsliced `all` — so if a host
+      // ever returns more than the DOM's own defensive cap, "what Generate sends" and "what the
+      // transcript log shows" never disagree about what "the transcript" is.
+      var PP_OVERCAP_SEGMENTS = [];
+      for (var ppOc = 0; ppOc < 125; ppOc++) {
+        PP_OVERCAP_SEGMENTS.push({ id: 900 + ppOc, text: "seg" + ppOc, start_ms: ppOc * 100, end_ms: ppOc * 100 + 90 });
+      }
+      render(Object.assign({}, baseView, { transcript: PP_OVERCAP_SEGMENTS }));
+      var ppOvercapExpected = PP_OVERCAP_SEGMENTS.slice(-120).map(function (s) { return s.text; }).join("\n");
+      ok(window.scCompletedTranscript === ppOvercapExpected,
+         "PP L-3: over the DOM's own 120-segment cap, the Generate bridge reflects the SAME tail #transcript-log renders, not the unsliced list");
+      ok(window.scCompletedTranscript.indexOf("seg0") === -1,
+         "PP L-3: ...specifically, the oldest over-cap segment is excluded — proving this is actually capped, not coincidentally equal");
+      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS })); // restore the fixture for the checks below
+
+      // Persist into the mock's own view state too (not just this one-off render()): the REAL
+      // app.js 1s poll keeps running underneath this whole block (exactly as it does in the real
+      // app while the operator sits on Settings), and every reactivation below re-fetches
+      // invoke("view") — either would otherwise re-render from V's default (no transcript) and
+      // silently wipe window.scCompletedTranscript back to "" partway through this test.
+      V.transcript = PP_TRANSCRIPT_SEGMENTS;
+
+      // 86akby7d8 defect 2 / F-5 (Sana, escalated blocking by Quinn): Generate no longer sends on
+      // click — it opens a review step showing the exact text and waits for an explicit Confirm.
+      // This helper drives that two-step flow so the pre-existing outcome checks below don't have
+      // to duplicate it, and it re-asserts the core guarantee (no send without Confirm) on every
+      // single call site that exercises Generate — a regression back to send-on-click would fail
+      // here, not just in the dedicated F-5 block further down.
+      var ppGenerateAndConfirm = async function (waitAfterConfirm) {
+        var before = ppCall("generate_sermon_notes").length;
+        el("pp-generate").click();
+        await sleep(30);
+        ok(ppCall("generate_sermon_notes").length === before,
+           "PP F-5: clicking Generate alone never calls generate_sermon_notes — the review step opens first");
+        var confirmBtn = el("pp-gen-preview-confirm");
+        if (confirmBtn) confirmBtn.click();
+        await sleep(waitAfterConfirm || 70);
+      };
+
       // Generate with consent OFF → the backend returns consent_required → prompt to opt in.
       window.__ppGen = "not_configured";
-      el("pp-generate").click();
-      await sleep(70);
+      await ppGenerateAndConfirm(70);
       var genRes = el("pp-gen-result");
       ok(!!genRes && !genRes.hidden && genRes.getAttribute("role")==="alert" && /Turn on cloud processing/.test(genRes.textContent),
          "PP C-005: Generate with consent off surfaces a consent_required prompt (role=alert)");
       ok(!!el("pp-optin-retry"), "PP C-005: the consent_required prompt offers a one-click 'Opt in & generate'");
-      // Opt in & generate → grants notes consent then retries; the service is not configured → honest 'coming soon'.
+      // Opt in & generate → grants notes consent then retries (through the SAME review-and-confirm
+      // gate — opting in mid-flow does not bypass it); the service is not configured → 'coming soon'.
       el("pp-optin-retry").click();
-      await sleep(90);
+      await sleep(60);
       ok(ppCall("set_cloud_consent").some(function(c){return c.args.kind==="notes" && c.args.enabled===true;}),
          "PP C-005: 'Opt in & generate' grants cloud-notes consent (set_cloud_consent{notes,true})");
+      var confirmAfterOptin = el("pp-gen-preview-confirm");
+      if (confirmAfterOptin) confirmAfterOptin.click();
+      await sleep(60);
       var genRes2 = el("pp-gen-result");
-      ok(!!genRes2 && genRes2.getAttribute("role")==="status" && /coming soon/i.test(genRes2.textContent),
-         "PP C-005: with consent on but the service not configured, Generate shows an honest 'coming soon'");
+      ok(!!genRes2 && genRes2.getAttribute("role")==="status" && /isn.t available in this build/i.test(genRes2.textContent),
+         "PP C-005: with consent on but nothing configured, Generate says so honestly (role=status, not an error)");
+      // 86akby7d8: the SAME not_configured error code means two different things, and the panel
+      // tells them apart from the status it already holds. "we haven't built it" and "you haven't
+      // supplied a key" ask different things of the reader; collapsing them wastes their time.
+      window.__pp.cloud_status = "key_missing";
+      document.querySelector('.nav-item[data-surface="settings"]').click();
+      await sleep(60);
+      await ppGenerateAndConfirm(70);
+      var genKey = el("pp-gen-result");
+      ok(!!genKey && /OPENAI_API_KEY/.test(genKey.textContent) && /\.env/.test(genKey.textContent),
+         "PP C-010: under key_missing the SAME not_configured code renders the actionable missing-key message instead");
+      ok(!/isn.t available in this build/i.test(genKey.textContent),
+         "PP C-010: ...and NOT the generic 'not available in this build' copy — the two states stay distinguishable");
+      window.__pp.cloud_status = "not_configured";
+      document.querySelector('.nav-item[data-surface="settings"]').click();
+      await sleep(60);
       ok(el("pp-consent-notes").checked===true, "PP C-005: the consent switch now reflects the granted consent");
       // Now simulate a configured service returning a draft.
       window.__ppGen = "ok";
-      el("pp-generate").click();
-      await sleep(80);
+      await ppGenerateAndConfirm(80);
       var genOk = el("pp-gen-result");
       ok(!!genOk && genOk.classList.contains("pp-gen-ok") && /Grace That Feeds/.test(genOk.textContent),
          "PP C-005: a successful generation renders the returned draft (title + sections)");
       ok(genOk.querySelectorAll(".pp-gen-list li").length > 0 && /Isaiah 61:5/.test(genOk.textContent),
          "PP C-005: the draft renders section items + scriptures");
-      ok(/\/\s*40/.test(document.querySelector(".pp-quota").textContent) && /27 remaining/.test(document.querySelector(".pp-quota").textContent),
-         "PP C-006: a server-returned quota drives the meter (real numbers only, after a live response)");
+
+      // --- 86akby7d8: FR-123 label, FR-128 disclosure, FR-122 sub-points ------------------
+      var aiLabel = genOk.querySelector(".pp-gen-ai-label");
+      ok(!!aiLabel && getComputedStyle(aiLabel).display !== "none" && /AI-generated/i.test(aiLabel.textContent),
+         "PP C-011 (FR-123): a model draft is VISIBLY labelled AI-generated (computed display, not just present)");
+      var disc = genOk.querySelector(".pp-gen-disclosure");
+      ok(!!disc && getComputedStyle(disc).display !== "none",
+         "PP C-011 (FR-128): the fabrication-risk disclosure is rendered with the draft");
+      ok(/invent/i.test(disc.textContent) && /Check every/i.test(disc.textContent),
+         "PP C-011 (FR-128): the disclosure actually warns that the model can invent things and asks for review");
+      // The retention/DPA language is Phase 2 (86akby942) and must NOT appear yet: naming a provider
+      // is safe without the DPA work, describing its retention posture is not.
+      ok(!/retention|retain|training data|processing agreement|DPA/i.test(disc.textContent),
+         "PP C-011: the disclosure makes NO retention or data-processing claim (that is gated on the DPA ticket)");
+      // FR-122: sub-points render nested INSIDE their parent point, not flattened into one list.
+      var pt = genOk.querySelector(".pp-gen-point");
+      ok(!!pt && /crowd came back/.test(pt.textContent),
+         "PP C-012 (FR-122): outline points render");
+      var sub = genOk.querySelector(".pp-gen-point > .pp-gen-sublist");
+      ok(!!sub && sub.querySelectorAll("li").length === 2,
+         "PP C-012 (FR-122): sub-points render as a NESTED list inside their parent point, not flattened");
+      ok(genOk.querySelectorAll(".pp-gen-sublist > li")[0].textContent === "They ate of the loaves",
+         "PP C-012 (FR-122): a sub-point is attached to the right parent point");
+      // quota is null even on the SUCCESS path in this phase — no meter is conjured from a working
+      // generation. This is the negative requirement a well-meaning implementation invents past.
+      var qAfter = document.querySelector(".pp-quota");
+      ok(qAfter.classList.contains("pp-quota-empty"),
+         "PP C-006: a successful generation with no metering leaves the honest quota placeholder alone");
 
       // (C-005 — the terminal generate outcomes each surface honestly; consent is on from the opt-in above.)
-      window.__ppGen = "quota_exceeded"; el("pp-generate").click(); await sleep(70);
+      window.__ppGen = "quota_exceeded"; await ppGenerateAndConfirm(70);
       var gQ = el("pp-gen-result");
       ok(gQ.getAttribute("role")==="alert" && /Monthly limit reached/.test(gQ.textContent),
          "PP C-005: quota_exceeded surfaces 'Monthly limit reached' (role=alert)");
-      window.__ppGen = "transport"; el("pp-generate").click(); await sleep(70);
+      window.__ppGen = "transport"; await ppGenerateAndConfirm(70);
       var gT = el("pp-gen-result");
       ok(gT.getAttribute("role")==="alert" && /Couldn’t generate notes/.test(gT.textContent),
          "PP C-005: a transport failure (rejected invoke) surfaces 'Couldn’t generate notes' (role=alert)");
-      window.__ppGen = "malformed"; el("pp-generate").click(); await sleep(70);
+      window.__ppGen = "malformed"; await ppGenerateAndConfirm(70);
       var gM = el("pp-gen-result");
       ok(gM.getAttribute("role")==="alert" && /Couldn’t generate notes/.test(gM.textContent),
          "PP C-005: a malformed response surfaces 'Couldn’t generate notes' (role=alert)");
       // A degraded (local fallback) success renders the draft with a 'Local draft' badge — and,
       // following the errors above, the result region is role=status, NOT a lingering alert (L1).
-      window.__ppGen = "degraded"; el("pp-generate").click(); await sleep(80);
+      window.__ppGen = "degraded"; await ppGenerateAndConfirm(80);
       var gD = el("pp-gen-result");
       ok(gD.classList.contains("pp-gen-ok") && /Local draft/.test(gD.textContent),
          "PP C-005: a degraded generation renders the draft with a 'Local draft' badge (FR-135)");
+      // 86akby7d8: the offline scaffold is NOT a model, so it carries no AI label and no fabrication
+      // warning — but it must NOT be shown in silence either, or a scaffold reads as though it were
+      // the AI notes the operator asked for.
+      ok(!gD.querySelector(".pp-gen-ai-label"),
+         "PP C-011: a degraded offline draft is NOT labelled AI-generated (it invents nothing — the label would be a false claim)");
+      ok(!gD.querySelector(".pp-gen-disclosure"),
+         "PP C-011: a degraded offline draft carries no fabrication warning, which does not apply to it");
+      var degNote = gD.querySelector(".pp-gen-degraded");
+      ok(!!degNote && getComputedStyle(degNote).display !== "none" && /could not be reached/i.test(degNote.textContent),
+         "PP C-011 (FR-135): a degraded draft says IN WORDS that the provider was unreachable and this is not the AI draft asked for");
+      ok(/not AI-generated notes/i.test(degNote.textContent),
+         "PP C-011 (FR-135): the degraded notice is explicit that these are not AI-generated notes");
       ok(gD.getAttribute("role")==="status",
          "PP C-005 (L1): a success after an error is announced as role=status, not a lingering alert");
       window.__ppGen = "ok"; // restore for any later reads
 
-      // (C-006 positive) flip the backend to a connected+quota state and re-activate: the pills + meter appear.
-      window.__pp.cloud_connected = true;
+      // === (F-5 / PERF-3) The review-and-confirm step is real, and an empty/below-minimum
+      // transcript is refused before any network call — 86akby7d8 ============================
+      // The footnote under Generate promises "You'll see exactly what's sent and confirm before
+      // anything is generated." Before this fix nothing enforced that: onGenerate sent on the
+      // same click (Sana F-5, escalated to release-blocking by Quinn — both read the shipped
+      // onGenerate themselves rather than take the gap on description). These checks fail if
+      // that regresses in EITHER direction: Generate reaching the network without an explicit
+      // Confirm, or Confirm sending something other than what the review step displayed.
+
+      // (a) PERF-3 (Vera): an empty transcript is refused before any network call, not sent —
+      // the guard that stops a mis-wire (defect 1) silently billing for a fabricated draft again.
+      // Driven through the REAL bridge (V.transcript + render()), not a direct global override —
+      // an empty FINALISED-segment list is what the host actually reports before any speech.
+      V.transcript = [];
+      render(Object.assign({}, baseView, { transcript: [] }));
+      ok(window.scCompletedTranscript === "", "PP defect 1: an empty transcript array bridges to \"\", not undefined or a stale value");
+      var genBeforeEmpty = ppCall("generate_sermon_notes").length;
+      el("pp-generate").click();
+      await sleep(40);
+      ok(ppCall("generate_sermon_notes").length === genBeforeEmpty,
+         "PP PERF-3: an empty transcript never reaches generate_sermon_notes — refused before the network call");
+      ok(el("pp-gen-preview").hidden === true,
+         "PP PERF-3: an empty transcript does not open the review step either — there is nothing to review");
+      var genEmptyRes = el("pp-gen-result");
+      ok(!!genEmptyRes && !genEmptyRes.hidden && /No transcript yet/.test(genEmptyRes.textContent),
+         "PP PERF-3: an empty transcript surfaces its own honest 'No transcript yet' state");
+
+      // (b) PERF-3: a below-floor, non-empty transcript (noise, not silence) is refused the same
+      // way, and distinguishably — the empty and near-empty cases say different true things.
+      V.transcript = [{ id: 701, text: "uh", start_ms: 0, end_ms: 300 }];
+      render(Object.assign({}, baseView, { transcript: V.transcript }));
+      ok(window.scCompletedTranscript === "uh", "PP defect 1: a single short segment bridges byte for byte");
+      el("pp-generate").click();
+      await sleep(40);
+      ok(ppCall("generate_sermon_notes").length === genBeforeEmpty,
+         "PP PERF-3: a below-minimum transcript never reaches generate_sermon_notes either");
+      var genShortRes = el("pp-gen-result");
+      ok(!!genShortRes && /too short/i.test(genShortRes.textContent) && !/No transcript yet/.test(genShortRes.textContent),
+         "PP PERF-3: a below-minimum (but non-empty) transcript surfaces 'too short', distinct from the empty case");
+
+      // (c) F-5: a real transcript opens a review step showing the EXACT string about to be sent,
+      // and calling generate_sermon_notes has still not happened.
+      V.transcript = PP_TRANSCRIPT_SEGMENTS;
+      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS }));
+      ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE, "PP defect 1: the fixture transcript is back via the real bridge before the review-step checks");
+      var genBeforeReview = ppCall("generate_sermon_notes").length;
+      el("pp-generate").click();
+      await sleep(40);
+      var previewBox = el("pp-gen-preview");
+      ok(!!previewBox && previewBox.hidden === false, "PP F-5: Generate opens the review step instead of sending");
+      // hidden-attr-vs-css-display trap (this webview): assert COMPUTED display, not just the
+      // cleared [hidden] attribute — a class display rule has defeated `hidden` here before.
+      ok(getComputedStyle(previewBox).display !== "none",
+         "PP F-5 (computed display): the review step is actually visible on screen, not defeated by a CSS display rule");
+      var previewText = previewBox.querySelector(".pp-gen-preview-text");
+      ok(!!previewText && previewText.textContent === PP_TRANSCRIPT_FIXTURE,
+         "PP F-5: the review step shows the EXACT text that will be sent, byte for byte");
+      ok(new RegExp(String(PP_TRANSCRIPT_FIXTURE.length) + " characters").test(previewBox.textContent),
+         "PP F-5: the review step states how much text is about to be sent");
+      // L-2 (Quinn, Cody, Vera — independently): the preview is honest about the byte count but
+      // said nothing about SCOPE — window.scCompletedTranscript is the operator's bounded recent
+      // tail (app.js's syncTranscript), not a full-service store (that's FR-130, not built), so a
+      // 45-minute sermon previews as a confident, complete-looking draft built from its last few
+      // minutes. Pin the disclosure copy exactly — unpinned copy is how F-5's promise rotted once.
+      var previewScope = previewBox.querySelector(".pp-gen-preview-scope");
+      ok(!!previewScope && previewScope.textContent ===
+         "This is drawn from the most recently transcribed speech, not the whole service — for a " +
+         "long sermon, that may be just the last few minutes.",
+         "PP F-5 L-2: the review step discloses that this may be a recent window, not the whole service (exact copy pinned)");
+      ok(document.activeElement && document.activeElement.id === "pp-gen-preview-title",
+         "PP F-5 a11y: opening the review step moves focus into it (a screen reader hears 'Review before sending', not silence)");
+      ok(ppCall("generate_sermon_notes").length === genBeforeReview,
+         "PP F-5: opening the review step alone still has not called generate_sermon_notes");
+      ok(el("pp-generate").hidden === true,
+         "PP F-5: the Generate button is hidden while its own review step is open (no double-fire path)");
+
+      // (d) F-5: Cancel sends nothing and returns the panel to idle.
+      el("pp-gen-preview-cancel").click();
+      await sleep(30);
+      ok(ppCall("generate_sermon_notes").length === genBeforeReview,
+         "PP F-5: Cancel never calls generate_sermon_notes");
+      ok(el("pp-gen-preview").hidden === true, "PP F-5: Cancel closes the review step");
+      // M-1 (Cody): the DOM `hidden` property alone is not proof the panel left the layout — this
+      // webview's known trap is an author `display` rule outranking the UA `[hidden]{display:none}`
+      // rule, which is exactly the direction the check above cannot see. Assert COMPUTED display,
+      // the same discipline the OPEN-direction check a few lines up already applies.
+      ok(getComputedStyle(el("pp-gen-preview")).display === "none",
+         "PP F-5 M-1 (computed display): Cancel actually removes the panel from layout, not just the [hidden] attribute");
+      ok(el("pp-generate").hidden === false, "PP F-5: Cancel restores the Generate button");
+      ok(document.activeElement === el("pp-generate"),
+         "PP F-5 a11y: Cancel returns keyboard focus to Generate, not to whatever the browser defaults to");
+
+      // (e) F-5: Confirm sends the SAME string the review step displayed, and only once pressed.
+      el("pp-generate").click();
+      await sleep(40);
+      // L-1 (Sana and Quinn, independently): the check below used to compare the sent transcript
+      // to PP_TRANSCRIPT_FIXTURE without ever moving the transcript between preview-open and
+      // Confirm — so a captured value and a fresh re-read of window.scCompletedTranscript were
+      // trivially identical and the check could not fail under the mutation it claims to guard
+      // against (confirmGenerate re-reading the global instead of using the value it was handed).
+      // Advance the transcript through the REAL render() path while the preview sits open — exactly
+      // what the live 1s poll would do during a real review — so the two are actually different.
+      var PP_TRANSCRIPT_SEGMENTS_ADVANCED = PP_TRANSCRIPT_SEGMENTS.concat([
+        { id: 604, text: "And now the congregation begins to respond.", start_ms: 9000, end_ms: 12000 },
+      ]);
+      var PP_TRANSCRIPT_FIXTURE_ADVANCED =
+        PP_TRANSCRIPT_FIXTURE + "\nAnd now the congregation begins to respond.";
+      V.transcript = PP_TRANSCRIPT_SEGMENTS_ADVANCED;
+      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS_ADVANCED }));
+      // Positive control: prove the transcript genuinely advanced underneath the open preview
+      // before trusting the control below to have caught anything.
+      ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE_ADVANCED,
+         "PP F-5 L-1 (premise): the bridge really did advance past what the open preview is showing, while the preview stayed open");
+      el("pp-gen-preview-confirm").click();
+      await sleep(70);
+      var sentCall = ppLast("generate_sermon_notes");
+      ok(!!sentCall && sentCall.args.transcript === PP_TRANSCRIPT_FIXTURE,
+         "PP F-5: Confirm sends the exact transcript the review step displayed — not a re-read that could have drifted");
+      ok(!!sentCall && sentCall.args.transcript !== PP_TRANSCRIPT_FIXTURE_ADVANCED,
+         "PP F-5 L-1: ...and specifically NOT the transcript that advanced underneath the open preview (a re-read-at-send regression sends this)");
+      ok(el("pp-gen-preview").hidden === true, "PP F-5: the review step closes once Confirm is pressed");
+      ok(getComputedStyle(el("pp-gen-preview")).display === "none",
+         "PP F-5 M-1 (computed display): Confirm actually removes the panel from layout, not just the [hidden] attribute");
+      window.__ppGen = "ok"; // restore for any later reads
+      V.transcript = undefined; V.partial_transcript = undefined; // undo the persistent override above
+      render(baseView); // clears view.transcript back to the default so the trailing 1s poll stays consistent
+
+      // === (C-010) THE FOUR PROVIDER STATES — 86akby7d8 ==================================
+      // The panel's rendered state must match the backend's reported state in every one of them.
+      // Asserted on COMPUTED display and rendered text, never on class names alone.
+      var ppReactivate = async function () {
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        await sleep(60);
+        return document.querySelector(".pp-ai-status");
+      };
+
+      // (a) "key_missing" — the direct path is COMPILED IN but no developer key is present. This is
+      // the state a fresh checkout is in. It must be distinguishable from "not_configured": the
+      // feature exists and the reader can do something about it.
+      window.__pp.cloud_status = "key_missing"; window.__pp.notes_provider = null;
+      var sKey = await ppReactivate();
+      ok(!/Coming soon/.test(sKey.textContent),
+         "PP C-010: key_missing is NOT reported as 'Coming soon' — the feature is built, the key is not");
+      ok(/No key configured/i.test(sKey.textContent),
+         "PP C-010: key_missing names the actual problem (a missing key)");
+      ok(/OPENAI_API_KEY/.test(el("surface-settings").textContent) || /developer API key/i.test(el("surface-settings").textContent),
+         "PP C-010: key_missing tells the reader what to supply");
+      ok(!/Available/.test(sKey.textContent),
+         "PP C-010: key_missing must NOT claim the feature is available — the fix must not invert into over-reporting");
+
+      // (b) "direct_provider" — a developer key IS configured. Notes really are generated, so the
+      // panel must NOT show 'coming soon', must name the provider (FR-132), and must say the key is
+      // a developer key rather than implying a shipped, supported configuration.
+      window.__pp.cloud_status = "direct_provider";
+      window.__pp.notes_provider = {kind:"openai", name:"OpenAI", model:"gpt-5.6-terra", developer_key:true};
+      var sDirect = await ppReactivate();
+      ok(!/Coming soon/.test(sDirect.textContent),
+         "PP C-010: with a provider configured the panel does NOT say 'coming soon' — this is THE trust bug this ticket fixes");
+      ok(/Available/.test(sDirect.textContent),
+         "PP C-010: direct_provider reports the feature as available");
+      ok(/OpenAI/.test(document.querySelector(".pp-ai-head").textContent),
+         "PP C-010: the panel NAMES OpenAI as the provider generating the notes (FR-132)");
+      ok(!/SelahCue AI/.test(document.querySelector(".pp-ai-head").textContent),
+         "PP C-010: the card no longer claims 'SelahCue AI' when OpenAI generates the notes");
+      ok(!!document.querySelector(".pp-badge-dev") && /DEVELOPER KEY/.test(document.querySelector(".pp-ai-head").textContent),
+         "PP C-010: the throwaway developer-key posture is stated on the card, not implied");
+      ok(/gpt-5\.6-terra/.test(document.querySelector(".pp-ai-status").textContent),
+         "PP C-010: the model actually in use is disclosed");
+      // quota STAYS null in this phase — a working provider must not conjure a meter.
+      var qDirect = document.querySelector(".pp-quota");
+      ok(qDirect.classList.contains("pp-quota-empty") && !/\d+\s*\/\s*\d+/.test(qDirect.textContent),
+         "PP C-010: with generation WORKING and no metering, quota is still the honest placeholder — no fabricated meter");
+
+      // (c) "hosted" — Phase 2. The hosted service is reachable; the pills say so, and the developer
+      // -key language is absent because it does not apply.
+      window.__pp.cloud_status = "hosted";
+      window.__pp.notes_provider = {kind:"selahcue_hosted", name:"SelahCue AI", model:"", developer_key:false};
+      var sHosted = await ppReactivate();
+      ok(/Available/.test(sHosted.textContent) && /Cloud connected/.test(sHosted.textContent) && !/Coming soon/.test(sHosted.textContent),
+         "PP C-010: hosted renders the Available + Cloud-connected pills");
+      ok(!document.querySelector(".pp-badge-dev"),
+         "PP C-010: hosted does NOT show the developer-key badge");
+
+      // (d) a real quota, when a hosted server ever reports one, still drives the meter.
       window.__pp.quota = {used:13, limit:40, remaining:27, resets_label:"Sep 1"};
-      document.querySelector('.nav-item[data-surface="settings"]').click();
-      await sleep(60);
-      var aiStatus2 = document.querySelector(".pp-ai-status");
-      ok(/Available/.test(aiStatus2.textContent) && /Cloud connected/.test(aiStatus2.textContent) && !/Coming soon/.test(aiStatus2.textContent),
-         "PP C-006: when cloud_connected=true the Available + Cloud-connected pills render (and 'Coming soon' is gone)");
+      await ppReactivate();
       var q2 = document.querySelector(".pp-quota");
       ok(!q2.classList.contains("pp-quota-empty") && /13/.test(q2.textContent) && /\/\s*40/.test(q2.textContent),
-         "PP C-006: a real quota renders the used/limit meter");
-      window.__pp.cloud_connected = false; window.__pp.quota = null; // restore honest default
+         "PP C-006: a real server-reported quota renders the used/limit meter");
+
+      // restore the honest stock-build default for everything after this block
+      window.__pp.cloud_status = "not_configured"; window.__pp.notes_provider = null; window.__pp.quota = null;
+      await ppReactivate();
+      ok(/Coming soon/.test(document.querySelector(".pp-ai-status").textContent),
+         "PP C-010: back at not_configured the honest 'coming soon' returns (the four states are reversible, not sticky)");
 
       // (C-007) excluded sections are absent.
       ok(!/Bring your own key/i.test(el("surface-settings").textContent) && !/Text-to-Speech/i.test(el("surface-settings").textContent) && !/BYOK/i.test(el("surface-settings").textContent),

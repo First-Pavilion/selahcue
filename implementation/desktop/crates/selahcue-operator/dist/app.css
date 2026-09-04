@@ -6859,7 +6859,77 @@
 .pp-footnote { display: flex; gap: 8px; align-items: center; justify-content: center; font-size: 11px; font-weight: 500; color: var(--sc-text-muted); }
 .pp-footnote-ico { flex: none; }
 
+/* Review-before-send preview (F-5): what the operator sees between Generate and the actual send. */
+.pp-gen-preview { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 11px; border: 1px solid var(--sc-preview-border); background: var(--sc-preview-soft); }
+/* The class `display: flex` above outranks the UA `[hidden]{display:none}`, so without this the
+   panel stays laid out — an empty bordered box — after closeGenPreview() sets `hidden` (M-1,
+   Cody). Same trap and same fix as .pm-media-body[hidden] / .rcv[hidden] elsewhere in this file. */
+.pp-gen-preview[hidden] { display: none; }
+.pp-gen-preview-title { margin: 0; font-size: 13px; font-weight: 700; color: var(--sc-text); }
+.pp-gen-preview-title:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+.pp-gen-preview-desc { margin: 0; font-size: 12px; font-weight: 500; color: var(--sc-text-secondary); line-height: 1.5; }
+.pp-gen-preview-text { max-height: 220px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.5; color: var(--sc-text); background: var(--sc-elevated); border: 1px solid var(--sc-border); border-radius: 9px; padding: 10px 12px; }
+.pp-gen-preview-text:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+.pp-gen-preview-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+.pp-gen-preview-cancel { font: inherit; font-size: 12px; font-weight: 700; color: var(--sc-text); background: var(--sc-elevated); border: 1px solid var(--sc-border); border-radius: 8px; padding: 9px 15px; cursor: pointer; }
+.pp-gen-preview-cancel:hover { background: var(--sc-inset); }
+.pp-gen-preview-cancel:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+.pp-gen-preview-confirm { font: inherit; font-size: 12px; font-weight: 700; color: #fff; background: var(--sc-primary); border: none; border-radius: 8px; padding: 9px 15px; cursor: pointer; }
+.pp-gen-preview-confirm:hover { background: var(--sc-primary-hover); }
+.pp-gen-preview-confirm:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+
 /* Narrow operator windows: stack the two-column grids so nothing overflows the surface. */
 @media (max-width: 880px) {
   .pp-trans-grid, .pp-fields, .pp-inc-cols { grid-template-columns: 1fr; }
 }
+
+/* --- Providers & Privacy: AI disclosure + FR-122 sub-points (86akby7d8) --------------- */
+/* Every colour below is an existing Design 2.0 token. The gold/warn pair is already the
+   console's "read this before you act on it" register, which is exactly what an AI draft
+   and a degraded fallback both are. */
+
+/* The AI-generated label (FR-123), sat in the draft header beside the title. */
+.pp-gen-ai-label {
+  margin-left: auto;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--sc-gold);
+  background: var(--sc-gold-soft);
+  border: 1px solid var(--sc-warn-border);
+}
+
+/* The fabrication warning (FR-128) and the degraded-fallback notice (FR-135). Same
+   treatment because they carry the same weight: read this before you use the draft. */
+.pp-gen-disclosure,
+.pp-gen-degraded {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--sc-warn);
+  border-radius: 4px;
+  background: var(--sc-warn-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--sc-text-secondary);
+}
+
+/* FR-122 sub-points render as a nested list inside their parent point, so subordination
+   is visible as structure rather than implied by an indent character inside the text. */
+.pp-gen-point { font-weight: 500; }
+.pp-gen-sublist {
+  margin: 4px 0 6px 0;
+  padding-left: 18px;
+  list-style: circle;
+}
+.pp-gen-sublist > li {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--sc-text-secondary);
+}
+
+/* "DEVELOPER KEY" — the throwaway Phase 1 posture stated on the card, not implied. */
+.pp-badge-dev { color: var(--sc-gold); background: var(--sc-gold-soft); border-color: var(--sc-warn-border); }

@@ -83,6 +83,65 @@ Confidence = Low / Med / High. **No perfect-accuracy claims are made anywhere in
 - **Default: local 7B–8B via bundled llama.cpp/Ollama-class runtime** for "notes from transcript," offline, no data egress.
 - **Opt-in cloud tier via provider abstraction:** default cloud = **Claude Haiku 4.5** (cheap, strong at summarization) with **Sonnet 4.6** as a "high-quality" toggle; **GPT-4o-mini** as an alternate cheap provider. Cloud calls require explicit per-church consent and a stated retention policy.
 
+> ### ⚠️ SUPERSEDED FOR NOTE GENERATION — owner decision, 2026-09-04
+>
+> **The owner selected OpenAI GPT.** The recommendation immediately above — Claude Haiku 4.5 as
+> the default cloud tier — **is superseded for sermon-note generation** and was not followed.
+> This is recorded rather than argued: a research document that quietly disagrees with what
+> shipped is worse than one that states the divergence. Implemented in ticket `86akby7d8`
+> (`selahcue-cloud/src/openai.rs`).
+>
+> **What actually shipped, and the evidence for it:**
+>
+> - **Model: `gpt-5.6-terra`.** Confirmed callable on the owner's account via `GET /v1/models`
+>   (HTTP 200, 118 models) on 2026-09-04 — **not** taken from documentation. That distinction
+>   earned its keep: `gpt-6-astra` appears in OpenAI's public docs but is **not** on this
+>   account, and the GPT-4o-mini / GPT-4o prices in the table above are from 2026-07 and are
+>   now two model generations stale.
+> - **Cost, for a ~45-minute sermon** (~9,300 input tokens, ~2,500 output): roughly **$0.05**
+>   on `gpt-5.6-terra`, **$0.005** on the cheaper `gpt-5.6-luna` — about **$2.50/year** versus
+>   **$0.26/year** for a church generating notes weekly.
+> - **Why the middle tier.** At two dollars a year, cost is not a real axis. The task is: FR-122
+>   asks for a full hierarchical outline (points *with sub-points*, illustrations, quotes, prayer
+>   points, calls-to-action, key lessons) reasoned over an hour of speech, and §2's own note says
+>   cloud frontier models are "materially better for complex reasoning/structure" while cheap
+>   tiers are "good for simple summarization". Structure and long-context reasoning are the axis
+>   here, so the spend goes there.
+> - **Benchmarked, 2026-09-04.** Both tiers were run on the same 1,431-word sermon through the
+>   shipped prompt and schema. **Structurally they tied** — 4 points, 13 sub-points and all 8
+>   enabled sections each, both honoured the disabled `social_excerpts` toggle, and **all 16
+>   scripture references across the two runs verified against the bundled KJV** (no fabrications
+>   on this transcript). Terra won on presentation quality: short, slide-usable point headings
+>   with the reference appended consistently, against luna's **manually numbered** headings
+>   ("1. ", "2. ") that would render as "1. 1." in an ordered list, and its habit of packing each
+>   point's explanation into the heading — blurring the point/sub-point separation FR-122 exists
+>   to create. Luna was faster (14.6s vs 17.8s) and is 10× cheaper, so it remains a real option
+>   if cost ever becomes an axis. **One transcript, one run each** — enough to confirm the choice,
+>   not enough to call it a general result.
+>
+> **Posture — this is deliberately throwaway.** The desktop calls OpenAI *directly* with a
+> **developer key** from the repo-root `.env` (ticket `86akby6yy`), behind an off-by-default
+> `openai` / `openai-notes` Cargo feature. It is not the shipping design: a key on the operator's
+> machine cannot be rotated centrally, metered per account, or revoked for one church without
+> revoking it for all of them. **The shipping path keeps notes proxied through the SelahCue
+> platform API**, and the direct path is deleted when that lands.
+>
+> **What did NOT change.** The egress choke point (`ProvidersConfig::build_note_request`) is
+> untouched: cloud stays off by default, nothing is sent without cloud-notes consent *and* an
+> explicit Generate, and the request carries the completed transcript only — there is no audio
+> field. §2's "consent/retention is the dominant axis" conclusion stands unamended; the
+> retention/DPA disclosure remains gated on `86akby942`.
+>
+> **One finding worth carrying forward, from driving the live API.** OpenAI's **401** response
+> body echoes a partially masked copy of the key that was sent
+> (`"Incorrect API key provided: sk-proj-********************-key"` — the prefix and trailing
+> characters survive the masking). Any client that forwards a provider error body into its own
+> error message therefore leaks key material. Applies to **any** provider integration, not just
+> this one: map errors from the machine-readable `error.code` / `error.type` and never echo the
+> body. Related, OpenAI overloads **429** for both "out of credit" (terminal) and "rate limited"
+> (transient); flattening the two turns a two-second throttle into "your monthly quota is
+> exhausted".
+
 ---
 
 ## 3. Text-to-Speech (RP-06)
