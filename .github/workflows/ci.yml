@@ -228,6 +228,37 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: sh scripts/check_toolchain.sh
+      # Quinn's process finding on PR #24 (86akcmzyq): the PR template's feature-flag-
+      # reachability section is three checkboxes a human ticks, unenforced by CI — exactly the
+      # human step that let 86akby7d8 ship, merge, and stay invisible from `make launch` in the
+      # first place. This makes it a build failure instead: asserts `make -n launch`/`make -n
+      # operator`'s resolved feature list is a superset of the features the product has decided
+      # must be default-reachable (dev-keys/openai-notes today, 86akcmzrd).
+      #
+      # Linux + macOS; Windows excluded. Originally Linux-only, citing this pipeline's `nfr` job
+      # as precedent for "make is not cross-OS-reliable" — Cody and Quinn (PR #24 remediation)
+      # independently tested that precedent and it does not hold: `nfr`'s macOS skip is about a
+      # one-time recorded timing baseline, and its Windows skip is about a POSIX shell script
+      # doing memory measurement, neither of which is about Make itself being unreliable
+      # cross-OS. Cody read the feature computation this script inspects and found zero
+      # $(UNAME)-conditional branching in it — the Makefile's only OS-conditional code selects
+      # NDI library paths and which shell wrapper launches the operator, not which Cargo features
+      # get requested. Quinn confirmed empirically by running every one of this script's
+      # self-test mutations successfully on macOS. Leaving macOS unguarded left uncovered exactly
+      # the platform most likely to run `make launch` interactively — the signed `.app` path
+      # exists for its microphone permissions — for the regression class this check exists to
+      # catch. Windows stays excluded: GNU Make dry-run parsing there is unproven, unlike Linux
+      # and macOS which both ship `make` by default.
+      - name: Feature-flag reachability (make launch / make operator resolve the required set)
+        # Setup-zone `if:` (implicit success()), NOT !cancelled(): this step sits before Format,
+        # the first gate below, and check_workflows.py's ordinal rule forbids a success()-default
+        # step running after a !cancelled() one — verified by running that checker against this
+        # exact placement.
+        if: runner.os != 'Windows'
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 scripts/check_launch_reachability.py --self-test
+          python3 scripts/check_launch_reachability.py
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
@@ -422,6 +453,18 @@ jobs:
       - name: Test (cloud openai feature — OpenAI note provider, stub transport only)
         if: ${{ !cancelled() }}
         run: cargo test -p selahcue-cloud --features openai --no-fail-fast
+      # THE release-profile half of Cody's High finding on PR #24 (86akcmzyq): `from_env` read
+      # OPENAI_API_KEY with no profile check at all until `direct_key_permitted` was added — a
+      # bare `cargo build --release --features openai-notes`, no dev-keys, bypassing `make`
+      # entirely, built a working direct-to-OpenAI release binary from whatever key happened to
+      # already be exported. The debug step above never exercises that guard's release arm; same
+      # shape as the licensing crate's RELEASE test further up this job.
+      - name: Test (cloud openai feature, RELEASE — the direct-key release refusal only holds here)
+        if: ${{ !cancelled() }}
+        run: cargo test -p selahcue-cloud --features openai --release --no-fail-fast
+      - name: Clippy (cloud openai feature, RELEASE)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p selahcue-cloud --features openai --release --all-targets -- -D warnings
       # The Deepgram streaming transport (86akby4yz) is behind an off-by-default feature, so the
       # workspace run does not build it. An off-by-default feature no gate compiles is how
       # selahcue-stt ended up linted and tested by nothing; this keeps that from repeating.
@@ -511,7 +554,18 @@ jobs:
     if: needs.changes.outputs.desktop == 'true'
     # Cap the job (like launch-smoke) so a wedged Playwright/apt install step fails in minutes,
     # not GitHub's 6h default (audit #11 review).
-    timeout-minutes: 25
+    #
+    # Lowered from 25 to 15 (86akcmzyq CI-timeout remediation, 2026-09-05) when the RELEASE and
+    # stt,cloud-stt feature-gate pairs moved out to `operator-native` below -- see that job's
+    # own timeout comment for why it moved, not just where. What is LEFT in this job is
+    # Format/Check/Clippy/Test plus three cheap feature-flag pairs and the two Linux webview
+    # smokes, none of them native-toolchain- or release-codegen-heavy. Measured on run
+    # 33984097274 (the merged-head run that timed out and prompted this split): that content
+    # took ~5m on windows-latest, this job's slowest OS, and ~4m on ubuntu-latest including
+    # both webview smokes. 15 minutes keeps 3x headroom over that without resurrecting the
+    # original job's failure mode -- one slow native build masking a real wedge in the cheap
+    # steps for 25 minutes.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -630,45 +684,6 @@ jobs:
       - name: Test (dev-keys,openai-notes)
         if: ${{ !cancelled() }}
         run: cargo test --features dev-keys,openai-notes --no-fail-fast
-      # Cloud (Deepgram) live transcription (86akby7th): `cloud-stt` wires the already-tested
-      # `selahcue-stt-cloud` streaming session into `listening.rs`'s capture path. It implies
-      # `stt` (mic capture lives in `selahcue-stt` regardless of which recognizer consumes it),
-      # so THIS is the first step in this job that compiles `stt` -- and therefore all of
-      # `listening.rs`, where the routing decision this ticket fixes actually lives -- at all.
-      # Without it, `listening.rs` would be exactly as "linted and tested by nothing" as
-      # `selahcue-stt` itself (the standing example every feature-gate comment in this job
-      # cites). whisper-rs-sys's native build needs only a C/C++ toolchain + cmake, which all
-      # three GitHub-hosted runner images carry by default -- the same reason the `stt`-only
-      # build was never separately gated before now. It is NOT true, though, that this step
-      # needs no extra system packages at all: `stt` also pulls in `selahcue-stt`'s `capture`
-      # feature (`CpalSource`, real microphone capture via `cpal`), and on Linux `cpal` builds
-      # against ALSA -- `alsa-sys` fails to compile without the ALSA development headers.
-      #
-      # That gap shipped TWICE in this ticket's own remediation, which is worth recording
-      # exactly rather than smoothing over. First revision: this step and the Test step below
-      # were red on ubuntu only, `libasound2-dev` was missing everywhere, and a step comment
-      # claiming "no extra deps" was itself the confident-but-wrong signal this job's other
-      # comments warn about. Second revision (still this ticket): the fix was made -- but in
-      # the WRONG job. `libasound2-dev` was added to the `rust` job's "Linux system deps"
-      # step, a job that never compiles `selahcue-operator` at all (it is excluded from the
-      # workspace -- see this repo's CLAUDE.md) and has no `cpal` dependency to satisfy. This
-      # step and the Test step below stayed red, because each CI job runs on its OWN fresh
-      # runner -- a package installed in one job's runner does not exist in another's. The
-      # comment that "fixed" it even said so in the same breath it got the job wrong.
-      #
-      # `libasound2-dev` is installed in THIS job's ("operator", `ci.yml`'s `operator:` block)
-      # OWN "Linux system deps (Tauri v2 webview + ALSA for cpal)" step, a few lines above --
-      # not a step in a different job reached by the word "above" alone. Check the claim
-      # against `ci.yml`'s `operator:` job, not against this comment. A macOS `make ci` run
-      # cannot catch this class of gap by construction (Core Audio needs no such package) --
-      # see CLAUDE.md's "One OS, not three" note; nor would a mismatched-job fix ever be
-      # caught by re-reading the diff instead of the actual GitHub Actions run.
-      - name: Clippy (stt,cloud-stt)
-        if: ${{ !cancelled() }}
-        run: cargo clippy --features stt,cloud-stt --all-targets -- -D warnings
-      - name: Test (stt,cloud-stt)
-        if: ${{ !cancelled() }}
-        run: cargo test --features stt,cloud-stt --no-fail-fast
       # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
       # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
       # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-
@@ -706,6 +721,176 @@ jobs:
         env:
           SELAHCUE_WEBKIT_REQUIRE: "1"
         run: python3 scripts/operator_webkit_smoke.py
+
+  # Split out of `operator` above (86akcmzyq CI-timeout remediation, 2026-09-05). PR #22 added
+  # the stt,cloud-stt pair below and this same PR added the RELEASE pair, both landing in the
+  # ONE 25-minute `operator` job. On the merged head (17b8fe8, run 33984097274) neither addition
+  # alone crossed the budget but both together did: `operator shell (windows-latest)` ran
+  # through and PASSED every step up to and including `Test (dev-keys,openai-notes, RELEASE)`,
+  # then was killed by `timeout-minutes` mid-`Clippy (stt,cloud-stt)` at 25:07 elapsed.
+  # `cancelled` is not `success` -- `.github/scripts/ci_alarm.py` explicitly treats a cancelled
+  # job as an outstanding failure on `main`, so that run was never actually green, and four
+  # reviewers approved a head whose CI has since been shown to time out on Windows.
+  #
+  # WHY A SPLIT, NOT JUST A BIGGER NUMBER ON THE ONE JOB: a bigger timeout fixes this merge but
+  # not the shape of the problem. This job gains a new feature-gate pair almost every time a
+  # slice ships -- dev-keys, openai-notes, their combination, now RELEASE and stt,cloud-stt --
+  # they all used to run SERIALLY in one job, and the next slice would just hit a higher wall
+  # further along, on the same OS, for the same underlying reason: Windows is where
+  # whisper-rs-sys compiles whisper.cpp natively AND where MSVC release codegen/linking is
+  # slowest, so it is structurally the tightest OS in this job and will keep being the first to
+  # blow whatever single number is set next.
+  #
+  # Narrowing coverage instead (dropping Windows from the RELEASE or stt,cloud-stt gates) was
+  # rejected too: it reintroduces exactly the "linted and tested by nothing on this OS" gap this
+  # job's own history has already paid for twice. The RELEASE pair exists because the debug-only
+  # gates in `operator` above never exercised `selahcue-operator`'s RELEASE arm at all. The
+  # `libasound2-dev` package below shipped in the WRONG job once already in this same ticket's
+  # remediation, invisible until someone read the actual Windows/Linux CI run rather than the
+  # diff. Dropping Windows here would recreate that exact class of gap on the one OS the shipped
+  # installer actually runs release builds on.
+  #
+  # Splitting keeps every OS x every feature combination covered and gives the two genuinely
+  # expensive, native-toolchain-bound gates (RELEASE codegen; whisper.cpp/cmake via cargo) their
+  # own honestly-sized budget instead of quietly spending down one meant for cheap feature-flag
+  # pairs. It also fixes where future growth lands: a cheap flag in the shape of `dev-keys` or
+  # `openai-notes` belongs in `operator` above, which has 3x headroom to spare; a slice that
+  # pulls in a native toolchain or needs its own release-profile gate belongs here, where a
+  # future budget bump is a deliberate, reviewable line next to the evidence that justified this
+  # one -- not a silent creep in a job whose name gives no hint what is eating the clock.
+  operator-native:
+    name: operator shell — release & native-toolchain features (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
+    # Sized from real per-step timings, not a guess. Run 33984097274 (windows-latest, this
+    # job's slowest OS, COLD cache -- the first run the RELEASE steps ever executed) recorded
+    # these to completion before the old job's 25-minute cap killed it further down the same
+    # steps: setup (checkout+toolchain+pin-check+cache-restore+staging) 66s, Clippy (RELEASE)
+    # 373s, Test (RELEASE) 653s. Clippy(stt,cloud-stt)/Test(stt,cloud-stt) were themselves cut
+    # off mid-step by that cap, so their duration here is the last time they ran to completion,
+    # pre-merge, on PR #22's own final run (33951200403, also windows-latest): 326s + 285s, plus
+    # that run's own post-job cache-save of 238s (this job now caches more artefacts than that
+    # run did, so treat 238s as a floor, not a ceiling). Sum: 66 + 373 + 653 + 326 + 285 + 238 +
+    # ~5 (post-checkout/complete) = 1946s ≈ 32.4 minutes. 45 minutes leaves ~13 minutes / ~40%
+    # headroom over that COLD-cache worst case -- sized against it deliberately, since a warm
+    # Swatinem/rust-cache hit is the happy path that does not need headroom.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: implementation/desktop/crates/selahcue-operator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.changes.outputs.rust }}
+          components: clippy, rustfmt
+      # Refuse to gate on a compiler nobody pinned. Same script `make ci` runs, so a
+      # divergence between this pipeline and the local gate fails loudly here instead
+      # of silently producing a green that means nothing (86ak5rc9c).
+      - name: Verify the pinned toolchain is what is running
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: sh scripts/check_toolchain.sh
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: implementation/desktop/crates/selahcue-operator
+      # Same packages as `operator`'s "Linux system deps" step above, needed here for the
+      # identical reason: this job compiles the same crate (Tauri webview deps) and, from the
+      # stt,cloud-stt pair below, `cpal`'s ALSA backend (`libasound2-dev`).
+      - name: Linux system deps (Tauri v2 webview + ALSA for cpal)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libx11-dev libxkbcommon-dev \
+            libasound2-dev
+      - name: Stage Tauri sidecar/resource placeholders (compile-check only)
+        # tauri-build validates that the externalBin sidecar (`selahcue-output`) and the NDI
+        # resource dll exist at build time. This job COMPILE-checks the operator (it does not
+        # bundle the app), so empty placeholders satisfy the existence check — the real sidecar is
+        # built in the packaging/release flow. Without this the build script fails on CI
+        # ("resource path `binaries/selahcue-output-<triple>` doesn't exist").
+        shell: bash
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p binaries
+          # CREATE-ONLY. `: > file` truncates, and these names include the
+          # owner-supplied NDI dll. That is harmless on an ephemeral runner, but this
+          # is the snippet people copy to reproduce CI locally, where truncating a real
+          # dll is silent and git-unrecoverable (binaries/ is gitignored). Never make
+          # this unconditional. 86ak5rjh7.
+          stage() { [ -e "$1" ] || : > "$1"; }
+          if [[ "$triple" == *windows* ]]; then
+            stage "binaries/selahcue-output-${triple}.exe"
+          else
+            stage "binaries/selahcue-output-${triple}"
+          fi
+          stage "binaries/Processing.NDI.Lib.x64.dll"
+          echo "staged Tauri placeholders for ${triple}"
+      # From the first GATE step onward, `!cancelled()`, and NO setup step after it -- same
+      # rationale as `operator` above: one broken gate should cost one gate's worth of
+      # information, not silently skip the rest of this job too.
+      # THE release-profile gate on this crate (Sana's Medium-Low finding on PR #24, 86akcmzyq):
+      # every operator test in the `operator` job above runs in DEBUG only, so `dev_env.rs`'s
+      # `loads_the_env_file_iff_this_is_a_debug_build` and main.rs's
+      # `the_environment_reaches_the_view_not_only_the_request` never exercised their RELEASE arm
+      # in any gate -- a hardcoded argument, an inverted `!`, or a deleted early return in either
+      # guard's call site would have passed every check in `operator` green. Same shape as the
+      # licensing crate's RELEASE test in the `rust` job; `selahcue-operator` is excluded from
+      # the workspace, so it needs its own explicit lines, on all three OSes per this job's own
+      # matrix.
+      - name: Clippy (dev-keys,openai-notes, RELEASE)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features dev-keys,openai-notes --release --all-targets -- -D warnings
+      - name: Test (dev-keys,openai-notes, RELEASE — the release refusals only hold here)
+        if: ${{ !cancelled() }}
+        run: cargo test --features dev-keys,openai-notes --release --no-fail-fast
+      # Cloud (Deepgram) live transcription (86akby7th): `cloud-stt` wires the already-tested
+      # `selahcue-stt-cloud` streaming session into `listening.rs`'s capture path. It implies
+      # `stt` (mic capture lives in `selahcue-stt` regardless of which recognizer consumes it),
+      # so THIS is the first step in this job that compiles `stt` -- and therefore all of
+      # `listening.rs`, where the routing decision this ticket fixes actually lives -- at all.
+      # Without it, `listening.rs` would be exactly as "linted and tested by nothing" as
+      # `selahcue-stt` itself (the standing example every feature-gate comment in this job
+      # cites). whisper-rs-sys's native build needs only a C/C++ toolchain + cmake, which all
+      # three GitHub-hosted runner images carry by default -- the same reason the `stt`-only
+      # build was never separately gated before now. It is NOT true, though, that this step
+      # needs no extra system packages at all: `stt` also pulls in `selahcue-stt`'s `capture`
+      # feature (`CpalSource`, real microphone capture via `cpal`), and on Linux `cpal` builds
+      # against ALSA -- `alsa-sys` fails to compile without the ALSA development headers.
+      #
+      # That gap shipped TWICE in this ticket's own remediation, which is worth recording
+      # exactly rather than smoothing over. First revision: this step and the Test step below
+      # were red on ubuntu only, `libasound2-dev` was missing everywhere, and a step comment
+      # claiming "no extra deps" was itself the confident-but-wrong signal this job's other
+      # comments warn about. Second revision (still this ticket): the fix was made -- but in
+      # the WRONG job. `libasound2-dev` was added to the `rust` job's "Linux system deps"
+      # step, a job that never compiles `selahcue-operator` at all (it is excluded from the
+      # workspace -- see this repo's CLAUDE.md) and has no `cpal` dependency to satisfy. This
+      # step and the Test step below stayed red, because each CI job runs on its OWN fresh
+      # runner -- a package installed in one job's runner does not exist in another's. The
+      # comment that "fixed" it even said so in the same breath it got the job wrong.
+      #
+      # `libasound2-dev` is installed in THIS job's ("operator-native", `ci.yml`'s
+      # `operator-native:` block) OWN "Linux system deps (Tauri v2 webview + ALSA for cpal)"
+      # step, a few lines above -- not a step in a different job reached by the word "above"
+      # alone. Check the claim against `ci.yml`'s `operator-native:` job, not against this
+      # comment. A macOS `make ci` run cannot catch this class of gap by construction (Core
+      # Audio needs no such package) -- see CLAUDE.md's "One OS, not three" note; nor would a
+      # mismatched-job fix ever be caught by re-reading the diff instead of the actual GitHub
+      # Actions run.
+      - name: Clippy (stt,cloud-stt)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features stt,cloud-stt --all-targets -- -D warnings
+      - name: Test (stt,cloud-stt)
+        if: ${{ !cancelled() }}
+        run: cargo test --features stt,cloud-stt --no-fail-fast
 
   flutter:
     name: flutter controller
@@ -936,8 +1121,8 @@ jobs:
   ci-alarm:
     name: alarm (main red/green tracking)
     needs:
-      [changes, lint-workflows, rust, launch-smoke, operator, flutter, api, marketing,
-       audit, supply-chain]
+      [changes, lint-workflows, rust, launch-smoke, operator, operator-native, flutter, api,
+       marketing, audit, supply-chain]
     # always(): several of the above are legitimately skipped by the path filters, and a
     # skipped dependency would otherwise skip the alarm exactly when it is needed.
     # Every job that can fail on `main` must be in this list, or its failure is invisible

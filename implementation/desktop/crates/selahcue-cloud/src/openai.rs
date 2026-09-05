@@ -87,6 +87,44 @@ pub const MAX_MODEL_LEN: usize = 64;
 /// this module's coupling to the `.env` loader (86akby6yy), which is itself scaffolding.
 pub const API_KEY_ENV: &str = "OPENAI_API_KEY";
 
+/// Whether this build profile is permitted to source the developer key from the process
+/// environment **at all**.
+///
+/// A pure predicate over an injected `debug_assertions` value, for the same reason
+/// `selahcue-operator`'s `dev_env::should_load_env_file` is one: `cfg!(debug_assertions)` is
+/// fixed for the whole lifetime of one compiled test binary, so a test that only calls
+/// [`OpenAiNoteProvider::from_env`] observes whichever profile `cargo test` happened to run in
+/// and can never reach the other branch. Taking the profile as a parameter makes both branches
+/// reachable, so a test can assert the release-profile refusal directly rather than trusting
+/// that a `!` somewhere was typed the right way round.
+///
+/// # The gap this closes (86akcmzyq / 86akcmzrd, Cody's High finding on PR #24)
+///
+/// `dev_env::load()` already refuses to read the repo-root `.env` in a release profile, even
+/// when `dev-keys` is compiled in — closing the `cargo build --release --features dev-keys`
+/// bypass of the Makefile's `release-ai-guard`. But [`OpenAiNoteProvider::from_env`] reads
+/// [`API_KEY_ENV`] straight from the process environment regardless of whether `dev-keys` put it
+/// there, and until this predicate existed had **no equivalent check anywhere**: a
+/// `cargo build --release --features openai-notes` — `openai-notes` alone, no `dev-keys` at all,
+/// bypassing `make` entirely — produced a fully working direct-to-OpenAI release binary
+/// whenever `OPENAI_API_KEY` happened to already be exported in the shell, which is
+/// unremarkable on a developer or IT-managed machine that also runs OpenAI's own CLI. This
+/// predicate makes that release build refuse the same way `dev_env::load()` does, so the claim
+/// "the release boundary holds through make or a bare cargo build" (CLAUDE.md) is true for BOTH
+/// features 86akcmzrd pairs together, not just `dev-keys`.
+///
+/// # Stated limit, same as `dev_env::should_load_env_file` and `selahcue-licensing`'s analogous
+/// development-entitlement-key guard
+///
+/// An explicit `[profile.release] debug-assertions = true`, or a `RUSTFLAGS` override, turns
+/// `cfg!(debug_assertions)` back on under `--release` and defeats this exactly as it defeats
+/// those two — nothing in-repo can observe either. This narrows the gap; it does not close every
+/// route through it. `scripts/installer_secret_scan.py` (86akc041v) is the independent,
+/// byte-level backstop on artefacts this repo actually ships.
+pub fn direct_key_permitted(debug_assertions: bool) -> bool {
+    debug_assertions
+}
+
 /// The default model.
 ///
 /// **Confirmed callable on the owner's account** via `GET /v1/models` on 2026-09-04
@@ -865,7 +903,15 @@ impl<T: HttpTransport> OpenAiNoteProvider<T> {
     /// panel renders it as "a key is missing" rather than "the feature does not exist".
     /// An absent variable and an empty one are treated identically, so it does not
     /// matter whether the `.env` loader unsets a blank value or exports it empty.
+    ///
+    /// **Also refuses in a release profile**, via [`direct_key_permitted`] — see its doc
+    /// comment for the gap this closes (86akcmzyq). The environment is not even read in that
+    /// case: a release build must not construct a working provider from a key that happens to
+    /// already be exported, not merely report one it declines to use.
     pub fn from_env(transport: T) -> Option<Self> {
+        if !direct_key_permitted(cfg!(debug_assertions)) {
+            return None;
+        }
         let key = std::env::var(API_KEY_ENV).ok()?;
         if key.trim().is_empty() {
             return None;
