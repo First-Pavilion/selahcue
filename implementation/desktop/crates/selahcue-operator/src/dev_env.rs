@@ -1386,6 +1386,16 @@ mod tests {
         /// as `selahcue-licensing`'s `..._iff_it_is_a_debug_build`.
         #[test]
         fn loads_the_env_file_iff_this_is_a_debug_build() {
+            // In a debug profile, `load_lines()` -> `load_from(REPO_ROOT_ENV_FILE)` mutates the
+            // REAL process environment (`std::env::set_var`/`remove_var`), same as every other
+            // test in this file that touches it — so it takes the same crate-wide lock they do.
+            // Without this, PR #24 remediation (Sana) found a concrete interleaving needing no
+            // `.env` at all: this test's release-profile branch is a no-op, but its debug branch
+            // races a locked sibling that exports/reads DEEPGRAM_API_KEY/OPENAI_API_KEY —
+            // whichever runs between the sibling's export and its own cleanup sees the wrong
+            // state. Always a false RED, never a false green, but a flaky release-boundary gate
+            // is the kind that gets retried into irrelevance.
+            let _guard = locked();
             let lines = load_lines();
             let is_release_refusal = lines.iter().any(|l| l.contains("release profile detected"));
 

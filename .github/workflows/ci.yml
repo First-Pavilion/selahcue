@@ -233,16 +233,28 @@ jobs:
       # human step that let 86akby7d8 ship, merge, and stay invisible from `make launch` in the
       # first place. This makes it a build failure instead: asserts `make -n launch`/`make -n
       # operator`'s resolved feature list is a superset of the features the product has decided
-      # must be default-reachable (dev-keys/openai-notes today, 86akcmzrd). Linux only — `make`
-      # itself is only proven cross-OS-reliable in this pipeline's own `nfr` job, which gates its
-      # `make nfr` step the same way ("Windows is a POSIX-script limit"); `make ci` runs this
-      # unconditionally since that always runs on whatever machine a developer is actually on.
+      # must be default-reachable (dev-keys/openai-notes today, 86akcmzrd).
+      #
+      # Linux + macOS; Windows excluded. Originally Linux-only, citing this pipeline's `nfr` job
+      # as precedent for "make is not cross-OS-reliable" — Cody and Quinn (PR #24 remediation)
+      # independently tested that precedent and it does not hold: `nfr`'s macOS skip is about a
+      # one-time recorded timing baseline, and its Windows skip is about a POSIX shell script
+      # doing memory measurement, neither of which is about Make itself being unreliable
+      # cross-OS. Cody read the feature computation this script inspects and found zero
+      # $(UNAME)-conditional branching in it — the Makefile's only OS-conditional code selects
+      # NDI library paths and which shell wrapper launches the operator, not which Cargo features
+      # get requested. Quinn confirmed empirically by running every one of this script's
+      # self-test mutations successfully on macOS. Leaving macOS unguarded left uncovered exactly
+      # the platform most likely to run `make launch` interactively — the signed `.app` path
+      # exists for its microphone permissions — for the regression class this check exists to
+      # catch. Windows stays excluded: GNU Make dry-run parsing there is unproven, unlike Linux
+      # and macOS which both ship `make` by default.
       - name: Feature-flag reachability (make launch / make operator resolve the required set)
         # Setup-zone `if:` (implicit success()), NOT !cancelled(): this step sits before Format,
         # the first gate below, and check_workflows.py's ordinal rule forbids a success()-default
         # step running after a !cancelled() one — verified by running that checker against this
         # exact placement.
-        if: runner.os == 'Linux'
+        if: runner.os != 'Windows'
         working-directory: ${{ github.workspace }}
         run: |
           python3 scripts/check_launch_reachability.py --self-test

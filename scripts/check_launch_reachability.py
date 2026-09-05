@@ -27,11 +27,18 @@ feature must be an exact comma-split TOKEN in that union, never a substring matc
 own `OP_FEATURES_WORDS` comment names `cloud-stt` containing "stt" as a substring as exactly the
 trap a naive `in` check would fall into.
 
-CROSS-PLATFORM SCOPE. Wired into CI on Linux only (see `.github/workflows/ci.yml`) -- `make`
-itself is only proven cross-OS-reliable in this pipeline's own `nfr` job, which gates its `make
-nfr` step the same way with the comment "Windows is a POSIX-script limit"; introducing a new
-Windows dependency on GNU Make dry-run parsing is out of scope for this fix. `make ci` runs this
-unconditionally, since that always runs on whatever machine the developer is actually on.
+CROSS-PLATFORM SCOPE. Wired into CI on Linux and macOS (see `.github/workflows/ci.yml`), Windows
+excluded. Originally Linux-only, citing this pipeline's `nfr` job as precedent for "make is not
+cross-OS-reliable" -- PR #24 remediation (86akcmzyq) tested that precedent and found it did not
+hold: `nfr`'s macOS skip is about a one-time recorded timing baseline and its Windows skip is
+about a POSIX shell script doing memory measurement, neither of which bears on Make itself being
+unreliable cross-OS. The feature computation this script inspects has zero $(UNAME)-conditional
+branching (verified by reading the Makefile) -- the only OS-conditional code there picks NDI
+library paths and which shell wrapper launches the operator, not which Cargo features get
+requested -- and every self-test mutation below also passes running this script on macOS.
+Windows stays excluded because GNU Make dry-run parsing on that runner is unproven, unlike Linux
+and macOS which both ship `make` by default. `make ci` runs this unconditionally, since that
+always runs on whatever machine the developer is actually on.
 
 Self-test: `check_launch_reachability.py --self-test` exercises the comparison logic against
 fixed dry-run-shaped fixtures -- including one built by deleting the required features from a
