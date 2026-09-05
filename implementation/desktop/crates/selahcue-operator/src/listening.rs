@@ -395,10 +395,19 @@ type SharedCloudSession = Arc<Mutex<Option<selahcue_stt_cloud::transport::CloudS
 ///
 /// `CloudSttSession::stop` is bounded by
 /// [`selahcue_stt_cloud::transport::SHUTDOWN_GRACE`] and sends Deepgram the courtesy close, so
-/// this cannot itself hang the capture worker thread.
+/// this cannot itself hang the capture worker thread — but it can still hang a THIRD locker of
+/// `slot` behind it for that same bound, up to [`selahcue_stt_cloud::transport::SHUTDOWN_GRACE`]
+/// (5 s), if `session.stop()` runs while the lock is still held. `slot.lock().take()` is taken
+/// as its own statement, ending the borrow there, rather than as the scrutinee of the `if let`
+/// (which would extend the guard's lifetime across the whole block) — so `stop()` below runs
+/// with `slot` already unlocked (86akby7th PR #22 remediation round 2, Vera LOW). Harmless
+/// today: only `run_cloud`'s two `FnOnce` closures ever call this, and exactly one of them runs
+/// per session — but a future third locker (e.g. a UI force-disconnect command) would otherwise
+/// block behind a lock this function no longer needs to hold.
 #[cfg(feature = "cloud-stt")]
 fn close_cloud_session(slot: &SharedCloudSession) {
-    if let Some(session) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    let session = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(session) = session {
         session.stop();
     }
 }
@@ -1757,8 +1766,20 @@ mod tests {
 
             let stop_worker = Arc::new(AtomicBool::new(false));
             let (seg_tx, _seg_rx) = tokio::sync::mpsc::channel(8);
-            let handoff = generous_handoff();
+            // This test, uniquely among the four `run_cloud_stream_loop` exit-path tests, reads
+            // `handoff`/`audio_ring` state AFTER the loop returns — but `assert_loop_returns_within`
+            // moves its closure onto another thread (86akby7th PR #22 remediation round 2, Quinn
+            // HIGH: this test relies on `may_stream_now()` to terminate the loop exactly like the
+            // other three, but was not wrapped, so a regression here hung the whole suite instead
+            // of failing — see `assert_loop_returns_within`'s own doc comment). A plain `move`
+            // would consume `handoff`/`audio_ring` and leave nothing to assert against below, so
+            // each is shared instead: `AudioRing` is already an `Arc`-backed handle (`.clone()`
+            // shares state, per its own doc comment); `AudioHandoff` is not, so it is wrapped in
+            // an `Arc` here explicitly, for the same reason.
+            let handoff = Arc::new(generous_handoff());
+            let handoff_for_loop = Arc::clone(&handoff);
             let audio_ring = AudioRing::new();
+            let audio_ring_for_loop = audio_ring.clone();
             let status = SessionStatus::new();
 
             // Consent is checked at the TOP of the loop now (86akby7th PR #22 remediation round
@@ -1768,19 +1789,21 @@ mod tests {
             // drop-notice condition — then withdraw it, exiting via the consent branch.
             let allow_one_iteration = std::cell::Cell::new(true);
 
-            run_cloud_stream_loop(
-                TestSource::with_one_chunk(oversized),
-                stop_worker,
-                seg_tx,
-                &handoff,
-                &audio_ring,
-                empty_provider(),
-                &status,
-                |_s: &mut TestSource| {},
-                move || allow_one_iteration.replace(false),
-                || panic!("must not take the clean-stop branch"),
-                |_s, _sw, _tx, _prior, _note| {}, // the fallback itself is not under test here
-            );
+            assert_loop_returns_within(move || {
+                run_cloud_stream_loop(
+                    TestSource::with_one_chunk(oversized),
+                    stop_worker,
+                    seg_tx,
+                    &handoff_for_loop,
+                    &audio_ring_for_loop,
+                    empty_provider(),
+                    &status,
+                    |_s: &mut TestSource| {},
+                    move || allow_one_iteration.replace(false),
+                    || panic!("must not take the clean-stop branch"),
+                    |_s, _sw, _tx, _prior, _note| {}, // the fallback itself is not under test here
+                );
+            });
 
             assert_eq!(
                 audio_ring.refused_oversize(),
@@ -1821,7 +1844,30 @@ mod tests {
     // `App`/`AppHandle` (`MockRuntime`) with no window and no OS integration, which is enough
     // to call `run_cloud` for real, with managed `AppState`, and drive a REAL
     // `CloudSttSession` against a local stub server.
-    #[cfg(feature = "cloud-stt")]
+    //
+    // **`#[cfg(unix)]`, in addition to `cloud-stt`, and deliberately so (86akby7th PR #22
+    // remediation round, Cody / Sana / Quinn HIGH, found independently by all three).**
+    // [`HeldOpenModelFile`] shells out to the `mkfifo` binary with no OS guard at all, and the
+    // `operator` job's `Test (stt,cloud-stt)` step runs across `[ubuntu, macos, windows-latest]`
+    // with no OS skip — so an unguarded build breaks CI on Windows, not just "doesn't work
+    // there". Sana's finding is the sharper one: even where an MSYS `mkfifo` happens to be on
+    // `PATH`, it creates a Cygwin-emulated FIFO that a native Rust `std::fs::File::open` does
+    // NOT block on the way a POSIX FIFO does — so the held-open hold this test's whole ordering
+    // argument depends on would silently not hold, and the `!worker.is_finished()` positive
+    // control a few dozen lines down would fail instead of the intended assertion. Every path is
+    // a red, none is a benign skip; gating the whole module is the honest fix, not a smaller
+    // one inside it.
+    //
+    // This means **Windows has no behavioural cover for the `run_cloud` fallback composition
+    // this module exists to test** — deliberately, and stated here rather than left to be
+    // discovered by inspection. That gap is defensible because the code under test
+    // (`run_cloud`'s closure composition, `close_cloud_session`, `SharedCloudSession`) is itself
+    // entirely platform-neutral: nothing in the PRODUCTION path is `#[cfg(unix)]`, only this
+    // ONE test's mechanism for forcing a deterministic hold is. A cross-platform replacement
+    // (e.g. a channel-based rendezvous instead of a FIFO) would close this gap and is a
+    // reasonable follow-up; it was not attempted here to keep this remediation round scoped to
+    // the four reviewers' actual findings.
+    #[cfg(all(feature = "cloud-stt", unix))]
     mod run_cloud_composition {
         use super::super::*;
         use selahcue_core::providers::{ProvidersConfig, TranscriptionMode};
@@ -1938,6 +1984,98 @@ mod tests {
             }
         }
 
+        /// Sets the four environment variables this test's `run_cloud` composition depends on
+        /// (`SELAHCUE_STT_MODEL`, `_SHA256`, `DEEPGRAM_API_KEY`,
+        /// `SELAHCUE_STT_CLOUD_TEST_ENDPOINT`) and removes all four on drop, unconditionally —
+        /// including when an assertion further down the test panics before reaching the code
+        /// that used to clean them up (86akby7th PR #22 remediation round, Cody / Quinn MEDIUM).
+        ///
+        /// Before this, cleanup was four `std::env::remove_var` calls at the very end of the
+        /// happy path — so ANY earlier `assert!` failing (there are several, deliberately, each
+        /// checking one step of the fallback ordering) unwound past them and left all four set
+        /// in the process environment for every test that runs afterward in this binary.
+        /// `crate::env_locked()` (held for this test's whole body, see `_env_guard` below) only
+        /// serialises WHICH test may read/write these names at a time — it does not reset their
+        /// values, so a leak here would be read by whichever test acquires the lock next, not
+        /// caught by the lock itself. The discipline already exists once in this same file, for
+        /// the FIFO path — see [`HeldOpenModelFile`]'s own `Drop`; this is that same pattern
+        /// applied to the env vars.
+        struct TestEnvVars;
+
+        impl TestEnvVars {
+            fn set(model_path: &Path, cloud_endpoint: &str) -> Self {
+                std::env::set_var("SELAHCUE_STT_MODEL", model_path);
+                std::env::set_var("SELAHCUE_STT_MODEL_SHA256", "0".repeat(64));
+                std::env::set_var("DEEPGRAM_API_KEY", "test-fixture-credential-000000");
+                std::env::set_var("SELAHCUE_STT_CLOUD_TEST_ENDPOINT", cloud_endpoint);
+                TestEnvVars
+            }
+        }
+
+        impl Drop for TestEnvVars {
+            fn drop(&mut self) {
+                std::env::remove_var("SELAHCUE_STT_MODEL");
+                std::env::remove_var("SELAHCUE_STT_MODEL_SHA256");
+                std::env::remove_var("DEEPGRAM_API_KEY");
+                std::env::remove_var("SELAHCUE_STT_CLOUD_TEST_ENDPOINT");
+            }
+        }
+
+        /// Proves the property `TestEnvVars` exists for, directly and without the cost/flakiness
+        /// of driving the full `run_cloud` composition: an assertion panicking BETWEEN
+        /// `TestEnvVars::set` and the end of a test must not leave any of the four variables set
+        /// for whatever test acquires `ENV_LOCK` next. `catch_unwind` here stands in for the test
+        /// harness's own panic boundary — what matters is that `TestEnvVars`'s `Drop` runs during
+        /// that unwind, same as it would in the real composition test above (86akby7th PR #22
+        /// remediation round, Cody / Quinn MEDIUM). Not gated to real `run_cloud` machinery
+        /// (mkfifo, tokio, a stub socket) — this test's premise is about `Drop`-during-unwind,
+        /// which needs none of that, so it stays fast and independent of the `unix`-only gate
+        /// above (moved out of `run_cloud_composition` would be equally valid; kept here because
+        /// `TestEnvVars` is private to this module).
+        #[test]
+        fn test_env_vars_are_removed_on_drop_even_after_a_panic() {
+            let _env_guard = crate::env_locked();
+            // Baseline: none of these leak in from an unrelated test that ran earlier.
+            for name in [
+                "SELAHCUE_STT_MODEL",
+                "SELAHCUE_STT_MODEL_SHA256",
+                "DEEPGRAM_API_KEY",
+                "SELAHCUE_STT_CLOUD_TEST_ENDPOINT",
+            ] {
+                std::env::remove_var(name);
+            }
+
+            let result = std::panic::catch_unwind(|| {
+                let _guard = TestEnvVars::set(
+                    Path::new("/does-not-need-to-exist"),
+                    "ws://example.invalid/v1/listen",
+                );
+                assert_eq!(
+                    std::env::var("SELAHCUE_STT_MODEL").as_deref(),
+                    Ok("/does-not-need-to-exist"),
+                    "premise: the guard actually set the variable"
+                );
+                panic!(
+                    "simulated assertion failure partway through the real composition test, \
+                     BEFORE any explicit cleanup would have run"
+                );
+            });
+            assert!(
+                result.is_err(),
+                "premise: the simulated failure actually unwound"
+            );
+
+            assert!(
+                std::env::var("SELAHCUE_STT_MODEL").is_err(),
+                "REMOVING TestEnvVars's Drop impl (reverting to explicit remove_var calls only \
+                 at the end of the happy path) must fail this test: a panic partway through must \
+                 not leave SELAHCUE_STT_MODEL set for the next test to acquire ENV_LOCK"
+            );
+            assert!(std::env::var("SELAHCUE_STT_MODEL_SHA256").is_err());
+            assert!(std::env::var("DEEPGRAM_API_KEY").is_err());
+            assert!(std::env::var("SELAHCUE_STT_CLOUD_TEST_ENDPOINT").is_err());
+        }
+
         #[test]
         fn run_cloud_closes_the_deepgram_session_before_falling_back_on_consent_revocation() {
             let _env_guard = crate::env_locked();
@@ -1951,9 +2089,6 @@ mod tests {
             // see `HeldOpenModelFile`. No network either way: the write end sends a few garbage
             // bytes, which fails the SHA-256 check locally.
             let held_model = HeldOpenModelFile::create();
-            std::env::set_var("SELAHCUE_STT_MODEL", &held_model.path);
-            std::env::set_var("SELAHCUE_STT_MODEL_SHA256", "0".repeat(64));
-            std::env::set_var("DEEPGRAM_API_KEY", "test-fixture-credential-000000");
 
             // A tiny local stub that completes the WebSocket handshake — so the session this
             // test drives actually reaches `Streaming` against it, which is what makes "the
@@ -1985,9 +2120,12 @@ mod tests {
                 });
                 port
             });
-            std::env::set_var(
-                "SELAHCUE_STT_CLOUD_TEST_ENDPOINT",
-                format!("ws://127.0.0.1:{port}/v1/listen"),
+
+            // Sets all four env vars this composition depends on; removed on drop, including on
+            // an early panic from one of the several `assert!`s below — see `TestEnvVars`.
+            let _env_vars = TestEnvVars::set(
+                &held_model.path,
+                &format!("ws://127.0.0.1:{port}/v1/listen"),
             );
 
             let mut providers = ProvidersConfig::default();
@@ -2100,10 +2238,9 @@ mod tests {
             );
             worker.join().expect("run_cloud must not panic");
 
-            std::env::remove_var("SELAHCUE_STT_MODEL");
-            std::env::remove_var("SELAHCUE_STT_MODEL_SHA256");
-            std::env::remove_var("DEEPGRAM_API_KEY");
-            std::env::remove_var("SELAHCUE_STT_CLOUD_TEST_ENDPOINT");
+            // `_env_vars` (and `held_model`) drop here, cleaning up unconditionally — no
+            // explicit teardown needed on the happy path either, so there is exactly one place
+            // that removes these, not two.
         }
     }
 }
