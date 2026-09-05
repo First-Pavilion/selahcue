@@ -139,6 +139,16 @@ mod whisper_backend {
     /// ticket's own validated 512 rather than a value this session alone tuned. Flagged for
     /// Vera to assess.
     ///
+    /// ALIGNMENT CONSTRAINT for whoever retunes this next: every value this session tried
+    /// that did NOT crash (512, 532, 600, 700, 800, 900, 1000) is a multiple of 4; the one
+    /// value that DID crash (650) is not (650 = 4*162 + 2). `GGML_ASSERT(nb01 % 8 == 0)` is a
+    /// byte-stride check, and this model's tensors are 2 bytes/element (fp16) — 4 elements =
+    /// 8 bytes, so "a multiple of 4" is the natural read of that assertion. This is an
+    /// observed pattern from 8 data points on ONE backend (Metal), not an exhaustively proven
+    /// rule — treat it as a strong prior (pick a multiple of 4, ideally a larger power-of-2
+    /// multiple, and confirm the specific value doesn't crash before trusting it), not a
+    /// guarantee, and re-check on CUDA/Vulkan/CPU if this is ever retuned for those.
+    ///
     /// Applied to BOTH a streaming interim decode and the end-of-utterance final: this
     /// method's signature (`samples`, `start_ms`, `end_ms`) carries no signal distinguishing
     /// the two — `SttEngine::emit_interim` and `SttEngine::close_utterance` both call the
