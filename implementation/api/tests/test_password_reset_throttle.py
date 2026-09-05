@@ -25,6 +25,18 @@ that test pass, for the wrong reason — every caller would share one bucket, so
 trivially "fails" to mint a fresh one. `test_separate_callers_have_separate_budgets_for_*` is the
 positive control that rules this out: two distinct real source IPs MUST each get their own
 budget.
+
+THE F4 GAP (Sana, security review round 1): every test above uses a NON-EXISTENT email or
+token, so none of them ever enters `request_password_reset`'s MINT branch — they cannot see
+`enforce_budget` move to the wrong side of the `transaction.atomic()` block it currently
+guards. If it moved below, still unconditional, every assertion above would still pass, and a
+21st request against a REAL account would mint a token, commit, dispatch the reset email, and
+ONLY THEN be told RATE_LIMITED — the throttled response's own timing becomes a new oracle, and
+a caller believed to be refused would still receive working mail.
+`test_a_throttled_request_against_a_real_account_mints_nothing_and_sends_nothing` is the test
+that closes this: it exhausts the budget against an EXISTING, VERIFIED account and asserts the
+throttled call left NO new `CredentialToken` row and sent NO new email. Mutation-verified the
+same way as the header test above (see the handoff evidence).
 """
 
 import json
@@ -33,6 +45,8 @@ import pytest
 from django.core.cache import cache
 from django.test import TestCase
 
+from selahcue_api.apps.accounts import services
+from selahcue_api.apps.accounts.models import CredentialToken, CredentialTokenPurpose, CustomerUser
 from selahcue_api.apps.throttling import guards
 
 
@@ -82,9 +96,44 @@ def _fresh_cache(settings):
     "trust REMOTE_ADDR only" default so a stray override elsewhere cannot leak in."""
     settings.SELAHCUE_TRUSTED_PROXY_COUNT = 0
     cache.clear()
-    from selahcue_api.apps.accounts import services
-
     services._reset_floor_overrun_reporting()
+
+
+class _CapturingSender(services.EmailSender):
+    """Module-local capture of dispatched mail, matching the shape of
+    tests/test_customer_auth_slice.py's `CapturingSender` (module-local by convention — see
+    conftest.py: shared seeding helpers are deliberately not shared across test files). Only
+    the two methods this file needs are overridden."""
+
+    def __init__(self):
+        self.verify_tokens = []
+        self.reset_tokens = []
+
+    def send_email_verification(self, user, raw_token):
+        self.verify_tokens.append(raw_token)
+
+    def send_password_reset(self, user, raw_token):
+        self.reset_tokens.append(raw_token)
+
+
+def _existing_verified_account(sender, *, email="verified@budget.example", idem="throttle-verified-0001"):
+    """A REAL, ACTIVE, email-verified CustomerUser, built through the actual signup + verify
+    SERVICE calls (not hand-built ORM rows) so it carries the exact same `email_fingerprint`
+    the code under test computes — a hand-rolled fixture that drifted from `_email_fingerprint`
+    would make the "mint branch" case below silently degenerate into the "no such user" case.
+    """
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        services.register_customer_user(
+            services.RegisterCustomerUserData(
+                idempotency_key=idem,
+                email=email,
+                password="correct-horse-battery-1",
+                org_name="Budget Chapel",
+                country="NG",
+            )
+        )
+    services.verify_email(sender.verify_tokens[-1])
+    return email
 
 
 # --- the positive control: refused at N, and a benign caller still gets through -----------
@@ -256,3 +305,60 @@ def test_store_unavailable_fails_open_for_confirm_reset(client, settings, monkey
         assert error_code(resp) == "VALIDATION_FAILED", (
             f"the limiter store being down must not deny the request, got {error_code(resp)!r}"
         )
+
+
+# --- F4 (Sana, security review round 1): the throttled call must precede the mint ---------
+@pytest.mark.django_db
+def test_a_throttled_request_against_a_real_account_mints_nothing_and_sends_nothing(client, settings):
+    """Every OTHER test in this file uses a NON-EXISTENT email or token, so none of them can
+    see `enforce_budget` land on the wrong side of `request_password_reset`'s
+    `transaction.atomic()` block: the mint branch never runs for them regardless of where the
+    guard sits. This test uses a REAL, VERIFIED account so the mint branch DOES run, and pins
+    that the THROTTLED call — not just the earlier ones — never reaches it.
+    """
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST = (1, 3600)
+    sender = _CapturingSender()
+    services.set_email_sender(sender)
+    try:
+        email = _existing_verified_account(sender)
+        user = CustomerUser.objects.get(email=email)
+
+        first = post_account(client, REQUEST_RESET, {"e": email})
+        assert error_code(first) is None, "the first call (within budget) must not itself be refused"
+
+        # POSITIVE CONTROL, asserted BEFORE the throttled call: prove the WITHIN-budget call
+        # really did reach the mint branch. Without this, a "no new token" result below could
+        # equally mean the mint branch never runs at all, which would prove nothing about the
+        # throttle's placement.
+        minted_count = CredentialToken.objects.filter(
+            customer_user=user, purpose=CredentialTokenPurpose.PASSWORD_RESET
+        ).count()
+        assert minted_count == 1, (
+            "the within-budget call did not mint a token — this fixture is not exercising the "
+            "mint branch, and the contract below would pass for the wrong reason"
+        )
+        assert len(sender.reset_tokens) == 1, (
+            "the within-budget call did not send a reset email — this fixture is not "
+            "exercising the mint branch, and the contract below would pass for the wrong reason"
+        )
+
+        second = post_account(client, REQUEST_RESET, {"e": email})
+        assert error_code(second) == "RATE_LIMITED"
+
+        # THE CONTRACT. If `enforce_budget` ran AFTER the atomic block instead of before it,
+        # this call would still be refused (the guard is unconditional either way) — but only
+        # after minting a SECOND token, committing it, and dispatching a SECOND email. The
+        # caller would see 429 while their mailbox received a working reset link, and the
+        # 429's own timing (mint-then-refuse vs refuse-outright) would become a fresh oracle.
+        assert (
+            CredentialToken.objects.filter(
+                customer_user=user, purpose=CredentialTokenPurpose.PASSWORD_RESET
+            ).count()
+            == minted_count
+        ), "the THROTTLED request minted a new token — enforce_budget is running after the mint"
+        assert len(sender.reset_tokens) == 1, (
+            "the THROTTLED request sent a SECOND reset email — enforce_budget is running after "
+            "the dispatch"
+        )
+    finally:
+        services.set_email_sender(services.EmailSender())

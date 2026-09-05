@@ -263,13 +263,23 @@ SELAHCUE_THROTTLE_RESEND_GLOBAL = (500, 3600)
 SELAHCUE_THROTTLE_RESET_REQUEST = (20, 3600)
 SELAHCUE_THROTTLE_RESET_CONFIRM = (20, 3600)
 
-# All three of the above fail OPEN when the limiter store is unreachable, so while Redis is
-# down they bound nothing at all — and this endpoint sends mail without authentication. This
-# is the ceiling that stands in for them during an outage: a PER-WORKER, in-process fixed
-# window, because the shared store is exactly what is broken. With N workers the effective
-# limit is N x this. It is deliberately far below the global budget it replaces: an outage is
-# the wrong time to be generous, and a caller whose send is skipped keeps the link they
-# already had. See RESEND_DEGRADED_SEND_CEILING in apps/accounts/services.py.
+# COVERS THE THREE `SELAHCUE_THROTTLE_RESEND_*` BUDGETS ONLY — not the two
+# `SELAHCUE_THROTTLE_RESET_*` budgets above, despite their sitting between this comment and
+# the resend settings it describes. Read the name: this is the *resend* degraded ceiling, and
+# `_claim_degraded_send` is called only from `resend_email_verification`.
+#
+# Every one of the five budgets above fails OPEN when the limiter store is unreachable, so
+# while Redis is down none of them bounds anything. This ceiling stands in for the resend
+# three during an outage: a PER-WORKER, in-process fixed window, because the shared store is
+# exactly what is broken. With N workers the effective limit is N x this. It is deliberately
+# far below the global budget it replaces: an outage is the wrong time to be generous, and a
+# caller whose send is skipped keeps the link they already had.
+#
+# THE RESET PATHS HAVE NO SUCH STAND-IN. During a store outage `request_password_reset`
+# reverts to unmetered unauthenticated mail and unbounded oracle sampling — no worse than
+# before 86akcmfd4, but not fixed by it either. Extending a ceiling to the reset send is a
+# tracked follow-up; do not assume this setting already does it.
+# See RESEND_DEGRADED_SEND_CEILING in apps/accounts/services.py.
 SELAHCUE_RESEND_DEGRADED_SEND_CEILING = (20, 3600)
 
 # --- Mail --------------------------------------------------------------------------------
