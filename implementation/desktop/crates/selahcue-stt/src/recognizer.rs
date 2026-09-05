@@ -119,35 +119,57 @@ mod whisper_backend {
     /// the window is. Interims fire every 0.8 s of speech, so that flat cost alone makes the
     /// pipeline fall behind on any hardware (measured: mean lag climbed 3.6 s -> 14.0 s over
     /// a 126 s paced run). Capping the context to cover only the audio actually given bounds
-    /// per-decode cost to ~360-520 ms on windows up to ~9 s (measured, Apple M5/Metal) — see
-    /// the KNOWN BOUNDARY CASE note below for the exact-10 s edge.
+    /// per-decode cost to a ~2.9-3.2x cut across the whole range this pipeline actually
+    /// produces (measured on real, non-repeating speech, Apple M5/Metal: ~270-430 ms from
+    /// 1.6 s up to the 10 s force-close), with recognized text byte-identical to the uncapped
+    /// baseline at every window measured. Independently re-verified by a performance review
+    /// (Vera, 86akcfp3u), which found no reason to change this constant.
     ///
     /// This ONE value is used for every call — not a value picked per window length —
     /// because the FIRST decode at a new context shape rebuilds whisper.cpp's compute graph,
     /// costing an extra 1.3-2.0 s; varying the context per call would reintroduce exactly the
     /// latency spikes this fix removes. 512 is the ticket's own measured-clean value.
     ///
-    /// KNOWN BOUNDARY CASE (independently measured in this session, see the
-    /// `at_the_ten_second_force_close_boundary_*` test below): 6-9 s windows land at
-    /// ~360-460 ms as expected, but a window of EXACTLY 10 s — `engine.rs`'s
-    /// `max_utterance_samples` ceiling, the longest a real utterance ever gets — jumps back
-    /// up to ~1.4-1.5 s, roughly a wash against the ~1.1 s pre-fix baseline rather than an
-    /// improvement. A larger fixed value (700-800) measured clean at exactly 10 s in an
-    /// ad-hoc sweep, but is NOT used here: ctx=650, in the same sweep, triggered a hard
-    /// native crash (`GGML_ASSERT(nb01 % 8 == 0)` in whisper.cpp's Metal backend, SIGABRT) —
-    /// evidence that not every plausible `audio_ctx` value is safe, so this ships the
-    /// ticket's own validated 512 rather than a value this session alone tuned. Flagged for
-    /// Vera to assess.
+    /// ENVELOPE COUPLING WITH `engine.rs` — READ BEFORE CHANGING EITHER CONSTANT (Cody/Vera
+    /// finding, 86akcfp3u review; tracked for phase 2, 86akcfp6z, not fixed here). `audio_ctx`
+    /// does not just bound cost — it bounds how much audio the encoder can see AT ALL.
+    /// whisper.cpp's context units are 20 ms each (30 s of context / 1,500 positions), so
+    /// `audio_ctx` covers exactly `audio_ctx / 50` seconds of real audio: 512 -> **10.24 s**.
+    /// Feed it more than that and whisper.cpp does not slow down gradually — cost jumps ~5x
+    /// (a second internal encode+decode pass) AND the extra audio is silently NOT
+    /// transcribed. Measured on real speech: 10.0 s -> 178 chars (~400 ms); 10.24 s -> 183
+    /// chars (~2.2-3.1 s); 10.5 s and 11.0 s -> the SAME 183 chars. A full extra second of
+    /// real speech produced zero additional words past the envelope — silent content loss,
+    /// not a crash or an error.
     ///
-    /// ALIGNMENT CONSTRAINT for whoever retunes this next: every value this session tried
-    /// that did NOT crash (512, 532, 600, 700, 800, 900, 1000) is a multiple of 4; the one
-    /// value that DID crash (650) is not (650 = 4*162 + 2). `GGML_ASSERT(nb01 % 8 == 0)` is a
-    /// byte-stride check, and this model's tensors are 2 bytes/element (fp16) — 4 elements =
-    /// 8 bytes, so "a multiple of 4" is the natural read of that assertion. This is an
-    /// observed pattern from 8 data points on ONE backend (Metal), not an exhaustively proven
-    /// rule — treat it as a strong prior (pick a multiple of 4, ideally a larger power-of-2
-    /// multiple, and confirm the specific value doesn't crash before trusting it), not a
-    /// guarantee, and re-check on CUDA/Vulkan/CPU if this is ever retuned for those.
+    /// `engine.rs`'s `EngineConfig::max_utterance_samples` defaults to `10 *
+    /// TARGET_SAMPLE_RATE` = exactly 10.000 s, the longest any utterance (interim or final)
+    /// ever gets before force-close — so production sits 0.24 s (2.4%) under this cliff
+    /// today, safely, but nothing in the code ties the two constants together. If
+    /// `max_utterance_samples` is ever raised (phase 2 is scheduled to touch `engine.rs`)
+    /// without revisiting `WHISPER_AUDIO_CTX` in lockstep, long utterances start silently
+    /// losing trailing words while looking like a pure win. Whoever touches either constant
+    /// next: `WHISPER_AUDIO_CTX / 50` (seconds) MUST stay comfortably above whatever
+    /// `max_utterance_samples` allows, with real margin, not just a positive one. This crate
+    /// cannot enforce that at compile time from here — it would need `max_utterance_samples`,
+    /// which lives in `engine.rs` and is out of scope for this fix — so today it is enforced
+    /// as this comment plus a phase-2 tracking item, not a cross-file static assertion.
+    ///
+    /// ALIGNMENT CONSTRAINT, derived (not sampled) from the vendored source this build
+    /// compiles (`whisper-rs-sys` 0.13.1, via a security review, 86akcfp3u): on the
+    /// non-flash-attention decode path, the cross-attention KV view is built with byte stride
+    /// `n_audio_ctx * 2` (the KV cache is fp16, `whisper.cpp:2584-2587`), and Metal's F16
+    /// matmul kernel asserts `nb01 % 8 == 0` (`ggml-metal.m:2263`) — so the constraint is
+    /// exactly `audio_ctx % 4 == 0` on this vendored version (the same reduction holds for
+    /// F32/BF16 too). This session's own sweep (512, 532, 600, 700, 800, 900, 1000) all pass
+    /// it; 650 fails it (SIGABRT). A performance review independently confirmed the
+    /// derivation at an untested adjacent pair: 654 fails, 656 passes. Values above the
+    /// model's own maximum (1,500 for this model) are rejected cleanly with an error, not a
+    /// crash (`whisper.cpp:5473`). This rule is version-pinned — re-derive it on any
+    /// whisper-rs bump or before tuning CUDA/Vulkan/CPU values, which have their own kernels
+    /// and alignment rules. The `const _` assertion below pins the arithmetic half (multiple
+    /// of 4, within the model's own maximum) so a future out-of-range or misaligned retune
+    /// fails to compile instead of aborting at runtime.
     ///
     /// Applied to BOTH a streaming interim decode and the end-of-utterance final: this
     /// method's signature (`samples`, `start_ms`, `end_ms`) carries no signal distinguishing
@@ -155,11 +177,22 @@ mod whisper_backend {
     /// same `Recognizer::transcribe`, and giving one of them a different context belongs to
     /// `engine.rs`, which is out of scope for this fix (see ticket 86akcfp3u; the phase-2
     /// backpressure sub-issue that also touches `engine.rs` is 86akcfpbj). Applying the one
-    /// value to both is the deliberate, measured choice: the investigation found ctx 512
-    /// clean on the final path too (recognized text at windows >= 4 s matched the uncapped
-    /// baseline — see the `capping_does_not_change_recognized_text` test below), not an
-    /// accident of a shared params builder.
+    /// value to both is the deliberate, measured choice, independently re-verified: a
+    /// performance review found recognized text byte-identical between capped and uncapped
+    /// decodes across the whole ramp a real utterance grows through before the 6 s interim
+    /// window engages (1.6/2.4/3.2/4.8/5.6 s) and at the 10 s final — not an accident of a
+    /// shared params builder.
     const WHISPER_AUDIO_CTX: std::os::raw::c_int = 512;
+
+    // Pins the arithmetic half of the ALIGNMENT CONSTRAINT above at compile time: a future
+    // retune to a misaligned or out-of-range value fails the build instead of SIGABRT-ing
+    // whisper.cpp's Metal backend at runtime. Wording per security review, 86akcfp3u.
+    const _: () = assert!(
+        WHISPER_AUDIO_CTX > 0 && WHISPER_AUDIO_CTX <= 1500 && WHISPER_AUDIO_CTX % 4 == 0,
+        "audio_ctx must be positive, <= n_audio_ctx (1500), and a multiple of 4: Metal's F16 \
+         matmul asserts nb01 % 8 == 0 on a 2-byte-per-element stride (SIGABRT otherwise) -- \
+         see WHISPER_AUDIO_CTX's doc comment"
+    );
 
     /// whisper.cpp-backed recognizer. Holds a **shared** loaded model context (`Arc`) so a
     /// stop→start can reuse the resident model instead of reloading it, and transcribes each
@@ -248,8 +281,20 @@ mod whisper_backend {
             // there is nothing useful for whisper.cpp's own internal segmentation to split —
             // and today, without this, a multi-segment result from one call is emitted as
             // MULTIPLE `RecognizedSegment`s that all carry the SAME (start_ms, end_ms) (this
-            // function's parameters, not per-segment timestamps), which is a duplicate-
-            // timestamp artifact this removes rather than introduces.
+            // function's parameters, not per-segment timestamps), a duplicate-timestamp
+            // artifact this removes rather than introduces (mechanism independently
+            // confirmed structurally real by code review, 86akcfp3u: whisper.cpp's own
+            // seek/segment loop is what reuses the shared timestamp on a multi-segment call).
+            //
+            // EVIDENCED, not just plausible: code review raised a real, different risk here —
+            // that forcing single-segment could truncate trailing audio if the model ever
+            // emits an early end-of-text token before the window's true end (a known
+            // whisper.cpp behavior around mid-utterance pauses). Tested twice and cleared: an
+            // A/B on four independent 10 s continuous-speech slices (single_segment on vs.
+            // off, same ctx) produced identical text in all four pairs, and a purpose-built
+            // fixture with four clauses separated by 500/650/400 ms pauses (the shape most
+            // likely to trigger an early EOT) was also byte-identical across both arms
+            // (86akcfp3u review, Vera + Quinn). No accuracy cost found.
             params.set_single_segment(true);
             if state.full(params, samples).is_err() {
                 return Vec::new();
@@ -385,22 +430,46 @@ mod whisper_backend {
             read_wav_pcm16_mono(&path)
         }
 
-        /// `target_secs` of real speech-DERIVED audio for the timing tests below, built by
-        /// tiling (repeat + trim) the recorded fixture rather than using silence.
+        /// The committed ~22 s recorded-speech fixture (macOS `say` + `afconvert`, 16 kHz
+        /// mono PCM16, generated once), long enough that every timing-test window below is a
+        /// genuine PREFIX slice — never a repeat of itself.
+        fn speech_long_fixture_samples() -> Vec<f32> {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/sample_speech_long_16k_mono.wav");
+            read_wav_pcm16_mono(&path)
+        }
+
+        /// `target_secs` of REAL, NON-REPEATING speech for the timing tests below: a prefix
+        /// slice of the long fixture above.
         ///
-        /// An earlier version of these tests used `vec![0.0; n]` silence, reasoning that the
-        /// defect is purely in the encoder's pass over a fixed-size context regardless of
-        /// content. That measured WRONG: pure silence trips whisper.cpp's own no-speech /
-        /// low-confidence fallback retry (visible in its stderr log as a second decode
-        /// attempt per call), which pays an extra decode pass unrelated to `audio_ctx` and
-        /// made even the CAPPED path measure ~1.36s on a 10s window — slower than the
-        /// pre-fix flat baseline, and not the encoder-bound cost this fix actually changes.
-        /// Tiled real speech decodes in one pass, matching the investigation's own
-        /// methodology (paced real speech, not silence).
+        /// CORRECTED (86akcfp3u review): an earlier version of this function built windows by
+        /// tiling (`.cycle()`) the SHORT ~5.8 s fixture, reasoning that the defect is purely
+        /// in the encoder's pass over a fixed-size context regardless of content. That was
+        /// WRONG and materially corrupted this file's own timing evidence: any window past
+        /// 5.81 s was the same sentence AGAIN, and whisper.cpp loops on the literal repeat,
+        /// burning temperature-fallback retries that have nothing to do with `audio_ctx`. A
+        /// performance review (Vera) measured the tiled fixture running 1.4-3.1 s at
+        /// 10/12/14 s windows while real non-repeating speech at the SAME windows ran
+        /// 360-460 ms — and found the tiled fixture was ALSO fast at 9.8 s and unstable
+        /// (1.3-3.0 s) at 9.5 s, proving the cost tracked the REPEAT FRACTION, not the window
+        /// length or `audio_ctx`. This is what produced this PR's earlier (wrong) claim of a
+        /// "10 s regression" — see `WHISPER_AUDIO_CTX`'s doc comment for the real boundary
+        /// (a 10.24 s content-loss envelope, not a 10.0 s slowdown).
+        ///
+        /// Fixed by slicing prefixes of a long (~22 s), never-repeated recording instead of
+        /// cycling a short one. Panics rather than silently tiling if a future caller asks
+        /// for more than the fixture provides — extend the fixture, do not reintroduce a
+        /// repeat.
         fn speech_like_samples(target_secs: u64) -> Vec<f32> {
-            let fixture = speech_fixture_samples();
+            let fixture = speech_long_fixture_samples();
             let target_len = (target_secs * 16_000) as usize;
-            fixture.iter().copied().cycle().take(target_len).collect()
+            assert!(
+                target_len <= fixture.len(),
+                "requested {target_secs}s but the long fixture is only {:.2}s -- extend the \
+                 fixture, do not fall back to tiling/cycling it",
+                fixture.len() as f64 / 16_000.0
+            );
+            fixture[..target_len].to_vec()
         }
 
         /// PRIMARY mutation-verified test (see the PR / handoff for the mutation transcript):
@@ -413,11 +482,12 @@ mod whisper_backend {
         /// call measured 791-899 ms here, noisier and closer to the threshold than the
         /// ~360-520 ms steady state this same window measures after a warm-up).
         ///
-        /// 8 s (not the 10 s `max_utterance_samples` ceiling) is deliberate — see
-        /// `at_the_ten_second_force_close_boundary_the_cap_does_not_regress_past_a_bounded_\
-        /// ceiling` below for why the exact 10 s boundary is tracked separately. Mutation-
-        /// verify by deleting the two `params.set_*` calls in `transcribe` above, re-running
-        /// this file's tests (with siblings, not `--exact`), confirming this goes RED, then
+        /// 8 s (well under the 10 s `max_utterance_samples` ceiling AND the 10.24 s
+        /// `audio_ctx` envelope — see `WHISPER_AUDIO_CTX`'s doc comment) is a representative
+        /// mid-range window; `capped_audio_ctx_bounds_a_ten_second_decode_at_the_\
+        /// max_utterance_ceiling` below covers the ceiling itself. Mutation-verify by
+        /// deleting the two `params.set_*` calls in `transcribe` above, re-running this
+        /// file's tests (with siblings, not `--exact`), confirming this goes RED, then
         /// restoring them.
         #[test]
         fn capped_audio_ctx_bounds_an_eight_second_decode_off_the_flat_thirty_second_cost() {
@@ -430,10 +500,9 @@ mod whisper_backend {
             };
             let _guard = lock_whisper_gpu();
             let mut recognizer = load_test_recognizer(&model_path);
-            // 8 s of real speech-derived audio (see `speech_like_samples`) — NOT silence,
-            // which trips an unrelated whisper.cpp fallback-retry path (confirmed by direct
-            // measurement: silence made even the CAPPED path slower than the pre-fix
-            // baseline, an artifact of that retry path, not of `audio_ctx`).
+            // 8 s of REAL, NON-REPEATING speech (see `speech_like_samples`) — not silence
+            // (trips an unrelated whisper.cpp fallback-retry path) and not tiled/cycled audio
+            // (see `speech_like_samples`'s doc comment for why that also corrupts timing).
             let samples = speech_like_samples(8);
             // Warm-up call: pays the one-time compute-graph-build cost so the TIMED call
             // below measures steady-state decode cost (see doc comment).
@@ -458,10 +527,10 @@ mod whisper_backend {
         /// per window length, later calls at a new shape would each re-pay the 1.3-2.0s
         /// rebuild and this test would go red.
         ///
-        /// Window lengths are drawn from the confirmed-fast range (independently measured:
-        /// 6-9s all land at ~360-460ms at `WHISPER_AUDIO_CTX`=512; see the dedicated 10s-
-        /// boundary test for why exactly 10s — the `max_utterance_samples` ceiling — is
-        /// tracked separately rather than folded in here).
+        /// Window lengths are drawn from the confirmed-fast range (independently measured on
+        /// real, non-repeating speech: 6-9s all land at ~360-460ms at `WHISPER_AUDIO_CTX`=512;
+        /// see the dedicated ten-second-ceiling test below for the `max_utterance_samples`
+        /// boundary, and `WHISPER_AUDIO_CTX`'s doc comment for the real 10.24s envelope).
         #[test]
         fn capped_audio_ctx_stays_fast_across_varying_window_lengths_in_one_session() {
             let Some(model_path) = cached_model_path() else {
@@ -471,9 +540,10 @@ mod whisper_backend {
             let _guard = lock_whisper_gpu();
             let mut recognizer = load_test_recognizer(&model_path);
             let windows_s = [2u64, 6, 9, 7]; // deliberately non-monotonic
-                                             // First call pays the one-time graph-build cost — not asserted. Real
-                                             // speech-derived audio throughout (see `speech_like_samples`) — silence trips an
-                                             // unrelated whisper.cpp fallback-retry path (see that function's doc comment).
+                                             // First call pays the one-time graph-build cost — not asserted. Real,
+                                             // NON-REPEATING speech throughout (see `speech_like_samples`) — silence trips an
+                                             // unrelated whisper.cpp fallback-retry path, and tiled/cycled audio measures the
+                                             // repeat, not the window (see that function's doc comment for both).
             let first = speech_like_samples(windows_s[0]);
             let _ = recognizer.transcribe(&first, 0, windows_s[0] * 1000);
             for &secs in &windows_s[1..] {
@@ -491,46 +561,52 @@ mod whisper_backend {
             }
         }
 
-        /// FINDING, tracked here as a passing regression guard rather than left undocumented:
-        /// at `WHISPER_AUDIO_CTX` = 512, a window of EXACTLY 10s — `engine.rs`'s
-        /// `max_utterance_samples` default, i.e. the longest a real utterance ever gets
-        /// before force-close — does NOT show the improvement the ticket's investigation
-        /// reported for a 10s window (450-490ms). Independently measured on this machine:
-        /// 6-9s windows all land at ~360-460ms, but exactly 10s jumps to ~1.4-1.5s — roughly
-        /// on par with (very slightly worse than) the ~1.1-1.15s pre-fix baseline, i.e. a
-        /// worst-case wash rather than the hoped-for win, not a regression below the
-        /// pre-fix cost. This is a materially different result from the ticket's stated
-        /// 450-490ms and is flagged for Vera to assess (a slightly larger fixed ctx, e.g.
-        /// 700-800, measured clean at exactly 10s in this session's ad-hoc sweep — but
-        /// picking a value without full validation is its own risk: ctx=650 hit a hard
-        /// native crash, `GGML_ASSERT(nb01 % 8 == 0)` in whisper.cpp's Metal backend
-        /// (`ggml-metal.m`), SIGABRT — so this PR ships the ticket's own validated 512
-        /// rather than an untested substitute). This test is a CEILING guard (not the
-        /// optimistic target): it fails only if the exact-10s case gets far worse than what
-        /// was actually measured, catching a future regression without asserting a target
-        /// this session could not reproduce.
+        /// A window of EXACTLY 10s — `engine.rs`'s `max_utterance_samples` default, the
+        /// longest any utterance (interim or final) ever gets before force-close — meets the
+        /// SAME ~700ms bar as every other window. No special allowance.
+        ///
+        /// CORRECTED (86akcfp3u review): an earlier version of this test claimed a "10s
+        /// regression" (measured ~1.4-1.5s, a 2000ms ceiling calibrated to admit it) and
+        /// flagged it for performance review. That claim was WRONG — it was an artifact of
+        /// `speech_like_samples` tiling a too-short fixture (see that function's doc comment),
+        /// not a property of `audio_ctx=512` or of this window length. Independently
+        /// re-measured on real, non-repeating speech: 10.0s decodes in ~400ms, same as every
+        /// other window, ~2.9x FASTER than the ~1.1-1.15s uncapped baseline. There is no
+        /// regression on the final path at 10.0s.
+        ///
+        /// The real, DIFFERENT boundary this fix has is documented at `WHISPER_AUDIO_CTX`'s
+        /// doc comment: `audio_ctx=512` gives the encoder a hard 10.24s horizon, past which
+        /// cost jumps ~5x AND transcription silently stops growing (content loss, not
+        /// slowness). This test's 10.0s window sits 0.24s (2.4%) under that envelope, which
+        /// is exactly production's real margin (`engine.rs`'s force-close), and does not
+        /// itself probe the 10.24s envelope — it confirms production's actual ceiling is
+        /// fast and safe, nothing more.
         #[test]
-        fn at_the_ten_second_force_close_boundary_the_cap_does_not_regress_past_a_bounded_ceiling()
-        {
+        fn capped_audio_ctx_bounds_a_ten_second_decode_at_the_max_utterance_ceiling() {
             let Some(model_path) = cached_model_path() else {
                 eprintln!("skipping: no cached model");
                 return;
             };
             let _guard = lock_whisper_gpu();
             let mut recognizer = load_test_recognizer(&model_path);
+            // 10 s of REAL, NON-REPEATING speech — see `speech_like_samples`'s doc comment;
+            // this is the exact window whose tiled-audio measurement produced this PR's
+            // earlier, incorrect "10s regression" claim.
             let samples = speech_like_samples(10);
-            // Warm-up call (see the primary test's doc comment for why): isolates the
-            // per-decode cost this finding is about from the one-time graph-build cost.
+            // Warm-up call (see the primary test's doc comment for why): isolates
+            // steady-state decode cost from the one-time graph-build cost.
             let _ = recognizer.transcribe(&samples, 0, 10_000);
             let started = Instant::now();
             let _ = recognizer.transcribe(&samples, 0, 10_000);
             let elapsed = started.elapsed();
-            eprintln!("10s window decode (KNOWN boundary case, steady state): {elapsed:?}");
+            eprintln!("10s window decode (max_utterance ceiling, steady state): {elapsed:?}");
             assert!(
-                elapsed < Duration::from_millis(2000),
-                "the exact-10s force-close case took {elapsed:?}, worse than the ~1.4-1.5s \
-                 this session measured repeatedly — a real regression, not the already-flagged \
-                 boundary finding; see this test's doc comment"
+                elapsed < Duration::from_millis(700),
+                "a 10s window (engine.rs's max_utterance_samples ceiling) took {elapsed:?} \
+                 (threshold 700ms, the SAME bar as every other window); pre-fix this measured \
+                 ~1.05-1.15s flat — if this goes red, audio_ctx has likely regressed to the \
+                 default, NOT the already-corrected tiled-fixture artifact this test used to \
+                 (wrongly) admit"
             );
         }
 
