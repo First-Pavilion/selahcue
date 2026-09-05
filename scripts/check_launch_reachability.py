@@ -182,6 +182,19 @@ rather than leaving as an implicit assumption the next change could quietly brea
     a future status message that happened to print it verbatim (rather than, say, `$(OP_FEATURES)`
     with different formatting) would be silently counted as evidence of a build that never
     happens.
+  * `dev_launch_entry_point_targets` (Quinn) uses "carries both `stt-preflight` AND
+    `release-ai-guard` as prerequisites" as a PROXY for "is a default dev-launch entry point that
+    needs the reachability guarantee enforced" -- the two are not logically the same, and Quinn
+    named two plausible future targets where they would part ways: a fast-iteration target that
+    hardcodes `RELEASE=0` internally and drops `release-ai-guard` as pointless for it, while still
+    consuming the default `OP_FEATURES` computation and still needing REQUIRED features
+    reachable; or a target scoped to skip live transcription entirely that drops `stt-preflight`
+    while keeping `release-ai-guard`, since `dev-keys`/`openai-notes` still apply to it. Neither
+    exists today (Quinn checked every target referencing `$(OPRUN)`/`$(OP_FEATURES)`/`$(OP)` and
+    found no live counterexample), so this is a residual assumption to know about, not a bug to
+    fix -- the next person adding a dev-launch target that does not carry both prerequisites for
+    a considered reason should update this heuristic (or add an explicit exemption) rather than
+    discover the mismatch from a failing `TARGETS` cross-check with no context for why.
 
 HOW THE CHECK WORKS. Runs `make -n <target>` (GNU Make's dry run: prints the resolved recipe
 text without executing any of it) for both `launch` and `operator`, with AI/STT/RELEASE/
@@ -242,17 +255,29 @@ CRATE_MANIFESTS: dict[str, Path] = {
 }
 
 # NEW-2 (Quinn/the coordinator): which registered crates actually HAVE a Make-level mechanism
-# enforcing their `RELEASE: UNSAFE` tags. Today that is `release-ai-guard` alone, and it filters
-# only `OP_FEATURES_WORDS` (selahcue-operator's resolved features) -- it does not, and cannot as
-# written, see `DESKTOP_FEATURES` (selahcue-desktop's). Tagging a `selahcue-desktop` feature
-# `UNSAFE` today would make the RELEASE CROSS-CHECK above pass (the tag and the
-# RELEASE_UNSAFE_FEATURES token would agree) and print "confirmed release-unsafe and matched
-# against the Makefile" -- true about the REGISTRY, false about anything actually being enforced.
-# A claim of "confirmed" about something unenforced is worse than no claim at all: it is the
-# shape of the original bug (a feature's real state disagreeing with what a green check reports)
-# one level up. `crates_with_unenforced_release_unsafe_features` below refuses to print success
-# in that situation -- see its docstring.
-CRATES_WITH_RELEASE_GUARD: set[str] = {"selahcue-operator"}
+# enforcing their `RELEASE: UNSAFE` tags, and the Make TARGET that mechanism is. Today that is
+# `release-ai-guard` alone, and it filters only `OP_FEATURES_WORDS` (selahcue-operator's resolved
+# features) -- it does not, and cannot as written, see `DESKTOP_FEATURES` (selahcue-desktop's).
+# Tagging a `selahcue-desktop` feature `UNSAFE` today would make the RELEASE CROSS-CHECK above
+# pass (the tag and the RELEASE_UNSAFE_FEATURES token would agree) and print "confirmed
+# release-unsafe and matched against the Makefile" -- true about the REGISTRY, false about
+# anything actually being enforced. A claim of "confirmed" about something unenforced is worse
+# than no claim at all: it is the shape of the original bug (a feature's real state disagreeing
+# with what a green check reports) one level up.
+#
+# NEW-2b (Sana, driving the exact probe the coordinator asked for): Sana proved this registry
+# ITSELF has no verification -- adding `"selahcue-desktop"` here with NO guard built still made
+# the whole check pass, because nothing had ever confirmed that `CRATES_WITH_RELEASE_GUARD`'s
+# claims describe a REAL, FIRING guard rather than a name in a set. `crates_with_unenforced_
+# release_unsafe_features` below still refuses to print success for a registered crate with no
+# entry here at all; membership in this dict is now ALSO required to correspond to a Make target
+# that actually refuses a hostile build -- see `probe_release_guard` and its use in `main`, which
+# runs `make <target> RELEASE=1 OP_FEATURES=<a real UNSAFE token>` for every entry here (a real,
+# no-build, sub-second invocation) and hard-fails if it does not refuse. This is also, as far as
+# this script or `make ci`/CI can tell, the FIRST automated exercise `release-ai-guard` has ever
+# had with a hostile input -- every prior confirmation of its behaviour was a human running it by
+# hand (Sana twice, Cody, Quinn, the coordinator).
+CRATES_WITH_RELEASE_GUARD: dict[str, str] = {"selahcue-operator": "release-ai-guard"}
 
 # See DERIVATION in the module docstring for what each tag on each axis means.
 LAUNCH_TAGS = {"REQUIRED", "AUTO", "OPT-IN"}
@@ -277,7 +302,21 @@ LAUNCH_TAG_RE = re.compile(r"^#\s*LAUNCH_REACHABILITY:\s*(\S+)")
 RELEASE_TAG_RE = re.compile(r"^#\s*RELEASE:\s*(\S+)")
 CRATE_NAME_IN_MANIFEST_PATH = re.compile(r"crates/([A-Za-z0-9_-]+)/Cargo\.toml")
 CRATE_NAME_VIA_DASH_P = re.compile(r"(?:^|\s)-p\s+([A-Za-z0-9_-]+)")
-RELEASE_UNSAFE_LINE = re.compile(r"^RELEASE_UNSAFE_FEATURES\s*:=\s*(.*)$", re.MULTILINE)
+# NEW-1b (Sana, verified live): anchored at `^` with no leading `\s*`, and matching only `:=`,
+# the original regex missed two spellings that also weaken the guard while staying green: a
+# plain `=` recursive reassignment, and a space-indented `:=` (Make strips leading whitespace
+# before parsing a line; this regex did not). Broadened to any assignment-shaped line -- `:=`,
+# `+=`, `?=`, `!=`, or plain `=`, with an optional `override` prefix -- while still refusing
+# anything but exactly one such line (see `resolve_release_unsafe_line`): `?=` (only takes effect
+# if unset, so a second one is inert) and `+=` (appends, so a second one only ever widens the set)
+# are not actually dangerous the way a second `:=`/`=`/`!=` is, but this script still treats any
+# count other than one as ambiguous rather than trying to reason about which operators are safe
+# to duplicate -- over-strictness is the right default here, since no legitimate reason exists
+# for a second assignment of any flavour. `$(eval ...)`-constructed or `include`-composed
+# assignments are beyond what text analysis alone can see and are not attempted.
+RELEASE_UNSAFE_LINE = re.compile(
+    r"^\s*(?:override\s+)?RELEASE_UNSAFE_FEATURES\s*(?::=|\+=|\?=|!=|=)\s*(.*)$", re.MULTILINE
+)
 # A Makefile target-definition line: `name: prereq1 prereq2 ## help text`. The negative lookahead
 # excludes `:=`/variable assignment lines (`OP_FEATURES_WORDS := ...`), which would otherwise
 # match the same "identifier followed by colon" shape.
@@ -429,6 +468,53 @@ def crates_with_unenforced_release_unsafe_features(
         if unsafe:
             unenforced[crate_name] = unsafe
     return unenforced
+
+
+def pick_probe_token(per_crate_tags: dict[str, dict[str, FeatureTags]], crate_name: str) -> str:
+    """The token to pass as `OP_FEATURES=<token>` when probing `crate_name`'s registered release
+    guard: the alphabetically-first feature that crate itself tags `RELEASE: UNSAFE` (real,
+    current, and unambiguous -- picking a fixed name here instead would silently stop probing
+    anything the day that specific feature is ever retagged or removed). A crate with NO `UNSAFE`
+    feature at all has nothing a hostile-input probe could meaningfully test, which is itself a
+    NEW-2b-shaped problem worth surfacing rather than silently skipping -- see its use in `main`.
+    """
+    unsafe = sorted(name for name, t in per_crate_tags.get(crate_name, {}).items() if t.release == "UNSAFE")
+    if not unsafe:
+        raise ValueError(
+            f"`{crate_name}` is in CRATES_WITH_RELEASE_GUARD but tags no feature `RELEASE: "
+            "UNSAFE` -- there is nothing for a hostile-input probe to test. Either it should not "
+            "be in that registry, or a feature is missing its UNSAFE tag."
+        )
+    return unsafe[0]
+
+
+NO_RULE_FOR_TARGET = "No rule to make target"
+
+
+def guard_refused(returncode: int, output: str) -> bool:
+    """Whether a probed guard invocation's outcome counts as a genuine refusal: a non-zero exit
+    THAT IS NOT merely `make` failing to find the target at all (a typo'd or deleted guard target
+    would also exit non-zero, for a reason that has nothing to do with the guard actually firing
+    -- this is the positive-control half of the probe, distinguishing "the guard refused" from
+    "the guard doesn't exist")."""
+    return returncode != 0 and NO_RULE_FOR_TARGET not in output
+
+
+def probe_release_guard(guard_target: str, op_features: str) -> tuple[int, str]:
+    """Actually invoke `make <guard_target> RELEASE=1 OP_FEATURES=<op_features>` -- a real,
+    no-build, sub-second `make` call (the guard's own recipe is nothing but a shell conditional
+    that either echoes an error and exits, or has nothing to do at all) -- and return its exit
+    code and combined output for `guard_refused` to interpret. See NEW-2b: this is, as far as
+    this script or `make ci`/CI can tell, the first automated exercise any registered release
+    guard has ever had with a hostile input."""
+    result = subprocess.run(
+        ["make", guard_target, "RELEASE=1", f"OP_FEATURES={op_features}"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode, result.stdout + result.stderr
 
 
 def resolved_features(dry_run_text: str) -> set[str]:
@@ -820,6 +906,19 @@ FIXTURE_MAKEFILE_DOUBLE_ASSIGNMENT = (
     "RELEASE_UNSAFE_FEATURES := dev-keys openai-notes\n"
     "release-ai-guard:\n"
 )
+# NEW-1b (Sana): the two spellings that weakened the guard while the ORIGINAL regex (anchored at
+# `^`, `:=` only) stayed green -- a plain `=` recursive reassignment, and a space-indented `:=`.
+# Both must now be detected as a second occurrence (hence ambiguous/refused), not missed.
+FIXTURE_MAKEFILE_PLAIN_EQUALS_WEAKENING = (
+    "RELEASE_UNSAFE_FEATURES := dev-keys openai-notes cloud-stt\n"
+    "RELEASE_UNSAFE_FEATURES = dev-keys openai-notes\n"
+    "release-ai-guard:\n"
+)
+FIXTURE_MAKEFILE_INDENTED_WEAKENING = (
+    "RELEASE_UNSAFE_FEATURES := dev-keys openai-notes cloud-stt\n"
+    "  RELEASE_UNSAFE_FEATURES := dev-keys openai-notes\n"
+    "release-ai-guard:\n"
+)
 
 
 def self_test() -> int:
@@ -893,6 +992,19 @@ def self_test() -> int:
             "RELEASE_UNSAFE_FEATURES parse: two assignments must be refused as ambiguous, not "
             f"resolved to the first one found, got ({tokens}, {problem})"
         )
+    # NEW-1b: the two spellings the original `^RELEASE_UNSAFE_FEATURES\s*:=` regex missed --
+    # a plain `=` reassignment, and a space-indented `:=` -- must now be counted as a second
+    # occurrence each, making both fixtures ambiguous/refused rather than silently green.
+    for name, fixture in (
+        ("plain `=` weakening", FIXTURE_MAKEFILE_PLAIN_EQUALS_WEAKENING),
+        ("indented `:=` weakening", FIXTURE_MAKEFILE_INDENTED_WEAKENING),
+    ):
+        tokens, problem = resolve_release_unsafe_line(fixture)
+        if tokens is not None or problem is None:
+            failures.append(
+                f"RELEASE_UNSAFE_FEATURES parse: {name} must be detected as a second occurrence "
+                f"and refused, got ({tokens}, {problem})"
+            )
 
     # TARGETS derivation, against fixture Makefile text: a var assignment isn't mistaken for a
     # target, a target with only one guard-shaped prerequisite doesn't qualify, and both
@@ -916,6 +1028,35 @@ def self_test() -> int:
         failures.append(
             "NEW-2: expected only the unguarded crate's UNSAFE feature reported, got "
             f"{unenforced}"
+        )
+
+    # NEW-2b: the pure decision logic behind the executable probe, tested without invoking a
+    # real `make` -- `pick_probe_token` (a real, current UNSAFE feature; a crate with none raises
+    # rather than silently skipping) and `guard_refused` (a genuine refusal vs. a missing-target
+    # false positive vs. a benign success).
+    try:
+        pick_probe_token({"selahcue-operator": {"dev-keys": FeatureTags("REQUIRED", "UNSAFE")}}, "selahcue-operator")
+    except ValueError:
+        failures.append("pick_probe_token: raised for a crate that DOES tag an UNSAFE feature")
+    if pick_probe_token(
+        {"selahcue-operator": {"cloud-stt": FeatureTags("REQUIRED", "UNSAFE"), "dev-keys": FeatureTags("REQUIRED", "UNSAFE")}},
+        "selahcue-operator",
+    ) != "cloud-stt":
+        failures.append("pick_probe_token: expected the alphabetically-first UNSAFE feature")
+    try:
+        pick_probe_token({"selahcue-desktop": {"ndi": FeatureTags("AUTO", "SAFE")}}, "selahcue-desktop")
+        failures.append("pick_probe_token: must raise for a crate with no UNSAFE feature at all")
+    except ValueError:
+        pass
+
+    if not guard_refused(1, "ERROR: refusing to build selahcue-operator --release with cloud-stt."):
+        failures.append("guard_refused: a real non-zero exit with no 'No rule' text must count as refused")
+    if guard_refused(0, ""):
+        failures.append("guard_refused: exit 0 must never count as refused")
+    if guard_refused(2, "make: *** No rule to make target `release-ai-guard'.  Stop."):
+        failures.append(
+            "guard_refused: a missing-target failure must NOT count as a genuine refusal -- "
+            "that is the false positive this function exists to rule out"
         )
 
     # Mutation control, in the repo's own idiom: take a known-GOOD fixture, delete ONE feature's
@@ -945,7 +1086,10 @@ def self_test() -> int:
         + 1  # collision guard
         + 1  # TARGETS derivation
         + 3  # RELEASE_UNSAFE_FEATURES parse (present, absent, double-assignment)
+        + 2  # NEW-1b: plain `=` and indented `:=` weakenings
         + 1  # NEW-2: unenforced-crate UNSAFE tag
+        + 3  # NEW-2b: pick_probe_token (has-one, picks-first, raises-on-none)
+        + 3  # NEW-2b: guard_refused (genuine refusal, success, missing-target false positive)
         + 1  # mutation control
     )
     if failures:
@@ -1002,6 +1146,38 @@ def main() -> int:
             "add the crate to CRATES_WITH_RELEASE_GUARD, or retag the feature SAFE if it "
             "genuinely has no release-boundary concern."
         )
+
+    # NEW-2b (Sana's probe, the coordinator's ask): membership in CRATES_WITH_RELEASE_GUARD is a
+    # CLAIM that a real Make target refuses a hostile build for that crate. Prove it by actually
+    # invoking it, for every registered crate -- not just checking that the registry's tokens
+    # agree with each other, which Sana showed can all agree while nothing is enforced at all.
+    for crate_name, guard_target in CRATES_WITH_RELEASE_GUARD.items():
+        try:
+            probe_token = pick_probe_token(per_crate_tags, crate_name)
+        except ValueError as exc:
+            problems.append(str(exc))
+            continue
+        hostile_code, hostile_output = probe_release_guard(guard_target, probe_token)
+        if not guard_refused(hostile_code, hostile_output):
+            problems.append(
+                f"{crate_name}: `make {guard_target} RELEASE=1 OP_FEATURES={probe_token}` did "
+                f"NOT refuse (exit {hostile_code}) -- CRATES_WITH_RELEASE_GUARD claims this "
+                f"target enforces {crate_name}'s release boundary, but a real invocation with a "
+                "real UNSAFE token proceeded anyway. Fix the guard, or remove this entry (which "
+                "then makes every UNSAFE feature here fail the check above instead)."
+            )
+            continue
+        # Positive control: the SAME target, same RELEASE=1, with nothing to refuse, must NOT
+        # also refuse -- otherwise "refuses" above could just mean "always fails", which would be
+        # indistinguishable from a genuinely discriminating guard by the hostile probe alone.
+        benign_code, benign_output = probe_release_guard(guard_target, "")
+        if guard_refused(benign_code, benign_output):
+            problems.append(
+                f"{crate_name}: `make {guard_target} RELEASE=1 OP_FEATURES=` (nothing unsafe "
+                f"requested) ALSO refused (exit {benign_code}) -- {guard_target} appears to "
+                "refuse unconditionally rather than discriminating on the actual feature set, "
+                "which the hostile-input probe alone cannot tell apart from a working guard."
+            )
 
     if problems:
         print(
