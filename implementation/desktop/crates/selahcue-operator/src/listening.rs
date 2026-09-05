@@ -47,6 +47,23 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::capture_handoff::AudioHandoff;
 use crate::transcription_route::TranscriptionRoute;
 
+/// What `run_cloud`'s streaming loop needs from a capture source beyond [`AudioSource`] itself
+/// (`next_chunk`/`label`) — kept to exactly the one extra operation the loop actually calls
+/// (`emit_level`'s peak reading), so the loop can be generic and exercised in tests against a
+/// `FakeAudioSource`-backed stand-in with no real microphone, while [`CpalSource`] satisfies it
+/// unchanged for the real capture path (86akby7th PR #22 review, Quinn's "zero coverage" — see
+/// `run_cloud_stream_loop`).
+trait CaptureSource: AudioSource {
+    /// Peak input amplitude (`0..=1`) since the previous call. See [`CpalSource::peak_level`].
+    fn peak_level(&self) -> f32;
+}
+
+impl CaptureSource for CpalSource {
+    fn peak_level(&self) -> f32 {
+        CpalSource::peak_level(self)
+    }
+}
+
 /// How often the SOURCE thread drains the mic ring into the hand-off + emits the live level.
 /// Short so the meter stays smooth and the capture ring never overflows (independent of decode).
 const CAPTURE_INTERVAL: Duration = Duration::from_millis(50);
@@ -267,6 +284,104 @@ fn clear_failure() {
     *status_lock(&LAST_FAILURE) = None;
 }
 
+/// Set the audio-dropped notice WITHOUT erasing a distinct note already there — appending
+/// rather than replacing.
+///
+/// `ENGINE_NOTE` is a single slot, and a mid-service engine-change disclosure (e.g.
+/// [`selahcue_stt_cloud::DEGRADED_FALLBACK_NOTICE`]) and a LATER audio-dropped notice
+/// ([`ON_DEVICE_AUDIO_DROPPED_NOTICE`] / [`AUDIO_DROPPED_NOTICE`]) can both be true about the
+/// same session — a fallback happened, AND the fallback engine later fell behind. Writing the
+/// drop notice straight into the slot (the previous behaviour) silently erased the disclosure
+/// that explained why the engine changed in the first place, which is exactly the kind of
+/// stale-looking honesty gap this ticket's other fixes remove elsewhere (86akby7th PR #22
+/// review, LOW: "do not let a drop note erase an engine-change note"). Idempotent: calling it
+/// twice with the same `addition` does not duplicate the suffix.
+fn append_engine_note(addition: &str) {
+    let mut slot = status_lock(&ENGINE_NOTE);
+    let next = match slot.take() {
+        // Already there (a prior call already appended it, or it IS the whole note): keep it —
+        // re-appending on every poll while the sticky drop condition holds would otherwise
+        // compound into a note that keeps growing.
+        Some(existing) if !existing.is_empty() && existing.ends_with(addition) => existing,
+        Some(existing) if !existing.is_empty() => format!("{existing} {addition}"),
+        _ => addition.to_string(),
+    };
+    *slot = Some(next);
+}
+
+/// The live `ProvidersConfig`, read fresh from shared app state — never a snapshot taken
+/// earlier in this capture session.
+///
+/// Used two ways in `run_cloud` (86akby7th PR #22 review):
+/// - to (re-)prove Cloud eligibility immediately before minting a `StreamAuthorization`, rather
+///   than trusting the snapshot `start()` decided the route from a moment ago — `CpalSource::new()`
+///   can block for as long as the OS mic-permission dialog is up, and the operator can revoke
+///   consent or leave Cloud mode during that wait (Cody, High: the old code re-derived
+///   `StreamAuthorization::from_config(&providers_snapshot)` from that same frozen clone, so it
+///   structurally could not see a change — the comment claiming otherwise was wrong, not just the
+///   behaviour);
+/// - polled every iteration of the streaming loop so a mid-service revocation (or leaving Cloud
+///   mode) is caught within one `CAPTURE_INTERVAL`, not only at the moment streaming started
+///   (Sana, High).
+#[cfg(feature = "cloud-stt")]
+fn live_providers_config(app: &AppHandle) -> selahcue_core::providers::ProvidersConfig {
+    let state = app.state::<crate::AppState>();
+    let guard = state.providers.lock().unwrap_or_else(|e| e.into_inner());
+    guard.clone()
+}
+
+/// Context for a mid-service fallback into [`run_on_device`], carrying WHY the previous engine
+/// stopped.
+///
+/// Applied only once on-device is confirmed to actually be producing (`run_on_device`'s success
+/// path), never proactively before the attempt — so the console never shows a disclosure
+/// claiming "coming from on-device instead" while on-device itself is still loading (a first-run
+/// model download can take a while) or has failed to start (86akby7th PR #22 review, LOW: "the
+/// fallback note/label should be set when the on-device engine actually produces, not before").
+/// If on-device ALSO fails, `prior_failure` is folded into the on-device error instead, so the
+/// operator learns both facts rather than only the newest one.
+struct FallbackContext {
+    /// What happened to the engine this session is falling back FROM — used only if on-device
+    /// also fails to start.
+    prior_failure: String,
+    /// The disclosure to show once on-device is confirmed running.
+    note: &'static str,
+}
+
+/// `run_on_device`'s failure branch, extracted so this exact wiring is what a test drives —
+/// rather than a real `CpalSource` (a live microphone) or a loaded whisper model, neither of
+/// which this failure path actually touches.
+///
+/// Folds in WHY a previous engine stopped, if `fallback` is `Some` (a mid-service handoff),
+/// then tears the worker slot down FROM INSIDE ITSELF (Quinn, PR #22 review, "zombie worker"):
+/// this may be a mid-service fallback (`run_on_device`'s `ready_tx: None` case) with no caller
+/// left watching a result to notice the failure and call the real `stop()` — the two callers
+/// that DO get an `Err` from `run_on_device` (`start_listening`, `perform_retry`) already call
+/// `stop()` themselves, so clearing the slot here too is a harmless, idempotent no-op for them.
+/// Calling the real `stop()` from here would deadlock: it joins the worker thread, and a thread
+/// cannot join itself. This is that same cleanup minus the join, safe because this thread is
+/// returning right after anyway — so `is_listening()` goes false and `detector_state` reports
+/// `Unavailable` with the real error, instead of a worker slot that outlives the thread it names
+/// and keeps reporting `Listening` forever. Returns the (possibly folded) message, so the caller
+/// can also send it down `ready_tx` when one is waiting.
+fn abandon_worker_after_on_device_failure(
+    fallback: &Option<FallbackContext>,
+    on_device_error: String,
+) -> String {
+    let message = match fallback {
+        Some(fb) => format!(
+            "{}; on-device fallback also failed: {on_device_error}",
+            fb.prior_failure
+        ),
+        None => on_device_error,
+    };
+    record_failure(message.clone());
+    *status_lock(&PROVIDER_LABEL) = None;
+    *status_lock(&ENGINE_NOTE) = None;
+    let _ = worker_lock().take();
+    message
+}
+
 /// The retained terminal failure, if the detector is currently down.
 pub fn last_failure() -> Option<String> {
     status_lock(&LAST_FAILURE).clone()
@@ -380,8 +495,10 @@ fn load_recognizer(app: &AppHandle) -> Result<WhisperRecognizer, String> {
 }
 
 /// Emit a live mic-level reading (peak percent) so "waiting for speech…" can show whether
-/// audio is actually arriving, regardless of which engine is consuming it.
-fn emit_level(app: &AppHandle, source: &mut CpalSource) {
+/// audio is actually arriving, regardless of which engine is consuming it. Generic over
+/// [`CaptureSource`] (not just [`CpalSource`]) so `run_cloud_stream_loop` can call it — in
+/// production always monomorphized to `CpalSource`, so this is not a behaviour change.
+fn emit_level<S: CaptureSource>(app: &AppHandle, source: &mut S) {
     let pct = (source.peak_level() * 100.0).round().clamp(0.0, 100.0) as u8;
     let _ = app.emit(LEVEL_EVENT, MicLevel { pct });
 }
@@ -459,14 +576,12 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
             TranscriptionRoute::Cloud => {
                 #[cfg(feature = "cloud-stt")]
                 {
-                    run_cloud(
-                        app_worker,
-                        source,
-                        stop_worker,
-                        seg_tx,
-                        ready_tx,
-                        providers_snapshot,
-                    );
+                    // `providers_snapshot` (captured above for the route DECISION only) is
+                    // deliberately NOT threaded through to `run_cloud`: it re-fetches the LIVE
+                    // config itself (`live_providers_config`) at the moment it matters, rather
+                    // than trusting a clone taken here that could already be stale by the time
+                    // `CpalSource::new()` above returns (86akby7th PR #22 review, Cody High).
+                    run_cloud(app_worker, source, stop_worker, seg_tx, ready_tx);
                 }
                 #[cfg(not(feature = "cloud-stt"))]
                 {
@@ -493,7 +608,14 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
                          ({reason:?}); using on-device transcription instead."
                     );
                 }
-                run_on_device(app_worker, source, stop_worker, seg_tx, Some(ready_tx));
+                run_on_device(
+                    app_worker,
+                    source,
+                    stop_worker,
+                    seg_tx,
+                    Some(ready_tx),
+                    None,
+                );
             }
         }
     });
@@ -523,19 +645,25 @@ const ON_DEVICE_AUDIO_DROPPED_NOTICE: &str = "On-device transcription is running
 /// session tries (on-device chosen outright, or an immediate pre-stream Cloud fallback);
 /// `None` when this is a mid-service handoff from an already-`Ok`-acknowledged Cloud session
 /// (the caller already resolved the oneshot channel, which can only be sent once).
+///
+/// `fallback` carries WHY a previous engine stopped, when this is that kind of handoff — `None`
+/// for the two call sites where on-device is the FIRST thing this session tries (nothing to
+/// explain). See [`FallbackContext`]: its `note` is applied only in the success branch below,
+/// never before, and its `prior_failure` is folded into the error only if on-device ALSO fails.
 fn run_on_device(
     app_worker: AppHandle,
     mut source: CpalSource,
     stop_worker: Arc<AtomicBool>,
     seg_tx: tokio::sync::mpsc::Sender<ProviderSegment>,
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    fallback: Option<FallbackContext>,
 ) {
     let recognizer = match load_recognizer(&app_worker) {
         Ok(r) => r,
         Err(e) => {
-            record_failure(e.clone());
+            let message = abandon_worker_after_on_device_failure(&fallback, e);
             if let Some(tx) = ready_tx {
-                let _ = tx.send(Err(e));
+                let _ = tx.send(Err(message));
             }
             return;
         }
@@ -566,6 +694,11 @@ fn run_on_device(
     // FR-120 honest disclosure: retain WHICH engine is producing this transcript, so the
     // console can name it instead of implying a perfect, anonymous recogniser.
     *status_lock(&PROVIDER_LABEL) = Some(provider.label().to_string());
+    // Apply the deferred fallback disclosure now that on-device is CONFIRMED producing — never
+    // before (see the doc comment above and `FallbackContext`).
+    if let Some(fb) = &fallback {
+        *status_lock(&ENGINE_NOTE) = Some(fb.note.to_string());
+    }
 
     // Decouple recognition from capture so a (potentially slow) decode never freezes the mic
     // or the level meter. The cpal stream is `!Send`, so the SOURCE stays on THIS thread and a
@@ -613,7 +746,7 @@ fn run_on_device(
                 handoff.dropped(),
                 handoff.retained_samples()
             );
-            *status_lock(&ENGINE_NOTE) = Some(ON_DEVICE_AUDIO_DROPPED_NOTICE.to_string());
+            append_engine_note(ON_DEVICE_AUDIO_DROPPED_NOTICE);
         }
         std::thread::sleep(CAPTURE_INTERVAL);
     }
@@ -645,29 +778,39 @@ const CAPTURE_WINDOW: Duration = Duration::from_secs(5);
 const AUDIO_DROPPED_NOTICE: &str = "Cloud transcription is running, but the connection is \
      falling behind — some audio may not have reached the transcript.";
 
+/// Shown when a running Cloud session is torn down because consent was revoked, or Cloud mode
+/// was left, WHILE it was actively streaming — distinct from [`selahcue_stt_cloud::DEGRADED_FALLBACK_NOTICE`]
+/// (that one means the session itself gave up; this one means the operator withdrew permission
+/// for it to keep running). Both land the operator in the same place — on-device, with an
+/// honest reason — but conflating "it broke" with "you turned it off" would misreport an
+/// intentional privacy action as a fault (86akby7th PR #22 review, Sana High / Cody High).
+#[cfg(feature = "cloud-stt")]
+const CONSENT_REVOKED_NOTICE: &str = "Cloud transcription was turned off (consent revoked, or \
+     On-device was selected) while a session was active. The transcript below is coming from \
+     the on-device engine instead.";
+
 /// Run Cloud (Deepgram) transcription until it fails, is stopped, or the running session is
 /// terminal, falling back to `run_on_device` in every case that is not a clean operator-driven
 /// stop. Behind `cloud-stt`: everything it touches from `selahcue-stt-cloud` beyond `readiness`
 /// requires the `deepgram` feature.
 ///
 /// This function never blocks the caller waiting on the network: `CloudSttSession::start`
-/// returns before the socket is open (it runs on its own thread), and every iteration of the
-/// loop below is bounded local work — draining the mic, pushing into the bounded `AudioRing`,
-/// draining the bounded `SegmentQueue`, and one non-blocking status read.
+/// returns before the socket is open (it runs on its own thread), and every iteration of
+/// [`run_cloud_stream_loop`]'s loop is bounded local work — draining the mic, pushing into the
+/// bounded `AudioRing`, draining the bounded `SegmentQueue`, and one non-blocking status read.
 #[cfg(feature = "cloud-stt")]
 fn run_cloud(
     app_worker: AppHandle,
-    mut source: CpalSource,
+    source: CpalSource,
     stop_worker: Arc<AtomicBool>,
     seg_tx: tokio::sync::mpsc::Sender<ProviderSegment>,
     ready_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
-    providers_snapshot: selahcue_core::providers::ProvidersConfig,
 ) {
     use selahcue_stt_cloud::session::{StreamAuthorization, StreamParams};
     use selahcue_stt_cloud::transport::{CloudSttSession, SessionConfig};
     use selahcue_stt_cloud::{
-        developer_credential_from_env, AudioChunk as CloudAudioChunk, AudioRing,
-        CloudTranscriptProvider, SegmentQueue, SessionStatus, DEGRADED_FALLBACK_NOTICE,
+        developer_credential_from_env, AudioRing, CloudTranscriptProvider, SegmentQueue,
+        SessionStatus,
     };
 
     // Size the shared capture hand-off from THIS device's real configuration — never a literal
@@ -698,17 +841,27 @@ fn run_cloud(
     };
     let handoff = AudioHandoff::new(handoff_capacity);
 
-    // `TranscriptionRoute::decide` already checked `may_stream_cloud_audio()` a moment ago, but
-    // config can change between that decision and here (the operator flips a toggle mid-start)
-    // — re-proving it at the point audio would actually stream, rather than trusting a decision
-    // made a few lines of code earlier, is what makes "streaming is unreachable without
-    // consent" hold at the point that matters (mirrors `selahcue-stt-cloud`'s own
-    // `StreamAuthorization` invariant).
-    let authorization = match StreamAuthorization::from_config(&providers_snapshot) {
+    // Re-fetch the LIVE config right here, rather than trusting `start()`'s snapshot from a
+    // moment ago (86akby7th PR #22 review, Cody High). `TranscriptionRoute::decide` already
+    // checked `may_stream_cloud_audio()` once, but `CpalSource::new()` above can block for as
+    // long as the OS mic-permission dialog is up — the operator can revoke consent or leave
+    // Cloud mode during that wait, and a frozen snapshot cannot see it. Re-proving eligibility
+    // at the point audio would actually stream, against the config as it stands NOW, is what
+    // makes "streaming is unreachable without consent" hold at the point that matters (mirrors
+    // `selahcue-stt-cloud`'s own `StreamAuthorization` invariant).
+    let authorization = match StreamAuthorization::from_config(&live_providers_config(&app_worker))
+    {
         Ok(a) => a,
         Err(e) => {
             record_failure(format!("cloud transcription not authorized: {e}"));
-            run_on_device(app_worker, source, stop_worker, seg_tx, Some(ready_tx));
+            run_on_device(
+                app_worker,
+                source,
+                stop_worker,
+                seg_tx,
+                Some(ready_tx),
+                None,
+            );
             return;
         }
     };
@@ -716,7 +869,14 @@ fn run_cloud(
         Ok(c) => c,
         Err(e) => {
             record_failure(format!("cloud transcription credential unavailable: {e}"));
-            run_on_device(app_worker, source, stop_worker, seg_tx, Some(ready_tx));
+            run_on_device(
+                app_worker,
+                source,
+                stop_worker,
+                seg_tx,
+                Some(ready_tx),
+                None,
+            );
             return;
         }
     };
@@ -742,12 +902,19 @@ fn run_cloud(
         Ok(s) => s,
         Err(e) => {
             record_failure(format!("cloud transcription failed to start: {e}"));
-            run_on_device(app_worker, source, stop_worker, seg_tx, Some(ready_tx));
+            run_on_device(
+                app_worker,
+                source,
+                stop_worker,
+                seg_tx,
+                Some(ready_tx),
+                None,
+            );
             return;
         }
     };
 
-    let mut provider = CloudTranscriptProvider::new(queue.clone(), &params);
+    let provider = CloudTranscriptProvider::new(queue.clone(), &params);
     // FR-120 honest disclosure: name Deepgram specifically, distinguishable from the on-device
     // label, so a fallback later is visibly a DIFFERENT engine, not the same string re-shown.
     *status_lock(&PROVIDER_LABEL) = Some(provider.label().to_string());
@@ -759,22 +926,103 @@ fn run_cloud(
         source.label()
     );
 
+    // The loop itself is a separate, generic function (`run_cloud_stream_loop`) so it is
+    // exercised in tests against a fake capture source and injected fallback/consent-check
+    // closures — no real microphone, network, or whisper model — rather than only by 104 tests
+    // that never touch this code path at all (Quinn, PR #22 review: deleting the terminal-
+    // handoff block here previously left the whole suite green).
+    let app_for_level = app_worker.clone();
+    let app_for_check = app_worker.clone();
+    run_cloud_stream_loop(
+        source,
+        stop_worker,
+        seg_tx,
+        &handoff,
+        &audio_ring,
+        provider,
+        &status,
+        move |s: &mut CpalSource| emit_level(&app_for_level, s),
+        // Polled every iteration (86akby7th PR #22 review, Sana High): a mid-service consent
+        // revocation or a move away from Cloud mode must terminate cloud egress within one
+        // `CAPTURE_INTERVAL`, not only be noticed the next time "Start listening" is pressed.
+        move || live_providers_config(&app_for_check).may_stream_cloud_audio(),
+        move || {
+            // Clean operator-driven stop. `stop()` asks Deepgram to flush first (bounded —
+            // `SHUTDOWN_GRACE`) so the last sentence of a sermon is not lost.
+            session.stop();
+        },
+        move |source, stop_worker, seg_tx, prior_failure, note| {
+            run_on_device(
+                app_worker,
+                source,
+                stop_worker,
+                seg_tx,
+                None,
+                Some(FallbackContext {
+                    prior_failure,
+                    note,
+                }),
+            );
+        },
+    );
+}
+
+/// The Cloud streaming loop itself: drains the mic, forwards audio to Deepgram, drains
+/// recognised segments, and watches two independent reasons to hand off to on-device — until
+/// told to stop cleanly.
+///
+/// Generic over [`CaptureSource`] and takes its side effects (`emit_level`, the live consent
+/// re-check, the clean-stop action, and the fallback handoff itself) as injected closures
+/// rather than calling `run_on_device`/`AppHandle::emit` directly, so this exact function — not
+/// a copy of its logic — is what a test drives with a `SessionStatus` set to terminal or a
+/// consent check that flips to `false`, with no real microphone, network socket, or whisper
+/// model anywhere nearby. Production (`run_cloud`, above) wires the closures to the real thing;
+/// removing or mis-wiring either exit path is a test failure here, not a silent no-op the way
+/// deleting the equivalent inline `if` block used to be (Quinn, PR #22 review).
+///
+/// Returns when `stop_worker` is set (`on_clean_stop` runs, no fallback), when `may_stream_now`
+/// reports the operator withdrew permission (`on_fallback` runs with [`CONSENT_REVOKED_NOTICE`]),
+/// or when `status` goes terminal (`on_fallback` runs with
+/// [`selahcue_stt_cloud::DEGRADED_FALLBACK_NOTICE`]) — never loops forever once any of the three
+/// fires.
+#[cfg(feature = "cloud-stt")]
+#[allow(clippy::too_many_arguments)]
+fn run_cloud_stream_loop<S: CaptureSource>(
+    mut source: S,
+    stop_worker: Arc<AtomicBool>,
+    seg_tx: tokio::sync::mpsc::Sender<ProviderSegment>,
+    handoff: &AudioHandoff,
+    audio_ring: &selahcue_stt_cloud::AudioRing,
+    mut provider: selahcue_stt_cloud::CloudTranscriptProvider,
+    status: &selahcue_stt_cloud::SessionStatus,
+    mut emit_level_cb: impl FnMut(&mut S),
+    mut may_stream_now: impl FnMut() -> bool,
+    on_clean_stop: impl FnOnce(),
+    on_fallback: impl FnOnce(
+        S,
+        Arc<AtomicBool>,
+        tokio::sync::mpsc::Sender<ProviderSegment>,
+        String,
+        &'static str,
+    ),
+) {
+    use selahcue_stt_cloud::{AudioChunk as CloudAudioChunk, DEGRADED_FALLBACK_NOTICE};
+
     // Both `handoff` (shared capture→consumer type; drops the OLDEST raw audio if this loop
     // ever fell behind draining the mic — it does not in practice, since nothing here blocks)
     // and `audio_ring` (Deepgram-specific, downstream of resampling; drops OLDEST if the socket
-    // falls behind) have their own drop-oldest capacity bound. Both are honest capacity
-    // management, not bugs, but both are SILENT ones otherwise — tracked so the console can say
-    // so rather than presenting a transcript that looks complete while it is not (the same
-    // honesty rule this ticket already applies to which engine is running). Sticky for the rest
-    // of THIS session once true — a flicker back to "no drops yet" the moment either buffer
-    // catches up would be easy to miss and would read as reassurance about audio already lost.
+    // falls behind, and REFUSES a single chunk larger than its own per-chunk cap) have their own
+    // capacity bound. All three are honest capacity management, not bugs, but all three are
+    // SILENT ones otherwise — tracked so the console can say so rather than presenting a
+    // transcript that looks complete while it is not (the same honesty rule this ticket already
+    // applies to which engine is running). Sticky for the rest of THIS session once true — a
+    // flicker back to "no drops yet" the moment a buffer catches up would be easy to miss and
+    // would read as reassurance about audio already lost.
     let mut audio_dropped_ever = false;
 
     loop {
         if stop_worker.load(Ordering::Relaxed) {
-            // Clean operator-driven stop. `stop()` asks Deepgram to flush first (bounded —
-            // `SHUTDOWN_GRACE`) so the last sentence of a sermon is not lost.
-            session.stop();
+            on_clean_stop();
             return;
         }
 
@@ -796,22 +1044,30 @@ fn run_cloud(
             );
             audio_ring.push(CloudAudioChunk::from_pcm_i16(&pcm_i16_from_f32(&mono)));
         }
-        emit_level(&app_worker, &mut source);
+        emit_level_cb(&mut source);
 
+        // `refused_oversize()` is now part of the sum (86akby7th PR #22 review, Vera Medium): a
+        // stall long enough to make the whole backlog one oversized chunk is refused whole by
+        // `AudioRing::push`, counted ONLY here — omitting it let a 30 s backlog vanish with the
+        // drop notice never firing, because `dropped_for_bound()` alone stayed at zero.
         if should_note_audio_drop(
-            handoff.dropped() + audio_ring.dropped_for_bound(),
+            handoff.dropped() + audio_ring.dropped_for_bound() + audio_ring.refused_oversize(),
             audio_dropped_ever,
         ) {
             audio_dropped_ever = true;
             eprintln!(
                 "SelahCue STT: audio was dropped before reaching Deepgram (capture hand-off: {} \
-                 samples dropped, {} currently retained; Deepgram ring: {} bytes dropped) — the \
-                 pipeline is not keeping up.",
+                 samples dropped, {} currently retained; Deepgram ring: {} bytes dropped, {} \
+                 chunks refused oversize) — the pipeline is not keeping up.",
                 handoff.dropped(),
                 handoff.retained_samples(),
-                audio_ring.dropped_for_bound()
+                audio_ring.dropped_for_bound(),
+                audio_ring.refused_oversize()
             );
-            *status_lock(&ENGINE_NOTE) = Some(AUDIO_DROPPED_NOTICE.to_string());
+            // Append, never overwrite (86akby7th PR #22 review, LOW): a consent-revoked or
+            // degraded-fallback disclosure may already be in this slot from an EARLIER iteration
+            // of this same loop, and a drop notice must not silently erase it.
+            append_engine_note(AUDIO_DROPPED_NOTICE);
         }
 
         // Drain whatever the socket has queued so far — never blocks (see `CloudTranscriptProvider::poll`).
@@ -819,13 +1075,33 @@ fn run_cloud(
             let _ = seg_tx.try_send(seg);
         });
 
+        if !may_stream_now() {
+            // The operator withdrew permission (revoked consent, or left Cloud mode) WHILE this
+            // session was actively streaming. Distinct from the terminal branch below: nothing
+            // here failed.
+            on_fallback(
+                source,
+                stop_worker,
+                seg_tx,
+                "cloud transcription consent was revoked, or Cloud mode was left, mid-service"
+                    .to_string(),
+                CONSENT_REVOKED_NOTICE,
+            );
+            return;
+        }
+
         if status.get().is_terminal() {
             // The session gave up (bad credential, exhausted retries, or a defect) rather than
-            // being asked to stop. Hand off to on-device with the SAME open mic — no re-prompt,
-            // no gap while a new stream opens — and say so on the console (FR-135 / FR-120).
-            record_failure(format!("cloud transcription stopped: {:?}", status.get()));
-            *status_lock(&ENGINE_NOTE) = Some(DEGRADED_FALLBACK_NOTICE.to_string());
-            run_on_device(app_worker, source, stop_worker, seg_tx, None);
+            // being asked to stop, and the operator did not withdraw permission — hand off to
+            // on-device with the SAME open mic (no re-prompt, no gap while a new stream opens).
+            let terminal_status = status.get();
+            on_fallback(
+                source,
+                stop_worker,
+                seg_tx,
+                format!("cloud transcription stopped: {terminal_status:?}"),
+                DEGRADED_FALLBACK_NOTICE,
+            );
             return;
         }
 
@@ -896,6 +1172,16 @@ mod tests {
     // benign positive control) now live with the type, in `capture_handoff.rs` — shared with
     // the Cloud route rather than duplicated here.
 
+    /// Serializes tests in this module (and `cloud_stt`, below) that touch the process-wide
+    /// `ENGINE_NOTE` / `LAST_FAILURE` / `PROVIDER_LABEL` / `WORKER` statics — the same pattern
+    /// `main.rs`'s `ENV_LOCK` uses for its own process-global test state. `cargo test` runs
+    /// tests in this binary on multiple threads by default, and without this two such tests
+    /// would race each other's writes to the same statics.
+    static STATE_LOCK: Mutex<()> = Mutex::new(());
+    fn state_locked() -> std::sync::MutexGuard<'static, ()> {
+        STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn should_note_audio_drop_is_sticky_and_needs_a_real_drop() {
         // The shared (86akby7th: "one shared counter") sticky-notice decision both routes call.
@@ -921,9 +1207,128 @@ mod tests {
         );
     }
 
+    #[test]
+    fn append_engine_note_never_erases_a_distinct_existing_note() {
+        let _guard = state_locked();
+
+        // Baseline: nothing set yet — appending sets it plainly, no leading artifact.
+        *status_lock(&ENGINE_NOTE) = None;
+        append_engine_note("first note");
+        assert_eq!(engine_note().as_deref(), Some("first note"));
+
+        // POSITIVE CONTROL for the fix (86akby7th PR #22 review, LOW): a distinct note already
+        // in the slot (e.g. an engine-change disclosure) must survive a LATER drop notice — the
+        // bug this replaces was a plain `*status_lock(&ENGINE_NOTE) = Some(addition)`, which
+        // erased whatever was there.
+        *status_lock(&ENGINE_NOTE) = Some("engine changed".to_string());
+        append_engine_note("audio dropped");
+        assert_eq!(
+            engine_note().as_deref(),
+            Some("engine changed audio dropped"),
+            "a later append must not erase the note already there"
+        );
+
+        // Idempotent: appending the SAME text again must not duplicate the suffix.
+        append_engine_note("audio dropped");
+        assert_eq!(
+            engine_note().as_deref(),
+            Some("engine changed audio dropped"),
+            "appending the same text twice must not duplicate it"
+        );
+
+        *status_lock(&ENGINE_NOTE) = None; // leave the slot clean for other tests
+    }
+
+    #[test]
+    fn on_device_failure_tears_the_worker_slot_down_and_reports_both_facts() {
+        let _guard = state_locked();
+
+        // Arrange the EXACT shape of Quinn's PR #22 "zombie worker" finding: a worker slot left
+        // occupied by `start()`, a stale Cloud provider label, and a stale "coming from
+        // on-device instead" note — all three left over from BEFORE a mid-service fallback's
+        // `load_recognizer()` call fails.
+        *worker_lock() = Some(Worker {
+            stop: Arc::new(AtomicBool::new(false)),
+            handle: None,
+        });
+        *status_lock(&PROVIDER_LABEL) = Some("deepgram-nova-3".to_string());
+        *status_lock(&ENGINE_NOTE) = Some("stale: coming from on-device instead".to_string());
+        clear_failure();
+        assert!(is_listening(), "premise: the worker slot starts occupied");
+
+        let message = abandon_worker_after_on_device_failure(
+            &Some(FallbackContext {
+                prior_failure: "cloud transcription stopped: Failed".to_string(),
+                note: "unused on the failure path",
+            }),
+            "model file not found".to_string(),
+        );
+
+        assert!(
+            !is_listening(),
+            "REMOVING this teardown must fail this test: a worker slot that outlives the \
+             thread it names is what made `detector_state` report Listening forever instead of \
+             Unavailable (Quinn, PR #22 review)"
+        );
+        assert_eq!(
+            provider_label(),
+            None,
+            "no engine is producing a transcript any more — the stale Deepgram label must not \
+             survive on-device also failing"
+        );
+        assert_eq!(
+            engine_note(),
+            None,
+            "a note claiming on-device is running must not survive on-device actually failing"
+        );
+        assert!(
+            message.contains("cloud transcription stopped: Failed")
+                && message.contains("on-device fallback also failed: model file not found"),
+            "the reported message must carry BOTH facts (why cloud stopped AND why the \
+             fallback also failed), got {message:?}"
+        );
+        assert_eq!(
+            last_failure().as_deref(),
+            Some(message.as_str()),
+            "the folded message must be what's retained as the terminal failure"
+        );
+
+        *worker_lock() = None; // leave the slot clean for other tests
+        clear_failure();
+    }
+
+    #[test]
+    fn on_device_failure_with_no_prior_engine_reports_the_bare_error() {
+        let _guard = state_locked();
+        *worker_lock() = Some(Worker {
+            stop: Arc::new(AtomicBool::new(false)),
+            handle: None,
+        });
+
+        let message =
+            abandon_worker_after_on_device_failure(&None, "no default input device".to_string());
+
+        assert_eq!(
+            message, "no default input device",
+            "with no prior engine to fold in (on-device chosen outright, or an immediate \
+             pre-stream Cloud fallback), the message is exactly the bare on-device error"
+        );
+        assert!(!is_listening());
+
+        *worker_lock() = None;
+        clear_failure();
+    }
+
     #[cfg(feature = "cloud-stt")]
     mod cloud_stt {
-        use super::super::pcm_i16_from_f32;
+        use super::super::*;
+        use selahcue_stt::audio::{AudioChunk, AudioSource, FakeAudioSource};
+        use selahcue_stt_cloud::error::OperatorAction;
+        use selahcue_stt_cloud::session::StreamParams;
+        use selahcue_stt_cloud::{
+            AudioRing, CloudTranscriptProvider, SegmentQueue, SessionState, SessionStatus,
+            DEGRADED_FALLBACK_NOTICE,
+        };
 
         #[test]
         fn round_trips_silence_and_full_scale() {
@@ -944,6 +1349,260 @@ mod tests {
             // around to a negative sample that would read as a loud click of the wrong sign.
             assert_eq!(pcm_i16_from_f32(&[2.5]), pcm_i16_from_f32(&[1.0]));
             assert_eq!(pcm_i16_from_f32(&[-2.5]), pcm_i16_from_f32(&[-1.0]));
+        }
+
+        // --- `run_cloud_stream_loop` (Quinn, PR #22 review: "zero coverage" — deleting the
+        // entire terminal-handoff block left 104/104 tests passing) --------------------------
+        //
+        // A [`CaptureSource`] backed by [`FakeAudioSource`] — no real microphone, deterministic
+        // — so the loop can be driven end to end with no hardware, no network socket, and no
+        // whisper model anywhere nearby: `SessionStatus`, `AudioRing`, `SegmentQueue` and
+        // `CloudTranscriptProvider` are all constructible without the `deepgram` transport
+        // (see `selahcue-stt-cloud`'s own lib doc — "everything decidable without a socket
+        // already has been, in the default build").
+
+        struct TestSource {
+            inner: FakeAudioSource,
+        }
+
+        impl TestSource {
+            fn empty() -> Self {
+                TestSource {
+                    inner: FakeAudioSource::new(),
+                }
+            }
+
+            fn with_one_chunk(chunk: AudioChunk) -> Self {
+                TestSource {
+                    inner: FakeAudioSource::with_chunks([chunk]),
+                }
+            }
+        }
+
+        impl AudioSource for TestSource {
+            fn label(&self) -> &str {
+                "test"
+            }
+
+            fn next_chunk(&mut self) -> Option<AudioChunk> {
+                self.inner.next_chunk()
+            }
+        }
+
+        impl CaptureSource for TestSource {
+            fn peak_level(&self) -> f32 {
+                0.0
+            }
+        }
+
+        /// Generous enough that no test below trips the hand-off's OWN drop-oldest bound by
+        /// accident — each test isolates ONE specific exit path or drop/refusal source.
+        fn generous_handoff() -> AudioHandoff {
+            AudioHandoff::new(NonZeroUsize::new(10_000_000).expect("nonzero"))
+        }
+
+        fn empty_provider() -> CloudTranscriptProvider {
+            CloudTranscriptProvider::new(SegmentQueue::new(), &StreamParams::default())
+        }
+
+        #[test]
+        fn a_clean_stop_takes_the_stop_branch_and_never_calls_the_fallback() {
+            let stop_worker = Arc::new(AtomicBool::new(true)); // ALREADY asked to stop
+            let (seg_tx, _seg_rx) = tokio::sync::mpsc::channel(8);
+            let handoff = generous_handoff();
+            let audio_ring = AudioRing::new();
+            let status = SessionStatus::new(); // Idle — non-terminal; must not matter here
+
+            let clean_stop_called = Arc::new(AtomicBool::new(false));
+            let clean_stop_called2 = Arc::clone(&clean_stop_called);
+            let fallback_called = Arc::new(AtomicBool::new(false));
+            let fallback_called2 = Arc::clone(&fallback_called);
+
+            run_cloud_stream_loop(
+                TestSource::empty(),
+                stop_worker,
+                seg_tx,
+                &handoff,
+                &audio_ring,
+                empty_provider(),
+                &status,
+                |_s: &mut TestSource| {},
+                || true, // consent stays granted throughout
+                move || clean_stop_called2.store(true, Ordering::SeqCst),
+                move |_s, _sw, _tx, _prior, _note| fallback_called2.store(true, Ordering::SeqCst),
+            );
+
+            assert!(
+                clean_stop_called.load(Ordering::SeqCst),
+                "an already-stopped worker must take the clean-stop branch"
+            );
+            assert!(
+                !fallback_called.load(Ordering::SeqCst),
+                "a clean, operator-driven stop must never fall back to on-device"
+            );
+        }
+
+        #[test]
+        fn a_terminal_cloud_session_hands_off_with_the_degraded_fallback_note() {
+            let stop_worker = Arc::new(AtomicBool::new(false));
+            let (seg_tx, _seg_rx) = tokio::sync::mpsc::channel(8);
+            let handoff = generous_handoff();
+            let audio_ring = AudioRing::new();
+            let status = SessionStatus::new();
+            status.set(SessionState::Failed {
+                action: OperatorAction::ReportDefect,
+                message: "boom".to_string(),
+            });
+
+            let captured: Arc<Mutex<Option<(String, &'static str)>>> = Arc::new(Mutex::new(None));
+            let captured2 = Arc::clone(&captured);
+            let clean_stop_called = Arc::new(AtomicBool::new(false));
+            let clean_stop_called2 = Arc::clone(&clean_stop_called);
+
+            run_cloud_stream_loop(
+                TestSource::empty(),
+                stop_worker,
+                seg_tx,
+                &handoff,
+                &audio_ring,
+                empty_provider(),
+                &status,
+                |_s: &mut TestSource| {},
+                || true, // consent stays granted — isolates the TERMINAL branch specifically
+                move || clean_stop_called2.store(true, Ordering::SeqCst),
+                move |_s, _sw, _tx, prior_failure, note| {
+                    *captured2.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some((prior_failure, note));
+                },
+            );
+
+            assert!(
+                !clean_stop_called.load(Ordering::SeqCst),
+                "a terminal session must not take the clean-stop branch"
+            );
+            let (prior_failure, note) = captured
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .expect(
+                    "REMOVING the terminal-session handoff (or never calling the fallback) must \
+                 fail this test — Quinn's PR #22 finding was that deleting this exact block \
+                 left 104/104 tests passing",
+                );
+            assert!(
+                prior_failure.contains("cloud transcription stopped"),
+                "got {prior_failure:?}"
+            );
+            assert_eq!(
+                note, DEGRADED_FALLBACK_NOTICE,
+                "a genuine session failure must carry the DEGRADED note, not the consent one"
+            );
+        }
+
+        #[test]
+        fn a_consent_revocation_hands_off_with_the_consent_revoked_note() {
+            let stop_worker = Arc::new(AtomicBool::new(false));
+            let (seg_tx, _seg_rx) = tokio::sync::mpsc::channel(8);
+            let handoff = generous_handoff();
+            let audio_ring = AudioRing::new();
+            // Stays Idle (non-terminal) throughout — isolates the CONSENT branch from the
+            // terminal-session branch above.
+            let status = SessionStatus::new();
+
+            let captured: Arc<Mutex<Option<(String, &'static str)>>> = Arc::new(Mutex::new(None));
+            let captured2 = Arc::clone(&captured);
+
+            run_cloud_stream_loop(
+                TestSource::empty(),
+                stop_worker,
+                seg_tx,
+                &handoff,
+                &audio_ring,
+                empty_provider(),
+                &status,
+                |_s: &mut TestSource| {},
+                || false, // consent withdrawn from the very first check (Sana/Cody, PR #22 High)
+                || panic!("a consent revocation must not take the clean-stop branch"),
+                move |_s, _sw, _tx, prior_failure, note| {
+                    *captured2.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some((prior_failure, note));
+                },
+            );
+
+            let (prior_failure, note) = captured
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .expect(
+                    "a withdrawn `may_stream_now()` must trigger the fallback — this is the exact \
+                 mid-service consent-revocation path Sana's and Cody's PR #22 findings required",
+                );
+            assert!(prior_failure.contains("consent"), "got {prior_failure:?}");
+            assert_eq!(
+                note, CONSENT_REVOKED_NOTICE,
+                "a withdrawn consent must carry the CONSENT note, not the degraded-session one"
+            );
+        }
+
+        #[test]
+        fn a_lone_oversized_chunk_is_refused_and_still_sets_the_drop_notice() {
+            let _guard = super::state_locked(); // this test touches ENGINE_NOTE via append_engine_note
+            *status_lock(&ENGINE_NOTE) = None;
+
+            // One chunk, already 16 kHz mono so resample is a no-op passthrough, comfortably
+            // bigger than `MAX_AUDIO_CHUNK_BYTES` (64 KiB = 32,768 i16 samples) once PCM-encoded
+            // — reproduces Vera's PR #22 finding: a stall long enough that the whole backlog
+            // becomes ONE oversized chunk, which `AudioRing::push` refuses WHOLE and counts
+            // ONLY in `refused_oversize()` — never in `dropped_for_bound()`.
+            let oversized = AudioChunk::new(vec![0.5f32; 40_000], 16_000, 1);
+
+            let stop_worker = Arc::new(AtomicBool::new(false));
+            let (seg_tx, _seg_rx) = tokio::sync::mpsc::channel(8);
+            let handoff = generous_handoff();
+            let audio_ring = AudioRing::new();
+            let status = SessionStatus::new();
+
+            run_cloud_stream_loop(
+                TestSource::with_one_chunk(oversized),
+                stop_worker,
+                seg_tx,
+                &handoff,
+                &audio_ring,
+                empty_provider(),
+                &status,
+                |_s: &mut TestSource| {},
+                // Exit via the consent branch right after the FIRST iteration has already
+                // processed the chunk and evaluated the drop-notice condition.
+                || false,
+                || panic!("must not take the clean-stop branch"),
+                |_s, _sw, _tx, _prior, _note| {}, // the fallback itself is not under test here
+            );
+
+            assert_eq!(
+                audio_ring.refused_oversize(),
+                1,
+                "the oversized chunk must be refused exactly once"
+            );
+            assert_eq!(
+                audio_ring.dropped_for_bound(),
+                0,
+                "premise: this is refusal, not the separate byte-bound eviction path"
+            );
+            assert_eq!(
+                handoff.dropped(),
+                0,
+                "premise: the hand-off itself never evicted anything (a lone chunk is kept \
+                 whole regardless of size — see capture_handoff.rs)"
+            );
+            assert_eq!(
+                engine_note().as_deref(),
+                Some(AUDIO_DROPPED_NOTICE),
+                "REMOVING refused_oversize() from the drop-notice sum (86akby7th PR #22 \
+                 review, Vera Medium) must fail this test: dropped_for_bound() alone stays 0 \
+                 here, so the notice would never fire and a 30 s backlog would vanish silently"
+            );
+
+            *status_lock(&ENGINE_NOTE) = None; // leave the slot clean for other tests
         }
     }
 }

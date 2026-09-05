@@ -231,13 +231,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
-      - name: Linux system deps (winit/wgpu + software Vulkan for GPU parity)
+      - name: Linux system deps (winit/wgpu + software Vulkan for GPU parity + ALSA for cpal)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libx11-dev libxkbcommon-dev libwayland-dev \
-            libvulkan1 mesa-vulkan-drivers libdbus-1-dev
+            libvulkan1 mesa-vulkan-drivers libdbus-1-dev \
+            libasound2-dev
       # A real serif face, so the typography tests can do real work (86ak643rc).
       #
       # `themes_differing_only_in_typography_never_share_a_measurement` (selahcue-present)
@@ -636,9 +637,21 @@ jobs:
       # `listening.rs`, where the routing decision this ticket fixes actually lives -- at all.
       # Without it, `listening.rs` would be exactly as "linted and tested by nothing" as
       # `selahcue-stt` itself (the standing example every feature-gate comment in this job
-      # cites). No extra system deps: whisper-rs-sys's native build needs only a C/C++ toolchain
-      # + cmake, which all three GitHub-hosted runner images carry by default -- the same reason
-      # the `stt`-only build was never separately gated before now.
+      # cites). whisper-rs-sys's native build needs only a C/C++ toolchain + cmake, which all
+      # three GitHub-hosted runner images carry by default -- the same reason the `stt`-only
+      # build was never separately gated before now. It is NOT true, though, that this step
+      # needs no extra system packages at all: `stt` also pulls in `selahcue-stt`'s `capture`
+      # feature (`CpalSource`, real microphone capture via `cpal`), and on Linux `cpal` builds
+      # against ALSA — `alsa-sys` fails to compile without the ALSA development headers, which
+      # is NOT one of the packages the earlier "Linux system deps" step installed (that step
+      # predates this one and was written for winit/wgpu + software Vulkan only). That gap
+      # shipped in this PR's first revision: this step and the Test step below were red on
+      # ubuntu only, `libasound2-dev` was missing, and a step comment claiming "no extra deps"
+      # is exactly the kind of confident-but-wrong signal this job's other comments warn about.
+      # `libasound2-dev` is now installed in the "Linux system deps" step above, which is why
+      # this line can compile `stt` on Linux at all. A macOS `make ci` run cannot catch this
+      # class of gap by construction (Core Audio needs no such package) -- see CLAUDE.md's "One
+      # OS, not three" note.
       - name: Clippy (stt,cloud-stt)
         if: ${{ !cancelled() }}
         run: cargo clippy --features stt,cloud-stt --all-targets -- -D warnings

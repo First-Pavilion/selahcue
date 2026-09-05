@@ -471,6 +471,13 @@
             <span id="det-health-body" class="det-health-body"></span>
             <button id="det-health-retry" class="det-health-retry" type="button" hidden>↻ Retry detection</button>
           </div>
+          <!-- 86akby7th PR #22 review (Vera, Medium): an engine-change / audio-dropped
+               disclosure must be visible even while detection rows exist. It previously
+               rendered only into #det-empty-sub below, which JS sets to display:none the
+               moment #detections-list is non-empty — so a mid-sermon disclosure was literally
+               unreachable on screen. This element is checked on every render regardless of
+               #detections-empty's visibility. -->
+          <div id="det-engine-note" class="det-engine-note" role="status" hidden></div>
           <div id="detections-list" class="stream" role="list" aria-label="Scripture detection approval queue"></div>
           <div id="detections-empty" class="fwd-empty">
             <span class="fwd-icon" aria-hidden="true">✨</span>

@@ -130,7 +130,16 @@ impl AudioHandoff {
             .is_empty()
     }
 
-    /// Retained sample count right now (never exceeds the cap this hand-off was built with).
+    /// Retained sample count right now.
+    ///
+    /// Bounded by the cap this hand-off was built with in the ordinary case — but NOT a hard
+    /// ceiling: `push`'s eviction loop stops once exactly one chunk remains
+    /// (`inner.chunks.len() > 1`), so a single chunk larger than the cap is retained WHOLE
+    /// rather than evicted down to empty. That is deliberate ("the newest is kept" must always
+    /// be stateable, even for a chunk bigger than the budget — see the module doc's zero-
+    /// capacity discussion for the same reasoning), but it does mean this can momentarily read
+    /// above the cap when the most recent chunk alone exceeds it (86akby7th PR #22 review, LOW:
+    /// this doc previously claimed "never exceeds", which the code does not hold in that case).
     pub fn retained_samples(&self) -> usize {
         self.inner
             .lock()
@@ -246,5 +255,29 @@ mod tests {
         h.push(chunk(1));
         assert_eq!(h.retained_samples(), 1);
         assert_eq!(h.dropped(), 1);
+    }
+
+    #[test]
+    fn a_single_chunk_larger_than_the_cap_is_retained_whole_not_evicted_to_empty() {
+        // Locks in the exact behaviour `retained_samples`'s doc comment describes (86akby7th PR
+        // #22 review, LOW: that doc previously claimed a hard "never exceeds" ceiling, which
+        // this case disproves). `push`'s eviction loop requires `chunks.len() > 1` to evict, so
+        // once only the newest chunk remains it stops — "the newest is kept" must be stateable
+        // even when that one chunk alone is bigger than the budget, rather than silently
+        // dropping to a hand-off that retains nothing at all.
+        let h = AudioHandoff::new(cap(TEST_CAP_SAMPLES));
+        let oversized = 10 * TEST_CAP_SAMPLES; // far past the budget, in ONE push
+        h.push(chunk(oversized));
+        assert_eq!(
+            h.retained_samples(),
+            oversized,
+            "a lone chunk bigger than the cap must be kept WHOLE, not evicted down to empty"
+        );
+        assert_eq!(
+            h.dropped(),
+            0,
+            "retaining the oversized chunk whole means nothing was actually evicted to make room"
+        );
+        assert!(!h.is_empty());
     }
 }

@@ -4877,6 +4877,32 @@ DRIVER = r"""
          "PP C-002: selecting On-device revokes cloud-transcription consent (audio never leaves the device)");
       ok(el("pp-radio-ondevice").getAttribute("aria-checked")==="true", "PP C-002: On-device is selected again");
 
+      // (2b) 86akby7th PR #22 review (Cody, Medium): the Cloud card's live-audio warning must
+      // name the ACTUAL provider driven from transcription_provider/transcription_available —
+      // not merely satisfy a prefix regex ("Streams live microphone audio") that would pass
+      // whether the rendered name were "Deepgram", a generic string, or "undefined". Both
+      // states are driven here the same way the notes-provider states are driven above (C-010).
+      window.__pp.transcription_provider = null; // transcription_available derives to false
+      document.querySelector('.nav-item[data-surface="settings"]').click();
+      await sleep(60);
+      var clWarnUnready = el("pp-radio-cloud").querySelector(".pp-warn");
+      ok(!!clWarnUnready && /a cloud speech service/.test(clWarnUnready.textContent),
+         "PP C-002 (86akby7th): with transcription_available=false the warning falls back to the honest generic name, not a fabricated provider");
+      ok(!/Deepgram/.test(clWarnUnready.textContent) && !/undefined/i.test(clWarnUnready.textContent),
+         "PP C-002 (86akby7th): with no provider named, the warning must not say Deepgram or leak 'undefined'");
+      ok(/not available right now on this machine/.test(el("pp-radio-cloud").textContent),
+         "PP C-002 (86akby7th): with transcription_available=false the footer honestly says the feature is not ready on this machine");
+
+      window.__pp.transcription_provider = {kind:"deepgram", name:"Deepgram", model:"nova-3", developer_key:true};
+      document.querySelector('.nav-item[data-surface="settings"]').click();
+      await sleep(60);
+      var clWarnReady = el("pp-radio-cloud").querySelector(".pp-warn");
+      ok(!!clWarnReady && /Deepgram/.test(clWarnReady.textContent),
+         "PP C-002 (86akby7th): with a real provider named, the warning says Deepgram specifically (FR-120/FR-132)");
+      ok(!/not available right now on this machine/.test(el("pp-radio-cloud").textContent),
+         "PP C-002 (86akby7th): with transcription_available=true the footer does not claim the feature is unavailable");
+      window.__pp.transcription_provider = null; // restore the stock-build default for later checks
+
       // (3) AI sermon notes — honest status FIRST (no fabricated pills/quota with nothing configured).
       var aiStatus = document.querySelector(".pp-ai-status");
       ok(!!aiStatus && !/Cloud connected/.test(aiStatus.textContent) && !/Available/.test(aiStatus.textContent),
@@ -5700,6 +5726,30 @@ DRIVER = r"""
       ok(await wWait(function(){ return wHBox.hidden; }),
          "CON-139: a successful retry recovers, and the stale refusal is not left showing beside the recovered state");
       window.__detHealth = null;
+
+      // (8) 86akby7th PR #22 review (Vera, Medium): an engine-change / audio-dropped NOTE must
+      // be visible even while detection rows exist. Previously it only rendered into
+      // #det-empty-sub, which JS sets display:none the instant #detections-list is non-empty —
+      // so a mid-sermon disclosure (the exact case that matters) was literally unreachable on
+      // screen. Reproduced here with a REAL detection row present, not the empty state.
+      render(Object.assign({}, baseView, { detections: [
+        { id: 7001, reference: "Psalm 23:1", text: "The Lord is my shepherd", confidence: 90 },
+      ] }));
+      ok(getComputedStyle(el("detections-empty")).display === "none",
+         "CON-128/139 (premise): with a detection row present, the empty state IS hidden — the exact condition that swallowed the note before this fix");
+      var wNoteEl = el("det-engine-note");
+      ok(!!wNoteEl, "CON-128/139: a dedicated, always-checked element carries the engine note");
+      await wHealth({state:"listening", provider:"deepgram-nova-3", error:null, can_retry:false,
+                     note:"Cloud transcription could not be reached. The transcript below is coming from the on-device engine instead."});
+      ok(!wNoteEl.hidden && getComputedStyle(wNoteEl).display !== "none",
+         "CON-128/139: the note is VISIBLE even though the empty state (where it used to render) is hidden by the detection row above");
+      ok(/on-device engine instead/.test(wNoteEl.textContent),
+         "CON-128/139: the note text matches the host's disclosure verbatim");
+      // Clearing the note hides the element again — never a stale disclosure with nothing to say.
+      await wHealth({state:"listening", provider:"deepgram-nova-3", error:null, can_retry:false, note:null});
+      ok(wNoteEl.hidden, "CON-128/139: a null note hides the element rather than leaving stale text behind");
+      window.__detHealth = null;
+      render(baseView); // restore — clears the fixture detection row for what follows
 
       // --- PME-058 / Q-08: the delete confirm must state the SLIDE COUNT, and must not promise
       // reversibility the host cannot deliver. The interesting case is NOT the one where the count
