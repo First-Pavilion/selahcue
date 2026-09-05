@@ -513,12 +513,55 @@ fn load_from(_path: &std::path::Path) -> Report {
 ///
 /// With `dev-keys`: reads the repo-root `.env`, exports what it is allowed to, and prints a line
 /// per missing variable. Without it: does nothing, and no `.env` reading is compiled in.
+///
+/// **Also refuses to run in a release profile, even when `dev-keys` is compiled in.** The
+/// Makefile (`AI ?= auto` / `release-ai-guard`) already keeps `--release` builds made *through
+/// `make`* from ever requesting this feature — but a feature flag alone is a Cargo-level switch,
+/// and nothing about it stops a bare `cargo build --release --features dev-keys` typed directly,
+/// bypassing Make entirely. That is precisely the gap 86akcmzrd names: the guarantee has to hold
+/// "through make or a bare cargo build", so it cannot live in the Makefile alone.
+///
+/// `cfg!(debug_assertions)` is `false` in `--release` by default (opt-level up, assertions off),
+/// which is the same property `selahcue-licensing`'s development entitlement-signing key leans on
+/// (see `trust.rs` and `scripts/dev_key_not_in_release.sh`). Checking it here means a release
+/// profile takes this early return and never reaches `load_from`, regardless of which features
+/// were requested — a real compile-time-adjacent guarantee, not a convention.
+///
+/// **Stated plainly, because every sibling guard in this codebase states its own limit rather
+/// than overclaiming: this is defeated by the same two things that defeat the licensing check** —
+/// an explicit `[profile.release] debug-assertions = true` in some reachable Cargo config, or a
+/// `RUSTFLAGS` override — neither of which anything in-repo can see. It narrows the gap; it does
+/// not close every route through it. `scripts/installer_secret_scan.py` (86akc041v) is the
+/// independent, byte-level backstop for exactly that residual case on artefacts this repo
+/// actually ships, and this check does not make that scan redundant.
 #[cfg(feature = "dev-keys")]
 pub fn load() {
+    if !should_load_env_file(cfg!(debug_assertions)) {
+        eprintln!(
+            "selahcue dev-keys: release profile detected (debug_assertions=false) — skipping \
+             the .env loader. A --release build of selahcue-operator must never read developer \
+             keys from a stray .env; see dev_env.rs for why."
+        );
+        return;
+    }
     let report = load_from(std::path::Path::new(REPO_ROOT_ENV_FILE));
     for line in startup_lines(&report) {
         eprintln!("{line}");
     }
+}
+
+/// Whether `load()` should proceed to read `.env`, given a resolved debug/release input.
+///
+/// Split out for the same reason `load_from`/`plan` and `notes_status_from`/`notes_status`
+/// (`main.rs`) are split from their thin wrappers: `cfg!(debug_assertions)` is fixed for the
+/// whole lifetime of one compiled test binary, so a test that only calls `load()` can only ever
+/// observe ONE of the two branches — whichever profile `cargo test` happened to be run in. Taking
+/// the profile as a parameter makes the other branch reachable, so a test can assert the
+/// release-profile refusal directly rather than trusting that the `!` in `load()` was typed the
+/// right way round.
+#[cfg(feature = "dev-keys")]
+fn should_load_env_file(debug_assertions: bool) -> bool {
+    debug_assertions
 }
 
 /// The default build: a no-op, and deliberately a silent one. A binary without the feature must
@@ -1282,6 +1325,33 @@ mod tests {
             assert!(report.resolved.contains(&DEEPGRAM_API_KEY));
 
             std::env::remove_var(DEEPGRAM_API_KEY);
+        }
+
+        /// The release-profile half of the `load()` guard (86akcmzrd's structural requirement),
+        /// tested directly against the pure predicate rather than through `load()` itself —
+        /// `cfg!(debug_assertions)` cannot be varied within one compiled test binary, so a test
+        /// that only calls `load()` observes whichever profile `cargo test` happened to run in
+        /// and can never reach the other branch. Touches no env var, so it needs no `locked()`.
+        #[test]
+        fn a_release_profile_input_refuses_to_load() {
+            assert!(
+                !should_load_env_file(false),
+                "a release-profile (debug_assertions=false) input must refuse to load .env — \
+                 this is the one guard standing between `--features dev-keys --release` and a \
+                 shipped binary that reads developer keys from a stray .env"
+            );
+        }
+
+        /// The positive control for the test above: an ordinary debug/test profile must still
+        /// load normally, so "refuses" above is the release branch actually firing rather than
+        /// the function refusing unconditionally.
+        #[test]
+        fn a_debug_profile_input_still_loads() {
+            assert!(
+                should_load_env_file(true),
+                "a debug-profile (debug_assertions=true) input was refused — dev-keys would stop \
+                 working in ordinary `cargo run`/`cargo test`, not just in --release"
+            );
         }
     }
 }

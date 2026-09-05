@@ -5,15 +5,21 @@
 # so you can launch and drive the app without remembering the paths and feature flags.
 #
 #   make            # show this help
-#   make run        # ONE command: output window + operator shell together (NDI + STT auto-on)
+#   make run        # ONE command: output window + operator shell together (NDI + STT + AI auto-on)
 #   make launch     # same as `make run`
 #   make run-release# same, but an OPTIMIZED build — use this to judge performance
 #   make output     # just the audience output window (native + LAN control server; NDI auto)
 #   make operator   # just the Tauri operator shell
 #   make remote CMD=go-live   # send one command to a running output window via the CLI
 #
-# `make run` auto-enables NDI when the SDK is vendored (scripts/fetch_ndi_sdk.sh) and STT when
-# cmake is present, and runs fine without either — force with `make run NDI=1|0 STT=1|0`.
+# `make run` auto-enables NDI when the SDK is vendored (scripts/fetch_ndi_sdk.sh), STT when cmake
+# is present, and the AI-assisted sermon-note path (dev-keys + openai-notes, reading a developer
+# OpenAI key from the repo-root .env — see .env.sample) UNCONDITIONALLY — and runs fine without
+# any of them — force with `make run NDI=1|0 STT=1|0 AI=1|0`. AI is forced OFF for any RELEASE=1
+# build, structurally: see the "AI-assisted sermon notes" comment below for exactly what that
+# means and its limits. This exists because a shipped, merged, four-reviewer-tested feature
+# (86akby7d8) was invisible from this exact command until 86akcmzyq/86akcmzrd fixed it — do not
+# reintroduce an opt-in flag for a future AI feature and expect anyone to find it.
 # It also waits for the output window to actually come up before starting the operator (a
 # condition, not a fixed sleep); `make run LAUNCH_TIMEOUT=600` raises the give-up backstop.
 
@@ -38,22 +44,93 @@ SECS     ?=
 # cmake + a C/C++ toolchain to compile whisper.cpp (and downloads the model on first use), so the
 # dev RUN targets enable it AUTOMATICALLY when cmake is present and quietly skip it otherwise —
 # `make run` never fails just because the STT toolchain is missing (same UX as NDI above). Force
-# it with STT=1 (errors if cmake is absent) or disable with STT=0; OP_FEATURES=<features> still
-# overrides the operator build directly. CI/check/clippy always use the default (no-STT) operator
-# build, so this never affects them.
+# it with STT=1 (errors if cmake is absent) or disable with STT=0. CI/check/clippy always use the
+# default (no-STT) operator build, so this never affects them.
+#
+# STT_STATUS/AI_STATUS (below OP_FEATURES_WORDS further down) are derived from the FINAL, resolved
+# feature list rather than from STT_FEATURES/AI_FEATURES directly, so the messages stay honest even
+# when a developer bypasses this auto-detection entirely with `OP_FEATURES=<features>` — see the
+# OP_FEATURES_WORDS comment for why that distinction matters.
 STT ?= auto
 ifeq ($(STT),0)
-OP_FEATURES ?=
+STT_FEATURES :=
 else ifeq ($(STT),1)
-OP_FEATURES ?= stt
+STT_FEATURES := stt
 else
-OP_FEATURES ?= $(if $(shell command -v cmake 2>/dev/null),stt,)
+STT_FEATURES := $(if $(shell command -v cmake 2>/dev/null),stt,)
 endif
-OPRUN       := $(if $(strip $(OP_FEATURES)),--features $(strip $(OP_FEATURES)),)
-ifeq ($(strip $(OP_FEATURES)),)
-STT_STATUS  := off (run with STT=1, or `brew install cmake`, to enable the live transcript)
+
+# AI-assisted sermon notes (`openai-notes`) plus the developer `.env` key loader that feeds it
+# (`dev-keys`). Both are real, merged, four-reviewer-tested code (86akby6yy / 86akby7d8) behind
+# Cargo features that default OFF at the crate level — correctly, since a release build must never
+# carry a direct-to-OpenAI path or a loader that can pick a credential off a stray `.env` (see
+# `openai-notes`'/`dev-keys`'s own comments in selahcue-operator/Cargo.toml). The bug this fixes
+# (86akcmzyq) was that `make launch`/`make operator` requested NEITHER, so a feature that had
+# already shipped and merged stayed unreachable from the one command a developer actually runs —
+# the console correctly, but misleadingly, reported "isn't available in this build yet."
+#
+# RESOLUTION (owner decision, 86akcmzrd): these dev launch targets turn BOTH features on by
+# default — the same shape as `STT ?= auto` above — chosen deliberately over an opt-in flag,
+# because an opt-in flag is how this bug happened in the first place: a feature ships, merges, and
+# stays invisible to anyone who doesn't already know the flag exists. Unlike STT there is no
+# native toolchain to probe for (reqwest/rustls, no OpenSSL, no cmake), so "auto" is
+# unconditionally on; force off with `make launch AI=0`.
+#
+# THE RELEASE BOUNDARY IS STRUCTURAL, NOT A DEFAULT THAT HAPPENS TO POINT THE RIGHT WAY:
+#   1. RELEASE=1 hard-clears AI_FEATURES below, unconditionally. `make launch RELEASE=1` and
+#      `make run-release` can never request dev-keys/openai-notes THROUGH THIS MAKEFILE, no matter
+#      what AI is set to — `AI=1 RELEASE=1` still resolves to no AI features. This is an override,
+#      not a different default.
+#   2. That still leaves a BARE `cargo build --release --features dev-keys` (bypassing Make
+#      entirely) as a Cargo-feature-only decision — a Makefile default cannot stop that. So
+#      dev_env.rs's `load()` additionally checks `cfg!(debug_assertions)` and no-ops in any
+#      `--release` profile regardless of which features were requested — see that file for the
+#      full reasoning and its stated limits (a `[profile.release] debug-assertions = true` or a
+#      RUSTFLAGS override can still defeat a debug_assertions check, exactly as it can for
+#      selahcue-licensing's analogous development-entitlement-key guard). The independent,
+#      byte-level backstop for that residual case on shipped installers already exists:
+#      scripts/installer_secret_scan.py (86akc041v).
+#   3. Neither `make ci`/`check`/`clippy`/`build`/`build-operator` (bare, no RELEASE/AI/STT
+#      arguments) nor the one workflow that ships a real artefact
+#      (.github/workflows/windows-installer.yml, which hardcodes its own `--features stt` and
+#      never reads OP_FEATURES/AI at all) is affected by this default.
+AI ?= auto
+ifeq ($(AI),0)
+AI_FEATURES :=
+else ifeq ($(filter 1,$(RELEASE)),1)
+AI_FEATURES :=
 else
-STT_STATUS  := on ($(strip $(OP_FEATURES)))
+AI_FEATURES := dev-keys openai-notes
+endif
+
+# The actual --features list the dev launch targets build with: STT + AI, comma-joined, with
+# empty slices dropped so e.g. `STT=0 AI=0` still produces a bare `cargo run` (no trailing/leading
+# comma, no --features flag at all). OP_FEATURES=<features> on the command line still overrides
+# this outright, exactly as it did before this change — it is a `?=` like everything above.
+EMPTY :=
+SPACE := $(EMPTY) $(EMPTY)
+COMMA := ,
+OP_FEATURES ?= $(subst $(SPACE),$(COMMA),$(strip $(STT_FEATURES) $(AI_FEATURES)))
+OPRUN       := $(if $(strip $(OP_FEATURES)),--features $(strip $(OP_FEATURES)),)
+# Word-list view of the FINAL feature set (whether auto-computed above or supplied directly via
+# OP_FEATURES=...) — this, not STT_FEATURES/AI_FEATURES, is what stt-preflight, release-ai-guard
+# and the status messages below react to, so a developer who bypasses the AI/STT auto-detection
+# with a raw OP_FEATURES= override still gets an honest "what's actually being built" answer
+# instead of one describing the auto-detection that never ran. `stt` is matched as a whole TOKEN,
+# not a substring: `cloud-stt` (86akby7th, in review) contains "stt" as a substring but needs no
+# whisper.cpp/cmake toolchain at all.
+OP_FEATURES_WORDS := $(subst $(COMMA),$(SPACE),$(OP_FEATURES))
+ifneq ($(filter stt,$(OP_FEATURES_WORDS)),)
+STT_STATUS := on (stt)
+else
+STT_STATUS := off (run with STT=1, or `brew install cmake`, to enable the live transcript)
+endif
+ifneq ($(strip $(filter dev-keys openai-notes,$(OP_FEATURES_WORDS))),)
+AI_STATUS := on ($(strip $(filter dev-keys openai-notes,$(OP_FEATURES_WORDS))) — reads an OpenAI key from the repo-root .env; see .env.sample)
+else ifeq ($(filter 1,$(RELEASE)),1)
+AI_STATUS := off (RELEASE=1 never enables dev-keys/openai-notes — see the comment above)
+else
+AI_STATUS := off (run with AI=1, or unset AI, to enable sermon-note generation)
 endif
 
 # On macOS the operator runs from a signed .app bundle so the on-device STT worker can get
@@ -110,16 +187,38 @@ NDI_STATUS := on (vendored SDK)
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test check clippy fmt clean
+.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test check clippy fmt clean
 
 stt-preflight: ## (internal) verify the toolchain needed for --features stt is present
-ifneq ($(strip $(OP_FEATURES)),)
+ifneq ($(filter stt,$(OP_FEATURES_WORDS)),)
 	@command -v cmake >/dev/null 2>&1 || { \
-	  echo "ERROR: on-device STT (--features $(OP_FEATURES)) needs cmake + a C/C++ toolchain to build whisper.cpp."; \
+	  echo "ERROR: on-device STT (--features stt, full set: $(OP_FEATURES)) needs cmake + a C/C++ toolchain to build whisper.cpp."; \
 	  echo "  macOS:         brew install cmake"; \
 	  echo "  Debian/Ubuntu: sudo apt-get install -y cmake build-essential"; \
 	  echo "  Or run without on-device STT:  make $(MAKECMDGOALS) STT=0"; \
 	  exit 1; }
+endif
+
+# (internal) THE STRUCTURAL HALF of the RELEASE=1 guarantee described in the "AI-assisted sermon
+# notes" comment above. That comment's point 1 only clears the AUTO-COMPUTED AI_FEATURES when
+# RELEASE=1 — it says nothing about a developer who bypasses the auto-detection entirely with
+# `OP_FEATURES=dev-keys,openai-notes` directly, which skips AI_FEATURES/AI= altogether (OP_FEATURES
+# is a `?=`, so a command-line value for it wins over everything computed above). Checking the
+# FINAL, resolved feature list — however it was populated — rather than the auto-detection inputs
+# is what makes this a guard on the outcome instead of a guard on one path to it. This still only
+# covers "through make"; see dev_env.rs's debug_assertions check for the bare-`cargo build` case
+# this cannot see.
+release-ai-guard: ## (internal) refuse any --release build of selahcue-operator that carries dev-keys/openai-notes
+ifeq ($(filter 1,$(RELEASE)),1)
+ifneq ($(strip $(filter dev-keys openai-notes,$(OP_FEATURES_WORDS))),)
+	@echo "ERROR: refusing to build selahcue-operator --release with $(strip $(filter dev-keys openai-notes,$(OP_FEATURES_WORDS)))."; \
+	  echo "  A RELEASE=1 (or --release) build of the operator must never carry the repo-root"; \
+	  echo "  .env developer-key loader or a direct-to-OpenAI path — see this Makefile's"; \
+	  echo "  \"AI-assisted sermon notes\" comment and selahcue-operator/src/dev_env.rs for why."; \
+	  echo "  You passed: OP_FEATURES=$(OP_FEATURES) RELEASE=$(RELEASE)"; \
+	  echo "  Drop RELEASE=1, or remove dev-keys/openai-notes from OP_FEATURES."; \
+	  exit 1
+endif
 endif
 
 help: ## Show this help
@@ -149,10 +248,11 @@ help: ## Show this help
 # never lose the race, so raise it rather than reduce it: `make run LAUNCH_TIMEOUT=600`.
 LAUNCH_TIMEOUT ?= 180
 
-launch: stt-preflight build-output build-operator ## Launch EVERYTHING — output window (NDI auto) + operator shell (STT on; OP_FEATURES= to skip)
+launch: stt-preflight release-ai-guard build-output build-operator ## Launch EVERYTHING — output window (NDI auto) + operator shell (STT + AI on; AI=0/STT=0 to skip)
 	@echo ">> build profile: $(PROFILE_NAME)$(if $(filter 1,$(RELEASE)),, — use \`make run-release\` to judge performance)"
 	@echo ">> NDI output: $(NDI_STATUS)"
 	@echo ">> on-device STT: $(STT_STATUS)"
+	@echo ">> AI-assisted sermon notes: $(AI_STATUS)"
 	@echo ">> clearing any stale endpoint and starting the output window…"
 	@rm -f "$(ENDPOINT)"; \
 	$(DESKTOP_ENV) $(CARGO) run $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) $(PROFILE_FLAG) & \
@@ -213,7 +313,9 @@ ndi-preflight: ## (internal) verify the repo-vendored NDI SDK is populated for t
 output-ndi: ndi-preflight ## Force the output window WITH NDI (errors if the SDK isn't vendored; `make run` enables NDI automatically)
 	NDI_SDK_DIR="$(NDI_DIR)" $(NDI_LOADER) $(CARGO) run $(WS) -p selahcue-desktop --features ndi $(PROFILE_FLAG)
 
-operator: stt-preflight ## Run only the operator shell (connects to a running output window, else a standalone demo)
+operator: stt-preflight release-ai-guard ## Run only the operator shell (connects to a running output window, else a standalone demo)
+	@echo ">> on-device STT: $(STT_STATUS)"
+	@echo ">> AI-assisted sermon notes: $(AI_STATUS)"
 	$(OPERATOR_RUN)
 
 operator-headless: ## Run the committed operator-webview behavioural check (headless Chrome; skips if Chrome absent)
@@ -338,7 +440,7 @@ build: ## Build the desktop workspace
 build-output: ## Build just the output window with the same features/profile `make run` uses
 	$(DESKTOP_ENV) $(CARGO) build $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) $(PROFILE_FLAG)
 
-build-operator: stt-preflight ## Build the Tauri operator shell crate
+build-operator: stt-preflight release-ai-guard ## Build the Tauri operator shell crate
 	$(CARGO) build $(OP) $(OPRUN) $(PROFILE_FLAG)
 
 test: ## Run the workspace test suite
