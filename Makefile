@@ -187,7 +187,7 @@ NDI_STATUS := on (vendored SDK)
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test check clippy fmt clean
+.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
 
 stt-preflight: ## (internal) verify the toolchain needed for --features stt is present
 ifneq ($(filter stt,$(OP_FEATURES_WORDS)),)
@@ -458,6 +458,16 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# checks for it locally; GitHub-hosted runners carry cmake by default).
 	$(CARGO) clippy $(OP) --features stt,cloud-stt --all-targets -- -D warnings
 	$(CARGO) test $(OP) --features stt,cloud-stt --no-fail-fast
+	# The real-model on-device STT integration test (86akd1jcc, Vera Q4) is `#[ignore]`d, so the
+	# line above never runs it -- it needs a real ~1.6GB whisper model, which the default debug
+	# profile hashes at ~18-19x release speed (SHA-256 over 1.6GB: ~63s debug / ~3s release,
+	# measured directly -- a build-profile fact, not machine contention, despite three reviewers
+	# and this ticket's own earlier comments attributing it to load). Run it explicitly, in
+	# release, here: real integration coverage for ~3s instead of an ignored test nobody
+	# remembers to run, or an unignored one silently taxing every debug `make ci`. A no-op
+	# (`0 passed; 0 filtered`, not a failure) on a machine without the model cached -- the test's
+	# own `#[ignore]` reason and doc comment explain why.
+	$(CARGO) test $(OP) --release --features stt -- --ignored a_real_cold_start_backlog_no_longer_trips_the_notice
 	python3 scripts/operator_headless.py
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 	@echo ""
@@ -486,6 +496,9 @@ build-operator: stt-preflight release-ai-guard ## Build the Tauri operator shell
 
 test: ## Run the workspace test suite
 	$(CARGO) test $(WS)
+
+test-stt-real-model: ## Run the `#[ignore]`d real-model on-device STT integration test (release, ~3s)
+	$(CARGO) test $(OP) --release --features stt -- --ignored a_real_cold_start_backlog_no_longer_trips_the_notice
 
 check: ## Type-check the workspace + the operator shell
 	$(CARGO) check $(WS)
