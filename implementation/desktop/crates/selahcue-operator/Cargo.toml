@@ -25,11 +25,21 @@ default = []
 # On-device speech-to-text as the live-transcript source. OFF by default so the operator's
 # compile-check (CI) needs no native whisper toolchain or model; enable on a whisper-capable
 # machine (`cargo run --features stt`) to drive real transcription from "Start listening".
+#
+# LAUNCH_REACHABILITY: AUTO — auto-enabled by `make launch`/`make operator`'s `STT ?= auto`
+# whenever cmake is on PATH (see Makefile), quietly skipped otherwise. Not REQUIRED: nobody has
+# made the owner call that this must be reachable on a machine that cannot build it — unlike
+# `cloud-stt` below, `stt`'s absence-when-toolchain-missing is by design, not a bug. See
+# scripts/check_launch_reachability.py for what each tag means and how it's enforced.
 stt = ["dep:selahcue-stt"]
 # Live SelahCue cloud path for Providers & Privacy: the real HTTP transport + OS-secret-store
 # account token. OFF by default so the compile-check needs no reqwest/keyring native tree and
 # the shell honestly reports the cloud provider as "not configured" (the live service does not
 # exist yet). Enable to reach a real SelahCue endpoint (`SELAHCUE_CLOUD_URL` + stored token).
+#
+# LAUNCH_REACHABILITY: OPT-IN — no dev launch target auto-enables this; the live endpoint it
+# talks to does not exist yet, so there is nothing for a default `make launch` to usefully
+# reach. Enable explicitly (`OP_FEATURES=cloud-live`) once 86ajy04hz's cloud lands.
 cloud-live = ["selahcue-cloud/http", "selahcue-cloud/keyring"]
 # Developer AI provider keys read from the repo-root `.env` at startup (src/dev_env.rs). OFF by
 # default, and it must stay that way: with the feature off, the file read is not compiled into the
@@ -37,6 +47,9 @@ cloud-live = ["selahcue-cloud/http", "selahcue-cloud/keyring"]
 # it happens to run on. This is temporary scaffolding for the developer-key phase — the shipping
 # path is a server-minted Deepgram grant token and a proxied sermon-notes service — so nothing
 # should come to depend on it. Enable for local AI work: `cargo run --features dev-keys`.
+#
+# LAUNCH_REACHABILITY: REQUIRED — 86akcmzrd (owner decision): must be reachable from a default
+# `make launch`/`make operator` invocation. Enforced by scripts/check_launch_reachability.py.
 dev-keys = []
 # Direct OpenAI GPT sermon-note generation with a DEVELOPER key (86akby7d8, Phase 1).
 # OFF by default, so a stock build contains no direct-to-provider path at all and the
@@ -44,6 +57,9 @@ dev-keys = []
 # throwaway: the shipping path proxies notes through the SelahCue platform API, and this
 # feature is deleted when that lands. Enable with a key in the repo-root `.env`
 # (86akby6yy) or exported in the shell.
+#
+# LAUNCH_REACHABILITY: REQUIRED — 86akcmzrd (owner decision): must be reachable from a default
+# `make launch`/`make operator` invocation. Enforced by scripts/check_launch_reachability.py.
 openai-notes = ["selahcue-cloud/openai", "selahcue-cloud/http"]
 # Cloud (Deepgram) live transcription (86akby7th), streaming real microphone audio through the
 # already-tested `selahcue-stt-cloud` crate. Implies `stt`: mic capture (`CpalSource`) and
@@ -55,6 +71,14 @@ openai-notes = ["selahcue-cloud/openai", "selahcue-cloud/http"]
 # deliberately throwaway, like `openai-notes`: the shipping path is a server-minted Deepgram
 # grant token (86akby3xu), and this developer-key path is deleted when that lands. Enable with
 # `DEEPGRAM_API_KEY` in the repo-root `.env` (86akby6yy): `cargo run --features cloud-stt`.
+#
+# LAUNCH_REACHABILITY: REQUIRED — 86akd10dq (owner decision, same shape as 86akcmzrd): shipped,
+# merged (86akby7th) and, exactly like dev-keys/openai-notes before it, invisible from the one
+# command a developer actually runs — selecting Cloud in Settings reported `NotInBuild` forever
+# because `make launch`/`make operator` never requested this feature. Reachability here does NOT
+# mean cloud transcription always runs: it only removes the "not compiled in" failure mode: a
+# build with this feature on but no `DEEPGRAM_API_KEY` still honestly reports `KeyMissing`, not
+# `Ready`. Enforced by scripts/check_launch_reachability.py.
 cloud-stt = ["stt", "selahcue-stt-cloud/deepgram"]
 
 [dependencies]

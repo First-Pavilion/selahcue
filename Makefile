@@ -47,6 +47,23 @@ SECS     ?=
 # it with STT=1 (errors if cmake is absent) or disable with STT=0. CI/check/clippy always use the
 # default (no-STT) operator build, so this never affects them.
 #
+# `cloud-stt` (Deepgram live transcription, 86akby7th) rides the SAME toggle rather than getting
+# its own (86akd10dq — the third instance of the 86akcmzyq bug class: shipped, merged, four-
+# reviewer-tested, and unreachable from this exact command). It is not an independent choice:
+# `cloud-stt = ["stt", "selahcue-stt-cloud/deepgram"]` in selahcue-operator/Cargo.toml, and
+# `cargo tree -e features --features cloud-stt -p selahcue-operator` confirms that pulls in
+# selahcue-stt's `whisper` feature -> whisper-rs-sys -> the SAME cmake build-dependency `stt`
+# needs, because mic capture (CpalSource) and resampling live in selahcue-stt regardless of which
+# recognizer consumes the audio (see that Cargo.toml's comment on `cloud-stt`). So `cloud-stt`
+# cannot be reachable on a machine where plain `stt` cannot -- there is no toolchain-free way to
+# offer it, and a separate CLOUD_STT=auto|0|1 toggle would just be re-running STT's own cmake
+# preflight a second time for no independent question. It also matches what a developer would
+# expect `STT=0` to mean: "no live transcript feature, on-device or cloud" -- not "on-device off,
+# but cloud silently still compiled in". Compiling `cloud-stt` in does not itself pick a recognizer:
+# that stays the runtime Settings choice (`TranscriptionMode`); a build with no `DEEPGRAM_API_KEY`
+# in `.env` reports `KeyMissing` (actionable) instead of `NotInBuild` (the bug this fixes) --
+# `dev-keys` already carries that key by default via `AI ?= auto` below.
+#
 # STT_STATUS/AI_STATUS (below OP_FEATURES_WORDS further down) are derived from the FINAL, resolved
 # feature list rather than from STT_FEATURES/AI_FEATURES directly, so the messages stay honest even
 # when a developer bypasses this auto-detection entirely with `OP_FEATURES=<features>` — see the
@@ -55,9 +72,9 @@ STT ?= auto
 ifeq ($(STT),0)
 STT_FEATURES :=
 else ifeq ($(STT),1)
-STT_FEATURES := stt
+STT_FEATURES := stt cloud-stt
 else
-STT_FEATURES := $(if $(shell command -v cmake 2>/dev/null),stt,)
+STT_FEATURES := $(if $(shell command -v cmake 2>/dev/null),stt cloud-stt,)
 endif
 
 # AI-assisted sermon notes (`openai-notes`) plus the developer `.env` key loader that feeds it
@@ -117,11 +134,19 @@ OPRUN       := $(if $(strip $(OP_FEATURES)),--features $(strip $(OP_FEATURES)),)
 # and the status messages below react to, so a developer who bypasses the AI/STT auto-detection
 # with a raw OP_FEATURES= override still gets an honest "what's actually being built" answer
 # instead of one describing the auto-detection that never ran. `stt` is matched as a whole TOKEN,
-# not a substring: `cloud-stt` (86akby7th, in review) contains "stt" as a substring but needs no
-# whisper.cpp/cmake toolchain at all.
+# not a substring, so a raw `OP_FEATURES=cloud-stt` (naming only `cloud-stt`, relying on Cargo's
+# own `cloud-stt = ["stt", ...]` implication to pull `stt` in) is not mistaken for the plain `stt`
+# token by accident — the two are matched independently below on purpose, not because one of them
+# is toolchain-free: CORRECTION (86akd10dq) — a prior version of this comment claimed `cloud-stt`
+# "needs no whisper.cpp/cmake toolchain at all". That was wrong, and stale by the time `cloud-stt`
+# merged: `cargo tree -e features --features cloud-stt -p selahcue-operator` shows it pulls in
+# selahcue-stt's `whisper` feature -> whisper-rs-sys -> cmake, same as plain `stt` (see the
+# `cloud-stt` comment above). `stt-preflight` below checks for EITHER token for exactly that
+# reason — the wrong comment, left uncorrected, would have kept a raw `OP_FEATURES=cloud-stt`
+# invocation skipping the cmake check it actually needs.
 OP_FEATURES_WORDS := $(subst $(COMMA),$(SPACE),$(OP_FEATURES))
-ifneq ($(filter stt,$(OP_FEATURES_WORDS)),)
-STT_STATUS := on (stt)
+ifneq ($(filter stt cloud-stt,$(OP_FEATURES_WORDS)),)
+STT_STATUS := on ($(strip $(filter stt cloud-stt,$(OP_FEATURES_WORDS))))
 else
 STT_STATUS := off (run with STT=1, or `brew install cmake`, to enable the live transcript)
 endif
@@ -189,13 +214,13 @@ endif
 .DEFAULT_GOAL := help
 .PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test check clippy fmt clean
 
-stt-preflight: ## (internal) verify the toolchain needed for --features stt is present
-ifneq ($(filter stt,$(OP_FEATURES_WORDS)),)
+stt-preflight: ## (internal) verify the toolchain needed for --features stt/cloud-stt is present
+ifneq ($(filter stt cloud-stt,$(OP_FEATURES_WORDS)),)
 	@command -v cmake >/dev/null 2>&1 || { \
-	  echo "ERROR: on-device STT (--features stt, full set: $(OP_FEATURES)) needs cmake + a C/C++ toolchain to build whisper.cpp."; \
+	  echo "ERROR: $(strip $(filter stt cloud-stt,$(OP_FEATURES_WORDS))) (full set: $(OP_FEATURES)) needs cmake + a C/C++ toolchain to build whisper.cpp -- cloud-stt implies stt, so it needs the same toolchain (mic capture lives in selahcue-stt regardless of which recognizer consumes it)."; \
 	  echo "  macOS:         brew install cmake"; \
 	  echo "  Debian/Ubuntu: sudo apt-get install -y cmake build-essential"; \
-	  echo "  Or run without on-device STT:  make $(MAKECMDGOALS) STT=0"; \
+	  echo "  Or run without live transcription:  make $(MAKECMDGOALS) STT=0"; \
 	  exit 1; }
 endif
 
@@ -251,7 +276,7 @@ LAUNCH_TIMEOUT ?= 180
 launch: stt-preflight release-ai-guard build-output build-operator ## Launch EVERYTHING — output window (NDI auto) + operator shell (STT + AI on; AI=0/STT=0 to skip)
 	@echo ">> build profile: $(PROFILE_NAME)$(if $(filter 1,$(RELEASE)),, — use \`make run-release\` to judge performance)"
 	@echo ">> NDI output: $(NDI_STATUS)"
-	@echo ">> on-device STT: $(STT_STATUS)"
+	@echo ">> live transcript (STT): $(STT_STATUS)"
 	@echo ">> AI-assisted sermon notes: $(AI_STATUS)"
 	@echo ">> clearing any stale endpoint and starting the output window…"
 	@rm -f "$(ENDPOINT)"; \
@@ -314,7 +339,7 @@ output-ndi: ndi-preflight ## Force the output window WITH NDI (errors if the SDK
 	NDI_SDK_DIR="$(NDI_DIR)" $(NDI_LOADER) $(CARGO) run $(WS) -p selahcue-desktop --features ndi $(PROFILE_FLAG)
 
 operator: stt-preflight release-ai-guard ## Run only the operator shell (connects to a running output window, else a standalone demo)
-	@echo ">> on-device STT: $(STT_STATUS)"
+	@echo ">> live transcript (STT): $(STT_STATUS)"
 	@echo ">> AI-assisted sermon notes: $(AI_STATUS)"
 	$(OPERATOR_RUN)
 
