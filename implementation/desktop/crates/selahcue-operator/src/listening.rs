@@ -718,6 +718,46 @@ const ON_DEVICE_AUDIO_DROPPED_NOTICE: &str = "On-device transcription is running
      being captured faster than it can be processed — some audio may not have reached the \
      transcript.";
 
+/// Discard whatever `source` has already buffered, returning the number of samples thrown away.
+///
+/// **Why this exists (owner report, 2026-09-05): the sticky drop notice was firing from a
+/// one-time startup artifact, not a real processing shortfall.** `load_recognizer` can take
+/// anywhere from ~5s (a warm disk cache still pays a SHA-256 verify + whisper.cpp load — see
+/// 86akcfpcc) to over a minute (a first-run ~1.6 GB download) before returning, and for that
+/// whole window nothing calls [`AudioSource::next_chunk`] — the mic keeps capturing regardless
+/// (via `CpalSource`'s own internal ring, `PcmRing`), but into a buffer this module cannot see
+/// or count, because [`AudioHandoff`] does not exist yet. The FIRST call to `next_chunk` once
+/// `load_recognizer` returns hands back that WHOLE backlog in one [`AudioChunk`] (`CpalSource`
+/// always drains its ring to completion); pushed into a brand-new, empty hand-off it is
+/// retained WHOLE (see `capture_handoff.rs`'s `retained_samples` doc comment), and then the
+/// very NEXT ordinary live chunk evicts it entirely in one shot — before the recognition
+/// thread has had any chance to decode a single frame. `should_note_audio_drop` cannot tell
+/// that apart from a genuine, ongoing "capture is outpacing decode" — it just sees a nonzero
+/// drop count — so the operator was shown a claim about ONGOING throughput
+/// ([`ON_DEVICE_AUDIO_DROPPED_NOTICE`]) that this one-time, pre-ready backlog does not support,
+/// and the notice's own deliberate stickiness (a real design choice, not a bug — see its doc
+/// comment) then carried that false impression for the rest of the session.
+///
+/// The fix is to never let that backlog reach the hand-off at all: this is called once,
+/// immediately after `load_recognizer` succeeds and BEFORE [`AudioHandoff::new`] is called, so
+/// whatever accumulated during the wait is discarded here instead of being counted as a drop.
+/// This does not lose anything the operator could otherwise rely on — the same on-screen state
+/// that made this window slow ("Preparing on-device transcription…") already told the operator
+/// nothing was being transcribed yet, and under the OLD code that backlog's survival into the
+/// transcript was already an unreliable race against the recognition thread (see
+/// `a_startup_backlog_dump_can_trip_the_notice_before_any_decode_happens`), never a guaranteed
+/// feature — making the boundary explicit costs nothing real. A drop that happens AFTER this
+/// point is a genuine post-ready throughput problem and is reported exactly as before: this
+/// function does not touch [`HANDOFF_MAX_SAMPLES`], [`should_note_audio_drop`], or the notice
+/// text, all three of which are correct for that case.
+fn flush_pending_backlog<S: CaptureSource>(source: &mut S) -> usize {
+    let mut discarded = 0usize;
+    while let Some(chunk) = source.next_chunk() {
+        discarded += chunk.samples.len();
+    }
+    discarded
+}
+
 /// Run on-device (Whisper) transcription until stopped. The single on-device path: the initial
 /// choice when on-device was actually selected, the immediate fallback when Cloud was selected
 /// but is not usable, AND the mid-service fallback when a running Cloud session fails — all
@@ -732,6 +772,10 @@ const ON_DEVICE_AUDIO_DROPPED_NOTICE: &str = "On-device transcription is running
 /// for the two call sites where on-device is the FIRST thing this session tries (nothing to
 /// explain). See [`FallbackContext`]: its `note` is applied only in the success branch below,
 /// never before, and its `prior_failure` is folded into the error only if on-device ALSO fails.
+///
+/// Between the ready signal and the fresh hand-off's construction, [`flush_pending_backlog`]
+/// discards whatever `source` accumulated while `load_recognizer` was blocked — see that
+/// function's doc comment for why this exists and what it fixes.
 fn run_on_device<S: CaptureSource, R: tauri::Runtime>(
     app_worker: AppHandle<R>,
     mut source: S,
@@ -780,6 +824,20 @@ fn run_on_device<S: CaptureSource, R: tauri::Runtime>(
     // before (see the doc comment above and `FallbackContext`).
     if let Some(fb) = &fallback {
         *status_lock(&ENGINE_NOTE) = Some(fb.note.to_string());
+    }
+
+    // Discard whatever accumulated in `source` while `load_recognizer` was busy — see
+    // `flush_pending_backlog`'s doc comment (86akcfp3u/86akcfpcc investigation, owner report
+    // 2026-09-05: this backlog was previously dumped into the fresh hand-off below and reported
+    // as an ONGOING drop, which it is not). Must run BEFORE `AudioHandoff::new` — the whole
+    // point is that this backlog never becomes a hand-off entry at all.
+    let flushed = flush_pending_backlog(&mut source);
+    if flushed > 0 {
+        eprintln!(
+            "SelahCue STT: discarded {flushed} samples captured before on-device transcription \
+             was ready (model download/load) — not counted as a drop, nothing was being \
+             transcribed yet."
+        );
     }
 
     // Decouple recognition from capture so a (potentially slow) decode never freezes the mic
@@ -1303,6 +1361,7 @@ pub fn stop() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use selahcue_stt::audio::AudioChunk;
 
     // `AudioHandoff`'s own bounded-memory tests (retained-sample bound, exact drop count, a
     // benign positive control) now live with the type, in `capture_handoff.rs` — shared with
@@ -1340,6 +1399,138 @@ mod tests {
         assert!(
             !should_note_audio_drop(50, true),
             "already-noted must stay sticky even as the drop count keeps climbing"
+        );
+    }
+
+    /// Reproduces, deterministically and with no thread/model/microphone involved, the EXACT
+    /// sequence `run_on_device`'s source loop produces when `load_recognizer` (a first-run
+    /// download, or — per 86akcfpcc — the ~5s SHA-256 verify+load that happens on EVERY fresh
+    /// session even with a warm cache) has taken long enough for real audio to pile up
+    /// somewhere `AudioHandoff` cannot see or count: `AudioHandoff` is constructed AFTER
+    /// `load_recognizer` returns (see `run_on_device`), so anything captured before that point
+    /// lives only in `CpalSource`'s OWN ring (`PcmRing`, capacity `MAX_PCM_SAMPLES` = 30s), a
+    /// buffer this module never reads a drop count from.
+    ///
+    /// `CpalSource::next_chunk` always drains its ring to completion in ONE `AudioChunk` — so
+    /// the FIRST chunk the fresh `AudioHandoff` ever sees after a slow load is that whole
+    /// backlog, retained WHOLE because it is the only chunk present (`capture_handoff.rs`'s own
+    /// `a_single_chunk_larger_than_the_cap_is_retained_whole_not_evicted_to_empty`). This test's
+    /// point is what happens next: the VERY NEXT ordinary live chunk — silence or speech, it
+    /// makes no difference — evicts that entire backlog in one shot, and does so before the
+    /// recognition thread has had any chance to decode a single frame. `should_note_audio_drop`
+    /// cannot tell that story from a bare drop count, which is exactly why the wording this
+    /// fires (`ON_DEVICE_AUDIO_DROPPED_NOTICE`, "audio is being captured faster than it can be
+    /// processed") is a claim about ONGOING throughput that this sequence does not support.
+    #[test]
+    fn a_startup_backlog_dump_can_trip_the_notice_before_any_decode_happens() {
+        let handoff = AudioHandoff::new(HANDOFF_MAX_SAMPLES);
+
+        // The backlog: comfortably bigger than the hand-off's own cap, standing in for what a
+        // real mic accumulates in `PcmRing` while `load_recognizer` blocks (bounded at
+        // `PcmRing`'s own 30s cap in the worst case — see `selahcue_stt::audio::MAX_PCM_SAMPLES`).
+        let backlog_samples = HANDOFF_MAX_SAMPLES.get() * 3;
+        handoff.push(AudioChunk::new(vec![0.0; backlog_samples], 48_000, 1));
+
+        // PREMISE, asserted before the real claim: a lone oversized chunk is retained whole,
+        // not evicted down to empty — if this ever regresses, the rest of this test would prove
+        // nothing about a "dump then evict" sequence, because there would be nothing left to
+        // dump. Named so a failure here points at the right place, not the assertion below it.
+        assert_eq!(
+            handoff.dropped(),
+            0,
+            "premise: a lone oversized chunk must be retained whole (see capture_handoff.rs), \
+             not partially evicted — otherwise this test does not exercise the sequence it \
+             claims to"
+        );
+        assert!(
+            !should_note_audio_drop(handoff.dropped(), false),
+            "the notice must not fire before anything has actually been evicted"
+        );
+
+        // Ordinary live capture continuing — ~10ms of audio, the size of one real cpal
+        // callback's worth, at whatever peak level (silence here; the level is irrelevant to
+        // eviction). The recognition thread has done NOTHING in this test: no `drain()`, no
+        // `engine.process` call — zero decode work performed, by construction, since this test
+        // never creates a recognizer or a recognition thread at all.
+        handoff.push(AudioChunk::new(vec![0.0; 480], 48_000, 1));
+
+        assert!(
+            handoff.dropped() >= backlog_samples as u64,
+            "the whole backlog must be evicted once any further audio arrives — got {} dropped",
+            handoff.dropped()
+        );
+        assert!(
+            should_note_audio_drop(handoff.dropped(), false),
+            "REMOVING the backlog-then-one-more-push sequence's eviction must fail this test: \
+             this is exactly the sequence that fires ON_DEVICE_AUDIO_DROPPED_NOTICE in \
+             production before the recognizer has processed anything at all — see \
+             run_on_device's source loop and its call to AudioHandoff::new AFTER \
+             load_recognizer returns"
+        );
+    }
+
+    /// A source with nothing buffered: `flush_pending_backlog` must be a true no-op, never
+    /// panicking and never fabricating samples to discard. POSITIVE CONTROL for the eviction
+    /// test below — without this, "discards everything queued" could be satisfied by a function
+    /// that also discards things that were never there.
+    #[test]
+    fn flush_pending_backlog_on_an_empty_source_discards_nothing() {
+        struct EmptySource(selahcue_stt::audio::FakeAudioSource);
+        impl AudioSource for EmptySource {
+            fn label(&self) -> &str {
+                "empty"
+            }
+            fn next_chunk(&mut self) -> Option<AudioChunk> {
+                self.0.next_chunk()
+            }
+        }
+        impl CaptureSource for EmptySource {
+            fn peak_level(&self) -> f32 {
+                0.0
+            }
+        }
+        let mut source = EmptySource(selahcue_stt::audio::FakeAudioSource::new());
+        assert_eq!(flush_pending_backlog(&mut source), 0);
+    }
+
+    /// The mechanism `run_on_device` relies on: everything currently queued on `source` is
+    /// discarded and counted, in one call, with nothing left behind for the caller's own
+    /// `next_chunk` loop to pick up afterward (the second assertion is what makes this a fix for
+    /// the bug — a flush that left even one chunk behind would still hand that chunk to a fresh
+    /// `AudioHandoff` next).
+    #[test]
+    fn flush_pending_backlog_discards_everything_queued_and_reports_the_exact_count() {
+        struct QueuedSource(selahcue_stt::audio::FakeAudioSource);
+        impl AudioSource for QueuedSource {
+            fn label(&self) -> &str {
+                "queued"
+            }
+            fn next_chunk(&mut self) -> Option<AudioChunk> {
+                self.0.next_chunk()
+            }
+        }
+        impl CaptureSource for QueuedSource {
+            fn peak_level(&self) -> f32 {
+                0.0
+            }
+        }
+        let mut inner = selahcue_stt::audio::FakeAudioSource::new();
+        inner.push_chunk(AudioChunk::new(vec![0.0; 300_000], 48_000, 1));
+        inner.push_chunk(AudioChunk::new(vec![0.0; 1], 48_000, 1));
+        inner.push_chunk(AudioChunk::new(vec![0.0; 42], 48_000, 1));
+        let mut source = QueuedSource(inner);
+
+        assert_eq!(
+            flush_pending_backlog(&mut source),
+            300_000 + 1 + 42,
+            "must report the EXACT total across every queued chunk, not just whether any \
+             existed"
+        );
+        assert!(
+            source.next_chunk().is_none(),
+            "REMOVING the drain loop (leaving one chunk un-flushed) must fail this test: a \
+             chunk left behind here is a chunk `run_on_device` would still hand to a fresh \
+             AudioHandoff next"
         );
     }
 
@@ -2242,5 +2433,160 @@ mod tests {
             // explicit teardown needed on the happy path either, so there is exactly one place
             // that removes these, not two.
         }
+    }
+
+    /// End-to-end proof against the REAL stack (real whisper.cpp, real Metal load, the actual
+    /// cached model — no download, no network) that a startup backlog no longer trips
+    /// [`ON_DEVICE_AUDIO_DROPPED_NOTICE`]. Same category as `recognizer.rs`'s own real-model
+    /// tests: slow (a genuine ~1.6 GB model load), hardware-dependent, and skipped cleanly when
+    /// the model is not cached locally (not part of `make ci`'s gate, which needs no model) —
+    /// but a real, reproducible RED→GREEN result, not a synthetic mutation:
+    ///
+    /// **Captured RED against this exact test, pre-fix, during this investigation
+    /// (2026-09-05):** `real model load+ready took 60.967132833s` (this machine was under real
+    /// contention from other sessions at the time — 86akcfpcc's clean measurement is ~5.3s),
+    /// immediately followed by `the on-device capture hand-off dropped 3309120 samples (480000
+    /// currently retained)` and `engine_note() = Some("On-device transcription is running, but
+    /// audio is being captured faster than it can be processed — some audio may not have
+    /// reached the transcript.")` — the exact notice from the owner's report, fired from a
+    /// recognizer that had not yet decoded a single frame.
+    ///
+    /// The backlog here is deliberately far larger than anything the recognition thread could
+    /// plausibly drain before the source thread's own tight backlog-delivery loop pushes past
+    /// it (see `flush_pending_backlog`'s doc comment) — pre-fix this was reproducible, not
+    /// merely possible, which is why this is asserted rather than left as a printed
+    /// observation.
+    #[test]
+    fn a_real_cold_start_backlog_no_longer_trips_the_notice() {
+        let _env_guard = crate::env_locked();
+        let _state_guard = state_locked();
+        use std::time::Instant;
+
+        let model_path = match std::env::var_os("HOME") {
+            Some(home) => std::path::PathBuf::from(home)
+                .join("Library/Caches/selahcue/models/ggml-large-v3-turbo.bin"),
+            None => {
+                eprintln!("skipping a_real_cold_start_backlog_no_longer_trips_the_notice: no HOME");
+                return;
+            }
+        };
+        if !model_path.exists() {
+            eprintln!(
+                "skipping a_real_cold_start_backlog_no_longer_trips_the_notice: no cached \
+                 model at {model_path:?}"
+            );
+            return;
+        }
+        // The pinned SHA-256 for `ggml-large-v3-turbo.bin` (`model.rs`) — verified independently
+        // against this exact file via `shasum -a 256` during this investigation.
+        let sha = "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69";
+        std::env::set_var("SELAHCUE_STT_MODEL", &model_path);
+        std::env::set_var("SELAHCUE_STT_MODEL_SHA256", sha);
+
+        *status_lock(&ENGINE_NOTE) = None;
+        clear_failure();
+
+        struct BacklogThenLiveSource {
+            inner: selahcue_stt::audio::FakeAudioSource,
+        }
+        impl AudioSource for BacklogThenLiveSource {
+            fn label(&self) -> &str {
+                "investigation"
+            }
+            fn next_chunk(&mut self) -> Option<AudioChunk> {
+                self.inner.next_chunk()
+            }
+        }
+        impl CaptureSource for BacklogThenLiveSource {
+            fn peak_level(&self) -> f32 {
+                0.0
+            }
+        }
+
+        // Backlog sized to `PcmRing`'s own worst-case cap (`MAX_PCM_SAMPLES`) — the most a real
+        // mic's ring could ever hand `AudioHandoff` in one `next_chunk` call — followed by a
+        // generous run of ordinary ~10ms live chunks so the source loop always has something to
+        // evict against and this test does not depend on real wall-clock mic timing.
+        let mut inner = selahcue_stt::audio::FakeAudioSource::new();
+        inner.push_chunk(AudioChunk::new(
+            vec![0.0; selahcue_stt::audio::MAX_PCM_SAMPLES],
+            48_000,
+            1,
+        ));
+        for _ in 0..2_000 {
+            inner.push_chunk(AudioChunk::new(vec![0.0; 480], 48_000, 1));
+        }
+        let source = BacklogThenLiveSource { inner };
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        handle.manage(crate::AppState {
+            backend: crate::Backend::Local(crate::demo_shell()),
+            deck: Mutex::new(crate::DeckWorkspace::demo()),
+            library: Mutex::new(crate::DeckLibrary::load(None)),
+            providers: Mutex::new(selahcue_core::providers::ProvidersConfig::default()),
+            providers_db: None,
+            secrets: crate::make_secret_store(),
+            link_error: Mutex::new(None),
+        });
+
+        let stop_worker = Arc::new(AtomicBool::new(false));
+        let (seg_tx, _seg_rx) = tokio::sync::mpsc::channel(64);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+        let started = Instant::now();
+        let sw = Arc::clone(&stop_worker);
+        let app_worker = handle.clone();
+        let worker = std::thread::spawn(move || {
+            run_on_device(app_worker, source, sw, seg_tx, Some(ready_tx), None);
+        });
+
+        let runtime = tokio::runtime::Runtime::new().expect("build a tokio runtime");
+        // Generous: a real ~1.6 GB model load competing with other work on a shared machine
+        // measured 61s during this investigation (a clean run is ~5.3s per 86akcfpcc). This is
+        // not part of `make ci` and only ever runs opt-in, locally, with the model cached.
+        let ready = runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(150), ready_rx).await });
+        eprintln!(
+            "a_real_cold_start_backlog_no_longer_trips_the_notice: real model load+ready took \
+             {:?}, ready={:?}",
+            started.elapsed(),
+            ready
+        );
+        assert!(
+            matches!(ready, Ok(Ok(Ok(())))),
+            "on-device must become ready against the real cached model: {ready:?}"
+        );
+
+        // A bounded real window for the source/recognition threads to interleave naturally,
+        // then a clean stop — mirrors `run_on_device`'s own shutdown contract.
+        std::thread::sleep(Duration::from_millis(1_500));
+        stop_worker.store(true, Ordering::Relaxed);
+        worker.join().expect("run_on_device must not panic");
+
+        let note = engine_note();
+        eprintln!(
+            "a_real_cold_start_backlog_no_longer_trips_the_notice: engine_note() = {note:?}, \
+             last_failure() = {:?}",
+            last_failure()
+        );
+
+        std::env::remove_var("SELAHCUE_STT_MODEL");
+        std::env::remove_var("SELAHCUE_STT_MODEL_SHA256");
+        *status_lock(&ENGINE_NOTE) = None;
+        *status_lock(&PROVIDER_LABEL) = None;
+        clear_failure();
+
+        // THE assertion this test exists for. Pre-fix, this exact scenario reproducibly set
+        // `engine_note()` to `ON_DEVICE_AUDIO_DROPPED_NOTICE` (see the captured RED result in
+        // this test's doc comment) despite the recognizer never having decoded a frame.
+        // REMOVING `flush_pending_backlog`'s call site in `run_on_device` (or reordering it
+        // after `AudioHandoff::new`) must fail this test.
+        assert_ne!(
+            note.as_deref(),
+            Some(ON_DEVICE_AUDIO_DROPPED_NOTICE),
+            "a cold-start backlog must not be reported as an ongoing processing shortfall — got \
+             {note:?}"
+        );
     }
 }
