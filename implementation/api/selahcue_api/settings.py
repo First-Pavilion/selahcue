@@ -251,6 +251,18 @@ SELAHCUE_THROTTLE_RESEND_ADDRESS = (3, 900)
 SELAHCUE_THROTTLE_RESEND_IP = (10, 3600)
 SELAHCUE_THROTTLE_RESEND_GLOBAL = (500, 3600)
 
+# Per-client-IP budgets for the two password-reset mutations (86akcmfd4 — DEC-013's required
+# follow-up). Both were reachable at an UNLIMITED rate: `request_password_reset` mints (or does
+# not mint) a token depending on whether the email exists, and DEC-013 measured that branch gap
+# at +0.437ms (sd 0.27ms) after removing the mint's PBKDF2 — smaller than before, but far
+# cheaper to sample now that the PBKDF2 noise that used to hide it is gone. `confirm_password_
+# reset` shares the same "zero budget on an unauthenticated mutation" gap. This setting does NOT
+# re-close that timing gap (see the functions' own comments for why not) — it bounds how many
+# samples one source can take, the same defence-in-depth role SELAHCUE_THROTTLE_RESEND_IP plays
+# for resend-verification, and the same magnitude for the same reason.
+SELAHCUE_THROTTLE_RESET_REQUEST = (20, 3600)
+SELAHCUE_THROTTLE_RESET_CONFIRM = (20, 3600)
+
 # All three of the above fail OPEN when the limiter store is unreachable, so while Redis is
 # down they bound nothing at all — and this endpoint sends mail without authentication. This
 # is the ceiling that stands in for them during an outage: a PER-WORKER, in-process fixed
