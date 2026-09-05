@@ -190,6 +190,52 @@ this script or `make ci`/CI can tell, the FIRST automated exercise `release-ai-g
 had with a hostile input in its existence -- every prior confirmation of its behaviour was a
 human running it by hand.
 
+NEW-2's-final-round (Sana). One token was not enough. The probe above originally tried only the
+alphabetically-first `UNSAFE` token for a crate; a PARTIAL weakening of the Makefile registry --
+`cloud-stt` still present, `dev-keys`/`openai-notes` quietly dropped -- would still pass, because
+the one token actually probed was still genuinely refused. `pick_probe_tokens` now returns EVERY
+`UNSAFE` token for the crate, and `main` probes each independently, requiring every one to
+refuse before the benign control even runs. Reproduced live: dropping `dev-keys`/`openai-notes`
+from `RELEASE_UNSAFE_FEATURES` while keeping `cloud-stt` now fails with both tokens individually
+reported as `DID_NOT_REFUSE`.
+
+THE LAYERING ACTUALLY COMPOSING (Sana). Two further spellings genuinely weaken the guard while
+evading NEW-1b's broadened regex entirely: `export RELEASE_UNSAFE_FEATURES := <weaker>` and a
+`define ... endef` block are both assignment shapes outside `:=`/`+=`/`?=`/`!=`/`=` with only an
+optional `override` prefix -- exactly the `$(eval ...)`/`include`-composition territory this
+script's own docstring already renounces for text analysis. Text analysis cannot win that race.
+But the real check still went RED on both, THROUGH NEW-2B, NOT THE REGEX: `make release-ai-guard
+RELEASE=1 OP_FEATURES=cloud-stt` genuinely does not refuse once either spelling has taken effect,
+so `classify_probe` reports `DID_NOT_REFUSE` and the check fails behaviourally. This is the
+strongest argument for having built both layers rather than either alone: the regex catches the
+spellings it knows by name, cheaply and specifically; the probe catches the ones nobody
+enumerated, because it tests the EFFECT on the guard rather than the TEXT that produced it. Any
+full weakening of the guard, however spelled -- including routes this script explicitly declines
+to parse -- fails `make ci` behaviourally.
+
+PROBE ATTRIBUTION, PINNED (Cody raised a Medium-High misattribution concern; Quinn reached the
+opposite conclusion about the same mutation; the coordinator tested GNU Make's actual semantics
+in a scratch Makefile rather than trust either verdict). The mutation: rename ONLY
+`release-ai-guard:`'s own declaration line (e.g. to `release-ai-guard-RENAMED:`), leaving
+`.PHONY` and every prerequisite reference (`launch: stt-preflight release-ai-guard`, ...)
+untouched -- a plausible refactor accident, since prerequisite/`.PHONY` lists are edited far
+less carefully than rule bodies. Probing the OLD name then yields `make: Nothing to be done for
+`release-ai-guard'.`, exit 0 -- Make treats a still-`.PHONY` target with no rule body as a
+satisfied no-op, not a missing target. Cody argued this should classify `COULD_NOT_RUN` (the
+probe's own target reference is stale; the guard's logic, now homeless, is untouched). Verified
+against GNU Make directly: after this exact mutation, `make launch RELEASE=1
+OP_FEATURES=cloud-stt` actually BUILDS -- the guard does not stop it, because nothing on any real
+build path invokes it under its new name any more. The dependent target runs regardless of
+whether the detached rule's own logic is "correct". `DID_NOT_REFUSE` is therefore the accurate
+classification, not `COULD_NOT_RUN`: this is a genuine, exploitable guard defeat -- the exact
+failure this whole mechanism exists to catch -- not evidence the PROBE is stale. Routing it to
+`COULD_NOT_RUN` would have reported a real release-boundary opening as "fix your registry",
+which is worse than the misattribution it would have replaced. `classify_probe` is intentionally
+unchanged from before this finding; only the `DID_NOT_REFUSE` message was extended to name the
+detached-recipe possibility explicitly (alongside "the filter logic itself is wrong"), so a
+developer checks both rather than only auditing the conditional. Pinned in self-test as
+`DID_NOT_REFUSE` so this does not get relitigated a third time.
+
 FEATURE-NAME AUTHORITY (Sana S-2). The line-based comment scanner above cannot see every legal
 TOML spelling of a feature key -- an indented key, or a quoted key (`"cloud-stt" = [...]`), both
 of which Cargo accepts and both of which would silently exit the tag-enforcement regime with no
@@ -201,8 +247,23 @@ not find a tag for -- regardless of why the scanner missed it -- is a hard failu
 feature, not a silent gap. (Not run in `--self-test`: it would require invoking `cargo` against
 the real manifests, which the self-test's whole point is to avoid needing.)
 
-KNOWN CONVENTIONS AND LIMITS (Cody's two residuals -- neither live today, both worth writing down
-rather than leaving as an implicit assumption the next change could quietly break).
+KNOWN CONVENTIONS AND LIMITS (Cody's two residuals plus NEW-2c -- none live today, all worth
+writing down rather than leaving as an implicit assumption the next change could quietly break).
+
+  * NEW-2c (the coordinator, ticketed as 86akd3wd3, not fixed here). The probe proves "this
+    registered target refuses this token when fed through `OP_FEATURES`" -- it does not, and
+    structurally cannot as written, prove "this crate's own real feature-resolution path is
+    guarded". Registering `CRATES_WITH_RELEASE_GUARD["selahcue-desktop"] = "release-ai-guard"`
+    (an impostor entry -- that target is the operator's own guard) still passes today: it
+    genuinely refuses a token fed through `OP_FEATURES`, and the probe has no way to know that
+    `selahcue-desktop`'s real build line uses `DESKTOP_FEATURES` instead and is never touched by
+    `release-ai-guard` at all. Latent -- no `selahcue-desktop` feature is tagged `UNSAFE` today,
+    so the only real entry in the registry is `selahcue-operator`'s own, correctly-wired one --
+    and narrower than the gap NEW-2b closed, since an impostor entry must now name a target that
+    genuinely refuses via `OP_FEATURES`, and exactly one target in this Makefile qualifies. See
+    86akd3wd3 for the two fix shapes considered (a per-crate probe variable, vs. a dry-run
+    assertion that the crate's own release build line cannot carry the token) and why this is a
+    design question deserving its own round rather than a same-night sixth one.
 
   * `crate_mentions` recognises exactly two shapes: a `-p <name>` token, or a
     `--manifest-path .../crates/<name>/Cargo.toml` path. A future Makefile recipe written some
@@ -259,8 +320,10 @@ Self-test: `check_launch_reachability.py --self-test` exercises the dry-run comp
 Cargo.toml tag parser (both axes), the cross-crate collision guard, the crate-registry drift
 check, the TARGETS derivation, the Makefile RELEASE_UNSAFE_FEATURES cross-check (including the
 NEW-1/NEW-1b assignment-shape cases), the NEW-2 unenforced-crate-tag check, and NEW-2b's pure
-decision logic (`pick_probe_token`, `classify_probe`'s six outcome shapes) -- against fixed
-fixtures, including several built by deleting or corrupting a tag from a fixture `[features]`
+decision logic (`pick_probe_tokens`'s every-UNSAFE-token behaviour, and `classify_probe`'s
+seven outcome shapes, including the PINNED detached-recipe case two reviewers disagreed about)
+-- against fixed fixtures, including several built by deleting or corrupting a tag from a fixture
+`[features]`
 block (the exact regressions this version closes) -- without touching the real Makefile, the
 real Cargo.toml files, or invoking `make`/`cargo` at all, so it runs anywhere. The real check
 (`check_launch_reachability.py`, no flag) reads the real Cargo.toml files, the real Makefile,
@@ -507,13 +570,21 @@ def crates_with_unenforced_release_unsafe_features(
     return unenforced
 
 
-def pick_probe_token(per_crate_tags: dict[str, dict[str, FeatureTags]], crate_name: str) -> str:
-    """The token to pass as `OP_FEATURES=<token>` when probing `crate_name`'s registered release
-    guard: the alphabetically-first feature that crate itself tags `RELEASE: UNSAFE` (real,
-    current, and unambiguous -- picking a fixed name here instead would silently stop probing
-    anything the day that specific feature is ever retagged or removed). A crate with NO `UNSAFE`
-    feature at all has nothing a hostile-input probe could meaningfully test, which is itself a
-    NEW-2b-shaped problem worth surfacing rather than silently skipping -- see its use in `main`.
+def pick_probe_tokens(per_crate_tags: dict[str, dict[str, FeatureTags]], crate_name: str) -> list[str]:
+    """EVERY token to pass, one probe each, as `OP_FEATURES=<token>` when probing `crate_name`'s
+    registered release guard: every feature that crate itself tags `RELEASE: UNSAFE`, sorted for
+    determinism (real and current -- picking a fixed name here instead would silently stop
+    probing anything the day that specific feature is ever retagged or removed).
+
+    NEW-2's-final-round (Sana): a single token is not enough. A PARTIAL weakening of the guard --
+    one token still refused, one or more others quietly dropped from the effective registry --
+    would pass a probe that only ever tries the alphabetically-first token, because that one
+    token alone would still trigger a genuine refusal. Each of a crate's UNSAFE tokens carries
+    its own independent claim ("this build must never carry ME"), so each gets its own
+    independent probe; the cost is a few more sub-second, no-build `make` invocations, not a
+    qualitatively different check. A crate with NO `UNSAFE` feature at all has nothing a
+    hostile-input probe could meaningfully test, which is itself a NEW-2b-shaped problem worth
+    surfacing rather than silently skipping -- see this function's use in `main`.
     """
     unsafe = sorted(name for name, t in per_crate_tags.get(crate_name, {}).items() if t.release == "UNSAFE")
     if not unsafe:
@@ -522,7 +593,7 @@ def pick_probe_token(per_crate_tags: dict[str, dict[str, FeatureTags]], crate_na
             "UNSAFE` -- there is nothing for a hostile-input probe to test. Either it should not "
             "be in that registry, or a feature is missing its UNSAFE tag."
         )
-    return unsafe[0]
+    return unsafe
 
 
 class ProbeOutcome(NamedTuple):
@@ -1097,21 +1168,25 @@ def self_test() -> int:
         )
 
     # NEW-2b: the pure decision logic behind the executable probe, tested without invoking a
-    # real `make` -- `pick_probe_token` (a real, current UNSAFE feature; a crate with none raises
-    # rather than silently skipping) and `classify_probe` (a genuine refusal vs. a benign success
-    # vs. every shape of "the probe itself could not run").
+    # real `make` -- `pick_probe_tokens` (EVERY current UNSAFE feature, not just one -- a crate
+    # with none raises rather than silently skipping) and `classify_probe` (a genuine refusal vs.
+    # a benign success vs. every shape of "the probe itself could not run").
     try:
-        pick_probe_token({"selahcue-operator": {"dev-keys": FeatureTags("REQUIRED", "UNSAFE")}}, "selahcue-operator")
+        pick_probe_tokens({"selahcue-operator": {"dev-keys": FeatureTags("REQUIRED", "UNSAFE")}}, "selahcue-operator")
     except ValueError:
-        failures.append("pick_probe_token: raised for a crate that DOES tag an UNSAFE feature")
-    if pick_probe_token(
+        failures.append("pick_probe_tokens: raised for a crate that DOES tag an UNSAFE feature")
+    if pick_probe_tokens(
         {"selahcue-operator": {"cloud-stt": FeatureTags("REQUIRED", "UNSAFE"), "dev-keys": FeatureTags("REQUIRED", "UNSAFE")}},
         "selahcue-operator",
-    ) != "cloud-stt":
-        failures.append("pick_probe_token: expected the alphabetically-first UNSAFE feature")
+    ) != ["cloud-stt", "dev-keys"]:
+        failures.append(
+            "pick_probe_tokens: expected EVERY UNSAFE feature (sorted), not just the "
+            "alphabetically-first one -- a partial weakening that only spared one token would "
+            "otherwise pass"
+        )
     try:
-        pick_probe_token({"selahcue-desktop": {"ndi": FeatureTags("AUTO", "SAFE")}}, "selahcue-desktop")
-        failures.append("pick_probe_token: must raise for a crate with no UNSAFE feature at all")
+        pick_probe_tokens({"selahcue-desktop": {"ndi": FeatureTags("AUTO", "SAFE")}}, "selahcue-desktop")
+        failures.append("pick_probe_tokens: must raise for a crate with no UNSAFE feature at all")
     except ValueError:
         pass
 
@@ -1150,6 +1225,22 @@ def self_test() -> int:
     make_missing = classify_probe(None, "could not invoke `make` at all: [Errno 2] No such file or directory: 'make'", "release-ai-guard")
     if make_missing.kind != "COULD_NOT_RUN":
         failures.append(f"classify_probe: `make` itself missing must be COULD_NOT_RUN, got {make_missing.kind}")
+    # PINNED (the coordinator, after Cody and Quinn independently reached opposite conclusions
+    # and the coordinator verified GNU Make's actual behaviour in a scratch Makefile rather than
+    # trust either): a "detached recipe" -- the rule body renamed while `.PHONY`/a prerequisite
+    # list still names the OLD target -- makes Make treat the old name as a satisfied no-op,
+    # `Nothing to be done for <target>`, exit 0. Verified live: with this shape, every real
+    # dependent target (`launch`, `operator`, ...) still runs to completion; the guard does not
+    # stop them. So exit 0 here is NOT a stale probe -- it is a GENUINE, exploitable guard
+    # defeat, and DID_NOT_REFUSE is the correct classification, not COULD_NOT_RUN. Pinned so the
+    # next person does not relitigate it.
+    detached_recipe = classify_probe(0, "make: Nothing to be done for `release-ai-guard'.", "release-ai-guard")
+    if detached_recipe.kind != "DID_NOT_REFUSE":
+        failures.append(
+            "classify_probe: a detached recipe (renamed rule body, stale .PHONY/prerequisite "
+            "reference) is a GENUINE guard defeat -- every real build path bypasses it -- and "
+            f"must classify DID_NOT_REFUSE, not COULD_NOT_RUN; got {detached_recipe.kind}"
+        )
 
     # Mutation control, in the repo's own idiom: take a known-GOOD fixture, delete ONE feature's
     # tags (the exact shape of the 86akby7th regression), and confirm the parser flips from zero
@@ -1180,8 +1271,8 @@ def self_test() -> int:
         + 3  # RELEASE_UNSAFE_FEATURES parse (present, absent, double-assignment)
         + 2  # NEW-1b: plain `=` and indented `:=` weakenings
         + 1  # NEW-2: unenforced-crate UNSAFE tag
-        + 3  # NEW-2b: pick_probe_token (has-one, picks-first, raises-on-none)
-        + 6  # NEW-2b: classify_probe (refused, benign, missing target, syntax error, wrong-target error, make missing)
+        + 3  # NEW-2b: pick_probe_tokens (has-one, returns-every-token-sorted, raises-on-none)
+        + 7  # NEW-2b: classify_probe (refused, benign, missing target, syntax error, wrong-target error, make missing, detached-recipe PINNED)
         + 1  # mutation control
     )
     if failures:
@@ -1248,35 +1339,55 @@ def main() -> int:
     # distinction is load-bearing, not cosmetic.
     for crate_name, guard_target in CRATES_WITH_RELEASE_GUARD.items():
         try:
-            probe_token = pick_probe_token(per_crate_tags, crate_name)
+            probe_tokens = pick_probe_tokens(per_crate_tags, crate_name)
         except ValueError as exc:
             problems.append(str(exc))
             continue
-        hostile_code, hostile_output = probe_release_guard(guard_target, probe_token)
-        hostile = classify_probe(hostile_code, hostile_output, guard_target)
-        if hostile.kind == "COULD_NOT_RUN":
-            problems.append(
-                f"{crate_name}: the probe for `{guard_target}` could not run -- this is a "
-                "problem with the PROBE, not evidence the guard is broken (`make` missing, the "
-                "target renamed, an unrelated Makefile error, or a wrong working directory would "
-                f"all land here). `make {guard_target} RELEASE=1 OP_FEATURES={probe_token}` "
-                f"exited {hostile_code} without that target's own `*** [{guard_target}] Error` "
-                f"signature. Output: {hostile.detail!r}"
-            )
+        # EVERY UNSAFE token gets its own probe -- Sana's final finding: a PARTIAL weakening
+        # that still refuses one token while quietly dropping others from the effective
+        # registry would pass a probe that only ever tried unsafe[0]. Each token's guarantee is
+        # independent, so each is proved independently; the binary in-crate guard still covers
+        # every token regardless, this only closes the Make-half's own blind spot.
+        all_refused = True
+        for probe_token in probe_tokens:
+            hostile_code, hostile_output = probe_release_guard(guard_target, probe_token)
+            hostile = classify_probe(hostile_code, hostile_output, guard_target)
+            if hostile.kind == "COULD_NOT_RUN":
+                problems.append(
+                    f"{crate_name}: the probe for `{guard_target}` (token `{probe_token}`) "
+                    "could not run -- this is a problem with the PROBE, not evidence the guard "
+                    "is broken (`make` missing, the target renamed, an unrelated Makefile "
+                    f"error, or a wrong working directory would all land here). `make "
+                    f"{guard_target} RELEASE=1 OP_FEATURES={probe_token}` exited {hostile_code} "
+                    f"without that target's own `*** [{guard_target}] Error` signature. Output: "
+                    f"{hostile.detail!r}"
+                )
+                all_refused = False
+                continue
+            if hostile.kind == "DID_NOT_REFUSE":
+                problems.append(
+                    f"{crate_name}: `make {guard_target} RELEASE=1 OP_FEATURES={probe_token}` "
+                    f"did NOT refuse (exit {hostile_code}) -- CRATES_WITH_RELEASE_GUARD claims "
+                    f"this target enforces {crate_name}'s release boundary, but a real "
+                    "invocation with a real UNSAFE token proceeded anyway. This can mean the "
+                    "guard's own filter logic is wrong, or that its recipe has been detached "
+                    "from the name every build path actually references -- e.g. the rule body "
+                    "renamed while `.PHONY`/a prerequisite list still names the old target, "
+                    "which GNU Make then treats as a satisfied no-op (exit 0) rather than a "
+                    "missing target, so every real build path bypasses it silently. Check both "
+                    "before assuming the conditional logic itself is at fault. Fix the guard, "
+                    "or remove this entry (which then makes every UNSAFE feature here fail the "
+                    "check above instead)."
+                )
+                all_refused = False
+                continue
+            # hostile.kind == "REFUSED" for this token -- keep checking the rest.
+        if not all_refused:
             continue
-        if hostile.kind == "DID_NOT_REFUSE":
-            problems.append(
-                f"{crate_name}: `make {guard_target} RELEASE=1 OP_FEATURES={probe_token}` did "
-                f"NOT refuse (exit {hostile_code}) -- CRATES_WITH_RELEASE_GUARD claims this "
-                f"target enforces {crate_name}'s release boundary, but a real invocation with a "
-                "real UNSAFE token proceeded anyway. Fix the guard, or remove this entry (which "
-                "then makes every UNSAFE feature here fail the check above instead)."
-            )
-            continue
-        # hostile.kind == "REFUSED". Positive control: the SAME target, same RELEASE=1, with
-        # nothing to refuse, must NOT also refuse -- otherwise "refuses" above could just mean
-        # "always fails", indistinguishable from a genuinely discriminating guard by the hostile
-        # probe alone.
+        # Positive control, once per crate after EVERY hostile token refused: the SAME target,
+        # same RELEASE=1, with nothing to refuse, must NOT also refuse -- otherwise "refuses"
+        # above could just mean "always fails", indistinguishable from a genuinely discriminating
+        # guard by the hostile probe alone.
         benign_code, benign_output = probe_release_guard(guard_target, "")
         benign = classify_probe(benign_code, benign_output, guard_target)
         if benign.kind == "COULD_NOT_RUN":
