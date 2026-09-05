@@ -149,6 +149,45 @@ impl std::fmt::Debug for Credential {
     }
 }
 
+/// Whether [`developer_credential_from_env`] may read [`DEEPGRAM_API_KEY_VAR`] from the process
+/// environment at all.
+///
+/// Takes the profile as an injected parameter rather than reading `cfg!(debug_assertions)`
+/// internally, for the same reason `selahcue_cloud::openai::direct_key_permitted` does:
+/// `cfg!(debug_assertions)` is fixed for the whole lifetime of one compiled test binary, so a
+/// test that only calls [`developer_credential_from_env`] observes whichever profile `cargo
+/// test` happened to run in and can never reach the other branch. Taking the profile as a
+/// parameter makes both branches reachable, so a test can assert the release-profile refusal
+/// directly rather than trusting that a `!` somewhere was typed the right way round.
+///
+/// # The gap this closes (86akd10dq, Sana's High finding on the `cloud-stt` reachability PR)
+///
+/// This crate's `deepgram` feature has no equivalent to `selahcue-operator`'s `dev-keys` — there
+/// is no separate Cargo feature gating whether the environment gets read, and no
+/// `cfg!(debug_assertions)` check anywhere in this crate before this fix
+/// (`grep -rn debug_assertions implementation/desktop/crates/selahcue-stt-cloud/src/` returned
+/// zero hits). So making `cloud-stt` reachable from `make launch`'s default `STT ?= auto`
+/// widened `RELEASE=1`'s reach as a side effect: `make run-release`/`make launch RELEASE=1`
+/// resolved `--features stt,cloud-stt` (the `.env` file route stayed closed — `dev-keys` is
+/// stripped in release and `dev_env::should_load_env_file` no-ops regardless — but a raw
+/// shell-exported `DEEPGRAM_API_KEY`, unremarkable on a machine that also runs Deepgram's own
+/// CLI, produced a fully working direct-to-Deepgram release binary). Exactly the residual
+/// scenario `selahcue_cloud::openai::direct_key_permitted` was written to close for
+/// `OPENAI_API_KEY` (86akcmzyq PR #24 review) — same shape, different crate, because nothing
+/// wired the equivalent check into this crate's own environment read.
+///
+/// # Stated limit, same as `dev_env::should_load_env_file` and
+/// `selahcue_cloud::openai::direct_key_permitted`
+///
+/// An explicit `[profile.release] debug-assertions = true`, or a `RUSTFLAGS` override, turns
+/// `cfg!(debug_assertions)` back on under `--release` and defeats this exactly as it defeats
+/// those two — nothing in-repo can observe either. This narrows the gap; it does not close every
+/// route through it. `scripts/installer_secret_scan.py` (86akc041v) is the independent,
+/// byte-level backstop on artefacts this repo actually ships.
+pub fn developer_key_permitted(debug_assertions: bool) -> bool {
+    debug_assertions
+}
+
 /// Read the **developer** Deepgram key from the process environment.
 ///
 /// This is the only function in the crate that touches the environment, and it exists so the
@@ -157,9 +196,24 @@ impl std::fmt::Debug for Credential {
 /// `.env` behind the operator's off-by-default `dev-keys` feature; a blank value in that file
 /// leaves the variable unset, so an empty string is not a case this has to handle specially.
 ///
+/// **Also refuses in a release profile**, via [`developer_key_permitted`] — see its doc comment
+/// for the gap this closes (86akd10dq). The environment is not even read in that case: a release
+/// build must not construct a working credential from a key that happens to already be exported,
+/// not merely report one it declines to use. The error is the same
+/// [`DeepgramError::MissingCredential`] a genuinely absent variable produces, deliberately —
+/// nothing downstream (the Providers & Privacy panel, [`crate::readiness`]) needs to distinguish
+/// "not set" from "this build will never read it", any more than `selahcue_cloud::openai::
+/// OpenAiNoteProvider::from_env` does for `OPENAI_API_KEY` (a different crate — plain text, not
+/// an intra-doc link, since this crate does not depend on `selahcue-cloud`).
+///
 /// **Temporary.** Phase 2 replaces this entirely with a short-lived grant token fetched from
 /// `POST /v1/stt/session`; at that point this function is deleted rather than adapted.
 pub fn developer_credential_from_env() -> Result<Credential, DeepgramError> {
+    if !developer_key_permitted(cfg!(debug_assertions)) {
+        return Err(DeepgramError::MissingCredential {
+            variable: DEEPGRAM_API_KEY_VAR,
+        });
+    }
     match std::env::var(DEEPGRAM_API_KEY_VAR) {
         Ok(secret) => Credential::developer_key(secret),
         Err(_) => Err(DeepgramError::MissingCredential {

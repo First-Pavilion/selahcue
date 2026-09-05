@@ -31,6 +31,8 @@ default = []
 # made the owner call that this must be reachable on a machine that cannot build it — unlike
 # `cloud-stt` below, `stt`'s absence-when-toolchain-missing is by design, not a bug. See
 # scripts/check_launch_reachability.py for what each tag means and how it's enforced.
+# RELEASE: SAFE — on-device Whisper reads no developer credential; ships in real release
+# artefacts today (.github/workflows/windows-installer.yml hardcodes `--features stt`).
 stt = ["dep:selahcue-stt"]
 # Live SelahCue cloud path for Providers & Privacy: the real HTTP transport + OS-secret-store
 # account token. OFF by default so the compile-check needs no reqwest/keyring native tree and
@@ -40,6 +42,9 @@ stt = ["dep:selahcue-stt"]
 # LAUNCH_REACHABILITY: OPT-IN — no dev launch target auto-enables this; the live endpoint it
 # talks to does not exist yet, so there is nothing for a default `make launch` to usefully
 # reach. Enable explicitly (`OP_FEATURES=cloud-live`) once 86ajy04hz's cloud lands.
+# RELEASE: SAFE — reads no developer-only credential (OS keychain token via `keyring`, not a
+# repo-root `.env`); the real production path this repo's release-boundary rules protect against
+# a dev-only alternative to, not an instance of one.
 cloud-live = ["selahcue-cloud/http", "selahcue-cloud/keyring"]
 # Developer AI provider keys read from the repo-root `.env` at startup (src/dev_env.rs). OFF by
 # default, and it must stay that way: with the feature off, the file read is not compiled into the
@@ -50,6 +55,9 @@ cloud-live = ["selahcue-cloud/http", "selahcue-cloud/keyring"]
 #
 # LAUNCH_REACHABILITY: REQUIRED — 86akcmzrd (owner decision): must be reachable from a default
 # `make launch`/`make operator` invocation. Enforced by scripts/check_launch_reachability.py.
+# RELEASE: UNSAFE — must never reach a RELEASE=1/--release build; see the "AI-assisted sermon
+# notes" comment in the Makefile and dev_env.rs. Enforced there by RELEASE_UNSAFE_FEATURES /
+# release-ai-guard AND structurally in dev_env.rs's own `cfg!(debug_assertions)` check.
 dev-keys = []
 # Direct OpenAI GPT sermon-note generation with a DEVELOPER key (86akby7d8, Phase 1).
 # OFF by default, so a stock build contains no direct-to-provider path at all and the
@@ -60,6 +68,9 @@ dev-keys = []
 #
 # LAUNCH_REACHABILITY: REQUIRED — 86akcmzrd (owner decision): must be reachable from a default
 # `make launch`/`make operator` invocation. Enforced by scripts/check_launch_reachability.py.
+# RELEASE: UNSAFE — must never reach a RELEASE=1/--release build; see `direct_key_permitted`
+# (selahcue-cloud/src/openai.rs). Enforced by RELEASE_UNSAFE_FEATURES/release-ai-guard AND
+# structurally by `direct_key_permitted` gating `OpenAiNoteProvider::from_env` itself.
 openai-notes = ["selahcue-cloud/openai", "selahcue-cloud/http"]
 # Cloud (Deepgram) live transcription (86akby7th), streaming real microphone audio through the
 # already-tested `selahcue-stt-cloud` crate. Implies `stt`: mic capture (`CpalSource`) and
@@ -79,6 +90,17 @@ openai-notes = ["selahcue-cloud/openai", "selahcue-cloud/http"]
 # mean cloud transcription always runs: it only removes the "not compiled in" failure mode: a
 # build with this feature on but no `DEEPGRAM_API_KEY` still honestly reports `KeyMissing`, not
 # `Ready`. Enforced by scripts/check_launch_reachability.py.
+# RELEASE: UNSAFE — 86akd10dq remediation (Sana S-1 / Cody Finding A / Quinn High): must never
+# reach a RELEASE=1/--release build today. Enforced by RELEASE_UNSAFE_FEATURES/release-ai-guard
+# in the Makefile AND structurally by `developer_key_permitted` gating
+# `developer_credential_from_env` itself (selahcue-stt-cloud/src/credential.rs) — the binary
+# guard alone would make a release build with this feature functionally inert (always
+# `KeyMissing`, never `Ready`); it is ALSO Make-stripped because Phase 2 (86akby3xu, the
+# server-minted grant token this feature's credential path is replaced by) is unstarted
+# (`planning/todo`) with the desktop-side integration not even ticketed yet, so a release build
+# carrying this feature today ships real dependency surface for zero functional benefit. Revisit
+# when 86akby3xu's desktop-side ticket exists and is scoped — see the Makefile's
+# RELEASE_UNSAFE_FEATURES comment for the full argument.
 cloud-stt = ["stt", "selahcue-stt-cloud/deepgram"]
 
 [dependencies]
