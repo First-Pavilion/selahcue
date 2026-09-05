@@ -104,5 +104,28 @@ selahcue-stt = { path = "../selahcue-stt", features = ["whisper", "capture", "do
 [target.'cfg(target_os = "macos")'.dependencies]
 selahcue-stt = { path = "../selahcue-stt", features = ["metal"], optional = true }
 
+# Test-only. `tauri`'s `test` feature adds `tauri::test::mock_app`/`MockRuntime` — a REAL
+# `App`/`AppHandle` with no window, no webview, and no OS integration — used by
+# `listening.rs`'s `run_cloud` composition test (86akby7th PR #22 remediation round 2) so that
+# test can drive the actual production closures (not a re-implementation of them) with managed
+# `AppState`, rather than being blocked on "no AppHandle without a real Tauri app". Cargo
+# unifies dev-dependency features into the SAME `tauri` crate only for test/bench/example
+# builds, so this adds nothing to a normal `cargo build`/release binary. `tokio-tungstenite` +
+# `futures-util` mirror the exact versions and feature set `selahcue-stt-cloud`'s own
+# `tests/test_transport.rs` already uses to run a local stub Deepgram-shaped WebSocket server —
+# same proven pattern, reused rather than reinvented, to let the composition test drive a REAL
+# `CloudSttSession` against a loopback stub and observe the socket close.
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = [
+    "connect",
+    "handshake",
+] }
+futures-util = { version = "0.3", default-features = false, features = [
+    "sink",
+    "std",
+] }
+
 [lints.clippy]
 unwrap_used = "warn"

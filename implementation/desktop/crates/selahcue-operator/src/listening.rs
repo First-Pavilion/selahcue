@@ -47,12 +47,12 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::capture_handoff::AudioHandoff;
 use crate::transcription_route::TranscriptionRoute;
 
-/// What `run_cloud`'s streaming loop needs from a capture source beyond [`AudioSource`] itself
-/// (`next_chunk`/`label`) — kept to exactly the one extra operation the loop actually calls
-/// (`emit_level`'s peak reading), so the loop can be generic and exercised in tests against a
-/// `FakeAudioSource`-backed stand-in with no real microphone, while [`CpalSource`] satisfies it
-/// unchanged for the real capture path (86akby7th PR #22 review, Quinn's "zero coverage" — see
-/// `run_cloud_stream_loop`).
+/// What `run_on_device` (and, via `emit_level`, `run_cloud_stream_loop`) need from a capture
+/// source beyond [`AudioSource`] itself (`next_chunk`/`label`) — kept to exactly the one extra
+/// operation those call (`emit_level`'s peak reading), so both can be generic and exercised in
+/// tests against a `FakeAudioSource`-backed stand-in with no real microphone, while
+/// [`CpalSource`] satisfies it unchanged for the real capture path (86akby7th PR #22 review,
+/// Quinn's "zero coverage" — see `run_cloud_stream_loop`).
 trait CaptureSource: AudioSource {
     /// Peak input amplitude (`0..=1`) since the previous call. See [`CpalSource::peak_level`].
     fn peak_level(&self) -> f32;
@@ -61,6 +61,32 @@ trait CaptureSource: AudioSource {
 impl CaptureSource for CpalSource {
     fn peak_level(&self) -> f32 {
         CpalSource::peak_level(self)
+    }
+}
+
+/// What `run_cloud` additionally needs, beyond [`CaptureSource`], to size the capture hand-off
+/// from the device's REAL configuration rather than a literal (`sample_rate`/`channels` feed
+/// `selahcue_core::audio_capacity::handoff_capacity`). A separate trait, rather than folding
+/// these into `CaptureSource` itself, so an `stt`-only build (no `cloud-stt`) — which never
+/// calls `run_cloud` at all — does not carry two methods nothing in that build can reach
+/// (`-D warnings` would otherwise flag them `dead_code`). Extended in the PR #22 remediation
+/// round 2 so `run_cloud` ITSELF, not only its inner loop, can be driven by a test — see
+/// `cloud_session_config`.
+#[cfg(feature = "cloud-stt")]
+trait CloudCaptureSource: CaptureSource {
+    /// The device's sample rate, Hz. See [`CpalSource::sample_rate`].
+    fn sample_rate(&self) -> u32;
+    /// The device's channel count. See [`CpalSource::channels`].
+    fn channels(&self) -> u16;
+}
+
+#[cfg(feature = "cloud-stt")]
+impl CloudCaptureSource for CpalSource {
+    fn sample_rate(&self) -> u32 {
+        CpalSource::sample_rate(self)
+    }
+    fn channels(&self) -> u16 {
+        CpalSource::channels(self)
     }
 }
 
@@ -152,7 +178,7 @@ enum FailReasonPayload {
 /// [`PHASE_EVENT`]; during downloading ALSO emit the legacy [`PROGRESS_EVENT`] so nothing that
 /// listens on `stt://progress` breaks. Advisory — send errors (no window yet) are ignored, and a
 /// short log line aids first-run debugging.
-fn emit_phase(app: &AppHandle, phase: selahcue_stt::DownloadPhase) {
+fn emit_phase<R: tauri::Runtime>(app: &AppHandle<R>, phase: selahcue_stt::DownloadPhase) {
     use selahcue_stt::{DownloadPhase as P, FailReason as R};
     let event = match phase {
         P::Downloading { done, total } => {
@@ -296,6 +322,13 @@ fn clear_failure() {
 /// stale-looking honesty gap this ticket's other fixes remove elsewhere (86akby7th PR #22
 /// review, LOW: "do not let a drop note erase an engine-change note"). Idempotent: calling it
 /// twice with the same `addition` does not duplicate the suffix.
+///
+/// **Not bounded by this function.** The idempotence check above only stops the SAME `addition`
+/// from being appended twice in a row (suffix match) — it does not cap how many DISTINCT
+/// fragments accumulate. Boundedness today is a property of the two call sites (each session
+/// appends at most one engine-change note and one drop note), not of `append_engine_note`
+/// itself; a future third caller alternating between two different additions would grow this
+/// slot without limit (86akby7th PR #22 remediation round 2, Vera LOW).
 fn append_engine_note(addition: &str) {
     let mut slot = status_lock(&ENGINE_NOTE);
     let next = match slot.take() {
@@ -324,10 +357,50 @@ fn append_engine_note(addition: &str) {
 ///   mode) is caught within one `CAPTURE_INTERVAL`, not only at the moment streaming started
 ///   (Sana, High).
 #[cfg(feature = "cloud-stt")]
-fn live_providers_config(app: &AppHandle) -> selahcue_core::providers::ProvidersConfig {
+fn live_providers_config<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> selahcue_core::providers::ProvidersConfig {
     let state = app.state::<crate::AppState>();
     let guard = state.providers.lock().unwrap_or_else(|e| e.into_inner());
     guard.clone()
+}
+
+/// A [`selahcue_stt_cloud::transport::CloudSttSession`] shared between `run_cloud`'s
+/// `on_clean_stop` and `on_fallback` closures, so WHICHEVER one actually fires can take sole
+/// ownership and stop it. `CloudSttSession` is not `Clone` (deliberately: two handles to one
+/// worker thread would double-join it), and exactly one of `run_cloud_stream_loop`'s three
+/// exits ever runs — so a plain `move` into one closure would leave the OTHER with no way to
+/// reach the session at all. `Option` because [`close_cloud_session`] takes it out; a second
+/// call (there is at most one today, but the type does not rely on that) is then a no-op
+/// rather than a double-stop.
+#[cfg(feature = "cloud-stt")]
+type SharedCloudSession = Arc<Mutex<Option<selahcue_stt_cloud::transport::CloudSttSession>>>;
+
+/// Take the session out of `slot`, if still present, and stop it.
+///
+/// **Must run before `run_cloud`'s fallback continues into `run_on_device`.** `run_on_device`
+/// blocks for the rest of the capture session (it returns only when the operator stops
+/// listening), so anything that has not already severed the Deepgram connection by the time it
+/// is called stays open behind that block — for hours, not moments.
+///
+/// This is the fix for a defect that shipped in this ticket's first remediation round: the old
+/// `on_fallback` never touched `session` at all, so on a mid-service consent revocation (or a
+/// terminal session failure) the authenticated WebSocket stayed open, `pump()` kept sending
+/// `KeepAlive` frames and flushing residual ring content, and any socket drop reconnected and
+/// re-presented the developer API key — directly contradicting
+/// [`CONSENT_REVOKED_NOTICE`]'s own text. The equivalent gap on the CLEAN-STOP path was already
+/// closed (that branch calls `session.stop()` itself); this closes it for every exit, through
+/// one call site, so the fallback branch cannot regress back to silently skipping it (86akby7th
+/// PR #22 remediation round 2, Cody High / Vera High).
+///
+/// `CloudSttSession::stop` is bounded by
+/// [`selahcue_stt_cloud::transport::SHUTDOWN_GRACE`] and sends Deepgram the courtesy close, so
+/// this cannot itself hang the capture worker thread.
+#[cfg(feature = "cloud-stt")]
+fn close_cloud_session(slot: &SharedCloudSession) {
+    if let Some(session) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        session.stop();
+    }
 }
 
 /// Context for a mid-service fallback into [`run_on_device`], carrying WHY the previous engine
@@ -424,7 +497,7 @@ fn cache_context(path: PathBuf, ctx: Arc<WhisperContext>) {
 /// Resolve the model (cache/download, integrity-verified) and load the recognizer. Runs on
 /// the worker thread (it can be slow: a large SHA-256 + whisper.cpp load, or a first-run
 /// download). An explicit `SELAHCUE_STT_MODEL` path overrides the download.
-fn load_recognizer(app: &AppHandle) -> Result<WhisperRecognizer, String> {
+fn load_recognizer<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<WhisperRecognizer, String> {
     let selection = HardwareProbe::detect().select_model();
     // Resolve the intended model path WITHOUT downloading or hashing yet, so a warm cache hit
     // (a prior start this session) skips fetch + verify + reload and reuses the resident context.
@@ -498,7 +571,7 @@ fn load_recognizer(app: &AppHandle) -> Result<WhisperRecognizer, String> {
 /// audio is actually arriving, regardless of which engine is consuming it. Generic over
 /// [`CaptureSource`] (not just [`CpalSource`]) so `run_cloud_stream_loop` can call it — in
 /// production always monomorphized to `CpalSource`, so this is not a behaviour change.
-fn emit_level<S: CaptureSource>(app: &AppHandle, source: &mut S) {
+fn emit_level<S: CaptureSource, R: tauri::Runtime>(app: &AppHandle<R>, source: &mut S) {
     let pct = (source.peak_level() * 100.0).round().clamp(0.0, 100.0) as u8;
     let _ = app.emit(LEVEL_EVENT, MicLevel { pct });
 }
@@ -650,9 +723,9 @@ const ON_DEVICE_AUDIO_DROPPED_NOTICE: &str = "On-device transcription is running
 /// for the two call sites where on-device is the FIRST thing this session tries (nothing to
 /// explain). See [`FallbackContext`]: its `note` is applied only in the success branch below,
 /// never before, and its `prior_failure` is folded into the error only if on-device ALSO fails.
-fn run_on_device(
-    app_worker: AppHandle,
-    mut source: CpalSource,
+fn run_on_device<S: CaptureSource, R: tauri::Runtime>(
+    app_worker: AppHandle<R>,
+    mut source: S,
     stop_worker: Arc<AtomicBool>,
     seg_tx: tokio::sync::mpsc::Sender<ProviderSegment>,
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
@@ -789,6 +862,37 @@ const CONSENT_REVOKED_NOTICE: &str = "Cloud transcription was turned off (consen
      On-device was selected) while a session was active. The transcript below is coming from \
      the on-device engine instead.";
 
+/// The `CloudSttSession`'s wire configuration — real Deepgram in production, and in a TEST
+/// build only, an optional override so a test can point `run_cloud` at a local stub instead
+/// (`SELAHCUE_STT_CLOUD_TEST_ENDPOINT`, e.g. `ws://127.0.0.1:PORT/v1/listen`).
+///
+/// This is a **compiled-away** seam, not a runtime branch: the `#[cfg(test)]` / `#[cfg(not(test))]`
+/// pair below means a release binary contains only the second definition and never reads this
+/// (or any) environment variable to decide where Deepgram audio goes — an always-on override
+/// would be a way to redirect a church's audio to an attacker-controlled endpoint via the
+/// process environment, which this codebase's existing endpoint-confidentiality checks
+/// (`DeepgramEndpoint::is_confidential`, `RequestSpec::build`'s loopback-only cleartext rule)
+/// are precisely trying to close off. Exists so `run_cloud`'s own composition — not just the
+/// generic, closure-driven `run_cloud_stream_loop` — can be driven end to end in a test against
+/// a real `CloudSttSession` and a local stub server (86akby7th PR #22 remediation round 2,
+/// Sana: "the composition is untested, not untestable").
+#[cfg(all(feature = "cloud-stt", not(test)))]
+fn cloud_session_config() -> selahcue_stt_cloud::transport::SessionConfig {
+    selahcue_stt_cloud::transport::SessionConfig::default()
+}
+
+#[cfg(all(feature = "cloud-stt", test))]
+fn cloud_session_config() -> selahcue_stt_cloud::transport::SessionConfig {
+    use selahcue_stt_cloud::transport::SessionConfig;
+    match std::env::var("SELAHCUE_STT_CLOUD_TEST_ENDPOINT") {
+        Ok(url) => SessionConfig {
+            endpoint: selahcue_stt_cloud::DeepgramEndpoint::custom(url),
+            ..SessionConfig::default()
+        },
+        Err(_) => SessionConfig::default(),
+    }
+}
+
 /// Run Cloud (Deepgram) transcription until it fails, is stopped, or the running session is
 /// terminal, falling back to `run_on_device` in every case that is not a clean operator-driven
 /// stop. Behind `cloud-stt`: everything it touches from `selahcue-stt-cloud` beyond `readiness`
@@ -799,15 +903,15 @@ const CONSENT_REVOKED_NOTICE: &str = "Cloud transcription was turned off (consen
 /// [`run_cloud_stream_loop`]'s loop is bounded local work — draining the mic, pushing into the
 /// bounded `AudioRing`, draining the bounded `SegmentQueue`, and one non-blocking status read.
 #[cfg(feature = "cloud-stt")]
-fn run_cloud(
-    app_worker: AppHandle,
-    source: CpalSource,
+fn run_cloud<S: CloudCaptureSource, R: tauri::Runtime>(
+    app_worker: AppHandle<R>,
+    source: S,
     stop_worker: Arc<AtomicBool>,
     seg_tx: tokio::sync::mpsc::Sender<ProviderSegment>,
     ready_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
 ) {
     use selahcue_stt_cloud::session::{StreamAuthorization, StreamParams};
-    use selahcue_stt_cloud::transport::{CloudSttSession, SessionConfig};
+    use selahcue_stt_cloud::transport::CloudSttSession;
     use selahcue_stt_cloud::{
         developer_credential_from_env, AudioRing, CloudTranscriptProvider, SegmentQueue,
         SessionStatus,
@@ -888,8 +992,9 @@ fn run_cloud(
     // `SessionConfig::default()` is the crate's own validated baseline (it is a compile-time-
     // pinned invariant of that crate that its defaults satisfy `SessionConfig::validate`) —
     // built through the validated path rather than hand-rolled, per the review note that this
-    // guard is what stands between this branch and an unbounded reconnect loop (V-2).
-    let config = SessionConfig::default();
+    // guard is what stands between this branch and an unbounded reconnect loop (V-2). See
+    // `cloud_session_config` for why a TEST build can reach a different endpoint here.
+    let config = cloud_session_config();
 
     let session = match CloudSttSession::start(
         &authorization,
@@ -926,6 +1031,14 @@ fn run_cloud(
         source.label()
     );
 
+    // Shared between BOTH exits below so whichever one fires can stop the session — see
+    // `SharedCloudSession` / `close_cloud_session`. Neither closure may simply `move session`
+    // into itself: only one of them ever runs, and the other would then have no way to reach it
+    // at all (exactly the shape of the bug this replaces).
+    let session_slot: SharedCloudSession = Arc::new(Mutex::new(Some(session)));
+    let session_for_clean_stop = Arc::clone(&session_slot);
+    let session_for_fallback = Arc::clone(&session_slot);
+
     // The loop itself is a separate, generic function (`run_cloud_stream_loop`) so it is
     // exercised in tests against a fake capture source and injected fallback/consent-check
     // closures — no real microphone, network, or whisper model — rather than only by 104 tests
@@ -941,7 +1054,7 @@ fn run_cloud(
         &audio_ring,
         provider,
         &status,
-        move |s: &mut CpalSource| emit_level(&app_for_level, s),
+        move |s: &mut S| emit_level(&app_for_level, s),
         // Polled every iteration (86akby7th PR #22 review, Sana High): a mid-service consent
         // revocation or a move away from Cloud mode must terminate cloud egress within one
         // `CAPTURE_INTERVAL`, not only be noticed the next time "Start listening" is pressed.
@@ -949,9 +1062,16 @@ fn run_cloud(
         move || {
             // Clean operator-driven stop. `stop()` asks Deepgram to flush first (bounded —
             // `SHUTDOWN_GRACE`) so the last sentence of a sermon is not lost.
-            session.stop();
+            close_cloud_session(&session_for_clean_stop);
         },
         move |source, stop_worker, seg_tx, prior_failure, note| {
+            // Sever the Deepgram connection BEFORE falling back. `run_on_device` below blocks
+            // for the rest of the capture session — anything not already stopped by the time it
+            // is called would stay open behind that block, reconnecting and re-presenting the
+            // developer credential for as long as capture runs (86akby7th PR #22 remediation
+            // round 2, Cody High / Vera High: the previous `on_fallback` never touched `session`
+            // at all). See `close_cloud_session`.
+            close_cloud_session(&session_for_fallback);
             run_on_device(
                 app_worker,
                 source,
@@ -1026,6 +1146,28 @@ fn run_cloud_stream_loop<S: CaptureSource>(
             return;
         }
 
+        // Checked BEFORE this iteration touches the egress ring (86akby7th PR #22 remediation
+        // round 2, Sana LOW). Checking it after the mic-drain/push below (the original order)
+        // meant a revoked-consent iteration still forwarded one further `CAPTURE_INTERVAL` of
+        // audio to Deepgram before the loop noticed — a small but real leak past the point
+        // consent was withdrawn. The mic ring is not lost by skipping this: the samples simply
+        // stay in `source`/the hand-off for whoever runs next (on-device, via the same open
+        // mic), rather than being pushed to the ring this route is about to stop feeding.
+        if !may_stream_now() {
+            // The operator withdrew permission (revoked consent, or left Cloud mode) WHILE this
+            // session was actively streaming. Distinct from the terminal branch below: nothing
+            // here failed.
+            on_fallback(
+                source,
+                stop_worker,
+                seg_tx,
+                "cloud transcription consent was revoked, or Cloud mode was left, mid-service"
+                    .to_string(),
+                CONSENT_REVOKED_NOTICE,
+            );
+            return;
+        }
+
         // Drain the mic into the SHARED hand-off (same type, same sizing rule, same drop
         // counter the on-device route uses — see `capture_handoff.rs`), then drain the
         // hand-off and resample each chunk to what Deepgram was told to expect (16 kHz mono,
@@ -1057,7 +1199,7 @@ fn run_cloud_stream_loop<S: CaptureSource>(
             audio_dropped_ever = true;
             eprintln!(
                 "SelahCue STT: audio was dropped before reaching Deepgram (capture hand-off: {} \
-                 samples dropped, {} currently retained; Deepgram ring: {} bytes dropped, {} \
+                 samples dropped, {} currently retained; Deepgram ring: {} chunks dropped, {} \
                  chunks refused oversize) — the pipeline is not keeping up.",
                 handoff.dropped(),
                 handoff.retained_samples(),
@@ -1074,21 +1216,6 @@ fn run_cloud_stream_loop<S: CaptureSource>(
         pump(&mut provider, |seg| {
             let _ = seg_tx.try_send(seg);
         });
-
-        if !may_stream_now() {
-            // The operator withdrew permission (revoked consent, or left Cloud mode) WHILE this
-            // session was actively streaming. Distinct from the terminal branch below: nothing
-            // here failed.
-            on_fallback(
-                source,
-                stop_worker,
-                seg_tx,
-                "cloud transcription consent was revoked, or Cloud mode was left, mid-service"
-                    .to_string(),
-                CONSENT_REVOKED_NOTICE,
-            );
-            return;
-        }
 
         if status.get().is_terminal() {
             // The session gave up (bad credential, exhausted retries, or a defect) rather than
@@ -1329,6 +1456,7 @@ mod tests {
             AudioRing, CloudTranscriptProvider, SegmentQueue, SessionState, SessionStatus,
             DEGRADED_FALLBACK_NOTICE,
         };
+        use std::time::Instant;
 
         #[test]
         fn round_trips_silence_and_full_scale() {
@@ -1395,6 +1523,19 @@ mod tests {
             }
         }
 
+        impl CloudCaptureSource for TestSource {
+            fn sample_rate(&self) -> u32 {
+                // A representative, safely-sizeable value — `run_cloud`'s handoff-capacity
+                // sizing (`selahcue_core::audio_capacity::handoff_capacity`) only needs a
+                // nonzero rate/channel pair that multiplies without overflow; the tests below
+                // that reach `run_cloud` itself do not assert on the resulting capacity.
+                16_000
+            }
+            fn channels(&self) -> u16 {
+                1
+            }
+        }
+
         /// Generous enough that no test below trips the hand-off's OWN drop-oldest bound by
         /// accident — each test isolates ONE specific exit path or drop/refusal source.
         fn generous_handoff() -> AudioHandoff {
@@ -1403,6 +1544,56 @@ mod tests {
 
         fn empty_provider() -> CloudTranscriptProvider {
             CloudTranscriptProvider::new(SegmentQueue::new(), &StreamParams::default())
+        }
+
+        /// How long [`run_cloud_stream_loop`] gets to return in the three tests below before
+        /// the test itself fails it — generous for a loop that does no real I/O and normally
+        /// returns in well under a millisecond, nowhere near the `operator` CI job's full
+        /// 25-minute timeout.
+        const LOOP_RETURN_BOUND: Duration = Duration::from_secs(2);
+
+        /// Run `f` (expected to call [`run_cloud_stream_loop`] exactly once) on its own thread
+        /// and fail with a clear message if it has not returned within [`LOOP_RETURN_BOUND`],
+        /// rather than hanging.
+        ///
+        /// The three exit-path tests below (`a_clean_stop_…`, `a_terminal_cloud_session_…`,
+        /// `a_consent_revocation_…`) each remove every reason to exit the loop EXCEPT the one
+        /// under test — that is what makes them a real regression test for that branch. It also
+        /// means a future edit that breaks the SAME branch (e.g. an early `return` added above
+        /// the check, or a condition inverted) leaves the loop with no live exit at all, and it
+        /// spins forever. Before this helper, that read as a stuck test name burning the whole
+        /// CI job's 25-minute timeout with no indication of which of the three branches was at
+        /// fault (86akby7th PR #22 remediation round 2, Cody Medium). Mirrors the bounded-wait
+        /// idiom already proven one file away —
+        /// [`selahcue_stt_cloud::transport::CloudSttSession::shutdown`]'s own
+        /// `finished.recv_timeout(SHUTDOWN_GRACE)` — rather than an unbounded join, which would
+        /// defeat the entire point.
+        ///
+        /// Deliberately does NOT join a thread that overran: an overrun means something is
+        /// wedged with no bounded exit of its own, and joining it here would just relocate the
+        /// hang from "a stuck test" to "a stuck cleanup step". The orphaned thread is reclaimed
+        /// when the test process exits, the same trade-off `CloudSttSession::shutdown` itself
+        /// makes on its own timeout path.
+        fn assert_loop_returns_within(f: impl FnOnce() + Send + 'static) {
+            let handle = std::thread::spawn(f);
+            let start = Instant::now();
+            loop {
+                if handle.is_finished() {
+                    if let Err(panic) = handle.join() {
+                        std::panic::resume_unwind(panic);
+                    }
+                    return;
+                }
+                assert!(
+                    start.elapsed() < LOOP_RETURN_BOUND,
+                    "run_cloud_stream_loop did not return within {LOOP_RETURN_BOUND:?} — this \
+                     scenario removed every exit path except the one under test, so it has no \
+                     way to return; a live regression here would otherwise hang for the whole \
+                     `operator` CI job's 25-minute timeout instead of failing (86akby7th PR #22 \
+                     remediation round 2, Cody Medium)"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
 
         #[test]
@@ -1418,19 +1609,23 @@ mod tests {
             let fallback_called = Arc::new(AtomicBool::new(false));
             let fallback_called2 = Arc::clone(&fallback_called);
 
-            run_cloud_stream_loop(
-                TestSource::empty(),
-                stop_worker,
-                seg_tx,
-                &handoff,
-                &audio_ring,
-                empty_provider(),
-                &status,
-                |_s: &mut TestSource| {},
-                || true, // consent stays granted throughout
-                move || clean_stop_called2.store(true, Ordering::SeqCst),
-                move |_s, _sw, _tx, _prior, _note| fallback_called2.store(true, Ordering::SeqCst),
-            );
+            assert_loop_returns_within(move || {
+                run_cloud_stream_loop(
+                    TestSource::empty(),
+                    stop_worker,
+                    seg_tx,
+                    &handoff,
+                    &audio_ring,
+                    empty_provider(),
+                    &status,
+                    |_s: &mut TestSource| {},
+                    || true, // consent stays granted throughout
+                    move || clean_stop_called2.store(true, Ordering::SeqCst),
+                    move |_s, _sw, _tx, _prior, _note| {
+                        fallback_called2.store(true, Ordering::SeqCst)
+                    },
+                );
+            });
 
             assert!(
                 clean_stop_called.load(Ordering::SeqCst),
@@ -1459,22 +1654,24 @@ mod tests {
             let clean_stop_called = Arc::new(AtomicBool::new(false));
             let clean_stop_called2 = Arc::clone(&clean_stop_called);
 
-            run_cloud_stream_loop(
-                TestSource::empty(),
-                stop_worker,
-                seg_tx,
-                &handoff,
-                &audio_ring,
-                empty_provider(),
-                &status,
-                |_s: &mut TestSource| {},
-                || true, // consent stays granted — isolates the TERMINAL branch specifically
-                move || clean_stop_called2.store(true, Ordering::SeqCst),
-                move |_s, _sw, _tx, prior_failure, note| {
-                    *captured2.lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some((prior_failure, note));
-                },
-            );
+            assert_loop_returns_within(move || {
+                run_cloud_stream_loop(
+                    TestSource::empty(),
+                    stop_worker,
+                    seg_tx,
+                    &handoff,
+                    &audio_ring,
+                    empty_provider(),
+                    &status,
+                    |_s: &mut TestSource| {},
+                    || true, // consent stays granted — isolates the TERMINAL branch specifically
+                    move || clean_stop_called2.store(true, Ordering::SeqCst),
+                    move |_s, _sw, _tx, prior_failure, note| {
+                        *captured2.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some((prior_failure, note));
+                    },
+                );
+            });
 
             assert!(
                 !clean_stop_called.load(Ordering::SeqCst),
@@ -1512,22 +1709,24 @@ mod tests {
             let captured: Arc<Mutex<Option<(String, &'static str)>>> = Arc::new(Mutex::new(None));
             let captured2 = Arc::clone(&captured);
 
-            run_cloud_stream_loop(
-                TestSource::empty(),
-                stop_worker,
-                seg_tx,
-                &handoff,
-                &audio_ring,
-                empty_provider(),
-                &status,
-                |_s: &mut TestSource| {},
-                || false, // consent withdrawn from the very first check (Sana/Cody, PR #22 High)
-                || panic!("a consent revocation must not take the clean-stop branch"),
-                move |_s, _sw, _tx, prior_failure, note| {
-                    *captured2.lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some((prior_failure, note));
-                },
-            );
+            assert_loop_returns_within(move || {
+                run_cloud_stream_loop(
+                    TestSource::empty(),
+                    stop_worker,
+                    seg_tx,
+                    &handoff,
+                    &audio_ring,
+                    empty_provider(),
+                    &status,
+                    |_s: &mut TestSource| {},
+                    || false, // consent withdrawn from the very first check (Sana/Cody, PR #22 High)
+                    || panic!("a consent revocation must not take the clean-stop branch"),
+                    move |_s, _sw, _tx, prior_failure, note| {
+                        *captured2.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some((prior_failure, note));
+                    },
+                );
+            });
 
             let (prior_failure, note) = captured
                 .lock()
@@ -1562,6 +1761,13 @@ mod tests {
             let audio_ring = AudioRing::new();
             let status = SessionStatus::new();
 
+            // Consent is checked at the TOP of the loop now (86akby7th PR #22 remediation round
+            // 2, Sana LOW), so a constant `|| false` would exit before the chunk was ever
+            // touched and prove nothing about oversize refusal. Grant it for exactly the first
+            // iteration — enough to let that iteration process the chunk and evaluate the
+            // drop-notice condition — then withdraw it, exiting via the consent branch.
+            let allow_one_iteration = std::cell::Cell::new(true);
+
             run_cloud_stream_loop(
                 TestSource::with_one_chunk(oversized),
                 stop_worker,
@@ -1571,9 +1777,7 @@ mod tests {
                 empty_provider(),
                 &status,
                 |_s: &mut TestSource| {},
-                // Exit via the consent branch right after the FIRST iteration has already
-                // processed the chunk and evaluated the drop-notice condition.
-                || false,
+                move || allow_one_iteration.replace(false),
                 || panic!("must not take the clean-stop branch"),
                 |_s, _sw, _tx, _prior, _note| {}, // the fallback itself is not under test here
             );
@@ -1603,6 +1807,303 @@ mod tests {
             );
 
             *status_lock(&ENGINE_NOTE) = None; // leave the slot clean for other tests
+        }
+    }
+
+    // --- `run_cloud` itself, end to end (86akby7th PR #22 remediation round 2) -------------
+    //
+    // `cloud_stt`'s tests above drive `run_cloud_stream_loop` with FAKE closures — they prove
+    // that function's own exits fire correctly, but they cannot see whether `run_cloud`'s REAL
+    // closures are wired correctly, because those tests never construct them. That gap is
+    // exactly how the fallback branch shipped with no `session.stop()` call at all: every test
+    // was green. Sana's PR #22 review rejected "untestable — no `AppHandle` harness" as the
+    // reason that gap was allowed to stand: `tauri::test::mock_app()` mints a real
+    // `App`/`AppHandle` (`MockRuntime`) with no window and no OS integration, which is enough
+    // to call `run_cloud` for real, with managed `AppState`, and drive a REAL
+    // `CloudSttSession` against a local stub server.
+    #[cfg(feature = "cloud-stt")]
+    mod run_cloud_composition {
+        use super::super::*;
+        use selahcue_core::providers::{ProvidersConfig, TranscriptionMode};
+        use selahcue_stt::audio::{AudioChunk, AudioSource, FakeAudioSource};
+        use std::time::Instant;
+
+        /// A capture source that produces silence forever — `run_cloud` only needs SOME
+        /// `CloudCaptureSource`, and this test does not exercise the audio path at all.
+        struct NullSource {
+            inner: FakeAudioSource,
+        }
+
+        impl NullSource {
+            fn new() -> Self {
+                NullSource {
+                    inner: FakeAudioSource::new(),
+                }
+            }
+        }
+
+        impl AudioSource for NullSource {
+            fn label(&self) -> &str {
+                "test"
+            }
+
+            fn next_chunk(&mut self) -> Option<AudioChunk> {
+                self.inner.next_chunk()
+            }
+        }
+
+        impl CaptureSource for NullSource {
+            fn peak_level(&self) -> f32 {
+                0.0
+            }
+        }
+
+        impl CloudCaptureSource for NullSource {
+            fn sample_rate(&self) -> u32 {
+                16_000
+            }
+            fn channels(&self) -> u16 {
+                1
+            }
+        }
+
+        /// Poll `check` until it holds or `limit` elapses. Returns whether it ever held, so a
+        /// caller asserts with an honest message instead of the loop just falling through.
+        fn within(limit: Duration, mut check: impl FnMut() -> bool) -> bool {
+            let deadline = Instant::now() + limit;
+            loop {
+                if check() {
+                    return true;
+                }
+                if Instant::now() >= deadline {
+                    return check();
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        /// A POSIX FIFO whose read end this test controls, so `run_on_device`'s (real)
+        /// `load_recognizer` can be held BLOCKED, deterministically, for as long as this test
+        /// wants — no sleep-and-hope timing race against how fast a local file read happens to
+        /// fail.
+        ///
+        /// Why this exists at all: `run_cloud`'s stack frame — and with it, any Cloud session
+        /// that the buggy pre-fix `on_fallback` merely left captured in an unused local rather
+        /// than explicitly stopping — does not actually drop until `run_cloud` RETURNS, and
+        /// `Drop for CloudSttSession` closes the socket too. If `run_on_device`'s failure were
+        /// allowed to return in microseconds (e.g. failing on a nonexistent path), a buggy
+        /// build closes the socket via that implicit drop just as fast as a correct build closes
+        /// it via the explicit `close_cloud_session` call — the two are indistinguishable by
+        /// wall-clock timing, and a first attempt at this test proved exactly that: it passed
+        /// unchanged with the fix's `close_cloud_session(&session_for_fallback);` call deleted.
+        /// Holding `run_on_device` open on a blocked read turns "did it close before the NEXT
+        /// step, or only when the whole call finally unwound" from a timing race into a state
+        /// this test can just look at.
+        struct HeldOpenModelFile {
+            path: PathBuf,
+        }
+
+        impl HeldOpenModelFile {
+            fn create() -> Self {
+                let path = std::env::temp_dir().join(format!(
+                    "selahcue-run-cloud-composition-test-{}-{:?}.fifo",
+                    std::process::id(),
+                    std::thread::current().id()
+                ));
+                let _ = std::fs::remove_file(&path); // stale FIFO from a killed prior run
+                let status = std::process::Command::new("mkfifo")
+                    .arg(&path)
+                    .status()
+                    .expect("run mkfifo");
+                assert!(status.success(), "mkfifo failed for {path:?}");
+                HeldOpenModelFile { path }
+            }
+
+            /// Open the write end, send a few bytes (guaranteed to fail the SHA-256 check — its
+            /// content is irrelevant, this test wants on-device to fail either way), and close
+            /// it — which is what lets the blocked reader on the other end finally see EOF.
+            fn release(&self) {
+                use std::io::Write;
+                let mut writer = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&self.path)
+                    .expect("open the FIFO's write end");
+                let _ = writer.write_all(b"not a real whisper model");
+            }
+        }
+
+        impl Drop for HeldOpenModelFile {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+
+        #[test]
+        fn run_cloud_closes_the_deepgram_session_before_falling_back_on_consent_revocation() {
+            let _env_guard = crate::env_locked();
+            let _state_guard = super::state_locked();
+
+            // `run_cloud`'s `on_fallback` closure, if this test's fix is in place, calls the
+            // REAL `run_on_device` — which must not attempt a ~1.6 GB model download. Pointing
+            // `SELAHCUE_STT_MODEL` at this FIFO makes `load_recognizer`'s `verify_model` block
+            // (a POSIX FIFO opened for reading blocks until a writer opens it) INSIDE
+            // `run_on_device`, on the capture worker thread, for as long as this test wants —
+            // see `HeldOpenModelFile`. No network either way: the write end sends a few garbage
+            // bytes, which fails the SHA-256 check locally.
+            let held_model = HeldOpenModelFile::create();
+            std::env::set_var("SELAHCUE_STT_MODEL", &held_model.path);
+            std::env::set_var("SELAHCUE_STT_MODEL_SHA256", "0".repeat(64));
+            std::env::set_var("DEEPGRAM_API_KEY", "test-fixture-credential-000000");
+
+            // A tiny local stub that completes the WebSocket handshake — so the session this
+            // test drives actually reaches `Streaming` against it, which is what makes "the
+            // socket closes on revocation" a claim about a LIVE connection rather than one that
+            // never opened — then just watches for the peer to close, recording when. Same
+            // shape `selahcue-stt-cloud`'s own `tests/test_transport.rs`
+            // (`dropping_the_session_handle_stops_the_stream`) already uses and already proves
+            // works; reused rather than reinvented.
+            let runtime = tokio::runtime::Runtime::new().expect("build a tokio runtime");
+            let handshaken = Arc::new(AtomicBool::new(false));
+            let handshaken_server = Arc::clone(&handshaken);
+            let closed_at: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+            let closed_at_server = Arc::clone(&closed_at);
+            let port = runtime.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind loopback");
+                let port = listener.local_addr().expect("local addr").port();
+                tokio::spawn(async move {
+                    let Ok((stream, _)) = listener.accept().await else {
+                        return;
+                    };
+                    if let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await {
+                        handshaken_server.store(true, Ordering::SeqCst);
+                        while futures_util::StreamExt::next(&mut socket).await.is_some() {}
+                        *closed_at_server.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(Instant::now());
+                    }
+                });
+                port
+            });
+            std::env::set_var(
+                "SELAHCUE_STT_CLOUD_TEST_ENDPOINT",
+                format!("ws://127.0.0.1:{port}/v1/listen"),
+            );
+
+            let mut providers = ProvidersConfig::default();
+            providers.settings.transcription_mode = TranscriptionMode::Cloud;
+            providers.consent.cloud_transcription = true;
+
+            let app = tauri::test::mock_app();
+            let handle = app.handle().clone();
+            handle.manage(crate::AppState {
+                backend: crate::Backend::Local(crate::demo_shell()),
+                deck: Mutex::new(crate::DeckWorkspace::demo()),
+                library: Mutex::new(crate::DeckLibrary::load(None)),
+                providers: Mutex::new(providers),
+                providers_db: None,
+                secrets: crate::make_secret_store(),
+                link_error: Mutex::new(None),
+            });
+
+            let stop_worker = Arc::new(AtomicBool::new(false));
+            let (seg_tx, _seg_rx) = tokio::sync::mpsc::channel(8);
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+            let handle_for_worker = handle.clone();
+            let worker = std::thread::spawn(move || {
+                run_cloud(
+                    handle_for_worker,
+                    NullSource::new(),
+                    stop_worker,
+                    seg_tx,
+                    ready_tx,
+                );
+            });
+
+            assert!(
+                within(Duration::from_secs(10), || handshaken
+                    .load(Ordering::SeqCst)),
+                "the stub server never completed the WebSocket handshake — the session never \
+                 went live, so revoking consent below would prove nothing about tearing down a \
+                 LIVE connection"
+            );
+            let ready = runtime
+                .block_on(async { tokio::time::timeout(Duration::from_secs(5), ready_rx).await });
+            assert!(
+                matches!(ready, Ok(Ok(Ok(())))),
+                "run_cloud must report ready once the session starts, got {ready:?}"
+            );
+
+            // Revoke consent WHILE the session is live — the exact mid-service withdrawal
+            // `CONSENT_REVOKED_NOTICE` describes. `run_on_device`'s (real) `load_recognizer`
+            // is about to block on `held_model`'s FIFO, deterministically, until this test
+            // releases it below — so everything asserted before that release is a statement
+            // about state DURING the fallback, not after `run_cloud` has already returned.
+            let revoked_at = Instant::now();
+            handle
+                .state::<crate::AppState>()
+                .providers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .consent
+                .cloud_transcription = false;
+
+            // THE assertion this test exists for: the stub server's side of the socket actually
+            // closed — and, thanks to `held_model`, closed WHILE `run_on_device` is still
+            // blocked, not merely by the time `run_cloud` eventually returns. A build that
+            // reverts to the pre-fix `on_fallback` (which never touched `session` at all)
+            // leaves the session captured in a local that `run_cloud`'s own stack frame keeps
+            // alive for as long as `run_on_device` blocks — i.e. for as long as this test is
+            // willing to hold the FIFO — so `closed_at` would stay `None` here and this
+            // `within` would time out.
+            assert!(
+                within(Duration::from_secs(5), || {
+                    closed_at
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .is_some()
+                }),
+                "REMOVING `close_cloud_session` from `run_cloud`'s `on_fallback` closure must \
+                 fail this test: the stub server never saw the socket close WHILE the fallback \
+                 was still blocked in `load_recognizer` — this is the exact composition gap the \
+                 first remediation round shipped through (86akby7th PR #22 remediation round 2, \
+                 Cody High / Vera High)"
+            );
+
+            // POSITIVE CONTROL: confirm the premise that made the assertion above meaningful —
+            // `run_cloud` genuinely has not returned yet (still blocked on the FIFO). Without
+            // this, a `closed_at` set only AFTER `run_cloud` already returned (the buggy,
+            // Drop-at-unwind timing) could still race the check above and pass for the wrong
+            // reason on a slow CI runner.
+            assert!(
+                !worker.is_finished(),
+                "premise violated: run_cloud returned before this test released the FIFO, so \
+                 the assertion above proves nothing about ordering"
+            );
+            let closed_at = closed_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .expect("checked Some by the `within` above");
+            assert!(
+                closed_at >= revoked_at,
+                "the socket must not appear to close before consent was even revoked"
+            );
+
+            // Release the held FIFO so `load_recognizer` gets EOF, fails the SHA-256 check
+            // (the bytes sent are not a real model), and `run_on_device` — and with it,
+            // `run_cloud` — finally returns.
+            held_model.release();
+            assert!(
+                within(Duration::from_secs(5), || worker.is_finished()),
+                "run_cloud did not return after the held FIFO was released"
+            );
+            worker.join().expect("run_cloud must not panic");
+
+            std::env::remove_var("SELAHCUE_STT_MODEL");
+            std::env::remove_var("SELAHCUE_STT_MODEL_SHA256");
+            std::env::remove_var("DEEPGRAM_API_KEY");
+            std::env::remove_var("SELAHCUE_STT_CLOUD_TEST_ENDPOINT");
         }
     }
 }
