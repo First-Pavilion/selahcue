@@ -446,6 +446,18 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# workspace so it needs its own explicit lines.
 	$(CARGO) test $(OP) --features dev-keys,openai-notes --release --no-fail-fast
 	$(CARGO) clippy $(OP) --features dev-keys,openai-notes --release --all-targets -- -D warnings
+	# Cloud (Deepgram) live transcription (86akby7th): the operator's `cloud-stt` feature wires
+	# the already-tested `selahcue-stt-cloud` streaming session into `listening.rs`'s capture
+	# path. `cloud-stt` implies `stt` (mic capture lives in `selahcue-stt` regardless of which
+	# recognizer consumes it), so this line is the FIRST place `stt` itself -- and therefore all
+	# of `listening.rs` -- is compiled and linted under `-D warnings` in this gate at all: `stt`
+	# alone was never turned on above (`check`/`clippy $(OP)` are bare, `stt-preflight` guards
+	# only the interactive `operator`/`launch` targets). Without this line, `listening.rs` --
+	# where the routing decision this ticket exists to fix actually lives -- would be exactly as
+	# unlinted as `selahcue-stt` itself. Needs the whisper/cpal native toolchain (`stt-preflight`
+	# checks for it locally; GitHub-hosted runners carry cmake by default).
+	$(CARGO) clippy $(OP) --features stt,cloud-stt --all-targets -- -D warnings
+	$(CARGO) test $(OP) --features stt,cloud-stt --no-fail-fast
 	python3 scripts/operator_headless.py
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 	@echo ""

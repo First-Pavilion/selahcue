@@ -579,13 +579,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop/crates/selahcue-operator
-      - name: Linux system deps (Tauri v2 webview)
+      - name: Linux system deps (Tauri v2 webview + ALSA for cpal)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev libx11-dev libxkbcommon-dev
+            librsvg2-dev libx11-dev libxkbcommon-dev \
+            libasound2-dev
       - name: Stage Tauri sidecar/resource placeholders (compile-check only)
         # tauri-build validates that the externalBin sidecar (`selahcue-output`) and the NDI
         # resource dll exist at build time. This job COMPILE-checks the operator (it does not
@@ -686,6 +687,45 @@ jobs:
       - name: Test (dev-keys,openai-notes, RELEASE — the release refusals only hold here)
         if: ${{ !cancelled() }}
         run: cargo test --features dev-keys,openai-notes --release --no-fail-fast
+      # Cloud (Deepgram) live transcription (86akby7th): `cloud-stt` wires the already-tested
+      # `selahcue-stt-cloud` streaming session into `listening.rs`'s capture path. It implies
+      # `stt` (mic capture lives in `selahcue-stt` regardless of which recognizer consumes it),
+      # so THIS is the first step in this job that compiles `stt` -- and therefore all of
+      # `listening.rs`, where the routing decision this ticket fixes actually lives -- at all.
+      # Without it, `listening.rs` would be exactly as "linted and tested by nothing" as
+      # `selahcue-stt` itself (the standing example every feature-gate comment in this job
+      # cites). whisper-rs-sys's native build needs only a C/C++ toolchain + cmake, which all
+      # three GitHub-hosted runner images carry by default -- the same reason the `stt`-only
+      # build was never separately gated before now. It is NOT true, though, that this step
+      # needs no extra system packages at all: `stt` also pulls in `selahcue-stt`'s `capture`
+      # feature (`CpalSource`, real microphone capture via `cpal`), and on Linux `cpal` builds
+      # against ALSA -- `alsa-sys` fails to compile without the ALSA development headers.
+      #
+      # That gap shipped TWICE in this ticket's own remediation, which is worth recording
+      # exactly rather than smoothing over. First revision: this step and the Test step below
+      # were red on ubuntu only, `libasound2-dev` was missing everywhere, and a step comment
+      # claiming "no extra deps" was itself the confident-but-wrong signal this job's other
+      # comments warn about. Second revision (still this ticket): the fix was made -- but in
+      # the WRONG job. `libasound2-dev` was added to the `rust` job's "Linux system deps"
+      # step, a job that never compiles `selahcue-operator` at all (it is excluded from the
+      # workspace -- see this repo's CLAUDE.md) and has no `cpal` dependency to satisfy. This
+      # step and the Test step below stayed red, because each CI job runs on its OWN fresh
+      # runner -- a package installed in one job's runner does not exist in another's. The
+      # comment that "fixed" it even said so in the same breath it got the job wrong.
+      #
+      # `libasound2-dev` is installed in THIS job's ("operator", `ci.yml`'s `operator:` block)
+      # OWN "Linux system deps (Tauri v2 webview + ALSA for cpal)" step, a few lines above --
+      # not a step in a different job reached by the word "above" alone. Check the claim
+      # against `ci.yml`'s `operator:` job, not against this comment. A macOS `make ci` run
+      # cannot catch this class of gap by construction (Core Audio needs no such package) --
+      # see CLAUDE.md's "One OS, not three" note; nor would a mismatched-job fix ever be
+      # caught by re-reading the diff instead of the actual GitHub Actions run.
+      - name: Clippy (stt,cloud-stt)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features stt,cloud-stt --all-targets -- -D warnings
+      - name: Test (stt,cloud-stt)
+        if: ${{ !cancelled() }}
+        run: cargo test --features stt,cloud-stt --no-fail-fast
       # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
       # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
       # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-

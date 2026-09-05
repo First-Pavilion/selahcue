@@ -45,6 +45,17 @@ dev-keys = []
 # feature is deleted when that lands. Enable with a key in the repo-root `.env`
 # (86akby6yy) or exported in the shell.
 openai-notes = ["selahcue-cloud/openai", "selahcue-cloud/http"]
+# Cloud (Deepgram) live transcription (86akby7th), streaming real microphone audio through the
+# already-tested `selahcue-stt-cloud` crate. Implies `stt`: mic capture (`CpalSource`) and
+# resampling live in `selahcue-stt` regardless of which recognizer consumes the audio, so this
+# feature only chooses which recognizer that is. OFF by default, so a stock build pulls in no
+# async runtime or WebSocket stack (`selahcue-stt-cloud` itself is always a dependency — its
+# default features are empty, so it costs nothing until `deepgram` is turned on here) and the
+# Providers & Privacy panel honestly reports cloud transcription as not built. This is
+# deliberately throwaway, like `openai-notes`: the shipping path is a server-minted Deepgram
+# grant token (86akby3xu), and this developer-key path is deleted when that lands. Enable with
+# `DEEPGRAM_API_KEY` in the repo-root `.env` (86akby6yy): `cargo run --features cloud-stt`.
+cloud-stt = ["stt", "selahcue-stt-cloud/deepgram"]
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -74,6 +85,14 @@ selahcue-data = { path = "../selahcue-data" }
 # build compiles the offline half only (in-memory secret store, no HTTP); the `cloud-live`
 # feature adds the real transport + OS keychain token.
 selahcue-cloud = { path = "../selahcue-cloud" }
+# Cloud (Deepgram) transcription readiness + the `TranscriptProvider` seam (86akby4yz).
+# NOT optional: with the `deepgram` feature off (the default) this crate pulls in only
+# `selahcue-core` + `serde_json` — no async runtime, no WebSocket stack — so keeping it
+# unconditional lets `providers_view` report cloud-transcription readiness honestly (built vs.
+# not, key present vs. not) in every operator build, not just one compiled with `cloud-stt`.
+# The real streaming session (`selahcue_stt_cloud::transport`) stays behind `deepgram`,
+# unified on via the operator's own `cloud-stt` feature above.
+selahcue-stt-cloud = { path = "../selahcue-stt-cloud" }
 # On-device STT engine (optional; behind the `stt` feature). Pulls the native whisper.cpp +
 # cpal backends ONLY when `stt` is enabled — the default build never touches them.
 selahcue-stt = { path = "../selahcue-stt", features = ["whisper", "capture", "download"], optional = true }
@@ -84,6 +103,29 @@ selahcue-stt = { path = "../selahcue-stt", features = ["whisper", "capture", "do
 # when the `stt` feature enables the optional dep.
 [target.'cfg(target_os = "macos")'.dependencies]
 selahcue-stt = { path = "../selahcue-stt", features = ["metal"], optional = true }
+
+# Test-only. `tauri`'s `test` feature adds `tauri::test::mock_app`/`MockRuntime` — a REAL
+# `App`/`AppHandle` with no window, no webview, and no OS integration — used by
+# `listening.rs`'s `run_cloud` composition test (86akby7th PR #22 remediation round 2) so that
+# test can drive the actual production closures (not a re-implementation of them) with managed
+# `AppState`, rather than being blocked on "no AppHandle without a real Tauri app". Cargo
+# unifies dev-dependency features into the SAME `tauri` crate only for test/bench/example
+# builds, so this adds nothing to a normal `cargo build`/release binary. `tokio-tungstenite` +
+# `futures-util` mirror the exact versions and feature set `selahcue-stt-cloud`'s own
+# `tests/test_transport.rs` already uses to run a local stub Deepgram-shaped WebSocket server —
+# same proven pattern, reused rather than reinvented, to let the composition test drive a REAL
+# `CloudSttSession` against a loopback stub and observe the socket close.
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = [
+    "connect",
+    "handshake",
+] }
+futures-util = { version = "0.3", default-features = false, features = [
+    "sink",
+    "std",
+] }
 
 [lints.clippy]
 unwrap_used = "warn"

@@ -264,6 +264,21 @@ mod cpal_source {
         pub fn peak_level(&self) -> f32 {
             f32::from_bits(self.peak.swap(0, Ordering::Relaxed))
         }
+
+        /// The device's real reported sample rate (Hz) — for a capture→consumer hand-off cap
+        /// derived from the ACTUAL device configuration
+        /// (`selahcue_core::audio_capacity::handoff_capacity`) rather than an assumed literal.
+        pub fn sample_rate(&self) -> u32 {
+            self.sample_rate
+        }
+
+        /// The device's real reported channel count — see [`CpalSource::sample_rate`]. Every
+        /// [`AudioChunk`] this source produces already carries its own `sample_rate`/`channels`
+        /// (set at construction, above), so this is the same value read before the first chunk
+        /// exists — e.g. to size a hand-off before capture has produced anything to inspect.
+        pub fn channels(&self) -> u16 {
+            self.channels
+        }
     }
 
     impl AudioSource for CpalSource {

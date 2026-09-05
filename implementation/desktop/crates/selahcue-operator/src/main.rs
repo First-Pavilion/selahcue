@@ -35,6 +35,22 @@ mod autolaunch;
 #[cfg(feature = "stt")]
 mod listening;
 
+/// The bounded capture→consumer audio hand-off shared by the on-device and Cloud transcription
+/// routes (86akby7th) — lives in its own module so neither route reaches into the other's file
+/// for it. Depends on `selahcue_stt::audio::AudioChunk`, so it follows `listening.rs`'s own
+/// `stt` gate (there is nothing for it to hand audio off to without that feature).
+#[cfg(feature = "stt")]
+mod capture_handoff;
+
+/// Where live transcription should run (Cloud vs. on-device) — pure, and consumed only by
+/// `listening.rs` (`stt`-gated), so the module itself follows the same gate for production
+/// builds. `cfg(test)` widens that for `cargo test`/`cargo clippy --all-targets` specifically:
+/// the routing decision is exercised by its own test module with **no feature flags at all**
+/// (86akby7th) — the point being that `TranscriptionRoute::decide` is pure enough not to need
+/// `stt`'s native toolchain to verify, even though nothing calls it in a build without `stt`.
+#[cfg(any(test, feature = "stt"))]
+mod transcription_route;
+
 /// The Presentation & Media editing workspace (Design 2.0, node 329:124) — the authored deck +
 /// media library the console edits, behind the deck/media Tauri commands.
 mod deck_workspace;
@@ -2398,19 +2414,20 @@ async fn cancel_download() -> Result<(), String> {
 /// Splitting it this way is deliberate: this crate is excluded from the workspace AND its
 /// `stt` feature is off in CI, so any judgement made here would be verified by nothing.
 #[cfg(feature = "stt")]
-fn detector_observations() -> (bool, Option<String>, Option<String>) {
+fn detector_observations() -> (bool, Option<String>, Option<String>, Option<String>) {
     (
         listening::is_listening(),
         listening::last_failure(),
         listening::provider_label(),
+        listening::engine_note(),
     )
 }
 
 /// Without the `stt` feature there is no detector in this binary at all — so it is not idle,
 /// not failed, and cannot be retried. Reporting anything else would be a fabrication.
 #[cfg(not(feature = "stt"))]
-fn detector_observations() -> (bool, Option<String>, Option<String>) {
-    (false, None, None)
+fn detector_observations() -> (bool, Option<String>, Option<String>, Option<String>) {
+    (false, None, None, None)
 }
 
 /// Whether a detector is compiled into this binary. A build constant, not a runtime condition.
@@ -2418,7 +2435,7 @@ const DETECTOR_COMPILED: bool = cfg!(feature = "stt");
 
 /// The detector's current state, derived by the pure core rule.
 fn current_detector_state() -> DetectorState {
-    let (worker_running, last_failure, _) = detector_observations();
+    let (worker_running, last_failure, _, _) = detector_observations();
     detector_state(DetectorSignals {
         compiled: DETECTOR_COMPILED,
         worker_running,
@@ -2440,16 +2457,21 @@ struct DetectionHealthReply {
     /// Whether a retry could actually change anything. Derived from the state's own
     /// permission rule, never set by hand, so it cannot disagree with `retry_detection`.
     can_retry: bool,
+    /// Why `provider` is not what Settings' `transcription_mode` says, or that it changed
+    /// mid-service (86akby7th) — e.g. Cloud selected without consent, or a live Cloud session
+    /// that failed over to on-device. `None` when there is nothing to explain.
+    note: Option<String>,
 }
 
 fn detection_health_reply() -> DetectionHealthReply {
     let state = current_detector_state();
-    let (_, last_failure, provider) = detector_observations();
+    let (_, last_failure, provider, note) = detector_observations();
     DetectionHealthReply {
         state: state.tag(),
         provider,
         error: last_failure,
         can_retry: state.retry_request().is_some(),
+        note,
     }
 }
 
@@ -2722,6 +2744,54 @@ struct NotesProviderView {
     developer_key: bool,
 }
 
+/// Who serves Cloud transcription, for the transcription card's honest-readiness disclosure
+/// (86akby7th) — the same shape as [`NotesProviderView`], for the same reason: `Some` exactly
+/// when `transcription_available` is true, never a provider named while unavailable and never
+/// availability claimed with no provider to name.
+#[derive(serde::Serialize)]
+struct TranscriptionProviderView {
+    /// Machine-readable: `"deepgram"`. Branch on this, not on the display name.
+    kind: String,
+    /// Human-readable provider name — the string the card's disclosure renders (FR-120/FR-132).
+    name: String,
+    /// The model actually requested (e.g. `"nova-3"`).
+    model: String,
+    /// True while this is the Phase 1 developer-key path rather than a server-minted grant
+    /// token (Phase 2 sets it false) — mirrors `NotesProviderView::developer_key`.
+    developer_key: bool,
+}
+
+/// Availability + named provider for Cloud transcription, from an **already-resolved**
+/// [`selahcue_stt_cloud::readiness::CloudSttStatus`].
+///
+/// Split from [`transcription_status`] for the same reason [`notes_status_from`] is split from
+/// [`notes_status`], after the same mistake: `transcription_status()` resolves from real build
+/// `cfg!` + the process environment, so a test calling it directly can only ever observe the
+/// ONE state this compilation and this environment happen to be in — which can never be the
+/// state where `transcription_available` must be **true**, the one place a hardcoded `false`
+/// would be caught. Taking the resolved status as a parameter — built from
+/// `CloudSttReadiness::{NotInBuild,KeyMissing,Ready}.status()`, all three constructible in a
+/// test regardless of feature flags — makes every state reachable.
+fn transcription_status_from(
+    status: selahcue_stt_cloud::readiness::CloudSttStatus,
+) -> (bool, Option<TranscriptionProviderView>) {
+    let provider = status.provider.map(|p| TranscriptionProviderView {
+        kind: p.kind.to_string(),
+        name: p.name.to_string(),
+        model: p.model.to_string(),
+        developer_key: p.developer_key,
+    });
+    (status.ready, provider)
+}
+
+/// This build's and this environment's real Cloud-transcription readiness. Always callable:
+/// `selahcue-stt-cloud` is an unconditional dependency, so this build can report honestly
+/// (`not_in_build`) even when `cloud-stt` is off, exactly the way `stt_ready()` reports
+/// `not_in_build` for on-device when `stt` is off.
+fn transcription_status() -> (bool, Option<TranscriptionProviderView>) {
+    transcription_status_from(selahcue_stt_cloud::readiness::readiness().status())
+}
+
 /// The full Providers & Privacy panel state (node 338:124). `quota` is `None` until a live cloud
 /// fetch returns one — never a fabricated figure (the server owns the count, and it does not exist
 /// yet), matching the console's "no guessed numbers" convention.
@@ -2770,6 +2840,13 @@ struct ProvidersView {
     notes_provider: Option<NotesProviderView>,
     account_token_set: bool,
     quota: Option<QuotaView>,
+    /// Whether Cloud (Deepgram) transcription can actually run right now — mirrors
+    /// `notes_available`/`notes_provider` exactly, and for the same reason: the card must
+    /// never claim availability with no provider to name, and never name a provider while
+    /// reporting unavailable (86akby7th). See `transcription_status_from`.
+    transcription_available: bool,
+    /// Who serves Cloud transcription. `Some` iff `transcription_available`.
+    transcription_provider: Option<TranscriptionProviderView>,
 }
 
 fn providers_templates() -> Vec<TemplateOption> {
@@ -2971,6 +3048,8 @@ fn providers_view_from(
     account_token_set: bool,
     cloud_status: String,
     notes_provider: Option<NotesProviderView>,
+    transcription_available: bool,
+    transcription_provider: Option<TranscriptionProviderView>,
 ) -> ProvidersView {
     // Derived from the provider rather than computed alongside it, so the two cannot disagree.
     //
@@ -3013,6 +3092,8 @@ fn providers_view_from(
         // panel's honest placeholder is the correct output. A generation counter or session tally
         // would be a fabricated meter — the exact thing settings.js refuses to render.
         quota: None,
+        transcription_available,
+        transcription_provider,
     }
 }
 
@@ -3054,6 +3135,8 @@ mod providers_view_tests {
             "notes_provider",
             "account_token_set",
             "quota",
+            "transcription_available",
+            "transcription_provider",
         ];
         expected.sort_unstable();
         assert_eq!(
@@ -3201,6 +3284,8 @@ mod providers_view_tests {
                 false,
                 status.to_string(),
                 Some(provider),
+                false,
+                None,
             ))
             .expect("the view serialises");
 
@@ -3217,9 +3302,15 @@ mod providers_view_tests {
 
         // And the other direction, through the same function, so one expression is pinned both ways.
         for status in ["not_configured", "key_missing"] {
-            let v =
-                serde_json::to_value(providers_view_from(&cfg, false, status.to_string(), None))
-                    .expect("the view serialises");
+            let v = serde_json::to_value(providers_view_from(
+                &cfg,
+                false,
+                status.to_string(),
+                None,
+                false,
+                None,
+            ))
+            .expect("the view serialises");
             assert_eq!(
                 v["notes_available"],
                 serde_json::json!(false),
@@ -3228,6 +3319,87 @@ mod providers_view_tests {
             );
             assert!(v["notes_provider"].is_null());
         }
+    }
+
+    /// `transcription_available`'s own version of `notes_available_is_true_in_the_view_when_a_provider_is_named`
+    /// — same trust bug shape, same fix shape. Drives `transcription_status_from` with a
+    /// **constructed** `CloudSttReadiness`, which is what makes the `Ready` state reachable
+    /// from a test regardless of whether this compilation has `cloud-stt` on: a call to
+    /// `transcription_status()` itself could only ever observe ONE build's real readiness, so a
+    /// hardcoded `transcription_available = false` would satisfy every test that called it
+    /// directly — exactly the `notes_available` postmortem repeated one field over.
+    #[test]
+    fn transcription_available_is_true_in_the_view_when_a_provider_is_named() {
+        use selahcue_stt_cloud::readiness::CloudSttReadiness;
+
+        let cfg = selahcue_core::providers::ProvidersConfig::default();
+
+        // POSITIVE: Ready names a provider, and that must flip transcription_available TRUE.
+        let (available, provider) = transcription_status_from(CloudSttReadiness::Ready.status());
+        let v = serde_json::to_value(providers_view_from(
+            &cfg,
+            false,
+            "not_configured".to_string(),
+            None,
+            available,
+            provider,
+        ))
+        .expect("the view serialises");
+        assert_eq!(
+            v["transcription_available"],
+            serde_json::json!(true),
+            "a named provider (readiness == Ready) must make transcription_available TRUE — \
+             reporting false here is the exact bug 86akby7th exists to fix: the card would deny \
+             a feature that is actually configured"
+        );
+        assert!(!v["transcription_provider"].is_null());
+        assert_eq!(v["transcription_provider"]["kind"], "deepgram");
+
+        // NEGATIVE, both ineligible states, through the SAME function so one expression is
+        // pinned in both directions.
+        for readiness in [CloudSttReadiness::NotInBuild, CloudSttReadiness::KeyMissing] {
+            let (available, provider) = transcription_status_from(readiness.status());
+            let v = serde_json::to_value(providers_view_from(
+                &cfg,
+                false,
+                "not_configured".to_string(),
+                None,
+                available,
+                provider,
+            ))
+            .expect("the view serialises");
+            assert_eq!(
+                v["transcription_available"],
+                serde_json::json!(false),
+                "no provider must mean transcription_available FALSE for {readiness:?} — the \
+                 fix must not invert into over-reporting (claiming Cloud is ready when it is not \
+                 is the worse of the two directions: it lets an operator opt in to silence)"
+            );
+            assert!(v["transcription_provider"].is_null());
+        }
+    }
+
+    #[test]
+    fn the_transcription_provider_object_keys_are_pinned() {
+        // settings.js reads these, and `name` is the FR-120/FR-132 disclosure string — the one
+        // the card renders to say which engine is producing the transcript.
+        use selahcue_stt_cloud::readiness::CloudSttReadiness;
+        let (_, provider) = transcription_status_from(CloudSttReadiness::Ready.status());
+        let provider = provider.expect("Ready must name a provider");
+        let v = serde_json::to_value(provider).expect("serialises");
+        let mut got: Vec<&str> = v
+            .as_object()
+            .expect("transcription_provider is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec!["developer_key", "kind", "model", "name"],
+            "the transcription_provider surface changed; settings.js must be updated in the \
+             SAME merge request"
+        );
     }
 
     /// The key check, driven by value rather than by the process environment.
@@ -3270,8 +3442,10 @@ mod providers_view_tests {
             let direct = direct_provider_from_key(Some("sk-proj-test"), model);
             let (status, provider) = notes_status_from(Hosted(None), direct, true);
             assert_eq!(status, "direct_provider");
-            let v = serde_json::to_value(providers_view_from(&cfg, false, status, provider))
-                .expect("the view serialises");
+            let v = serde_json::to_value(providers_view_from(
+                &cfg, false, status, provider, false, None,
+            ))
+            .expect("the view serialises");
             assert_eq!(
                 v["notes_provider"]["model"], model,
                 "the panel must show the model actually configured; showing the default would \
@@ -3324,8 +3498,10 @@ mod providers_view_tests {
                 "premise: an exported key must name a provider in a debug build, or the model \
                  assertion below cannot run"
             );
-            let v = serde_json::to_value(providers_view_from(&cfg, false, status, provider))
-                .expect("the view serialises");
+            let v = serde_json::to_value(providers_view_from(
+                &cfg, false, status, provider, false, None,
+            ))
+            .expect("the view serialises");
             assert_eq!(
                 v["notes_provider"]["model"], "sentinel-model-from-env",
                 "the panel reported a model other than the one exported — QA cannot tell a \
@@ -3447,7 +3623,15 @@ fn providers_view_of(
     account_token_set: bool,
 ) -> ProvidersView {
     let (cloud_status, notes_provider) = notes_status(account_token_set);
-    providers_view_from(cfg, account_token_set, cloud_status, notes_provider)
+    let (transcription_available, transcription_provider) = transcription_status();
+    providers_view_from(
+        cfg,
+        account_token_set,
+        cloud_status,
+        notes_provider,
+        transcription_available,
+        transcription_provider,
+    )
 }
 
 fn account_token_is_set(state: &State<'_, AppState>) -> bool {
