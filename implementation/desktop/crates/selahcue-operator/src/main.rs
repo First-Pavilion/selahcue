@@ -2841,14 +2841,20 @@ fn direct_provider_from_key(key: Option<&str>, model: &str) -> Direct {
     }))
 }
 
+/// **Also refuses in a release profile**, via `selahcue_cloud::openai::direct_key_permitted` —
+/// the same predicate that gates `OpenAiNoteProvider::from_env`, the function that actually
+/// performs generation (86akcmzyq, Cody's High finding on PR #24). Before this, this status
+/// function had no profile check at all: a release build could report `"direct_provider"` from
+/// whatever `OPENAI_API_KEY` happened to be exported, even once `from_env` itself refused to use
+/// it — a panel claiming a working provider that generation would then fail to produce. The key
+/// is not read at all when the profile refuses, matching `from_env`'s own behaviour so the panel
+/// and the actual generation path never disagree.
 #[cfg(feature = "openai-notes")]
 fn direct_notes_provider() -> Direct {
-    direct_provider_from_key(
-        std::env::var(selahcue_cloud::openai::API_KEY_ENV)
-            .ok()
-            .as_deref(),
-        &selahcue_cloud::openai::model_from_env(),
-    )
+    let key = selahcue_cloud::openai::direct_key_permitted(cfg!(debug_assertions))
+        .then(|| std::env::var(selahcue_cloud::openai::API_KEY_ENV).ok())
+        .flatten();
+    direct_provider_from_key(key.as_deref(), &selahcue_cloud::openai::model_from_env())
 }
 
 #[cfg(not(feature = "openai-notes"))]
@@ -3290,6 +3296,14 @@ mod providers_view_tests {
     /// sets luna, the REQUEST correctly uses luna, and the PANEL says terra — so the one surface
     /// QA reads to confirm the switch is the one that lies. That is precisely the
     /// "unfalsifiable from outside" failure the model field exists to prevent.
+    ///
+    /// Extended for 86akcmzyq (Cody's High finding): `direct_notes_provider` now also refuses in
+    /// a release profile, mirroring `OpenAiNoteProvider::from_env`. `cfg!(debug_assertions)` is
+    /// fixed for the life of one compiled test binary, so this asserts whichever branch THIS
+    /// profile actually compiled — `cargo test` (debug) takes the `if`, `cargo test --release`
+    /// (added to `make ci`/CI alongside this fix) takes the `else`. One test, both arms proven by
+    /// running it in both profiles, the same shape as `selahcue-licensing`'s
+    /// `..._iff_it_is_a_debug_build`.
     #[cfg(feature = "openai-notes")]
     #[test]
     fn the_environment_reaches_the_view_not_only_the_request() {
@@ -3303,17 +3317,36 @@ mod providers_view_tests {
         std::env::remove_var(selahcue_cloud::openai::API_KEY_ENV);
 
         let (status, provider) = notes_status_from(Hosted(None), direct, true);
-        assert_eq!(
-            status, "direct_provider",
-            "premise: an exported key must name a provider, or the model assertion below cannot run"
-        );
-        let v = serde_json::to_value(providers_view_from(&cfg, false, status, provider))
-            .expect("the view serialises");
-        assert_eq!(
-            v["notes_provider"]["model"], "sentinel-model-from-env",
-            "the panel reported a model other than the one exported — QA cannot tell a failed \
-             override from a stale display, which makes the whole switch unverifiable"
-        );
+
+        if cfg!(debug_assertions) {
+            assert_eq!(
+                status, "direct_provider",
+                "premise: an exported key must name a provider in a debug build, or the model \
+                 assertion below cannot run"
+            );
+            let v = serde_json::to_value(providers_view_from(&cfg, false, status, provider))
+                .expect("the view serialises");
+            assert_eq!(
+                v["notes_provider"]["model"], "sentinel-model-from-env",
+                "the panel reported a model other than the one exported — QA cannot tell a \
+                 failed override from a stale display, which makes the whole switch unverifiable"
+            );
+        } else {
+            // The release half of 86akcmzyq's Cody finding: a RELEASE build must not construct a
+            // working direct provider from an exported OPENAI_API_KEY, even with openai-notes
+            // compiled in — matching the layer-2 guard dev_env::load() already has for dev-keys.
+            // If this goes back to "direct_provider", direct_key_permitted stopped being wired
+            // into direct_notes_provider (inverted, hardcoded, or the gate was removed).
+            assert_eq!(
+                status, "key_missing",
+                "a RELEASE build reported a working direct provider from an exported \
+                 OPENAI_API_KEY — see selahcue_cloud::openai::direct_key_permitted"
+            );
+            assert!(
+                provider.is_none(),
+                "key_missing must carry no provider view"
+            );
+        }
         assert_ne!(
             "sentinel-model-from-env",
             selahcue_cloud::openai::DEFAULT_MODEL,

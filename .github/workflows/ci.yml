@@ -228,6 +228,25 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: sh scripts/check_toolchain.sh
+      # Quinn's process finding on PR #24 (86akcmzyq): the PR template's feature-flag-
+      # reachability section is three checkboxes a human ticks, unenforced by CI — exactly the
+      # human step that let 86akby7d8 ship, merge, and stay invisible from `make launch` in the
+      # first place. This makes it a build failure instead: asserts `make -n launch`/`make -n
+      # operator`'s resolved feature list is a superset of the features the product has decided
+      # must be default-reachable (dev-keys/openai-notes today, 86akcmzrd). Linux only — `make`
+      # itself is only proven cross-OS-reliable in this pipeline's own `nfr` job, which gates its
+      # `make nfr` step the same way ("Windows is a POSIX-script limit"); `make ci` runs this
+      # unconditionally since that always runs on whatever machine a developer is actually on.
+      - name: Feature-flag reachability (make launch / make operator resolve the required set)
+        # Setup-zone `if:` (implicit success()), NOT !cancelled(): this step sits before Format,
+        # the first gate below, and check_workflows.py's ordinal rule forbids a success()-default
+        # step running after a !cancelled() one — verified by running that checker against this
+        # exact placement.
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 scripts/check_launch_reachability.py --self-test
+          python3 scripts/check_launch_reachability.py
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
@@ -422,6 +441,18 @@ jobs:
       - name: Test (cloud openai feature — OpenAI note provider, stub transport only)
         if: ${{ !cancelled() }}
         run: cargo test -p selahcue-cloud --features openai --no-fail-fast
+      # THE release-profile half of Cody's High finding on PR #24 (86akcmzyq): `from_env` read
+      # OPENAI_API_KEY with no profile check at all until `direct_key_permitted` was added — a
+      # bare `cargo build --release --features openai-notes`, no dev-keys, bypassing `make`
+      # entirely, built a working direct-to-OpenAI release binary from whatever key happened to
+      # already be exported. The debug step above never exercises that guard's release arm; same
+      # shape as the licensing crate's RELEASE test further up this job.
+      - name: Test (cloud openai feature, RELEASE — the direct-key release refusal only holds here)
+        if: ${{ !cancelled() }}
+        run: cargo test -p selahcue-cloud --features openai --release --no-fail-fast
+      - name: Clippy (cloud openai feature, RELEASE)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p selahcue-cloud --features openai --release --all-targets -- -D warnings
       # The Deepgram streaming transport (86akby4yz) is behind an off-by-default feature, so the
       # workspace run does not build it. An off-by-default feature no gate compiles is how
       # selahcue-stt ended up linted and tested by nothing; this keeps that from repeating.
@@ -629,6 +660,20 @@ jobs:
       - name: Test (dev-keys,openai-notes)
         if: ${{ !cancelled() }}
         run: cargo test --features dev-keys,openai-notes --no-fail-fast
+      # THE release-profile gate on this crate (Sana's Medium-Low finding on PR #24, 86akcmzyq):
+      # every operator test above runs in DEBUG only, so `dev_env.rs`'s
+      # `loads_the_env_file_iff_this_is_a_debug_build` and main.rs's
+      # `the_environment_reaches_the_view_not_only_the_request` never exercised their RELEASE arm
+      # in any gate -- a hardcoded argument, an inverted `!`, or a deleted early return in either
+      # guard's call site would have passed every check above green. Same shape as the licensing
+      # crate's RELEASE test in the `rust` job; `selahcue-operator` is excluded from the
+      # workspace, so it needs its own explicit lines, on all three OSes like the steps above.
+      - name: Clippy (dev-keys,openai-notes, RELEASE)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features dev-keys,openai-notes --release --all-targets -- -D warnings
+      - name: Test (dev-keys,openai-notes, RELEASE — the release refusals only hold here)
+        if: ${{ !cancelled() }}
+        run: cargo test --features dev-keys,openai-notes --release --no-fail-fast
       # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
       # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
       # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-

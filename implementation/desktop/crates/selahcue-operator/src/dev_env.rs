@@ -536,18 +536,39 @@ fn load_from(_path: &std::path::Path) -> Report {
 /// actually ships, and this check does not make that scan redundant.
 #[cfg(feature = "dev-keys")]
 pub fn load() {
+    for line in load_lines() {
+        eprintln!("{line}");
+    }
+}
+
+/// `load()`'s body, minus the printing — returns what it WOULD print instead of writing to
+/// stderr, so a test can assert on the return value directly. `load()` above is now just the
+/// `for line in load_lines() { eprintln!(...) }` loop; every branch this doc comment on `load()`
+/// describes lives here.
+///
+/// **Splitting this out is what makes the release-profile call site itself testable** (86akcmzyq,
+/// Sana's finding on PR #24: the predicate `should_load_env_file` was mutation-tested, but the
+/// call site `if !should_load_env_file(cfg!(debug_assertions))` was not — a future edit that
+/// hardcodes the argument, inverts the `!`, or deletes the early return would pass every other
+/// gate). Calling `load()` itself and asserting on the process environment cannot distinguish
+/// "the release branch returned early" from "the debug branch ran `load_from` and the real
+/// repo-root `.env` happened to leave this test's probe untouched" — that file's content varies
+/// per developer machine, which is the entire point of it existing. The two branches' RETURN
+/// VALUES are distinguishable regardless of file content instead: the release branch always
+/// returns exactly the one hardcoded refusal line below, and `startup_lines(&report)` never
+/// produces that exact text. See `loads_the_env_file_iff_this_is_a_debug_build`.
+#[cfg(feature = "dev-keys")]
+fn load_lines() -> Vec<String> {
     if !should_load_env_file(cfg!(debug_assertions)) {
-        eprintln!(
+        return vec![
             "selahcue dev-keys: release profile detected (debug_assertions=false) — skipping \
              the .env loader. A --release build of selahcue-operator must never read developer \
              keys from a stray .env; see dev_env.rs for why."
-        );
-        return;
+                .to_string(),
+        ];
     }
     let report = load_from(std::path::Path::new(REPO_ROOT_ENV_FILE));
-    for line in startup_lines(&report) {
-        eprintln!("{line}");
-    }
+    startup_lines(&report)
 }
 
 /// Whether `load()` should proceed to read `.env`, given a resolved debug/release input.
@@ -1352,6 +1373,42 @@ mod tests {
                 "a debug-profile (debug_assertions=true) input was refused — dev-keys would stop \
                  working in ordinary `cargo run`/`cargo test`, not just in --release"
             );
+        }
+
+        /// The wiring test the two above do not give: they prove the extracted PREDICATE is
+        /// correct in isolation, but nothing called `load()`/`load_lines()` itself, so a mutation
+        /// at the call site (hardcode the argument, invert the `!`, drop the early return) would
+        /// pass both of them unchanged. This calls `load_lines()` — `load()`'s real body, see its
+        /// doc comment for why the return value rather than the environment is what gets
+        /// asserted on. One test, run once per profile by `make ci`/CI (`cargo test -p
+        /// selahcue-operator --features dev-keys` and the `--release` sibling added alongside
+        /// this fix), asserting whichever branch that profile actually compiled — the same shape
+        /// as `selahcue-licensing`'s `..._iff_it_is_a_debug_build`.
+        #[test]
+        fn loads_the_env_file_iff_this_is_a_debug_build() {
+            let lines = load_lines();
+            let is_release_refusal = lines.iter().any(|l| l.contains("release profile detected"));
+
+            if cfg!(debug_assertions) {
+                assert!(
+                    !is_release_refusal,
+                    "a debug build printed the release-profile refusal message — load()'s debug \
+                     branch stopped reaching the file loader. Lines: {lines:?}"
+                );
+            } else {
+                assert!(
+                    is_release_refusal,
+                    "a RELEASE build did not print the release-profile refusal message — the \
+                     release guard in load() stopped firing (inverted `!`, a hardcoded argument, \
+                     or the early return was removed). Lines: {lines:?}"
+                );
+                assert_eq!(
+                    lines.len(),
+                    1,
+                    "a release refusal must be the ONLY line load_lines() returns — nothing from \
+                     load_from should run alongside it. Lines: {lines:?}"
+                );
+            }
         }
     }
 }

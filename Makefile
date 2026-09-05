@@ -370,6 +370,16 @@ mobile-test: ## Analyze + unit-test the Flutter controller
 # smuggle into a toolchain fix.
 ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that this does not)
 	sh scripts/check_toolchain.sh
+	# Quinn's process finding on PR #24 (86akcmzyq): the PR template's feature-flag-reachability
+	# section is three checkboxes a human ticks, unenforced by CI -- exactly the human step that
+	# let 86akby7d8 ship, merge, and stay invisible from `make launch` in the first place. This
+	# makes it a build failure instead: asserts `make -n launch`/`make -n operator`'s resolved
+	# feature list is a superset of the features the product has decided must be default-
+	# reachable (currently dev-keys/openai-notes, 86akcmzrd). Self-test first (fixture-driven,
+	# no `make`/cargo dependency) so the comparison LOGIC itself is covered before trusting it
+	# against the real Makefile.
+	python3 scripts/check_launch_reachability.py --self-test
+	python3 scripts/check_launch_reachability.py
 	cd $(DESKTOP) && $(CARGO) fmt --check
 	cd $(OPERATOR) && $(CARGO) fmt --check
 	$(CARGO) clippy $(WS) --workspace --all-targets -- -D warnings
@@ -397,6 +407,15 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# workspace run above does NOT cover it. Lint + test it explicitly: an off-by-default feature
 	# that no gate ever compiles is exactly how selahcue-stt ended up linted by nothing.
 	$(CARGO) test $(WS) -p selahcue-cloud --features openai --no-fail-fast
+	# THE release-profile half of the boundary named in Cody's High finding on PR #24
+	# (86akcmzyq): `OpenAiNoteProvider::from_env` reads OPENAI_API_KEY with no profile check at
+	# all until `direct_key_permitted` (openai.rs) was added -- a bare `cargo build --release
+	# --features openai-notes`, with no `dev-keys` and bypassing `make` entirely, built a working
+	# direct-to-OpenAI release binary from whatever key happened to already be exported. Debug
+	# above does not exercise the release arm of `direct_key_permitted`/`from_env`'s `iff` tests;
+	# this is the licensing-crate pattern (`test -p selahcue-licensing --release`) applied here.
+	$(CARGO) test $(WS) -p selahcue-cloud --features openai --release --no-fail-fast
+	$(CARGO) clippy $(WS) -p selahcue-cloud --features openai --release --all-targets -- -D warnings
 	# The Deepgram streaming transport (86akby4yz) is behind an off-by-default feature, so the
 	# workspace run above does NOT build it. Lint + test it explicitly: an off-by-default feature
 	# that no gate ever compiles is exactly how selahcue-stt ended up linted by nothing. The
@@ -417,6 +436,16 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# nothing catches a regression here without a line that runs on every push.
 	$(CARGO) clippy $(OP) --features dev-keys,openai-notes --all-targets -- -D warnings
 	$(CARGO) test $(OP) --features dev-keys,openai-notes --no-fail-fast
+	# THE release-profile gate on the operator crate itself (Sana's Medium-Low finding on PR #24,
+	# 86akcmzyq): every operator test above runs in DEBUG only, so `dev_env.rs`'s
+	# `loads_the_env_file_iff_this_is_a_debug_build` and main.rs's
+	# `the_environment_reaches_the_view_not_only_the_request` never exercised their RELEASE arm
+	# in any gate -- a hardcoded argument, an inverted `!`, or a deleted early return in either
+	# guard's call site passed every automated check green. Same shape as the licensing crate's
+	# `test -p selahcue-licensing --release` pair above; `selahcue-operator` is excluded from the
+	# workspace so it needs its own explicit lines.
+	$(CARGO) test $(OP) --features dev-keys,openai-notes --release --no-fail-fast
+	$(CARGO) clippy $(OP) --features dev-keys,openai-notes --release --all-targets -- -D warnings
 	python3 scripts/operator_headless.py
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 	@echo ""

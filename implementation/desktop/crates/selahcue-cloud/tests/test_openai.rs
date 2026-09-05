@@ -15,10 +15,10 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_cloud::openai::{
-    bounded_transcript, draft_schema, map_error_status, model_from_env, parse_draft, Bound,
-    OpenAiNoteProvider, DEFAULT_MODEL, MAX_ITEM_CHARS, MAX_OUTPUT_TOKENS,
-    MAX_PARSED_RESPONSE_BYTES, MAX_POINTS, MAX_SCRIPTURES, MAX_SECTION_ITEMS, MAX_SUB_POINTS,
-    MAX_TRANSCRIPT_CHARS, MODEL_ENV, OUTLINE_HEADING, PROVIDER_LABEL,
+    bounded_transcript, direct_key_permitted, draft_schema, map_error_status, model_from_env,
+    parse_draft, Bound, OpenAiNoteProvider, API_KEY_ENV, DEFAULT_MODEL, MAX_ITEM_CHARS,
+    MAX_OUTPUT_TOKENS, MAX_PARSED_RESPONSE_BYTES, MAX_POINTS, MAX_SCRIPTURES, MAX_SECTION_ITEMS,
+    MAX_SUB_POINTS, MAX_TRANSCRIPT_CHARS, MODEL_ENV, OUTLINE_HEADING, PROVIDER_LABEL,
 };
 use selahcue_cloud::transport::{HttpResponse, HttpTransport, TransportError};
 use selahcue_cloud::{
@@ -452,6 +452,67 @@ fn the_environment_actually_reaches_model_selection() {
         "sentinel-model-from-env", DEFAULT_MODEL,
         "premise: the sentinel must differ from the default"
     );
+}
+
+// 86akcmzyq (Cody's High finding, PR #24): `from_env` read `API_KEY_ENV` with no profile check
+// at all, so `cargo build --release --features openai-notes` — bypassing `make` and without
+// `dev-keys` — built a working direct-to-OpenAI provider from whatever key happened to already
+// be exported. `direct_key_permitted` closes that; these three tests prove it, the same shape
+// as `dev_env.rs`'s `should_load_env_file` pair plus its own wiring test.
+
+/// The pure predicate's release branch, tested directly since `cfg!(debug_assertions)` cannot be
+/// varied within one compiled test binary.
+#[test]
+fn a_release_profile_input_refuses_the_direct_key() {
+    assert!(
+        !direct_key_permitted(false),
+        "a release-profile (debug_assertions=false) input must refuse the direct developer key \
+         — this is the guard standing between `--features openai-notes --release` and a shipped \
+         binary that reads OPENAI_API_KEY from whatever happens to be exported"
+    );
+}
+
+/// The positive control: an ordinary debug/test profile must still permit it, so "refuses" above
+/// is the release branch actually firing rather than the predicate refusing unconditionally.
+#[test]
+fn a_debug_profile_input_still_permits_the_direct_key() {
+    assert!(
+        direct_key_permitted(true),
+        "a debug-profile (debug_assertions=true) input was refused — openai-notes would stop \
+         working in ordinary `cargo run`/`cargo test`, not just in --release"
+    );
+}
+
+/// The wiring test: proves `from_env` ITSELF takes the branch this profile compiled, not just
+/// that the extracted predicate above is correct in isolation. Mirrors `selahcue-operator`'s
+/// `dev_env::load()` wiring test and `selahcue-licensing`'s `..._iff_it_is_a_debug_build`: one
+/// test, run once per profile by `make ci`/CI (`cargo test -p selahcue-cloud --features openai`
+/// and the `--release` sibling added alongside this fix), asserting whichever branch that
+/// profile actually compiled. Only this test touches `API_KEY_ENV`; the lock keeps that true if
+/// another ever does.
+#[test]
+fn from_env_permits_the_direct_key_iff_this_is_a_debug_build() {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    std::env::set_var(API_KEY_ENV, "sk-proj-test-key");
+    let built = OpenAiNoteProvider::from_env(MockTransport::responding(200, "{}"));
+    std::env::remove_var(API_KEY_ENV);
+
+    if cfg!(debug_assertions) {
+        assert!(
+            built.is_some(),
+            "a debug build must build a provider from an exported OPENAI_API_KEY, or \
+             openai-notes stops working in ordinary development"
+        );
+    } else {
+        assert!(
+            built.is_none(),
+            "a RELEASE build built a working OpenAI provider from an exported OPENAI_API_KEY — \
+             direct_key_permitted stopped being wired into from_env (inverted, hardcoded, or the \
+             early return was removed)"
+        );
+    }
 }
 
 #[test]
