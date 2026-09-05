@@ -102,6 +102,10 @@
       notes_provider: null,
       account_token_set: false,
       quota: null,
+      // Honest offline-first default (86akby7th): no build claims Cloud transcription is ready
+      // until the backend actually confirms it, mirroring notes_available/notes_provider above.
+      transcription_available: false,
+      transcription_provider: null,
     };
   }
 
@@ -236,13 +240,30 @@
       },
     });
 
+    // Honest readiness (86akby7th, mirroring on_device above): name the real provider once the
+    // backend confirms one is actually configured (FR-120/FR-132) — never an unnamed "the
+    // provider" once a real Deepgram socket is what would open, and never a claim of
+    // availability the backend has not confirmed.
+    var tp = view.transcription_provider;
+    var ta = !!view.transcription_available;
+    var cloudProviderName = tp && tp.name ? tp.name : "a cloud speech service";
+
     var warn = el("div", "pp-warn");
     warn.appendChild(el("span", "pp-warn-ico", "⚠"));
-    warn.appendChild(el("span", "pp-warn-text", "Streams live microphone audio to the provider while active"));
+    warn.appendChild(el("span", "pp-warn-text", "Streams live microphone audio to " + cloudProviderName + " while active"));
 
     var cloudOn = mode === "cloud" && view.cloud_transcription_consent;
-    var cloudFoot = el("p", "pp-radio-foot",
-      "Requires network + explicit consent · currently " + (cloudOn ? "on" : "off"));
+    var cloudFootText = "Requires network + explicit consent · currently " + (cloudOn ? "on" : "off");
+    if (!ta) {
+      // Not "coming soon" and not an error — the same honesty rule the notes panel already
+      // follows for key_missing/not_configured: say the feature is not usable right now rather
+      // than hiding the card or implying it works. Selecting it still switches the mode (so the
+      // Settings intent is recorded), but `listening.rs` falls back to on-device and says so on
+      // the console the moment "Start listening" is pressed — this card cannot know that live
+      // detail without a running session, so it states its OWN honest scope: not ready to start.
+      cloudFootText += " · not available right now on this machine";
+    }
+    var cloudFoot = el("p", "pp-radio-foot", cloudFootText);
 
     var cloud = transcriptionCard({
       id: "pp-radio-cloud",
@@ -250,7 +271,9 @@
       title: "Cloud transcription",
       badgeCls: "pp-badge-optin",
       badgeText: "☁ OPT-IN",
-      desc: "Higher accuracy via a cloud speech service.",
+      desc: tp && tp.name
+        ? "Higher accuracy via " + tp.name + "."
+        : "Higher accuracy via a cloud speech service.",
       warnNode: warn,
       footNode: cloudFoot,
       onSelect: function () {

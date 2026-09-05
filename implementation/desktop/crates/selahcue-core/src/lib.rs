@@ -16,12 +16,17 @@
 //! - [`providers`] — Providers & Privacy settings/consent + the offline-by-default
 //!   egress gate and the note-generation seam (R3; FR-131/132/135/137).
 //! - [`detection`] — scripture-reference detection over the transcript stream (R4).
+//! - [`audio_capacity`] — the one place "how many samples for N seconds of captured audio"
+//!   gets computed, so every capture→consumer hand-off (on-device and cloud alike) derives its
+//!   retention cap from the device's real configuration rather than each re-deriving its own
+//!   arithmetic (86akby7th).
 
 #![forbid(unsafe_code)]
 // The `unwrap_used` lint guards the library's runtime paths (which are
 // panic-free); tests legitimately unwrap known-good values.
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod audio_capacity;
 pub mod detection;
 pub mod detector;
 pub mod media;

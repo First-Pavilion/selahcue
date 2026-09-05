@@ -2993,6 +2993,26 @@
         color: var(--sc-text-secondary);
       }
 
+      /* An engine-change / audio-dropped disclosure (86akby7th PR #22 review, Vera Medium) —
+         its OWN element, independent of #detections-empty (which is display:none whenever a
+         detection row exists — the exact condition that swallowed this text before). Honest
+         disclosure, not a fault, so it borrows the QUIET card treatment rather than the amber
+         .det-health one. */
+      .det-engine-note {
+        margin: 0 0 8px;
+        padding: 8px 10px;
+        border-radius: 9px;
+        background: var(--sc-inset);
+        border: 1px solid var(--sc-border);
+        font-size: 11px;
+        line-height: 1.4;
+        color: var(--sc-text-secondary);
+      }
+
+      .det-engine-note[hidden] {
+        display: none;
+      }
+
       /* Live-transcript header row: title + the REC recording indicator. */
       .fwd-head {
         display: flex;

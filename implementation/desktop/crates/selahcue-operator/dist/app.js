@@ -5841,7 +5841,17 @@
         const retry = document.getElementById("det-health-retry");
         const emptyMsg = document.getElementById("det-empty-msg");
         const emptySub = document.getElementById("det-empty-sub");
+        const engineNote = document.getElementById("det-engine-note");
         const st = detHealthKnown && detHealth ? detHealth.state : null; // null = unknown
+        // 86akby7th PR #22 review (Vera, Medium): checked on EVERY render, independent of `st`
+        // and of whether #detections-empty is showing — an engine-change or audio-dropped
+        // disclosure must be visible mid-sermon, not only in the (now overlapping) empty state
+        // below, which JS hides the instant a detection row exists.
+        if (engineNote) {
+          const noteText = detHealthKnown && detHealth && detHealth.note ? String(detHealth.note) : "";
+          engineNote.textContent = noteText;
+          engineNote.hidden = !noteText;
+        }
         // A recovered detector clears a stale refusal — the message described a world that no
         // longer exists (contract: do not show a stale fault after recovery).
         if (st === "listening" || st === "idle") detRetryError = null;
@@ -5890,6 +5900,10 @@
               "Detections appear the moment a reference or quote is recognised" +
               (detHealth.provider ? " (" + detHealth.provider + ")" : "") +
               ". Nothing stages or goes live on its own — it stays operator-confirmed (FR-115).";
+              // 86akby7th: the engine-change / audio-dropped disclosure now renders in the
+              // always-visible #det-engine-note above, not appended here — appending it here
+              // ALSO meant it vanished the moment a detection row appeared (Vera, PR #22
+              // review, Medium), since this whole element is hidden then.
           } else if (st === "idle") {
             emptyMsg.textContent = "Detection is not running.";
             emptySub.textContent =
