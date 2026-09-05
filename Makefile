@@ -281,6 +281,15 @@ endif
 # is what makes this a guard on the outcome instead of a guard on one path to it. This still only
 # covers "through make"; see dev_env.rs's debug_assertions check for the bare-`cargo build` case
 # this cannot see.
+#
+# DO NOT VERIFY THIS GUARD WITH `make -n` ALONE (Quinn) — a dry run prints every recipe LINE
+# unconditionally, including the `exit 1` inside this guard's shell block and the cargo build
+# line that follows it in the file, because `-n` never actually evaluates the shell conditional
+# that would stop it. That makes `make -n build-operator RELEASE=1 OP_FEATURES=stt,cloud-stt`
+# LOOK like the guard's error is printed and then a cargo build still happens — it does not. The
+# real invocation (`make build-operator RELEASE=1 OP_FEATURES=stt,cloud-stt`) exits 2 at this
+# guard's own `exit 1` and never reaches the cargo line at all; verified by running both and
+# diffing what each actually does, not by reading the dry run.
 release-ai-guard: ## (internal) refuse any --release build of selahcue-operator carrying a RELEASE_UNSAFE_FEATURES token
 ifeq ($(filter 1,$(RELEASE)),1)
 ifneq ($(strip $(filter $(RELEASE_UNSAFE_FEATURES),$(OP_FEATURES_WORDS))),)

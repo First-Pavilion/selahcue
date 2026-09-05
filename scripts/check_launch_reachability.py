@@ -36,8 +36,8 @@ comment block that already has to explain, in prose, why the feature defaults of
   `RELEASE: SAFE | UNSAFE` (86akd10dq remediation -- Sana S-1 / Cody Finding A / Quinn High)
     * `UNSAFE` -- must never reach a `RELEASE=1`/`--release` build of the crate that declares it.
       Cross-checked against the Makefile's own `RELEASE_UNSAFE_FEATURES` registry (see RELEASE
-      CROSS-CHECK below) so the two cannot drift apart silently the way the reachability set used
-      to before this script existed at all.
+      CROSS-CHECK, and NEW-1 within it, below) so the two cannot drift apart silently the way the
+      reachability set used to before this script existed at all.
     * `SAFE` -- no release-boundary concern (reads no developer-only credential, or ships in a
       real release artefact already, e.g. `stt` in the Windows installer).
 
@@ -72,16 +72,30 @@ a new crate entering the dev-launch path is a rare, visible, architectural event
 plus a new Makefile recipe line, both already under heavy review), unlike a new Cargo feature,
 which is added routinely, inside one crate, as part of nearly every feature PR. Trusting a
 hardcoded list unconditionally would still be the same mistake, though -- so
-`assert_no_unregistered_crates` parses every `-p <name>` / `crates/<name>/Cargo.toml` token that
+`unregistered_crate_mentions` parses every `-p <name>` / `crates/<name>/Cargo.toml` token that
 actually appears in a REAL `make -n launch`/`make -n operator` dry run and hard-fails if any name
 is not a key in `CRATE_MANIFESTS`, so a third crate joining the dev-launch path without a matching
-registry entry is a loud failure, not a silent blind spot. `TARGETS` below gets the same treatment
-for the same reason, and stays a bare tuple for a stronger reason: unlike crate names (cargo
-metadata) or feature names (Cargo.toml), there is no source of "which Makefile targets are real
-dev-launch entry points" OTHER than the Makefile itself, so deriving it would mean reading the one
-file this script is independent of -- `run`/`run-release` already reduce to `launch` so they need
-no separate entry, and a genuinely new default dev-launch target is exactly the kind of rare,
-reviewed, `.PHONY`-list change a human is already looking straight at.
+registry entry is a loud failure, not a silent blind spot.
+
+`TARGETS` (Quinn's consistency point, closed rather than argued down). The first cut of this
+reasoning gave `TARGETS` a WEAKER treatment than `CRATE_MANIFESTS` for a reason that does not
+survive scrutiny: "a new dev-launch target is rare and reviewed, so a human is already looking"
+is exactly the reasoning this section just declined to accept for crate names, which got a real
+drift check instead of trust. `TARGETS` stays hardcoded for a genuinely different reason -- there
+is no independent source for "which Makefile targets are dev-launch entry points" the way Cargo.toml
+is the source for feature names or `cargo metadata` is for crate names, so deriving the SET from
+outside the Makefile is not possible the way it is for those two -- but it is NOT left untested:
+`dev_launch_entry_point_targets` derives the set of targets that OUGHT to be in `TARGETS` from a
+different, checkable property of the same file -- every target whose prerequisite list names both
+`stt-preflight` and `release-ai-guard`, the two guards that gate a real build of the STT/AI
+feature computation this script checks -- and `TARGETS` must equal that set exactly. Verified
+(Quinn): `diff <(make -n run) <(make -n launch)` is byte-identical but for a cosmetic error-string
+substitution (`run: launch` is a plain alias); `run-release`/`launch-release` reduce to a
+recursive `$(MAKE) launch RELEASE=1` recipe command, not a static prerequisite, so dry-running
+`launch` already exercises the identical computation; `build-operator` DOES carry both
+prerequisites in its own right and is now a member of `TARGETS`, even though its dry run is
+textually redundant with what `launch` already shows -- included rather than carved out as an
+unexplained exception now that leaving it out is a hard failure instead of a silent gap.
 
 COLLISION GUARD (Quinn's point on `missing_features()`). The dry-run comparison below unions
 every `--features <list>` occurrence anywhere in a target's dry-run text into one flat set,
@@ -92,8 +106,10 @@ by name coincidence -- and worse, `run`/`operator`'s recipe on Darwin shells out
 of its own AT ALL in a `make -n` dry run (the manifest path lives inside that script, invisible
 to a dry run that never executes it) -- so tying every required feature to an explicit per-line
 crate attribution is not reliably possible on the exact platform (macOS) this check is wired into
-CI for. Instead: `assert_no_cross_crate_feature_collisions` makes it a hard failure for two
-registered crates to declare the same feature name at all. With that invariant held, a feature
+CI for. Instead: the collision check inline in `collect_all_tags` (see its `owner` dict) makes it
+a hard failure for two registered crates to declare the same feature name at all -- verified by
+adding a real colliding `cloud-stt` feature name to `selahcue-desktop/Cargo.toml` (Quinn) and
+confirming the check names both crates before doing anything else. With that invariant held, a feature
 name found ANYWHERE in a target's resolved `--features` union is unambiguous evidence about the
 one crate that could have produced it, regardless of whether that specific line's crate identity
 was parseable -- a guarantee that does not depend on macOS's wrapper-script blind spot, and is
@@ -105,13 +121,39 @@ crate must appear, as an exact token, in the Makefile's own `RELEASE_UNSAFE_FEAT
 line -- and every token in that line must correspond to a feature actually tagged `UNSAFE`
 somewhere. This is the same shape of guarantee DERIVATION gives the reachability set, applied to
 the release boundary: a Makefile edit that silently drops a token from `RELEASE_UNSAFE_FEATURES`,
-or a Cargo.toml edit that tags a feature `UNSAFE` without updating the Makefile, now fails this
-check instead of drifting apart silently. Scoped to `selahcue-operator` today because
-`release-ai-guard` (the actual enforcement mechanism) only ever filters `OP_FEATURES_WORDS`; if a
-future feature in another registered crate is ever tagged `UNSAFE`, this check still requires it
-to appear in `RELEASE_UNSAFE_FEATURES`, which forces whoever adds it to notice that no Make-level
-guard currently reads that list for any crate but the operator, and build one -- rather than
-tagging it and believing something enforces it when nothing does.
+or a Cargo.toml edit that tags a feature `UNSAFE` without updating the Makefile, fails this check
+instead of drifting apart silently.
+
+NEW-1 (Sana, verified live against the real repo, not just this claim). The first cut of this
+cross-check read `RELEASE_UNSAFE_FEATURES` with `re.search`, which finds only the FIRST
+occurrence of that assignment in the Makefile. GNU Make's `:=` is a plain reassignment, so a
+SECOND, weaker `RELEASE_UNSAFE_FEATURES := ...` line inserted between the real registry and
+`release-ai-guard`'s use of it silently becomes the value the guard actually sees -- Sana proved
+this makes `release-ai-guard` accept `OP_FEATURES=stt,cloud-stt RELEASE=1` (exit 0, no refusal)
+while this script, still trusting the first (stronger) occurrence, printed success. That is
+exactly the drift this mechanism claims to make impossible, so "the two cannot drift apart
+silently" was false as written before this fix. `find_release_unsafe_occurrences`/
+`resolve_release_unsafe_line` now find EVERY occurrence and hard-fail on anything but exactly
+one, closing this specific hole -- the same ambiguous-is-a-hard-failure treatment a duplicate
+LAUNCH_REACHABILITY/RELEASE tag already gets. (A `RELEASE_UNSAFE_FEATURES` line appended AFTER
+`release-ai-guard` is inert -- verified -- since nothing reads the variable again past that
+point; this script does not attempt to reason about position, only about count, because
+distinguishing "before" from "after" the guard would mean re-implementing Make's own parser.)
+
+NEW-2 (Quinn/the coordinator). Matching tokens between the tags and `RELEASE_UNSAFE_FEATURES`
+proves the two REGISTRIES agree; it does not prove anything is actually enforced. Scoped to
+`selahcue-operator` today because `release-ai-guard` (the only Make-level guard that exists) only
+ever filters `OP_FEATURES_WORDS` -- it cannot see `DESKTOP_FEATURES` at all. Tagging a
+`selahcue-desktop` feature `UNSAFE` and adding its token to `RELEASE_UNSAFE_FEATURES` would make
+this cross-check agree and print "confirmed release-unsafe and matched against the Makefile" --
+true about the registries, false about the build: `make -n launch RELEASE=1 NDI=1` would still
+resolve `--features ndi --release` and `release-ai-guard` would still exit 0. A "confirmed"
+message about something unenforced is worse than no message -- the same shape of bug as the
+original one, one level up. `CRATES_WITH_RELEASE_GUARD` names which registered crates actually
+have a Make-level guard behind their `UNSAFE` tags (`selahcue-operator` alone, today), and
+`crates_with_unenforced_release_unsafe_features` refuses to reach the success message at all if
+any other registered crate is ever tagged `UNSAFE` with nothing enforcing it -- forcing whoever
+adds such a tag to either build the missing guard or retag the feature `SAFE`.
 
 FEATURE-NAME AUTHORITY (Sana S-2). The line-based comment scanner above cannot see every legal
 TOML spelling of a feature key -- an indented key, or a quoted key (`"cloud-stt" = [...]`), both
@@ -123,6 +165,23 @@ feature list for that crate's manifest. Any name `cargo metadata` reports that t
 not find a tag for -- regardless of why the scanner missed it -- is a hard failure naming the
 feature, not a silent gap. (Not run in `--self-test`: it would require invoking `cargo` against
 the real manifests, which the self-test's whole point is to avoid needing.)
+
+KNOWN CONVENTIONS AND LIMITS (Cody's two residuals -- neither live today, both worth writing down
+rather than leaving as an implicit assumption the next change could quietly break).
+
+  * `crate_mentions` recognises exactly two shapes: a `-p <name>` token, or a
+    `--manifest-path .../crates/<name>/Cargo.toml` path. A future Makefile recipe written some
+    other way -- e.g. `cd crates/newthing && cargo build --features x` -- would name a crate this
+    script cannot see at all, escaping the MULTI-CRATE SCOPE drift check entirely rather than
+    failing loudly. Every recipe in this Makefile today uses one of the two recognised shapes;
+    this is a convention this script depends on, not a guarantee it can verify by itself.
+  * `FEATURES_FLAG` matches the literal substring `--features <list>` anywhere in a dry run's
+    text, including inside an `@echo` status line -- it does not distinguish an actual build
+    invocation from a line that merely mentions the words for a human to read. Nothing in the
+    Makefile today echoes that exact substring outside `OPRUN`'s own real `--features` flag, but
+    a future status message that happened to print it verbatim (rather than, say, `$(OP_FEATURES)`
+    with different formatting) would be silently counted as evidence of a build that never
+    happens.
 
 HOW THE CHECK WORKS. Runs `make -n <target>` (GNU Make's dry run: prints the resolved recipe
 text without executing any of it) for both `launch` and `operator`, with AI/STT/RELEASE/
@@ -150,10 +209,11 @@ always runs on whatever machine the developer is actually on.
 
 Self-test: `check_launch_reachability.py --self-test` exercises the dry-run comparison, the
 Cargo.toml tag parser (both axes), the cross-crate collision guard, the crate-registry drift
-check, and the Makefile RELEASE_UNSAFE_FEATURES cross-check -- against fixed fixtures, including
-several built by deleting or corrupting a tag from a fixture `[features]` block (the exact
-regressions this version closes) -- without touching the real Makefile, the real Cargo.toml
-files, or invoking `make`/`cargo` at all, so it runs anywhere. The real check
+check, the TARGETS derivation, the Makefile RELEASE_UNSAFE_FEATURES cross-check (including the
+NEW-1 double-assignment case), and the NEW-2 unenforced-crate-tag check -- against fixed
+fixtures, including several built by deleting or corrupting a tag from a fixture `[features]`
+block (the exact regressions this version closes) -- without touching the real Makefile, the
+real Cargo.toml files, or invoking `make`/`cargo` at all, so it runs anywhere. The real check
 (`check_launch_reachability.py`, no flag) reads the real Cargo.toml files, the real Makefile, and
 shells out to the actual `make -n launch` / `make -n operator` / `cargo metadata` in this repo
 checkout.
@@ -181,11 +241,35 @@ CRATE_MANIFESTS: dict[str, Path] = {
     "selahcue-desktop": DESKTOP_ROOT / "crates" / "selahcue-desktop" / "Cargo.toml",
 }
 
+# NEW-2 (Quinn/the coordinator): which registered crates actually HAVE a Make-level mechanism
+# enforcing their `RELEASE: UNSAFE` tags. Today that is `release-ai-guard` alone, and it filters
+# only `OP_FEATURES_WORDS` (selahcue-operator's resolved features) -- it does not, and cannot as
+# written, see `DESKTOP_FEATURES` (selahcue-desktop's). Tagging a `selahcue-desktop` feature
+# `UNSAFE` today would make the RELEASE CROSS-CHECK above pass (the tag and the
+# RELEASE_UNSAFE_FEATURES token would agree) and print "confirmed release-unsafe and matched
+# against the Makefile" -- true about the REGISTRY, false about anything actually being enforced.
+# A claim of "confirmed" about something unenforced is worse than no claim at all: it is the
+# shape of the original bug (a feature's real state disagreeing with what a green check reports)
+# one level up. `crates_with_unenforced_release_unsafe_features` below refuses to print success
+# in that situation -- see its docstring.
+CRATES_WITH_RELEASE_GUARD: set[str] = {"selahcue-operator"}
+
 # See DERIVATION in the module docstring for what each tag on each axis means.
 LAUNCH_TAGS = {"REQUIRED", "AUTO", "OPT-IN"}
 RELEASE_TAGS = {"SAFE", "UNSAFE"}
 
-TARGETS = ("launch", "operator")
+# TARGETS (Quinn's consistency point). Every Makefile target whose prerequisite list names BOTH
+# `stt-preflight` AND `release-ai-guard` -- the two guards that gate a real build carrying the
+# STT/AI feature computation this script checks. Verified (Quinn): `diff <(make -n run) <(make -n
+# launch)` is byte-identical but for a cosmetic error-string substitution (`run: launch` is a
+# plain alias), and `run-release`/`launch-release` reduce to a recursive `$(MAKE) launch
+# RELEASE=1` recipe command rather than a static prerequisite -- neither needs its own entry
+# because dry-running `launch` already exercises the identical computation. `build-operator` DOES
+# list both prerequisites in its own right (it is `launch`'s own build step, reused) and is
+# textually redundant with what dry-running `launch` already shows -- included anyway rather than
+# carved out as a silent exception, once `TARGETS_MATCHES_MAKEFILE` below makes leaving it out a
+# hard failure instead of an unexplained omission.
+TARGETS = ("launch", "operator", "build-operator")
 
 FEATURES_FLAG = re.compile(r"--features\s+(\S+)")
 FEATURE_DEF = re.compile(r"^([A-Za-z0-9_-]+)\s*=")
@@ -194,6 +278,10 @@ RELEASE_TAG_RE = re.compile(r"^#\s*RELEASE:\s*(\S+)")
 CRATE_NAME_IN_MANIFEST_PATH = re.compile(r"crates/([A-Za-z0-9_-]+)/Cargo\.toml")
 CRATE_NAME_VIA_DASH_P = re.compile(r"(?:^|\s)-p\s+([A-Za-z0-9_-]+)")
 RELEASE_UNSAFE_LINE = re.compile(r"^RELEASE_UNSAFE_FEATURES\s*:=\s*(.*)$", re.MULTILINE)
+# A Makefile target-definition line: `name: prereq1 prereq2 ## help text`. The negative lookahead
+# excludes `:=`/variable assignment lines (`OP_FEATURES_WORDS := ...`), which would otherwise
+# match the same "identifier followed by colon" shape.
+MAKEFILE_TARGET_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):(?!=)\s*(.*)$", re.MULTILINE)
 
 
 class FeatureTags(NamedTuple):
@@ -325,6 +413,24 @@ def release_unsafe_from_tags(tags: dict[str, FeatureTags]) -> set[str]:
     return {name for name, t in tags.items() if t.release == "UNSAFE"}
 
 
+def crates_with_unenforced_release_unsafe_features(
+    per_crate_tags: dict[str, dict[str, FeatureTags]]
+) -> dict[str, set[str]]:
+    """For every registered crate NOT in `CRATES_WITH_RELEASE_GUARD`, any feature(s) it tags
+    `RELEASE: UNSAFE` anyway -- a tag with no Make-level mechanism behind it. See NEW-2 next to
+    `CRATES_WITH_RELEASE_GUARD` for why this must be a hard failure rather than letting the
+    RELEASE CROSS-CHECK's agreement (tag present, Makefile token present) print a false
+    "confirmed release-unsafe" for a crate nothing actually blocks."""
+    unenforced: dict[str, set[str]] = {}
+    for crate_name, crate_tags in per_crate_tags.items():
+        if crate_name in CRATES_WITH_RELEASE_GUARD:
+            continue
+        unsafe = {name for name, t in crate_tags.items() if t.release == "UNSAFE"}
+        if unsafe:
+            unenforced[crate_name] = unsafe
+    return unenforced
+
+
 def resolved_features(dry_run_text: str) -> set[str]:
     """Every feature token named in any `--features <list>` occurrence in `dry_run_text`. See
     COLLISION GUARD in the module docstring for why a flat union (rather than per-line crate
@@ -358,14 +464,60 @@ def unregistered_crate_mentions(dry_run_texts: list[str]) -> set[str]:
     return mentioned - set(CRATE_MANIFESTS)
 
 
-def parse_release_unsafe_line(makefile_text: str) -> set[str] | None:
-    """The token set of the Makefile's `RELEASE_UNSAFE_FEATURES := ...` line, or `None` if that
-    line cannot be found at all (a hard failure at the call site -- the cross-check has nothing
-    to compare against)."""
-    m = RELEASE_UNSAFE_LINE.search(makefile_text)
-    if not m:
-        return None
-    return set(m.group(1).split())
+def dev_launch_entry_point_targets(makefile_text: str) -> set[str]:
+    """Every Makefile target whose prerequisite list names BOTH `stt-preflight` AND
+    `release-ai-guard` -- see TARGETS above for why this pair, and why the result must equal
+    `TARGETS` exactly rather than being trusted unchecked."""
+    targets: set[str] = set()
+    for name, rest in MAKEFILE_TARGET_LINE.findall(makefile_text):
+        prereqs = set(rest.split("##", 1)[0].split())
+        if {"stt-preflight", "release-ai-guard"} <= prereqs:
+            targets.add(name)
+    return targets
+
+
+def find_release_unsafe_occurrences(makefile_text: str) -> list[set[str]]:
+    """Every `RELEASE_UNSAFE_FEATURES := ...` assignment in the Makefile text, in file order,
+    each as its own token set.
+
+    NEW-1 (Sana, verified against the real repo). GNU Make's `:=` is a plain reassignment: at any
+    USE site -- `release-ai-guard`'s `ifneq ($(filter $(RELEASE_UNSAFE_FEATURES),...))` -- the
+    value is whichever assignment appears LAST before that use site in the file, not necessarily
+    the first (or only) one. The original version of this function used `re.search`, which finds
+    only the FIRST occurrence. Sana proved this concretely: inserting a second, weaker
+    `RELEASE_UNSAFE_FEATURES := ...` line BETWEEN the real registry and `release-ai-guard` makes
+    the guard silently accept `OP_FEATURES=stt,cloud-stt RELEASE=1` (exit 0, no refusal) while
+    this script, still reading only the first (stronger) occurrence, reported everything green --
+    exactly the silent drift the mechanism claims to make impossible. (A line appended AFTER
+    `release-ai-guard` is inert -- verified -- because nothing reads the variable again past that
+    point, but this script cannot see "before" vs "after" the guard without re-implementing
+    Make's own parser, so position is not attempted as a distinguishing signal.)
+
+    The fix: return every occurrence, and let the caller refuse anything other than exactly one --
+    the same treatment a duplicate LAUNCH_REACHABILITY/RELEASE tag on one feature already gets
+    (ambiguous is a hard failure, not "take the first"), applied to the Makefile side too.
+    """
+    return [set(m.split()) for m in RELEASE_UNSAFE_LINE.findall(makefile_text)]
+
+
+def resolve_release_unsafe_line(makefile_text: str) -> tuple[set[str] | None, str | None]:
+    """The single, unambiguous token set of the Makefile's `RELEASE_UNSAFE_FEATURES := ...` line,
+    as `(tokens, None)` -- or `(None, <problem>)` if there is zero or more than one such
+    assignment anywhere in the file. See `find_release_unsafe_occurrences` for why more than one
+    is refused outright rather than resolved by position or by "first wins"."""
+    occurrences = find_release_unsafe_occurrences(makefile_text)
+    if not occurrences:
+        return None, "no `RELEASE_UNSAFE_FEATURES := ...` line found at all"
+    if len(occurrences) > 1:
+        shown = [sorted(o) for o in occurrences]
+        return None, (
+            f"{len(occurrences)} separate `RELEASE_UNSAFE_FEATURES := ...` assignments found "
+            f"({shown}) -- GNU Make's `:=` means whichever one sits last before "
+            "`release-ai-guard`'s use of it silently wins, which this script cannot determine "
+            "from text alone (see NEW-1 in `find_release_unsafe_occurrences`'s docstring). Keep "
+            "exactly one assignment."
+        )
+    return occurrences[0], None
 
 
 def run_make_dry(target: str) -> str:
@@ -444,7 +596,7 @@ FIXTURE_LAUNCH_REGRESSED = (
 FIXTURE_NO_FEATURES_AT_ALL = "cargo build --manifest-path .../Cargo.toml \n"
 FIXTURE_SUBSTRING_TRAP = "cargo build --manifest-path .../Cargo.toml --features cloud-stt,ndi \n"
 # A dry run naming both registered crates by their real identifying tokens -- the shape
-# `assert_no_unregistered_crates` must accept without complaint.
+# `unregistered_crate_mentions` must accept without complaint.
 FIXTURE_BOTH_CRATES_REGISTERED = (
     "cargo build --manifest-path implementation/desktop/crates/selahcue-operator/Cargo.toml "
     "--features stt,dev-keys,openai-notes,cloud-stt \n"
@@ -645,6 +797,30 @@ FIXTURE_MAKEFILE_OK = (
 )
 FIXTURE_MAKEFILE_NO_LINE = "RELEASE ?= 0\nSTT ?= auto\n"
 
+# Fixture Makefile-shaped text for `dev_launch_entry_point_targets`, modelled on the real
+# Makefile's shape: a variable assignment (must NOT be mistaken for a target), a target with no
+# prerequisites, one with only ONE of the two guards, and two with BOTH.
+FIXTURE_MAKEFILE_TARGETS = """\
+OP_FEATURES_WORDS := $(subst $(COMMA),$(SPACE),$(OP_FEATURES))
+stt-preflight: ## (internal) verify the toolchain
+release-ai-guard: ## (internal) refuse a bad release
+launch: stt-preflight release-ai-guard build-output build-operator ## Launch EVERYTHING
+operator: stt-preflight release-ai-guard ## Run only the operator shell
+output-ndi: ndi-preflight ## Force NDI (only one guard-shaped prerequisite, not both)
+help: ## Show this help
+"""
+# NEW-1 (Sana): the exact shape of the drift the original re.search-based parser missed -- a
+# second, weaker RELEASE_UNSAFE_FEATURES assignment landing between the real registry and
+# release-ai-guard's use of it. Must be refused outright (ambiguous), not resolved by "first
+# occurrence wins".
+FIXTURE_MAKEFILE_DOUBLE_ASSIGNMENT = (
+    "RELEASE ?= 0\n"
+    "RELEASE_UNSAFE_FEATURES := dev-keys openai-notes cloud-stt\n"
+    "STT ?= auto\n"
+    "RELEASE_UNSAFE_FEATURES := dev-keys openai-notes\n"
+    "release-ai-guard:\n"
+)
+
 
 def self_test() -> int:
     failures = []
@@ -697,14 +873,49 @@ def self_test() -> int:
         )
 
     # The RELEASE_UNSAFE_FEATURES Makefile cross-check, against fixture Makefile text.
-    tokens = parse_release_unsafe_line(FIXTURE_MAKEFILE_OK)
-    if tokens != {"dev-keys", "openai-notes", "cloud-stt"}:
-        failures.append(f"RELEASE_UNSAFE_FEATURES parse: expected the three tokens, got {tokens}")
-    if parse_release_unsafe_line(FIXTURE_MAKEFILE_NO_LINE) is not None:
+    tokens, problem = resolve_release_unsafe_line(FIXTURE_MAKEFILE_OK)
+    if tokens != {"dev-keys", "openai-notes", "cloud-stt"} or problem is not None:
         failures.append(
-            "RELEASE_UNSAFE_FEATURES parse: a Makefile with no such line must report None, "
-            "not an empty set (a missing line is a hard failure at the call site, not 'nothing "
-            "is unsafe')"
+            f"RELEASE_UNSAFE_FEATURES parse: expected the three tokens with no problem, "
+            f"got tokens={tokens} problem={problem}"
+        )
+    tokens, problem = resolve_release_unsafe_line(FIXTURE_MAKEFILE_NO_LINE)
+    if tokens is not None or problem is None:
+        failures.append(
+            "RELEASE_UNSAFE_FEATURES parse: a Makefile with no such line must report "
+            f"(None, <problem>), got ({tokens}, {problem})"
+        )
+    # NEW-1 mutation control: two assignments (the exact shape Sana found live) must be refused,
+    # not resolved by picking the first one -- that silent "first wins" behaviour is the bug.
+    tokens, problem = resolve_release_unsafe_line(FIXTURE_MAKEFILE_DOUBLE_ASSIGNMENT)
+    if tokens is not None or problem is None:
+        failures.append(
+            "RELEASE_UNSAFE_FEATURES parse: two assignments must be refused as ambiguous, not "
+            f"resolved to the first one found, got ({tokens}, {problem})"
+        )
+
+    # TARGETS derivation, against fixture Makefile text: a var assignment isn't mistaken for a
+    # target, a target with only one guard-shaped prerequisite doesn't qualify, and both
+    # dual-guarded targets are found.
+    derived = dev_launch_entry_point_targets(FIXTURE_MAKEFILE_TARGETS)
+    if derived != {"launch", "operator"}:
+        failures.append(
+            f"dev_launch_entry_point_targets: expected {{'launch', 'operator'}}, got {derived}"
+        )
+
+    # NEW-2: an UNSAFE tag on a crate with no Make-level guard is a hard failure, not a silent
+    # "confirmed" success. Positive control included -- selahcue-operator's own UNSAFE feature
+    # must NOT be flagged, or this check would be indistinguishable from "always fail".
+    unenforced = crates_with_unenforced_release_unsafe_features(
+        {
+            "selahcue-operator": {"dev-keys": FeatureTags("REQUIRED", "UNSAFE")},
+            "selahcue-desktop": {"ndi": FeatureTags("AUTO", "UNSAFE")},
+        }
+    )
+    if unenforced != {"selahcue-desktop": {"ndi"}}:
+        failures.append(
+            "NEW-2: expected only the unguarded crate's UNSAFE feature reported, got "
+            f"{unenforced}"
         )
 
     # Mutation control, in the repo's own idiom: take a known-GOOD fixture, delete ONE feature's
@@ -732,7 +943,9 @@ def self_test() -> int:
         + len(crate_registry_cases())
         + len(tag_parser_cases())
         + 1  # collision guard
-        + 2  # RELEASE_UNSAFE_FEATURES parse (present + absent)
+        + 1  # TARGETS derivation
+        + 3  # RELEASE_UNSAFE_FEATURES parse (present, absent, double-assignment)
+        + 1  # NEW-2: unenforced-crate UNSAFE tag
         + 1  # mutation control
     )
     if failures:
@@ -776,6 +989,20 @@ def main() -> int:
                 "definition."
             )
 
+    # NEW-2 (Quinn/the coordinator): a RELEASE: UNSAFE tag on a crate with no Make-level guard
+    # enforcing it is worse than no tag -- refuse before ever reaching a success message that
+    # would call it "confirmed".
+    for crate_name, unsafe in crates_with_unenforced_release_unsafe_features(per_crate_tags).items():
+        problems.append(
+            f"{crate_name}: feature(s) {sorted(unsafe)} tagged `RELEASE: UNSAFE`, but no "
+            f"Make-level guard enforces the release boundary for `{crate_name}` today -- only "
+            "`release-ai-guard` exists, and it filters only selahcue-operator's "
+            "OP_FEATURES_WORDS. Either build a Make-level guard for this crate (e.g. extend "
+            "release-ai-guard to also filter DESKTOP_FEATURES, or add an analogous guard) and "
+            "add the crate to CRATES_WITH_RELEASE_GUARD, or retag the feature SAFE if it "
+            "genuinely has no release-boundary concern."
+        )
+
     if problems:
         print(
             "check_launch_reachability: feature(s) with no valid reachability/release decision "
@@ -813,12 +1040,46 @@ def main() -> int:
         )
         return 1
 
-    makefile_release_unsafe = parse_release_unsafe_line(MAKEFILE_PATH.read_text())
-    if makefile_release_unsafe is None:
+    derived_targets = dev_launch_entry_point_targets(MAKEFILE_PATH.read_text())
+    if derived_targets != set(TARGETS):
+        only_in_makefile = derived_targets - set(TARGETS)
+        only_in_targets = set(TARGETS) - derived_targets
         print(
-            "check_launch_reachability: could not find a `RELEASE_UNSAFE_FEATURES := ...` line "
-            f"in {MAKEFILE_PATH.relative_to(REPO_ROOT)} -- the RELEASE cross-check has nothing "
-            "to compare against. See RELEASE CROSS-CHECK in this script's docstring.",
+            "check_launch_reachability: TARGETS and the Makefile's own "
+            "stt-preflight+release-ai-guard prerequisites have drifted apart:",
+            file=sys.stderr,
+        )
+        if only_in_makefile:
+            print(
+                f"  Target(s) with both guard prerequisites but missing from TARGETS: "
+                f"{sorted(only_in_makefile)}",
+                file=sys.stderr,
+            )
+        if only_in_targets:
+            print(
+                f"  In TARGETS but no longer carrying both guard prerequisites: "
+                f"{sorted(only_in_targets)}",
+                file=sys.stderr,
+            )
+        print(
+            "  Update TARGETS to match -- see the TARGETS comment for why this is checked "
+            "rather than trusted.",
+            file=sys.stderr,
+        )
+        return 1
+
+    makefile_release_unsafe, release_line_problem = resolve_release_unsafe_line(
+        MAKEFILE_PATH.read_text()
+    )
+    if release_line_problem is not None:
+        print(
+            f"check_launch_reachability: {release_line_problem}",
+            file=sys.stderr,
+        )
+        print(
+            f"  In {MAKEFILE_PATH.relative_to(REPO_ROOT)} -- the RELEASE cross-check has nothing "
+            "reliable to compare against. See NEW-1 in `find_release_unsafe_occurrences`'s "
+            "docstring for why more than one assignment is refused outright.",
             file=sys.stderr,
         )
         return 1
