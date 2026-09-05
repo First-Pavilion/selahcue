@@ -995,10 +995,21 @@ fn run_on_device<S: CaptureSource, R: tauri::Runtime>(
 /// startup/fallback flush-and-disclosure logic through the capture loop and the drop notice
 /// lives here, generic over the recognizer, so a test can hand it a
 /// `selahcue_stt::FakeRecognizer` and exercise the REAL production logic — not a reimplementation
-/// of it — in milliseconds, deterministically, with no model, everywhere including CI. The
-/// one remaining real-model test (`a_real_cold_start_backlog_no_longer_trips_the_notice`) is
-/// kept as the separate, explicitly-not-CI-covered integration proof that `load_recognizer`
-/// itself composes correctly with this function — see its own doc comment.
+/// of it — in milliseconds, deterministically, with no model, everywhere including CI.
+///
+/// **What is actually left CI-blind, stated precisely (Quinn, 86akd1jcc review round 4 — an
+/// earlier version of this comment said only "composition with a real model," which understates
+/// it).** The thin `run_on_device` wrapper above has exactly one call site anywhere in this
+/// file's test suite: the `#[ignore]`d `a_real_cold_start_backlog_no_longer_trips_the_notice`.
+/// So what is CI-blind is that wrapper's WHOLE ~15-line body — the `load_recognizer` call, the
+/// `Ok`/`Err` match, and the `Err` arm's own wiring (`abandon_worker_after_on_device_failure` and
+/// the `ready_tx` send) — not merely "does a real recognizer compose with this function." This
+/// is pre-existing, low-complexity plumbing this review round neither introduced nor worsened,
+/// and the `Err` arm's underlying behaviour (what `abandon_worker_after_on_device_failure` itself
+/// does) is separately, directly tested elsewhere (`on_device_failure_tears_the_worker_slot_down_and_reports_both_facts`,
+/// `on_device_failure_with_no_prior_engine_reports_the_bare_error`) — just not through this
+/// wrapper's own wiring. Named accurately here so nobody reads the earlier framing as narrower
+/// than the actual gap.
 fn run_on_device_with_recognizer<S: CaptureSource, R: tauri::Runtime>(
     app_worker: AppHandle<R>,
     mut source: S,
@@ -3182,6 +3193,29 @@ mod tests {
     /// flood far exceeding any real-time decode rate, AFTER `ready_rx` resolves — i.e. strictly
     /// after the engine is confirmed live and consuming. Any drop this test observes is
     /// therefore unambiguously a genuine post-ready throughput problem.
+    ///
+    /// **The mutation form that actually proves this control, stated exactly (Quinn, 86akd1jcc
+    /// review round 4 — replacing an earlier, now-misleading claim).** This test goes red when
+    /// the source loop's push to the hand-off is SEVERED from the chunks it pulls — e.g.
+    /// replacing the loop a few lines below this comment,
+    /// `while let Some(chunk) = source.next_chunk() { handoff.push(chunk); }`, with
+    /// `while source.next_chunk().is_some() {}` (chunks drained, never reaching
+    /// `AudioHandoff::push` at all). It does **NOT** go red from merely INSERTING an extra
+    /// `let _ = flush_pending_backlog(&mut source);` call alongside that loop, leaving the loop
+    /// itself intact — [`FLUSH_PENDING_BACKLOG_ITERATION_CAP`] (added in this same review round,
+    /// for an unrelated reason: bounding `flush_pending_backlog`'s own worst case) caps that
+    /// inserted call at 4 chunks, and the untouched loop immediately after still drains the rest
+    /// of a 5,000-chunk flood into the hand-off exactly as before, so the notice still fires and
+    /// this test still passes — 113/113, confirmed by actually running it, not reasoned about.
+    /// Both forms were independently run against this exact test during this review round: the
+    /// severing form reproducibly gives 112 passed / 1 failed (only this test, siblings
+    /// running); the insertion form reproducibly gives 113/113 green, twice. If you are
+    /// replaying "the mutation from PR #26" to re-satisfy yourself this control still bites, use
+    /// the severing form above — the insertion form no longer means anything, not because the
+    /// control went vacuous, but because an unrelated later change (the iteration cap) happens
+    /// to absorb that specific phrasing. A mutation proof can be invalidated by an unrelated
+    /// later change, silently, without the control itself regressing — record the exact form
+    /// that still works, not just that a mutation once worked.
     #[test]
     fn a_genuine_post_ready_overload_still_trips_the_notice() {
         let _guard = state_locked();

@@ -464,9 +464,18 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# measured directly -- a build-profile fact, not machine contention, despite three reviewers
 	# and this ticket's own earlier comments attributing it to load). Run it explicitly, in
 	# release, here: real integration coverage for ~3s instead of an ignored test nobody
-	# remembers to run, or an unignored one silently taxing every debug `make ci`. A no-op
-	# (`0 passed; 0 filtered`, not a failure) on a machine without the model cached -- the test's
-	# own `#[ignore]` reason and doc comment explain why.
+	# remembers to run, or an unignored one silently taxing every debug `make ci`.
+	#
+	# On a machine without the model cached: this line still reports `test result: ok. 1
+	# passed`, in well under a second -- NOT a skip, NOT `0 passed`. The test's own early
+	# `return` (see its doc comment) is not a no-op in the sense `cargo test`'s summary can
+	# show; the harness has no concept of a runtime-decided skip without `#[ignore]`, so a test
+	# that returns early without panicking is indistinguishable, in that summary line, from one
+	# that actually verified something (Cody, 86akd1jcc round 4, caught an earlier version of
+	# this exact comment claiming `0 passed; 0 filtered`, which is not real `cargo test` output
+	# at all -- forced the branch and got `1 passed`, confirmed independently before this fix).
+	# This is precisely the fact that made this whole ticket's CI-vacuity finding possible in
+	# the first place, so getting the wording right here is not cosmetic.
 	$(CARGO) test $(OP) --release --features stt -- --ignored a_real_cold_start_backlog_no_longer_trips_the_notice
 	python3 scripts/operator_headless.py
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
