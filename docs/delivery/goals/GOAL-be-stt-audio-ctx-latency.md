@@ -162,6 +162,15 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - New evidence: exactly two of the four whisper tests are genuine mutation-controls for this change; the other two are a documented ceiling guard and an accuracy-equivalence check respectively, by design.
 - Decision: complete — mutation verification satisfied; proceed to commit/PR.
 
+### Iteration 7 (post-PR: worktree-isolation audit + alignment-constraint documentation)
+
+- Target criterion: process integrity (coordinator-raised), C-002 documentation quality
+- Trigger: the coordinator asked whether the four dispatched reviewers shared this session's worktree (a real risk on this repo: concurrent mutation testing in a shared tree can silently corrupt a latency measurement, unlike a compile error which announces itself) and asked for the ctx=650 crash to be documented as an explicit alignment constraint rather than an anecdote.
+- Verification executed: `git status --porcelain -uall` (empty), `git diff --stat` against both HEAD and e256717 (empty), byte-for-byte `diff` of both changed files against `git show e256717:<path>` (MATCH), `lsof +D` on the worktree root (only this session's own shell/claude process), `find ... -newer <branch-ref>` (no file touched since the last commit) — all confirm this worktree was not shared or touched by any reviewer.
+- Result: confirmed clean; reported to the coordinator with the four reviewer agent IDs (Cody a60351954f3371307, Vera a23ea47ca0f708b19, Sana a1675a179cfb87420, Quinn a001e0776162dec35) so it can resume them directly rather than risk duplicate instances.
+- Change: added a new commit (022b823, never amended) to `WHISPER_AUDIO_CTX`'s doc comment stating the alignment pattern — every non-crashing value tried (512, 532, 600, 700, 800, 900, 1000) is a multiple of 4; the crashing value (650) is not — framed as a strong prior (8 data points, one backend) for whoever retunes this next, not a proven rule. Posted as a PR comment; coordinator notified of the new head SHA.
+- Decision: complete — no code behavior change, doc-only; awaiting the coordinator's (re)dispatch of the four reviewers.
+
 ### Incidental finding (not this session's regression, not fixed — out of one-file scope)
 
 `model::tests::cpu_only_build_uses_a_small_model_not_the_large_one` and `model::tests::low_end_cpu_steps_down_to_a_smaller_model` (in `model.rs`, untouched by this change) FAIL under `--features metal` in every run in this session, including on the unmodified file. They assert CPU-only step-down behavior via `assert!(!gpu_acceleration_compiled(), ...)`, which is false whenever `metal`/`cuda`/`vulkan` is compiled in — i.e. they are written to run under `--features whisper` alone and were never given a `#[cfg(not(any(feature = "metal", ...)))]` guard. Pre-existing, unrelated to `recognizer.rs`, consistent with this crate being "linted by nothing" and having no CI coverage (CLAUDE.md, 86ak5rjh7) — nothing catches this feature-combination gap today. Flagged for awareness, not fixed (out of the one-file scope for this ticket).
