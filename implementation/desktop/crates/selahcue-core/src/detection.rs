@@ -241,7 +241,35 @@ fn take_number(tokens: &[&str]) -> Option<(u16, usize)> {
     let mut value: u16 = 0;
     let mut consumed = 0;
     let mut state = NumState::Start;
-    for &tok in tokens {
+    let mut idx = 0;
+    while idx < tokens.len() {
+        let tok = tokens[idx];
+        // "and" is not a number word, so on every other path it ends the number here
+        // exactly as before (falls through to `classify(tok) == None` below). The one
+        // exception: immediately after a hundreds component ("one hundred") English
+        // numerals conventionally insert "and" before the remainder ("one hundred AND
+        // three", "two hundred AND twenty-one"). Tolerate it ONLY there, and ONLY when
+        // the token right after "and" itself continues the same number — never merely
+        // because we are "between two numbers" in general. That keeps the tolerance
+        // scoped to a single spoken number: it cannot bridge two independent numbers
+        // or a clause boundary ("Romans eight and consider verse ten" never reaches
+        // this branch because state is AfterOnes, not AfterHundred, when "and" is
+        // hit — see `and_does_not_fuse_numbers_across_a_clause_boundary` and
+        // `and_does_not_fuse_adjacent_numbers_without_a_preceding_hundred`).
+        if tok == "and" && state == NumState::AfterHundred {
+            let continues = tokens
+                .get(idx + 1)
+                .and_then(|next_tok| classify(next_tok))
+                .is_some_and(|c| {
+                    matches!(c, NumWord::Ones(_) | NumWord::Teen(_) | NumWord::Tens(_))
+                });
+            if continues {
+                consumed += 1;
+                idx += 1;
+                continue;
+            }
+            break;
+        }
         let Some(class) = classify(tok) else { break };
         let next = match (state, class) {
             (NumState::Start, NumWord::Ones(n)) => {
@@ -289,6 +317,7 @@ fn take_number(tokens: &[&str]) -> Option<(u16, usize)> {
         };
         state = next;
         consumed += 1;
+        idx += 1;
         if state == NumState::Done {
             break;
         }

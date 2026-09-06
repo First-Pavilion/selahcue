@@ -330,3 +330,70 @@ fn engine_ingest_with_no_quotes_matches_plain_ingest() {
         .collect();
     assert_eq!(ra, rb);
 }
+
+// ---- "and" inside a hundreds number (86akd8hx6) ----
+//
+// `take_number` breaks the moment it hits a word `classify()` doesn't recognise, and
+// "and" is not a number word — so "one hundred and three" folded to just 100, with
+// "three" left as a dangling bare word that `detect()`'s window-shrink then silently
+// swallowed. The fix must tolerate "and" ONLY when it sits directly between a
+// consumed hundreds component and its remainder, never as a bridge between two
+// independent numbers or across a clause boundary — see the clause-boundary tests
+// below for the hazard this must not reintroduce.
+
+#[test]
+fn and_inside_a_hundreds_number_is_not_truncated() {
+    // The exact bug case: before the fix this returned ["Psalms 100"], silently
+    // dropping "three" and surfacing the WRONG reference at high confidence rather
+    // than no reference at all.
+    assert_eq!(detect("psalm one hundred and three"), vec!["Psalms 103"]);
+}
+
+#[test]
+fn hundreds_for_long_psalms_with_and_in_both_components() {
+    // Same phrase as the pre-existing `hundreds_for_long_psalms`, with "and" inserted
+    // into both the chapter and the verse — the natural way a British speaker reads
+    // both three-digit numbers aloud. Must resolve identically.
+    assert_eq!(
+        detect("Psalm one hundred and nineteen verse one hundred and five"),
+        vec!["Psalms 119:105"]
+    );
+}
+
+// ---- Clause boundary: "and" must NOT bridge two independent numbers ----
+
+#[test]
+fn and_does_not_fuse_numbers_across_a_clause_boundary() {
+    // The exact hazard of the fix: "and" here is an ordinary conjunction joining two
+    // unrelated clauses, not part of a spoken number. A global "and"-strip would risk
+    // welding "eight" and "ten" together (or otherwise manufacturing a reference that
+    // was never spoken). Only the actually-named "Romans 8" (whole chapter) may
+    // surface; "ten" must never attach to it as a fused or fabricated verse.
+    assert_eq!(
+        detect("turn to Romans eight and consider verse ten"),
+        vec!["Romans 8"]
+    );
+}
+
+#[test]
+fn and_does_not_fuse_adjacent_numbers_without_a_preceding_hundred() {
+    // Tighter than the case above: here "and" sits DIRECTLY between two number words
+    // with nothing else in between ("eight and ten") — structurally the same
+    // adjacency as "one hundred and three", but with no "hundred" before it. This is
+    // the precise discriminator the fix must get right: tolerance for "and" is keyed
+    // to having just consumed a hundreds component, not merely to sitting between any
+    // two number words. If the guard were "and between two numbers" instead of "and
+    // right after hundred", this would wrongly fold to a fused/garbage number
+    // (e.g. 810) instead of leaving "eight" and "ten" independent.
+    //
+    // Positive control: "Romans 8" (the chapter that WAS actually named) must still
+    // be detected — proving this isn't just refusing everything, but precisely
+    // rejecting the fusion while the benign chapter reference still comes through.
+    let got = detect("Romans chapter eight and verse ten");
+    assert_eq!(got, vec!["Romans 8"]);
+    assert!(
+        !got.iter()
+            .any(|r| r.contains("810") || r.contains("828") || r == "Romans 8:10"),
+        "\"eight\" and \"ten\" must never fuse across the conjunction: got {got:?}"
+    );
+}
