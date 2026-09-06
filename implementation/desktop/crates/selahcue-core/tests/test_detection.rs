@@ -90,6 +90,99 @@ fn digit_by_digit_reading_requires_an_internal_zero_or_oh() {
     );
 }
 
+// ---- The zero/oh must be INTERNAL, not merely present (PR #27 review: Sana High,
+// independently confirmed by Cody) ----
+//
+// The first cut of this fix accepted a zero/oh anywhere in a 2+ digit-word run,
+// including trailing. A trailing "oh"/"zero" immediately after a real spoken digit is
+// common English (interjection "oh", vocative "O Lord", idioms "zero tolerance"/"zero
+// in"), and folding it multiplied the preceding digit by ten — reintroducing the exact
+// silently-wrong-high-confidence-detection bug class 86akd8903 exists to fix, via a
+// different trigger word. Worst case found: "psalm eight oh lord our lord how majestic
+// is your name" is literally Psalm 8's own opening line (Psalm 8:1) — reading it aloud
+// used to misdetect as Psalm 80.
+//
+// These eight phrases are Sana's exact probe set, each independently verified against
+// both `162bcd8` (base, pre-86akd8903) and this fix — all eight must reproduce the base
+// (correct) result.
+
+#[test]
+fn trailing_oh_after_a_chapter_digit_is_not_folded_into_it() {
+    assert_eq!(
+        detect("psalm eight oh lord our lord how majestic is your name"),
+        vec!["Psalms 8"],
+        "reading Psalm 8:1 aloud must not misdetect as Psalm 80"
+    );
+}
+
+#[test]
+fn trailing_oh_before_i_forget_is_not_folded() {
+    assert_eq!(detect("john three oh before i forget"), vec!["John 3"]);
+}
+
+#[test]
+fn oh_splitting_a_chapter_from_its_verse_does_not_weld_them() {
+    assert_eq!(
+        detect("john chapter three oh sixteen verse sixteen"),
+        vec!["John 3"],
+        "before this fix this produced \"John 30:16\""
+    );
+}
+
+#[test]
+fn trailing_oh_man_what_a_chapter_is_not_folded() {
+    // Genesis 30 genuinely exists, so no downstream chapter-range check could ever have
+    // caught this one — the guard itself has to be right.
+    assert_eq!(
+        detect("genesis three oh man what a chapter"),
+        vec!["Genesis 3"]
+    );
+}
+
+#[test]
+fn trailing_oh_what_a_promise_is_not_folded() {
+    assert_eq!(detect("romans eight oh what a promise"), vec!["Romans 8"]);
+}
+
+#[test]
+fn trailing_oh_after_a_completed_chapter_verse_pair_is_not_folded() {
+    assert_eq!(
+        detect("john chapter three four oh how i love it"),
+        vec!["John 3:4"],
+        "before this fix this produced \"John 340\""
+    );
+}
+
+#[test]
+fn trailing_zero_tolerance_idiom_is_not_folded() {
+    assert_eq!(detect("john three zero tolerance for sin"), vec!["John 3"]);
+}
+
+#[test]
+fn trailing_zero_in_idiom_is_not_folded() {
+    // Acts 20 genuinely exists too — same point as the Genesis case above.
+    assert_eq!(detect("acts two zero in the year"), vec!["Acts 2"]);
+}
+
+#[test]
+fn a_completed_digit_by_digit_fold_is_not_extended_by_a_following_trailing_oh() {
+    // The harder case: an internal zero DOES fold ("one zero three" -> 103), but a
+    // trailing "oh" immediately after that completed fold must not extend it further.
+    assert_eq!(
+        detect("psalm one zero three oh how great is our God"),
+        vec!["Psalms 103"]
+    );
+}
+
+#[test]
+fn trailing_zero_with_nothing_after_it_does_not_fold() {
+    // Recorded trade-off (see `take_digit_run`'s doc): a chapter/verse number that
+    // genuinely ends in a spoken zero ("one zero" for a hypothetical "10") is not read
+    // digit-by-digit here — indistinguishable from a trailing interjection, so it falls
+    // back to plain single-digit handling, matching base (pre-86akd8903) behaviour.
+    assert_eq!(detect("psalm one zero"), vec!["Psalms 1"]);
+}
+
 #[test]
 fn digit_by_digit_run_is_bounded_and_never_panics() {
     // Pin the premise: the bound must still be small enough for this test to be

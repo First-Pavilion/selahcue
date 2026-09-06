@@ -336,31 +336,64 @@ fn digit_word(word: &str) -> Option<u8> {
 }
 
 /// Consume a maximal run of single-digit spoken words at the start of `tokens` — but
-/// only when that run is at least two words long **and contains a "zero"/"oh"**.
+/// only when that run is at least two words long **and contains a "zero"/"oh" that is
+/// itself immediately followed by another digit word** (i.e. the zero/oh is internal to
+/// the run, never its last word).
 ///
-/// That guard is the whole design: no English cardinal number is ever spoken with an
-/// internal "zero" ("one zero three" is never how anyone says a cardinal number), so a
-/// zero/oh inside a run of single-digit words is an unambiguous signal that the speaker
-/// is reading digits one at a time, not composing a cardinal number. Without a zero, a
-/// bare run of single-digit words is left entirely alone here — `take_number`'s existing
-/// cardinal-combination state machine already owns that case (e.g. it stops "eight" at a
-/// following "twenty" on its own), and this function must never compete with it, or
-/// "Romans eight twenty-eight" would fold into "828" instead of staying "8" then "28".
-/// The `>= 2` length floor additionally keeps a single stray "oh" (a common interjection,
-/// "oh well") from being read as a lone digit "0".
+/// That "internal" qualifier is the whole design, and it is stricter than it first looks
+/// like it needs to be. No English cardinal number is ever spoken with an internal zero
+/// ("one zero three" is never how anyone says a cardinal number), so a zero/oh inside a
+/// run of single-digit words IS an unambiguous signal of digit-by-digit reading — but
+/// only while more digits follow it. A *trailing* zero/oh, where the run ends right
+/// there, is NOT unambiguous: a spoken chapter digit followed by "oh" is indistinguishable
+/// from that same digit followed by the ordinary English interjection "oh" ("Psalm
+/// eight! Oh, how majestic...", which is itself Psalm 8:1), a self-correction ("chapter
+/// three, oh, I mean four"), or the idiom "zero tolerance"/"zero in". All three are
+/// common in live preaching, far more so than a number genuinely ending in a spoken
+/// zero, and folding them reintroduces exactly the silently-wrong-high-confidence
+/// detection this function exists to eliminate, via a different trigger word (review
+/// finding on 86akd8903 PR #27 — Sana, independently confirmed by Cody). So a trailing
+/// zero/oh is excluded from the run entirely: the run ends BEFORE it, and if that leaves
+/// fewer than 2 digits or no internal zero, this returns `None` and the token(s) fall
+/// back to `take_number`/literal handling exactly as before this function existed.
+///
+/// Recorded trade-off, not an oversight: a chapter/verse number that genuinely ends in a
+/// spoken zero ("one two zero" for 120) is not read digit-by-digit by this function — it
+/// falls back to whatever handling a stray trailing "zero" already got (an unrecognised
+/// literal token). "one twenty" is overwhelmingly the more natural spoken form anyway.
+///
+/// Without a zero, a bare run of single-digit words is left entirely alone here —
+/// `take_number`'s existing cardinal-combination state machine already owns that case
+/// (e.g. it stops "eight" at a following "twenty" on its own), and this function must
+/// never compete with it, or "Romans eight twenty-eight" would fold into "828" instead
+/// of staying "8" then "28".
 ///
 /// Bounded to [`MAX_DIGIT_RUN`] words so a pathological run can never grow the resulting
-/// string, or the u32 accumulator, without limit. Returns `(value, tokens consumed)` or
-/// `None`.
+/// string, or the u32 accumulator, without limit. A zero/oh sitting exactly at that cap
+/// boundary is also treated as trailing (nothing this function is allowed to look at
+/// follows it) and excluded, on the same conservative principle. Returns `(value, tokens
+/// consumed)` or `None`.
 fn take_digit_run(tokens: &[&str]) -> Option<(u16, usize)> {
+    let limit = tokens.len().min(MAX_DIGIT_RUN);
     let mut digits: Vec<u8> = Vec::new();
-    let mut saw_zero = false;
-    for &tok in tokens.iter().take(MAX_DIGIT_RUN) {
-        let Some(d) = digit_word(tok) else { break };
-        saw_zero |= d == 0;
+    let mut saw_internal_zero = false;
+    let mut i = 0;
+    while i < limit {
+        let Some(d) = digit_word(tokens[i]) else {
+            break;
+        };
+        if d == 0 {
+            let followed_by_digit = i + 1 < limit && digit_word(tokens[i + 1]).is_some();
+            if !followed_by_digit {
+                // Trailing zero/oh: stop the run BEFORE it rather than folding it in.
+                break;
+            }
+            saw_internal_zero = true;
+        }
         digits.push(d);
+        i += 1;
     }
-    if digits.len() < 2 || !saw_zero {
+    if digits.len() < 2 || !saw_internal_zero {
         return None;
     }
     // Cap in u32 first so a full MAX_DIGIT_RUN of "nine"s cannot overflow before the
