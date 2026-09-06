@@ -447,6 +447,37 @@ fn take_digit_run(tokens: &[&str]) -> Option<(u16, usize)> {
             // words after it ("oh, how majestic", "zero tolerance for..."); a "zero"
             // that simply ends the segment, with nothing following to be idiomatic
             // about, is read as completing the number.
+            //
+            // ACCEPTED RISK, KNOWINGLY TAKEN (not an oversight -- read this before
+            // touching this line): "nothing follows" means nothing follows in THIS
+            // TRANSCRIPT SEGMENT, and a segment boundary is not the same thing as an
+            // utterance boundary. Cloud STT sends two independent signals -- `is_final`
+            // ("this text will not be revised") and `speech_final` ("the speaker paused
+            // here") -- and Deepgram can settle a chunk of text mid-utterance, before
+            // `speech_final` fires (see `selahcue-stt-cloud/src/protocol.rs`). This
+            // detector is only ever handed `is_final` segments (`speech_final` is parsed
+            // there but dropped before it reaches here); the on-device engine has an
+            // analogous exposure via `max_utterance_samples` force-closing unbroken
+            // speech with no VAD-detected pause. So if a provider settles a segment
+            // right after "zero" -- e.g. "John three zero" cut from "John three zero
+            // tolerance for sin" -- this rule cannot tell that apart from a verse
+            // genuinely ending in ten: no rule reading a single segment's text can, since
+            // the disambiguating fact (did more speech actually follow) is not present
+            // in what this function receives.
+            //
+            // Accepted rather than withheld: every digit-by-digit verse ending in zero
+            // is confidently WRONG today with no split required at all, which is the
+            // certainty this rule trades against a possibility. Operator confirmation
+            // (FR-115) remains the gate before anything goes live either way. A
+            // "must be preceded by a chapter/verse marker" companion condition was
+            // considered and rejected -- it only closes the chapter-position slice of
+            // this exposure; Cody's actual cases are all verse-position (immediately
+            // preceded by "verse"), exactly where this risk concentrates, so that
+            // condition would leave the case this rule exists for exactly as exposed.
+            // The real fix is threading `speech_final` (or the on-device equivalent)
+            // through to here and gating THIS rule alone on it -- tracked as 86akdpw83,
+            // linked to 86akd8903 -- not the other rules above, which already degrade
+            // gracefully (incompletely, not wrongly) on a genuine segment split.
             let is_final_zero_in_input = tokens[i] == "zero" && tokens.get(i + 1).is_none();
 
             if !followed_by_digit && !followed_by_boundary_then_number && !is_final_zero_in_input {
