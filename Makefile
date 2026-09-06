@@ -298,6 +298,23 @@ endif
 # stop-timer) are deliberately NOT switched to this indirection: those genuinely want `-n` to
 # cascade into what the target they call would do, and none of them make an assertion whose
 # failure depends on a grandchild that -n keeps dry.
+#
+# THE RULE FOR A FIFTH CALL SITE (Cody, PR #29 review -- stated directly so this is a check,
+# not a judgement call): does this line's text contain BOTH a $(MAKE) reference AND other
+# logic whose correctness depends on actually running, rather than merely being echoed? If
+# yes, it needs $(MAKE_RECURSE). If the entire recipe is nothing but the recursive call
+# itself, the literal $(MAKE) is not merely harmless but CORRECT -- it is what lets `-n`
+# cascade into a genuine preview of the child target, which is exactly what run-release/
+# output-release/timer/stop-timer want and why they keep the literal form.
+#
+# What counts as "a line" is what makes this checkable rather than approximate: GNU Make's
+# exemption matches the recipe LINE AS MAKE PARSES IT, and a backslash-continued shell block --
+# however many physical lines or `;`-separated statements it spans -- is ONE such line. That is
+# exactly why verify-stage-operator-binaries-create-only's OLD recipe tripped this: its
+# assertions and its nested $(MAKE) call shared a single logical line, so the whole block was
+# force-executed together, assertions included. A target whose recipe is nothing but
+# `$(MAKE) ... sometarget` cannot trip it for the same reason in reverse -- there is no other
+# logic on that line to force-execute alongside the call.
 MAKE_RECURSE := $(MAKE)
 
 # selahcue-operator's build.rs (tauri_build::build()) validates that the externalBin sidecar
