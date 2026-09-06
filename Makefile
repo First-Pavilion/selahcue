@@ -260,7 +260,173 @@ NDI_STATUS := on (vendored SDK)
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
+.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
+
+# Recursive-make calls that must NOT get GNU Make's special "$(MAKE) literal text" handling
+# (documented in the GNU Make manual, "How the MAKE Variable Works": a recipe LINE containing
+# the exact substring "$(MAKE)" or "${MAKE}" is force-executed even under `-n`/`-t`/`-q`,
+# specifically so a dry run of a genuinely recursive build stays meaningful). Every other line
+# in `ci` is an ordinary command `-n` correctly leaves unexecuted; the two operator-placeholder
+# calls below, and the nested calls inside verify-stage-operator-binaries-create-only's own
+# recipe, used to be the only things in this file that violated that -- `make -n ci` regressed
+# from a clean preview to a hard `exit 2` (FAIL(A): sidecar placeholder was not created),
+# because the OUTER call was force-executed for real, called INTO a script that made real
+# assertions, while the INNER nested call two levels down correctly stayed dry (its own line
+# has no $(MAKE) reference to re-trigger the exemption) and created nothing. Root-caused with
+# an isolated probe Makefile, not by reading the manual and guessing (86akc2kmh, PR #29).
+#
+# Using $(MAKE_RECURSE) here instead of the literal text sidesteps the exemption rule entirely:
+# real execution is unaffected (identical expansion, jobserver fds still inherited via the
+# environment the same as any child process), but under `-n`/`-t`/`-q` the line is printed as
+# preview text and never run at all -- restoring the SAME "printed, not executed" contract
+# every other line in this file already keeps under `-n`, rather than adding a second,
+# target-local mechanism that behaves differently from its surroundings. Verified directly: a
+# probe using this indirection stays fully dry under `-n` (zero subprocess spawned, zero side
+# effect), and still passes jobserver fds cleanly under `-j` (no warnings, side effect happens).
+#
+# This is NOT the only tool for this class of problem -- a MAKEFLAGS-based guard
+# (`ifneq ($(findstring n,$(filter-out --%,$(MAKEFLAGS))),)`, skip the real logic under a dry
+# run) also verified correctly here, and is the right choice for a recursive call that must
+# genuinely DO something useful under `-n` (a real preview action), which indirection cannot
+# give you since it makes the call vanish under `-n` rather than run a dry-run-aware branch of
+# it. This case needs no such preview -- a dry run of a regression test should do nothing -- so
+# indirection is the smaller, more durable fix: it depends on one of GNU Make's oldest and most
+# stable documented behaviours, not on this machine's particular MAKEFLAGS serialization format
+# (which does vary by version/platform, and would need its own re-verification on every one).
+#
+# Pre-existing $(MAKE) calls elsewhere in this file (run-release, output-release, timer,
+# stop-timer) are deliberately NOT switched to this indirection: those genuinely want `-n` to
+# cascade into what the target they call would do, and none of them make an assertion whose
+# failure depends on a grandchild that -n keeps dry.
+#
+# THE RULE FOR A FIFTH CALL SITE (Cody, PR #29 review -- stated directly so this is a check,
+# not a judgement call): does this line's text contain BOTH a $(MAKE) reference AND other
+# logic whose correctness depends on actually running, rather than merely being echoed? If
+# yes, it needs $(MAKE_RECURSE). If the entire recipe is nothing but the recursive call
+# itself, the literal $(MAKE) is not merely harmless but CORRECT -- it is what lets `-n`
+# cascade into a genuine preview of the child target, which is exactly what run-release/
+# output-release/timer/stop-timer want and why they keep the literal form.
+#
+# What counts as "a line" is what makes this checkable rather than approximate: GNU Make's
+# exemption matches the recipe LINE AS MAKE PARSES IT, and a backslash-continued shell block --
+# however many physical lines or `;`-separated statements it spans -- is ONE such line. That is
+# exactly why verify-stage-operator-binaries-create-only's OLD recipe tripped this: its
+# assertions and its nested $(MAKE) call shared a single logical line, so the whole block was
+# force-executed together, assertions included. A target whose recipe is nothing but
+# `$(MAKE) ... sometarget` cannot trip it for the same reason in reverse -- there is no other
+# logic on that line to force-execute alongside the call.
+MAKE_RECURSE := $(MAKE)
+
+# selahcue-operator's build.rs (tauri_build::build()) validates that the externalBin sidecar
+# (`selahcue-output-<triple>`) and the NDI resource dll declared in tauri.conf.json exist on
+# disk -- even for a bare `cargo check`/`clippy` that never bundles the app. Both live under
+# $(OPERATOR)/binaries/, which is gitignored (selahcue-operator/.gitignore:11), so a fresh
+# clone or a fresh `git worktree` -- the very isolation the operating contract mandates for
+# every ticket -- never has them, and every target below that touches the operator crate dies
+# on `resource path 'binaries/selahcue-output-<triple>' doesn't exist`, on a crate the diff
+# usually never touched, with no hint the fix is a one-line touch (86akc2kmh).
+#
+# .github/workflows/ci.yml stages the identical placeholders for the identical reason (see its
+# "Stage Tauri sidecar/resource placeholders" step) -- its own comment calls itself "the
+# snippet people copy to reproduce CI locally". This target IS that reproduction, kept in sync
+# by hand: it makes the local gate documented at the top of this file actually work from a
+# clean checkout. It does not touch ci.yml's step, which is correct as-is and stays untouched.
+#
+# CREATE-ONLY, ON PURPOSE -- DO NOT MAKE THIS UNCONDITIONAL. `: > file` TRUNCATES, and one of
+# these two names is `Processing.NDI.Lib.x64.dll` -- the real NDI SDK redistributable an owner
+# vendors by hand (scripts/fetch_ndi_sdk.sh), never built by this repo. `binaries/` is
+# gitignored, so truncating a real dll there is SILENT and GIT-UNRECOVERABLE: nothing tracks
+# it, nothing can restore it. Harmless on an ephemeral CI runner; not harmless on a developer's
+# machine, which is exactly where this target runs. The `[ -e "$$f" ] || [ -h "$$f" ]` guard on
+# each file is the entire safety property -- never drop it, and never replace `stage()`'s body
+# with an unconditional `: >` or `touch`. The `-h` half matters on its own: a DANGLING symlink
+# (e.g. the dll symlinked to an SDK path on a volume that is not currently mounted) reads false
+# under `-e` alone, so without `-h` too, `: >` would follow the link and create an empty file
+# wherever it points -- outside `binaries/`, possibly outside the repo. Create-only still holds
+# either way (no existing file is touched), but the intent is "skip anything already spoken
+# for", not just "skip anything `-e` can see" (Sana, PR #29 F1).
+#
+# Quiet on the common case (a machine that already has real files staged, or ran this before):
+# prints only when it actually creates a placeholder, so this adds no noise to every
+# `make ci`/`check`/`clippy`/`operator`/`build-operator` invocation.
+#
+# Fails LOUD if rustc is missing or unusable, matching `stt-preflight`/`ndi-preflight`'s
+# `command -v X || { echo ERROR; exit 1; }` style rather than silently staging a garbage
+# `selahcue-output-` (empty triple) and reporting success anyway (Cody, PR #29 High: without
+# this, `make stage-operator-binaries` exited 0 with a misleading "staged" message, and the
+# real cause only surfaced later as cargo's confusing `resource path ... doesn't exist`).
+#
+# `ci` deliberately does NOT list this target as a prerequisite -- a same-level prerequisite
+# resolves before `ci`'s own recipe body runs, which would put this check AHEAD of
+# `sh scripts/check_toolchain.sh`, the one script whose own header says it must run "BEFORE
+# running any gate" (86ak5rc9c's nine-day-red-main lesson) and gives the fuller diagnostic for
+# a broken rustc (mismatched pin, missing component, etc.). So `ci` calls this target
+# explicitly, as a recipe line, AFTER that check -- see `ci:` below. Every other prerequisite
+# of this target (`check`/`clippy`/`operator`/`build-operator`/`test-stt-real-model`) has no
+# such ordering conflict, since none of them run `check_toolchain.sh` themselves.
+stage-operator-binaries: ## (internal) create-only placeholders for the operator's gitignored sidecar/NDI dll, so a fresh worktree can compile it (86akc2kmh)
+	@command -v rustc >/dev/null 2>&1 || { \
+	  echo "ERROR: rustc is not on PATH -- needed to resolve the platform triple for"; \
+	  echo "  selahcue-operator's gitignored sidecar/NDI placeholders. Install the pinned"; \
+	  echo "  toolchain via rustup (see rust-toolchain.toml), or run 'make ci', whose own"; \
+	  echo "  toolchain check gives the fuller diagnostic if rustc is present but misconfigured."; \
+	  exit 1; }
+	@triple="$$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')"; \
+	[ -n "$$triple" ] || { echo "ERROR: 'rustc -vV' produced no 'host:' line -- cannot resolve the platform triple for selahcue-operator's sidecar placeholder. Run 'rustc -vV' directly to see its actual output."; exit 1; }; \
+	dir="$(OPERATOR)/binaries"; \
+	mkdir -p "$$dir"; \
+	case "$$triple" in \
+	  *windows*) bin="$$dir/selahcue-output-$${triple}.exe" ;; \
+	  *) bin="$$dir/selahcue-output-$${triple}" ;; \
+	esac; \
+	ndi="$$dir/Processing.NDI.Lib.x64.dll"; \
+	staged=""; \
+	for f in "$$bin" "$$ndi"; do \
+	  [ -e "$$f" ] || [ -h "$$f" ] || { : > "$$f"; staged="$$staged $$(basename "$$f")"; }; \
+	done; \
+	if [ -n "$$staged" ]; then echo ">> staged selahcue-operator compile-check placeholder(s) (gitignored, create-only, safe to delete):$$staged"; fi
+
+# Regression-tests the create-only guarantee `stage-operator-binaries` promises (86akc2kmh's own
+# acceptance criterion: "write it as a real check, not an eyeball" -- Quinn, PR #29 QA review).
+# Runs the EXACT shipped recipe (never a duplicate copy that could drift) against two disposable
+# temp directories via OPERATOR=, so nothing here can ever put a real dll at risk:
+#
+#   (A) a REAL existing file at the NDI slot must survive byte-for-byte, and the sidecar slot
+#       (genuinely missing) must still get created -- the base create-only property plus "it
+#       still does its job" on the happy path.
+#   (B) a DANGLING symlink at the NDI slot (Sana's PR #29 F1) must be left alone -- nothing is
+#       created at the link's target and the link itself is not replaced -- while the sidecar
+#       slot still gets created normally alongside it. Kept in its own temp dir and its own
+#       assertions so a regression in (A) or (B) fails on its own signal rather than being
+#       masked by the other slot succeeding.
+#
+# Mutation-verified by hand before this comment was written: dropping `stage-operator-binaries`'s
+# `[ -e "$$f" ] ||` turns scenario (A)'s hash into the well-known empty-file SHA-256
+# (e3b0c442...) and this target catches it immediately; dropping the `[ -h "$$f" ] ||` half
+# makes scenario (B) create a file at the dangling link's target and this target catches that
+# too. Both were restored after confirming the RED.
+verify-stage-operator-binaries-create-only: ## (internal) regression-test stage-operator-binaries' create-only guarantee, incl. the dangling-symlink guard (86akc2kmh)
+	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	mkdir -p "$$tmp/binaries"; \
+	printf 'KNOWN-PAYLOAD-DO-NOT-TRUNCATE-%s' "$$$$" > "$$tmp/binaries/Processing.NDI.Lib.x64.dll"; \
+	before="$$(shasum -a 256 "$$tmp/binaries/Processing.NDI.Lib.x64.dll" | awk '{print $$1}')"; \
+	$(MAKE_RECURSE) --no-print-directory stage-operator-binaries OPERATOR="$$tmp" >/dev/null; \
+	after="$$(shasum -a 256 "$$tmp/binaries/Processing.NDI.Lib.x64.dll" | awk '{print $$1}')"; \
+	[ "$$before" = "$$after" ] || { echo "FAIL(A): stage-operator-binaries truncated an existing file"; exit 1; }; \
+	sidecar="$$(find "$$tmp/binaries" -name 'selahcue-output-*' 2>/dev/null | head -1)"; \
+	[ -n "$$sidecar" ] && [ -e "$$sidecar" ] || { echo "FAIL(A): sidecar placeholder was not created for a genuinely-missing file"; exit 1; }; \
+	echo ">> (A) create-only + real-creation property verified"; \
+	tmp2="$$(mktemp -d)"; trap 'rm -rf "$$tmp" "$$tmp2"' EXIT; \
+	mkdir -p "$$tmp2/binaries"; \
+	dangle_target="$$tmp2/outside-the-binaries-dir.dll"; \
+	ln -s "$$dangle_target" "$$tmp2/binaries/Processing.NDI.Lib.x64.dll"; \
+	$(MAKE_RECURSE) --no-print-directory stage-operator-binaries OPERATOR="$$tmp2" >/dev/null; \
+	[ ! -e "$$dangle_target" ] || { echo "FAIL(B): a dangling symlink's target got created (Sana PR #29 F1 regressed)"; exit 1; }; \
+	[ -h "$$tmp2/binaries/Processing.NDI.Lib.x64.dll" ] || { echo "FAIL(B): the dangling symlink itself was replaced"; exit 1; }; \
+	sidecar2="$$(find "$$tmp2/binaries" -name 'selahcue-output-*' 2>/dev/null | head -1)"; \
+	[ -n "$$sidecar2" ] && [ -e "$$sidecar2" ] || { echo "FAIL(B): sidecar placeholder was not created alongside the skipped dangling symlink"; exit 1; }; \
+	echo ">> (B) dangling-symlink guard verified"; \
+	echo ">> stage-operator-binaries create-only property fully verified"
 
 stt-preflight: ## (internal) verify the toolchain needed for --features stt/cloud-stt is present
 ifneq ($(filter stt cloud-stt,$(OP_FEATURES_WORDS)),)
@@ -396,7 +562,7 @@ ndi-preflight: ## (internal) verify the repo-vendored NDI SDK is populated for t
 output-ndi: ndi-preflight ## Force the output window WITH NDI (errors if the SDK isn't vendored; `make run` enables NDI automatically)
 	NDI_SDK_DIR="$(NDI_DIR)" $(NDI_LOADER) $(CARGO) run $(WS) -p selahcue-desktop --features ndi $(PROFILE_FLAG)
 
-operator: stt-preflight release-ai-guard ## Run only the operator shell (connects to a running output window, else a standalone demo)
+operator: stt-preflight release-ai-guard stage-operator-binaries ## Run only the operator shell (connects to a running output window, else a standalone demo)
 	@echo ">> live transcript (STT): $(STT_STATUS)"
 	@echo ">> AI-assisted sermon notes: $(AI_STATUS)"
 	$(OPERATOR_RUN)
@@ -453,6 +619,14 @@ mobile-test: ## Analyze + unit-test the Flutter controller
 # smuggle into a toolchain fix.
 ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that this does not)
 	sh scripts/check_toolchain.sh
+	# Stage the operator's gitignored sidecar/NDI placeholders (86akc2kmh) as an explicit recipe
+	# line, deliberately AFTER the toolchain check above and NOT as a same-level prerequisite of
+	# `ci` -- a prerequisite would resolve before this recipe body starts, putting a plain
+	# "rustc not found" message ahead of check_toolchain.sh's richer, purpose-built diagnostic
+	# (Cody, PR #29 High). Reuses the exact target other callers use, via recursive make, so
+	# there is exactly one definition of the staging logic.
+	$(MAKE_RECURSE) --no-print-directory stage-operator-binaries
+	$(MAKE_RECURSE) --no-print-directory verify-stage-operator-binaries-create-only
 	# Quinn's process finding on PR #24 (86akcmzyq): the PR template's feature-flag-reachability
 	# section is three checkboxes a human ticks, unenforced by CI -- exactly the human step that
 	# let 86akby7d8 ship, merge, and stay invisible from `make launch` in the first place. This
@@ -595,16 +769,16 @@ build: ## Build the desktop workspace
 build-output: ## Build just the output window with the same features/profile `make run` uses
 	$(DESKTOP_ENV) $(CARGO) build $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) $(PROFILE_FLAG)
 
-build-operator: stt-preflight release-ai-guard ## Build the Tauri operator shell crate
+build-operator: stt-preflight release-ai-guard stage-operator-binaries ## Build the Tauri operator shell crate
 	$(CARGO) build $(OP) $(OPRUN) $(PROFILE_FLAG)
 
 test: ## Run the workspace test suite
 	$(CARGO) test $(WS)
 
-test-stt-real-model: ## Run the `#[ignore]`d real-model on-device STT integration test (release, ~3s)
+test-stt-real-model: stage-operator-binaries ## Run the `#[ignore]`d real-model on-device STT integration test (release, ~3s)
 	$(CARGO) test $(OP) --release --features stt -- --ignored a_real_cold_start_backlog_no_longer_trips_the_notice
 
-check: ## Type-check the workspace + the operator shell
+check: stage-operator-binaries ## Type-check the workspace + the operator shell
 	$(CARGO) check $(WS)
 # A workspace build unifies features across members, so a crate that is missing a `cfg` on
 # something feature-gated still compiles here and only fails when someone builds it alone.
@@ -613,7 +787,7 @@ check: ## Type-check the workspace + the operator shell
 	$(CARGO) check $(WS) -p selahcue-app --all-targets
 	$(CARGO) check $(OP)
 
-clippy: ## Lint the workspace + the operator shell
+clippy: stage-operator-binaries ## Lint the workspace + the operator shell
 	$(CARGO) clippy $(WS) --all-targets
 	$(CARGO) clippy $(OP)
 
