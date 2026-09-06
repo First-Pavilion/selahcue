@@ -229,6 +229,43 @@ mutation, reproduced on this function rather than `main()`'s now-deleted loop: t
 `verify_crate_release_guard`'s own `for probe_token in probe_tokens:` line to `probe_tokens[:1]`
 turns all three new self-test cases red, then restored.
 
+ONE LEVEL OUT, THE SAME NIGHT AGAIN (Quinn, verifying `verify_crate_release_guard` itself before
+signing off). The inner loop above is genuinely closed -- Quinn reproduced the exact-mutation
+claim independently. But the loop that CALLED `verify_crate_release_guard`, once per registered
+crate, still lived inline in `main()`: `for crate_name, guard_target in
+CRATES_WITH_RELEASE_GUARD.items(): problems.extend(verify_crate_release_guard(...))`. `main()`
+is never exercised by `self_test()` at all, so nothing tested this outer loop's own bound. Quinn
+truncated it to `list(CRATES_WITH_RELEASE_GUARD.items())[:0]` -- no crate probed, no guard
+invoked, at all -- and got 31/31 self-test green plus a real check against the healthy repo
+printing unqualified success with the guard never once invoked. Unlike NEW-2c, this was LIVE, not
+latent: `CRATES_WITH_RELEASE_GUARD` has exactly one entry today, so "skip everything" and "skip
+nothing" were, until this fix, indistinguishable outcomes -- two rounds of protection deleted by
+narrowing one line, every gate staying green.
+
+Closed with the identical discipline, one level out: `verify_all_release_guards` wraps the
+`CRATES_WITH_RELEASE_GUARD.items()` loop, taking `verify_crate` as an injectable dependency the
+same way `verify_crate_release_guard` takes `prober`. Self-test injects a call-recording fake
+`verify_crate` and asserts the recorded `(crate_name, guard_target)` pairs against
+`CRATES_WITH_RELEASE_GUARD`'s own keys, READ LIVE at assertion time -- not a hand-written
+`{"selahcue-operator": ...}` literal, which would have passed just as well whether the registry
+had one entry or none. Verified the way Quinn verifies "reads live, not a copy" (the same check
+Quinn has now asked for three times on this PR, each time on a different join in this chain):
+temporarily added a second, fake entry to `CRATES_WITH_RELEASE_GUARD` itself and confirmed the
+self-test assertion tracked the change to two entries with no test-code edit, rather than staying
+green against a value that no longer described the registry. Verified against Quinn's exact
+mutation before reporting closed: truncating `verify_all_release_guards`'s own
+`for crate_name, guard_target in CRATES_WITH_RELEASE_GUARD.items():` line to
+`list(CRATES_WITH_RELEASE_GUARD.items())[:0]` turns the new self-test cases red, then restored.
+
+WHY THIS TERMINATES THE REGRESS. `main()` is now a single, unconditional line --
+`problems.extend(verify_all_release_guards(per_crate_tags))` -- with no loop of its own left to
+truncate. The chain from "which crates are registered" (`CRATES_WITH_RELEASE_GUARD`, read live)
+to "which tokens does each one need to refuse" (`pick_probe_tokens`, read live) to "did probing
+actually happen" (the injected `prober`) is pinned at every join that exists, each verified by
+mutating the REAL thing one level down and confirming the test tracks it rather than a
+hand-copied stand-in going stale. There is no further "loop that calls this loop" left in
+`main()` for a future review to find one level out again.
+
 THE LAYERING ACTUALLY COMPOSING (Sana). Two further spellings genuinely weaken the guard while
 evading NEW-1b's broadened regex entirely: `export RELEASE_UNSAFE_FEATURES := <weaker>` and a
 `define ... endef` block are both assignment shapes outside `:=`/`+=`/`?=`/`!=`/`=` with only an
@@ -352,12 +389,16 @@ check, the TARGETS derivation, the Makefile RELEASE_UNSAFE_FEATURES cross-check 
 NEW-1/NEW-1b assignment-shape cases), the NEW-2 unenforced-crate-tag check, and NEW-2b's pure
 decision logic (`pick_probe_tokens`'s every-UNSAFE-token behaviour, `classify_probe`'s seven
 outcome shapes including the PINNED detached-recipe case two reviewers disagreed about, and
-`verify_crate_release_guard`'s consuming loop via an injected call-recording `prober` -- an
+`verify_crate_release_guard`'s consuming loop via an injected call-recording `prober` (an
 all-refused case, a MIXED refused/not-refused case, and an explicit cross-check against
 `pick_probe_tokens`' own token count/set, verified to turn red against Quinn's exact
-`probe_tokens[:1]` mutation) -- against fixed fixtures, including several built by deleting or
-corrupting a tag from a fixture `[features]` block (the exact regressions this version closes)
--- without touching the real Makefile, the
+`probe_tokens[:1]` mutation), and `verify_all_release_guards`'s OUTER consuming loop via an
+injected call-recording `verify_crate` (asserted against `CRATES_WITH_RELEASE_GUARD`'s own keys
+read live, verified to turn red against Quinn's exact `[:0]` truncation, and verified to track a
+real second entry added to that registry rather than staying green against a stale copy) --
+against fixed fixtures, including several built by deleting or corrupting a tag from a fixture
+`[features]` block (the exact regressions this version closes) -- without touching the real
+Makefile, the
 real Cargo.toml files, or invoking `make`/`cargo` at all, so it runs anywhere. The real check
 (`check_launch_reachability.py`, no flag) reads the real Cargo.toml files, the real Makefile,
 and shells out to the actual `make -n launch` / `make -n operator` / `cargo metadata` /
@@ -789,6 +830,55 @@ def verify_crate_release_guard(
     return problems
 
 
+def verify_all_release_guards(
+    per_crate_tags: dict[str, dict[str, FeatureTags]],
+    verify_crate: Callable[[str, str, dict[str, dict[str, FeatureTags]]], list[str]] = verify_crate_release_guard,
+) -> list[str]:
+    """Every registered crate's release guard, verified: iterates `CRATES_WITH_RELEASE_GUARD`
+    (read LIVE -- this function's own module-level global, not a value copied in at import time
+    or a parameter a caller could hand it a stale snapshot of) and calls `verify_crate` once per
+    entry.
+
+    THE FINDING THIS FUNCTION EXISTS TO CLOSE (Quinn, one level out from the previous round's
+    fix). `verify_crate_release_guard`'s OWN inner loop is now pinned -- truncating it is caught.
+    But the loop that called IT, `for crate_name, guard_target in
+    CRATES_WITH_RELEASE_GUARD.items(): problems.extend(verify_crate_release_guard(...))`, lived
+    inline in `main()`, exercised by nothing: `self_test()` never calls `main()` at all. Quinn
+    truncated that outer loop to `list(CRATES_WITH_RELEASE_GUARD.items())[:0]` -- no crate probed,
+    no guard invoked, at all -- and got 31/31 self-test green plus a real check against the
+    healthy repo printing unqualified success. This is LIVE, not latent, unlike NEW-2c:
+    `CRATES_WITH_RELEASE_GUARD` has exactly one entry today, so "skip everything" and "skip
+    nothing" were, until this function existed, indistinguishable outcomes -- the entire
+    protection built over two rounds could be deleted by narrowing one line, with every gate
+    staying green.
+
+    THE SAME FIX, ONE LEVEL OUT, WITH THE SAME DISCIPLINE. `verify_crate_release_guard` closed
+    the inner truncation by taking its probing mechanism (`prober`) as an injectable dependency
+    rather than calling `probe_release_guard` directly, so self-test can record every call made
+    and check that list against `pick_probe_tokens`' own live output. This function does the
+    identical thing one level out: `verify_crate` is injectable, self-test injects a
+    call-recording fake, and the assertion is against `CRATES_WITH_RELEASE_GUARD`'s own keys,
+    read directly at assertion time -- not a hand-written `{"selahcue-operator"}` literal, which
+    would keep passing even if the registry changed underneath it and would not have caught this
+    exact mutation any more than the inner fixture's first draft would have. Verified the same
+    way Quinn verifies "reads live, not a copy": mutate `CRATES_WITH_RELEASE_GUARD` itself (add a
+    second entry) and confirm the self-test assertion tracks the change rather than going stale.
+
+    WHY THIS TERMINATES THE REGRESS. `main()` is reduced to a single, unconditional call --
+    `problems.extend(verify_all_release_guards(per_crate_tags))` -- with no loop of its own left
+    to truncate. There is no further "loop that calls this loop" for a future review to find one
+    level out again: the chain from "which crates are registered" (`CRATES_WITH_RELEASE_GUARD`,
+    read live) to "which tokens does each one need to refuse" (`pick_probe_tokens`, read live) to
+    "did probing actually happen" (the injected `prober`) is now pinned at every join, each
+    verified by mutating the REAL thing one level down and confirming the test tracks it rather
+    than a hand-copied stand-in.
+    """
+    problems: list[str] = []
+    for crate_name, guard_target in CRATES_WITH_RELEASE_GUARD.items():
+        problems.extend(verify_crate(crate_name, guard_target, per_crate_tags))
+    return problems
+
+
 def resolved_features(dry_run_text: str) -> set[str]:
     """Every feature token named in any `--features <list>` occurrence in `dry_run_text`. See
     COLLISION GUARD in the module docstring for why a flat union (rather than per-line crate
@@ -1212,6 +1302,24 @@ def _fake_prober(refuses: set[str]) -> tuple[Callable[[str, str], tuple[int, str
     return prober, calls
 
 
+def _fake_crate_verifier() -> tuple[
+    Callable[[str, str, dict[str, dict[str, FeatureTags]]], list[str]], list[tuple[str, str]]
+]:
+    """A test double for `verify_all_release_guards`'s `verify_crate` parameter. Returns
+    `(verify_crate, calls)`: `verify_crate` always reports success (no problems); `calls` records
+    every `(crate_name, guard_target)` pair the function under test actually invoked it with, IN
+    ORDER. Always-success isolates "did the outer loop iterate every registered crate" from
+    whether any individual crate's own guard actually works -- `verify_crate_release_guard`'s own
+    self-test already covers that half."""
+    calls: list[tuple[str, str]] = []
+
+    def verify_crate(crate_name: str, guard_target: str, per_crate_tags: dict) -> list[str]:
+        calls.append((crate_name, guard_target))
+        return []
+
+    return verify_crate, calls
+
+
 def self_test() -> int:
     failures = []
 
@@ -1468,6 +1576,31 @@ def self_test() -> int:
             f"does not match pick_probe_tokens' output {expected_tokens}"
         )
 
+    # verify_all_release_guards: the OUTER loop, one level out from the case just above -- Quinn
+    # found this untested after the inner loop was pinned, and truncated it to
+    # list(CRATES_WITH_RELEASE_GUARD.items())[:0] (no crate probed at all). The assertion below
+    # reads CRATES_WITH_RELEASE_GUARD LIVE, not a hand-written copy -- verified the same way
+    # Quinn verifies "reads live": see the real mutation of CRATES_WITH_RELEASE_GUARD itself,
+    # applied and confirmed tracked, in this change's own verification record.
+    fake_verify_crate, crate_calls = _fake_crate_verifier()
+    all_guards_result = verify_all_release_guards({}, verify_crate=fake_verify_crate)
+    if all_guards_result != []:
+        failures.append(
+            f"verify_all_release_guards: an always-success fake verify_crate must yield no "
+            f"problems, got {all_guards_result}"
+        )
+    if set(crate_calls) != set(CRATES_WITH_RELEASE_GUARD.items()):
+        failures.append(
+            "verify_all_release_guards: expected to iterate every CRATES_WITH_RELEASE_GUARD "
+            f"entry, read live ({dict(CRATES_WITH_RELEASE_GUARD)}), got calls={crate_calls}"
+        )
+    if len(crate_calls) != len(CRATES_WITH_RELEASE_GUARD):
+        failures.append(
+            f"verify_all_release_guards: iterated {len(crate_calls)} crate(s) but "
+            f"CRATES_WITH_RELEASE_GUARD has {len(CRATES_WITH_RELEASE_GUARD)} -- this is exactly "
+            "Quinn's [:0] truncation, reproduced structurally"
+        )
+
     # Mutation control, in the repo's own idiom: take a known-GOOD fixture, delete ONE feature's
     # tags (the exact shape of the 86akby7th regression), and confirm the parser flips from zero
     # problems to reporting exactly that feature on both axes -- proving the enforcement actually
@@ -1500,6 +1633,7 @@ def self_test() -> int:
         + 3  # NEW-2b: pick_probe_tokens (has-one, returns-every-token-sorted, raises-on-none)
         + 7  # NEW-2b: classify_probe (refused, benign, missing target, syntax error, wrong-target error, make missing, detached-recipe PINNED)
         + 4  # verify_crate_release_guard: all-refused+calls, mixed (non-trivial), truncation-count, truncation-tokenset
+        + 3  # verify_all_release_guards: no-problems, iterates-live-registry, truncation-count
         + 1  # mutation control
     )
     if failures:
@@ -1564,11 +1698,10 @@ def main() -> int:
     # Every outcome is reported as what it actually is: COULD_NOT_RUN (a problem with the PROBE)
     # is never phrased as "the guard is broken" -- see classify_probe's docstring for why that
     # distinction is load-bearing, not cosmetic.
-    # verify_crate_release_guard owns the WHOLE chain (pick tokens, probe each, fold, benign
-    # control) as one tested unit -- see its own docstring for why: `main()` has nothing left to
-    # truncate.
-    for crate_name, guard_target in CRATES_WITH_RELEASE_GUARD.items():
-        problems.extend(verify_crate_release_guard(crate_name, guard_target, per_crate_tags))
+    # verify_all_release_guards owns the WHOLE chain, including which crates are registered --
+    # see its own docstring for why this reduces `main()` to a single unconditional call with no
+    # loop of its own left to truncate.
+    problems.extend(verify_all_release_guards(per_crate_tags))
 
     if problems:
         print(
