@@ -260,7 +260,7 @@ NDI_STATUS := on (vendored SDK)
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
+.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
 
 # selahcue-operator's build.rs (tauri_build::build()) validates that the externalBin sidecar
 # (`selahcue-output-<triple>`) and the NDI resource dll declared in tauri.conf.json exist on
@@ -282,15 +282,42 @@ endif
 # vendors by hand (scripts/fetch_ndi_sdk.sh), never built by this repo. `binaries/` is
 # gitignored, so truncating a real dll there is SILENT and GIT-UNRECOVERABLE: nothing tracks
 # it, nothing can restore it. Harmless on an ephemeral CI runner; not harmless on a developer's
-# machine, which is exactly where this target runs. The `[ -e "$$f" ] ||` guard on each file is
-# the entire safety property -- never drop it, and never replace `stage()`'s body with an
-# unconditional `: >` or `touch`.
+# machine, which is exactly where this target runs. The `[ -e "$$f" ] || [ -h "$$f" ]` guard on
+# each file is the entire safety property -- never drop it, and never replace `stage()`'s body
+# with an unconditional `: >` or `touch`. The `-h` half matters on its own: a DANGLING symlink
+# (e.g. the dll symlinked to an SDK path on a volume that is not currently mounted) reads false
+# under `-e` alone, so without `-h` too, `: >` would follow the link and create an empty file
+# wherever it points -- outside `binaries/`, possibly outside the repo. Create-only still holds
+# either way (no existing file is touched), but the intent is "skip anything already spoken
+# for", not just "skip anything `-e` can see" (Sana, PR #29 F1).
 #
 # Quiet on the common case (a machine that already has real files staged, or ran this before):
 # prints only when it actually creates a placeholder, so this adds no noise to every
 # `make ci`/`check`/`clippy`/`operator`/`build-operator` invocation.
+#
+# Fails LOUD if rustc is missing or unusable, matching `stt-preflight`/`ndi-preflight`'s
+# `command -v X || { echo ERROR; exit 1; }` style rather than silently staging a garbage
+# `selahcue-output-` (empty triple) and reporting success anyway (Cody, PR #29 High: without
+# this, `make stage-operator-binaries` exited 0 with a misleading "staged" message, and the
+# real cause only surfaced later as cargo's confusing `resource path ... doesn't exist`).
+#
+# `ci` deliberately does NOT list this target as a prerequisite -- a same-level prerequisite
+# resolves before `ci`'s own recipe body runs, which would put this check AHEAD of
+# `sh scripts/check_toolchain.sh`, the one script whose own header says it must run "BEFORE
+# running any gate" (86ak5rc9c's nine-day-red-main lesson) and gives the fuller diagnostic for
+# a broken rustc (mismatched pin, missing component, etc.). So `ci` calls this target
+# explicitly, as a recipe line, AFTER that check -- see `ci:` below. Every other prerequisite
+# of this target (`check`/`clippy`/`operator`/`build-operator`/`test-stt-real-model`) has no
+# such ordering conflict, since none of them run `check_toolchain.sh` themselves.
 stage-operator-binaries: ## (internal) create-only placeholders for the operator's gitignored sidecar/NDI dll, so a fresh worktree can compile it (86akc2kmh)
-	@triple="$$(rustc -vV | sed -n 's/^host: //p')"; \
+	@command -v rustc >/dev/null 2>&1 || { \
+	  echo "ERROR: rustc is not on PATH -- needed to resolve the platform triple for"; \
+	  echo "  selahcue-operator's gitignored sidecar/NDI placeholders. Install the pinned"; \
+	  echo "  toolchain via rustup (see rust-toolchain.toml), or run 'make ci', whose own"; \
+	  echo "  toolchain check gives the fuller diagnostic if rustc is present but misconfigured."; \
+	  exit 1; }
+	@triple="$$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')"; \
+	[ -n "$$triple" ] || { echo "ERROR: 'rustc -vV' produced no 'host:' line -- cannot resolve the platform triple for selahcue-operator's sidecar placeholder. Run 'rustc -vV' directly to see its actual output."; exit 1; }; \
 	dir="$(OPERATOR)/binaries"; \
 	mkdir -p "$$dir"; \
 	case "$$triple" in \
@@ -300,9 +327,51 @@ stage-operator-binaries: ## (internal) create-only placeholders for the operator
 	ndi="$$dir/Processing.NDI.Lib.x64.dll"; \
 	staged=""; \
 	for f in "$$bin" "$$ndi"; do \
-	  [ -e "$$f" ] || { : > "$$f"; staged="$$staged $$(basename "$$f")"; }; \
+	  [ -e "$$f" ] || [ -h "$$f" ] || { : > "$$f"; staged="$$staged $$(basename "$$f")"; }; \
 	done; \
 	if [ -n "$$staged" ]; then echo ">> staged selahcue-operator compile-check placeholder(s) (gitignored, create-only, safe to delete):$$staged"; fi
+
+# Regression-tests the create-only guarantee `stage-operator-binaries` promises (86akc2kmh's own
+# acceptance criterion: "write it as a real check, not an eyeball" -- Quinn, PR #29 QA review).
+# Runs the EXACT shipped recipe (never a duplicate copy that could drift) against two disposable
+# temp directories via OPERATOR=, so nothing here can ever put a real dll at risk:
+#
+#   (A) a REAL existing file at the NDI slot must survive byte-for-byte, and the sidecar slot
+#       (genuinely missing) must still get created -- the base create-only property plus "it
+#       still does its job" on the happy path.
+#   (B) a DANGLING symlink at the NDI slot (Sana's PR #29 F1) must be left alone -- nothing is
+#       created at the link's target and the link itself is not replaced -- while the sidecar
+#       slot still gets created normally alongside it. Kept in its own temp dir and its own
+#       assertions so a regression in (A) or (B) fails on its own signal rather than being
+#       masked by the other slot succeeding.
+#
+# Mutation-verified by hand before this comment was written: dropping `stage-operator-binaries`'s
+# `[ -e "$$f" ] ||` turns scenario (A)'s hash into the well-known empty-file SHA-256
+# (e3b0c442...) and this target catches it immediately; dropping the `[ -h "$$f" ] ||` half
+# makes scenario (B) create a file at the dangling link's target and this target catches that
+# too. Both were restored after confirming the RED.
+verify-stage-operator-binaries-create-only: ## (internal) regression-test stage-operator-binaries' create-only guarantee, incl. the dangling-symlink guard (86akc2kmh)
+	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	mkdir -p "$$tmp/binaries"; \
+	printf 'KNOWN-PAYLOAD-DO-NOT-TRUNCATE-%s' "$$$$" > "$$tmp/binaries/Processing.NDI.Lib.x64.dll"; \
+	before="$$(shasum -a 256 "$$tmp/binaries/Processing.NDI.Lib.x64.dll" | awk '{print $$1}')"; \
+	$(MAKE) --no-print-directory stage-operator-binaries OPERATOR="$$tmp" >/dev/null; \
+	after="$$(shasum -a 256 "$$tmp/binaries/Processing.NDI.Lib.x64.dll" | awk '{print $$1}')"; \
+	[ "$$before" = "$$after" ] || { echo "FAIL(A): stage-operator-binaries truncated an existing file"; exit 1; }; \
+	sidecar="$$(find "$$tmp/binaries" -name 'selahcue-output-*' 2>/dev/null | head -1)"; \
+	[ -n "$$sidecar" ] && [ -e "$$sidecar" ] || { echo "FAIL(A): sidecar placeholder was not created for a genuinely-missing file"; exit 1; }; \
+	echo ">> (A) create-only + real-creation property verified"; \
+	tmp2="$$(mktemp -d)"; trap 'rm -rf "$$tmp" "$$tmp2"' EXIT; \
+	mkdir -p "$$tmp2/binaries"; \
+	dangle_target="$$tmp2/outside-the-binaries-dir.dll"; \
+	ln -s "$$dangle_target" "$$tmp2/binaries/Processing.NDI.Lib.x64.dll"; \
+	$(MAKE) --no-print-directory stage-operator-binaries OPERATOR="$$tmp2" >/dev/null; \
+	[ ! -e "$$dangle_target" ] || { echo "FAIL(B): a dangling symlink's target got created (Sana PR #29 F1 regressed)"; exit 1; }; \
+	[ -h "$$tmp2/binaries/Processing.NDI.Lib.x64.dll" ] || { echo "FAIL(B): the dangling symlink itself was replaced"; exit 1; }; \
+	sidecar2="$$(find "$$tmp2/binaries" -name 'selahcue-output-*' 2>/dev/null | head -1)"; \
+	[ -n "$$sidecar2" ] && [ -e "$$sidecar2" ] || { echo "FAIL(B): sidecar placeholder was not created alongside the skipped dangling symlink"; exit 1; }; \
+	echo ">> (B) dangling-symlink guard verified"; \
+	echo ">> stage-operator-binaries create-only property fully verified"
 
 stt-preflight: ## (internal) verify the toolchain needed for --features stt/cloud-stt is present
 ifneq ($(filter stt cloud-stt,$(OP_FEATURES_WORDS)),)
@@ -493,8 +562,16 @@ mobile-test: ## Analyze + unit-test the Flutter controller
 # that would otherwise be hidden), but line-level aborts remain. Tracked on
 # 86ak5rjh7 -- fixing it means restructuring this target, which is not a change to
 # smuggle into a toolchain fix.
-ci: stage-operator-binaries ## Run the local Rust/Flutter CI gate (see the header for what CI runs that this does not)
+ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that this does not)
 	sh scripts/check_toolchain.sh
+	# Stage the operator's gitignored sidecar/NDI placeholders (86akc2kmh) as an explicit recipe
+	# line, deliberately AFTER the toolchain check above and NOT as a same-level prerequisite of
+	# `ci` -- a prerequisite would resolve before this recipe body starts, putting a plain
+	# "rustc not found" message ahead of check_toolchain.sh's richer, purpose-built diagnostic
+	# (Cody, PR #29 High). Reuses the exact target other callers use, via recursive make, so
+	# there is exactly one definition of the staging logic.
+	$(MAKE) --no-print-directory stage-operator-binaries
+	$(MAKE) --no-print-directory verify-stage-operator-binaries-create-only
 	# Quinn's process finding on PR #24 (86akcmzyq): the PR template's feature-flag-reachability
 	# section is three checkboxes a human ticks, unenforced by CI -- exactly the human step that
 	# let 86akby7d8 ship, merge, and stay invisible from `make launch` in the first place. This
