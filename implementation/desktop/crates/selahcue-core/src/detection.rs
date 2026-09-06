@@ -347,6 +347,25 @@ fn digit_word(word: &str) -> Option<u8> {
     })
 }
 
+/// Does a number start at the beginning of `rest`? Used only by `take_digit_run`'s
+/// boundary-then-number lookahead, to decide whether "chapter"/"verse" is genuinely
+/// introducing another number rather than ordinary continuing speech.
+///
+/// `take_number(rest).is_some()` alone is not enough: `classify()` has no entry for
+/// "zero"/"oh", so a number that itself starts with a spoken zero ("verse zero four",
+/// "verse oh five") makes `take_number` report nothing, even though it plainly is one
+/// (review finding, Cody). The fallback below covers exactly that gap -- rest begins
+/// with a zero/oh immediately followed by another digit word -- without recursing into
+/// `take_digit_run` itself: recursion would let a hostile "zero verse zero verse..."
+/// flood chain lookahead calls and go quadratic, which is exactly the risk this
+/// non-recursive, two-token check avoids while still being O(1) per call (measured
+/// linear across five input-size doublings; see PR review evidence).
+fn starts_a_number(rest: &[&str]) -> bool {
+    take_number(rest).is_some()
+        || (rest.first().is_some_and(|&w| digit_word(w) == Some(0))
+            && rest.get(1).is_some_and(|&w| digit_word(w).is_some()))
+}
+
 /// Consume a maximal run of single-digit spoken words at the start of `tokens` — but
 /// only when that run is at least two words long **and contains a "zero"/"oh" that is
 /// itself immediately followed by another digit word** (i.e. the zero/oh is internal to
@@ -381,32 +400,21 @@ fn digit_word(word: &str) -> Option<u8> {
 /// of staying "8" then "28".
 ///
 /// Bounded to [`MAX_DIGIT_RUN`] words so a pathological run can never grow the resulting
-/// string, or the u32 accumulator, without limit. A zero sitting exactly at that cap
-/// boundary is also treated as trailing (nothing this function is allowed to look at
-/// beyond the cap), and excluded, on the same conservative principle: the
-/// boundary-then-number lookahead is itself bounded by the same `limit` as the rest of
-/// the scan (review finding, Quinn: an earlier draft let this lookahead peek past the
-/// cap, which two reviewers independently flagged as contradicting this very comment).
+/// string, or the u32 accumulator, without limit. Rule 3 (the boundary-then-number
+/// lookahead below) is itself bounded by the same `limit` as the rest of the scan, so it
+/// can never reach a zero past the documented cap (review finding, Quinn: an earlier
+/// draft let it peek past the cap). Rule 4 (end-of-input, also below) is deliberately
+/// NOT bounded by `limit` the same way -- "is there truly nothing left in the input" is
+/// a question about the whole `tokens` slice, not about what this call may consume --
+/// so a zero sitting exactly at the cap boundary CAN still be rescued by Rule 4 if it is
+/// also the last token in the input: `detect("psalm one one one one one zero")` ->
+/// `"Psalms 65535"`, the clamp below saturating on a run this length. Degenerate,
+/// bounded, and harmless (no realistic spoken chapter/verse has this shape) -- stated
+/// plainly because this comment previously claimed a cap-boundary zero was always
+/// trailing and excluded, which stopped being true the moment Rule 4 was added, and this
+/// same sentence region had already been corrected twice before for saying one thing
+/// while the code did another (review finding, Sana).
 /// Returns `(value, tokens consumed)` or `None`.
-/// Does a number start at the beginning of `rest`? Used only by `take_digit_run`'s
-/// boundary-then-number lookahead, to decide whether "chapter"/"verse" is genuinely
-/// introducing another number rather than ordinary continuing speech.
-///
-/// `take_number(rest).is_some()` alone is not enough: `classify()` has no entry for
-/// "zero"/"oh", so a number that itself starts with a spoken zero ("verse zero four",
-/// "verse oh five") makes `take_number` report nothing, even though it plainly is one
-/// (review finding, Cody). The fallback below covers exactly that gap -- rest begins
-/// with a zero/oh immediately followed by another digit word -- without recursing into
-/// `take_digit_run` itself: recursion would let a hostile "zero verse zero verse..."
-/// flood chain lookahead calls and go quadratic, which is exactly the risk this
-/// non-recursive, two-token check avoids while still being O(1) per call (measured
-/// linear across five input-size doublings; see PR review evidence).
-fn starts_a_number(rest: &[&str]) -> bool {
-    take_number(rest).is_some()
-        || (rest.first().is_some_and(|&w| digit_word(w) == Some(0))
-            && rest.get(1).is_some_and(|&w| digit_word(w).is_some()))
-}
-
 fn take_digit_run(tokens: &[&str]) -> Option<(u16, usize)> {
     let limit = tokens.len().min(MAX_DIGIT_RUN);
     let mut digits: Vec<u8> = Vec::new();
@@ -437,16 +445,30 @@ fn take_digit_run(tokens: &[&str]) -> Option<(u16, usize)> {
                 && tokens.get(i + 2..).is_some_and(starts_a_number);
 
             // Rule: a verse ending in a spoken zero, with NOTHING else left in the
-            // input, is internal -- literal "zero" only. A verse is ordinarily the last
-            // number in a citation, so there is no following marker+number for the rule
-            // above to find; the discriminator here is instead "does anything at all
-            // follow" (review finding, Cody, Finding 1: rule 3 alone can rescue a
-            // chapter's trailing zero but structurally never a verse's, since nothing
-            // ever follows the last number in an utterance for it to be "before").
-            // An interjection needs either a reaction target before it or trailing
-            // words after it ("oh, how majestic", "zero tolerance for..."); a "zero"
-            // that simply ends the segment, with nothing following to be idiomatic
-            // about, is read as completing the number.
+            // input, is internal -- literal "zero" only, never "oh". A verse is
+            // ordinarily the last number in a citation, so there is no following
+            // marker+number for the rule above to find; the discriminator here is
+            // instead "does anything at all follow" (review finding, Cody, Finding 1:
+            // rule 3 alone can rescue a chapter's trailing zero but structurally never a
+            // verse's, since nothing ever follows the last number in an utterance for it
+            // to be "before"). An interjection needs either a reaction target before it
+            // or trailing words after it ("oh, how majestic", "zero tolerance for...");
+            // a "zero" that simply ends the segment, with nothing following to be
+            // idiomatic about, is read as completing the number.
+            //
+            // "oh" stays excluded here for the same reason it is excluded from the rule
+            // above -- but it is worth spelling out why that is probably still right
+            // even with nothing following, rather than leaving a future reader to
+            // mistake the asymmetry with `followed_by_digit` (which accepts "oh" freely)
+            // for an oversight and "fix" it into a regression: "oh" alone can be a
+            // complete, standalone exclamation ("Psalm eight... oh!") in a way "zero"
+            // essentially never is -- nobody ends a sentence on a bare "zero" as a
+            // reaction. Pinned: `detect("psalm one oh")` stays `["Psalms 1"]` (review
+            // finding, Cody; regression-tested, Quinn -- mutating this check from the
+            // literal `"zero"` to "any digit_word mapping to 0" passes all 60
+            // pre-existing tests silently and turns `"psalm eight oh"` into the wrong
+            // `"Psalms 80"`, so the literal-word restriction here is load-bearing even
+            // though nothing else in this file's tests exercised it before).
             //
             // ACCEPTED RISK, KNOWINGLY TAKEN (not an oversight -- read this before
             // touching this line): "nothing follows" means nothing follows in THIS
@@ -474,10 +496,24 @@ fn take_digit_run(tokens: &[&str]) -> Option<(u16, usize)> {
             // this exposure; Cody's actual cases are all verse-position (immediately
             // preceded by "verse"), exactly where this risk concentrates, so that
             // condition would leave the case this rule exists for exactly as exposed.
+            // Concretely: `"john three verse two zero"`, as if cut mid-"zero tolerance"
+            // right after the marker, satisfies "preceded by verse" and would still be
+            // rescued to `"John 3:20"` under that condition, when the uncut utterance,
+            // `"john three verse two zero tolerance for sin"`, correctly gives
+            // `"John 3:2"` (review addition, Sana).
+            //
             // The real fix is threading `speech_final` (or the on-device equivalent)
             // through to here and gating THIS rule alone on it -- tracked as 86akdpw83,
-            // linked to 86akd8903 -- not the other rules above, which already degrade
-            // gracefully (incompletely, not wrongly) on a genuine segment split.
+            // linked to 86akd8903. NOT a claim that the other rules above are safe from
+            // the same class of split, though an earlier draft of this comment wrongly
+            // said so: `detect("psalm one zero verse")` -- a split right after "verse",
+            // rule 3's own decision point -- gives `"Psalms 1"`, a wrong chapter at 95%
+            // confidence via the pre-existing sliding-window fallback, not an incomplete
+            // one (review finding, Sana). That the exposure is broader than this comment
+            // used to claim argues FOR 86akdpw83, not against it: threading a real
+            // utterance-boundary signal through is worth more than "gate Rule 4 alone"
+            // implied, even though Rule 4 is the rule this PR adds and so the one it
+            // takes direct responsibility for here.
             let is_final_zero_in_input = tokens[i] == "zero" && tokens.get(i + 1).is_none();
 
             if !followed_by_digit && !followed_by_boundary_then_number && !is_final_zero_in_input {

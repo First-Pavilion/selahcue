@@ -754,3 +754,19 @@ fn fold_before_strip_also_fixes_a_pre_existing_cardinal_boundary_bug() {
         vec!["Psalms 100:3"]
     );
 }
+
+#[test]
+fn trailing_oh_at_absolute_end_of_input_is_not_rescued_by_rule_4() {
+    // Rule 4 (see `take_digit_run`'s doc) rescues a literal "zero" with nothing left in
+    // the input, but never "oh" -- the same restriction rule 3 already carries, for the
+    // same reason: "oh" alone can be a complete standalone exclamation in a way "zero"
+    // essentially never is. Nothing tested this asymmetry before (review finding,
+    // Quinn): mutating the check from the literal "zero" to "any digit_word mapping to
+    // 0" passes all 60 pre-existing tests silently and turns "psalm eight oh" into the
+    // wrong "Psalms 80" -- the flagship bug class this PR exists to fix, reintroduced a
+    // third time through a third path. The second case below is the load-bearing one:
+    // it covers a numbered book ("first corinthians"), where the leading "one" is
+    // structurally significant to book-name resolution, not just the digit fold.
+    assert_eq!(detect("psalm eight oh"), vec!["Psalms 8"]);
+    assert_eq!(detect("first corinthians one oh"), vec!["1 Corinthians 1"]);
+}
