@@ -63,6 +63,8 @@ python3 scripts/operator_headless.py   # its behavioural check (headless Chrome;
 cargo test --manifest-path implementation/desktop/crates/selahcue-stt/Cargo.toml
 ```
 
+**A fresh clone or `git worktree` needs one more step before `selahcue-operator` compiles at all.** Its build script (`tauri-build`) requires two files to exist on disk — the `externalBin` sidecar (`binaries/selahcue-output-<triple>`, `.exe` on Windows) and `binaries/Processing.NDI.Lib.x64.dll` — and `binaries/` is gitignored (`selahcue-operator/.gitignore:11`), so neither is ever tracked. A fresh worktree (the isolation the operating contract requires for every ticket) therefore has neither file, and `make ci`/`check`/`clippy`/`operator`/`build-operator` (and anything that depends on them, e.g. `make launch`) dies on this crate with `resource path 'binaries/selahcue-output-<triple>' doesn't exist` before reaching any Rust gate that the diff actually touched. Those targets now run `make stage-operator-binaries` first, which creates empty placeholders for whichever of the two files is missing — the same fix `.github/workflows/ci.yml`'s own "Stage Tauri sidecar/resource placeholders" step applies for CI. That target is **create-only** (`[ -e "$file" ] || : > "$file"`) and must stay that way: one of the two names, `Processing.NDI.Lib.x64.dll`, is the real NDI SDK redistributable an owner vendors by hand (`scripts/fetch_ndi_sdk.sh`), never built by this repo — on a machine that already has it staged, an unconditional `: >`/`touch` would truncate it silently and git cannot recover a gitignored file. Never drop that existence guard. 86akc2kmh.
+
 ## Architecture (desktop Rust workspace)
 
 Layered crate graph; lower layers are pure and never depend on higher ones:

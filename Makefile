@@ -260,7 +260,49 @@ NDI_STATUS := on (vendored SDK)
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
+.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
+
+# selahcue-operator's build.rs (tauri_build::build()) validates that the externalBin sidecar
+# (`selahcue-output-<triple>`) and the NDI resource dll declared in tauri.conf.json exist on
+# disk -- even for a bare `cargo check`/`clippy` that never bundles the app. Both live under
+# $(OPERATOR)/binaries/, which is gitignored (selahcue-operator/.gitignore:11), so a fresh
+# clone or a fresh `git worktree` -- the very isolation the operating contract mandates for
+# every ticket -- never has them, and every target below that touches the operator crate dies
+# on `resource path 'binaries/selahcue-output-<triple>' doesn't exist`, on a crate the diff
+# usually never touched, with no hint the fix is a one-line touch (86akc2kmh).
+#
+# .github/workflows/ci.yml stages the identical placeholders for the identical reason (see its
+# "Stage Tauri sidecar/resource placeholders" step) -- its own comment calls itself "the
+# snippet people copy to reproduce CI locally". This target IS that reproduction, kept in sync
+# by hand: it makes the local gate documented at the top of this file actually work from a
+# clean checkout. It does not touch ci.yml's step, which is correct as-is and stays untouched.
+#
+# CREATE-ONLY, ON PURPOSE -- DO NOT MAKE THIS UNCONDITIONAL. `: > file` TRUNCATES, and one of
+# these two names is `Processing.NDI.Lib.x64.dll` -- the real NDI SDK redistributable an owner
+# vendors by hand (scripts/fetch_ndi_sdk.sh), never built by this repo. `binaries/` is
+# gitignored, so truncating a real dll there is SILENT and GIT-UNRECOVERABLE: nothing tracks
+# it, nothing can restore it. Harmless on an ephemeral CI runner; not harmless on a developer's
+# machine, which is exactly where this target runs. The `[ -e "$$f" ] ||` guard on each file is
+# the entire safety property -- never drop it, and never replace `stage()`'s body with an
+# unconditional `: >` or `touch`.
+#
+# Quiet on the common case (a machine that already has real files staged, or ran this before):
+# prints only when it actually creates a placeholder, so this adds no noise to every
+# `make ci`/`check`/`clippy`/`operator`/`build-operator` invocation.
+stage-operator-binaries: ## (internal) create-only placeholders for the operator's gitignored sidecar/NDI dll, so a fresh worktree can compile it (86akc2kmh)
+	@triple="$$(rustc -vV | sed -n 's/^host: //p')"; \
+	dir="$(OPERATOR)/binaries"; \
+	mkdir -p "$$dir"; \
+	case "$$triple" in \
+	  *windows*) bin="$$dir/selahcue-output-$${triple}.exe" ;; \
+	  *) bin="$$dir/selahcue-output-$${triple}" ;; \
+	esac; \
+	ndi="$$dir/Processing.NDI.Lib.x64.dll"; \
+	staged=""; \
+	for f in "$$bin" "$$ndi"; do \
+	  [ -e "$$f" ] || { : > "$$f"; staged="$$staged $$(basename "$$f")"; }; \
+	done; \
+	if [ -n "$$staged" ]; then echo ">> staged selahcue-operator compile-check placeholder(s) (gitignored, create-only, safe to delete):$$staged"; fi
 
 stt-preflight: ## (internal) verify the toolchain needed for --features stt/cloud-stt is present
 ifneq ($(filter stt cloud-stt,$(OP_FEATURES_WORDS)),)
@@ -396,7 +438,7 @@ ndi-preflight: ## (internal) verify the repo-vendored NDI SDK is populated for t
 output-ndi: ndi-preflight ## Force the output window WITH NDI (errors if the SDK isn't vendored; `make run` enables NDI automatically)
 	NDI_SDK_DIR="$(NDI_DIR)" $(NDI_LOADER) $(CARGO) run $(WS) -p selahcue-desktop --features ndi $(PROFILE_FLAG)
 
-operator: stt-preflight release-ai-guard ## Run only the operator shell (connects to a running output window, else a standalone demo)
+operator: stt-preflight release-ai-guard stage-operator-binaries ## Run only the operator shell (connects to a running output window, else a standalone demo)
 	@echo ">> live transcript (STT): $(STT_STATUS)"
 	@echo ">> AI-assisted sermon notes: $(AI_STATUS)"
 	$(OPERATOR_RUN)
@@ -451,7 +493,7 @@ mobile-test: ## Analyze + unit-test the Flutter controller
 # that would otherwise be hidden), but line-level aborts remain. Tracked on
 # 86ak5rjh7 -- fixing it means restructuring this target, which is not a change to
 # smuggle into a toolchain fix.
-ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that this does not)
+ci: stage-operator-binaries ## Run the local Rust/Flutter CI gate (see the header for what CI runs that this does not)
 	sh scripts/check_toolchain.sh
 	# Quinn's process finding on PR #24 (86akcmzyq): the PR template's feature-flag-reachability
 	# section is three checkboxes a human ticks, unenforced by CI -- exactly the human step that
@@ -595,16 +637,16 @@ build: ## Build the desktop workspace
 build-output: ## Build just the output window with the same features/profile `make run` uses
 	$(DESKTOP_ENV) $(CARGO) build $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) $(PROFILE_FLAG)
 
-build-operator: stt-preflight release-ai-guard ## Build the Tauri operator shell crate
+build-operator: stt-preflight release-ai-guard stage-operator-binaries ## Build the Tauri operator shell crate
 	$(CARGO) build $(OP) $(OPRUN) $(PROFILE_FLAG)
 
 test: ## Run the workspace test suite
 	$(CARGO) test $(WS)
 
-test-stt-real-model: ## Run the `#[ignore]`d real-model on-device STT integration test (release, ~3s)
+test-stt-real-model: stage-operator-binaries ## Run the `#[ignore]`d real-model on-device STT integration test (release, ~3s)
 	$(CARGO) test $(OP) --release --features stt -- --ignored a_real_cold_start_backlog_no_longer_trips_the_notice
 
-check: ## Type-check the workspace + the operator shell
+check: stage-operator-binaries ## Type-check the workspace + the operator shell
 	$(CARGO) check $(WS)
 # A workspace build unifies features across members, so a crate that is missing a `cfg` on
 # something feature-gated still compiles here and only fails when someone builds it alone.
@@ -613,7 +655,7 @@ check: ## Type-check the workspace + the operator shell
 	$(CARGO) check $(WS) -p selahcue-app --all-targets
 	$(CARGO) check $(OP)
 
-clippy: ## Lint the workspace + the operator shell
+clippy: stage-operator-binaries ## Lint the workspace + the operator shell
 	$(CARGO) clippy $(WS) --all-targets
 	$(CARGO) clippy $(OP)
 
