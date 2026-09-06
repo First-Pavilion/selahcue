@@ -575,3 +575,32 @@ fn oh_before_a_boundary_word_not_followed_by_a_number_still_does_not_fold() {
         vec!["Psalms 8"]
     );
 }
+
+#[test]
+fn boundary_lookahead_still_applies_when_the_zero_sits_at_the_max_digit_run_cap() {
+    // Combined-rule interaction (review): three guards -- internal-zero, the
+    // fold-before-strip boundary fix, and this boundary-then-number lookahead -- were
+    // each mutation-verified in isolation, but this specific intersection was not: a
+    // zero sitting exactly at position MAX_DIGIT_RUN-1, with a real "verse <number>"
+    // starting immediately after the cap. The lookahead deliberately peeks past the cap
+    // (only the CONSUMED run is bounded by MAX_DIGIT_RUN, not this judgment about
+    // whether the boundary zero is internal), so the run still folds. A prior version of
+    // this test left the exact intersection uncovered: bounding the lookahead by `limit`
+    // (a plausible-looking mutation) passed every other test in this file unchanged.
+    //
+    // The chapter here is deliberately built from leading zeros ("zero zero zero zero
+    // one zero") rather than ascending digits, so the fold stays a small, valid chapter
+    // (10) instead of saturating to u16::MAX -- a saturated value would pin arithmetic
+    // garbage as "the expected result", which looks like a real reference today but
+    // would silently flip this test's meaning the moment saturation or range-rejection
+    // is ever fixed elsewhere. What this test actually asserts is narrower and is the
+    // only thing that matters here: verse 4 survived intact, proving the run stopped at
+    // the "verse" boundary rather than swallowing it.
+    let got = detect("psalm zero zero zero zero one zero verse four");
+    assert_eq!(got.len(), 1, "expected exactly one detection, got {got:?}");
+    assert!(
+        got[0].ends_with(":4"),
+        "the boundary-then-number lookahead must not swallow \"verse four\" into the \
+         chapter fold, even when the triggering zero sits at the MAX_DIGIT_RUN cap: got {got:?}"
+    );
+}
