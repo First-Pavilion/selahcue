@@ -820,14 +820,26 @@ const AUDIO_LOST_DURING_ENGINE_SWITCH_NOTICE: &str =
 /// ticket fixes was about (a technically-defensible notice that misleads by what it implies).
 ///
 /// **Chosen as a defensible default, not an owner ruling — flagged as such rather than shipped
-/// silently:** ~5x `CAPTURE_INTERVAL` (comfortable margin over one or two stray capture
-/// callbacks landing in the ready/flush window) and under 5% of 86akcfpcc's measured ~5.3s
-/// warm-cache reload (comfortable margin under any real preparation delay this fix cares about
-/// — a genuine delay clears this threshold by roughly 20x, not by a coin flip). Assumes 48kHz,
-/// the same assumption `HANDOFF_MAX_SAMPLES` already makes elsewhere in this file; not solved
-/// generally here for the same reason that literal is not being revisited in this ticket
-/// (86akcfp8w's territory, explicitly out of scope).
-const AUDIO_LOSS_DISCLOSURE_THRESHOLD_SAMPLES: usize = 48_000 / 1000 * 250; // 250ms @ 48kHz mono
+/// silently:** under 5% of 86akcfpcc's measured ~5.3s warm-cache reload (comfortable margin
+/// under any real preparation delay this fix cares about — a genuine delay clears this
+/// threshold by roughly 20x, not by a coin flip).
+///
+/// **Units, corrected (Sana and Vera, 86akd1jcc review round 5 — reached independently, neither
+/// having seen the other's report, which is why this was worth fixing rather than waving
+/// through).** `flushed` counts INTERLEAVED device-channel samples — the same unit
+/// `HANDOFF_MAX_SAMPLES` and `MAX_PCM_SAMPLES` already use elsewhere in this file — not mono
+/// wall-clock samples. `12,000` is honestly **250ms at 48kHz MONO**, but a stereo device (the
+/// ordinary case, and the one `MAX_PCM_SAMPLES` itself already assumes) packs two interleaved
+/// samples per audio frame, so the same 12,000 covers only **125ms of wall audio** there — half
+/// what an earlier version of this comment claimed unconditionally. Left as a documentation fix,
+/// not a behaviour change: the error is in the SAFE direction (the disclosure fires sooner than
+/// labelled, never later), and the anti-flap margin still holds comfortably even at the smaller
+/// true value — one stray ~10ms stereo `cpal` callback is ~960 interleaved samples against this
+/// 12,000-sample threshold, about 12x. Changing the constant instead (e.g. doubling it to hold
+/// 250ms of wall audio regardless of channel count) would need those two reviewers' two-
+/// directional mutation tests re-verified at a new value for no behavioural gain, since the
+/// current value already does its job on both mono and stereo devices.
+const AUDIO_LOSS_DISCLOSURE_THRESHOLD_SAMPLES: usize = 48_000 / 1000 * 250; // 12,000 interleaved samples: 250ms @ 48kHz MONO, 125ms @ 48kHz STEREO
 
 /// Discard whatever `source` has already buffered, returning the number of samples thrown away.
 ///
