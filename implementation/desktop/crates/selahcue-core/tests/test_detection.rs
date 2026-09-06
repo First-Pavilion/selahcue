@@ -485,3 +485,13 @@ fn engine_ingest_with_no_quotes_matches_plain_ingest() {
         .collect();
     assert_eq!(ra, rb);
 }
+
+#[test]
+fn parser_leniency_on_out_of_range_chapters_is_pre_existing_not_a_backstop() {
+    // Backs the corrected comment in take_digit_run: parse_chapter_verse does not
+    // range-check chapters/verses against real book lengths. Pre-existing behaviour,
+    // unrelated to and out of scope for this fix -- pinned here only so the comment's
+    // factual claim about it doesn't drift silently (PR #27 review finding, Sana).
+    assert_eq!(detect("psalm 151"), vec!["Psalms 151"]);
+    assert_eq!(detect("john 99999"), vec!["John 65535"]);
+}

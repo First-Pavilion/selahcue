@@ -397,7 +397,16 @@ fn take_digit_run(tokens: &[&str]) -> Option<(u16, usize)> {
         return None;
     }
     // Cap in u32 first so a full MAX_DIGIT_RUN of "nine"s cannot overflow before the
-    // final clamp into u16 (the parser rejects out-of-range chapters/verses anyway).
+    // final clamp into u16 below. That clamp exists purely to avoid an overflow panic on
+    // the cast -- it is NOT a correctness backstop: `parse_chapter_verse` in
+    // scripture.rs does not range-check chapter/verse numbers against real book lengths
+    // (e.g. `detect("psalm 151")` -> `"Psalms 151"` and `detect("john 99999")` ->
+    // `"John 65535"`, on this commit and on unmodified `main` alike), so a saturated
+    // value here can still surface as a plausible-looking wrong detection, exactly like
+    // any other out-of-range input this parser already accepts. `saw_internal_zero`
+    // above is the actual correctness control (review finding, Sana: an earlier version
+    // of this comment cited the parser's leniency as a mitigating control, which it is
+    // not).
     let value: u32 = digits.iter().fold(0u32, |acc, &d| {
         acc.saturating_mul(10).saturating_add(d as u32)
     });
