@@ -194,10 +194,40 @@ NEW-2's-final-round (Sana). One token was not enough. The probe above originally
 alphabetically-first `UNSAFE` token for a crate; a PARTIAL weakening of the Makefile registry --
 `cloud-stt` still present, `dev-keys`/`openai-notes` quietly dropped -- would still pass, because
 the one token actually probed was still genuinely refused. `pick_probe_tokens` now returns EVERY
-`UNSAFE` token for the crate, and `main` probes each independently, requiring every one to
-refuse before the benign control even runs. Reproduced live: dropping `dev-keys`/`openai-notes`
-from `RELEASE_UNSAFE_FEATURES` while keeping `cloud-stt` now fails with both tokens individually
+`UNSAFE` token for the crate, and each is probed independently, requiring every one to refuse
+before the benign control even runs. Reproduced live: dropping `dev-keys`/`openai-notes` from
+`RELEASE_UNSAFE_FEATURES` while keeping `cloud-stt` now fails with both tokens individually
 reported as `DID_NOT_REFUSE`.
+
+THE CONSUMING LOOP ITSELF (Quinn, the same night -- the round after the round above). Fixing
+`pick_probe_tokens` to return every token was not the same as fixing anything that CONSUMES the
+return value. The loop that iterated `pick_probe_tokens`' output used to live inline in `main()`,
+untested as its own unit -- `pick_probe_tokens` and `classify_probe` each had mutation-verified
+coverage individually, but the procedural glue combining them did not. Quinn truncated that loop
+to `probe_tokens[:1]`: self-test stayed 31/31 green (nothing exercised the loop's own bound), the
+real check against a healthy Makefile stayed green, and the real check against Sana's exact
+`export RELEASE_UNSAFE_FEATURES := cloud-stt` partial weakening ALSO stayed green -- printing
+"confirmed release-unsafe" while `dev-keys`/`openai-notes` were genuinely unenforced -- because
+truncating the loop meant only `cloud-stt` (still genuinely refused) was ever probed. The
+vulnerability the round above closed could be silently reopened by narrowing the code that
+consumes two already-correct, already-tested functions -- indistinguishable, if left untested,
+from every other instance of this bug class this whole script exists to eliminate.
+
+Fixed by extracting the ENTIRE chain -- pick tokens, probe each, fold, benign control -- into
+`verify_crate_release_guard`, with the probing mechanism itself swapped for a call-recording fake
+in self-test (`prober`). `main()` is reduced to one call to this function per registered crate;
+there is nothing left in `main()` to truncate. Critically, a pure fold over a caller-supplied
+`list[ProbeOutcome]` (the first fix considered) would NOT have caught Quinn's mutation: a fold
+over a list already truncated before the fold ever saw it is still a perfectly correct fold, so
+the fix has to reach the CALLER of `pick_probe_tokens`, not just aggregate what it is handed.
+Self-test's fake `prober` records every call made and asserts that list against
+`pick_probe_tokens`' own output directly -- three cases: every token refused (asserting the full,
+in-order call list, not just the verdict), a MIXED refused/not-refused pair (proving the loop
+does not short-circuit on the first result, which an all-not-refused fixture could not prove),
+and an explicit count/set cross-check against `pick_probe_tokens`. Verified against Quinn's exact
+mutation, reproduced on this function rather than `main()`'s now-deleted loop: truncating
+`verify_crate_release_guard`'s own `for probe_token in probe_tokens:` line to `probe_tokens[:1]`
+turns all three new self-test cases red, then restored.
 
 THE LAYERING ACTUALLY COMPOSING (Sana). Two further spellings genuinely weaken the guard while
 evading NEW-1b's broadened regex entirely: `export RELEASE_UNSAFE_FEATURES := <weaker>` and a
@@ -320,11 +350,14 @@ Self-test: `check_launch_reachability.py --self-test` exercises the dry-run comp
 Cargo.toml tag parser (both axes), the cross-crate collision guard, the crate-registry drift
 check, the TARGETS derivation, the Makefile RELEASE_UNSAFE_FEATURES cross-check (including the
 NEW-1/NEW-1b assignment-shape cases), the NEW-2 unenforced-crate-tag check, and NEW-2b's pure
-decision logic (`pick_probe_tokens`'s every-UNSAFE-token behaviour, and `classify_probe`'s
-seven outcome shapes, including the PINNED detached-recipe case two reviewers disagreed about)
--- against fixed fixtures, including several built by deleting or corrupting a tag from a fixture
-`[features]`
-block (the exact regressions this version closes) -- without touching the real Makefile, the
+decision logic (`pick_probe_tokens`'s every-UNSAFE-token behaviour, `classify_probe`'s seven
+outcome shapes including the PINNED detached-recipe case two reviewers disagreed about, and
+`verify_crate_release_guard`'s consuming loop via an injected call-recording `prober` -- an
+all-refused case, a MIXED refused/not-refused case, and an explicit cross-check against
+`pick_probe_tokens`' own token count/set, verified to turn red against Quinn's exact
+`probe_tokens[:1]` mutation) -- against fixed fixtures, including several built by deleting or
+corrupting a tag from a fixture `[features]` block (the exact regressions this version closes)
+-- without touching the real Makefile, the
 real Cargo.toml files, or invoking `make`/`cargo` at all, so it runs anywhere. The real check
 (`check_launch_reachability.py`, no flag) reads the real Cargo.toml files, the real Makefile,
 and shells out to the actual `make -n launch` / `make -n operator` / `cargo metadata` /
@@ -341,7 +374,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DESKTOP_ROOT = REPO_ROOT / "implementation" / "desktop"
@@ -652,6 +685,108 @@ def probe_release_guard(guard_target: str, op_features: str) -> tuple[int | None
     except OSError as exc:
         return None, f"could not invoke `make` at all: {exc}"
     return result.returncode, result.stdout + result.stderr
+
+
+def verify_crate_release_guard(
+    crate_name: str,
+    guard_target: str,
+    per_crate_tags: dict[str, dict[str, FeatureTags]],
+    prober: Callable[[str, str], tuple[int | None, str]] = probe_release_guard,
+) -> list[str]:
+    """The complete NEW-2b verification for ONE registered crate: pick every `RELEASE: UNSAFE`
+    token for `crate_name` (`pick_probe_tokens`), probe `guard_target` with EACH ONE
+    independently, and run the benign-input positive control -- returning a list of
+    human-readable problems (empty means this crate's guard is proven).
+
+    THE FINAL FINDING THIS FUNCTION EXISTS TO CLOSE (Quinn). `pick_probe_tokens` and
+    `classify_probe` were each tested individually and each caught their own mutation. The
+    PROCEDURAL LOOP that consumed them -- "for every token pick_probe_tokens returned, probe it,
+    and require every single one to refuse" -- used to live inline in `main()`, untested as its
+    own unit. Quinn truncated that loop to `probe_tokens[:1]`: `pick_probe_tokens` still
+    correctly computed all three tokens, `classify_probe` still correctly classified whatever it
+    was given, self-test stayed 31/31, and the real check against Sana's exact
+    `export RELEASE_UNSAFE_FEATURES := cloud-stt` partial weakening stayed GREEN -- because only
+    `cloud-stt` (still genuinely refused) was ever probed; `dev-keys`/`openai-notes` (silently
+    unenforced by that mutation) never were. The vulnerability this whole round exists to close
+    could be silently reopened by narrowing the code that CONSUMES two already-correct,
+    already-tested functions.
+
+    WHY THIS IS ONE FUNCTION WITH AN INJECTABLE PROBER, NOT TWO. A pure fold over a
+    caller-supplied `list[ProbeOutcome]` (Quinn's first suggestion) proves the FOLD inspects
+    every element it is given -- it cannot prove the CALLER handed it every element
+    `pick_probe_tokens` actually returned; a fold over a list already truncated before the fold
+    ever saw it is still a perfectly correct fold. Putting the whole chain -- pick tokens, probe
+    each, fold -- inside one function, with the probing mechanism itself swapped out in
+    self-test (`prober`), is what makes "was every token from `pick_probe_tokens` actually
+    probed" a directly, mechanically testable question: a self-test with a call-recording fake
+    `prober` asserts not just the VERDICT but the exact set of `(guard_target, op_features)`
+    calls made, so truncating this function's own internal loop -- Quinn's exact mutation,
+    reproduced by truncating the loop HERE instead of in `main()` -- is caught by a shorter call
+    list, not just a possibly-still-correct verdict. `main()` itself is left with nothing to
+    truncate: it is a single call to this function per registered crate.
+    """
+    try:
+        probe_tokens = pick_probe_tokens(per_crate_tags, crate_name)
+    except ValueError as exc:
+        return [str(exc)]
+
+    problems: list[str] = []
+    for probe_token in probe_tokens:
+        hostile_code, hostile_output = prober(guard_target, probe_token)
+        hostile = classify_probe(hostile_code, hostile_output, guard_target)
+        if hostile.kind == "COULD_NOT_RUN":
+            problems.append(
+                f"{crate_name}: the probe for `{guard_target}` (token `{probe_token}`) "
+                "could not run -- this is a problem with the PROBE, not evidence the guard "
+                "is broken (`make` missing, the target renamed, an unrelated Makefile "
+                f"error, or a wrong working directory would all land here). `make "
+                f"{guard_target} RELEASE=1 OP_FEATURES={probe_token}` exited {hostile_code} "
+                f"without that target's own `*** [{guard_target}] Error` signature. Output: "
+                f"{hostile.detail!r}"
+            )
+        elif hostile.kind == "DID_NOT_REFUSE":
+            problems.append(
+                f"{crate_name}: `make {guard_target} RELEASE=1 OP_FEATURES={probe_token}` "
+                f"did NOT refuse (exit {hostile_code}) -- CRATES_WITH_RELEASE_GUARD claims "
+                f"this target enforces {crate_name}'s release boundary, but a real "
+                "invocation with a real UNSAFE token proceeded anyway. This can mean the "
+                "guard's own filter logic is wrong, or that its recipe has been detached "
+                "from the name every build path actually references -- e.g. the rule body "
+                "renamed while `.PHONY`/a prerequisite list still names the old target, "
+                "which GNU Make then treats as a satisfied no-op (exit 0) rather than a "
+                "missing target, so every real build path bypasses it silently. Check both "
+                "before assuming the conditional logic itself is at fault. Fix the guard, "
+                "or remove this entry (which then makes every UNSAFE feature here fail the "
+                "check above instead)."
+            )
+        # hostile.kind == "REFUSED" for this token -- keep checking the rest, unconditionally;
+        # no early return/break, so truncation is the ONLY way to skip a token, and truncation
+        # is exactly what the self-test's call-recording prober catches.
+
+    if problems:
+        return problems
+
+    # Positive control, once per crate, ONLY after EVERY hostile token refused: the SAME target,
+    # same RELEASE=1, with nothing to refuse, must NOT also refuse -- otherwise "refuses" above
+    # could just mean "always fails", indistinguishable from a genuinely discriminating guard by
+    # the hostile probe alone.
+    benign_code, benign_output = prober(guard_target, "")
+    benign = classify_probe(benign_code, benign_output, guard_target)
+    if benign.kind == "COULD_NOT_RUN":
+        problems.append(
+            f"{crate_name}: the benign-input control probe for `{guard_target}` could not "
+            f"run (exit {benign_code}) -- a problem with the PROBE, not the guard. Output: "
+            f"{benign.detail!r}"
+        )
+    elif benign.kind == "REFUSED":
+        problems.append(
+            f"{crate_name}: `make {guard_target} RELEASE=1 OP_FEATURES=` (nothing unsafe "
+            f"requested) ALSO refused -- {guard_target} appears to refuse unconditionally "
+            "rather than discriminating on the actual feature set, which the hostile-input "
+            "probe alone cannot tell apart from a working guard."
+        )
+    # benign.kind == "DID_NOT_REFUSE" is the expected, passing case.
+    return problems
 
 
 def resolved_features(dry_run_text: str) -> set[str]:
@@ -1058,6 +1193,25 @@ FIXTURE_MAKEFILE_INDENTED_WEAKENING = (
 )
 
 
+def _fake_prober(refuses: set[str]) -> tuple[Callable[[str, str], tuple[int, str]], list[tuple[str, str]]]:
+    """A test double for `verify_crate_release_guard`'s `prober` parameter. Returns `(prober,
+    calls)`: `prober` behaves like a real `probe_release_guard` would for a guard that refuses
+    exactly the tokens in `refuses` (and never refuses the empty-string benign probe); `calls`
+    records every `(guard_target, op_features)` pair the function under test actually invoked it
+    with, IN ORDER -- this is what lets a self-test assert not just the final verdict but that
+    EVERY token was actually probed, closing the gap a verdict-only assertion would leave (see
+    `verify_crate_release_guard`'s own docstring, and Quinn's `probe_tokens[:1]` finding)."""
+    calls: list[tuple[str, str]] = []
+
+    def prober(guard_target: str, op_features: str) -> tuple[int, str]:
+        calls.append((guard_target, op_features))
+        if op_features and op_features in refuses:
+            return 1, f"make: *** [{guard_target}] Error 1"
+        return 0, f"make: Nothing to be done for `{guard_target}'."
+
+    return prober, calls
+
+
 def self_test() -> int:
     failures = []
 
@@ -1242,6 +1396,78 @@ def self_test() -> int:
             f"must classify DID_NOT_REFUSE, not COULD_NOT_RUN; got {detached_recipe.kind}"
         )
 
+    # verify_crate_release_guard: the PROCEDURAL LOOP that consumes pick_probe_tokens' output,
+    # tested with an injected prober so this runs with no real `make` call at all. Three cases,
+    # matching what the coordinator asked for specifically:
+    #   1. every token refused + benign correctly does not -> no problems, and EVERY token
+    #      (matched against pick_probe_tokens' own output) was actually probed, in order,
+    #      plus the benign probe.
+    #   2. a MIXED refused/not-refused list -> must report a problem AND must have probed BOTH
+    #      tokens (not short-circuited on the first, and not skipped the second) -- an
+    #      all-not-refused list would pass a fold that fails unconditionally, so this is the
+    #      case that actually proves the loop inspects every element.
+    #   3. Quinn's exact regression, reproduced structurally: a prober that WOULD refuse every
+    #      token if asked, cross-checked against pick_probe_tokens' own count and token set --
+    #      this is the assertion a pure fold over a pre-built outcome list cannot make, because
+    #      it has no way to know what pick_probe_tokens would have returned; tying the injected
+    #      prober's call list back to pick_probe_tokens' own output is what closes that gap.
+    three_unsafe = {
+        "selahcue-operator": {
+            "cloud-stt": FeatureTags("REQUIRED", "UNSAFE"),
+            "dev-keys": FeatureTags("REQUIRED", "UNSAFE"),
+            "openai-notes": FeatureTags("REQUIRED", "UNSAFE"),
+        }
+    }
+    expected_tokens = pick_probe_tokens(three_unsafe, "selahcue-operator")
+
+    prober, calls = _fake_prober(refuses=set(expected_tokens))
+    result = verify_crate_release_guard("selahcue-operator", "release-ai-guard", three_unsafe, prober=prober)
+    if result != []:
+        failures.append(f"verify_crate_release_guard: all-refused + benign-clean case should report no problems, got {result}")
+    expected_calls = [("release-ai-guard", t) for t in expected_tokens] + [("release-ai-guard", "")]
+    if calls != expected_calls:
+        failures.append(
+            "verify_crate_release_guard: expected every token from pick_probe_tokens to be "
+            f"probed in order, then the benign probe; expected calls={expected_calls}, got {calls}"
+        )
+
+    two_unsafe = {
+        "selahcue-operator": {
+            "cloud-stt": FeatureTags("REQUIRED", "UNSAFE"),
+            "dev-keys": FeatureTags("REQUIRED", "UNSAFE"),
+        }
+    }
+    prober, calls = _fake_prober(refuses={"cloud-stt"})  # dev-keys deliberately NOT refused
+    result = verify_crate_release_guard("selahcue-operator", "release-ai-guard", two_unsafe, prober=prober)
+    if not result:
+        failures.append("verify_crate_release_guard: a MIXED refused/not-refused list must report a problem, got none")
+    if calls != [("release-ai-guard", "cloud-stt"), ("release-ai-guard", "dev-keys")]:
+        failures.append(
+            "verify_crate_release_guard: the mixed case must probe BOTH tokens (not "
+            f"short-circuit on the first refusal), got {calls}"
+        )
+
+    # Quinn's exact regression, reproduced structurally against THIS function rather than
+    # main()'s now-deleted inline loop: a prober that refuses every token it is ever asked
+    # about, cross-checked against pick_probe_tokens' own count. If this function's internal
+    # loop were ever truncated to probe_tokens[:1] the way Quinn's mutation did in main(), the
+    # hostile call count below would drop to 1 while expected_tokens stays 3 -- see the mutation
+    # verification in the PR/commit history for this exact edit applied and confirmed red.
+    prober, calls = _fake_prober(refuses=set(expected_tokens))
+    verify_crate_release_guard("selahcue-operator", "release-ai-guard", three_unsafe, prober=prober)
+    hostile_calls = [c for c in calls if c[1] != ""]
+    if len(hostile_calls) != len(expected_tokens):
+        failures.append(
+            f"verify_crate_release_guard: probed {len(hostile_calls)} token(s) but "
+            f"pick_probe_tokens returned {len(expected_tokens)} -- this is exactly Quinn's "
+            "probe_tokens[:1] truncation, reproduced structurally"
+        )
+    if {t for _, t in hostile_calls} != set(expected_tokens):
+        failures.append(
+            f"verify_crate_release_guard: probed token set {sorted(t for _, t in hostile_calls)} "
+            f"does not match pick_probe_tokens' output {expected_tokens}"
+        )
+
     # Mutation control, in the repo's own idiom: take a known-GOOD fixture, delete ONE feature's
     # tags (the exact shape of the 86akby7th regression), and confirm the parser flips from zero
     # problems to reporting exactly that feature on both axes -- proving the enforcement actually
@@ -1273,6 +1499,7 @@ def self_test() -> int:
         + 1  # NEW-2: unenforced-crate UNSAFE tag
         + 3  # NEW-2b: pick_probe_tokens (has-one, returns-every-token-sorted, raises-on-none)
         + 7  # NEW-2b: classify_probe (refused, benign, missing target, syntax error, wrong-target error, make missing, detached-recipe PINNED)
+        + 4  # verify_crate_release_guard: all-refused+calls, mixed (non-trivial), truncation-count, truncation-tokenset
         + 1  # mutation control
     )
     if failures:
@@ -1337,73 +1564,11 @@ def main() -> int:
     # Every outcome is reported as what it actually is: COULD_NOT_RUN (a problem with the PROBE)
     # is never phrased as "the guard is broken" -- see classify_probe's docstring for why that
     # distinction is load-bearing, not cosmetic.
+    # verify_crate_release_guard owns the WHOLE chain (pick tokens, probe each, fold, benign
+    # control) as one tested unit -- see its own docstring for why: `main()` has nothing left to
+    # truncate.
     for crate_name, guard_target in CRATES_WITH_RELEASE_GUARD.items():
-        try:
-            probe_tokens = pick_probe_tokens(per_crate_tags, crate_name)
-        except ValueError as exc:
-            problems.append(str(exc))
-            continue
-        # EVERY UNSAFE token gets its own probe -- Sana's final finding: a PARTIAL weakening
-        # that still refuses one token while quietly dropping others from the effective
-        # registry would pass a probe that only ever tried unsafe[0]. Each token's guarantee is
-        # independent, so each is proved independently; the binary in-crate guard still covers
-        # every token regardless, this only closes the Make-half's own blind spot.
-        all_refused = True
-        for probe_token in probe_tokens:
-            hostile_code, hostile_output = probe_release_guard(guard_target, probe_token)
-            hostile = classify_probe(hostile_code, hostile_output, guard_target)
-            if hostile.kind == "COULD_NOT_RUN":
-                problems.append(
-                    f"{crate_name}: the probe for `{guard_target}` (token `{probe_token}`) "
-                    "could not run -- this is a problem with the PROBE, not evidence the guard "
-                    "is broken (`make` missing, the target renamed, an unrelated Makefile "
-                    f"error, or a wrong working directory would all land here). `make "
-                    f"{guard_target} RELEASE=1 OP_FEATURES={probe_token}` exited {hostile_code} "
-                    f"without that target's own `*** [{guard_target}] Error` signature. Output: "
-                    f"{hostile.detail!r}"
-                )
-                all_refused = False
-                continue
-            if hostile.kind == "DID_NOT_REFUSE":
-                problems.append(
-                    f"{crate_name}: `make {guard_target} RELEASE=1 OP_FEATURES={probe_token}` "
-                    f"did NOT refuse (exit {hostile_code}) -- CRATES_WITH_RELEASE_GUARD claims "
-                    f"this target enforces {crate_name}'s release boundary, but a real "
-                    "invocation with a real UNSAFE token proceeded anyway. This can mean the "
-                    "guard's own filter logic is wrong, or that its recipe has been detached "
-                    "from the name every build path actually references -- e.g. the rule body "
-                    "renamed while `.PHONY`/a prerequisite list still names the old target, "
-                    "which GNU Make then treats as a satisfied no-op (exit 0) rather than a "
-                    "missing target, so every real build path bypasses it silently. Check both "
-                    "before assuming the conditional logic itself is at fault. Fix the guard, "
-                    "or remove this entry (which then makes every UNSAFE feature here fail the "
-                    "check above instead)."
-                )
-                all_refused = False
-                continue
-            # hostile.kind == "REFUSED" for this token -- keep checking the rest.
-        if not all_refused:
-            continue
-        # Positive control, once per crate after EVERY hostile token refused: the SAME target,
-        # same RELEASE=1, with nothing to refuse, must NOT also refuse -- otherwise "refuses"
-        # above could just mean "always fails", indistinguishable from a genuinely discriminating
-        # guard by the hostile probe alone.
-        benign_code, benign_output = probe_release_guard(guard_target, "")
-        benign = classify_probe(benign_code, benign_output, guard_target)
-        if benign.kind == "COULD_NOT_RUN":
-            problems.append(
-                f"{crate_name}: the benign-input control probe for `{guard_target}` could not "
-                f"run (exit {benign_code}) -- a problem with the PROBE, not the guard. Output: "
-                f"{benign.detail!r}"
-            )
-        elif benign.kind == "REFUSED":
-            problems.append(
-                f"{crate_name}: `make {guard_target} RELEASE=1 OP_FEATURES=` (nothing unsafe "
-                f"requested) ALSO refused -- {guard_target} appears to refuse unconditionally "
-                "rather than discriminating on the actual feature set, which the hostile-input "
-                "probe alone cannot tell apart from a working guard."
-            )
-        # benign.kind == "DID_NOT_REFUSE" is the expected, passing case.
+        problems.extend(verify_crate_release_guard(crate_name, guard_target, per_crate_tags))
 
     if problems:
         print(
