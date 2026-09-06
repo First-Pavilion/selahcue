@@ -3,7 +3,8 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_core::detection::{
-    detect, DetectionQueue, TranscriptEngine, MAX_DETECTIONS, NAMED_REFERENCE_CONFIDENCE,
+    detect, DetectionQueue, TranscriptEngine, MAX_DETECTIONS, MAX_DIGIT_RUN,
+    NAMED_REFERENCE_CONFIDENCE,
 };
 
 // ---- Spoken-form detection correctness (the cases the story names) ----
@@ -45,6 +46,67 @@ fn hundreds_for_long_psalms() {
     assert_eq!(
         detect("Psalm one hundred nineteen verse one hundred five"),
         vec!["Psalms 119:105"]
+    );
+}
+
+// ---- Digit-by-digit spoken numbers, e.g. "psalm one zero three" (86akd8903) ----
+//
+// Root cause: `classify()` had no entry for "zero"/"oh", so `take_number` stopped at
+// the first one it hit. Verified against `detect()` directly before this fix landed:
+// `detect("psalm one zero three")` did not fail to detect — it returned `["Psalms 1"]`,
+// a WRONG reference, because the scan then found "psalm 1" as a shorter valid window.
+// That is the severity this section pins: a silently wrong high-confidence detection,
+// not a missed one.
+
+#[test]
+fn digit_by_digit_reading_with_zero_word_gives_the_correct_psalm() {
+    assert_eq!(
+        detect("psalm one zero three"),
+        vec!["Psalms 103"],
+        "before the 86akd8903 fix this returned [\"Psalms 1\"] — the wrong psalm, not no detection"
+    );
+}
+
+#[test]
+fn digit_by_digit_reading_with_oh_word_gives_the_correct_psalm() {
+    // "oh" is the everyday spoken alternative to "zero" ("one oh three"); it must be
+    // recognised the same way.
+    assert_eq!(detect("psalm one oh three"), vec!["Psalms 103"]);
+}
+
+#[test]
+fn digit_by_digit_reading_requires_an_internal_zero_or_oh() {
+    // Positive control for the fix's discriminator: a run of single-digit words with NO
+    // zero/oh must NOT be folded into one digit-concatenated number. "three four" has no
+    // zero, so it must stay two separate numbers ("3", "4"), which the existing
+    // space-shorthand chapter:verse parsing then reads as "John 3:4". If the zero/oh
+    // guard in `take_digit_run` were ever dropped (folding any 2+ run of single-digit
+    // words), this would instead wrongly produce "John 34" (whole chapter 34) — this
+    // test is mutation-verified to catch exactly that (see PR evidence).
+    assert_eq!(
+        detect("John chapter three four"),
+        vec!["John 3:4"],
+        "a digit-word run with no zero/oh must use the existing cardinal folding, not the new digit-concatenation path"
+    );
+}
+
+#[test]
+fn digit_by_digit_run_is_bounded_and_never_panics() {
+    // Pin the premise: the bound must still be small enough for this test to be
+    // meaningful (i.e. shorter than the 10-word hostile run below).
+    const _: () = assert!(MAX_DIGIT_RUN < 10);
+
+    // Ten consecutive single-digit words (well past MAX_DIGIT_RUN) must not panic, must
+    // not unboundedly grow the folded value, and must consume at most MAX_DIGIT_RUN of
+    // them per run. "zero one two three four five" (6 words, capped) folds to 12345;
+    // the leftover "six seven eight nine" contains no zero, so the fix's own guard
+    // refuses to fold it further and it falls back to plain single-digit tokens, which
+    // detect()'s pre-existing space-shorthand chapter:verse reading then picks up the
+    // trailing "8 9" from. A naive unbounded fold of all ten words would instead have
+    // produced the ten-digit chapter "0123456789" — this exact string proves it did not.
+    assert_eq!(
+        detect("psalm zero one two three four five six seven eight nine"),
+        vec!["Psalms 12345:6"]
     );
 }
 

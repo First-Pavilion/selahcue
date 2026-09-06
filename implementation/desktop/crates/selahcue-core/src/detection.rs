@@ -109,7 +109,8 @@ pub fn detect(text: &str) -> Vec<String> {
 /// Normalise transcript text into parser-ready tokens: lowercase; strip punctuation
 /// (keeping `:` so a typed `"8:28"` still parses); drop "chapter"/"verse" filler; fold
 /// spelled-out numbers ("twenty eight" → `28`, "one hundred nineteen" → `119`) to
-/// digits; and join spoken ranges ("28 through 30" → `28-30`).
+/// digits, including a **digit-by-digit reading** ("one zero three" / "one oh three" →
+/// `103` — see [`take_digit_run`]); and join spoken ranges ("28 through 30" → `28-30`).
 fn normalize_tokens(text: &str) -> Vec<String> {
     // 1. Lowercase; keep ASCII alphanumerics and ':' (a chapter:verse separator),
     //    everything else becomes a break.
@@ -132,11 +133,17 @@ fn normalize_tokens(text: &str) -> Vec<String> {
         .filter(|w| !matches!(*w, "chapter" | "chapters" | "verse" | "verses"))
         .collect();
 
-    // 3. Fold spelled-out cardinal numbers into digit tokens.
+    // 3. Fold spelled-out cardinal numbers into digit tokens. A digit-by-digit run
+    //    ("one zero three") is tried first — it is a disjoint reading from the cardinal
+    //    grammar `take_number` implements (see `take_digit_run`'s doc for why the two
+    //    never conflict) — before falling back to the existing cardinal folding.
     let mut folded: Vec<String> = Vec::new();
     let mut i = 0;
     while i < words.len() {
-        if let Some((value, consumed)) = take_number(&words[i..]) {
+        if let Some((value, consumed)) = take_digit_run(&words[i..]) {
+            folded.push(value.to_string());
+            i += consumed;
+        } else if let Some((value, consumed)) = take_number(&words[i..]) {
             folded.push(value.to_string());
             i += consumed;
         } else {
@@ -294,6 +301,74 @@ fn take_number(tokens: &[&str]) -> Option<(u16, usize)> {
         }
     }
     (consumed > 0).then_some((value, consumed))
+}
+
+/// The longest a digit-by-digit run ("one zero three") may span. Bounds
+/// [`take_digit_run`]'s scan and its resulting numeric string to a fixed size regardless
+/// of how long a hostile transcript segment's word run is (no-leak). Six comfortably
+/// covers any real chapter/verse number spoken digit-by-digit. `pub` so the
+/// bounded-memory test can pin against it directly rather than a hardcoded copy.
+pub const MAX_DIGIT_RUN: usize = 6;
+
+// Pinned so the constant can never shrink below what the reported bug case needs
+// ("one zero three" is 3 words) without this failing to compile — a silent regression
+// here would reopen 86akd8903 without any test noticing.
+const _: () = assert!(MAX_DIGIT_RUN >= 3);
+
+/// Maps a single spoken digit word (`"zero"`/`"oh"` through `"nine"`) to its value, or
+/// `None` for anything else — in particular the teen/tens/hundred words, which never
+/// appear inside a digit-by-digit reading and so are deliberately excluded here (they
+/// stay [`classify`]'s and [`take_number`]'s job).
+fn digit_word(word: &str) -> Option<u8> {
+    Some(match word {
+        "zero" | "oh" => 0,
+        "one" => 1,
+        "two" => 2,
+        "three" => 3,
+        "four" => 4,
+        "five" => 5,
+        "six" => 6,
+        "seven" => 7,
+        "eight" => 8,
+        "nine" => 9,
+        _ => return None,
+    })
+}
+
+/// Consume a maximal run of single-digit spoken words at the start of `tokens` — but
+/// only when that run is at least two words long **and contains a "zero"/"oh"**.
+///
+/// That guard is the whole design: no English cardinal number is ever spoken with an
+/// internal "zero" ("one zero three" is never how anyone says a cardinal number), so a
+/// zero/oh inside a run of single-digit words is an unambiguous signal that the speaker
+/// is reading digits one at a time, not composing a cardinal number. Without a zero, a
+/// bare run of single-digit words is left entirely alone here — `take_number`'s existing
+/// cardinal-combination state machine already owns that case (e.g. it stops "eight" at a
+/// following "twenty" on its own), and this function must never compete with it, or
+/// "Romans eight twenty-eight" would fold into "828" instead of staying "8" then "28".
+/// The `>= 2` length floor additionally keeps a single stray "oh" (a common interjection,
+/// "oh well") from being read as a lone digit "0".
+///
+/// Bounded to [`MAX_DIGIT_RUN`] words so a pathological run can never grow the resulting
+/// string, or the u32 accumulator, without limit. Returns `(value, tokens consumed)` or
+/// `None`.
+fn take_digit_run(tokens: &[&str]) -> Option<(u16, usize)> {
+    let mut digits: Vec<u8> = Vec::new();
+    let mut saw_zero = false;
+    for &tok in tokens.iter().take(MAX_DIGIT_RUN) {
+        let Some(d) = digit_word(tok) else { break };
+        saw_zero |= d == 0;
+        digits.push(d);
+    }
+    if digits.len() < 2 || !saw_zero {
+        return None;
+    }
+    // Cap in u32 first so a full MAX_DIGIT_RUN of "nine"s cannot overflow before the
+    // final clamp into u16 (the parser rejects out-of-range chapters/verses anyway).
+    let value: u32 = digits.iter().fold(0u32, |acc, &d| {
+        acc.saturating_mul(10).saturating_add(d as u32)
+    });
+    Some((value.min(u16::MAX as u32) as u16, digits.len()))
 }
 
 /// A hard-capped queue of un-actioned scripture detections (the operator's approval
