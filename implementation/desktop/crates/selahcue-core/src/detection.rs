@@ -396,7 +396,24 @@ fn take_digit_run(tokens: &[&str]) -> Option<(u16, usize)> {
         };
         if d == 0 {
             let followed_by_digit = i + 1 < limit && digit_word(tokens[i + 1]).is_some();
-            if !followed_by_digit {
+            // A zero/oh immediately before a "chapter"/"verse" boundary word is ALSO
+            // internal, not trailing, when that boundary word is itself immediately
+            // followed by the start of another number: "...one zero verse four..." is a
+            // chapter ending in a spoken zero, not an interjection, because "verse"/
+            // "chapter" reliably signals a new number is coming right after (86akd8jzg
+            // AC: "first corinthians one zero verse four" -> "1 Corinthians 10:4").
+            // Deliberately `take_number` only, never a recursive `take_digit_run` call,
+            // for this lookahead: `take_number`'s state machine always halts within a
+            // handful of tokens regardless of slice length, so this stays O(1) per zero
+            // and cannot turn a hostile "zero verse zero verse..." flood quadratic the
+            // way a recursive digit-run lookahead chained across every zero would.
+            let followed_by_boundary_then_number = tokens
+                .get(i + 1)
+                .is_some_and(|&w| matches!(w, "chapter" | "chapters" | "verse" | "verses"))
+                && tokens
+                    .get(i + 2..)
+                    .is_some_and(|rest| take_number(rest).is_some());
+            if !followed_by_digit && !followed_by_boundary_then_number {
                 // Trailing zero/oh: stop the run BEFORE it rather than folding it in.
                 break;
             }

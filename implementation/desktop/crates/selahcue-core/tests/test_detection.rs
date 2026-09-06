@@ -532,3 +532,46 @@ fn a_digit_by_digit_chapter_does_not_fuse_across_the_chapter_filler_word() {
         "\"chapter\" must act as a boundary the same as \"verse\" does"
     );
 }
+
+#[test]
+fn zero_verse_number_stays_distinct_when_only_the_verse_has_the_zero() {
+    // Chapter has no zero at all; only the verse is read digit-by-digit with an
+    // internal zero. Direct 86akd8jzg acceptance criterion.
+    assert_eq!(
+        detect("psalm three verse one oh five"),
+        vec!["Psalms 3:105"]
+    );
+}
+
+#[test]
+fn zero_verse_number_stays_distinct_symmetric_case() {
+    assert_eq!(
+        detect("john three verse one zero three"),
+        vec!["John 3:103"]
+    );
+}
+
+#[test]
+fn a_trailing_zero_immediately_before_a_boundary_word_completes_the_chapter() {
+    // The zero is trailing relative to the digit run itself (nothing digit-word follows
+    // it), but "verse" immediately after it is itself immediately followed by a real
+    // number ("four") -- that combination is a chapter ending in a spoken zero, not an
+    // interjection, and must fold ("one zero" -> 10), unlike a bare trailing zero/oh
+    // followed by ordinary speech. Direct 86akd8jzg acceptance criterion; also exercises
+    // the numbered-book ("first corinthians") path together with the boundary fix.
+    assert_eq!(
+        detect("first corinthians one zero verse four"),
+        vec!["1 Corinthians 10:4"]
+    );
+}
+
+#[test]
+fn oh_before_a_boundary_word_not_followed_by_a_number_still_does_not_fold() {
+    // The boundary-then-number lookahead must not over-fire: "verse"/"chapter" alone,
+    // with no number right after it, does not retroactively make a preceding trailing
+    // oh/zero "internal".
+    assert_eq!(
+        detect("psalm eight oh chapter by chapter we will read it"),
+        vec!["Psalms 8"]
+    );
+}
