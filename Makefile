@@ -262,6 +262,44 @@ endif
 .DEFAULT_GOAL := help
 .PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
 
+# Recursive-make calls that must NOT get GNU Make's special "$(MAKE) literal text" handling
+# (documented in the GNU Make manual, "How the MAKE Variable Works": a recipe LINE containing
+# the exact substring "$(MAKE)" or "${MAKE}" is force-executed even under `-n`/`-t`/`-q`,
+# specifically so a dry run of a genuinely recursive build stays meaningful). Every other line
+# in `ci` is an ordinary command `-n` correctly leaves unexecuted; the two operator-placeholder
+# calls below, and the nested calls inside verify-stage-operator-binaries-create-only's own
+# recipe, used to be the only things in this file that violated that -- `make -n ci` regressed
+# from a clean preview to a hard `exit 2` (FAIL(A): sidecar placeholder was not created),
+# because the OUTER call was force-executed for real, called INTO a script that made real
+# assertions, while the INNER nested call two levels down correctly stayed dry (its own line
+# has no $(MAKE) reference to re-trigger the exemption) and created nothing. Root-caused with
+# an isolated probe Makefile, not by reading the manual and guessing (86akc2kmh, PR #29).
+#
+# Using $(MAKE_RECURSE) here instead of the literal text sidesteps the exemption rule entirely:
+# real execution is unaffected (identical expansion, jobserver fds still inherited via the
+# environment the same as any child process), but under `-n`/`-t`/`-q` the line is printed as
+# preview text and never run at all -- restoring the SAME "printed, not executed" contract
+# every other line in this file already keeps under `-n`, rather than adding a second,
+# target-local mechanism that behaves differently from its surroundings. Verified directly: a
+# probe using this indirection stays fully dry under `-n` (zero subprocess spawned, zero side
+# effect), and still passes jobserver fds cleanly under `-j` (no warnings, side effect happens).
+#
+# This is NOT the only tool for this class of problem -- a MAKEFLAGS-based guard
+# (`ifneq ($(findstring n,$(filter-out --%,$(MAKEFLAGS))),)`, skip the real logic under a dry
+# run) also verified correctly here, and is the right choice for a recursive call that must
+# genuinely DO something useful under `-n` (a real preview action), which indirection cannot
+# give you since it makes the call vanish under `-n` rather than run a dry-run-aware branch of
+# it. This case needs no such preview -- a dry run of a regression test should do nothing -- so
+# indirection is the smaller, more durable fix: it depends on one of GNU Make's oldest and most
+# stable documented behaviours, not on this machine's particular MAKEFLAGS serialization format
+# (which does vary by version/platform, and would need its own re-verification on every one).
+#
+# Pre-existing $(MAKE) calls elsewhere in this file (run-release, output-release, timer,
+# stop-timer) are deliberately NOT switched to this indirection: those genuinely want `-n` to
+# cascade into what the target they call would do, and none of them make an assertion whose
+# failure depends on a grandchild that -n keeps dry.
+MAKE_RECURSE := $(MAKE)
+
 # selahcue-operator's build.rs (tauri_build::build()) validates that the externalBin sidecar
 # (`selahcue-output-<triple>`) and the NDI resource dll declared in tauri.conf.json exist on
 # disk -- even for a bare `cargo check`/`clippy` that never bundles the app. Both live under
@@ -355,7 +393,7 @@ verify-stage-operator-binaries-create-only: ## (internal) regression-test stage-
 	mkdir -p "$$tmp/binaries"; \
 	printf 'KNOWN-PAYLOAD-DO-NOT-TRUNCATE-%s' "$$$$" > "$$tmp/binaries/Processing.NDI.Lib.x64.dll"; \
 	before="$$(shasum -a 256 "$$tmp/binaries/Processing.NDI.Lib.x64.dll" | awk '{print $$1}')"; \
-	$(MAKE) --no-print-directory stage-operator-binaries OPERATOR="$$tmp" >/dev/null; \
+	$(MAKE_RECURSE) --no-print-directory stage-operator-binaries OPERATOR="$$tmp" >/dev/null; \
 	after="$$(shasum -a 256 "$$tmp/binaries/Processing.NDI.Lib.x64.dll" | awk '{print $$1}')"; \
 	[ "$$before" = "$$after" ] || { echo "FAIL(A): stage-operator-binaries truncated an existing file"; exit 1; }; \
 	sidecar="$$(find "$$tmp/binaries" -name 'selahcue-output-*' 2>/dev/null | head -1)"; \
@@ -365,7 +403,7 @@ verify-stage-operator-binaries-create-only: ## (internal) regression-test stage-
 	mkdir -p "$$tmp2/binaries"; \
 	dangle_target="$$tmp2/outside-the-binaries-dir.dll"; \
 	ln -s "$$dangle_target" "$$tmp2/binaries/Processing.NDI.Lib.x64.dll"; \
-	$(MAKE) --no-print-directory stage-operator-binaries OPERATOR="$$tmp2" >/dev/null; \
+	$(MAKE_RECURSE) --no-print-directory stage-operator-binaries OPERATOR="$$tmp2" >/dev/null; \
 	[ ! -e "$$dangle_target" ] || { echo "FAIL(B): a dangling symlink's target got created (Sana PR #29 F1 regressed)"; exit 1; }; \
 	[ -h "$$tmp2/binaries/Processing.NDI.Lib.x64.dll" ] || { echo "FAIL(B): the dangling symlink itself was replaced"; exit 1; }; \
 	sidecar2="$$(find "$$tmp2/binaries" -name 'selahcue-output-*' 2>/dev/null | head -1)"; \
@@ -570,8 +608,8 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# "rustc not found" message ahead of check_toolchain.sh's richer, purpose-built diagnostic
 	# (Cody, PR #29 High). Reuses the exact target other callers use, via recursive make, so
 	# there is exactly one definition of the staging logic.
-	$(MAKE) --no-print-directory stage-operator-binaries
-	$(MAKE) --no-print-directory verify-stage-operator-binaries-create-only
+	$(MAKE_RECURSE) --no-print-directory stage-operator-binaries
+	$(MAKE_RECURSE) --no-print-directory verify-stage-operator-binaries-create-only
 	# Quinn's process finding on PR #24 (86akcmzyq): the PR template's feature-flag-reachability
 	# section is three checkboxes a human ticks, unenforced by CI -- exactly the human step that
 	# let 86akby7d8 ship, merge, and stay invisible from `make launch` in the first place. This
