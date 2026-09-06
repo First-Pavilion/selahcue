@@ -474,6 +474,24 @@ jobs:
       - name: Test (cloud STT deepgram feature — stub socket on loopback)
         if: ${{ !cancelled() }}
         run: cargo test -p selahcue-stt-cloud --features deepgram --no-fail-fast
+      # THE release-profile half of Sana S-1 / Cody Finding A / Quinn High on the `cloud-stt`
+      # reachability PR (86akd10dq): `developer_credential_from_env` read DEEPGRAM_API_KEY with no
+      # profile check at all until `developer_key_permitted` (credential.rs) was added — a bare
+      # `cargo build --release --features deepgram` (or, after that PR made `cloud-stt` reachable
+      # from `make launch`'s default `STT ?= auto`, plain `make launch RELEASE=1`/`make
+      # run-release`) built a working direct-to-Deepgram release binary from whatever key happened
+      # to already be exported. Cody reproduced this directly pre-fix: `cargo test --release -p
+      # selahcue-stt-cloud --features deepgram` with DEEPGRAM_API_KEY exported read `Ready` with
+      # `debug_assertions=false`. The debug step above never exercises that guard's release arm;
+      # same shape as the licensing crate's RELEASE test and the cloud openai feature's RELEASE
+      # steps above. This step is the actual remediation for HOW the gap was missed, not a
+      # nice-to-have alongside the binary fix.
+      - name: Test (cloud STT deepgram feature, RELEASE — the developer-key release refusal only holds here)
+        if: ${{ !cancelled() }}
+        run: cargo test -p selahcue-stt-cloud --features deepgram --release --no-fail-fast
+      - name: Clippy (cloud STT deepgram feature, RELEASE)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p selahcue-stt-cloud --features deepgram --release --all-targets -- -D warnings
       - name: Test (at-rest encryption — SQLCipher + vendored OpenSSL)
         # The vendored OpenSSL build needs perl+nasm on Windows; covered on the
         # other two OSes (the feature is platform-independent Rust).

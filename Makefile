@@ -36,6 +36,19 @@ OP       := --manifest-path $(OPERATOR)/Cargo.toml
 RELEASE      ?= 0
 PROFILE_FLAG := $(if $(filter 1,$(RELEASE)),--release,)
 PROFILE_NAME := $(if $(filter 1,$(RELEASE)),release,debug)
+# THE single named registry of selahcue-operator Cargo features that must never reach a
+# RELEASE=1/--release build of the operator THROUGH THIS MAKEFILE, whatever path OP_FEATURES was
+# populated by (auto-detection or a direct override) -- read by `release-ai-guard` below, which is
+# the actual backstop: STT_FEATURES/AI_FEATURES's own RELEASE=1 handling independently avoids
+# these tokens too, but a developer bypassing that auto-detection with a raw
+# `OP_FEATURES=cloud-stt RELEASE=1` still hits this guard. Named and defined in exactly one place
+# so `scripts/check_launch_reachability.py` can cross-check it against selahcue-operator/
+# Cargo.toml's own `RELEASE:` tags (86akd10dq remediation, Quinn's point on hand-maintained lists
+# drifting): a feature tagged `RELEASE: UNSAFE` there that is missing from this list, or a token
+# here with no matching `RELEASE: UNSAFE` tag, fails that check rather than drifting silently.
+# `dev-keys`/`openai-notes` were here from 86akcmzrd; `cloud-stt` is added by 86akd10dq -- see the
+# long comment on `STT_FEATURES` below for why cloud-stt joins this list and plain `stt` does not.
+RELEASE_UNSAFE_FEATURES := dev-keys openai-notes cloud-stt
 # The local endpoint file the output window writes (matches Rust's std::env::temp_dir()).
 ENDPOINT := $(shell python3 -c "import tempfile,os;print(os.path.join(tempfile.gettempdir(),'selahcue-operator-endpoint.json'))" 2>/dev/null)
 CMD      ?= next
@@ -47,17 +60,69 @@ SECS     ?=
 # it with STT=1 (errors if cmake is absent) or disable with STT=0. CI/check/clippy always use the
 # default (no-STT) operator build, so this never affects them.
 #
+# `cloud-stt` (Deepgram live transcription, 86akby7th) rides the SAME toggle rather than getting
+# its own (86akd10dq — the third instance of the 86akcmzyq bug class: shipped, merged, four-
+# reviewer-tested, and unreachable from this exact command). It is not an independent choice:
+# `cloud-stt = ["stt", "selahcue-stt-cloud/deepgram"]` in selahcue-operator/Cargo.toml, and
+# `cargo tree -e features --features cloud-stt -p selahcue-operator` confirms that pulls in
+# selahcue-stt's `whisper` feature -> whisper-rs-sys -> the SAME cmake build-dependency `stt`
+# needs, because mic capture (CpalSource) and resampling live in selahcue-stt regardless of which
+# recognizer consumes the audio (see that Cargo.toml's comment on `cloud-stt`). So `cloud-stt`
+# cannot be reachable on a machine where plain `stt` cannot -- there is no toolchain-free way to
+# offer it, and a separate CLOUD_STT=auto|0|1 toggle would just be re-running STT's own cmake
+# preflight a second time for no independent question. It also matches what a developer would
+# expect `STT=0` to mean: "no live transcript feature, on-device or cloud" -- not "on-device off,
+# but cloud silently still compiled in". Compiling `cloud-stt` in does not itself pick a recognizer:
+# that stays the runtime Settings choice (`TranscriptionMode`); a build with no `DEEPGRAM_API_KEY`
+# in `.env` reports `KeyMissing` (actionable) instead of `NotInBuild` (the bug this fixes) --
+# `dev-keys` already carries that key by default via `AI ?= auto` below.
+#
 # STT_STATUS/AI_STATUS (below OP_FEATURES_WORDS further down) are derived from the FINAL, resolved
 # feature list rather than from STT_FEATURES/AI_FEATURES directly, so the messages stay honest even
 # when a developer bypasses this auto-detection entirely with `OP_FEATURES=<features>` — see the
 # OP_FEATURES_WORDS comment for why that distinction matters.
+#
+# RELEASE=1 CLEARS cloud-stt (but NOT plain stt) FROM THIS COMPUTATION -- A DECISION, NOT AN
+# OVERSIGHT (86akd10dq remediation, Sana S-1 / Cody Finding A / Quinn High, all three independently
+# found the same gap: making cloud-stt reachable by default widened RELEASE=1's reach as a side
+# effect, since nothing here or in selahcue-stt-cloud checked the profile before this fix -- Cody
+# reproduced it directly: `cargo test --release -p selahcue-stt-cloud --features deepgram` with a
+# shell-exported DEEPGRAM_API_KEY read `Ready`, with debug_assertions=false, in the actual binary).
+#
+# The BINARY-level guard is the real control either way: `selahcue-stt-cloud::credential::
+# developer_key_permitted` (mirroring `selahcue_cloud::openai::direct_key_permitted`) now makes
+# `developer_credential_from_env` refuse in ANY release profile, through make or a bare
+# `cargo build --release --features cloud-stt`, so a RELEASE=1 binary with cloud-stt compiled in
+# can never read a shell-exported DEEPGRAM_API_KEY and reports KeyMissing, not Ready -- that alone
+# closes the credential leak regardless of what this Makefile does.
+#
+# Stripping cloud-stt here on TOP of that binary guard is the additional, separately-argued call:
+# unlike plain `stt` (which ships in real release artefacts today -- windows-installer.yml
+# hardcodes `--features stt`), `cloud-stt`'s ONLY credential source that exists in the tree right
+# now is the developer-key path `credential.rs` itself documents as temporary ("Phase 2 replaces
+# this entirely... this function is deleted rather than adapted"). Phase 2 (the server-minted
+# grant-token endpoint, 86akby3xu) is `planning/todo`, unstarted, normal priority, with its own
+# non-goal explicitly excluding "anything on the desktop" -- meaning the desktop-side integration
+# that would let cloud-stt reach `Ready` in a release build legitimately is not even ticketed yet.
+# So today, a release build carrying cloud-stt provides the user exactly ZERO functional benefit
+# (with the binary guard in place it can only ever report KeyMissing) while adding real cost: the
+# async/WebSocket dependency surface of `selahcue-stt-cloud`'s `deepgram` feature ships in a real
+# artefact for a capability that cannot work, and the operator's Cargo.toml comment on `cloud-stt`
+# already describes it the same way it describes `openai-notes` -- "deliberately throwaway...
+# deleted when [Phase 2] lands" -- and `openai-notes` itself is fully release-cleared, not merely
+# binary-guarded. Re-enabling cloud-stt in release once the desktop-side Phase 2 ticket exists and
+# is scoped is a one-line change here, not a cost worth avoiding now by leaving a dead capability
+# in a shipped binary. This is a judgement call on present evidence, not a permanent architectural
+# position -- revisit it when 86akby3xu's desktop-side ticket lands (see RELEASE_UNSAFE_FEATURES
+# above, which scripts/check_launch_reachability.py cross-checks against selahcue-operator/
+# Cargo.toml's `RELEASE:` tags so this list and that decision cannot drift apart silently).
 STT ?= auto
 ifeq ($(STT),0)
 STT_FEATURES :=
 else ifeq ($(STT),1)
-STT_FEATURES := stt
+STT_FEATURES := stt $(if $(filter 1,$(RELEASE)),,cloud-stt)
 else
-STT_FEATURES := $(if $(shell command -v cmake 2>/dev/null),stt,)
+STT_FEATURES := $(if $(shell command -v cmake 2>/dev/null),stt $(if $(filter 1,$(RELEASE)),,cloud-stt),)
 endif
 
 # AI-assisted sermon notes (`openai-notes`) plus the developer `.env` key loader that feeds it
@@ -117,11 +182,19 @@ OPRUN       := $(if $(strip $(OP_FEATURES)),--features $(strip $(OP_FEATURES)),)
 # and the status messages below react to, so a developer who bypasses the AI/STT auto-detection
 # with a raw OP_FEATURES= override still gets an honest "what's actually being built" answer
 # instead of one describing the auto-detection that never ran. `stt` is matched as a whole TOKEN,
-# not a substring: `cloud-stt` (86akby7th, in review) contains "stt" as a substring but needs no
-# whisper.cpp/cmake toolchain at all.
+# not a substring, so a raw `OP_FEATURES=cloud-stt` (naming only `cloud-stt`, relying on Cargo's
+# own `cloud-stt = ["stt", ...]` implication to pull `stt` in) is not mistaken for the plain `stt`
+# token by accident — the two are matched independently below on purpose, not because one of them
+# is toolchain-free: CORRECTION (86akd10dq) — a prior version of this comment claimed `cloud-stt`
+# "needs no whisper.cpp/cmake toolchain at all". That was wrong, and stale by the time `cloud-stt`
+# merged: `cargo tree -e features --features cloud-stt -p selahcue-operator` shows it pulls in
+# selahcue-stt's `whisper` feature -> whisper-rs-sys -> cmake, same as plain `stt` (see the
+# `cloud-stt` comment above). `stt-preflight` below checks for EITHER token for exactly that
+# reason — the wrong comment, left uncorrected, would have kept a raw `OP_FEATURES=cloud-stt`
+# invocation skipping the cmake check it actually needs.
 OP_FEATURES_WORDS := $(subst $(COMMA),$(SPACE),$(OP_FEATURES))
-ifneq ($(filter stt,$(OP_FEATURES_WORDS)),)
-STT_STATUS := on (stt)
+ifneq ($(filter stt cloud-stt,$(OP_FEATURES_WORDS)),)
+STT_STATUS := on ($(strip $(filter stt cloud-stt,$(OP_FEATURES_WORDS))))
 else
 STT_STATUS := off (run with STT=1, or `brew install cmake`, to enable the live transcript)
 endif
@@ -189,13 +262,13 @@ endif
 .DEFAULT_GOAL := help
 .PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test check clippy fmt clean
 
-stt-preflight: ## (internal) verify the toolchain needed for --features stt is present
-ifneq ($(filter stt,$(OP_FEATURES_WORDS)),)
+stt-preflight: ## (internal) verify the toolchain needed for --features stt/cloud-stt is present
+ifneq ($(filter stt cloud-stt,$(OP_FEATURES_WORDS)),)
 	@command -v cmake >/dev/null 2>&1 || { \
-	  echo "ERROR: on-device STT (--features stt, full set: $(OP_FEATURES)) needs cmake + a C/C++ toolchain to build whisper.cpp."; \
+	  echo "ERROR: $(strip $(filter stt cloud-stt,$(OP_FEATURES_WORDS))) (full set: $(OP_FEATURES)) needs cmake + a C/C++ toolchain to build whisper.cpp -- cloud-stt implies stt, so it needs the same toolchain (mic capture lives in selahcue-stt regardless of which recognizer consumes it)."; \
 	  echo "  macOS:         brew install cmake"; \
 	  echo "  Debian/Ubuntu: sudo apt-get install -y cmake build-essential"; \
-	  echo "  Or run without on-device STT:  make $(MAKECMDGOALS) STT=0"; \
+	  echo "  Or run without live transcription:  make $(MAKECMDGOALS) STT=0"; \
 	  exit 1; }
 endif
 
@@ -208,15 +281,25 @@ endif
 # is what makes this a guard on the outcome instead of a guard on one path to it. This still only
 # covers "through make"; see dev_env.rs's debug_assertions check for the bare-`cargo build` case
 # this cannot see.
-release-ai-guard: ## (internal) refuse any --release build of selahcue-operator that carries dev-keys/openai-notes
+#
+# DO NOT VERIFY THIS GUARD WITH `make -n` ALONE (Quinn) — a dry run prints every recipe LINE
+# unconditionally, including the `exit 1` inside this guard's shell block and the cargo build
+# line that follows it in the file, because `-n` never actually evaluates the shell conditional
+# that would stop it. That makes `make -n build-operator RELEASE=1 OP_FEATURES=stt,cloud-stt`
+# LOOK like the guard's error is printed and then a cargo build still happens — it does not. The
+# real invocation (`make build-operator RELEASE=1 OP_FEATURES=stt,cloud-stt`) exits 2 at this
+# guard's own `exit 1` and never reaches the cargo line at all; verified by running both and
+# diffing what each actually does, not by reading the dry run.
+release-ai-guard: ## (internal) refuse any --release build of selahcue-operator carrying a RELEASE_UNSAFE_FEATURES token
 ifeq ($(filter 1,$(RELEASE)),1)
-ifneq ($(strip $(filter dev-keys openai-notes,$(OP_FEATURES_WORDS))),)
-	@echo "ERROR: refusing to build selahcue-operator --release with $(strip $(filter dev-keys openai-notes,$(OP_FEATURES_WORDS)))."; \
-	  echo "  A RELEASE=1 (or --release) build of the operator must never carry the repo-root"; \
-	  echo "  .env developer-key loader or a direct-to-OpenAI path — see this Makefile's"; \
-	  echo "  \"AI-assisted sermon notes\" comment and selahcue-operator/src/dev_env.rs for why."; \
+ifneq ($(strip $(filter $(RELEASE_UNSAFE_FEATURES),$(OP_FEATURES_WORDS))),)
+	@echo "ERROR: refusing to build selahcue-operator --release with $(strip $(filter $(RELEASE_UNSAFE_FEATURES),$(OP_FEATURES_WORDS)))."; \
+	  echo "  A RELEASE=1 (or --release) build of the operator must never carry: $(RELEASE_UNSAFE_FEATURES)"; \
+	  echo "  -- the repo-root .env developer-key loader, a direct-to-OpenAI path, or the"; \
+	  echo "  developer-key Deepgram path. See this Makefile's RELEASE_UNSAFE_FEATURES comment,"; \
+	  echo "  the \"AI-assisted sermon notes\" comment, and selahcue-operator/src/dev_env.rs for why."; \
 	  echo "  You passed: OP_FEATURES=$(OP_FEATURES) RELEASE=$(RELEASE)"; \
-	  echo "  Drop RELEASE=1, or remove dev-keys/openai-notes from OP_FEATURES."; \
+	  echo "  Drop RELEASE=1, or remove $(RELEASE_UNSAFE_FEATURES) from OP_FEATURES."; \
 	  exit 1
 endif
 endif
@@ -251,7 +334,7 @@ LAUNCH_TIMEOUT ?= 180
 launch: stt-preflight release-ai-guard build-output build-operator ## Launch EVERYTHING — output window (NDI auto) + operator shell (STT + AI on; AI=0/STT=0 to skip)
 	@echo ">> build profile: $(PROFILE_NAME)$(if $(filter 1,$(RELEASE)),, — use \`make run-release\` to judge performance)"
 	@echo ">> NDI output: $(NDI_STATUS)"
-	@echo ">> on-device STT: $(STT_STATUS)"
+	@echo ">> live transcript (STT): $(STT_STATUS)"
 	@echo ">> AI-assisted sermon notes: $(AI_STATUS)"
 	@echo ">> clearing any stale endpoint and starting the output window…"
 	@rm -f "$(ENDPOINT)"; \
@@ -314,7 +397,7 @@ output-ndi: ndi-preflight ## Force the output window WITH NDI (errors if the SDK
 	NDI_SDK_DIR="$(NDI_DIR)" $(NDI_LOADER) $(CARGO) run $(WS) -p selahcue-desktop --features ndi $(PROFILE_FLAG)
 
 operator: stt-preflight release-ai-guard ## Run only the operator shell (connects to a running output window, else a standalone demo)
-	@echo ">> on-device STT: $(STT_STATUS)"
+	@echo ">> live transcript (STT): $(STT_STATUS)"
 	@echo ">> AI-assisted sermon notes: $(AI_STATUS)"
 	$(OPERATOR_RUN)
 
@@ -421,6 +504,18 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# that no gate ever compiles is exactly how selahcue-stt ended up linted by nothing. The
 	# suite here talks to a local stub socket on loopback, never to the live Deepgram service.
 	$(CARGO) test $(WS) -p selahcue-stt-cloud --features deepgram --no-fail-fast
+	# THE release-profile half of the boundary named in Sana S-1 / Cody Finding A / Quinn High on
+	# the `cloud-stt` reachability PR (86akd10dq): `developer_credential_from_env` read
+	# DEEPGRAM_API_KEY with no profile check at all until `developer_key_permitted`
+	# (credential.rs) was added -- a bare `cargo build --release --features deepgram` (or, after
+	# this PR made cloud-stt reachable by default, plain `make launch RELEASE=1`/`make
+	# run-release`) built a working direct-to-Deepgram release binary from whatever key happened
+	# to already be exported. Debug above does not exercise the release arm of
+	# `developer_key_permitted`/`developer_credential_from_env`'s `iff` test; this is the exact
+	# `selahcue-cloud --features openai --release` pattern a few lines above, applied here -- this
+	# line is the actual remediation for HOW the gap was missed, not a nice-to-have alongside it.
+	$(CARGO) test $(WS) -p selahcue-stt-cloud --features deepgram --release --no-fail-fast
+	$(CARGO) clippy $(WS) -p selahcue-stt-cloud --features deepgram --release --all-targets -- -D warnings
 	$(CARGO) check $(OP)
 	$(CARGO) test $(OP) --no-fail-fast
 	$(CARGO) test $(OP) --features dev-keys --no-fail-fast

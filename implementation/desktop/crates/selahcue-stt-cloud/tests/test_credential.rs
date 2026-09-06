@@ -5,7 +5,7 @@
 
 use std::sync::{Mutex, MutexGuard};
 
-use selahcue_stt_cloud::credential::MIN_SECRET_LEN;
+use selahcue_stt_cloud::credential::{developer_key_permitted, MIN_SECRET_LEN};
 use selahcue_stt_cloud::error::MalformedCredential;
 use selahcue_stt_cloud::{
     developer_credential_from_env, Credential, CredentialScheme, DeepgramError,
@@ -213,10 +213,51 @@ fn reading_the_environment_when_nothing_is_set_names_the_variable() {
     }
 }
 
+// 86akd10dq (Sana's High finding, Cody's Finding A, Quinn's High: the `cloud-stt` reachability
+// PR): `developer_credential_from_env` read `DEEPGRAM_API_KEY_VAR` with no profile check at all,
+// so making `cloud-stt` reachable from `make launch`'s default `STT ?= auto` meant `make launch
+// RELEASE=1`/`make run-release` built a working direct-to-Deepgram release binary from whatever
+// happened to be exported in the shell. `developer_key_permitted` closes that, the same shape as
+// `selahcue_cloud::openai`'s `direct_key_permitted` pair plus its own wiring test — these four
+// tests prove it (three here, one wiring test folded into the existing environment-read test
+// below rather than duplicated, since it already sets up exactly the state the wiring test
+// needs).
+
+/// The pure predicate's release branch, tested directly since `cfg!(debug_assertions)` cannot be
+/// varied within one compiled test binary.
 #[test]
-fn reading_the_environment_when_a_key_is_set_produces_a_token_credential() {
-    // The positive control for the environment read. Without it, "missing is reported" is
-    // indistinguishable from a function that always fails.
+fn a_release_profile_input_refuses_the_developer_key() {
+    assert!(
+        !developer_key_permitted(false),
+        "a release-profile (debug_assertions=false) input must refuse the developer key — this \
+         is the guard standing between `--features cloud-stt --release` (or `make launch \
+         RELEASE=1`/`make run-release`, which now reach `cloud-stt` by default) and a shipped \
+         binary that reads DEEPGRAM_API_KEY from whatever happens to be exported"
+    );
+}
+
+/// The positive control: an ordinary debug/test profile must still permit it, so "refuses" above
+/// is the release branch actually firing rather than the predicate refusing unconditionally.
+#[test]
+fn a_debug_profile_input_still_permits_the_developer_key() {
+    assert!(
+        developer_key_permitted(true),
+        "a debug-profile (debug_assertions=true) input was refused — cloud-stt would stop \
+         working in ordinary `cargo run`/`cargo test`, not just in --release"
+    );
+}
+
+/// The wiring test: proves `developer_credential_from_env` ITSELF takes the branch this profile
+/// compiled, not just that the extracted predicate above is correct in isolation. Mirrors
+/// `selahcue_cloud::openai::OpenAiNoteProvider::from_env`'s wiring test and
+/// `selahcue-operator`'s `dev_env::load()` wiring test: one test, run once per profile by
+/// `make ci`/CI (`cargo test -p selahcue-stt-cloud --features deepgram` and the `--release`
+/// sibling added alongside this fix), asserting whichever branch that profile actually compiled.
+/// Also doubles as the positive control for the environment read itself in a debug build —
+/// without it, "missing is reported" would be indistinguishable from a function that always
+/// fails.
+#[test]
+fn reading_the_environment_when_a_key_is_set_produces_a_credential_iff_this_is_a_debug_build() {
     let _guard = env_guard();
     let restore = std::env::var(DEEPGRAM_API_KEY_VAR).ok();
     std::env::set_var(DEEPGRAM_API_KEY_VAR, TEST_SECRET);
@@ -228,10 +269,26 @@ fn reading_the_environment_when_a_key_is_set_produces_a_token_credential() {
         None => std::env::remove_var(DEEPGRAM_API_KEY_VAR),
     }
 
-    let credential = result.expect("a key in the environment should produce a credential");
-    assert_eq!(credential.scheme(), CredentialScheme::Token);
-    assert_eq!(
-        credential.authorization_header_value(),
-        format!("Token {TEST_SECRET}")
-    );
+    if cfg!(debug_assertions) {
+        let credential = result.expect(
+            "a debug build must produce a credential from an exported \
+                            DEEPGRAM_API_KEY, or cloud-stt stops working in ordinary development",
+        );
+        assert_eq!(credential.scheme(), CredentialScheme::Token);
+        assert_eq!(
+            credential.authorization_header_value(),
+            format!("Token {TEST_SECRET}")
+        );
+    } else {
+        match result {
+            Err(DeepgramError::MissingCredential { variable }) => {
+                assert_eq!(variable, DEEPGRAM_API_KEY_VAR)
+            }
+            other => panic!(
+                "a RELEASE build produced {other:?} from an exported DEEPGRAM_API_KEY — \
+                 developer_key_permitted stopped being wired into developer_credential_from_env \
+                 (inverted, hardcoded, or the early return was removed)"
+            ),
+        }
+    }
 }

@@ -16,6 +16,12 @@ path = "src/main.rs"
 # with the key acquired from the OS secret store (or an Argon2id-derived
 # passphrase key). Off by default — CI's Windows lane lacks the SQLCipher
 # toolchain, and unencrypted remains the dev default.
+#
+# LAUNCH_REACHABILITY: OPT-IN — no dev launch target auto-enables this (`make launch`'s
+# DESKTOP_FEATURES only ever carries `ndi`); a developer opts in explicitly to test the
+# encrypted-DB path. See scripts/check_launch_reachability.py for what each tag means.
+# RELEASE: SAFE — the key comes from the OS secret store or an Argon2id-derived passphrase,
+# never a developer `.env`/shell-exported credential; no release-boundary concern.
 encryption = ["selahcue-data/encryption", "dep:keyring", "dep:argon2", "dep:getrandom", "dep:zeroize"]
 # NDI OUTPUT delivery (Screens page): broadcast a composed audience feed as an NDI source via
 # grafton-ndi (Apache-2.0; NDI SDK 6). OFF by default — the default build links no native NDI
@@ -23,6 +29,13 @@ encryption = ["selahcue-data/encryption", "dep:keyring", "dep:argon2", "dep:getr
 # NDI *setup* (name/enable, persisted + surfaced) works in every build; only transmission needs
 # this feature + the NDI SDK/runtime installed. Build to broadcast: `cargo build -p
 # selahcue-desktop --features ndi`.
+#
+# LAUNCH_REACHABILITY: AUTO — auto-enabled by `make launch`'s `NDI ?= auto` whenever the SDK is
+# vendored (scripts/fetch_ndi_sdk.sh), quietly skipped otherwise. Not REQUIRED: no owner decision
+# has made this unconditional the way 86akcmzrd/86akd10dq did for the AI/STT features.
+# RELEASE: SAFE — broadcasts to the local network via a vendored SDK; reads no developer-only
+# credential. Ships in real release artefacts (the Windows installer bundles NDI per
+# `implementation/desktop/vendor/ndi/README.md`).
 ndi = ["dep:grafton-ndi"]
 
 [dependencies]
