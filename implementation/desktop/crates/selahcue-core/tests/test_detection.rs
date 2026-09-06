@@ -495,3 +495,40 @@ fn parser_leniency_on_out_of_range_chapters_is_pre_existing_not_a_backstop() {
     assert_eq!(detect("psalm 151"), vec!["Psalms 151"]);
     assert_eq!(detect("john 99999"), vec!["John 65535"]);
 }
+
+// ---- A digit-by-digit run must not cross "chapter"/"verse" (86akd8jzg, folded into
+// this PR at the delivery lead's direction) ----
+//
+// `take_digit_run` used to run AFTER "chapter"/"verse" filler was stripped, so it had no
+// way to see that a boundary had ever been there: a chapter read digit-by-digit,
+// immediately followed by a verse also read digit-by-digit, fused into one run across
+// the (already-removed) "verse". Fixed by folding numbers over the raw tokens, before
+// the filler strip -- "chapter"/"verse" then act as a natural stop for the scan, the
+// same way they already do for take_number's cardinal grammar.
+
+#[test]
+fn a_digit_by_digit_chapter_does_not_fuse_with_a_following_digit_by_digit_verse() {
+    assert_eq!(
+        detect("psalm one zero three verse four"),
+        vec!["Psalms 103:4"],
+        "before this fix this fused into \"Psalms 1034\""
+    );
+}
+
+#[test]
+fn a_digit_by_digit_chapter_and_verse_both_survive_independently() {
+    // The harder case: BOTH sides read digit-by-digit, separated by "verse".
+    assert_eq!(
+        detect("psalm one zero three verse one zero five"),
+        vec!["Psalms 103:105"]
+    );
+}
+
+#[test]
+fn a_digit_by_digit_chapter_does_not_fuse_across_the_chapter_filler_word() {
+    assert_eq!(
+        detect("john chapter one zero three"),
+        vec!["John 103"],
+        "\"chapter\" must act as a boundary the same as \"verse\" does"
+    );
+}

@@ -107,10 +107,11 @@ pub fn detect(text: &str) -> Vec<String> {
 }
 
 /// Normalise transcript text into parser-ready tokens: lowercase; strip punctuation
-/// (keeping `:` so a typed `"8:28"` still parses); drop "chapter"/"verse" filler; fold
-/// spelled-out numbers ("twenty eight" → `28`, "one hundred nineteen" → `119`) to
-/// digits, including a **digit-by-digit reading** ("one zero three" / "one oh three" →
-/// `103` — see [`take_digit_run`]); and join spoken ranges ("28 through 30" → `28-30`).
+/// (keeping `:` so a typed `"8:28"` still parses); fold spelled-out numbers ("twenty
+/// eight" → `28`, "one hundred nineteen" → `119`) to digits, including a
+/// **digit-by-digit reading** ("one zero three" / "one oh three" → `103` — see
+/// [`take_digit_run`]); drop "chapter"/"verse" filler (their numbers already survived
+/// the fold on their own); and join spoken ranges ("28 through 30" → `28-30`).
 fn normalize_tokens(text: &str) -> Vec<String> {
     // 1. Lowercase; keep ASCII alphanumerics and ':' (a chapter:verse separator),
     //    everything else becomes a break.
@@ -127,44 +128,55 @@ fn normalize_tokens(text: &str) -> Vec<String> {
         .collect();
     let raw: Vec<&str> = cleaned.split_whitespace().collect();
 
-    // 2. Drop filler connectors (their numbers survive on their own).
-    let words: Vec<&str> = raw
-        .into_iter()
-        .filter(|w| !matches!(*w, "chapter" | "chapters" | "verse" | "verses"))
-        .collect();
-
-    // 3. Fold spelled-out cardinal numbers into digit tokens. A digit-by-digit run
-    //    ("one zero three") is tried first — it is a disjoint reading from the cardinal
-    //    grammar `take_number` implements (see `take_digit_run`'s doc for why the two
-    //    never conflict) — before falling back to the existing cardinal folding.
+    // 2. Fold spelled-out numbers into digit tokens — over these RAW tokens, i.e.
+    //    BEFORE "chapter"/"verse" filler is dropped below. That ordering matters: it
+    //    makes "chapter"/"verse" a natural stop for a digit-by-digit run the same way
+    //    they already are for `take_number`'s cardinal grammar (`classify` doesn't
+    //    recognise either word, so `take_number` already halts there) — no separate
+    //    "boundary word" concept is needed in `take_digit_run` itself. Folding after
+    //    stripping them (the first cut of this fix) erased that boundary and let a
+    //    chapter read digit-by-digit fuse with a following digit-by-digit verse across
+    //    the removed "verse" (review finding, Quinn, 86akd8jzg):
+    //    `"one zero three verse four"` folded into one wrong `1034` instead of separate
+    //    `103` and `4`. A digit-by-digit run is tried first at each position — it is a
+    //    disjoint reading from the cardinal grammar `take_number` implements (see
+    //    `take_digit_run`'s doc for why the two never conflict) — before falling back
+    //    to the existing cardinal folding.
     let mut folded: Vec<String> = Vec::new();
     let mut i = 0;
-    while i < words.len() {
-        if let Some((value, consumed)) = take_digit_run(&words[i..]) {
+    while i < raw.len() {
+        if let Some((value, consumed)) = take_digit_run(&raw[i..]) {
             folded.push(value.to_string());
             i += consumed;
-        } else if let Some((value, consumed)) = take_number(&words[i..]) {
+        } else if let Some((value, consumed)) = take_number(&raw[i..]) {
             folded.push(value.to_string());
             i += consumed;
         } else {
-            folded.push(words[i].to_string());
+            folded.push(raw[i].to_string());
             i += 1;
         }
     }
 
+    // 3. Drop filler connectors now that any numbers straddling them have already been
+    //    folded on their own (step 2's ordering is what makes this safe).
+    let words: Vec<String> = folded
+        .into_iter()
+        .filter(|w| !matches!(w.as_str(), "chapter" | "chapters" | "verse" | "verses"))
+        .collect();
+
     // 4. Join spoken ranges: <digits> <range-word> <digits> → "a-b".
     let mut out: Vec<String> = Vec::new();
     let mut j = 0;
-    while j < folded.len() {
-        if j + 2 < folded.len()
-            && is_all_digits(&folded[j])
-            && matches!(folded[j + 1].as_str(), "to" | "through" | "thru")
-            && is_all_digits(&folded[j + 2])
+    while j < words.len() {
+        if j + 2 < words.len()
+            && is_all_digits(&words[j])
+            && matches!(words[j + 1].as_str(), "to" | "through" | "thru")
+            && is_all_digits(&words[j + 2])
         {
-            out.push(format!("{}-{}", folded[j], folded[j + 2]));
+            out.push(format!("{}-{}", words[j], words[j + 2]));
             j += 3;
         } else {
-            out.push(folded[j].clone());
+            out.push(words[j].clone());
             j += 1;
         }
     }
