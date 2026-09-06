@@ -381,10 +381,32 @@ fn digit_word(word: &str) -> Option<u8> {
 /// of staying "8" then "28".
 ///
 /// Bounded to [`MAX_DIGIT_RUN`] words so a pathological run can never grow the resulting
-/// string, or the u32 accumulator, without limit. A zero/oh sitting exactly at that cap
+/// string, or the u32 accumulator, without limit. A zero sitting exactly at that cap
 /// boundary is also treated as trailing (nothing this function is allowed to look at
-/// follows it) and excluded, on the same conservative principle. Returns `(value, tokens
-/// consumed)` or `None`.
+/// beyond the cap), and excluded, on the same conservative principle: the
+/// boundary-then-number lookahead is itself bounded by the same `limit` as the rest of
+/// the scan (review finding, Quinn: an earlier draft let this lookahead peek past the
+/// cap, which two reviewers independently flagged as contradicting this very comment).
+/// Returns `(value, tokens consumed)` or `None`.
+/// Does a number start at the beginning of `rest`? Used only by `take_digit_run`'s
+/// boundary-then-number lookahead, to decide whether "chapter"/"verse" is genuinely
+/// introducing another number rather than ordinary continuing speech.
+///
+/// `take_number(rest).is_some()` alone is not enough: `classify()` has no entry for
+/// "zero"/"oh", so a number that itself starts with a spoken zero ("verse zero four",
+/// "verse oh five") makes `take_number` report nothing, even though it plainly is one
+/// (review finding, Cody). The fallback below covers exactly that gap -- rest begins
+/// with a zero/oh immediately followed by another digit word -- without recursing into
+/// `take_digit_run` itself: recursion would let a hostile "zero verse zero verse..."
+/// flood chain lookahead calls and go quadratic, which is exactly the risk this
+/// non-recursive, two-token check avoids while still being O(1) per call (measured
+/// linear across five input-size doublings; see PR review evidence).
+fn starts_a_number(rest: &[&str]) -> bool {
+    take_number(rest).is_some()
+        || (rest.first().is_some_and(|&w| digit_word(w) == Some(0))
+            && rest.get(1).is_some_and(|&w| digit_word(w).is_some()))
+}
+
 fn take_digit_run(tokens: &[&str]) -> Option<(u16, usize)> {
     let limit = tokens.len().min(MAX_DIGIT_RUN);
     let mut digits: Vec<u8> = Vec::new();
@@ -396,24 +418,38 @@ fn take_digit_run(tokens: &[&str]) -> Option<(u16, usize)> {
         };
         if d == 0 {
             let followed_by_digit = i + 1 < limit && digit_word(tokens[i + 1]).is_some();
-            // A zero/oh immediately before a "chapter"/"verse" boundary word is ALSO
-            // internal, not trailing, when that boundary word is itself immediately
-            // followed by the start of another number: "...one zero verse four..." is a
-            // chapter ending in a spoken zero, not an interjection, because "verse"/
-            // "chapter" reliably signals a new number is coming right after (86akd8jzg
-            // AC: "first corinthians one zero verse four" -> "1 Corinthians 10:4").
-            // Deliberately `take_number` only, never a recursive `take_digit_run` call,
-            // for this lookahead: `take_number`'s state machine always halts within a
-            // handful of tokens regardless of slice length, so this stays O(1) per zero
-            // and cannot turn a hostile "zero verse zero verse..." flood quadratic the
-            // way a recursive digit-run lookahead chained across every zero would.
-            let followed_by_boundary_then_number = tokens
-                .get(i + 1)
-                .is_some_and(|&w| matches!(w, "chapter" | "chapters" | "verse" | "verses"))
+
+            // Rule: a chapter ending in a spoken zero, immediately before a
+            // "chapter"/"verse" marker that itself introduces another number
+            // ("...one zero verse four..."), is internal -- literal "zero" only (see
+            // below), bounded by `limit` so this can never reach past
+            // MAX_DIGIT_RUN's documented cap (review finding, Quinn/Cody).
+            // `starts_a_number` -- not a raw `take_number` call -- covers the number
+            // after the marker itself starting with a spoken zero ("verse zero four"),
+            // which plain `take_number` cannot see (`classify` has no "zero"/"oh" entry)
+            // and would otherwise wrongly report "no number here", withdrawing this
+            // rescue (review finding, Cody, Finding 2).
+            let followed_by_boundary_then_number = i + 1 < limit
+                && tokens[i] == "zero"
                 && tokens
-                    .get(i + 2..)
-                    .is_some_and(|rest| take_number(rest).is_some());
-            if !followed_by_digit && !followed_by_boundary_then_number {
+                    .get(i + 1)
+                    .is_some_and(|&w| matches!(w, "chapter" | "chapters" | "verse" | "verses"))
+                && tokens.get(i + 2..).is_some_and(starts_a_number);
+
+            // Rule: a verse ending in a spoken zero, with NOTHING else left in the
+            // input, is internal -- literal "zero" only. A verse is ordinarily the last
+            // number in a citation, so there is no following marker+number for the rule
+            // above to find; the discriminator here is instead "does anything at all
+            // follow" (review finding, Cody, Finding 1: rule 3 alone can rescue a
+            // chapter's trailing zero but structurally never a verse's, since nothing
+            // ever follows the last number in an utterance for it to be "before").
+            // An interjection needs either a reaction target before it or trailing
+            // words after it ("oh, how majestic", "zero tolerance for..."); a "zero"
+            // that simply ends the segment, with nothing following to be idiomatic
+            // about, is read as completing the number.
+            let is_final_zero_in_input = tokens[i] == "zero" && tokens.get(i + 1).is_none();
+
+            if !followed_by_digit && !followed_by_boundary_then_number && !is_final_zero_in_input {
                 // Trailing zero/oh: stop the run BEFORE it rather than folding it in.
                 break;
             }

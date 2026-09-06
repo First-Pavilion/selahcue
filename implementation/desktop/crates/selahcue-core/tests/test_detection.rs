@@ -175,12 +175,23 @@ fn a_completed_digit_by_digit_fold_is_not_extended_by_a_following_trailing_oh() 
 }
 
 #[test]
-fn trailing_zero_with_nothing_after_it_does_not_fold() {
-    // Recorded trade-off (see `take_digit_run`'s doc): a chapter/verse number that
-    // genuinely ends in a spoken zero ("one zero" for a hypothetical "10") is not read
-    // digit-by-digit here — indistinguishable from a trailing interjection, so it falls
-    // back to plain single-digit handling, matching base (pre-86akd8903) behaviour.
-    assert_eq!(detect("psalm one zero"), vec!["Psalms 1"]);
+fn trailing_zero_at_the_end_of_input_completes_the_number() {
+    // REVISED (review, Cody, Finding 1): this test originally pinned the opposite
+    // result ("Psalms 1", treating "one zero" at end of input as a non-goal, same as
+    // an interjection). That trade-off did not generalise: a spoken verse routinely
+    // ends in zero (10, 20, 100...) with nothing after it, since a verse is ordinarily
+    // the LAST number in a citation -- and the boundary-then-number rule above can only
+    // ever rescue a number that is followed by something, so it structurally could
+    // never rescue a verse's trailing zero. The distinguisher that holds up is not
+    // chapter-vs-verse position but simply: does anything at all follow this zero? An
+    // interjection needs either a reaction target before it or trailing words after it
+    // ("oh, how majestic", "zero tolerance for..."); a "zero" that ends the segment,
+    // with nothing following to be idiomatic about, is read as completing the number --
+    // for a chapter number ending in zero this way too, by the same reasoning, not just
+    // a verse. See `trailing_zero_idiom_is_not_folded`/`trailing_zero_in_idiom_is_not_folded`
+    // for the cases that must still NOT fold: a "zero" that is followed by more speech
+    // stays excluded regardless of this rule.
+    assert_eq!(detect("psalm one zero"), vec!["Psalms 10"]);
 }
 
 #[test]
@@ -577,30 +588,169 @@ fn oh_before_a_boundary_word_not_followed_by_a_number_still_does_not_fold() {
 }
 
 #[test]
-fn boundary_lookahead_still_applies_when_the_zero_sits_at_the_max_digit_run_cap() {
-    // Combined-rule interaction (review): three guards -- internal-zero, the
-    // fold-before-strip boundary fix, and this boundary-then-number lookahead -- were
-    // each mutation-verified in isolation, but this specific intersection was not: a
-    // zero sitting exactly at position MAX_DIGIT_RUN-1, with a real "verse <number>"
-    // starting immediately after the cap. The lookahead deliberately peeks past the cap
-    // (only the CONSUMED run is bounded by MAX_DIGIT_RUN, not this judgment about
-    // whether the boundary zero is internal), so the run still folds. A prior version of
-    // this test left the exact intersection uncovered: bounding the lookahead by `limit`
-    // (a plausible-looking mutation) passed every other test in this file unchanged.
+fn boundary_lookahead_does_not_reach_past_the_max_digit_run_cap() {
+    // Combined-rule interaction (review, two reviewers independently: Sana and Quinn):
+    // three guards -- internal-zero, the fold-before-strip boundary fix, and this
+    // boundary-then-number lookahead -- were each mutation-verified in isolation, but
+    // not at their intersection with MAX_DIGIT_RUN's cap. An earlier draft of the
+    // lookahead peeked PAST the cap (checking `chapter`/`verse` and the number after it
+    // regardless of `limit`), which both reviewers flagged as contradicting this
+    // function's own doc comment -- and which is also the more dangerous direction to
+    // get wrong, since it lets a run silently exceed its documented bound. The lookahead
+    // is now itself bounded by `limit`, exactly like `followed_by_digit` above it.
     //
-    // The chapter here is deliberately built from leading zeros ("zero zero zero zero
-    // one zero") rather than ascending digits, so the fold stays a small, valid chapter
-    // (10) instead of saturating to u16::MAX -- a saturated value would pin arithmetic
-    // garbage as "the expected result", which looks like a real reference today but
-    // would silently flip this test's meaning the moment saturation or range-rejection
-    // is ever fixed elsewhere. What this test actually asserts is narrower and is the
-    // only thing that matters here: verse 4 survived intact, proving the run stopped at
-    // the "verse" boundary rather than swallowing it.
-    let got = detect("psalm zero zero zero zero one zero verse four");
-    assert_eq!(got.len(), 1, "expected exactly one detection, got {got:?}");
-    assert!(
-        got[0].ends_with(":4"),
-        "the boundary-then-number lookahead must not swallow \"verse four\" into the \
-         chapter fold, even when the triggering zero sits at the MAX_DIGIT_RUN cap: got {got:?}"
+    // The chapter here is built from leading zeros ("zero zero zero zero one zero")
+    // rather than ascending digits specifically so this test does not need to reason
+    // about the outer fold loop's retry behaviour (a failed attempt starting at the
+    // run's first token gets retried one token later, which can shift a later digit's
+    // position relative to the cap and mask what's being tested here) -- the leading
+    // zeros are each `followed_by_digit`-internal, so the whole prefix folds in a single
+    // successful attempt, with only the LAST zero (at the cap boundary) tested by the
+    // now-bounded lookahead. That zero is correctly excluded: the fold produces the
+    // 5-digit prefix "1" (from "zero zero zero zero one"), and "verse four" is left
+    // for the outer scan to handle on its own -- which fails to attach it to anything,
+    // the safe direction for an input this synthetic (no real chapter is spoken this
+    // way). What matters is that the wrong "Psalms 10:4" (the pre-fix value, which
+    // erroneously folds the boundary zero AND grabs the verse) does not appear.
+    assert_eq!(
+        detect("psalm zero zero zero zero one zero verse four"),
+        vec!["Psalms 1"]
+    );
+}
+
+// ---- The boundary-then-number lookahead must not fire on "oh" (review, round 2: Sana
+// Medium, independently confirmed by Quinn) ----
+//
+// Combining the internal-zero-via-digit-follow rule with the internal-zero-via-boundary
+// rule created a gap neither rule alone had: an interjection "oh" landing immediately
+// before "verse"/"chapter" + a number got retroactively reclassified as a digit, because
+// the boundary branch didn't check WHICH zero-word (`"zero"` or `"oh"`) triggered it --
+// only that `digit_word` mapped it to 0. Restricted to literal `"zero"`; a genuine
+// digit-by-digit "oh" is unaffected because it always reaches the OTHER branch
+// (`followed_by_digit`, directly followed by another digit word), never this one.
+
+#[test]
+fn interjection_oh_before_verse_is_not_reclassified_as_a_digit() {
+    assert_eq!(
+        detect("john three oh verse sixteen"),
+        vec!["John 3"],
+        "before this fix this produced \"John 30:16\""
+    );
+}
+
+#[test]
+fn interjection_oh_before_chapter_is_not_reclassified_as_a_digit() {
+    assert_eq!(
+        detect("psalm eight oh chapter three tells us more"),
+        vec!["Psalms 8"],
+        "before this fix this produced \"Psalms 80:3\""
+    );
+}
+
+#[test]
+fn self_correction_oh_after_a_completed_fold_degrades_to_the_chapter_alone() {
+    // The flagship case: citing then re-reading a digit-by-digit psalm, with a spoken
+    // self-correction ("Psalm one-oh-three... oh, verse four.") immediately after. This
+    // degrades safely to the correct chapter with the verse dropped -- base-equivalent
+    // in direction (a missed verse, not a wrong one) -- rather than the wrong
+    // "Psalms 1030:4" a shared zero/oh boundary rule would have produced.
+    assert_eq!(
+        detect("psalm one zero three oh verse four"),
+        vec!["Psalms 103"],
+        "before this fix this produced \"Psalms 1030:4\""
+    );
+}
+
+// ---- Finding 1 (Cody, High): a digit-by-digit verse ending in zero must also be
+// rescued, not just a chapter -- rule 3 alone could structurally never rescue a verse's
+// trailing zero, since nothing ever follows the last number in a citation for a
+// "boundary word + number" check to find. ----
+
+#[test]
+fn a_digit_by_digit_verse_ending_in_zero_completes_at_end_of_input() {
+    assert_eq!(
+        detect("first corinthians one zero verse one zero"),
+        vec!["1 Corinthians 10:10"],
+        "before this fix this produced \"1 Corinthians 10:1\""
+    );
+}
+
+#[test]
+fn a_digit_by_digit_verse_ending_in_zero_after_a_correct_chapter() {
+    assert_eq!(
+        detect("psalm one zero three verse one zero"),
+        vec!["Psalms 103:10"],
+        "before this fix the chapter was already correct but the verse was wrong: \"Psalms 103:1\""
+    );
+}
+
+#[test]
+fn a_digit_by_digit_verse_ending_in_zero_third_case() {
+    assert_eq!(
+        detect("romans one zero verse two zero"),
+        vec!["Romans 10:20"],
+        "before this fix this produced \"Romans 10:2\""
+    );
+}
+
+// ---- Finding 2 (Cody, Medium-High): the boundary-then-number lookahead must recognise
+// a number that itself starts with a spoken zero/oh, not just plain cardinal numbers --
+// `take_number` alone can't see "zero"/"oh" (`classify` has no entry for them), so it
+// wrongly reported "no number after verse" and withdrew an otherwise-correct chapter
+// rescue. ----
+
+#[test]
+fn boundary_lookahead_recognises_a_verse_that_itself_starts_with_zero() {
+    assert_eq!(
+        detect("psalm one zero verse zero four"),
+        vec!["Psalms 10:4"],
+        "before this fix this produced \"Psalms 1\" -- chapter AND verse both lost"
+    );
+}
+
+#[test]
+fn boundary_lookahead_recognises_a_verse_that_itself_starts_with_oh() {
+    assert_eq!(
+        detect("first corinthians one zero verse oh five"),
+        vec!["1 Corinthians 10:5"],
+        "before this fix this produced \"1 Corinthians 1\""
+    );
+}
+
+// ---- Safety checks: the end-of-input rule must not reopen the interjection/idiom risk
+// merely because it happens to sit after a "verse" marker -- these all have MORE speech
+// following the zero/oh, so end-of-input does not apply and they must stay excluded
+// exactly like their chapter-position counterparts. ----
+
+#[test]
+fn oh_in_verse_position_with_trailing_speech_is_still_not_folded() {
+    assert_eq!(
+        detect("psalm eight verse three oh my goodness"),
+        vec!["Psalms 8:3"]
+    );
+}
+
+#[test]
+fn zero_tolerance_idiom_in_verse_position_is_still_not_folded() {
+    assert_eq!(
+        detect("psalm eight verse three zero tolerance for that sin"),
+        vec!["Psalms 8:3"]
+    );
+}
+
+#[test]
+fn fold_before_strip_also_fixes_a_pre_existing_cardinal_boundary_bug() {
+    // Unfiled, found independently by two reviewers (Sana, Cody): the fold-before-
+    // filler-drop reorder (86akd8jzg) fixes this same class of bug for `take_number`'s
+    // cardinal grammar too, not just `take_digit_run`. Before this PR, "chapter"/
+    // "verse" were stripped BEFORE folding, so `take_number` had no way to see the
+    // boundary either -- base (162bcd8) `detect("psalm one hundred verse three")`
+    // returns `["Psalms 103"]`, wrongly fusing the chapter and verse across the removed
+    // "verse" the same way the reported bug fused digit-by-digit numbers. This is a
+    // real behavioural improvement beyond this ticket's original scope; recorded here as
+    // a deliberate decision rather than an accident a future change could "fix" back.
+    assert_eq!(
+        detect("psalm one hundred verse three"),
+        vec!["Psalms 100:3"]
     );
 }
