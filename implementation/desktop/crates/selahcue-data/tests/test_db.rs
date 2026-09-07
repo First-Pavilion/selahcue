@@ -24,8 +24,10 @@ fn schema_version_is_pinned() {
     // v16 = deck table (authored slide-deck library, Design 2.0 node 329:124);
     // v17 = media_asset table (media library, Design 2.0 node 329:124);
     // v18 = plan_item.content_ref (linked scripture/deck/media, ADR-0020 follow-up);
-    // v19 = providers_setting table (Providers & Privacy settings + consent, node 338:124).
-    assert_eq!(migrations::target_version(), 19);
+    // v19 = providers_setting table (Providers & Privacy settings + consent, node 338:124);
+    // v20 = transcript + transcript_segment + transcript_correction + detection +
+    // transcript_setting tables (86ajtxzrn; FR-130/153/154/137/082).
+    assert_eq!(migrations::target_version(), 20);
 }
 
 #[test]
@@ -46,6 +48,11 @@ fn a_pre_saved_theme_database_upgrades_and_gains_the_saved_theme_table() {
              DROP TABLE deck;
              DROP TABLE media_asset;
              DROP TABLE providers_setting;
+             DROP TABLE detection;
+             DROP TABLE transcript_correction;
+             DROP TABLE transcript_segment;
+             DROP TABLE transcript;
+             DROP TABLE transcript_setting;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 10;",
         )
@@ -86,6 +93,11 @@ fn a_pre_screen_theme_database_upgrades_and_gains_the_screen_theme_table() {
              DROP TABLE deck;
              DROP TABLE media_asset;
              DROP TABLE providers_setting;
+             DROP TABLE detection;
+             DROP TABLE transcript_correction;
+             DROP TABLE transcript_segment;
+             DROP TABLE transcript;
+             DROP TABLE transcript_setting;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 11;",
         )
@@ -126,6 +138,11 @@ fn a_pre_registry_database_upgrades_and_gains_the_screen_table() {
              DROP TABLE deck;
              DROP TABLE media_asset;
              DROP TABLE providers_setting;
+             DROP TABLE detection;
+             DROP TABLE transcript_correction;
+             DROP TABLE transcript_segment;
+             DROP TABLE transcript;
+             DROP TABLE transcript_setting;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 12;",
         )
@@ -172,6 +189,11 @@ fn a_pre_per_item_theme_database_upgrades_and_gains_the_plan_item_theme_column()
              DROP TABLE deck;
              DROP TABLE media_asset;
              DROP TABLE providers_setting;
+             DROP TABLE detection;
+             DROP TABLE transcript_correction;
+             DROP TABLE transcript_segment;
+             DROP TABLE transcript;
+             DROP TABLE transcript_setting;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 9;",
         )
@@ -215,6 +237,11 @@ fn a_pre_theme_database_upgrades_and_gains_the_theme_columns() {
              DROP TABLE deck;
              DROP TABLE media_asset;
              DROP TABLE providers_setting;
+             DROP TABLE detection;
+             DROP TABLE transcript_correction;
+             DROP TABLE transcript_segment;
+             DROP TABLE transcript;
+             DROP TABLE transcript_setting;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 7;",
         )

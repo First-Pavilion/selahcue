@@ -11,6 +11,8 @@
 //! - [`plan_repo`] — [`selahcue_core::plan::ServicePlan`] persistence (FR-001/002).
 //! - [`deck_repo`] — authored slide-deck library persistence (Design 2.0 node 329:124).
 //! - [`media_repo`] — [`selahcue_core::media::MediaLibrary`] persistence (Design 2.0 node 329:124).
+//! - [`transcript_repo`] — transcript, segment, correction, and detection persistence +
+//!   configurable retention (86ajtxzrn; FR-130/153/154/137/082).
 //!
 //! At-rest encryption (FR-154) is behind the `encryption` feature: it compiles
 //! SQLCipher and exposes [`EncryptionKey`] plus [`Database::open_encrypted`].
@@ -32,6 +34,7 @@ pub mod screen_config_repo;
 pub mod screen_repo;
 pub mod screen_theme_repo;
 pub mod session_repo;
+pub mod transcript_repo;
 
 pub use db::Database;
 pub use error::{DataError, Result};

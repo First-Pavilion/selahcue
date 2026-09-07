@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_core::plan::{ItemKind, ServicePlan};
+use selahcue_data::transcript_repo::{self, NewTranscript};
 use selahcue_data::{plan_repo, Database, EncryptionKey};
 
 fn key_a() -> EncryptionKey {
@@ -115,6 +116,56 @@ fn plain_open_of_encrypted_db_fails() {
     assert!(
         Database::open(file.path()).is_err(),
         "an unkeyed open of an encrypted database must fail"
+    );
+}
+
+#[test]
+fn encrypted_transcript_round_trips_and_leaves_no_plaintext_on_disk() {
+    // FR-154 for the new transcript/segment/detection tables (86ajtxzrn): no per-table
+    // wiring exists or is needed — the whole database file is keyed before migrations
+    // run, so this table is encrypted at rest exactly like `service_plan` above.
+    const MARKER: &str = "PLAINTEXT_MARKER_Habakkuk_Woe_Oracle_Sermon_Transcript";
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let (transcript_id, seg_id) = {
+        let db = Database::open_encrypted(file.path(), &key_a()).unwrap();
+        let transcript_id = transcript_repo::create(
+            &db,
+            &NewTranscript {
+                label: MARKER.to_string(),
+                provider: "manual".into(),
+                plan_id: None,
+                started_at_ms: 0,
+            },
+        )
+        .unwrap();
+        let seg_id = transcript_repo::append_segment(&db, transcript_id, 0, 1000, MARKER).unwrap();
+        transcript_repo::append_detection(&db, transcript_id, Some(seg_id), MARKER, 90).unwrap();
+        db.checkpoint_truncate().unwrap();
+        (transcript_id, seg_id)
+    };
+
+    // Reopening with the correct key returns the data intact.
+    let db = Database::open_encrypted(file.path(), &key_a()).unwrap();
+    db.integrity_check().unwrap();
+    let detail = transcript_repo::load(&db, transcript_id).unwrap();
+    assert_eq!(detail.label, MARKER);
+    assert_eq!(detail.segments.len(), 1);
+    assert_eq!(detail.segments[0].text, MARKER);
+    assert_eq!(detail.detections.len(), 1);
+    assert_eq!(detail.detections[0].reference, MARKER);
+    assert_eq!(detail.detections[0].source_segment, seg_id as u64);
+    drop(db);
+
+    // The raw file must not contain the plaintext marker anywhere — label, segment
+    // text, and detection reference all carry it, so this exercises every new column.
+    let bytes = std::fs::read(file.path()).unwrap();
+    assert!(
+        !contains(&bytes, MARKER.as_bytes()),
+        "transcript/detection plaintext leaked into the encrypted database file"
+    );
+    assert!(
+        !bytes.starts_with(b"SQLite format 3\0"),
+        "database header is not encrypted"
     );
 }
 
