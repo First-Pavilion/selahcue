@@ -113,19 +113,40 @@ pub struct TranscriptDetail {
 /// flat key/value set (`transcript_setting`, mirroring `providers_setting`) rather
 /// than typed columns, so a further open question resolves to a new key, never a new
 /// migration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetentionSettings {
     /// Days after which a transcript becomes eligible for automatic deletion via
     /// [`purge_expired`]. `None` = kept indefinitely — FR-153's current provisional
     /// default; this ticket does not change it (see 86ajtxzrn's open questions).
     pub retention_days: Option<u32>,
-    /// Whether deleting a transcript should also delete notes generated from it.
-    /// 86akcffy0 (note generation) is not built yet, so this flag is currently inert
-    /// — reading it is a no-op until a notes table exists to consult it. Defaults to
-    /// `false` (notes outlive their source) as the conservative, non-destructive
-    /// placeholder pending the product/legal answer; this is not this ticket's
-    /// decision to make final.
+    /// Whether deleting a transcript should also delete the sermon-note draft
+    /// generated from it. Enforced by [`delete`] and [`purge_expired`], which
+    /// explicitly remove the matching `sermon_note` row (via
+    /// `sermon_note_repo::delete_for_transcript`) inside the same transaction as the
+    /// transcript delete, BEFORE it happens, whenever this is `true` — the schema's
+    /// own `sermon_note.transcript_id ON DELETE SET NULL` is only the fallback floor
+    /// for `false` (detach, don't delete).
+    ///
+    /// **Default is `true` (cascade) as of 86akgqdv0** — this is a PROPOSAL this
+    /// ticket implements against, not a settled product decision, and it reverses
+    /// 86ajtxzrn's placeholder `false`. Rationale: an AI-generated artifact derived
+    /// from congregation speech shouldn't outlive the source once someone has asked
+    /// for that speech to be deleted. Flagged explicitly in 86akgqdv0's PR/ClickUp
+    /// comment as needing the product owner's explicit sign-off before merge — the
+    /// same pattern 86ajtxzrn used for its own open questions (this field included,
+    /// at the time it was only inert scaffolding). The seam stays fully live either
+    /// way: an explicit `save_retention_settings` call with `delete_cascade_to_notes:
+    /// false` restores the non-destructive behaviour with no migration required.
     pub delete_cascade_to_notes: bool,
+}
+
+impl Default for RetentionSettings {
+    fn default() -> Self {
+        RetentionSettings {
+            retention_days: None,
+            delete_cascade_to_notes: true,
+        }
+    }
 }
 
 const KEY_RETENTION_DAYS: &str = "retention_days";
@@ -385,20 +406,44 @@ pub fn load(db: &Database, transcript_id: i64) -> Result<TranscriptDetail> {
 }
 
 /// Delete a transcript and everything derived from it — segments, corrections, and
-/// detections — together, in one statement (FK `ON DELETE CASCADE`, FR-153). Whether
-/// this should also delete generated notes is the open deletion-cascade question
-/// (86ajtxzrn); there is no notes table yet, so nothing here decides it — the future
-/// integration point is [`RetentionSettings::delete_cascade_to_notes`], read by
-/// whichever future ticket adds the notes table and its FK. `NotFound` if no such
-/// transcript.
+/// detections — together, in one statement (FK `ON DELETE CASCADE`, FR-153).
+/// `NotFound` if no such transcript.
+///
+/// Whether this also deletes the transcript's generated sermon-note draft (added by
+/// 86akgqdv0) is read from [`RetentionSettings::delete_cascade_to_notes`]: when
+/// `true` (the current PROPOSED default — see that field's doc comment), the
+/// `sermon_note` row is deleted explicitly, inside the same transaction as the
+/// transcript delete and BEFORE it, so the schema's own `ON DELETE SET NULL` floor
+/// (detach, don't delete) never gets a chance to apply. When `false`, nothing extra
+/// happens here and that floor is exactly what fires: the note survives with
+/// `transcript_id = NULL`.
+///
+/// The `DELETE FROM sermon_note` below is deliberately inline raw SQL rather than a
+/// call into `sermon_note_repo` — that module's functions take `&Database` (they
+/// open their own implicit transaction per call), and this cascade must run inside
+/// the SAME transaction as the transcript delete, which a `&Database`-shaped API
+/// cannot participate in. `sermon_note_repo::delete_for_transcript` remains the
+/// canonical row-level API for every other caller.
 pub fn delete(db: &Database, transcript_id: i64) -> Result<()> {
-    let n = db.conn().execute(
+    let settings = load_retention_settings(db)?;
+    let tx = db.conn().unchecked_transaction()?;
+    if settings.delete_cascade_to_notes {
+        tx.execute(
+            "DELETE FROM sermon_note WHERE transcript_id = ?1",
+            params![transcript_id],
+        )?;
+    }
+    let n = tx.execute(
         "DELETE FROM transcript WHERE id = ?1",
         params![transcript_id],
     )?;
     if n == 0 {
+        // Dropping `tx` without committing rolls back (rusqlite's `Drop` impl) — the
+        // cascade delete above, if it ran, is undone too, so "no such transcript" is
+        // still a true no-op even when cascade is on.
         return Err(DataError::NotFound);
     }
+    tx.commit()?;
     // Best-effort: try to keep the just-deleted text from lingering in the `-wal`
     // sidecar (FR-153; PR #30 review, Sana F6). Bounded to near-zero wait via a
     // scoped `busy_timeout = 0` (PR #30 review, Vera F5) — it cannot meaningfully
@@ -524,6 +569,15 @@ pub fn purge_expired(db: &Database, now_ms: i64) -> Result<Vec<i64>> {
         .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(stmt);
     for id in &ids {
+        // Same cascade decision as `delete` — see its doc comment. Deleting the note
+        // first, in the same transaction, means an interrupted purge cannot leave a
+        // transcript gone with its note still pointing at a live cascade-eligible id.
+        if settings.delete_cascade_to_notes {
+            tx.execute(
+                "DELETE FROM sermon_note WHERE transcript_id = ?1",
+                params![id],
+            )?;
+        }
         tx.execute("DELETE FROM transcript WHERE id = ?1", params![id])?;
     }
     tx.commit()?;

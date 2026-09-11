@@ -259,9 +259,14 @@ const MIGRATIONS: &[&str] = &[
     // ticket's acceptance criterion), and every open product/legal question 86ajtxzrn leaves
     // unresolved (the FR-153 retention-days default, the delete-cascade-to-notes flag once
     // notes exist, a future consent/administrator-scope key) is answerable by adding a KEY,
-    // never a further migration. An absent key reads back as the safe placeholder default
-    // (kept indefinitely; notes are not cascade-deleted) via `transcript_repo`, exactly as
-    // `providers_repo::load` falls back to `ProvidersConfig::default()` for an empty store.
+    // never a further migration. An absent key reads back as the placeholder default via
+    // `transcript_repo`, exactly as `providers_repo::load` falls back to
+    // `ProvidersConfig::default()` for an empty store — at the time this migration shipped
+    // that default was "kept indefinitely; notes are not cascade-deleted" (notes did not
+    // exist yet); 86akgqdv0, which added the `sermon_note` table (v20 -> v21 below), PROPOSED
+    // and implemented flipping the notes-cascade half to `true` by default — see
+    // `RetentionSettings::delete_cascade_to_notes`'s doc comment for the current default and
+    // why it is a proposal pending product sign-off, not a settled decision.
     // FR-137 "Administrator-gated" enforcement (who may change this setting) is a command/
     // RBAC-layer concern per the existing precedent for provider consent (see
     // `selahcue-core::providers` — "Administrator-gated at the command layer" — and
@@ -321,6 +326,67 @@ const MIGRATIONS: &[&str] = &[
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );
+    "#,
+    // v20 -> v21: persist generated sermon-note drafts so they survive past the
+    // confirm-and-generate dialog, and let the operator edit them afterward
+    // (86akgqdv0; FR-123 "editable" half — generation + labelling + the untouched-
+    // transcript invariant shipped already in 86akby7d8/PR #19).
+    //
+    // One editable draft per transcript: `transcript_id` is UNIQUE. Regenerating a
+    // draft and retaining a prior version (FR-129, 86akgqdx8) is explicitly out of
+    // this ticket's scope — `sermon_note_repo::create` upserts (replaces) the single
+    // row for a transcript rather than keeping history, which is a deliberate
+    // interim behaviour, not an oversight, pending FR-129.
+    //
+    // `sections` and `scriptures` are opaque JSON TEXT, not normalized child tables —
+    // the same "dumb store" shape as `deck.deck_json` (see `deck_repo`): the data
+    // layer round-trips whatever the caller hands it without knowing its shape.
+    // `selahcue-core` stays dependency-free (no serde here either), so the JSON
+    // encode/decode of `NoteSection`'s items-XOR-points shape (FR-122) lives in
+    // `selahcue-operator`, which already depends on `serde_json` for the wire to the
+    // JS UI (`draft_json()`) — never in this crate or in core.
+    //
+    // `ai_generated`/`disclosure`/`provider`/`model` are set ONLY at create time (from
+    // the generating `GenerationOutcome`) and are never touched by
+    // `sermon_note_repo::update` — editing a draft's text must never silently drop
+    // the FR-123 label or the FR-128 fabrication disclosure. `disclosure` is
+    // nullable because it is `None` exactly when `ai_generated` is false (the FR-135
+    // offline-fallback scaffold), mirroring `GenerationOutcome::disclosure`'s own
+    // invariant. `model` is nullable and, at the one call site wired by this ticket,
+    // always NULL today: no `NoteProvider` implementation currently exposes a model
+    // identifier through `GenerationOutcome` (only a human-readable `provider_label`)
+    // — the column exists for a future provider that can report one, not invented
+    // data.
+    //
+    // `transcript_id` is NULLABLE with `ON DELETE SET NULL` as the schema-level
+    // FLOOR behaviour: on its own, deleting a transcript detaches its note (the note
+    // survives, non-destructively) rather than losing it. Whether a transcript
+    // delete instead CASCADES to remove its notes is governed by the existing
+    // `transcript_setting` key `delete_cascade_to_notes` — added empty/inert by
+    // 86ajtxzrn in anticipation of exactly this ticket — and is enforced by
+    // `transcript_repo::delete`/`purge_expired` EXPLICITLY deleting the matching
+    // `sermon_note` row inside the same transaction, BEFORE the transcript row goes
+    // away, whenever that setting is on. This keeps the cascade answer a runtime
+    // setting, not a schema decision baked into the FK — the exact seam 86ajtxzrn
+    // left open, so the answer can change without a second migration. See
+    // `transcript_repo::RetentionSettings::delete_cascade_to_notes`'s doc comment for
+    // this ticket's PROPOSED (not yet product-signed-off) default.
+    r#"
+    CREATE TABLE sermon_note (
+        id            INTEGER PRIMARY KEY,
+        transcript_id INTEGER UNIQUE REFERENCES transcript(id) ON DELETE SET NULL,
+        title         TEXT    NOT NULL,
+        summary       TEXT,
+        sections      TEXT    NOT NULL,
+        scriptures    TEXT    NOT NULL,
+        ai_generated  INTEGER NOT NULL,
+        disclosure    TEXT,
+        provider      TEXT    NOT NULL,
+        model         TEXT,
+        created_at    INTEGER NOT NULL,
+        edited_at     INTEGER NOT NULL
+    );
+    CREATE INDEX idx_sermon_note_transcript ON sermon_note(transcript_id);
     "#,
 ];
 

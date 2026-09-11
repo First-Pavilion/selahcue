@@ -3843,6 +3843,241 @@ fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
     })
 }
 
+// ---------------------------------------------------------------------------------
+// Sermon-note draft persistence (86akgqdv0; FR-123 "editable" half).
+//
+// `selahcue-core` and `selahcue-data` stay dependency-free / dumb-store respectively
+// (see the v20->v21 migration comment in `selahcue-data/src/migrations.rs`), so the
+// JSON codec for `NoteSection`'s items-XOR-points shape (FR-122) lives here — the
+// operator already depends on `serde_json` for the wire to the JS UI.
+// ---------------------------------------------------------------------------------
+
+fn sections_to_json(sections: &[selahcue_core::providers::NoteSection]) -> String {
+    let v: Vec<serde_json::Value> = sections
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "heading": s.heading,
+                "items": s.items(),
+                "points": s.points().iter().map(|p| serde_json::json!({
+                    "text": p.text, "sub_points": p.sub_points,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn scriptures_to_json(scriptures: &[String]) -> String {
+    serde_json::to_string(scriptures).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Parse a persisted `sections`/`scriptures` JSON column back into a `Value` for the
+/// wire to JS. Both columns are written exclusively by [`sections_to_json`]/
+/// [`scriptures_to_json`] above (or, for a freshly generated draft, the equivalent
+/// shape `draft_json` already produces), so a parse failure here means the stored
+/// value is corrupt — fall back to an empty array rather than fail the whole load,
+/// mirroring `media_repo::load_all`'s "an unrecognised row degrades, it does not
+/// take down the read" precedent.
+fn parse_json_column(s: &str) -> serde_json::Value {
+    serde_json::from_str(s).unwrap_or_else(|_| serde_json::Value::Array(Vec::new()))
+}
+
+/// One outline point as submitted by the edit surface — mirrors
+/// `selahcue_core::providers::NotePoint` field-for-field so deserialization doubles
+/// as the shape check (a malformed edit fails HERE, at the Tauri IPC boundary,
+/// before ever reaching `sermon_note_repo::update`).
+#[derive(serde::Deserialize)]
+struct NotePointInput {
+    text: String,
+    #[serde(default)]
+    sub_points: Vec<String>,
+}
+
+/// One section as submitted by the edit surface. `items`/`points` are not mutually
+/// exclusive at the wire level (unlike `NoteSection`'s private-fields invariant) —
+/// [`sections_from_input`] resolves that: a section with any `points` is treated as
+/// an outline (its `items` are ignored), matching `NoteSection::is_outline`'s own
+/// "points present" test, so a round-tripped section can never silently flip shape.
+#[derive(serde::Deserialize)]
+struct NoteSectionInput {
+    heading: String,
+    #[serde(default)]
+    items: Vec<String>,
+    #[serde(default)]
+    points: Vec<NotePointInput>,
+}
+
+fn sections_from_input(input: Vec<NoteSectionInput>) -> Vec<selahcue_core::providers::NoteSection> {
+    use selahcue_core::providers::{NotePoint, NoteSection};
+    input
+        .into_iter()
+        .map(|s| {
+            if s.points.is_empty() {
+                NoteSection::flat(s.heading, s.items)
+            } else {
+                NoteSection::outline(
+                    s.heading,
+                    s.points
+                        .into_iter()
+                        .map(|p| NotePoint {
+                            text: p.text,
+                            sub_points: p.sub_points,
+                        })
+                        .collect(),
+                )
+            }
+        })
+        .collect()
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// The transcript a save-on-generate / load-persisted-draft call should target.
+///
+/// **Working assumption (86akgqdv0, flagged for reviewer scrutiny — see the ticket's
+/// PR description):** the operator has no channel carrying a transcript's row id
+/// today — the LAN control link exposes only the finalized transcript TEXT
+/// (`window.scCompletedTranscript` in `dist/settings.js`, sourced from the host's
+/// `OperatorView.transcript`), never an id. `transcript_id` exists only in
+/// `selahcue-data`/`selahcue-app`/`selahcue-desktop`. So "the transcript this
+/// generate/edit call is about" is resolved as the MOST RECENTLY STARTED row —
+/// correct for a single-active-session desktop app, where the live-confirm-dialog
+/// flow only ever generates from the session currently (or just) being recorded.
+/// A future ticket that lets the operator address a specific transcript id directly
+/// (86akgqdxr's Transcripts viewer, or 86akcffy0's "generate from a selected stored
+/// transcript") can pass one through explicitly instead of relying on this
+/// heuristic.
+fn most_recent_transcript_id(db: &selahcue_data::Database) -> Option<i64> {
+    selahcue_data::transcript_repo::list(db)
+        .ok()?
+        .into_iter()
+        .next()
+        .map(|t| t.id)
+}
+
+/// Build the wire JSON for a persisted draft, in the same shape `generate_sermon_notes`
+/// already returns under `"draft"` — so the JS render path is identical whether the
+/// draft just arrived from a live generation or was loaded back from disk on panel
+/// activation.
+fn sermon_note_json(r: &selahcue_data::sermon_note_repo::SermonNoteRecord) -> serde_json::Value {
+    serde_json::json!({
+        "title": r.title,
+        "summary": r.summary,
+        "sections": parse_json_column(&r.sections_json),
+        "scriptures": parse_json_column(&r.scriptures_json),
+    })
+}
+
+#[cfg(test)]
+mod sermon_note_codec_tests {
+    use super::*;
+    use selahcue_core::providers::{NotePoint, NoteSection};
+
+    #[test]
+    fn sections_to_json_round_trips_through_sections_from_input() {
+        // FR-122: both shapes in the same round trip — a flat section and an outline section
+        // with a sub-point — so neither path is only exercised on its own.
+        let original = vec![
+            NoteSection::flat("Prayer points", vec!["Thank God".to_string()]),
+            NoteSection::outline(
+                "Main points",
+                vec![NotePoint {
+                    text: "Be faithful".to_string(),
+                    sub_points: vec!["In little".to_string(), "In much".to_string()],
+                }],
+            ),
+        ];
+        let json = sections_to_json(&original);
+
+        // Round-trip through the SAME deserialization the Tauri IPC boundary uses for an edit
+        // submission (`NoteSectionInput`), proving `sections_to_json`'s output is exactly what
+        // `sections_from_input` (fed from JS) can read back.
+        let input: Vec<NoteSectionInput> =
+            serde_json::from_str(&json).expect("sections_to_json must produce valid JSON");
+        let rebuilt = sections_from_input(input);
+
+        assert_eq!(rebuilt.len(), 2);
+        assert_eq!(rebuilt[0].heading, "Prayer points");
+        assert_eq!(rebuilt[0].items(), ["Thank God".to_string()]);
+        assert!(rebuilt[0].points().is_empty());
+        assert_eq!(rebuilt[1].heading, "Main points");
+        assert!(rebuilt[1].items().is_empty());
+        assert_eq!(rebuilt[1].points()[0].text, "Be faithful");
+        assert_eq!(
+            rebuilt[1].points()[0].sub_points,
+            vec!["In little".to_string(), "In much".to_string()]
+        );
+    }
+
+    #[test]
+    fn sections_from_input_treats_any_points_as_outline_even_with_items_present() {
+        // A section with BOTH `items` and `points` populated is a shape `NoteSection`'s own
+        // constructors cannot express (see its "exactly one of these is populated" invariant) —
+        // this pins which one wins when a caller (a hand-crafted or buggy JS payload) sends both:
+        // points wins, items are dropped, mirroring `NoteSection::is_outline`'s own "points
+        // present" test, so a round-tripped section can never silently flip shape.
+        let input = vec![NoteSectionInput {
+            heading: "Mixed".to_string(),
+            items: vec!["should be ignored".to_string()],
+            points: vec![NotePointInput {
+                text: "wins".to_string(),
+                sub_points: vec![],
+            }],
+        }];
+        let sections = sections_from_input(input);
+        assert!(sections[0].is_outline());
+        assert_eq!(sections[0].points()[0].text, "wins");
+        assert!(sections[0].items().is_empty());
+    }
+
+    #[test]
+    fn scriptures_to_json_round_trips() {
+        let refs = vec!["John 3:16".to_string(), "Luke 16:10".to_string()];
+        let json = scriptures_to_json(&refs);
+        let back: Vec<String> =
+            serde_json::from_str(&json).expect("scriptures_to_json must produce valid JSON");
+        assert_eq!(back, refs);
+    }
+
+    #[test]
+    fn parse_json_column_degrades_to_an_empty_array_on_corrupt_stored_json() {
+        // A `sections`/`scriptures` column is written exclusively by this module's own encoders
+        // (see the function's doc comment) — a parse failure here means the stored value is
+        // corrupt. This must degrade the ONE field, not fail the whole draft load.
+        let v = parse_json_column("{not valid json");
+        assert_eq!(v, serde_json::Value::Array(Vec::new()));
+    }
+
+    #[test]
+    fn sermon_note_json_reads_the_persisted_columns_back_into_the_wire_shape() {
+        let record = selahcue_data::sermon_note_repo::SermonNoteRecord {
+            id: 1,
+            transcript_id: Some(7),
+            title: "A Title".to_string(),
+            summary: Some("A summary".to_string()),
+            sections_json: r#"[{"heading":"H","items":["i"],"points":[]}]"#.to_string(),
+            scriptures_json: r#"["Gen 1:1"]"#.to_string(),
+            ai_generated: true,
+            disclosure: Some("disc".to_string()),
+            provider: "SelahCue AI".to_string(),
+            model: None,
+            created_at_ms: 1,
+            edited_at_ms: 2,
+        };
+        let json = sermon_note_json(&record);
+        assert_eq!(json["title"], "A Title");
+        assert_eq!(json["summary"], "A summary");
+        assert_eq!(json["sections"][0]["heading"], "H");
+        assert_eq!(json["scriptures"][0], "Gen 1:1");
+    }
+}
+
 /// Run note generation with consent gating + graceful fallback. In a `cloud-live` build with a
 /// configured base URL + stored token it calls the real SelahCue service; otherwise it still
 /// honours the consent gate and then reports the honest "not configured" state (no live transport).
@@ -3976,32 +4211,166 @@ async fn generate_sermon_notes(
             .clone()
     };
     match run_note_generation(cfg, transcript, &state).await {
-        Ok(outcome) => Ok(serde_json::json!({
-            "ok": true,
-            "degraded": outcome.degraded,
-            "provider": outcome.provider_label,
-            // FR-123 / FR-128. `ai_generated` comes from the provider that actually SERVED the
-            // draft, so a degraded outcome from the offline scaffold is not mislabelled as model
-            // output; `disclosure` is Some exactly when `ai_generated`, so the warning cannot be
-            // separated from the thing it warns about.
-            "ai_generated": outcome.ai_generated,
-            "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
-            "disclosure": outcome.disclosure,
-            // FR-135. A degraded outcome carries its OWN notice. The fabrication disclosure does
-            // not apply to the offline scaffold — it invents nothing — but the operator asked for
-            // AI notes and did not get them, and a scaffold shown in silence reads as though it
-            // were the notes they asked for. `degraded_notice` is Some exactly when `degraded`.
-            "degraded_notice": outcome.degraded
-                .then_some(selahcue_core::providers::DEGRADED_FALLBACK_NOTICE),
-            "draft": draft_json(&outcome.draft),
-            "quota": outcome.quota.map(|q| serde_json::json!({
-                "used": q.used, "limit": q.limit, "remaining": q.remaining(), "resets_label": q.resets_label,
-            })),
-        })),
+        Ok(outcome) => {
+            // Save-on-generate (86akgqdv0; FR-123 "editable" half): persist the draft
+            // against its source transcript, best-effort — a persistence failure must
+            // never block returning the draft to the UI, mirroring `with_providers`'s
+            // "Persistence failure never blocks the edit" contract. See
+            // `most_recent_transcript_id`'s doc comment for the transcript-resolution
+            // heuristic this depends on.
+            let transcript_id = state.providers_db.as_ref().and_then(|db| {
+                let db = db.lock().ok()?;
+                let transcript_id = most_recent_transcript_id(&db)?;
+                let note = selahcue_data::sermon_note_repo::NewSermonNote {
+                    transcript_id,
+                    title: outcome.draft.title.clone(),
+                    summary: outcome.draft.summary.clone(),
+                    sections_json: sections_to_json(&outcome.draft.sections),
+                    scriptures_json: scriptures_to_json(&outcome.draft.scriptures),
+                    ai_generated: outcome.ai_generated,
+                    disclosure: outcome.disclosure.map(str::to_string),
+                    provider: outcome.provider_label.clone(),
+                    // No `NoteProvider` implementation exposes a model id through
+                    // `GenerationOutcome` today — see the migration comment for why
+                    // this is honestly `None`, not invented data.
+                    model: None,
+                    created_at_ms: now_ms(),
+                };
+                match selahcue_data::sermon_note_repo::create(&db, &note) {
+                    Ok(_) => Some(transcript_id),
+                    Err(e) => {
+                        eprintln!("selahcue-operator: failed to persist sermon-note draft: {e}");
+                        None
+                    }
+                }
+            });
+            Ok(serde_json::json!({
+                "ok": true,
+                "degraded": outcome.degraded,
+                "provider": outcome.provider_label,
+                // FR-123 / FR-128. `ai_generated` comes from the provider that actually SERVED the
+                // draft, so a degraded outcome from the offline scaffold is not mislabelled as model
+                // output; `disclosure` is Some exactly when `ai_generated`, so the warning cannot be
+                // separated from the thing it warns about.
+                "ai_generated": outcome.ai_generated,
+                "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
+                "disclosure": outcome.disclosure,
+                // FR-135. A degraded outcome carries its OWN notice. The fabrication disclosure does
+                // not apply to the offline scaffold — it invents nothing — but the operator asked for
+                // AI notes and did not get them, and a scaffold shown in silence reads as though it
+                // were the notes they asked for. `degraded_notice` is Some exactly when `degraded`.
+                "degraded_notice": outcome.degraded
+                    .then_some(selahcue_core::providers::DEGRADED_FALLBACK_NOTICE),
+                "draft": draft_json(&outcome.draft),
+                // `null` when persistence was unavailable/failed — the edit surface stays
+                // hidden in that case (nothing to key an edit off) but the draft itself is
+                // still shown, exactly like the pre-86akgqdv0 behaviour.
+                "transcript_id": transcript_id,
+                "quota": outcome.quota.map(|q| serde_json::json!({
+                    "used": q.used, "limit": q.limit, "remaining": q.remaining(), "resets_label": q.resets_label,
+                })),
+            }))
+        }
         Err(e) => Ok(serde_json::json!({
             "ok": false,
             "error": note_error_code(&e),
             "message": e.to_string(),
+        })),
+    }
+}
+
+/// Load the most recently persisted sermon-note draft, if any (86akgqdv0). Called on
+/// Settings panel activation so a draft generated in a prior session — or edited and
+/// left unread — reappears after a restart. `{"ok": false}` (not an error) when there
+/// is no persistence connection or no draft — an absent draft is a normal, common
+/// state, not a failure.
+#[tauri::command]
+async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let Some(db) = state.providers_db.as_ref() else {
+        return Ok(serde_json::json!({ "ok": false }));
+    };
+    let db = db.lock().map_err(|e| format!("providers_db lock: {e}"))?;
+    let Some(transcript_id) = most_recent_transcript_id(&db) else {
+        return Ok(serde_json::json!({ "ok": false }));
+    };
+    match selahcue_data::sermon_note_repo::find_by_transcript(&db, transcript_id) {
+        Ok(Some(record)) => Ok(serde_json::json!({
+            "ok": true,
+            "transcript_id": transcript_id,
+            "ai_generated": record.ai_generated,
+            "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
+            // FR-123/FR-128: the label and disclosure travel with the draft through a
+            // restart exactly as they did through an edit — read back verbatim from
+            // what `create` persisted, never re-derived here.
+            "disclosure": record.disclosure,
+            "provider": record.provider,
+            "draft": sermon_note_json(&record),
+        })),
+        Ok(None) => Ok(serde_json::json!({ "ok": false })),
+        Err(e) => {
+            eprintln!("selahcue-operator: failed to load sermon-note draft: {e}");
+            Ok(serde_json::json!({ "ok": false }))
+        }
+    }
+}
+
+/// Apply an operator edit to the persisted draft's title/summary/sections/scriptures
+/// (86akgqdv0). `transcript_id` is the id returned by a prior `generate_sermon_notes`
+/// or `load_sermon_note_draft` call. Touches ONLY the editable columns — the backend
+/// (`sermon_note_repo::update`) structurally cannot see or change `ai_generated`/
+/// `disclosure`/`provider`, so an edit can never silently drop the FR-123 label or
+/// FR-128 disclosure; this command's own response echoes them back unchanged so the
+/// UI never has to assume that rather than see it.
+///
+/// A malformed `sections`/`points` shape (wrong JSON types) is rejected by Tauri's
+/// own IPC deserialization before this function body ever runs. An oversized field
+/// is rejected by `sermon_note_repo::update`'s bound check, surfaced here as
+/// `"error": "too_large"`.
+#[tauri::command]
+async fn update_sermon_note_draft(
+    transcript_id: i64,
+    title: String,
+    summary: Option<String>,
+    sections: Vec<NoteSectionInput>,
+    scriptures: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let Some(db) = state.providers_db.as_ref() else {
+        return Ok(serde_json::json!({ "ok": false, "error": "unavailable",
+            "message": "No local database connection is available." }));
+    };
+    let db = db.lock().map_err(|e| format!("providers_db lock: {e}"))?;
+    let sections = sections_from_input(sections);
+    let edit = selahcue_data::sermon_note_repo::DraftEdit {
+        title,
+        summary,
+        sections_json: sections_to_json(&sections),
+        scriptures_json: scriptures_to_json(&scriptures),
+    };
+    match selahcue_data::sermon_note_repo::update(&db, transcript_id, &edit, now_ms()) {
+        Ok(()) => {
+            let record = selahcue_data::sermon_note_repo::find_by_transcript(&db, transcript_id)
+                .map_err(|e| format!("re-reading updated draft: {e}"))?
+                .ok_or_else(|| "draft vanished immediately after update".to_string())?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "transcript_id": transcript_id,
+                "ai_generated": record.ai_generated,
+                "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
+                "disclosure": record.disclosure,
+                "provider": record.provider,
+                "draft": sermon_note_json(&record),
+            }))
+        }
+        Err(selahcue_data::DataError::NotFound) => Ok(serde_json::json!({
+            "ok": false, "error": "not_found",
+            "message": "No saved draft exists for this transcript.",
+        })),
+        Err(selahcue_data::DataError::TooLarge(msg)) => Ok(serde_json::json!({
+            "ok": false, "error": "too_large", "message": msg,
+        })),
+        Err(e) => Ok(serde_json::json!({
+            "ok": false, "error": "storage_error", "message": e.to_string(),
         })),
     }
 }
@@ -4207,7 +4576,9 @@ fn main() {
             set_include_flag,
             set_account_token,
             clear_account_token,
-            generate_sermon_notes
+            generate_sermon_notes,
+            load_sermon_note_draft,
+            update_sermon_note_draft
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");

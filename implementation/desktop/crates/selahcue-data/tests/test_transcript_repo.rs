@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use rusqlite::params;
 use selahcue_core::plan::ServicePlan;
 use selahcue_core::transcript::{MAX_SEGMENT_TEXT_LEN, MAX_TRANSCRIPT_SEGMENTS};
+use selahcue_data::sermon_note_repo::{self, NewSermonNote};
 use selahcue_data::transcript_repo::{self, NewTranscript, RetentionSettings};
 use selahcue_data::{plan_repo, Database};
 
@@ -863,7 +864,147 @@ fn empty_store_loads_the_safe_placeholder_retention_defaults() {
         settings.retention_days, None,
         "kept indefinitely by default (FR-153)"
     );
-    assert!(!settings.delete_cascade_to_notes);
+    // 86akgqdv0: the notes-cascade default flipped to `true` (PROPOSED, pending
+    // product sign-off — see `RetentionSettings::delete_cascade_to_notes`'s doc
+    // comment). This assertion intentionally diverges from 86ajtxzrn's original
+    // `false` placeholder now that a `sermon_note` table exists for the flag to
+    // govern.
+    assert!(settings.delete_cascade_to_notes);
+}
+
+// --- Notes cascade-on-delete (86akgqdv0; PROPOSED default, see the field doc) -----
+
+fn sample_note(transcript_id: i64) -> NewSermonNote {
+    NewSermonNote {
+        transcript_id,
+        title: "Sunday Sermon".into(),
+        summary: Some("A short summary.".into()),
+        sections_json: r#"[{"heading":"Points","items":["one"],"points":[]}]"#.into(),
+        scriptures_json: r#"["John 3:16"]"#.into(),
+        ai_generated: true,
+        disclosure: Some("AI-generated. Check every reference.".into()),
+        provider: "SelahCue AI".into(),
+        model: None,
+        created_at_ms: 1_000,
+    }
+}
+
+#[test]
+fn deleting_a_transcript_cascade_deletes_its_note_when_the_setting_is_on() {
+    let db = db();
+    // Default is cascade-on (see above) — exercise it without an explicit save, so
+    // the test also pins the default itself, not just the explicit-opt-in path.
+    let transcript_id = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "svc".into(),
+            provider: "manual".into(),
+            plan_id: None,
+            started_at_ms: 1_000,
+        },
+    )
+    .unwrap();
+    sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+    assert!(
+        sermon_note_repo::find_by_transcript(&db, transcript_id)
+            .unwrap()
+            .is_some(),
+        "positive control: the note must actually be persisted before delete"
+    );
+
+    transcript_repo::delete(&db, transcript_id).unwrap();
+
+    assert!(
+        sermon_note_repo::find_by_transcript(&db, transcript_id)
+            .unwrap()
+            .is_none(),
+        "cascade is ON by default: the note must be gone, not merely detached"
+    );
+}
+
+#[test]
+fn deleting_a_transcript_only_detaches_its_note_when_cascade_is_off() {
+    let db = db();
+    transcript_repo::save_retention_settings(
+        &db,
+        &RetentionSettings {
+            retention_days: None,
+            delete_cascade_to_notes: false,
+        },
+    )
+    .unwrap();
+    let transcript_id = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "svc".into(),
+            provider: "manual".into(),
+            plan_id: None,
+            started_at_ms: 1_000,
+        },
+    )
+    .unwrap();
+    let note_id = sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+
+    transcript_repo::delete(&db, transcript_id).unwrap();
+
+    // The note row must still exist (not deleted) but its transcript_id must have
+    // gone to NULL (the schema's `ON DELETE SET NULL` floor) so `find_by_transcript`
+    // can no longer find it via the now-gone transcript id.
+    assert!(
+        sermon_note_repo::find_by_transcript(&db, transcript_id)
+            .unwrap()
+            .is_none(),
+        "find_by_transcript is keyed on transcript_id, which is now NULL"
+    );
+    let transcript_id_col: Option<i64> = db
+        .conn()
+        .query_row(
+            "SELECT transcript_id FROM sermon_note WHERE id = ?1",
+            params![note_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        transcript_id_col, None,
+        "cascade OFF: the note row must survive, detached (transcript_id = NULL), not be deleted"
+    );
+}
+
+#[test]
+fn purge_expired_cascade_deletes_notes_for_every_purged_transcript() {
+    let db = db();
+    const DAY_MS: i64 = 86_400_000;
+    let now = 100 * DAY_MS;
+    let transcript_id = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "old".into(),
+            provider: "manual".into(),
+            plan_id: None,
+            started_at_ms: now - 10 * DAY_MS,
+        },
+    )
+    .unwrap();
+    transcript_repo::end(&db, transcript_id, now - 9 * DAY_MS).unwrap();
+    sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+    // Default (cascade true) + a short retention window so the fixture is eligible.
+    transcript_repo::save_retention_settings(
+        &db,
+        &RetentionSettings {
+            retention_days: Some(7),
+            delete_cascade_to_notes: true,
+        },
+    )
+    .unwrap();
+
+    let purged = transcript_repo::purge_expired(&db, now).unwrap();
+    assert_eq!(purged, vec![transcript_id]);
+    assert!(
+        sermon_note_repo::find_by_transcript(&db, transcript_id)
+            .unwrap()
+            .is_none(),
+        "purge_expired must apply the same cascade decision as delete()"
+    );
 }
 
 #[test]

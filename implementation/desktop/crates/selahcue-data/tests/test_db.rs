@@ -26,8 +26,9 @@ fn schema_version_is_pinned() {
     // v18 = plan_item.content_ref (linked scripture/deck/media, ADR-0020 follow-up);
     // v19 = providers_setting table (Providers & Privacy settings + consent, node 338:124);
     // v20 = transcript + transcript_segment + transcript_correction + detection +
-    // transcript_setting tables (86ajtxzrn; FR-130/153/154/137/082).
-    assert_eq!(migrations::target_version(), 20);
+    // transcript_setting tables (86ajtxzrn; FR-130/153/154/137/082);
+    // v21 = sermon_note table (86akgqdv0; FR-123 "editable" half).
+    assert_eq!(migrations::target_version(), 21);
 }
 
 #[test]
@@ -53,6 +54,7 @@ fn a_pre_saved_theme_database_upgrades_and_gains_the_saved_theme_table() {
              DROP TABLE transcript_segment;
              DROP TABLE transcript;
              DROP TABLE transcript_setting;
+             DROP TABLE sermon_note;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 10;",
         )
@@ -98,6 +100,7 @@ fn a_pre_screen_theme_database_upgrades_and_gains_the_screen_theme_table() {
              DROP TABLE transcript_segment;
              DROP TABLE transcript;
              DROP TABLE transcript_setting;
+             DROP TABLE sermon_note;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 11;",
         )
@@ -143,6 +146,7 @@ fn a_pre_registry_database_upgrades_and_gains_the_screen_table() {
              DROP TABLE transcript_segment;
              DROP TABLE transcript;
              DROP TABLE transcript_setting;
+             DROP TABLE sermon_note;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 12;",
         )
@@ -194,6 +198,7 @@ fn a_pre_per_item_theme_database_upgrades_and_gains_the_plan_item_theme_column()
              DROP TABLE transcript_segment;
              DROP TABLE transcript;
              DROP TABLE transcript_setting;
+             DROP TABLE sermon_note;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 9;",
         )
@@ -242,6 +247,7 @@ fn a_pre_theme_database_upgrades_and_gains_the_theme_columns() {
              DROP TABLE transcript_segment;
              DROP TABLE transcript;
              DROP TABLE transcript_setting;
+             DROP TABLE sermon_note;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 7;",
         )
