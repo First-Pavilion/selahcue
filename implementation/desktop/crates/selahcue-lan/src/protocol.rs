@@ -311,6 +311,23 @@ pub enum Command {
         #[serde(default = "default_true", skip_serializing_if = "is_true")]
         is_final: bool,
     },
+    /// Open a new durable transcript session (86akcfftu): a session-boundary sibling of
+    /// [`IngestTranscript`], sent once when listening starts, so the desktop-authoritative
+    /// host (which owns the persistent transcript store) can open a transcript record with
+    /// `started_at` before segments start arriving. `label`/`provider` describe the session
+    /// for a future Transcripts list — `provider` is provider-erased free text (e.g.
+    /// `"on-device-whisper"`/`"deepgram"`), never interpreted by the wire protocol itself, so
+    /// this command needs no change when a new `TranscriptProvider` ships. Additive,
+    /// back-compatible: an older desktop that has never heard of it is out of scope (same
+    /// wire-version discipline as every other addition here); it changes no existing fixture.
+    /// Requires the `Transcribe` permission (the same one `IngestTranscript` requires).
+    StartTranscript { label: String, provider: String },
+    /// Close the current durable transcript session, if one is open (a no-op otherwise):
+    /// sets `ended_at` so a Transcripts list can show a real duration. Sent once when
+    /// listening stops normally; a crash that skips this is handled separately, by a
+    /// startup sweep over any transcript left with no `ended_at` — not by this command.
+    /// Requires the `Transcribe` permission.
+    EndTranscript,
     /// Approve a queued scripture detection by id (R4): stage its verse in Preview (the
     /// operator Goes Live when ready — detections never auto-display, FR-115) and remove
     /// it from the queue. Requires `SearchScripture` (stages scripture).

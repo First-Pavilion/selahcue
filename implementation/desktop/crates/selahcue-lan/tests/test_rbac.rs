@@ -313,6 +313,30 @@ fn transcription_ingest_is_producer_and_up_not_assistant() {
 }
 
 #[test]
+fn transcript_session_boundaries_require_the_same_permission_as_ingest() {
+    // StartTranscript/EndTranscript (86akcfftu) are session-boundary siblings of
+    // IngestTranscript above — same RBAC tier, same reasoning: whoever may feed the
+    // transcript stream may also open/close the durable session around it.
+    let start = Command::StartTranscript {
+        label: "Sunday Service".into(),
+        provider: "on-device-whisper".into(),
+    };
+    let end = Command::EndTranscript;
+    for cmd in [start, end] {
+        assert!(authorize(Role::Operator, &cmd), "operator {cmd:?}");
+        assert!(authorize(Role::Producer, &cmd), "producer {cmd:?}");
+        assert!(
+            !authorize(Role::Assistant, &cmd),
+            "assistant must NOT open/close a transcript session: {cmd:?}"
+        );
+        assert!(
+            !authorize(Role::Viewer, &cmd),
+            "viewer must NOT open/close a transcript session: {cmd:?}"
+        );
+    }
+}
+
+#[test]
 fn approving_or_dismissing_a_detection_is_scripture_staging_privilege() {
     // Approving stages a scripture candidate; dismissing drops one — both are the
     // SearchScripture privilege (Assistant and up), never GoLive.

@@ -418,6 +418,21 @@ impl OperatorShell {
         })
     }
 
+    /// Open a new durable transcript session (86akcfftu) — the session-boundary sibling of
+    /// [`ingest_transcript`](Self::ingest_transcript). Sent once when listening starts.
+    pub fn start_transcript(&self, label: &str, provider: &str) -> OperatorView {
+        self.act(&Command::StartTranscript {
+            label: label.into(),
+            provider: provider.into(),
+        })
+    }
+
+    /// Close the current durable transcript session, if one is open. Sent once when
+    /// listening stops normally.
+    pub fn end_transcript(&self) -> OperatorView {
+        self.act(&Command::EndTranscript)
+    }
+
     /// Approve a queued scripture detection by id: stage its verse in Preview.
     pub fn approve_detection(&self, detection_id: u64) -> OperatorView {
         self.act(&Command::ApproveDetection { detection_id })
@@ -1100,6 +1115,28 @@ impl RemoteOperator {
             is_final,
         })
         .await
+    }
+
+    /// Open a new durable transcript session (86akcfftu) on the host — the session-boundary
+    /// sibling of [`ingest_transcript`](Self::ingest_transcript). Sent once when listening
+    /// starts, so the host (which owns the persistent transcript store) can open a
+    /// transcript record with `started_at` before segments start arriving.
+    pub async fn start_transcript(
+        &mut self,
+        label: &str,
+        provider: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::StartTranscript {
+            label: label.into(),
+            provider: provider.into(),
+        })
+        .await
+    }
+
+    /// Close the current durable transcript session on the host, if one is open. Sent once
+    /// when listening stops normally.
+    pub async fn end_transcript(&mut self) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::EndTranscript).await
     }
 
     /// Approve a queued scripture detection on the host (stages its verse in Preview).

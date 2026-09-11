@@ -653,6 +653,17 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
     // happened.
     *status_lock(&ENGINE_NOTE) = route.fallback_reason().map(|r| r.detail().to_string());
 
+    // A durable transcript session (86akcfftu) is opened once per capture session, before any
+    // segment can arrive — the coarse route decision (Cloud vs on-device), not the specific
+    // engine/model name `PROVIDER_LABEL` records once loaded, since that resolves later
+    // (asynchronously, possibly after a download) and this needs no engine loaded yet. This is
+    // free text carried opaquely by the wire command; nothing here interprets it — a future
+    // provider needs no change to this call.
+    let provider_label = match route {
+        TranscriptionRoute::Cloud => "deepgram".to_string(),
+        TranscriptionRoute::OnDevice { .. } => "on-device-whisper".to_string(),
+    };
+
     // Recognised segments flow worker(sync) → drain task(async) → backend ingest. Bounded.
     let (seg_tx, mut seg_rx) = tokio::sync::mpsc::channel::<ProviderSegment>(SEGMENT_QUEUE);
 
@@ -661,6 +672,20 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
     // stops and drops `seg_tx`.
     let app_task = app.clone();
     tauri::async_runtime::spawn(async move {
+        {
+            let state = app_task.state::<crate::AppState>();
+            // Best-effort: a label is cosmetic (a future Transcripts list), so a lookup
+            // failure falls back to a generic label rather than blocking capture on it.
+            let label = state
+                .backend
+                .view()
+                .await
+                .ok()
+                .map(|v| v.plan_name)
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| "Live transcript".to_string());
+            let _ = state.backend.start_transcript(label, provider_label).await;
+        }
         while let Some(seg) = seg_rx.recv().await {
             let state = app_task.state::<crate::AppState>();
             let _ = state
@@ -668,6 +693,13 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
                 .ingest_transcript(seg.text, seg.start_ms, seg.end_ms, seg.is_final)
                 .await;
         }
+        // The channel closed — the worker stopped (normal Stop Listening OR the worker
+        // thread exiting on its own, e.g. a setup failure). Either way, no further segments
+        // are coming for this session: close the durable transcript here too, not only in
+        // `stop()`, so a worker that exits without anyone calling `stop()` still gets an
+        // `ended_at` promptly rather than waiting on the crash-recovery startup sweep.
+        let state = app_task.state::<crate::AppState>();
+        let _ = state.backend.end_transcript().await;
     });
 
     let stop = Arc::new(AtomicBool::new(false));

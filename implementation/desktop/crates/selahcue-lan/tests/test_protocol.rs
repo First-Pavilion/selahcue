@@ -423,6 +423,21 @@ fn every_command_round_trips() {
         to_json(&Command::ApproveDetection { detection_id: 3 }).unwrap(),
         r#"{"cmd":"approve_detection","detection_id":3}"#
     );
+    // StartTranscript/EndTranscript (86akcfftu): new, additive commands — they do not
+    // change any fixture pinned above. Pinned here so their own wire shape cannot drift
+    // silently either.
+    assert_eq!(
+        to_json(&Command::StartTranscript {
+            label: "Sunday Service".into(),
+            provider: "on-device-whisper".into(),
+        })
+        .unwrap(),
+        r#"{"cmd":"start_transcript","label":"Sunday Service","provider":"on-device-whisper"}"#
+    );
+    assert_eq!(
+        to_json(&Command::EndTranscript).unwrap(),
+        r#"{"cmd":"end_transcript"}"#
+    );
 }
 
 /// The transcript + detection view fields are additive: empty omits them entirely

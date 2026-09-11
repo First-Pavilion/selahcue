@@ -124,7 +124,9 @@ pub fn required_permission(cmd: &Command) -> Permission {
         // Approving / dismissing a detection merely stages or drops a scripture
         // candidate — the same privilege as staging scripture, not going live.
         Command::ApproveDetection { .. } | Command::DismissDetection { .. } => SearchScripture,
-        Command::IngestTranscript { .. } => Transcribe,
+        Command::IngestTranscript { .. }
+        | Command::StartTranscript { .. }
+        | Command::EndTranscript => Transcribe,
         Command::GetState
         | Command::GetOperatorState
         | Command::GetConsoleThumbnails { .. }
