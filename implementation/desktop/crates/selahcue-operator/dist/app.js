@@ -1260,12 +1260,12 @@
       });
 
       // --- App menu + surface routing (86ajq321f) ---
-      const APP_SURFACES = ["console", "preservice", "presentation", "theme-designer", "screens", "remote", "plan", "settings"];
+      const APP_SURFACES = ["console", "preservice", "presentation", "theme-designer", "screens", "remote", "plan", "settings", "transcripts"];
       // Kept in sync with the nav items' .nav-t labels — the topbar surface label + the SR
       // route announcement read from here, so a drift would show a name the menu doesn't use.
       const SURFACE_LABEL = {
         console: "Live Console", preservice: "Pre-service Check", presentation: "Presentation", "theme-designer": "Theme Designer",
-        screens: "Screens & Outputs", remote: "Remote Control", plan: "Service Plan", settings: "Settings",
+        screens: "Screens & Outputs", remote: "Remote Control", plan: "Service Plan", settings: "Settings", transcripts: "Transcripts",
       };
       const appMenu = document.getElementById("app-menu");
       const appMenuBtn = document.getElementById("app-menu-btn");
@@ -1327,6 +1327,9 @@
         // the real providers_view() lazily. A caller wanting another page (e.g. ⌘⇧R → Network & Mobile)
         // calls setSettingsPage() AFTER showSurface, overriding this default.
         if (name === "settings" && typeof setSettingsPage === "function") setSettingsPage("providers");
+        // Transcripts (86akcffvt) reloads the list every time the surface is opened — a fresh read
+        // from the shared store each visit, never a stale in-memory cache from a prior visit.
+        if (name === "transcripts" && typeof trActivate === "function") trActivate();
       }
       // Settings sidebar routing (Design 2.0, Figma 338:124). Providers + Network & Mobile are built;
       // the rest show the shared "coming soon" page. Providers loads lazily via settingsActivate.
@@ -3868,9 +3871,10 @@
           if (window.__gsearch) window.__gsearch.open();
           return;
         }
-        // Global ⌘/Ctrl+1–7 jump to the seven navigable sections in menu order — makes the menu's
+        // Global ⌘/Ctrl+1–8 jump to the eight navigable sections in menu order — makes the menu's
         // ⌘N badges and the Shortcuts reference REAL. Works whether the menu is open or not.
-        if (mod && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "7") {
+        // (86akcffvt added Transcripts as the 8th entry — raised from 7.)
+        if (mod && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "8") {
           const targets = navItems.filter(
             (it) =>
               it.dataset.surface &&

@@ -98,7 +98,17 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 #   120-tail #transcript-log renders from, not the unsliced list — the bridge was changed from
 #   `all.map(...)` to `segs.map(...)` in app.js's syncTranscript() to make that true.
 # The REAL observed count (1179 + 5 + 2 = 1186).)
-EXPECTED_MIN_CHECKS = 1186
+# (Raised for the Transcripts surface — 86akcffvt / FR-130 core slice: the new page's list,
+# read-only detail viewer, empty/error states, and the bounded-window rendering control (the
+# transcript-length virtualizer that keeps mounted DOM rows bounded regardless of segment count).
+# 1196 -> 1233, the REAL observed count (baseline drifted 1186 -> 1196 between rounds; both
+# numbers are floors, never exact, per this constant's own contract). The three bounded-DOM
+# checks were mutation-verified BY HAND with the whole suite running (not `--exact`): the initial
+# windowed render call was mutated to render every segment unconditionally, which flipped exactly
+# those three checks RED (mounted-row-count bound, the last-segment-absent-on-open control, and
+# the scroll-to-end exact-text check) while every other check in the 1233-check run stayed GREEN
+# — restoring the guard returned the suite to 0 FAIL. See the "=== Transcripts" block below.)
+EXPECTED_MIN_CHECKS = 1233
 
 
 def find_chrome():
@@ -607,6 +617,51 @@ STUB = r"""
       LIB.decks=LIB.decks.filter(function(x){return x.id!==args.id;});
       if (wasOpen){ if(LIB.decks.length){ LIB.open=LIB.decks[0].id; D.name=LIB.decks[0].name; D.count=LIB.decks[0].slides; } else { LIB.decks.push({id:LIB.nextId++, name:"Untitled presentation", slides:1}); LIB.open=LIB.decks[0].id; D.name="Untitled presentation"; D.count=1; } }
       return Promise.resolve(libView());
+    }
+    // --- Transcripts (86akcffvt / FR-130 core slice): transcript_list / transcript_get ---
+    var TR = window.__TR || (window.__TR = {
+      list: [
+        {id:1, label:"Sunday Service — Aug 4", provider:"manual", started_at_ms: 1722760800000, ended_at_ms: 1722764460000, segment_count: 3},
+        // Never ended (a crash mid-service / still recording, FR-075) — exercises the "In progress"
+        // duration branch instead of a bogus negative/garbage one.
+        {id:2, label:"Wednesday Bible Study", provider:"whisper", started_at_ms: 1722160800000, ended_at_ms: null, segment_count: 1},
+      ],
+      detail: {
+        1: { id:1, label:"Sunday Service — Aug 4", provider:"manual", started_at_ms: 1722760800000, ended_at_ms: 1722764460000,
+             notes_generated: false,
+             segments: [
+               {id:101, start_ms:0, end_ms:4000, text:"Good morning, church."},
+               {id:102, start_ms:4000, end_ms:9000, text:"Please turn with me to Romans chapter eight."},
+               {id:103, start_ms:9000, end_ms:15000, text:"Verse twenty-eight: And we know that all things work together for good."},
+             ] },
+        2: { id:2, label:"Wednesday Bible Study", provider:"whisper", started_at_ms: 1722160800000, ended_at_ms: null,
+             notes_generated: false,
+             segments: [ {id:201, start_ms:0, end_ms:5000, text:"Let's open in prayer."} ] },
+      },
+    });
+    // A synthetic three-hour-scale transcript — 500 segments, well past the live console's
+    // 240-segment ring cap — for the bounded-DOM-rendering checks (86akcffvt AC3). Each segment's
+    // text names its own index so a check can assert exactly which ones are/aren't mounted.
+    if (!window.__trBigSeeded) {
+      window.__trBigSeeded = true;
+      var bigSegs = [];
+      for (var bi = 0; bi < 500; bi++) {
+        bigSegs.push({id: 1000 + bi, start_ms: bi * 4000, end_ms: bi * 4000 + 3500,
+          text: "Segment " + bi + " — the quick brown fox jumps over the lazy dog near the riverbank at dawn."});
+      }
+      var bigStart = 1725600000000, bigEnd = bigStart + 500 * 4000;
+      TR.detail[3] = {id:3, label:"Three-Hour Service — Sep 6", provider:"manual", started_at_ms:bigStart, ended_at_ms:bigEnd, notes_generated:false, segments:bigSegs};
+      TR.list.push({id:3, label:"Three-Hour Service — Sep 6", provider:"manual", started_at_ms:bigStart, ended_at_ms:bigEnd, segment_count:500});
+    }
+    if (cmd === "transcript_list") {
+      if (window.__trListFailOnce) { window.__trListFailOnce = false; return Promise.reject("simulated host rejection"); }
+      return Promise.resolve(TR.list.map(function(t){ return {id:t.id, label:t.label, provider:t.provider, started_at_ms:t.started_at_ms, ended_at_ms:t.ended_at_ms, segment_count:t.segment_count}; }));
+    }
+    if (cmd === "transcript_get") {
+      if (window.__trGetFailOnce) { window.__trGetFailOnce = false; return Promise.reject("simulated host rejection"); }
+      var td = TR.detail[args.id];
+      if (!td) return Promise.reject("row not found");
+      return Promise.resolve(JSON.parse(JSON.stringify(td)));
     }
     // Detector liveness (HOST-SIGNAL-WEBVIEW-CONTRACT Tier 1a). All four keys always present.
     // __detHealthFail simulates a host with no such command — the UNKNOWN case, which is the one
@@ -2574,6 +2629,133 @@ DRIVER = r"""
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"3", metaKey:true, bubbles:true}));
       ok(el("surface-theme-designer").classList.contains("active") && !el("surface-presentation").classList.contains("active"),
          "PM: ⌘3 routes to Theme Designer (menu-order ⌘1–7 map)");
+
+      // === Transcripts (86akcffvt / FR-130 core slice) ===============================
+      // Local contrast helpers (NOT the shared _cr/_rgba/_f — those are function declarations
+      // later in this same `try` block, and Annex B block-function hoisting only makes the NAME
+      // safe to reference early, not the value: the outer binding stays undefined until actual
+      // execution reaches that later declaration. Self-contained copies avoid depending on
+      // execution order at all.)
+      function _trSl(v){ v/=255; return v<=0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055,2.4); }
+      function _trLum(c){ return 0.2126*_trSl(c[0])+0.7152*_trSl(c[1])+0.0722*_trSl(c[2]); }
+      function _trCr(a,b){ var la=_trLum(a), lb=_trLum(b), hi=Math.max(la,lb), lo=Math.min(la,lb); return (hi+0.05)/(lo+0.05); }
+      function _trRgba(s){ var m=String(s).match(/[-\d.]+/g)||["0","0","0"]; return [+m[0],+m[1],+m[2], m.length>3?+m[3]:1]; }
+      function _trF(r){ return r.toFixed(2); }
+      document.querySelector('.nav-item[data-surface="transcripts"]').click();
+      ok(el("surface-transcripts").classList.contains("active") && getComputedStyle(el("surface-transcripts")).display !== "none",
+         "TR: the nav item opens the Transcripts surface (computed display, WKWebView-safe)");
+      await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 3; });
+      ok(el("tr-list").querySelectorAll(".tr-card").length === 3, "TR: transcript_list renders one card per transcript");
+      ok(el("tr-empty").hidden && getComputedStyle(el("tr-empty")).display === "none", "TR: the empty state is hidden (computed display) while transcripts exist");
+      ok(/Sunday Service — Aug 4/.test(el("tr-list").textContent), "TR: a card shows the transcript's label");
+      var card1Meta = el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-meta').textContent;
+      ok(/3 segments/.test(card1Meta), "TR: a card shows its segment count");
+      ok(/\d{1,2}:\d{2}:\d{2}/.test(card1Meta), "TR: a card shows an h:mm:ss duration for a finished transcript (1h01m — over an hour)");
+      var card2Meta = el('tr-list').querySelector('.tr-card[data-id="2"] .tr-card-meta').textContent;
+      ok(/In progress/.test(card2Meta), "TR: a never-ended transcript (crash/still-recording) shows 'In progress', not a bogus negative duration");
+      ok(el("tr-list").querySelector(".tr-card-open").tagName === "BUTTON", "TR: each row's open control is a real <button> (keyboard-activatable by default, NFR-019)");
+      // Contrast (NFR-020): card meta text on its card background clears AA-NORMAL.
+      var trMetaEl = el("tr-list").querySelector(".tr-card-meta");
+      var trMetaC = _trCr(_trRgba(getComputedStyle(trMetaEl).color), _trRgba(getComputedStyle(el("tr-list").querySelector(".tr-card")).backgroundColor));
+      ok(trMetaC >= 4.5, "TR: card meta text clears AA-NORMAL on its card ground (" + _trF(trMetaC) + ":1)");
+
+      // ⌘8 (menu-order ⌘1–8, raised from ⌘1–7 by this ticket): away then back.
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      ok(!el("surface-transcripts").classList.contains("active"), "TR (setup): navigated away from Transcripts");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"8", metaKey:true, bubbles:true}));
+      ok(el("surface-transcripts").classList.contains("active"), "TR: ⌘8 routes to Transcripts (menu-order ⌘1–8 map)");
+      await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 3; });
+
+      // Selecting a transcript shows its FULL stored text (86akcffvt AC2) — every segment, not a
+      // tail or a sample — plus the honest notes-generated status.
+      el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+      ok(window.__calls.some(function(c){ return c.cmd === "transcript_get" && c.args.id === 1; }), "TR: opening a card drives transcript_get(that card's id)");
+      await waitFor(function(){ return !el("tr-detail-view").hidden && /Good morning/.test(el("tr-detail-log").textContent); });
+      ok(!el("tr-detail-view").hidden && getComputedStyle(el("tr-detail-view")).display !== "none", "TR: selecting a card opens the detail view (computed display)");
+      ok(el("tr-list-view").hidden, "TR: the list view is hidden while a transcript is open");
+      ok(el("tr-detail-title").textContent === "Sunday Service — Aug 4", "TR: the detail header shows the transcript's label");
+      ok(/3 segments/.test(el("tr-detail-meta").textContent), "TR: the detail header shows the segment count");
+      var trLog = el("tr-detail-log").textContent;
+      ok(/Good morning, church\./.test(trLog) && /Romans chapter eight/.test(trLog) && /all things work together for good/.test(trLog),
+         "TR: ALL THREE stored segments render — the full text, not a tail or a sample");
+      ok(el("tr-detail-notes").textContent === "Notes not yet generated", "TR: the notes-generated status is honestly reported (no notes table exists yet, 86akcffy0)");
+      ok(el("tr-detail-log").getAttribute("role") === "log" && el("tr-detail-log").getAttribute("tabindex") === "0",
+         "TR: the transcript text is a role=log, tabindex=0 region — natively keyboard-scrollable once focused (NFR-019)");
+      ok(document.activeElement === el("tr-detail-log"), "TR: opening a transcript moves focus INTO the scrollable log (WCAG 2.4.3)");
+      // Contrast (NFR-020): rendered line text on the log's background clears AA-NORMAL.
+      var trLineEl = el("tr-detail-log").querySelector(".tr-line-txt");
+      var trLineC = _trCr(_trRgba(getComputedStyle(trLineEl).color), _trRgba(getComputedStyle(el("tr-detail-log")).backgroundColor));
+      ok(trLineC >= 4.5, "TR: transcript line text clears AA-NORMAL on the log's ground (" + _trF(trLineC) + ":1)");
+
+      // Back returns to the list, focus lands on a stable element (WCAG 2.4.3) — the card that
+      // opened this transcript is gone from view, so focus must not fall to <body>.
+      el("tr-detail-back").click();
+      ok(el("tr-list-view").hidden === false && el("tr-detail-view").hidden === true, "TR: ‹ Transcripts returns to the list");
+      ok(document.activeElement === el("tr-list").querySelector(".tr-card-open"), "TR: Back restores focus to a real control, not <body>");
+
+      // Detail error state: a rejected transcript_get shows a role=alert error + Retry recovers.
+      window.__trGetFailOnce = true;
+      el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+      await waitFor(function(){ return !el("tr-detail-error").hidden; });
+      ok(!el("tr-detail-error").hidden && el("tr-detail-error").getAttribute("role") === "alert" && getComputedStyle(el("tr-detail-error")).display !== "none",
+         "TR: a failed transcript_get shows a role=alert error state (computed display)");
+      el("tr-detail-retry").click();
+      await waitFor(function(){ return el("tr-detail-error").hidden && /Good morning/.test(el("tr-detail-log").textContent); });
+      ok(el("tr-detail-error").hidden, "TR: Retry recovers the transcript detail");
+      el("tr-detail-back").click();
+
+      // List error state: a rejected transcript_list shows a role=alert error + Retry recovers.
+      window.__trListFailOnce = true;
+      el("tr-retry").click();
+      await waitFor(function(){ return !el("tr-error").hidden; });
+      ok(!el("tr-error").hidden && el("tr-error").getAttribute("role") === "alert" && getComputedStyle(el("tr-error")).display !== "none",
+         "TR: a failed transcript_list shows a role=alert error state (computed display)");
+      el("tr-retry").click();
+      await waitFor(function(){ return el("tr-error").hidden && el("tr-list").querySelectorAll(".tr-card").length >= 3; });
+      ok(el("tr-error").hidden, "TR: Retry recovers the transcripts list");
+
+      // Empty state: no transcripts yet is shown clearly rather than a blank page.
+      var savedTrList = window.__TR.list;
+      window.__TR.list = [];
+      el("tr-retry").click();
+      await waitFor(function(){ return !el("tr-empty").hidden; });
+      ok(!el("tr-empty").hidden && getComputedStyle(el("tr-empty")).display !== "none" && el("tr-list").querySelectorAll(".tr-card").length === 0,
+         "TR: an empty store shows the 'No transcripts yet' state (computed display), not a blank page");
+      window.__TR.list = savedTrList;
+      el("tr-retry").click();
+      await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 3; });
+
+      // === TR bounded rendering (86akcffvt AC3): a transcript with FAR more segments than the
+      // live console's 240-segment cap must render COMPLETELY (every segment reachable by
+      // scrolling) WITHOUT unbounded DOM growth (the mounted row count stays bounded throughout,
+      // never approaching the transcript's real length). This is the mutation-verified control:
+      // break `WINDOW_ROWS`/the windowing in transcripts.js and this whole block goes RED. ===
+      var TR_BOUND = 200; // comfortably above WINDOW_ROWS(150); far below the 500-segment fixture
+      el('tr-list').querySelector('.tr-card[data-id="3"] .tr-card-open').click();
+      await waitFor(function(){ return !el("tr-detail-view").hidden && el("tr-detail-title").textContent === "Three-Hour Service — Sep 6"; });
+      await waitFor(function(){ return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      ok(window.__trRenderedRowCount() <= TR_BOUND,
+         "TR bounded: opening a 500-segment transcript mounts <= " + TR_BOUND + " real rows (got " + window.__trRenderedRowCount() + "), not one unbounded DOM blob");
+      var firstRow = window.__trRowFor(1000);
+      ok(!!firstRow && /Segment 0 —/.test(firstRow.textContent), "TR bounded: the FIRST segment is mounted and reads correctly on open");
+      ok(!window.__trRowFor(1499), "TR bounded (control): the LAST segment is NOT mounted on open — proves this is a real window, not every row pre-rendered and merely capped visually");
+      // Scroll to the very end: the LAST segment must become reachable (full text, not truncated),
+      // and the row count must stay bounded (not grow to 500) — the two halves of AC3 together.
+      window.__trScrollToFraction(1);
+      await waitFor(function(){ return !!window.__trRowFor(1499); }, 200);
+      var lastRow = window.__trRowFor(1499);
+      ok(!!lastRow && /Segment 499 —/.test(lastRow.textContent), "TR bounded: scrolling to the end reaches the LAST segment with its exact stored text — the full transcript, not a tail");
+      ok(window.__trRenderedRowCount() <= TR_BOUND,
+         "TR bounded: after scrolling to the end the mounted row count is STILL <= " + TR_BOUND + " (got " + window.__trRenderedRowCount() + ") — bounded throughout use, not just on first paint");
+      ok(!window.__trRowFor(1000), "TR bounded: the FIRST segment's row was evicted once scrolled away — rows are recycled, not endlessly appended (the real 'unbounded growth' failure mode)");
+      // A middle position reaches a middle segment, with BOTH ends absent — rules out a mutation
+      // that special-cases only the first/last window instead of a genuine sliding one.
+      window.__trScrollToFraction(0.5);
+      await waitFor(function(){ return !!window.__trRowFor(1250); }, 200);
+      ok(!!window.__trRowFor(1250), "TR bounded: scrolling to the middle reaches a middle segment");
+      ok(!window.__trRowFor(1000) && !window.__trRowFor(1499), "TR bounded: at the middle position, NEITHER the first nor the last segment is mounted — a genuine sliding window");
+      ok(window.__trRenderedRowCount() <= TR_BOUND, "TR bounded: the middle position also stays <= " + TR_BOUND + " rows");
+      el("tr-detail-back").click();
 
       // === Pre-service Check (moved into the Settings sidebar, Design 2.0) ===
       document.querySelector('.nav-item[data-surface="settings"]').click();

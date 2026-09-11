@@ -59,6 +59,17 @@ window.__TAURI__ = { core: { invoke: function(cmd, args){
      preview:{w:2,h:1,rgba:btoa("\xff\x00\x00\xff\x00\xff\x00\xff")},
      live:{w:2,h:1,rgba:btoa("\x00\x00\xff\xff\xff\xff\x00\xff")}});
   if (cmd === "operator_state" || cmd === "state") return Promise.resolve({});
+  // Transcripts (86akcffvt / FR-130 core slice): enough for a real-WebKit check that the
+  // surface's flex layout + [hidden]-attribute toggling (list <-> detail) actually paints —
+  // exactly the class of trap (flex collapse, an author `display` beating `[hidden]`) this
+  // console has hit before on WKWebView specifically and never on Blink.
+  if (cmd === "transcript_list") return Promise.resolve([
+    {id:1, label:"Sunday Service", provider:"manual", started_at_ms:1722760800000, ended_at_ms:1722764460000, segment_count:1}
+  ]);
+  if (cmd === "transcript_get") return Promise.resolve({
+    id:1, label:"Sunday Service", provider:"manual", started_at_ms:1722760800000, ended_at_ms:1722764460000,
+    notes_generated:false, segments:[{id:101, start_ms:0, end_ms:4000, text:"Good morning, church."}]
+  });
   return Promise.resolve(null);
 } } };
 """
@@ -94,6 +105,37 @@ def main():
             "() => { var c = document.getElementById('preview-canvas');"
             " return !!c && c.width === 2 && c.height === 1; }"
         )
+
+        # Transcripts (86akcffvt): a real-WebKit check of the list <-> detail [hidden] toggle over
+        # a flex layout — computed style, never `.hidden` alone (the documented WKWebView trap).
+        tr_errors = []
+        try:
+            # The nav item lives in the app menu, closed by default (#app-menu { display: none }
+            # until .open) — open it first, a real click, matching an actual WebKit user.
+            page.click('#app-menu-btn')
+            page.wait_for_selector('.nav-item[data-surface="transcripts"]', state="visible", timeout=8000)
+            page.click('.nav-item[data-surface="transcripts"]')
+            page.wait_for_function(
+                "() => document.querySelectorAll('#tr-list .tr-card').length >= 1", timeout=8000
+            )
+            tr_list_visible = page.evaluate(
+                "() => getComputedStyle(document.getElementById('tr-list-view')).display !== 'none'"
+            )
+            page.click('#tr-list .tr-card-open')
+            page.wait_for_function(
+                "() => document.getElementById('tr-detail-log').textContent.indexOf('Good morning') >= 0",
+                timeout=8000,
+            )
+            tr_detail_visible = page.evaluate(
+                "() => getComputedStyle(document.getElementById('tr-detail-view')).display !== 'none'"
+            )
+            tr_list_hidden_now = page.evaluate(
+                "() => getComputedStyle(document.getElementById('tr-list-view')).display === 'none'"
+            )
+        except Exception as e:  # noqa: BLE001 — any failure here is itself the finding
+            tr_errors.append(str(e).splitlines()[0])
+            tr_list_visible = tr_detail_visible = tr_list_hidden_now = False
+
         browser.close()
 
     checks = []
@@ -103,6 +145,11 @@ def main():
     checks.append(("render_console" in calls, "console render path ran on WebKit (render_console invoked)"))
     checks.append((has_render, "preview panel reached has-render on WebKit"))
     checks.append((canvas_ok, "preview canvas drawn 2x1 on WebKit (base64 RGBA decode + putImageData work)"))
+    checks.append((not tr_errors, "Transcripts: nav + list + detail exercised on WebKit with no exception"
+                   + (" — " + "; ".join(tr_errors) if tr_errors else "")))
+    checks.append((tr_list_visible, "Transcripts: the list view paints on WebKit (computed display, not just .hidden)"))
+    checks.append((tr_detail_visible, "Transcripts: opening a transcript paints the flex-based detail view on WebKit (computed display)"))
+    checks.append((tr_list_hidden_now, "Transcripts: the list view is actually display:none on WebKit once the detail view is showing — [hidden] wins over the flex display (the documented WKWebView trap)"))
 
     for passed, msg in checks:
         print(("PASS" if passed else "FAIL") + ": " + msg)
