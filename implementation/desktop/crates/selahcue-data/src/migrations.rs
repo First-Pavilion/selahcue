@@ -214,6 +214,114 @@ const MIGRATIONS: &[&str] = &[
         value TEXT NOT NULL
     );
     "#,
+    // v19 -> v20: TRANSCRIPT + DETECTION PERSISTENCE (86ajtxzrn; FR-130/153/154/137/082).
+    //
+    // Identity — an assumption cleared to proceed on, NOT a confirmed product/
+    // architecture decision (corrected here after review; the previous wording in this
+    // comment overstated its status — see the ClickUp comments on 86ajtxzrn, which state
+    // plainly that sign-off is still outstanding): a transcript = one listening session
+    // (one start-to-stop of the STT engine), provider-agnostic (ADR-0010/0019). `label`
+    // defaults to the active `ServicePlan`'s name + start timestamp, or just the
+    // timestamp when no plan was active (`selahcue_core::plan::ServicePlan` is app-layer
+    // knowledge; this table only stores the resolved string) — `label` is a plain,
+    // renamable column (no separate "custom label" flag needed), so the future rename
+    // affordance (FR-130/R5) is already free. `plan_id` is nullable and ON DELETE SET
+    // NULL: a transcript must outlive the plan it was recorded against, per the "raw
+    // transcript is immutable" principle this whole slice exists to serve.
+    //
+    // Segments are the "raw immutable stream": `transcript_segment` has no counterpart to
+    // `MAX_TRANSCRIPT_SEGMENTS`/`MAX_SEGMENT_TEXT_LEN` (selahcue-core::transcript — those
+    // cap only the in-memory ring) — `text`/`ord` are unbounded by construction (SQLite
+    // TEXT/INTEGER columns), which is the acceptance criterion this migration exists to
+    // satisfy. `ord` is assigned by the repo at append time (current count for that
+    // transcript), not reused from the in-memory ring's per-session id, so a segment's
+    // position survives independently of whatever the live engine numbered it.
+    //
+    // `transcript_correction` is the "editable correction layer" — schema only, no editing
+    // UI in this ticket (non-goal). One row per corrected segment (`segment_id UNIQUE`): a
+    // second edit replaces the first via upsert, the same "latest wins" shape as
+    // `session_state`. The segment it corrects cascades away with it, and the raw segment
+    // text is never overwritten (FR-123's mirror for the correction layer, not just notes).
+    //
+    // `detection` persists `selahcue_core::detection::DetectedReference` rows tied to a
+    // transcript (and, where known, the segment that produced them); `segment_id` is
+    // nullable + ON DELETE CASCADE so a detection's provenance link cascades with its
+    // segment without forcing every caller to resolve one. `idx_detection_segment`
+    // exists so that cascade lookup (fired once per deleted segment, by every
+    // `transcript_repo::delete`/`purge_expired` call) is index-backed rather than a full
+    // scan of every detection ever stored across every transcript — measured at 144M
+    // full-scan VM steps / 6.6s for one delete of a 3,000-segment transcript against a
+    // 30k-row detection table without this index, 0 steps / 5-10ms with it (Vera, PR #30
+    // review). Cheap now, forward-only migration after merge.
+    //
+    // `transcript_setting` is a flat key/value table — the same shape as `providers_setting`
+    // (v18->v19) — so retention config is a *setting*, not a hardcoded constant (per this
+    // ticket's acceptance criterion), and every open product/legal question 86ajtxzrn leaves
+    // unresolved (the FR-153 retention-days default, the delete-cascade-to-notes flag once
+    // notes exist, a future consent/administrator-scope key) is answerable by adding a KEY,
+    // never a further migration. An absent key reads back as the safe placeholder default
+    // (kept indefinitely; notes are not cascade-deleted) via `transcript_repo`, exactly as
+    // `providers_repo::load` falls back to `ProvidersConfig::default()` for an empty store.
+    // FR-137 "Administrator-gated" enforcement (who may change this setting) is a command/
+    // RBAC-layer concern per the existing precedent for provider consent (see
+    // `selahcue-core::providers` — "Administrator-gated at the command layer" — and
+    // `selahcue-lan::rbac::authorize`); this migration only makes the setting exist,
+    // outside a hardcoded constant, for that layer to gate.
+    //
+    // Encryption (FR-154): no per-table wiring is needed or added here. SQLCipher (the
+    // `encryption` feature) keys the whole database file before `migrations::run` ever
+    // executes (`Database::open_encrypted` / `open_in_memory_encrypted`), so every table
+    // created by this migration is encrypted at rest exactly like every table that came
+    // before it — proven for this schema by the encrypted round-trip test added alongside
+    // `test_encryption.rs`'s existing coverage.
+    r#"
+    CREATE TABLE transcript (
+        id         INTEGER PRIMARY KEY,
+        plan_id    INTEGER REFERENCES service_plan(id) ON DELETE SET NULL,
+        label      TEXT    NOT NULL,
+        provider   TEXT    NOT NULL,
+        started_at INTEGER NOT NULL,
+        ended_at   INTEGER
+    );
+    CREATE INDEX idx_transcript_started_at ON transcript(started_at);
+
+    CREATE TABLE transcript_segment (
+        id            INTEGER PRIMARY KEY,
+        transcript_id INTEGER NOT NULL REFERENCES transcript(id) ON DELETE CASCADE,
+        ord           INTEGER NOT NULL,
+        start_ms      INTEGER NOT NULL,
+        end_ms        INTEGER NOT NULL,
+        text          TEXT    NOT NULL,
+        UNIQUE (transcript_id, ord)
+    );
+    -- No separate CREATE INDEX on (transcript_id, ord) here: the UNIQUE constraint
+    -- above already creates that exact index (SQLite's implicit autoindex), so a
+    -- second explicit one would be a byte-identical second B-tree maintained on every
+    -- append with zero query benefit (Cody #3 / Vera F3 — measured ~7% extra file size
+    -- at 5,000 segments, no plan-shape change when dropped).
+
+    CREATE TABLE transcript_correction (
+        id             INTEGER PRIMARY KEY,
+        segment_id     INTEGER NOT NULL UNIQUE REFERENCES transcript_segment(id) ON DELETE CASCADE,
+        corrected_text TEXT    NOT NULL,
+        corrected_at   INTEGER NOT NULL
+    );
+
+    CREATE TABLE detection (
+        id            INTEGER PRIMARY KEY,
+        transcript_id INTEGER NOT NULL REFERENCES transcript(id) ON DELETE CASCADE,
+        segment_id    INTEGER REFERENCES transcript_segment(id) ON DELETE CASCADE,
+        reference     TEXT    NOT NULL,
+        confidence    INTEGER NOT NULL
+    );
+    CREATE INDEX idx_detection_transcript ON detection(transcript_id);
+    CREATE INDEX idx_detection_segment ON detection(segment_id);
+
+    CREATE TABLE transcript_setting (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).
