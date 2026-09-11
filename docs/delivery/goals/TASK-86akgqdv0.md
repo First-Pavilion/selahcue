@@ -8,11 +8,12 @@
   transcript and the operator can edit them afterward, with the source transcript
   provably untouched (FR-123 "editable" half)
 - Role: backend-engineer
-- Status: IN_PROGRESS
+- Status: GATE_REVIEW (implementation + local verification complete; awaiting
+  four-reviewer gate and product sign-off on the cascade-on-delete proposal)
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86akgqdv0
 - Created: 2026-09-11
-- Updated: 2026-09-11
+- Updated: 2026-09-11 (PR #33 opened, head `81a24744a5df352a69d21bdddfcf10284c2c31ea`)
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -48,8 +49,15 @@ the operator has no existing channel to a transcript's row id.
 
 - ClickUp 86akgqdv0 description as reconstructed in this session's prompt (ClickUp
   MCP unreachable — `getaddrinfo ENOTFOUND mcp-proxy.anthropic.com` on two attempts
-  at session start; to be re-verified against the live ticket before claiming
-  completion, per the ticket's own instruction)
+  at session start; RE-VERIFIED against the live ticket once the connector came
+  back up, before opening the PR — the reconstructed text matched, with two
+  additions the live ticket carries that the reconstruction had softened: (1) the
+  cascade-on-delete decision is asked to be "confirmed with product/architecture...
+  before the migration merges", handled here as an explicitly-flagged proposal
+  rather than an actual confirmation, since that confirmation is outside this
+  role's authority; (2) "Verification expectations" explicitly asks for a headless
+  webview check on the edit UI asserting computed style, not `.hidden` — added as
+  the `PP SN-*` checks in `scripts/operator_headless.py`)
 - `docs/product/prds/SelahCue-PRD.md` §EPIC-M, FR-123
 - `implementation/desktop/crates/selahcue-data/src/transcript_repo.rs` (closest
   precedent: repo API shape, `RetentionSettings` seam, cascade doc comments)
@@ -81,6 +89,10 @@ the operator has no existing channel to a transcript's row id.
   that transcript deletion cascades to notes BY DEFAULT going forward, reversing
   86ajtxzrn's placeholder `false` — pending product sign-off, not presented as
   decided.
+- `scripts/operator_headless.py`: new headless-webview checks for the edit UI
+  (added once the live ticket text — re-verified after ClickUp came back up —
+  confirmed this was explicitly asked for, asserting computed style not
+  `.hidden`).
 
 ### Non-goals
 
@@ -141,15 +153,15 @@ the operator has no existing channel to a transcript's row id.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | `sermon_note` table + repo (create/read-by-transcript/update) exist, migration is v21 | `cargo test -p selahcue-data --test test_sermon_note_repo` | all pass | test log | PENDING |
-| C-002 | yes | Draft persists across a fresh `Database::open` on the same file (restart-survives) | dedicated repo test opening a file-backed DB twice | pass | test log | PENDING |
-| C-003 | yes | Editing title/summary/section items+outline points persists and survives a re-open | repo test + operator command test | pass | test log | PENDING |
-| C-004 | yes | Source transcript stored text byte-identical before generation / after generation / after editing | new persisted-storage regression test in `selahcue-data` (companion to `selahcue-cloud`'s existing FR-123 in-memory test) | pass | test log | PENDING |
-| C-005 | yes | Editing a draft never drops `ai_generated`/`disclosure` | repo test asserting both fields unchanged by `update` | pass | test log | PENDING |
-| C-006 | yes | Cascade-on-delete proposal implemented + explicitly flagged as needing sign-off | code comments + `transcript_repo` tests (cascade true deletes note; false detaches note) + PR/ClickUp comment | pass + comment posted | test log + PR/ClickUp comment link | PENDING |
-| C-007 | yes | Oversized/malformed edit rejected, storage stays bounded; mutation-verified | `cargo test -p selahcue-data` bounded-memory test, manual mutation (guard removed → RED, restored → GREEN, whole file w/ siblings) | RED then GREEN observed | test output | PENDING |
-| C-008 | yes | `make ci` passes | `make ci` | exit 0 | ci log | PENDING |
-| C-009 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) | review round | all blocking findings resolved | review report artifact | PENDING |
+| C-001 | yes | `sermon_note` table + repo (create/read-by-transcript/update) exist, migration is v21 | `cargo test -p selahcue-data --test test_sermon_note_repo` | all pass | 13/13 pass | PASS |
+| C-002 | yes | Draft persists across a fresh `Database::open` on the same file (restart-survives) | `a_draft_survives_a_fresh_database_open_of_the_same_file` | pass | pass | PASS |
+| C-003 | yes | Editing title/summary/section items+outline points persists and survives a re-open | `editing_title_summary_and_sections_persists_and_survives_reopen` + headless `PP SN-4`/`PP SN-5` | pass | pass | PASS |
+| C-004 | yes | Source transcript stored text byte-identical before generation / after generation / after editing | `generating_persisting_and_editing_a_draft_leaves_the_stored_transcript_byte_identical` | pass, mutation-verified | RED (bug injected) then GREEN | PASS |
+| C-005 | yes | Editing a draft never drops `ai_generated`/`disclosure` | `editing_a_draft_never_drops_the_ai_generated_label_or_disclosure` + headless `PP SN-3`/`PP SN-5` (computed style) | pass | pass | PASS |
+| C-006 | yes | Cascade-on-delete proposal implemented + explicitly flagged as needing sign-off | code comments + `transcript_repo` tests (cascade true deletes note; false detaches note) + PR/ClickUp comment | pass + comment posted | 3 new tests pass; PR description + PR comment + ClickUp comment all posted | PASS |
+| C-007 | yes | Oversized/malformed edit rejected, storage stays bounded; mutation-verified | `cargo test -p selahcue-data` bounded-memory test, manual mutation (guard removed → RED, restored → GREEN, whole file w/ siblings) | RED then GREEN observed | RED then GREEN observed | PASS |
+| C-008 | yes | `make ci` passes | `make ci` | exit 0 | `MAKE_CI_EXIT_CODE=0`, "ALL GREEN" | PASS |
+| C-009 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) | review round | all blocking findings resolved | not yet requested | PENDING |
 
 ## Verification plan
 
@@ -174,10 +186,61 @@ the operator has no existing channel to a transcript's row id.
   that only touches editable columns, satisfies persistence + editability +
   label-preservation without touching `NoteDraft`'s shape or adding dependencies
   to `selahcue-core`.
-- Change: (recorded after implementation below)
-- Verifier executed: (recorded below)
-- Result: (recorded below)
-- Decision: (recorded below)
+- Change: migration v21 + `sermon_note_repo` (selahcue-data); cascade wiring in
+  `transcript_repo::delete`/`purge_expired`; `generate_sermon_notes` persist-on-
+  generate + `load_sermon_note_draft`/`update_sermon_note_draft` commands
+  (selahcue-operator); edit surface in `dist/settings.js` + `app.css`.
+- Verifier executed: `cargo test -p selahcue-data` (+ `--features encryption`),
+  `cargo test`/`cargo clippy --all-targets -- -D warnings` for
+  `selahcue-operator` (default and `dev-keys,openai-notes`).
+- Result: PASS (C-001..C-007).
+- Decision: iterate to C-008 (full `make ci`, plus the headless webview checks
+  the re-verified live ticket asked for).
+
+### Iteration 2
+
+- Target criterion: C-008, and the headless webview check the live ClickUp
+  ticket's "Verification expectations" asks for (missed in the initial
+  reconstructed-prompt read; caught on re-verifying against ClickUp once the
+  connector came back up).
+- Hypothesis: 27 new `PP SN-*` checks in `scripts/operator_headless.py`,
+  asserting `getComputedStyle(...).display` (not `.hidden`) for the Edit button,
+  the edit form, and the AI label/disclosure through open-edit/save/cancel, give
+  this the same behavioural cover the rest of the Providers & Privacy panel
+  already has.
+- Change: extended the mock Tauri host in `operator_headless.py` with
+  `load_sermon_note_draft`/`update_sermon_note_draft` handlers and a
+  single-slot `SN` persisted-draft mock state; added the 27 checks.
+- Verifier executed: `python3 scripts/operator_headless.py`.
+- Result: PASS — 1227 checks, 0 FAIL (27 new).
+- Decision: run full `make ci`.
+
+### Iteration 3
+
+- Target criterion: C-008.
+- Hypothesis: `make ci` is green once both `cargo fmt` targets (the workspace
+  manifest AND the operator's own, excluded, manifest) are applied.
+- Change/investigation: first `make ci` run failed at the desktop workspace's own
+  `cargo fmt --check` (new `sermon_note_repo.rs`/test files unformatted); fixed,
+  reran — failed at the OPERATOR's separate `cargo fmt --check` (excluded
+  manifest, not covered by the first `cargo fmt`); fixed, reran clean. Separately
+  caught `clippy::unwrap_used` in a new operator unit test (added after the fmt
+  fixes, verified directly rather than via a fourth full `make ci` run, since
+  `make ci` has no dedicated operator `cargo test` step — confirmed by reading
+  the Makefile's `ci` recipe) and fixed it.
+- Verifier executed: `make ci` (run 3, on the fully settled file state) plus a
+  final standalone re-check of `selahcue-operator` (`fmt --check`, `clippy
+  --all-targets -- -D warnings` for default and `dev-keys,openai-notes`, `cargo
+  test`) and `selahcue-data` (`cargo test`), since those two crates were mid-edit
+  during run 3's own execution and its coverage of them could not be trusted at
+  face value.
+- Result: PASS — `make ci` run 3: `MAKE_CI_EXIT_CODE=0`, "ALL GREEN". Standalone
+  re-check: all green.
+- Decision: complete. Committed (`81a2474`), pushed, Draft PR #33 opened against
+  `main`, PR + ClickUp comments posted, ClickUp status moved to `code review`.
+  Terminal state: `GATE_REVIEW` (C-009, the four-reviewer gate, is the
+  remaining criterion — owned by the review pipeline, not this role, per the
+  Operating Contract's review pipeline section).
 
 ## Risks and rollback
 
@@ -200,9 +263,23 @@ the operator has no existing channel to a transcript's row id.
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86akgqdv0.md`
-- Validator result: (recorded once run)
-- Independent verification result: pending four-reviewer gate (C-009)
-- Terminal state: (recorded once `make ci` is green and the PR is open)
-- Remaining failed or blocked criteria: (recorded)
-- ClickUp final evidence comment: to be posted once `make ci` is green and the PR
-  is open (connector permitting)
+- Validator result: structural OK (run before iteration 1); this file's own
+  `--completion` pass was not re-run after this final edit — see the note below.
+- Independent verification result: pending four-reviewer gate (C-009) — not
+  requested in this session; the ticket's own scope ended at "Draft PR open,
+  report back", matching the precedent set by TASK-86akcfftu (C-008 there was
+  also left PENDING for the same reason).
+- Terminal state: **GATE_REVIEW**. C-001..C-008 PASS; C-009 (four-reviewer gate)
+  and the cascade-on-delete product sign-off are both explicitly open and owned
+  outside this role, per the Operating Contract's boundary ("Product scope...
+  are owned by other roles — escalate rather than decide them").
+- Remaining failed or blocked criteria: C-009 only (PENDING, not FAILED —
+  blocked on dispatching the review pipeline, which is the natural next step).
+- ClickUp final evidence comment: POSTED —
+  https://app.clickup.com/t/86akgqdv0 (comment id `90130319846390`), read back
+  to confirm it persisted in full (no Markdown-table content in it, per the
+  known ClickUp table-dropping issue — plain lists only). Task status moved
+  `planning/todo` -> `code review`.
+- PR: https://github.com/First-Pavilion/selahcue/pull/33 (Draft, base `main`,
+  head `81a24744a5df352a69d21bdddfcf10284c2c31ea`) — description + a separate
+  summary comment posted.
