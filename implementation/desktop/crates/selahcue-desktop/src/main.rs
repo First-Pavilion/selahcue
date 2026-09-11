@@ -3143,6 +3143,12 @@ fn main() {
     // throwaway probe — it must not persist anything (no session mutation).
     if !app.disk_critical && !app.clean_mode && !app.smoke {
         if let Ok(mut c) = app.controller.lock() {
+            // 86akcfftu (Sana, PR #31 F2): a clean exit while a transcript session is open
+            // must close it here too, not just on an explicit Stop Listening — otherwise
+            // quitting mid-service left `ended_at` unset until the next startup's
+            // crash-recovery sweep, and dropped whatever was still buffered unflushed. A
+            // no-op (via `close_current`'s early return) when no session is open.
+            c.end_transcript_session();
             if c.take_plan_dirty() {
                 app.store.save_plan(c.plan());
             }

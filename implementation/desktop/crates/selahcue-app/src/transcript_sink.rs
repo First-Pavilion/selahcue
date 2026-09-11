@@ -211,8 +211,12 @@ impl<S: TranscriptStoreWriter, M: MonotonicClock, E: EpochClock> BatchingTranscr
         self.pending.len()
     }
 
-    /// How many buffered segments have been dropped (oldest-first) to hold the bound above,
-    /// because the store kept failing to accept a flush. Zero under a healthy store.
+    /// How many segments this writer has ever had to drop instead of persisting them — a
+    /// LIFETIME count for this writer (never reset by `start()`), covering every way a
+    /// segment can be lost: the bound above being held against a failing store
+    /// (oldest-first), a segment ingested with no session open (nothing to attribute it to),
+    /// and a segment still unflushed when its session closed. Zero under a healthy store used
+    /// as documented (a `start()`/`ingest()`/`end()` sequence with no gaps).
     pub fn dropped_segment_count(&self) -> u64 {
         self.dropped_segment_count
     }
@@ -248,8 +252,9 @@ impl<S: TranscriptStoreWriter, M: MonotonicClock, E: EpochClock> BatchingTranscr
 
     fn flush(&mut self) {
         let Some(id) = self.transcript_id else {
-            // Nothing open (start() never succeeded, or end() already ran) — keep buffering;
-            // a later start() will flush what's pending against the newly opened transcript.
+            // Nothing open. `pending` should be empty here by construction — `ingest` (below)
+            // refuses to buffer a segment with no open transcript in the first place, so there
+            // is nothing to attribute a flush to and nothing this call needs to do.
             return;
         };
         while let Some(seg) = self.pending.front() {
@@ -281,13 +286,49 @@ impl<S: TranscriptStoreWriter, M: MonotonicClock, E: EpochClock> BatchingTranscr
     }
 }
 
+impl<S: TranscriptStoreWriter, M: MonotonicClock, E: EpochClock> BatchingTranscriptWriter<S, M, E> {
+    /// Flush and end whatever transcript is currently open, if any — a no-op if none is.
+    /// Shared by [`TranscriptSink::end`] and [`TranscriptSink::start`] so a `start()` that
+    /// finds a session already open can never silently discard it (PR #31 review, Sana F1: a
+    /// bare `start()` used to clear `pending` and drop the transcript id unconditionally,
+    /// losing every unflushed segment of whatever was open — reachable both by a legitimate
+    /// operator-process restart mid-service and, since RBAC does not track "is a session
+    /// already open" state, by any two `StartTranscript` commands in a row from a paired
+    /// Producer/Operator). This makes "close whatever's open" the ONE code path either
+    /// caller goes through, so a future change to closing logic cannot fix one and miss
+    /// the other.
+    fn close_current(&mut self) {
+        self.flush();
+        self.enforce_bound();
+        if let Some(id) = self.transcript_id.take() {
+            if let Err(e) = self.store.end_transcript(id, self.epoch.now_ms()) {
+                self.last_error = Some(e);
+            }
+        }
+        // Anything still buffered here means the store kept refusing it even through the
+        // flush above (a persistently failing store) — count it as dropped, never silently
+        // discard it, mirroring `enforce_bound`'s own count-on-drop discipline. Under a
+        // healthy store this is always empty already.
+        self.dropped_segment_count += self.pending.len() as u64;
+        self.pending.clear();
+    }
+}
+
 impl<S: TranscriptStoreWriter + Send, M: MonotonicClock, E: EpochClock> TranscriptSink
     for BatchingTranscriptWriter<S, M, E>
 {
     fn start(&mut self, label: &str, provider: &str) {
-        self.pending.clear();
-        self.last_error = None;
-        self.dropped_segment_count = 0;
+        // A `start()` while a transcript is ALREADY open must never silently discard it (Sana,
+        // PR #31 F1) — close it out properly first: flush its pending segments, end it, and
+        // count anything that still could not be flushed. See `close_current`'s own doc.
+        self.close_current();
+        // Deliberately NOT clearing `last_error` or `dropped_segment_count`: `close_current()`
+        // just above may have set/incremented either (the previous session's close failed to
+        // flush or end cleanly), and that is exactly the moment a caller most needs to still
+        // see it — both are lifetime counters/latches for this writer, not per-session ones,
+        // cleared only by their own natural mechanism (a later successful flush clears
+        // `last_error`; `dropped_segment_count` never auto-clears, same as e.g. this
+        // codebase's other saturating lifetime counters).
         self.last_flush_at = Some(self.monotonic.now());
         match self
             .store
@@ -302,6 +343,16 @@ impl<S: TranscriptStoreWriter + Send, M: MonotonicClock, E: EpochClock> Transcri
     }
 
     fn ingest(&mut self, start_ms: u64, end_ms: u64, text: &str) {
+        if self.transcript_id.is_none() {
+            // No session open — there is nothing to durably attribute this segment to.
+            // Buffering it "for whichever session starts next" (the previous design) would
+            // silently mis-attribute it to an unrelated future session, or vanish entirely if
+            // that session's own `start()`/`close_current()` cleared the buffer first (Sana,
+            // PR #31 F1, probe B). Counting it as dropped makes the loss honest and visible
+            // instead of a queue nothing is actually consuming.
+            self.dropped_segment_count += 1;
+            return;
+        }
         self.pending.push_back(PendingSegment {
             start_ms,
             end_ms,
@@ -315,14 +366,7 @@ impl<S: TranscriptStoreWriter + Send, M: MonotonicClock, E: EpochClock> Transcri
     }
 
     fn end(&mut self) {
-        self.flush();
-        self.enforce_bound();
-        if let Some(id) = self.transcript_id.take() {
-            if let Err(e) = self.store.end_transcript(id, self.epoch.now_ms()) {
-                self.last_error = Some(e);
-            }
-        }
-        self.pending.clear();
+        self.close_current();
     }
 }
 
@@ -668,6 +712,101 @@ mod tests {
         writer.ingest(0, 1, "hello");
         writer.end();
         assert_eq!(store.open_calls(), 1);
+    }
+
+    /// Regression for PR #31 review (Sana F1, probe A): `start()` while a transcript is
+    /// ALREADY open must flush + end the previous one, never silently discard it.
+    #[test]
+    fn starting_a_new_session_while_one_is_open_flushes_and_ends_the_previous_one_first() {
+        let store = FakeStore::new();
+        let mut writer = BatchingTranscriptWriter::with_clocks(
+            store.clone(),
+            FakeMonotonicClock::new(),
+            FakeEpochClock::new(1_000),
+        );
+        writer.start("Sunday AM", "on-device-whisper");
+        // Below FLUSH_SEGMENT_THRESHOLD, so nothing has flushed yet — still buffered when the
+        // second start() arrives.
+        for i in 0..FLUSH_SEGMENT_THRESHOLD - 1 {
+            writer.ingest(i as u64, i as u64 + 1, "grace and peace");
+        }
+        assert_eq!(
+            store.accepted().len(),
+            0,
+            "nothing flushed yet — this is the setup"
+        );
+
+        writer.start("Sunday PM", "on-device-whisper");
+
+        assert_eq!(
+            store.accepted().len(),
+            FLUSH_SEGMENT_THRESHOLD - 1,
+            "the first session's buffered segments must have been flushed before the second \
+             session opened, not discarded"
+        );
+        assert_eq!(
+            store.ended().len(),
+            1,
+            "the first session must have been properly ended, not left dangling"
+        );
+        assert_eq!(
+            writer.dropped_segment_count(),
+            0,
+            "a healthy store must lose nothing across a start-while-open"
+        );
+        assert_eq!(
+            store.open_calls(),
+            2,
+            "and the second session must have genuinely opened"
+        );
+    }
+
+    /// Regression for PR #31 review (Sana F1, probe B): a segment ingested with NO session
+    /// open (e.g. after `end()`, before the next `start()`) must be counted as dropped, not
+    /// silently buffered where a later `start()` would discard it unnoticed.
+    #[test]
+    fn a_segment_ingested_with_no_session_open_is_counted_as_dropped_not_silently_lost() {
+        let store = FakeStore::new();
+        let mut writer = BatchingTranscriptWriter::with_clocks(
+            store.clone(),
+            FakeMonotonicClock::new(),
+            FakeEpochClock::new(1_000),
+        );
+        writer.start("Sunday AM", "on-device-whisper");
+        writer.end();
+        assert_eq!(writer.dropped_segment_count(), 0);
+
+        // No session open here — these must not vanish into a buffer nothing will ever flush.
+        for i in 0..74 {
+            writer.ingest(i, i + 1, "orphaned tail audio");
+        }
+        assert_eq!(
+            writer.dropped_segment_count(),
+            74,
+            "every orphaned ingest must be counted as dropped, immediately — not queued"
+        );
+        assert_eq!(
+            writer.pending_len(),
+            0,
+            "nothing should be buffered with no session open"
+        );
+
+        writer.start("Sunday PM", "on-device-whisper");
+        writer.ingest(0, 1, "a genuinely new segment");
+        writer.end();
+
+        let accepted = store.accepted();
+        assert_eq!(
+            accepted.len(),
+            1,
+            "the second session must contain only its OWN segment, not any orphaned ones"
+        );
+        assert_eq!(accepted[0].3, "a genuinely new segment");
+        assert_eq!(
+            writer.dropped_segment_count(),
+            74,
+            "the drop count must still show the earlier loss after a later, healthy session"
+        );
     }
 
     #[test]
