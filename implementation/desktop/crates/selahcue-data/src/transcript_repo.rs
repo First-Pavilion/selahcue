@@ -400,9 +400,12 @@ pub fn delete(db: &Database, transcript_id: i64) -> Result<()> {
         return Err(DataError::NotFound);
     }
     // Best-effort: try to keep the just-deleted text from lingering in the `-wal`
-    // sidecar (FR-153; PR #30 review, Sana F6) — see
-    // `Database::try_checkpoint_truncate`'s doc comment for why this can never fail
-    // or block this call, only degrade gracefully.
+    // sidecar (FR-153; PR #30 review, Sana F6). Bounded to near-zero wait via a
+    // scoped `busy_timeout = 0` (PR #30 review, Vera F5) — it cannot meaningfully
+    // block this call or any other connection's write, but under contention it may
+    // skip the truncate entirely; see `Database::try_checkpoint_truncate`'s doc
+    // comment for the full trade-off and why that is still an acceptable, self-
+    // healing degradation rather than a failure.
     db.try_checkpoint_truncate();
     Ok(())
 }

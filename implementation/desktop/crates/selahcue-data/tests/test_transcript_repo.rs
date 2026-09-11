@@ -6,6 +6,8 @@
 #![allow(clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use rusqlite::params;
 use selahcue_core::plan::ServicePlan;
@@ -648,6 +650,156 @@ fn purging_expired_transcripts_removes_their_text_from_the_plain_store_file_and_
     );
 
     drop(db);
+}
+
+#[test]
+fn deleting_with_a_reader_holding_the_wal_open_does_not_stall_the_caller_or_other_writers() {
+    // PR #30 review, Vera F5 (High, blocking): `try_checkpoint_truncate`'s
+    // `wal_checkpoint(TRUNCATE)` used to run under the connection's normal
+    // `busy_timeout` (5000ms). With another connection holding an open read
+    // transaction against the same file, that made the checkpoint (and therefore
+    // `delete()`/`purge_expired()`) block for up to the full 5s — and, because a
+    // `TRUNCATE` checkpoint holds the WAL write lock while it waits on readers, it
+    // stalled *every other writer on the file* for the same window too. Worse,
+    // `append_segment`-shaped writes (a deferred transaction that has already run a
+    // read — `SELECT MAX(ord)` — before its `INSERT`) don't even get to wait: SQLite
+    // refuses the busy handler on a read-to-write lock upgrade, so they fail
+    // `SQLITE_BUSY` immediately for the whole window. Measured against `0b87d91`:
+    // `delete()` ~5.2s, writer stall ~5.2s, writer failures on every shape. Fixed by
+    // scoping `busy_timeout` to 0 around just the checkpoint call (see
+    // `Database::try_checkpoint_truncate`'s doc comment).
+    //
+    // This reproduces the contention shape end to end through the public API: a
+    // reader (connection B) holds an open read transaction; `delete()` runs on
+    // connection A concurrently with one `append_detection` and one `append_segment`
+    // attempted on connection C from a second thread, so C's attempts can genuinely
+    // land while A's checkpoint is (pre-fix) holding the WAL write lock.
+    //
+    // Mutation-verified by hand: reverting `Database::try_checkpoint_truncate` to the
+    // bare `let _ = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");` (no
+    // scoped busy_timeout) turns this test RED — observed `delete()` at ~5.18s (over
+    // the bound below by 50x) and, on the same run, the `append_segment` probe failing
+    // outright with `SQLITE_BUSY: database is locked` rather than merely being slow.
+    // Restoring the fix turns it GREEN again.
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_path_buf();
+    let wal_path = wal_sidecar_path(&path);
+
+    let db = Database::open(&path).unwrap(); // connection A
+    let transcript_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
+    transcript_repo::append_segment(&db, transcript_id, 0, 1, "fixture").unwrap();
+
+    let writer_db = Database::open(&path).unwrap(); // connection C
+    let other_transcript_id =
+        transcript_repo::create(&writer_db, &sample_new_transcript()).unwrap();
+
+    // Connection B: a reader holding an open read transaction — the contention shape
+    // that makes the checkpoint's busy wait real (an idle connection, or one that
+    // merely polls, does not trigger it — see `Database::try_checkpoint_truncate`'s
+    // doc comment).
+    let reader = rusqlite::Connection::open(&path).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT COUNT(*) FROM transcript;")
+        .unwrap();
+
+    // Bound generous enough to never flake on a loaded CI box, but 10x tighter than
+    // the 5000ms `busy_timeout` the old code could stall for — nowhere close to the
+    // ~1-2ms this crate's own fix measures uncontended.
+    const BOUND: Duration = Duration::from_millis(500);
+
+    // Connection C's writes run on their own thread, started before A's delete() call
+    // below, so a scheduling hiccup cannot make them run only after A has already
+    // finished (which would trivially "pass" regardless of the fix).
+    let writer_thread = thread::spawn(move || {
+        // Tiny head start so A's DELETE + checkpoint call has begun before C's first
+        // attempt — irrelevant for correctness (the pre-fix bug's window is ~5s, five
+        // orders of magnitude longer than this sleep) but maximises the odds that a
+        // single hand-run of the mutated code actually overlaps.
+        thread::sleep(Duration::from_millis(5));
+
+        let detection_start = Instant::now();
+        let detection_result = transcript_repo::append_detection(
+            &writer_db,
+            other_transcript_id,
+            None,
+            "John 3:16",
+            90,
+        );
+        let detection_elapsed = detection_start.elapsed();
+
+        let segment_start = Instant::now();
+        let segment_result =
+            transcript_repo::append_segment(&writer_db, other_transcript_id, 0, 1, "segment");
+        let segment_elapsed = segment_start.elapsed();
+
+        (
+            detection_result,
+            detection_elapsed,
+            segment_result,
+            segment_elapsed,
+        )
+    });
+
+    let delete_start = Instant::now();
+    transcript_repo::delete(&db, transcript_id).unwrap();
+    let delete_elapsed = delete_start.elapsed();
+
+    let (detection_result, detection_elapsed, segment_result, segment_elapsed) =
+        writer_thread.join().unwrap();
+
+    // Release the reader before the positive control below.
+    reader.execute_batch("COMMIT;").unwrap();
+
+    assert!(
+        delete_elapsed < BOUND,
+        "delete() took {delete_elapsed:?} with a reader holding an open read \
+         transaction — Database::try_checkpoint_truncate's scoped busy_timeout = 0 \
+         fix (PR #30 review, Vera F5) must bound this to a few ms, not the \
+         connection's full 5s busy_timeout"
+    );
+    assert!(
+        detection_result.is_ok(),
+        "append_detection (an ordinary autocommit writer, concurrent with \
+         delete()'s checkpoint) failed instead of succeeding: {detection_result:?}"
+    );
+    assert!(
+        detection_elapsed < BOUND,
+        "append_detection stalled for {detection_elapsed:?} while a concurrent \
+         delete() ran its checkpoint under WAL contention — a best-effort WAL \
+         truncate on one connection must not stall a write on another"
+    );
+    assert!(
+        segment_result.is_ok(),
+        "append_segment (the future live-STT write shape, 86akcfftu) failed instead \
+         of succeeding: {segment_result:?} — its deferred transaction has already run \
+         a read (`SELECT MAX(ord)`) before the INSERT, so SQLite refuses the busy \
+         handler on that read-to-write upgrade and this shape fails immediately \
+         rather than merely waiting, exactly as Vera's report describes"
+    );
+    assert!(
+        segment_elapsed < BOUND,
+        "append_segment stalled for {segment_elapsed:?}"
+    );
+
+    // Positive control: with the reader released and no contention, delete()'s
+    // checkpoint still fully truncates the WAL, exactly as it always could when
+    // uncontended — proving the scoped busy_timeout = 0 fix doesn't simply make the
+    // checkpoint skip every time; it only yields promptly under real contention.
+    // `writer_db` (connection C) was moved into the writer thread above, so this
+    // control uses a fresh connection — a new open, same file, same guarantee.
+    let control_db = Database::open(&path).unwrap();
+    transcript_repo::delete(&control_db, other_transcript_id).unwrap();
+    let wal_after = std::fs::read(&wal_path).unwrap_or_default();
+    assert_eq!(
+        wal_after.len(),
+        0,
+        "positive control: with no reader holding the WAL open, delete()'s checkpoint \
+         must still fully truncate the -wal file to 0 bytes"
+    );
+
+    drop(reader);
+    drop(db);
+    drop(control_db);
 }
 
 // --- Listing (enough per row for a list UI, no second read) -------------------------
