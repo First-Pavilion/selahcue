@@ -111,6 +111,28 @@ impl Database {
         Ok(())
     }
 
+    /// Best-effort WAL checkpoint+truncate, called automatically after
+    /// `transcript_repo::delete`/`purge_expired` commit (FR-153; PR #30 review, Sana
+    /// F6). `secure_delete = ON` (above) only zeroes freed *page* content inside the
+    /// main `.db3` file; in WAL mode a deleted row's bytes can still sit in the `-wal`
+    /// sidecar — as stale, already-superseded frames left over from the write that
+    /// originally created the row — until something truncates it. A plain checkpoint
+    /// (`PASSIVE`, what SQLite's own auto-checkpoint runs) moves the *current* state
+    /// into the main file but does not truncate the WAL, so those old frames can
+    /// persist indefinitely while the app keeps running. `TRUNCATE` does both.
+    ///
+    /// Deliberately best-effort: `wal_checkpoint(TRUNCATE)` can only fully truncate
+    /// when no other connection holds a read transaction open against the WAL — a
+    /// concurrent reader can make it return `SQLITE_BUSY` or leave a shorter (but
+    /// non-empty) WAL behind instead of an empty one. This must never fail or block
+    /// the caller's delete/purge: the row is already gone from the readable schema
+    /// either way, so any error here is silently discarded and the erasure guarantee
+    /// degrades gracefully to "no later than the next successful checkpoint or a
+    /// clean close" — the pre-fix status quo — never to a failed or blocked delete.
+    pub(crate) fn try_checkpoint_truncate(&self) {
+        let _ = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    }
+
     /// Crash-safe backup of an **unencrypted** database via SQLite's online backup
     /// API (not a raw file copy), so it is consistent even while the source is in
     /// use (FR-079).

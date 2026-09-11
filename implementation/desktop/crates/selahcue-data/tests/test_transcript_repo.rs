@@ -23,6 +23,27 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+/// Smallest chunk of a marker the FR-082 runtime leak check treats as a leak on its
+/// own (PR #30 review, Sana F7). An exact, whole-marker match alone lets a truncated
+/// diagnostic — e.g. "bad segment starting <first 24 chars>" — walk straight past the
+/// check, because it never contains the FULL marker. `LEAK_WINDOW` is smaller than
+/// every marker used in this file, so a genuine leak of any contiguous chunk at least
+/// this long is caught even when the rest of the marker never appears.
+const LEAK_WINDOW: usize = 12;
+
+/// True iff some contiguous `LEAK_WINDOW`-byte-or-longer slice of `needle` appears
+/// anywhere in `haystack` — not just an exact match of the whole string.
+fn contains_a_leak_window_of(haystack: &str, needle: &str) -> bool {
+    let needle = needle.as_bytes();
+    let haystack = haystack.as_bytes();
+    if needle.len() <= LEAK_WINDOW {
+        return haystack.windows(needle.len()).any(|w| w == needle);
+    }
+    needle
+        .windows(LEAK_WINDOW)
+        .any(|nw| haystack.windows(LEAK_WINDOW).any(|hw| hw == nw))
+}
+
 /// SQLite's WAL sidecar path for a given database file path (`<path>-wal`).
 fn wal_sidecar_path(db_path: &Path) -> PathBuf {
     let mut s = db_path.as_os_str().to_owned();
@@ -489,14 +510,30 @@ fn deleting_an_unknown_transcript_is_not_found() {
 fn deleting_a_transcript_removes_its_text_from_the_plain_store_file_and_wal() {
     // FR-153 "reliable deletion" must mean the text is actually gone from disk, not
     // merely unreachable via the read API. Bundled SQLite defaults `secure_delete`
-    // OFF, which leaves a deleted row's bytes sitting in freed pages (and in the WAL
-    // until checkpointed) until some unrelated later write happens to reuse that page
-    // (PR #30 review, Sana F1 — this is the live path today: `make launch`, `make
-    // output`, and the installer all build the plaintext output-window path, so this
-    // is not merely a theoretical gap behind the off-by-default `encryption` feature).
-    // Mutation check performed by hand: removing `PRAGMA secure_delete = ON;` from
-    // `Database::init` turns this RED (the marker survives in both files); restoring
-    // it turns it GREEN again.
+    // OFF, which leaves a deleted row's bytes sitting in freed pages until some
+    // unrelated later write happens to reuse that page (PR #30 review, Sana F1 — this
+    // is the live path today: `make launch`, `make output`, and the installer all
+    // build the plaintext output-window path, so this is not merely a theoretical gap
+    // behind the off-by-default `encryption` feature). Mutation check performed by
+    // hand: removing `PRAGMA secure_delete = ON;` from `Database::init` turns the
+    // main-file assertion below RED; restoring it turns it GREEN again.
+    //
+    // `secure_delete` alone only covers the main `.db3` file. In WAL mode, freed-page
+    // zeroing happens inside a *new* WAL frame; the earlier, now-superseded frame that
+    // still holds the deleted row's original bytes can remain physically present in
+    // the `-wal` sidecar until something truncates it (PR #30 review, Sana F6) — so
+    // `delete()` now runs a best-effort `wal_checkpoint(TRUNCATE)` itself (see
+    // `Database::try_checkpoint_truncate`). This test does NOT call
+    // `checkpoint_truncate()` itself, and reads both files with the connection STILL
+    // OPEN, immediately after `delete()` returns — deliberately, on both counts: an
+    // explicit test-side checkpoint (the previous version of this test) or even just
+    // `drop(db)` (SQLite auto-checkpoints and typically deletes the WAL on a clean
+    // close) would truncate the WAL regardless of whether `delete()`'s own internal
+    // checkpoint did anything, making the WAL assertion pass unconditionally — exactly
+    // the vacuousness Cody's review flagged in the prior version of this test. Mutation
+    // check performed by hand: removing the `db.try_checkpoint_truncate();` call from
+    // `transcript_repo::delete` turns the WAL assertion below RED (the marker survives
+    // in the stale, superseded WAL frame); restoring it turns it GREEN again.
     const MARKER: &str = "FR153_SECURE_DELETE_MARKER_Nahum_Elkoshite_Oracle";
     let file = tempfile::NamedTempFile::new().unwrap();
     let path = file.path().to_path_buf();
@@ -520,20 +557,97 @@ fn deleting_a_transcript_removes_its_text_from_the_plain_store_file_and_wal() {
     );
 
     transcript_repo::delete(&db, transcript_id).unwrap();
-    db.checkpoint_truncate().unwrap();
-    drop(db);
 
+    // Read with `db` still open — see the doc comment above for why.
     let main_after = std::fs::read(&path).unwrap();
     let wal_after = std::fs::read(&wal_path).unwrap_or_default();
     assert!(
         !contains(&main_after, MARKER.as_bytes()),
-        "deleted transcript text remained in the main .db3 file after checkpoint — \
-         secure_delete is not zeroing freed pages (FR-153)"
+        "deleted transcript text remained in the main .db3 file — secure_delete is not \
+         zeroing freed pages (FR-153)"
     );
     assert!(
         !contains(&wal_after, MARKER.as_bytes()),
-        "deleted transcript text remained in the -wal file after checkpoint (FR-153)"
+        "deleted transcript text remained in the -wal file immediately after delete() \
+         returned, before any connection close — delete()'s own best-effort \
+         wal_checkpoint(TRUNCATE) did not clear it (FR-153)"
     );
+
+    drop(db);
+}
+
+#[test]
+fn purging_expired_transcripts_removes_their_text_from_the_plain_store_file_and_wal() {
+    // Same FR-153 guarantee as the delete test above, through `purge_expired` — the
+    // other deletion path Sana F6's fix applies to. Same reasoning for reading with
+    // the connection still open and never calling `checkpoint_truncate()` in the test:
+    // a clean close would truncate the WAL regardless of whether `purge_expired()`'s
+    // own best-effort checkpoint did anything. Mutation check performed by hand:
+    // removing the `db.try_checkpoint_truncate();` call from
+    // `transcript_repo::purge_expired` turns the WAL assertion below RED; restoring it
+    // turns it GREEN again.
+    const MARKER: &str = "FR153_PURGE_SECURE_DELETE_MARKER_Habakkuk_Zephaniah_Oracle";
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_path_buf();
+    let wal_path = wal_sidecar_path(&path);
+    const DAY_MS: i64 = 86_400_000;
+    let now = 100 * DAY_MS;
+
+    let db = Database::open(&path).unwrap();
+    let transcript_id = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "to purge".into(),
+            provider: "manual".into(),
+            plan_id: None,
+            started_at_ms: now - 10 * DAY_MS,
+        },
+    )
+    .unwrap();
+    for i in 0..40 {
+        transcript_repo::append_segment(&db, transcript_id, i, i + 1, MARKER).unwrap();
+    }
+    transcript_repo::end(&db, transcript_id, now - 9 * DAY_MS).unwrap();
+    transcript_repo::save_retention_settings(
+        &db,
+        &RetentionSettings {
+            retention_days: Some(7),
+            delete_cascade_to_notes: false,
+        },
+    )
+    .unwrap();
+
+    // Positive control, same reasoning as the delete test above.
+    let wal_before = std::fs::read(&wal_path).unwrap_or_default();
+    let main_before = std::fs::read(&path).unwrap();
+    assert!(
+        contains(&wal_before, MARKER.as_bytes()) || contains(&main_before, MARKER.as_bytes()),
+        "positive control: marker must be present on disk before purge"
+    );
+
+    let purged = transcript_repo::purge_expired(&db, now).unwrap();
+    assert_eq!(
+        purged,
+        vec![transcript_id],
+        "sanity: the fixture transcript must actually be the one purged"
+    );
+
+    // Read with `db` still open — see the doc comment above for why.
+    let main_after = std::fs::read(&path).unwrap();
+    let wal_after = std::fs::read(&wal_path).unwrap_or_default();
+    assert!(
+        !contains(&main_after, MARKER.as_bytes()),
+        "purged transcript text remained in the main .db3 file — secure_delete is not \
+         zeroing freed pages (FR-153)"
+    );
+    assert!(
+        !contains(&wal_after, MARKER.as_bytes()),
+        "purged transcript text remained in the -wal file immediately after \
+         purge_expired() returned, before any connection close — its own best-effort \
+         wal_checkpoint(TRUNCATE) did not clear it (FR-153)"
+    );
+
+    drop(db);
 }
 
 // --- Listing (enough per row for a list UI, no second read) -------------------------
@@ -935,9 +1049,10 @@ fn no_segment_or_detection_text_reaches_a_dataerror_diagnostic() {
     }
 
     assert!(
-        !diagnostics.contains(MARKER),
+        !contains_a_leak_window_of(&diagnostics, MARKER),
         "sensitive transcript/detection text leaked into a DataError's Display/Debug \
-         output (FR-082): {diagnostics}"
+         output (FR-082) — matched at least a {LEAK_WINDOW}-byte window of the marker, \
+         not just a full exact match (PR #30 review, Sana F7): {diagnostics}"
     );
     // Second positive control: the captured diagnostics string is real, non-trivial
     // content — proving the capture-and-search methodology isn't itself dead (an empty
@@ -957,6 +1072,17 @@ fn transcript_repo_source_never_calls_a_logging_or_print_macro() {
     // control is that none of these ever appear in its source — an addition is caught
     // here even before any test exercises the new line. Mirrors
     // `selahcue-licensing/tests/test_custody.rs`'s "never handed to a formatter" guard.
+    // Also forbids panic!/todo!/unimplemented!/.expect( (PR #30 review, Sana F4): a
+    // panic's message is exactly as capable of embedding sensitive text as a log line
+    // is, and none of the four is otherwise needed in this module.
+    //
+    // `format!` itself is deliberately NOT in this list: this module already uses it
+    // to build `DataError::Corrupt` messages, always over ids, counts, or a fixed
+    // literal — with the one documented exception of `load_retention_settings` echoing
+    // a malformed *configuration value* (never segment/detection/correction text). See
+    // the module doc comment at the top of `transcript_repo.rs` for the full claim;
+    // this scan only catches an outright logging/print/panic call, not a `format!` that
+    // captures the wrong variable — that half is the runtime test above's job.
     let src_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/transcript_repo.rs");
     let body = std::fs::read_to_string(&src_path).unwrap();
     const FORBIDDEN: &[&str] = &[
@@ -967,6 +1093,10 @@ fn transcript_repo_source_never_calls_a_logging_or_print_macro() {
         "log::",
         "tracing::",
         "dbg!",
+        "panic!",
+        "todo!",
+        "unimplemented!",
+        ".expect(",
     ];
 
     let mut scanned_lines = 0usize;

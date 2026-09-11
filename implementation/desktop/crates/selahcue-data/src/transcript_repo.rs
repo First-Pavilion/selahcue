@@ -16,13 +16,35 @@
 //! `transcript_setting` row, not a hardcoded constant (FR-153/FR-137): see
 //! [`RetentionSettings`].
 //!
-//! No function in this module formats segment/detection/correction **text** into a
-//! diagnostic — every error path here carries only ids, counts, or a fixed literal
-//! (FR-082). `tests/test_transcript_repo.rs` verifies this holds at runtime (every
-//! `DataError` reachable from this module, formatted, never contains planted marker
-//! text) with a positive control proving the marker really was persisted, plus a
-//! static source scan mirroring `selahcue-licensing`'s "never handed to a formatter"
-//! guard.
+//! No function in this module formats segment/detection/correction **text** (the raw
+//! speech, its correction, or a detected reference) into a diagnostic — every error
+//! path over that content carries only ids, counts, or a fixed literal (FR-082). The
+//! one deliberate exception is [`load_retention_settings`], which echoes a malformed
+//! `transcript_setting` *value* into `DataError::Corrupt` (PR #30 review, Sana F5/F4):
+//! that string is an operator-set configuration value (e.g. a bad `retention_days`),
+//! never speech, and surfacing it is the point — a privacy control that fails silently
+//! on bad input is worse than one that names it. `tests/test_transcript_repo.rs`
+//! verifies the no-speech-in-diagnostics half holds at runtime (every `DataError`
+//! reachable from this module that touches segment/detection/correction text,
+//! formatted, never contains planted marker text — checked against partial/truncated
+//! leaks, not just an exact match, PR #30 review, Sana F7) with a positive control
+//! proving the marker really was persisted, plus a static source scan mirroring
+//! `selahcue-licensing`'s "never handed to a formatter" guard — see that scan's own
+//! comment for exactly which tokens it forbids and why `format!` itself is still
+//! allowed.
+//!
+//! The aggregate types below (`NewTranscript`, `TranscriptSummary`,
+//! `SegmentCorrection`, `TranscriptDetail`) derive `Debug` even though they carry raw
+//! text (PR #30 review, Sana F4). That is not itself an FR-082 exposure: the guarantee
+//! above is about what this module's own functions *format into an error*, and none of
+//! them ever formats a value of these types wholesale — only individual id/count
+//! fields, which is what the static scan and the runtime test both check. `Debug` on
+//! these structs is reachable today only from a test's own assertion-failure message
+//! (this crate's tests, printed to `cargo test`'s own output, never a production log or
+//! diagnostic) or a future caller's own debugging code. If a future caller (e.g.
+//! 86akcfftu, the live write path) ever logs or reports one of these values wholesale,
+//! that call site — not this derive — is what would need a redacting `Debug` or to log
+//! selected fields only; nothing here forecloses that.
 
 use crate::{DataError, Database, Result};
 use rusqlite::params;
@@ -375,10 +397,14 @@ pub fn delete(db: &Database, transcript_id: i64) -> Result<()> {
         params![transcript_id],
     )?;
     if n == 0 {
-        Err(DataError::NotFound)
-    } else {
-        Ok(())
+        return Err(DataError::NotFound);
     }
+    // Best-effort: try to keep the just-deleted text from lingering in the `-wal`
+    // sidecar (FR-153; PR #30 review, Sana F6) — see
+    // `Database::try_checkpoint_truncate`'s doc comment for why this can never fail
+    // or block this call, only degrade gracefully.
+    db.try_checkpoint_truncate();
+    Ok(())
 }
 
 /// Load the retention/deletion-cascade settings. An empty store yields the safe
@@ -498,5 +524,10 @@ pub fn purge_expired(db: &Database, now_ms: i64) -> Result<Vec<i64>> {
         tx.execute("DELETE FROM transcript WHERE id = ?1", params![id])?;
     }
     tx.commit()?;
+    if !ids.is_empty() {
+        // Same best-effort WAL truncate as `delete` (FR-153; Sana F6) — only worth
+        // attempting when something was actually removed.
+        db.try_checkpoint_truncate();
+    }
     Ok(ids)
 }
