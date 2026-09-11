@@ -39,7 +39,7 @@ use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_data::session_repo::SessionState;
 use selahcue_data::{
     output_repo, plan_repo, saved_theme_repo, screen_config_repo, screen_repo, screen_theme_repo,
-    session_repo, DataError, Database,
+    session_repo, transcript_repo, DataError, Database,
 };
 use selahcue_engine::raster::{Fit, FrameBuffer};
 use selahcue_lan::protocol::{
@@ -553,6 +553,82 @@ fn data_dir() -> Option<std::path::PathBuf> {
     Some(dir)
 }
 
+/// Adapts `selahcue_data::transcript_repo` to `selahcue_app::TranscriptStoreWriter`
+/// (86akcfftu). `selahcue-app` must not depend on `selahcue-data` (see `transcript_sink`'s
+/// module docs there), so this binary — which already depends on both — is where the two
+/// meet. Owns its own `Database` connection; see [`SessionStore::open_transcript_sink`] for
+/// why that needs no lock shared with `SessionStore`'s own connection.
+struct RealTranscriptStore {
+    db: Database,
+}
+
+impl selahcue_app::TranscriptStoreWriter for RealTranscriptStore {
+    fn open_transcript(
+        &mut self,
+        label: &str,
+        provider: &str,
+        started_at_ms: i64,
+    ) -> Result<i64, String> {
+        transcript_repo::create(
+            &self.db,
+            &transcript_repo::NewTranscript {
+                label: label.to_string(),
+                provider: provider.to_string(),
+                plan_id: None,
+                started_at_ms,
+            },
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn append_segment(
+        &mut self,
+        transcript_id: i64,
+        start_ms: u64,
+        end_ms: u64,
+        text: &str,
+    ) -> Result<i64, String> {
+        transcript_repo::append_segment(&self.db, transcript_id, start_ms, end_ms, text)
+            .map_err(|e| e.to_string())
+    }
+
+    fn end_transcript(&mut self, transcript_id: i64, ended_at_ms: i64) -> Result<(), String> {
+        transcript_repo::end(&self.db, transcript_id, ended_at_ms).map_err(|e| e.to_string())
+    }
+}
+
+/// 86akcfftu crash-recovery sweep: close any transcript left with `ended_at IS NULL` by a
+/// previous run that never called `end()` — an app-close or crash mid-service, which the
+/// normal Stop-Listening path (`selahcue-operator::listening`) cannot reach because the
+/// process that would have sent it is the one that died. Runs once at startup, before any
+/// new session can open one. Best-effort per row: one unreadable/unwritable row is logged
+/// and skipped (retried on the next launch), never a hard failure that blocks startup.
+///
+/// The backfill timestamp is the transcript's last known segment `end_ms` (segment timings
+/// are session-relative offsets from `started_at_ms`, per `transcript_repo`'s schema) added
+/// onto `started_at_ms`, or `started_at_ms` itself for a session that crashed before its
+/// first segment landed — the best available evidence of when it was last known to be alive,
+/// never a fabricated "now".
+fn sweep_orphaned_transcripts(db: &Database) {
+    let Ok(summaries) = transcript_repo::list(db) else {
+        return;
+    };
+    for t in summaries.into_iter().filter(|t| t.ended_at_ms.is_none()) {
+        let backfill_ms = transcript_repo::load(db, t.id)
+            .ok()
+            .and_then(|detail| detail.segments.iter().map(|s| s.end_ms).max())
+            .map(|last_end_ms| t.started_at_ms.saturating_add(last_end_ms as i64))
+            .unwrap_or(t.started_at_ms);
+        if let Err(e) = transcript_repo::end(db, t.id, backfill_ms) {
+            eprintln!(
+                "SelahCue: could not close orphaned transcript {} left open by a previous \
+                 run ({e}); it will be retried on the next launch.",
+                t.id
+            );
+        }
+    }
+}
+
 /// The desktop's session store: the SQLite database + the persisted plan's row id.
 /// A storage failure degrades to in-memory (never blocks a service) with a message.
 struct SessionStore {
@@ -670,6 +746,29 @@ impl SessionStore {
     #[cfg(not(feature = "encryption"))]
     fn open_db(path: &std::path::Path, _data_dir: &std::path::Path) -> Result<Database, DataError> {
         Database::open(path)
+    }
+
+    /// Best-effort: open the durable transcript side-channel (86akcfftu), sweeping any
+    /// crash-orphaned transcript first. A SECOND, independent connection to the SAME on-disk
+    /// store this `SessionStore` uses — opened via the identical [`Self::open_db`] decision
+    /// (plaintext vs SQLCipher, same key resolution), so it reads/writes the same file. Two
+    /// connections need no shared Rust-level lock between them: `selahcue-data`'s persistence
+    /// is WAL throughout (`ARCHITECTURE.md`), which is precisely the mode built for multiple
+    /// connections to one file, and the RETURNED sink lives inside `LiveController`, so every
+    /// call to it is already serialized by that controller's own `Arc<Mutex<_>>` — the same
+    /// reasoning that makes `self.db` need no lock either (single owner per connection).
+    ///
+    /// Returns `None` on any failure (no data dir, can't open a second connection) — a
+    /// side-channel failure must never block the service starting; the caller keeps the
+    /// default no-op `NullTranscriptSink`, exactly like any other storage degradation here.
+    fn open_transcript_sink() -> Option<Box<dyn selahcue_app::TranscriptSink>> {
+        let dir = data_dir()?;
+        let path = dir.join("selahcue.db3");
+        let db = Self::open_db(&path, &dir).ok()?;
+        sweep_orphaned_transcripts(&db);
+        Some(Box::new(selahcue_app::BatchingTranscriptWriter::new(
+            RealTranscriptStore { db },
+        )))
     }
 
     /// Load the persisted session: the plan + the live-state snapshot. `None` on a
@@ -1800,6 +1899,14 @@ impl App {
             Theme::dark(),
         )));
 
+        if let Ok(mut c) = controller.lock() {
+            // Durable transcript side-channel (86akcfftu): best-effort, degrades to the
+            // controller's default no-op sink on any failure (no data dir, storage
+            // unavailable) — exactly like every other storage degradation in this file.
+            if let Some(sink) = SessionStore::open_transcript_sink() {
+                c.set_transcript_sink(sink);
+            }
+        }
         if let Ok(mut c) = controller.lock() {
             // Publish health from the FIRST frame, so the very first operator view already
             // carries it. Waiting for the first autosave tick would leave a window in which the
@@ -3036,6 +3143,12 @@ fn main() {
     // throwaway probe — it must not persist anything (no session mutation).
     if !app.disk_critical && !app.clean_mode && !app.smoke {
         if let Ok(mut c) = app.controller.lock() {
+            // 86akcfftu (Sana, PR #31 F2): a clean exit while a transcript session is open
+            // must close it here too, not just on an explicit Stop Listening — otherwise
+            // quitting mid-service left `ended_at` unset until the next startup's
+            // crash-recovery sweep, and dropped whatever was still buffered unflushed. A
+            // no-op (via `close_current`'s early return) when no session is open.
+            c.end_transcript_session();
             if c.take_plan_dirty() {
                 app.store.save_plan(c.plan());
             }
@@ -3458,6 +3571,121 @@ mod window_lifecycle_tests {
             reconcile_windows(builtins(false, true), true, false, &mut failures),
             [WindowAction::Close(WindowRole::Main)],
             "main still closes while stage is suppressed"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod transcript_durability_tests {
+    use selahcue_data::{transcript_repo, Database};
+
+    /// `RealTranscriptStore` (86akcfftu) is a thin, faithful adapter over
+    /// `selahcue_data::transcript_repo` — a full create → append → end round-trip, read back
+    /// through the repo's own `load`, must show exactly what was written.
+    #[test]
+    fn real_transcript_store_round_trips_through_transcript_repo() {
+        use selahcue_app::TranscriptStoreWriter;
+
+        let mut store = super::RealTranscriptStore {
+            db: Database::open_in_memory().unwrap(),
+        };
+        let id = store
+            .open_transcript("Sunday Service", "on-device-whisper", 1_000)
+            .unwrap();
+        store.append_segment(id, 0, 500, "grace and peace").unwrap();
+        store.append_segment(id, 500, 1_200, "to you").unwrap();
+        store.end_transcript(id, 5_000).unwrap();
+
+        let detail = transcript_repo::load(&store.db, id).unwrap();
+        assert_eq!(detail.label, "Sunday Service");
+        assert_eq!(detail.provider, "on-device-whisper");
+        assert_eq!(detail.started_at_ms, 1_000);
+        assert_eq!(detail.ended_at_ms, Some(5_000));
+        assert_eq!(detail.segments.len(), 2);
+        assert_eq!(detail.segments[0].text, "grace and peace");
+        assert_eq!(detail.segments[1].text, "to you");
+    }
+
+    /// The 86akcfftu crash-recovery sweep: an orphaned transcript (no normal Stop Listening
+    /// ever ran) gets `ended_at` backfilled from its last segment's `end_ms` on the next
+    /// startup — never left null forever.
+    #[test]
+    fn sweep_closes_an_orphaned_transcript_using_its_last_segment_end() {
+        let db = Database::open_in_memory().unwrap();
+        let id = transcript_repo::create(
+            &db,
+            &transcript_repo::NewTranscript {
+                label: "Sunday Service".into(),
+                provider: "on-device-whisper".into(),
+                plan_id: None,
+                started_at_ms: 1_000,
+            },
+        )
+        .unwrap();
+        transcript_repo::append_segment(&db, id, 0, 500, "first").unwrap();
+        transcript_repo::append_segment(&db, id, 500, 12_000, "last before the crash").unwrap();
+        // Never end()ed — simulates a crash mid-service.
+
+        super::sweep_orphaned_transcripts(&db);
+
+        let detail = transcript_repo::load(&db, id).unwrap();
+        assert_eq!(
+            detail.ended_at_ms,
+            Some(1_000 + 12_000),
+            "ended_at must be backfilled from started_at + the last segment's end_ms, not left \
+             null and not a fabricated 'now'"
+        );
+    }
+
+    /// POSITIVE CONTROL for the sweep above: a transcript that crashed before its first
+    /// segment ever landed still gets closed (using `started_at`, its only evidence) — the
+    /// sweep must not silently skip a session with zero segments.
+    #[test]
+    fn sweep_closes_an_orphan_with_no_segments_using_started_at() {
+        let db = Database::open_in_memory().unwrap();
+        let id = transcript_repo::create(
+            &db,
+            &transcript_repo::NewTranscript {
+                label: "Sunday Service".into(),
+                provider: "on-device-whisper".into(),
+                plan_id: None,
+                started_at_ms: 42_000,
+            },
+        )
+        .unwrap();
+
+        super::sweep_orphaned_transcripts(&db);
+
+        let detail = transcript_repo::load(&db, id).unwrap();
+        assert_eq!(detail.ended_at_ms, Some(42_000));
+    }
+
+    /// POSITIVE CONTROL: a transcript that already ended normally (a healthy prior run) must
+    /// be left completely untouched by the sweep — otherwise "the sweep ran" would be
+    /// indistinguishable from "the sweep clobbers everything it sees".
+    #[test]
+    fn sweep_never_touches_a_transcript_that_already_ended() {
+        let db = Database::open_in_memory().unwrap();
+        let id = transcript_repo::create(
+            &db,
+            &transcript_repo::NewTranscript {
+                label: "Sunday Service".into(),
+                provider: "on-device-whisper".into(),
+                plan_id: None,
+                started_at_ms: 1_000,
+            },
+        )
+        .unwrap();
+        transcript_repo::end(&db, id, 9_999).unwrap();
+
+        super::sweep_orphaned_transcripts(&db);
+
+        let detail = transcript_repo::load(&db, id).unwrap();
+        assert_eq!(
+            detail.ended_at_ms,
+            Some(9_999),
+            "a normally-ended transcript's ended_at must be left exactly as it was"
         );
     }
 }

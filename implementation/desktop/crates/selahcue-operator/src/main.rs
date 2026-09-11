@@ -814,6 +814,40 @@ impl Backend {
             Backend::Local(s) => Ok(s.ingest_transcript(&text, start_ms, end_ms, is_final)),
         }
     }
+    /// Open a durable transcript session (86akcfftu) — the session-boundary sibling of
+    /// [`ingest_transcript`](Self::ingest_transcript), same dispatch shape. Only called from
+    /// the `stt`-gated `listening` module today (there is no webview affordance to open a
+    /// session manually — out of scope, no UI change), hence the matching `cfg`.
+    #[cfg(feature = "stt")]
+    async fn start_transcript(
+        &self,
+        label: String,
+        provider: String,
+    ) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .start_transcript(&label, &provider)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.start_transcript(&label, &provider)),
+        }
+    }
+    /// Close the current durable transcript session, if one is open. Same `cfg` as
+    /// [`start_transcript`](Self::start_transcript), for the same reason.
+    #[cfg(feature = "stt")]
+    async fn end_transcript(&self) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .end_transcript()
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.end_transcript()),
+        }
+    }
     async fn approve_detection(&self, detection_id: u64) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m

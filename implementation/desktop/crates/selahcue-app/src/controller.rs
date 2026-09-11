@@ -6,6 +6,7 @@
 //! **Live** output. `Clear`/`Blackout` act on Live.
 
 use crate::operator::{ItemView, OperatorView};
+use crate::transcript_sink::{NullTranscriptSink, TranscriptSink};
 use selahcue_core::detection::TranscriptEngine;
 use selahcue_core::plan::{ItemId, ServicePlan};
 use selahcue_core::scripture;
@@ -268,6 +269,17 @@ pub struct LiveController {
     /// being spoken). Shown live below the finalised transcript; replaced by each interim and
     /// cleared when the utterance finalises. Not logged and not run through detection.
     partial: Option<String>,
+    /// The durable transcript side-channel (86akcfftu) — a PARALLEL path to a persistent
+    /// store, never a route through [`ControllerSnapshot`] (ADR-0019 keeps the transcript +
+    /// detection queue out of crash recovery on purpose; this field does not change that).
+    /// Defaults to a no-op ([`NullTranscriptSink`]), matching today's in-memory-only
+    /// behaviour exactly; a caller with a real store (the desktop binary, which owns a
+    /// `Database`) wires one in via [`set_transcript_sink`](Self::set_transcript_sink).
+    /// Provider-agnostic by construction: fed from the same provider-erased
+    /// `text`/`start_ms`/`end_ms` this struct already receives in
+    /// [`ingest_transcript`](Self::ingest_transcript), never told which
+    /// [`TranscriptProvider`](selahcue_core::transcript::TranscriptProvider) produced them.
+    transcript_sink: Box<dyn TranscriptSink>,
 }
 
 /// How many recent transcript segments the fuzzy quote matcher looks back over, so a
@@ -865,7 +877,29 @@ impl LiveController {
             session_health: None,
             recent_texts: std::collections::VecDeque::new(),
             partial: None,
+            transcript_sink: Box::new(NullTranscriptSink),
         }
+    }
+
+    /// Wire a real durable [`TranscriptSink`] (86akcfftu) — e.g. a `BatchingTranscriptWriter`
+    /// backed by `selahcue_data::transcript_repo` — in place of the default no-op. Replaces
+    /// whatever sink was previously set; does not itself open or close a session (call
+    /// [`start_transcript_session`](Self::start_transcript_session) for that).
+    pub fn set_transcript_sink(&mut self, sink: Box<dyn TranscriptSink>) {
+        self.transcript_sink = sink;
+    }
+
+    /// Open a new durable transcript session (86akcfftu) — the counterpart of
+    /// [`end_transcript_session`](Self::end_transcript_session). Delegates straight to the
+    /// injected [`TranscriptSink`]; a no-op sink (the default) makes this a no-op too.
+    pub fn start_transcript_session(&mut self, label: &str, provider: &str) {
+        self.transcript_sink.start(label, provider);
+    }
+
+    /// Close the current durable transcript session, if one is open (a no-op otherwise).
+    /// Delegates straight to the injected [`TranscriptSink`].
+    pub fn end_transcript_session(&mut self) {
+        self.transcript_sink.end();
     }
 
     /// Ingest one live-transcript segment (the STT-provider ingestion path) and run
@@ -887,6 +921,13 @@ impl LiveController {
         }
         // Final: the utterance closed, so the interim is superseded.
         self.partial = None;
+        // Durable side-channel (86akcfftu): every FINAL segment also reaches the injected
+        // sink, BEFORE the ring below can evict anything, with the ORIGINAL untruncated text
+        // (the ring's own `MAX_SEGMENT_TEXT_LEN` truncation is a live-view bound only — the
+        // persisted copy must not inherit it). A no-op sink (the default) costs one vtable
+        // call; a real sink batches/bounds its own writes (see `transcript_sink`), so this
+        // call is never a synchronous disk write on this path.
+        self.transcript_sink.ingest(start_ms, end_ms, text);
         // Exact reference detection PLUS the fuzzy quote/paraphrase rung (R4): the corpus
         // matcher lives in selahcue-scripture (the pure core cannot see the corpus), so its
         // most-likely-verse suggestion for a spoken quotation is enqueued alongside exact
@@ -2408,7 +2449,13 @@ impl LiveController {
             // not the persisted LIVE session, so they do not trigger an autosave (the
             // transcript is in-memory only this slice). Approving a detection stages a
             // scripture (a real Preview change), so it falls through to `state_dirty`.
+            // StartTranscript/EndTranscript (86akcfftu) are the same kind of command: they
+            // open/close a DURABLE side-channel session (the desktop's transcript store),
+            // never `ControllerSnapshot` — see the module's `ControllerSnapshot` doc and
+            // ADR-0019, which this ticket confirmed still holds.
             | Command::IngestTranscript { .. }
+            | Command::StartTranscript { .. }
+            | Command::EndTranscript
             | Command::DismissDetection { .. } => {}
             _ => {
                 self.state_dirty = true;
@@ -3037,6 +3084,18 @@ impl LiveController {
                 // the STT worker feed, so paraphrases must resolve here too. A streaming interim
                 // (`is_final == false`) only updates the live partial line.
                 self.ingest_transcript(text, start, end, *is_final);
+                ControllerReply::Ack
+            }
+            // Durable transcript session boundaries (86akcfftu) — a sibling of
+            // `IngestTranscript` above, not a new subsystem: same permission, same
+            // exclusion from `state_dirty`/`ControllerSnapshot`, delegated straight to the
+            // injected `TranscriptSink` (a no-op unless a real store is wired in).
+            Command::StartTranscript { label, provider } => {
+                self.start_transcript_session(label, provider);
+                ControllerReply::Ack
+            }
+            Command::EndTranscript => {
+                self.end_transcript_session();
                 ControllerReply::Ack
             }
             Command::ApproveDetection { detection_id } => {
