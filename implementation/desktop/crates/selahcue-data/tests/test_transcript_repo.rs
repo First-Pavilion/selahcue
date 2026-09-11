@@ -826,12 +826,22 @@ fn no_segment_or_detection_text_reaches_a_dataerror_diagnostic() {
     // plain `NotFound`, which structurally carries no data and can never leak
     // anything. Quinn proved this with a real injected leak in `load()` that the old
     // test never caught (all 17 tests stayed green). This version captures diagnostics
-    // from TWO kinds of paths against the transcript that ACTUALLY holds the marker:
+    // from THREE kinds of paths against the transcript that ACTUALLY holds the marker:
     // (a) NotFound, from a genuinely nonexistent id (data-free by construction, kept
     // as one arm for completeness — this alone is what BLOCKING-1 found insufficient);
     // (b) real `Sqlite(rusqlite::Error)` FK-constraint failures raised while MARKER
     // itself is bound as the failing statement's parameter, operating on the real
-    // transcript/segment ids — the path BLOCKING-1 found completely unexercised.
+    // transcript/segment ids — the path BLOCKING-1 found completely unexercised;
+    // (c) a genuinely ordinary `load()` call on the transcript that actually holds the
+    // marker — the exact call Quinn's own reproduction mutated (making `load()` return
+    // `DataError::Corrupt` embedding real segment text whenever a segment's text
+    // contained a substring of MARKER, reachable from a completely normal `load()` on
+    // marker-bearing data). Re-verified here by hand: applying that exact mutation to
+    // `transcript_repo::load` and running this whole file with its siblings (never
+    // `--exact`) left arms (a) and (b) alone green — neither one ever calls `load` on
+    // the real, existing `transcript_id` — until arm (c) was added; with (c) present,
+    // the same mutation turns this test (and only this test) red, and reverting the
+    // mutation turns it green again.
     const MARKER: &str = "FR082_SENSITIVE_SERMON_TEXT_Nebuchadnezzar_Belshazzar_Confession";
     let db = db();
     let transcript_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
@@ -897,6 +907,32 @@ fn no_segment_or_detection_text_reaches_a_dataerror_diagnostic() {
         "append_detection against a bad segment_id",
     );
     diagnostics.push_str(&format!("{append_detection_err} {append_detection_err:?}"));
+
+    // (c) The real, ordinary `load()` call on the transcript that actually holds the
+    // marker. On today's code this succeeds — a success value is expected to carry the
+    // real content back (that is `load()`'s whole job, not a leak) — so this arm is not
+    // captured into `diagnostics` on the `Ok` path, only on `Err`, exactly like every
+    // other arm above. What this arm actually guards is the class of regression that
+    // silently turns that ordinary success into an error carrying real content (Quinn's
+    // reproduction: a conditional inside the segment loop that returns
+    // `DataError::Corrupt(format!("... {text}"))` for ordinary marker-bearing data). If
+    // `load()` ever does that, it lands here and the final assertion below catches it.
+    match transcript_repo::load(&db, transcript_id) {
+        Ok(detail) => {
+            assert_eq!(
+                detail.segments.len(),
+                1,
+                "expected exactly the one marker-bearing segment created above"
+            );
+            assert_eq!(
+                detail.segments[0].text, MARKER,
+                "a successful load() must return the real segment text unmodified"
+            );
+        }
+        Err(load_real_err) => {
+            diagnostics.push_str(&format!(" {load_real_err} {load_real_err:?}"));
+        }
+    }
 
     assert!(
         !diagnostics.contains(MARKER),
