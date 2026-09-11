@@ -216,16 +216,18 @@ const MIGRATIONS: &[&str] = &[
     "#,
     // v19 -> v20: TRANSCRIPT + DETECTION PERSISTENCE (86ajtxzrn; FR-130/153/154/137/082).
     //
-    // Identity (confirmed with product/architecture, recorded on 86ajtxzrn before this
-    // migration merged): a transcript = one listening session (one start-to-stop of the
-    // STT engine), provider-agnostic (ADR-0010/0019). `label` defaults to the active
-    // `ServicePlan`'s name + start timestamp, or just the timestamp when no plan was
-    // active (`selahcue_core::plan::ServicePlan` is app-layer knowledge; this table only
-    // stores the resolved string) — `label` is a plain, renamable column (no separate
-    // "custom label" flag needed), so the future rename affordance (FR-130/R5) is already
-    // free. `plan_id` is nullable and ON DELETE SET NULL: a transcript must outlive the
-    // plan it was recorded against, per the "raw transcript is immutable" principle this
-    // whole slice exists to serve.
+    // Identity — an assumption cleared to proceed on, NOT a confirmed product/
+    // architecture decision (corrected here after review; the previous wording in this
+    // comment overstated its status — see the ClickUp comments on 86ajtxzrn, which state
+    // plainly that sign-off is still outstanding): a transcript = one listening session
+    // (one start-to-stop of the STT engine), provider-agnostic (ADR-0010/0019). `label`
+    // defaults to the active `ServicePlan`'s name + start timestamp, or just the
+    // timestamp when no plan was active (`selahcue_core::plan::ServicePlan` is app-layer
+    // knowledge; this table only stores the resolved string) — `label` is a plain,
+    // renamable column (no separate "custom label" flag needed), so the future rename
+    // affordance (FR-130/R5) is already free. `plan_id` is nullable and ON DELETE SET
+    // NULL: a transcript must outlive the plan it was recorded against, per the "raw
+    // transcript is immutable" principle this whole slice exists to serve.
     //
     // Segments are the "raw immutable stream": `transcript_segment` has no counterpart to
     // `MAX_TRANSCRIPT_SEGMENTS`/`MAX_SEGMENT_TEXT_LEN` (selahcue-core::transcript — those
@@ -244,7 +246,13 @@ const MIGRATIONS: &[&str] = &[
     // `detection` persists `selahcue_core::detection::DetectedReference` rows tied to a
     // transcript (and, where known, the segment that produced them); `segment_id` is
     // nullable + ON DELETE CASCADE so a detection's provenance link cascades with its
-    // segment without forcing every caller to resolve one.
+    // segment without forcing every caller to resolve one. `idx_detection_segment`
+    // exists so that cascade lookup (fired once per deleted segment, by every
+    // `transcript_repo::delete`/`purge_expired` call) is index-backed rather than a full
+    // scan of every detection ever stored across every transcript — measured at 144M
+    // full-scan VM steps / 6.6s for one delete of a 3,000-segment transcript against a
+    // 30k-row detection table without this index, 0 steps / 5-10ms with it (Vera, PR #30
+    // review). Cheap now, forward-only migration after merge.
     //
     // `transcript_setting` is a flat key/value table — the same shape as `providers_setting`
     // (v18->v19) — so retention config is a *setting*, not a hardcoded constant (per this
@@ -286,7 +294,11 @@ const MIGRATIONS: &[&str] = &[
         text          TEXT    NOT NULL,
         UNIQUE (transcript_id, ord)
     );
-    CREATE INDEX idx_transcript_segment_transcript ON transcript_segment(transcript_id, ord);
+    -- No separate CREATE INDEX on (transcript_id, ord) here: the UNIQUE constraint
+    -- above already creates that exact index (SQLite's implicit autoindex), so a
+    -- second explicit one would be a byte-identical second B-tree maintained on every
+    -- append with zero query benefit (Cody #3 / Vera F3 — measured ~7% extra file size
+    -- at 5,000 segments, no plan-shape change when dropped).
 
     CREATE TABLE transcript_correction (
         id             INTEGER PRIMARY KEY,
@@ -303,6 +315,7 @@ const MIGRATIONS: &[&str] = &[
         confidence    INTEGER NOT NULL
     );
     CREATE INDEX idx_detection_transcript ON detection(transcript_id);
+    CREATE INDEX idx_detection_segment ON detection(segment_id);
 
     CREATE TABLE transcript_setting (
         key   TEXT PRIMARY KEY,

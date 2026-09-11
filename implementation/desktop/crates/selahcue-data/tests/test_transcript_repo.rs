@@ -5,15 +5,29 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::params;
+use selahcue_core::plan::ServicePlan;
 use selahcue_core::transcript::{MAX_SEGMENT_TEXT_LEN, MAX_TRANSCRIPT_SEGMENTS};
 use selahcue_data::transcript_repo::{self, NewTranscript, RetentionSettings};
-use selahcue_data::Database;
+use selahcue_data::{plan_repo, Database};
 
 fn db() -> Database {
     Database::open_in_memory().unwrap()
+}
+
+/// True iff `needle` occurs anywhere in `haystack` (mirrors `test_encryption.rs`'s
+/// same-named helper — used here to prove ABSENCE of a marker on disk, not presence).
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// SQLite's WAL sidecar path for a given database file path (`<path>-wal`).
+fn wal_sidecar_path(db_path: &Path) -> PathBuf {
+    let mut s = db_path.as_os_str().to_owned();
+    s.push("-wal");
+    PathBuf::from(s)
 }
 
 fn sample_new_transcript() -> NewTranscript {
@@ -59,12 +73,87 @@ fn creates_appends_across_many_calls_and_reads_back_in_order_unmodified() {
 }
 
 #[test]
+fn ord_continues_from_the_highest_surviving_value_not_a_row_count() {
+    // append_segment must derive `ord` from a high-water mark, not `COUNT(*)` — a row
+    // count under-counts as soon as any segment is removed from the middle of the
+    // sequence, and then collides with an existing `ord`, violating
+    // `UNIQUE (transcript_id, ord)` on the very next append (PR #30 review, Sana S1).
+    // There is no single-segment delete in this ticket's public API yet, but the
+    // schema permits arbitrary row deletion (e.g. a future correction/redaction
+    // feature), and this is cheap to pin now while the migration is still unmerged.
+    let db = db();
+    let transcript_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
+    let ids: Vec<i64> = (0..3)
+        .map(|i| transcript_repo::append_segment(&db, transcript_id, i, i + 1, "x").unwrap())
+        .collect();
+    // Remove the middle segment (ord = 1) directly — simulating a future deletion path.
+    // Remaining ords are {0, 2}; COUNT(*) now reports 2, which collides with the
+    // surviving ord=2 row. A high-water mark correctly reports 3.
+    db.conn()
+        .execute(
+            "DELETE FROM transcript_segment WHERE id = ?1",
+            params![ids[1]],
+        )
+        .unwrap();
+
+    // If `ord` were still assigned via COUNT(*), this insert would hit the UNIQUE
+    // constraint and this unwrap would panic — that panic IS the regression signal.
+    let next_id = transcript_repo::append_segment(&db, transcript_id, 3, 4, "next").unwrap();
+    let next_ord: i64 = db
+        .conn()
+        .query_row(
+            "SELECT ord FROM transcript_segment WHERE id = ?1",
+            params![next_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        next_ord, 3,
+        "next ord must continue past the highest surviving ord (2), not the post-delete \
+         row count (2, which would collide)"
+    );
+}
+
+#[test]
 fn load_of_unknown_transcript_is_not_found() {
     let db = db();
     assert!(matches!(
         transcript_repo::load(&db, 999_999),
         Err(selahcue_data::DataError::NotFound)
     ));
+}
+
+#[test]
+fn deleting_the_plan_sets_transcript_plan_id_null_the_transcript_survives() {
+    // The entire reason `transcript.plan_id` is `INTEGER REFERENCES service_plan(id)
+    // ON DELETE SET NULL` instead of a hard/blocking reference: "a transcript must
+    // outlive the plan it was recorded against" (migrations.rs v19->v20 comment) — the
+    // "raw transcript is immutable" principle this whole slice exists to serve. Every
+    // other fixture in this file uses `plan_id: None`, so without this test the one
+    // behaviour this migration is built around was unverified (PR #30 review, Cody
+    // Medium #1): a future edit that quietly changed this to `ON DELETE CASCADE` (or
+    // dropped the clause, defaulting to `RESTRICT`) would pass every other test here.
+    let db = db();
+    let plan_id = plan_repo::insert(&db, &ServicePlan::new("Sunday Service")).unwrap();
+    let transcript_id = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "Sunday Service — 2026-09-06 09:03".into(),
+            provider: "manual".into(),
+            plan_id: Some(plan_id),
+            started_at_ms: 1_757_150_000_000,
+        },
+    )
+    .unwrap();
+
+    plan_repo::delete(&db, plan_id).unwrap();
+
+    let detail = transcript_repo::load(&db, transcript_id).unwrap();
+    assert_eq!(
+        detail.plan_id, None,
+        "transcript must survive its deleted plan with plan_id set to NULL, not RESTRICT \
+         the plan delete and not cascade away with it"
+    );
 }
 
 // --- Unbounded storage: the acceptance criterion this ticket exists to satisfy ------
@@ -206,6 +295,86 @@ fn detections_persist_and_read_back_correctly() {
 }
 
 #[test]
+fn segment_id_is_none_reads_back_as_the_documented_zero_sentinel() {
+    // `detection.segment_id` is nullable by design (a detection can exist with no
+    // known source segment), but `DetectedReference::source_segment` is a mandatory
+    // `u64` — `load()` maps `None` to `0`. Changing that representation is a
+    // `selahcue-core` change, out of this ticket's `selahcue-data`-only file
+    // footprint, so this pins the documented sentinel rather than the type (PR #30
+    // review, Cody #2 / Quinn ADVISORY-1): nothing before this test ever called
+    // `append_detection` with `segment_id: None`, so this path was previously
+    // unexercised entirely.
+    let db = db();
+    let transcript_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
+    transcript_repo::append_detection(&db, transcript_id, None, "Genesis 1:1", 70).unwrap();
+
+    let detail = transcript_repo::load(&db, transcript_id).unwrap();
+    assert_eq!(detail.detections.len(), 1);
+    assert_eq!(
+        detail.detections[0].source_segment, 0,
+        "a NULL segment_id must round-trip to the documented 0 sentinel"
+    );
+}
+
+#[test]
+fn transcript_segment_has_exactly_one_index_from_its_unique_constraint() {
+    // `UNIQUE (transcript_id, ord)` already creates an implicit autoindex on those two
+    // columns; a second explicit `CREATE INDEX` on the same columns is a byte-
+    // identical duplicate B-tree maintained on every append with zero read benefit
+    // (PR #30 review, Cody #3 / Vera F3 — measured ~7% extra file size at 5,000
+    // segments, no plan-shape change when dropped). Pinning the count, not just query
+    // plans, so a future re-added duplicate is caught even if it happens not to change
+    // any plan.
+    let db = db();
+    let mut stmt = db
+        .conn()
+        .prepare("PRAGMA index_list('transcript_segment')")
+        .unwrap();
+    let names: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        names.len(),
+        1,
+        "expected exactly one index on transcript_segment (the UNIQUE constraint's own \
+         autoindex); found {names:?}"
+    );
+}
+
+#[test]
+fn a_segment_delete_never_full_scans_the_detection_table() {
+    // FK `detection.segment_id ON DELETE CASCADE` fires once per deleted segment.
+    // Without an index on `detection(segment_id)` that lookup is a full scan of the
+    // whole `detection` table — across every transcript, not just the one being
+    // deleted (PR #30 review, Vera F1 — measured 144M full-scan VM steps / 6.6s for a
+    // single delete against a 30k-row detection table without the index; 0 steps /
+    // 5-10ms with it). Mutation check performed by hand: removing the `CREATE INDEX
+    // idx_detection_segment` line from the v20 migration turns this RED with a plan
+    // containing "SCAN detection"; restoring it turns it GREEN again.
+    let db = db();
+    let mut stmt = db
+        .conn()
+        .prepare("EXPLAIN QUERY PLAN SELECT 1 FROM detection WHERE segment_id = ?1")
+        .unwrap();
+    let plan: Vec<String> = stmt
+        .query_map(params![1i64], |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        !plan.iter().any(|p| p.contains("SCAN")),
+        "detection.segment_id lookup is a full scan, not index-backed: {plan:?}"
+    );
+    assert!(
+        plan.iter()
+            .any(|p| p.contains("INDEX") && p.contains("segment_id")),
+        "expected an index-backed search naming segment_id: {plan:?}"
+    );
+}
+
+#[test]
 fn a_corrupt_confidence_value_is_reported_without_leaking_the_reference_text() {
     // A malformed row (e.g. a future schema mismatch) must surface as `Corrupt`, not a
     // panic — and the Corrupt message must name the field, never the sensitive
@@ -316,10 +485,66 @@ fn deleting_an_unknown_transcript_is_not_found() {
     ));
 }
 
+#[test]
+fn deleting_a_transcript_removes_its_text_from_the_plain_store_file_and_wal() {
+    // FR-153 "reliable deletion" must mean the text is actually gone from disk, not
+    // merely unreachable via the read API. Bundled SQLite defaults `secure_delete`
+    // OFF, which leaves a deleted row's bytes sitting in freed pages (and in the WAL
+    // until checkpointed) until some unrelated later write happens to reuse that page
+    // (PR #30 review, Sana F1 — this is the live path today: `make launch`, `make
+    // output`, and the installer all build the plaintext output-window path, so this
+    // is not merely a theoretical gap behind the off-by-default `encryption` feature).
+    // Mutation check performed by hand: removing `PRAGMA secure_delete = ON;` from
+    // `Database::init` turns this RED (the marker survives in both files); restoring
+    // it turns it GREEN again.
+    const MARKER: &str = "FR153_SECURE_DELETE_MARKER_Nahum_Elkoshite_Oracle";
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_path_buf();
+    let wal_path = wal_sidecar_path(&path);
+
+    let db = Database::open(&path).unwrap();
+    let transcript_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
+    for i in 0..40 {
+        transcript_repo::append_segment(&db, transcript_id, i, i + 1, MARKER).unwrap();
+    }
+
+    // Positive control: the marker really is on disk before delete (WAL mode defers
+    // writes to the main file, so it lives in the WAL sidecar at this point) —
+    // otherwise "absent after delete" below would be true merely because it was never
+    // written to disk in the first place.
+    let wal_before = std::fs::read(&wal_path).unwrap_or_default();
+    let main_before = std::fs::read(&path).unwrap();
+    assert!(
+        contains(&wal_before, MARKER.as_bytes()) || contains(&main_before, MARKER.as_bytes()),
+        "positive control: marker must be present on disk before delete"
+    );
+
+    transcript_repo::delete(&db, transcript_id).unwrap();
+    db.checkpoint_truncate().unwrap();
+    drop(db);
+
+    let main_after = std::fs::read(&path).unwrap();
+    let wal_after = std::fs::read(&wal_path).unwrap_or_default();
+    assert!(
+        !contains(&main_after, MARKER.as_bytes()),
+        "deleted transcript text remained in the main .db3 file after checkpoint — \
+         secure_delete is not zeroing freed pages (FR-153)"
+    );
+    assert!(
+        !contains(&wal_after, MARKER.as_bytes()),
+        "deleted transcript text remained in the -wal file after checkpoint (FR-153)"
+    );
+}
+
 // --- Listing (enough per row for a list UI, no second read) -------------------------
 
 #[test]
-fn listing_returns_label_provider_timing_and_segment_count_without_a_second_read() {
+fn listing_returns_label_provider_timing_and_segment_count() {
+    // Renamed from `..._without_a_second_read` (PR #30 review, Vera F4, mutation-
+    // verified): this test only checks the returned values, which a rewritten N+1
+    // `list()` would return identically, so it cannot actually guard "one statement" —
+    // see the doc comment on `transcript_repo::list` for where that invariant really
+    // lives and why a public-API test structurally cannot pin it here.
     let db = db();
     let a = transcript_repo::create(
         &db,
@@ -402,6 +627,67 @@ fn retention_settings_round_trip_and_save_replaces_the_whole_set() {
 }
 
 #[test]
+fn malformed_retention_days_is_reported_corrupt_not_silently_kept_forever() {
+    // retention_days is a privacy control (FR-153); a value nobody could parse must
+    // fail CLOSED (surfaced as an error) rather than fail OPEN (silently treated as
+    // "kept indefinitely", the least protective outcome) — PR #30 review, Sana F5.
+    // Mutation check performed by hand: reverting the parse to `.ok()` turns this RED
+    // (returns Ok with retention_days: None instead of an error); restoring the `?`
+    // turns it GREEN again.
+    let db = db();
+    db.conn()
+        .execute(
+            "INSERT INTO transcript_setting (key, value) VALUES ('retention_days', 'not-a-number')",
+            [],
+        )
+        .unwrap();
+
+    let err = transcript_repo::load_retention_settings(&db).unwrap_err();
+    assert!(
+        matches!(err, selahcue_data::DataError::Corrupt(_)),
+        "expected DataError::Corrupt for an unparseable retention_days, got {err:?}"
+    );
+}
+
+#[test]
+fn a_recently_started_unended_transcript_survives_purge_even_with_zero_day_retention() {
+    // Grace-period floor, isolated from the orphan-sweep test below: even the most
+    // aggressive configured retention (0 days) must never purge a transcript that
+    // started inside the orphan grace window, or a short retention_days setting could
+    // delete a live, still-recording service out from under it (PR #30 review, Sana
+    // F2's fix). Mutation check performed by hand: dropping the
+    // `.min(now_ms - ORPHAN_GRACE_MS)` clause from `purge_expired`'s `orphan_cutoff`
+    // (using the plain retention `cutoff` alone for orphans) turns this RED (the live
+    // transcript gets purged); restoring it turns it GREEN again.
+    let db = db();
+    let now = 1_000_000_000_i64;
+    let live = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "live".into(),
+            provider: "manual".into(),
+            plan_id: None,
+            started_at_ms: now - 60_000, // 1 minute ago — nowhere near the grace period
+        },
+    )
+    .unwrap();
+    transcript_repo::save_retention_settings(
+        &db,
+        &RetentionSettings {
+            retention_days: Some(0),
+            delete_cascade_to_notes: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        transcript_repo::purge_expired(&db, now).unwrap(),
+        Vec::<i64>::new()
+    );
+    assert!(transcript_repo::load(&db, live).is_ok());
+}
+
+#[test]
 fn purge_expired_removes_only_ended_transcripts_past_the_configured_window() {
     let db = db();
     const DAY_MS: i64 = 86_400_000;
@@ -433,12 +719,31 @@ fn purge_expired_removes_only_ended_transcripts_past_the_configured_window() {
     .unwrap();
     transcript_repo::end(&db, recent, now - DAY_MS).unwrap();
 
-    // (c) started 100 days ago but still recording (no ended_at) — never auto-purged,
-    // regardless of age, because it is still live.
+    // (c) started 2 hours ago, still recording (no ended_at) — must survive even
+    // against a configured window, because it has not yet cleared the crash-orphan
+    // grace period; a genuinely live multi-hour service must never be purged out from
+    // under it.
     let live = transcript_repo::create(
         &db,
         &NewTranscript {
             label: "live".into(),
+            provider: "manual".into(),
+            plan_id: None,
+            started_at_ms: now - 2 * 60 * 60 * 1000,
+        },
+    )
+    .unwrap();
+
+    // (d) started 100 days ago, NEVER ended (a crash mid-service, FR-075 treats this
+    // as routine) — once the grace period has long passed, this is an abandoned
+    // orphan, not a live session, and must be evaluated against the same retention
+    // window using started_at as the effective end. Before the fix, this transcript
+    // was exempt from retention forever regardless of age (86ajtxzrn open question #1
+    // / Sana F2).
+    let orphan = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "orphan".into(),
             provider: "manual".into(),
             plan_id: None,
             started_at_ms: now - 100 * DAY_MS,
@@ -446,8 +751,9 @@ fn purge_expired_removes_only_ended_transcripts_past_the_configured_window() {
     )
     .unwrap();
 
-    // With the default (kept indefinitely), purge is a deliberate no-op — retention
-    // stays opt-in even with an eligible-looking row sitting in the store.
+    // With the default (kept indefinitely), purge is a deliberate no-op for
+    // everything, orphan included — retention stays opt-in even with eligible-looking
+    // rows sitting in the store.
     assert_eq!(
         transcript_repo::purge_expired(&db, now).unwrap(),
         Vec::<i64>::new()
@@ -455,6 +761,10 @@ fn purge_expired_removes_only_ended_transcripts_past_the_configured_window() {
     assert!(
         transcript_repo::load(&db, old).is_ok(),
         "no purge without a configured window"
+    );
+    assert!(
+        transcript_repo::load(&db, orphan).is_ok(),
+        "no purge without a configured window, even for a long-abandoned orphan"
     );
 
     transcript_repo::save_retention_settings(
@@ -468,13 +778,18 @@ fn purge_expired_removes_only_ended_transcripts_past_the_configured_window() {
 
     let mut purged = transcript_repo::purge_expired(&db, now).unwrap();
     purged.sort_unstable();
+    let mut expected = vec![old, orphan];
+    expected.sort_unstable();
     assert_eq!(
-        purged,
-        vec![old],
-        "only the ended, past-window transcript is purged"
+        purged, expected,
+        "the ended, past-window transcript AND the long-abandoned orphan are purged"
     );
     assert!(matches!(
         transcript_repo::load(&db, old),
+        Err(selahcue_data::DataError::NotFound)
+    ));
+    assert!(matches!(
+        transcript_repo::load(&db, orphan),
         Err(selahcue_data::DataError::NotFound)
     ));
     assert!(
@@ -483,14 +798,40 @@ fn purge_expired_removes_only_ended_transcripts_past_the_configured_window() {
     );
     assert!(
         transcript_repo::load(&db, live).is_ok(),
-        "still-recording must never be purged"
+        "a recent, genuinely live session must never be purged"
     );
 }
 
 // --- FR-082: no transcript/detection content in logs or diagnostics ------------------
 
+/// `err` must be `DataError::Sqlite(_)` — the variant this test exists to exercise for
+/// FR-082 (a real SQLite constraint failure, not the data-free `NotFound` path). This
+/// is itself a control, not just a cast: BLOCKING-1 (PR #30 review, Quinn/Sana) was
+/// exactly that the original test's captured errors were structurally incapable of
+/// carrying data (`NotFound` only), which "the diagnostics don't contain MARKER" alone
+/// cannot distinguish from "the diagnostics were never real errors to begin with".
+fn assert_is_sqlite_variant(err: &selahcue_data::DataError, context: &str) {
+    assert!(
+        matches!(err, selahcue_data::DataError::Sqlite(_)),
+        "{context}: expected DataError::Sqlite(_) — got {err:?} instead, which means \
+         this arm was not exercising a real SQLite constraint failure"
+    );
+}
+
 #[test]
 fn no_segment_or_detection_text_reaches_a_dataerror_diagnostic() {
+    // BLOCKING-1 (PR #30 review, Quinn and Sana, found independently): the original
+    // version of this test called `load`/`end`/`delete` on a hardcoded nonexistent id
+    // (999_999) — a row that never held the marker — so every captured error was a
+    // plain `NotFound`, which structurally carries no data and can never leak
+    // anything. Quinn proved this with a real injected leak in `load()` that the old
+    // test never caught (all 17 tests stayed green). This version captures diagnostics
+    // from TWO kinds of paths against the transcript that ACTUALLY holds the marker:
+    // (a) NotFound, from a genuinely nonexistent id (data-free by construction, kept
+    // as one arm for completeness — this alone is what BLOCKING-1 found insufficient);
+    // (b) real `Sqlite(rusqlite::Error)` FK-constraint failures raised while MARKER
+    // itself is bound as the failing statement's parameter, operating on the real
+    // transcript/segment ids — the path BLOCKING-1 found completely unexercised.
     const MARKER: &str = "FR082_SENSITIVE_SERMON_TEXT_Nebuchadnezzar_Belshazzar_Confession";
     let db = db();
     let transcript_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
@@ -514,15 +855,48 @@ fn no_segment_or_detection_text_reaches_a_dataerror_diagnostic() {
         "positive control: marker must actually be persisted"
     );
 
-    // Force every DataError this module can produce and capture their Display+Debug —
-    // the realistic path by which an application layer would ever log one of these.
     let mut diagnostics = String::new();
-    let load_err = transcript_repo::load(&db, 999_999).unwrap_err();
+
+    // (a) NotFound arm: a genuinely nonexistent id, unrelated to the marker-bearing
+    // transcript. Kept for completeness; this alone is what BLOCKING-1 found was the
+    // ENTIRE original test.
+    let nonexistent = transcript_id + 1_000_000;
+    let load_err = transcript_repo::load(&db, nonexistent).unwrap_err();
     diagnostics.push_str(&format!("{load_err} {load_err:?} "));
-    let end_err = transcript_repo::end(&db, 999_999, 0).unwrap_err();
+    let end_err = transcript_repo::end(&db, nonexistent, 0).unwrap_err();
     diagnostics.push_str(&format!("{end_err} {end_err:?} "));
-    let delete_err = transcript_repo::delete(&db, 999_999).unwrap_err();
-    diagnostics.push_str(&format!("{delete_err} {delete_err:?}"));
+    let delete_err = transcript_repo::delete(&db, nonexistent).unwrap_err();
+    diagnostics.push_str(&format!("{delete_err} {delete_err:?} "));
+
+    // (b) Sqlite(rusqlite::Error) arms: MARKER is the actual bound parameter in each
+    // failing statement, against the real (existing) transcript_id / seg_id. Each
+    // assert_is_sqlite_variant call is itself a positive control that the arm is
+    // really hitting a constraint failure, not silently degrading to NotFound or some
+    // other data-free path.
+    let append_segment_err =
+        transcript_repo::append_segment(&db, nonexistent, 0, 1, MARKER).unwrap_err();
+    assert_is_sqlite_variant(
+        &append_segment_err,
+        "append_segment against a bad transcript_id",
+    );
+    diagnostics.push_str(&format!("{append_segment_err} {append_segment_err:?} "));
+
+    let correct_segment_err =
+        transcript_repo::correct_segment(&db, seg_id + 1_000_000, MARKER, 1).unwrap_err();
+    assert_is_sqlite_variant(
+        &correct_segment_err,
+        "correct_segment against a bad segment_id",
+    );
+    diagnostics.push_str(&format!("{correct_segment_err} {correct_segment_err:?} "));
+
+    let append_detection_err =
+        transcript_repo::append_detection(&db, transcript_id, Some(seg_id + 1_000_000), MARKER, 50)
+            .unwrap_err();
+    assert_is_sqlite_variant(
+        &append_detection_err,
+        "append_detection against a bad segment_id",
+    );
+    diagnostics.push_str(&format!("{append_detection_err} {append_detection_err:?}"));
 
     assert!(
         !diagnostics.contains(MARKER),
@@ -533,9 +907,10 @@ fn no_segment_or_detection_text_reaches_a_dataerror_diagnostic() {
     // content — proving the capture-and-search methodology isn't itself dead (an empty
     // or unrelated string would make the assertion above vacuous).
     assert!(
-        diagnostics.contains("not found"),
-        "expected the well-known NotFound message in the captured diagnostics; got: \
-         {diagnostics} — the capture methodology may not be exercising real error paths"
+        diagnostics.contains("not found") && diagnostics.contains("FOREIGN KEY"),
+        "expected both the well-known NotFound message AND a real FOREIGN KEY \
+         constraint message in the captured diagnostics; got: {diagnostics} — the \
+         capture methodology may not be exercising real error paths"
     );
 }
 

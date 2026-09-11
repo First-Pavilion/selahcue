@@ -57,11 +57,23 @@ impl Database {
         // WAL: readers never block the writer; a crash loses only uncommitted WAL.
         // synchronous=NORMAL is the recommended durable-but-fast setting under WAL.
         // foreign_keys=ON makes ON DELETE CASCADE (plan → items) actually fire.
+        // secure_delete=ON (FR-153; PR #30 review, Sana F1): bundled SQLite defaults
+        // this OFF, which leaves a deleted row's bytes sitting in freed pages (and in
+        // the WAL until checkpointed) until some later write happens to reuse that
+        // page — "deleted" transcript/detection text can otherwise still be recovered
+        // from the raw file after `transcript_repo::delete`. A keyed SQLCipher open
+        // enables this implicitly, but `make launch`/`make output` and the installer
+        // all build the plaintext path today, so this must be set here, unconditionally,
+        // for every open — not left to depend on the `encryption` feature being on.
+        // Verified: `test_transcript_repo.rs`'s
+        // `deleting_a_transcript_removes_its_text_from_the_plain_store_file_and_wal`
+        // fails without this line and passes with it.
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA foreign_keys = ON;
-             PRAGMA busy_timeout = 5000;",
+             PRAGMA busy_timeout = 5000;
+             PRAGMA secure_delete = ON;",
         )?;
         migrations::run(&conn)?;
         Ok(Database { conn })

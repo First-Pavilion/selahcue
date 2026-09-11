@@ -137,10 +137,18 @@ pub fn end(db: &Database, transcript_id: i64, ended_at_ms: i64) -> Result<()> {
 ///
 /// Unbounded: unlike [`selahcue_core::transcript::TranscriptLog`], neither the
 /// segment's text length nor the transcript's segment count is capped here — that
-/// is 86ajtxzrn's acceptance criterion, not an oversight. `ord` is assigned as the
-/// transcript's current segment count (inside the same transaction as the insert),
-/// so segments always read back in append order regardless of whatever id the live
-/// in-memory engine assigned them.
+/// is 86ajtxzrn's acceptance criterion, not an oversight. `ord` is assigned from a
+/// high-water mark (`COALESCE(MAX(ord), -1) + 1`), inside the same transaction as the
+/// insert, so segments always read back in append order regardless of whatever id the
+/// live in-memory engine assigned them. This must be a high-water mark, not a row
+/// count: a row count under-counts as soon as any segment is removed from the middle
+/// of the sequence (nothing in this ticket's API does that today, but the schema
+/// permits arbitrary row deletion), and it would then collide with an existing `ord`
+/// and fail `UNIQUE (transcript_id, ord)` on the very next append (PR #30 review,
+/// Sana S1). `MAX` on the indexed `(transcript_id, ord)` column is also one B-tree
+/// seek instead of a full per-transcript count, which matters here because this is
+/// the one call the live writer (86akcfftu) will make on every single segment of
+/// every service (measured: ~2.4µs vs ~190µs at n=20,000 — Vera F2).
 pub fn append_segment(
     db: &Database,
     transcript_id: i64,
@@ -150,7 +158,7 @@ pub fn append_segment(
 ) -> Result<i64> {
     let tx = db.conn().unchecked_transaction()?;
     let ord: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM transcript_segment WHERE transcript_id = ?1",
+        "SELECT COALESCE(MAX(ord), -1) + 1 FROM transcript_segment WHERE transcript_id = ?1",
         params![transcript_id],
         |r| r.get(0),
     )?;
@@ -202,6 +210,17 @@ pub fn append_detection(
 
 /// List transcripts, most recently started first — enough per row (label, provider,
 /// timing, segment count) to render a list UI without a second read per row.
+///
+/// The "no second read" guarantee is structural, in the SQL below: `segment_count` is
+/// a correlated subquery inside the single `SELECT`, not a per-row follow-up query
+/// issued from Rust (`EXPLAIN QUERY PLAN` shows one statement, no N+1) — verified by
+/// hand during the PR #30 review (Vera F4). This is *not* a property a public-API test
+/// can pin directly: a real statement-count guard needs `Connection::trace`, which
+/// needs `&mut Connection`, and [`Database::conn`] hands out `&Connection`. The test
+/// `listing_returns_label_provider_timing_and_segment_count` therefore checks only the
+/// returned values, which an N+1 rewrite would return identically — that test does not
+/// (and structurally cannot, through this crate's public API) guard "one statement";
+/// this comment is where that invariant actually lives.
 pub fn list(db: &Database) -> Result<Vec<TranscriptSummary>> {
     let conn = db.conn();
     let mut stmt = conn.prepare(
@@ -305,6 +324,17 @@ pub fn load(db: &Database, transcript_id: i64) -> Result<TranscriptDetail> {
         let (id, segment_id, reference, confidence) = row?;
         let id = u64::try_from(id)
             .map_err(|_| DataError::Corrupt(format!("negative detection id {id}")))?;
+        // `detection.segment_id` is nullable by design (a detection can exist with no
+        // known source segment), but `DetectedReference::source_segment` is a mandatory
+        // `u64` with no "unknown" representation — changing that is out of this ticket's
+        // `selahcue-data`-only file footprint (it is a `selahcue-core` domain type used
+        // elsewhere, e.g. the live detection queue). `0` is a deliberate, documented
+        // sentinel for "no known segment" here, not a real segment id: `transcript_
+        // segment.id` is an `INTEGER PRIMARY KEY` rowid alias, which SQLite allocates
+        // starting at 1, so a genuine segment `0` cannot exist via this insert path
+        // (PR #30 review, Cody #2 / Quinn ADVISORY-1). `segment_id_is_none_reads_back_
+        // as_the_documented_zero_sentinel` in `tests/test_transcript_repo.rs` pins this
+        // on purpose so it cannot silently drift.
         let source_segment = u64::try_from(segment_id.unwrap_or(0)).map_err(|_| {
             DataError::Corrupt(format!("negative detection segment_id {segment_id:?}"))
         })?;
@@ -354,6 +384,13 @@ pub fn delete(db: &Database, transcript_id: i64) -> Result<()> {
 /// Load the retention/deletion-cascade settings. An empty store yields the safe
 /// placeholder defaults (kept indefinitely; notes not cascade-deleted) — never an
 /// error, mirroring `providers_repo::load`'s empty-store fallback.
+///
+/// A *present but malformed* `retention_days` value is different from an absent one,
+/// and is reported as [`DataError::Corrupt`] rather than silently falling back to
+/// "kept indefinitely" (PR #30 review, Sana F5/T4): `retention_days` is a privacy
+/// control (FR-153), and silently discarding a value nobody could parse would fail
+/// *open* — the one setting on this whole table where the safe direction is to refuse
+/// and surface the problem, not to quietly grant the least protection.
 pub fn load_retention_settings(db: &Database) -> Result<RetentionSettings> {
     let conn = db.conn();
     let mut stmt = conn.prepare("SELECT key, value FROM transcript_setting")?;
@@ -362,7 +399,13 @@ pub fn load_retention_settings(db: &Database) -> Result<RetentionSettings> {
     for row in rows {
         let (key, value) = row?;
         match key.as_str() {
-            KEY_RETENTION_DAYS => settings.retention_days = value.parse::<u32>().ok(),
+            KEY_RETENTION_DAYS => {
+                settings.retention_days = Some(value.parse::<u32>().map_err(|_| {
+                    DataError::Corrupt(format!(
+                        "transcript_setting {KEY_RETENTION_DAYS} value {value:?} is not a valid u32"
+                    ))
+                })?);
+            }
             KEY_DELETE_CASCADE_TO_NOTES => settings.delete_cascade_to_notes = value == "true",
             // Forward-compatible: an unknown key written by a newer build is ignored,
             // not fatal (the same spirit as `media_repo::load_all` dropping an
@@ -405,12 +448,30 @@ pub fn save_retention_settings(db: &Database, settings: &RetentionSettings) -> R
     Ok(())
 }
 
-/// Delete every transcript whose retention window has elapsed as of `now_ms`
-/// (`ended_at + retention_days` days, in epoch milliseconds) — a transcript still
-/// being recorded (`ended_at IS NULL`) is never purged. Cascades to
-/// segments/corrections/detections exactly like [`delete`]. A `None` `retention_days`
-/// (the default) purges nothing — retention stays opt-in until the FR-153 default is
-/// finalized. Returns the deleted ids.
+/// A never-`end()`ed transcript is only ever treated as abandoned (see [`purge_expired`])
+/// once it has been running at least this long — long enough that no real service is
+/// still recording. This is a floor, not a target: it exists so a short or zero-day
+/// `retention_days` setting can never purge a genuinely live, still-recording session
+/// out from under it (86ajtxzrn Sana F2 / this ticket's own FR-075 crash-path note).
+const ORPHAN_GRACE_MS: i64 = 86_400_000; // 24h
+
+/// Delete every transcript whose retention window has elapsed as of `now_ms`.
+///
+/// A normally-ended transcript expires `retention_days` days after `ended_at`. A
+/// transcript that was never `end()`ed — a crash mid-service, which FR-075 treats as
+/// routine, not exceptional — used to be exempt from retention *forever*, regardless
+/// of how old it was (86ajtxzrn open question #1 / Sana F2): retention only ever
+/// looked at `ended_at`, and an orphan has none. That is fixed here by treating
+/// `started_at` as the effective end for a never-ended transcript, but only once it
+/// has been running longer than [`ORPHAN_GRACE_MS`] — a transcript that started
+/// recently and simply hasn't stopped yet (a real, in-progress multi-hour service)
+/// must never be purged regardless of the configured window; one that started days or
+/// weeks ago and never stopped is, past the grace period, indistinguishable from an
+/// abandoned crash artifact and is evaluated against the same retention window using
+/// `started_at`. Cascades to segments/corrections/detections exactly like [`delete`].
+/// A `None` `retention_days` (the default) purges nothing at all, orphans included —
+/// retention stays opt-in until the FR-153 default is finalized. Returns the deleted
+/// ids.
 pub fn purge_expired(db: &Database, now_ms: i64) -> Result<Vec<i64>> {
     let settings = load_retention_settings(db)?;
     let Some(days) = settings.retention_days else {
@@ -418,12 +479,19 @@ pub fn purge_expired(db: &Database, now_ms: i64) -> Result<Vec<i64>> {
     };
     let window_ms = i64::from(days) * 86_400_000;
     let cutoff = now_ms - window_ms;
+    // An orphan (`ended_at IS NULL`) is eligible only once it clears BOTH floors: the
+    // grace period (it can no longer plausibly be a live session) AND the configured
+    // retention window measured from its `started_at`.
+    let orphan_cutoff = cutoff.min(now_ms - ORPHAN_GRACE_MS);
 
     let tx = db.conn().unchecked_transaction()?;
-    let mut stmt =
-        tx.prepare("SELECT id FROM transcript WHERE ended_at IS NOT NULL AND ended_at <= ?1")?;
+    let mut stmt = tx.prepare(
+        "SELECT id FROM transcript
+         WHERE (ended_at IS NOT NULL AND ended_at <= ?1)
+            OR (ended_at IS NULL AND started_at <= ?2)",
+    )?;
     let ids: Vec<i64> = stmt
-        .query_map(params![cutoff], |r| r.get(0))?
+        .query_map(params![cutoff, orphan_cutoff], |r| r.get(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(stmt);
     for id in &ids {
