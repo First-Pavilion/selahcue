@@ -39,7 +39,7 @@ use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_data::session_repo::SessionState;
 use selahcue_data::{
     output_repo, plan_repo, saved_theme_repo, screen_config_repo, screen_repo, screen_theme_repo,
-    session_repo, transcript_repo, DataError, Database,
+    sermon_note_repo, session_repo, transcript_repo, DataError, Database,
 };
 use selahcue_engine::raster::{Fit, FrameBuffer};
 use selahcue_lan::protocol::{
@@ -597,6 +597,105 @@ impl selahcue_app::TranscriptStoreWriter for RealTranscriptStore {
     }
 }
 
+/// Adapts `selahcue_data::sermon_note_repo` + `transcript_repo::most_recent_id` to
+/// `selahcue_app::SermonNoteStore` (86akgqdv0; PR #33 review, Sana F1 remediation) — the exact
+/// sibling of [`RealTranscriptStore`] just above, for the identical reason: `selahcue-app` must
+/// not depend on `selahcue-data`, so this binary (which already depends on both) is where the
+/// two meet. Owns its own `Database` connection, opened the SAME way `RealTranscriptStore`'s is
+/// (see [`SessionStore::open_sermon_note_store`]).
+struct RealSermonNoteStore {
+    db: Database,
+}
+
+impl selahcue_app::SermonNoteStore for RealSermonNoteStore {
+    fn active_transcript_id(&mut self) -> Result<Option<i64>, String> {
+        transcript_repo::most_recent_id(&self.db).map_err(|e| e.to_string())
+    }
+
+    fn save_draft(
+        &mut self,
+        transcript_id: i64,
+        draft: &selahcue_lan::protocol::SermonNoteDraftInput,
+    ) -> Result<selahcue_lan::protocol::SermonNoteDraftView, String> {
+        let note = sermon_note_repo::NewSermonNote {
+            transcript_id,
+            title: draft.title.clone(),
+            summary: draft.summary.clone(),
+            sections_json: draft.sections_json.clone(),
+            scriptures_json: draft.scriptures_json.clone(),
+            ai_generated: draft.ai_generated,
+            disclosure: draft.disclosure.clone(),
+            provider: draft.provider.clone(),
+            model: draft.model.clone(),
+            created_at_ms: now_ms(),
+        };
+        sermon_note_repo::create(&self.db, &note).map_err(|e| e.to_string())?;
+        let record = sermon_note_repo::find_by_transcript(&self.db, transcript_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "draft vanished immediately after create".to_string())?;
+        Ok(sermon_note_view_of(&record))
+    }
+
+    fn load_draft(
+        &mut self,
+        transcript_id: i64,
+    ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, String> {
+        sermon_note_repo::find_by_transcript(&self.db, transcript_id)
+            .map(|opt| opt.map(|r| sermon_note_view_of(&r)))
+            .map_err(|e| e.to_string())
+    }
+
+    fn update_draft(
+        &mut self,
+        transcript_id: i64,
+        edit: &selahcue_lan::protocol::SermonNoteEditInput,
+    ) -> Result<selahcue_lan::protocol::SermonNoteDraftView, String> {
+        let db_edit = sermon_note_repo::DraftEdit {
+            title: edit.title.clone(),
+            summary: edit.summary.clone(),
+            sections_json: edit.sections_json.clone(),
+            scriptures_json: edit.scriptures_json.clone(),
+        };
+        sermon_note_repo::update(&self.db, transcript_id, &db_edit, now_ms())
+            .map_err(|e| e.to_string())?;
+        let record = sermon_note_repo::find_by_transcript(&self.db, transcript_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "draft vanished immediately after update".to_string())?;
+        Ok(sermon_note_view_of(&record))
+    }
+}
+
+/// Wall-clock epoch milliseconds for `sermon_note.created_at`/`edited_at` — this binary's own
+/// clock read, mirroring every other desktop-stamped timestamp (e.g. `NewTranscript::started_at_ms`
+/// at the call sites that construct it from `SystemTime::now()`).
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// `sermon_note_repo::SermonNoteRecord` -> the LAN wire view. `transcript_id` is dropped — the
+/// caller already knows it (it is the key both sides used to ask for/save this row) and every
+/// [`selahcue_lan::protocol::ServerMessage::SermonNoteDraft`] carries it as a separate top-level
+/// field, never duplicated inside the draft payload itself.
+fn sermon_note_view_of(
+    r: &sermon_note_repo::SermonNoteRecord,
+) -> selahcue_lan::protocol::SermonNoteDraftView {
+    selahcue_lan::protocol::SermonNoteDraftView {
+        title: r.title.clone(),
+        summary: r.summary.clone(),
+        sections_json: r.sections_json.clone(),
+        scriptures_json: r.scriptures_json.clone(),
+        ai_generated: r.ai_generated,
+        disclosure: r.disclosure.clone(),
+        provider: r.provider.clone(),
+        model: r.model.clone(),
+        created_at_ms: r.created_at_ms,
+        edited_at_ms: r.edited_at_ms,
+    }
+}
+
 /// 86akcfftu crash-recovery sweep: close any transcript left with `ended_at IS NULL` by a
 /// previous run that never called `end()` — an app-close or crash mid-service, which the
 /// normal Stop-Listening path (`selahcue-operator::listening`) cannot reach because the
@@ -769,6 +868,30 @@ impl SessionStore {
         Some(Box::new(selahcue_app::BatchingTranscriptWriter::new(
             RealTranscriptStore { db },
         )))
+    }
+
+    /// Best-effort: open the durable sermon-note-draft store (86akgqdv0; PR #33 review, Sana F1
+    /// remediation) — the exact sibling of [`open_transcript_sink`](Self::open_transcript_sink)
+    /// just above, for the identical reason. A THIRD independent connection to the SAME on-disk
+    /// store (`self.db`/`open_transcript_sink`'s own connection are the other two) — safe for
+    /// the same reason those two are: WAL throughout, and every call into the returned store is
+    /// already serialized by `LiveController`'s own `Arc<Mutex<_>>`.
+    ///
+    /// This is the fix for the bug PR #33's review found: the operator previously opened its
+    /// OWN, differently-located file for this feature (Tauri `app_data_dir()`, never this
+    /// process's `data_dir()`), so in a real launch it could never see a real `transcript` row.
+    /// The operator no longer opens any file for this feature at all — it sends LAN commands
+    /// that land here, against the store this process actually owns.
+    ///
+    /// Returns `None` on any failure (no data dir, can't open a second connection) — a
+    /// side-channel failure must never block the service starting; the caller keeps the
+    /// default no-op `NullSermonNoteStore`, exactly like `open_transcript_sink`'s own
+    /// degradation.
+    fn open_sermon_note_store() -> Option<Box<dyn selahcue_app::SermonNoteStore>> {
+        let dir = data_dir()?;
+        let path = dir.join("selahcue.db3");
+        let db = Self::open_db(&path, &dir).ok()?;
+        Some(Box::new(RealSermonNoteStore { db }))
     }
 
     /// Load the persisted session: the plan + the live-state snapshot. `None` on a
@@ -1905,6 +2028,12 @@ impl App {
             // unavailable) — exactly like every other storage degradation in this file.
             if let Some(sink) = SessionStore::open_transcript_sink() {
                 c.set_transcript_sink(sink);
+            }
+            // Durable sermon-note-draft store (86akgqdv0; PR #33 review, Sana F1
+            // remediation): same best-effort degradation as the transcript sink above — a
+            // sibling seam, not a dependency of it.
+            if let Some(store) = SessionStore::open_sermon_note_store() {
+                c.set_sermon_note_store(store);
             }
         }
         if let Ok(mut c) = controller.lock() {

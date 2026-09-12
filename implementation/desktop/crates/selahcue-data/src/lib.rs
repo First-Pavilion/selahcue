@@ -13,6 +13,8 @@
 //! - [`media_repo`] — [`selahcue_core::media::MediaLibrary`] persistence (Design 2.0 node 329:124).
 //! - [`transcript_repo`] — transcript, segment, correction, and detection persistence +
 //!   configurable retention (86ajtxzrn; FR-130/153/154/137/082).
+//! - [`sermon_note_repo`] — generated sermon-note draft persistence + editing
+//!   (86akgqdv0; FR-123 "editable" half).
 //!
 //! At-rest encryption (FR-154) is behind the `encryption` feature: it compiles
 //! SQLCipher and exposes [`EncryptionKey`] plus [`Database::open_encrypted`].
@@ -33,6 +35,7 @@ pub mod saved_theme_repo;
 pub mod screen_config_repo;
 pub mod screen_repo;
 pub mod screen_theme_repo;
+pub mod sermon_note_repo;
 pub mod session_repo;
 pub mod transcript_repo;
 

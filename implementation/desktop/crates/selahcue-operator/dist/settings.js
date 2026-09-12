@@ -3,7 +3,14 @@
 // the operator commands and wires every control to its command:
 //   providers_view · set_transcription_mode · set_cloud_consent · set_notes_template ·
 //   set_preferred_translation · set_include_flag · set_account_token / clear_account_token ·
-//   generate_sermon_notes
+//   generate_sermon_notes · load_sermon_note_draft · update_sermon_note_draft
+//
+// PERSISTENCE (86akgqdv0; FR-123 "editable" half): a successful generate is saved by the backend
+// against its source transcript (best-effort — see `generate_sermon_notes`'s Rust doc comment),
+// which returns a `transcript_id`. `load_sermon_note_draft` restores that saved draft on panel
+// activation, so it survives a restart. `update_sermon_note_draft` persists an edit; the AI-
+// generated label and FR-128 disclosure are re-read from the backend's response after a save, not
+// assumed unchanged client-side, so an edit can never visually drift from what is actually stored.
 //
 // HONESTY (this screen is about trust): only real state is rendered, and under-reporting breaks
 // that contract exactly as much as over-reporting does.
@@ -669,44 +676,123 @@
     return r;
   }
 
+  // ---------- persisted draft state + editing (86akgqdv0; FR-123 "editable" half) ----------
+  //
+  // `currentDraft` is the single source of truth for what #pp-gen-result shows — set by a
+  // successful generate (showGenResult), a draft restored on panel activation
+  // (loadPersistedDraft), or a saved edit (saveDraftEdit). It never accumulates: each setter
+  // REPLACES it wholesale, the same discipline `view` above already follows.
+  //
+  // `transcriptId` is null exactly when local persistence was unavailable/failed for this draft
+  // (the backend's save-on-generate is best-effort) — editing is hidden in that case because
+  // there is nothing to key a save off; the draft itself still renders, unchanged from before
+  // 86akgqdv0.
+  var currentDraft = null;
+  var editingDraft = false;
+
+  // Test-only hook (86akgqdv0, Quinn's QA review of PR #33): resets in-page draft state so a
+  // headless check can simulate "the operator just restarted the app" — a real restart clears
+  // this module's closure state entirely, which a single continuous headless page session
+  // otherwise never naturally does. Mirrors `window.__resetDeckPreviewKey` in app.js (the same
+  // pattern already used elsewhere in this codebase for a driver-only reset hook). Calling
+  // `window.settingsActivate()` after this exercises `loadPersistedDraft()`'s real fetch-and-
+  // render path exactly as a genuine restart would, closing the gap the review flagged: this
+  // path used to be provable only by a DB-level test, a wire-contract test, and a manual code
+  // trace — never a machine-checked render.
+  window.__resetSermonNoteDraftForTest = function () {
+    currentDraft = null;
+    editingDraft = false;
+  };
+
   function showGenResult(res) {
     if (!res || res.ok !== true) {
       var err = res || {};
       return showGenError(err.error || "malformed", err.message || "Something went wrong.");
     }
+    currentDraft = {
+      transcriptId: (typeof res.transcript_id === "number") ? res.transcript_id : null,
+      draft: res.draft || {},
+      aiGenerated: !!res.ai_generated,
+      aiLabel: res.ai_label || "AI-generated draft",
+      disclosure: res.disclosure || null,
+      provider: res.provider || "AI sermon notes",
+      degraded: !!res.degraded,
+      degradedNotice: res.degraded_notice || null,
+    };
+    editingDraft = false;
+    renderCurrentDraft();
+    // A returned quota is authoritative — reflect it (and it will drive the meter on next render).
+    if (res.quota && typeof res.quota.limit === "number") {
+      view.quota = res.quota;
+      var meterHost = document.querySelector(".pp-quota");
+      if (meterHost && meterHost.parentNode) meterHost.parentNode.replaceChild(renderQuota(), meterHost);
+    }
+  }
+
+  // Restores a previously persisted draft (a prior session's generate, possibly since edited) so
+  // it reappears after a restart, without requiring another Generate click. Silent no-op when
+  // there is nothing to restore or no host connection — an absent draft is the common case, not
+  // an error, and this must never overwrite a draft already on screen from THIS session's own
+  // generate (e.g. a slow load racing a fast Generate click).
+  function loadPersistedDraft() {
+    invoke("load_sermon_note_draft").then(function (res) {
+      if (!res || res.ok !== true || currentDraft) return;
+      currentDraft = {
+        transcriptId: (typeof res.transcript_id === "number") ? res.transcript_id : null,
+        draft: res.draft || {},
+        aiGenerated: !!res.ai_generated,
+        aiLabel: res.ai_label || "AI-generated draft",
+        disclosure: res.disclosure || null,
+        provider: res.provider || "AI sermon notes",
+        degraded: false,
+        degradedNotice: null,
+      };
+      editingDraft = false;
+      renderCurrentDraft();
+    }).catch(function () {});
+  }
+
+  // Renders `currentDraft` (view or edit mode) into #pp-gen-result. The ONLY place either mode is
+  // drawn, so view <-> edit is always a full re-render from the same state, never a partial DOM
+  // patch that could drift from it.
+  function renderCurrentDraft() {
     var r = genResultEl();
-    if (!r) return;
+    if (!r || !currentDraft) return;
     r.className = "pp-gen-result pp-gen-ok";
-    r.setAttribute("role", "status"); // a completed draft is a polite status, not an alert
-    var d = res.draft || {};
+    r.setAttribute("role", "status"); // a completed/restored draft is a polite status, not an alert
+    if (editingDraft) renderDraftEditForm(r); else renderDraftView(r);
+  }
+
+  function renderDraftHeader(host) {
     var hd = el("div", "pp-gen-hdr");
     hd.setAttribute("role", "status");
-    var provider = res.provider ? res.provider : "AI sermon notes";
-    hd.appendChild(el("span", "pp-gen-badge", (res.degraded ? "Local draft" : provider)));
-    hd.appendChild(el("span", "pp-gen-title", d.title || "Sermon notes"));
-    // FR-123: a model draft is labelled as one. The backend sets `ai_generated` from the provider
-    // that actually SERVED the draft, so a degraded offline scaffold is not mislabelled as AI.
-    if (res.ai_generated) {
-      hd.appendChild(el("span", "pp-gen-ai-label", res.ai_label || "AI-generated draft"));
+    hd.appendChild(el("span", "pp-gen-badge", (currentDraft.degraded ? "Local draft" : currentDraft.provider)));
+    hd.appendChild(el("span", "pp-gen-title", (currentDraft.draft && currentDraft.draft.title) || "Sermon notes"));
+    // FR-123: a model draft is labelled as one — in EITHER mode, view or edit. Editing must never
+    // silently remove this label; it is drawn from `currentDraft`, not from anything the edit form
+    // itself could omit.
+    if (currentDraft.aiGenerated) {
+      hd.appendChild(el("span", "pp-gen-ai-label", currentDraft.aiLabel));
     }
-    r.appendChild(hd);
-    // FR-128: the fabrication warning travels WITH the draft, never separately and never omitted.
-    // The backend guarantees `disclosure` is non-null exactly when `ai_generated`, so this cannot
-    // render a label without its warning.
-    if (res.ai_generated && res.disclosure) {
-      var disc = el("p", "pp-gen-disclosure", res.disclosure);
+    host.appendChild(hd);
+    // FR-128: the fabrication warning travels WITH the draft, in either mode, never separately and
+    // never omitted. The backend guarantees `disclosure` is non-null exactly when `ai_generated`.
+    if (currentDraft.aiGenerated && currentDraft.disclosure) {
+      var disc = el("p", "pp-gen-disclosure", currentDraft.disclosure);
       disc.setAttribute("role", "note");
-      r.appendChild(disc);
+      host.appendChild(disc);
     }
-    // FR-135: a degraded draft says so in words, not just via a badge. The operator asked for AI
-    // notes and got an offline outline instead; showing the scaffold in silence would read as
-    // though it WERE the notes they asked for — the same under-reporting the AI label prevents,
-    // pointing the other way. `degraded_notice` is non-null exactly when `degraded`.
-    if (res.degraded && res.degraded_notice) {
-      var deg = el("p", "pp-gen-degraded", res.degraded_notice);
+    // FR-135: a degraded draft says so in words, not just via a badge.
+    if (currentDraft.degraded && currentDraft.degradedNotice) {
+      var deg = el("p", "pp-gen-degraded", currentDraft.degradedNotice);
       deg.setAttribute("role", "note");
-      r.appendChild(deg);
+      host.appendChild(deg);
     }
+  }
+
+  function renderDraftView(r) {
+    var d = currentDraft.draft || {};
+    renderDraftHeader(r);
     if (d.summary) r.appendChild(el("p", "pp-gen-summary", d.summary));
     (d.sections || []).forEach(function (s) {
       r.appendChild(el("p", "pp-gen-sec-h", s.heading || ""));
@@ -733,12 +819,191 @@
       sc.appendChild(el("span", "pp-gen-scr-list", d.scriptures.join(" · ")));
       r.appendChild(sc);
     }
-    // A returned quota is authoritative — reflect it (and it will drive the meter on next render).
-    if (res.quota && typeof res.quota.limit === "number") {
-      view.quota = res.quota;
-      var meterHost = document.querySelector(".pp-quota");
-      if (meterHost && meterHost.parentNode) meterHost.parentNode.replaceChild(renderQuota(), meterHost);
+    // Editing needs a transcript id to save against — null only when local persistence itself was
+    // unavailable/failed for this draft (see the `currentDraft` doc comment above).
+    if (currentDraft.transcriptId != null) {
+      var actions = el("div", "pp-gen-actions");
+      var editBtn = el("button", "pp-gen-edit-btn", "Edit");
+      editBtn.type = "button";
+      editBtn.id = "pp-gen-edit";
+      editBtn.addEventListener("click", function () { editingDraft = true; renderCurrentDraft(); });
+      actions.appendChild(editBtn);
+      r.appendChild(actions);
     }
+  }
+
+  function editField(labelText, inputEl, extraCls) {
+    var wrap = el("label", "pp-gen-field" + (extraCls ? " " + extraCls : ""));
+    wrap.appendChild(el("span", "pp-gen-field-label", labelText));
+    wrap.appendChild(inputEl);
+    return wrap;
+  }
+
+  // Editable text for existing title/summary/heading/item/point/sub-point wording. Deliberately
+  // does NOT add UI to insert or remove a section/item/point — FR-123 asks for "editable", not a
+  // structural outline builder; adding/removing entries is a reasonable later affordance, not
+  // silently faked here.
+  function renderDraftEditForm(r) {
+    var d = currentDraft.draft || {};
+    renderDraftHeader(r);
+
+    var form = el("div", "pp-gen-edit-form");
+    form.setAttribute("role", "group");
+    form.setAttribute("aria-label", "Edit sermon notes draft");
+
+    var titleInput = document.createElement("input");
+    titleInput.type = "text";
+    titleInput.id = "pp-edit-title";
+    titleInput.value = d.title || "";
+    form.appendChild(editField("Title", titleInput));
+
+    var summaryInput = document.createElement("textarea");
+    summaryInput.id = "pp-edit-summary";
+    summaryInput.rows = 3;
+    summaryInput.value = d.summary || "";
+    form.appendChild(editField("Summary", summaryInput));
+
+    var sectionsHost = el("div", "pp-gen-edit-sections");
+    (d.sections || []).forEach(function (s, si) {
+      var box = el("div", "pp-gen-edit-section");
+      var headingInput = document.createElement("input");
+      headingInput.type = "text";
+      headingInput.className = "pp-edit-section-heading";
+      headingInput.setAttribute("data-si", si);
+      headingInput.value = s.heading || "";
+      box.appendChild(editField("Heading", headingInput));
+
+      var isOutline = (s.points || []).length > 0;
+      if (isOutline) {
+        (s.points || []).forEach(function (pt, pi) {
+          var ptWrap = el("div", "pp-gen-edit-point");
+          var ptInput = document.createElement("input");
+          ptInput.type = "text";
+          ptInput.className = "pp-edit-point-text";
+          ptInput.setAttribute("data-si", si);
+          ptInput.setAttribute("data-pi", pi);
+          ptInput.value = (pt && pt.text) || "";
+          ptWrap.appendChild(editField("Point", ptInput));
+          (pt && pt.sub_points || []).forEach(function (sp, spi) {
+            var spInput = document.createElement("input");
+            spInput.type = "text";
+            spInput.className = "pp-edit-subpoint-text";
+            spInput.setAttribute("data-si", si);
+            spInput.setAttribute("data-pi", pi);
+            spInput.setAttribute("data-spi", spi);
+            spInput.value = sp || "";
+            ptWrap.appendChild(editField("Sub-point", spInput, "pp-gen-field-sub"));
+          });
+          box.appendChild(ptWrap);
+        });
+      } else {
+        (s.items || []).forEach(function (it, ii) {
+          var itInput = document.createElement("input");
+          itInput.type = "text";
+          itInput.className = "pp-edit-item-text";
+          itInput.setAttribute("data-si", si);
+          itInput.setAttribute("data-ii", ii);
+          itInput.value = it || "";
+          box.appendChild(editField("Item", itInput));
+        });
+      }
+      sectionsHost.appendChild(box);
+    });
+    form.appendChild(sectionsHost);
+
+    var actions = el("div", "pp-gen-preview-actions");
+    var cancel = el("button", "pp-gen-preview-cancel", "Cancel");
+    cancel.type = "button";
+    cancel.id = "pp-gen-edit-cancel";
+    cancel.addEventListener("click", function () { editingDraft = false; renderCurrentDraft(); });
+    actions.appendChild(cancel);
+
+    var save = el("button", "pp-gen-preview-confirm", "Save");
+    save.type = "button";
+    save.id = "pp-gen-save";
+    save.addEventListener("click", function () { saveDraftEdit(form); });
+    actions.appendChild(save);
+    form.appendChild(actions);
+
+    r.appendChild(form);
+    titleInput.focus();
+  }
+
+  // Reads the edit form's current input values back into the sections/points/items shape the
+  // backend expects, preserving the flat-items-XOR-outline-points shape of each section (FR-122)
+  // — never re-derived from scratch, always keyed off the SAME section/point/item positions
+  // `renderDraftEditForm` drew the inputs at, so a value read back can never land on the wrong row.
+  function readSectionsFromForm(form, sections) {
+    return (sections || []).map(function (s, si) {
+      var headingEl = form.querySelector('.pp-edit-section-heading[data-si="' + si + '"]');
+      var heading = headingEl ? headingEl.value : (s.heading || "");
+      var isOutline = (s.points || []).length > 0;
+      if (isOutline) {
+        var points = (s.points || []).map(function (pt, pi) {
+          var textEl = form.querySelector('.pp-edit-point-text[data-si="' + si + '"][data-pi="' + pi + '"]');
+          var subPoints = (pt && pt.sub_points || []).map(function (sp, spi) {
+            var sel = '.pp-edit-subpoint-text[data-si="' + si + '"][data-pi="' + pi + '"][data-spi="' + spi + '"]';
+            var spEl = form.querySelector(sel);
+            return spEl ? spEl.value : sp;
+          });
+          return { text: textEl ? textEl.value : (pt && pt.text) || "", sub_points: subPoints };
+        });
+        return { heading: heading, items: [], points: points };
+      }
+      var items = (s.items || []).map(function (it, ii) {
+        var itEl = form.querySelector('.pp-edit-item-text[data-si="' + si + '"][data-ii="' + ii + '"]');
+        return itEl ? itEl.value : it;
+      });
+      return { heading: heading, items: items, points: [] };
+    });
+  }
+
+  function saveDraftEdit(form) {
+    if (!currentDraft || currentDraft.transcriptId == null) return;
+    var d = currentDraft.draft || {};
+    var titleEl = document.getElementById("pp-edit-title");
+    var summaryEl = document.getElementById("pp-edit-summary");
+    var title = titleEl ? titleEl.value : (d.title || "");
+    var summaryVal = summaryEl ? summaryEl.value : "";
+    var sections = readSectionsFromForm(form, d.sections);
+    var scriptures = d.scriptures || []; // scripture list editing is not in this ticket's scope
+
+    var saveBtn = document.getElementById("pp-gen-save");
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.setAttribute("aria-busy", "true"); }
+    invoke("update_sermon_note_draft", {
+      transcriptId: currentDraft.transcriptId,
+      title: title,
+      summary: summaryVal.trim() ? summaryVal : null,
+      sections: sections,
+      scriptures: scriptures,
+    }).then(function (res) {
+      if (!res || res.ok !== true) {
+        var err = res || {};
+        showGenError(err.error || "malformed", err.message || "The edit could not be saved.");
+        return;
+      }
+      // Re-read the label/disclosure/provider back FROM the backend response, rather than assume
+      // they survived unchanged client-side — the guarantee that editing can't drop them belongs
+      // to the backend (`sermon_note_repo::update` cannot touch those columns), and this renders
+      // exactly what it reports, not what the client hopes is still true.
+      currentDraft = {
+        transcriptId: currentDraft.transcriptId,
+        draft: res.draft || {},
+        aiGenerated: !!res.ai_generated,
+        aiLabel: res.ai_label || currentDraft.aiLabel,
+        disclosure: res.disclosure || null,
+        provider: res.provider || currentDraft.provider,
+        degraded: currentDraft.degraded,
+        degradedNotice: currentDraft.degradedNotice,
+      };
+      editingDraft = false;
+      renderCurrentDraft();
+    }).catch(function (e) {
+      showGenError("transport", String(e && e.message ? e.message : e));
+    }).then(function () {
+      var b = document.getElementById("pp-gen-save");
+      if (b) { b.disabled = false; b.removeAttribute("aria-busy"); }
+    });
   }
 
   function showGenError(code, message) {
@@ -800,9 +1065,21 @@
 
   // Called by app.js showSurface("settings"). Loads the authoritative view, then renders. Without a
   // host it renders the offline-first defaults so the panel is never blank.
+  //
+  // 86akgqdv0: render() rebuilds #pp-gen-result FRESH (empty) on every activation — including a
+  // return visit to Settings within the same session, not only a cold app start — so the sermon-
+  // note draft state has to be redrawn into it every time, not fetched-once. If this session
+  // already holds `currentDraft` (an earlier generate/edit/load), just redraw it; otherwise fetch
+  // the persisted draft from the backend. This is what makes "generate a draft, restart the app,
+  // reopen the same transcript: the draft is still there" true from this panel, without requiring
+  // another Generate click.
   window.settingsActivate = function () {
     invoke("providers_view")
-      .then(function (v) { view = v || defaultView(); render(); })
+      .then(function (v) {
+        view = v || defaultView();
+        render();
+        if (currentDraft) renderCurrentDraft(); else loadPersistedDraft();
+      })
       .catch(function () { view = defaultView(); render(); });
   };
 

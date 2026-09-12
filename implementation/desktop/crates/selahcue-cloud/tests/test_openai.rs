@@ -856,6 +856,15 @@ fn the_offline_fallback_is_not_labelled_ai_generated() {
     assert_eq!(outcome.disclosure.is_some(), outcome.ai_generated);
 }
 
+// 86akgqdv0's companion to this test lives in
+// `selahcue-data/tests/test_sermon_note_repo.rs`'s
+// `generating_persisting_and_editing_a_draft_leaves_the_stored_transcript_byte_identical`
+// — same invariant, proven at the PERSISTENCE layer once persisted drafts exist.
+// It does not live here: this crate (`selahcue-cloud`) has no dependency on
+// `selahcue-data` and gains none for this ticket (note generation and note
+// persistence stay separate concerns), so this test below remains the pure
+// in-memory half of the invariant — nothing here writes to or reads from a
+// database.
 #[test]
 fn generation_and_draft_editing_leave_the_source_transcript_byte_identical() {
     let original = TRANSCRIPT.to_string();

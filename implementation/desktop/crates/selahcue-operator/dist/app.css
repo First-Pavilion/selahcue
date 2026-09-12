@@ -6951,5 +6951,61 @@
   color: var(--sc-text-secondary);
 }
 
+/* --- Sermon-note draft editing (86akgqdv0; FR-123 "editable" half) ------------------- */
+
+.pp-gen-actions { display: flex; justify-content: flex-end; margin-top: 4px; }
+.pp-gen-edit-btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--sc-text);
+  background: var(--sc-elevated);
+  border: 1px solid var(--sc-border);
+  border-radius: 8px;
+  padding: 7px 13px;
+  cursor: pointer;
+}
+.pp-gen-edit-btn:hover { background: var(--sc-inset); }
+.pp-gen-edit-btn:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+
+.pp-gen-edit-form { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.pp-gen-field { display: flex; flex-direction: column; gap: 4px; }
+.pp-gen-field-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--sc-text-secondary);
+}
+.pp-gen-field input[type="text"],
+.pp-gen-field textarea {
+  font: inherit;
+  font-size: 12px;
+  color: var(--sc-text);
+  background: var(--sc-elevated);
+  border: 1px solid var(--sc-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+.pp-gen-field input[type="text"]:focus-visible,
+.pp-gen-field textarea:focus-visible {
+  outline: 2px solid var(--sc-primary-hover);
+  outline-offset: 1px;
+}
+.pp-gen-field-sub { margin-left: 18px; }
+
+.pp-gen-edit-sections { display: flex; flex-direction: column; gap: 14px; }
+.pp-gen-edit-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--sc-border);
+  border-radius: 9px;
+  background: var(--sc-elevated);
+}
+.pp-gen-edit-point { display: flex; flex-direction: column; gap: 6px; }
+
 /* "DEVELOPER KEY" — the throwaway Phase 1 posture stated on the card, not implied. */
 .pp-badge-dev { color: var(--sc-gold); background: var(--sc-gold-soft); border-color: var(--sc-warn-border); }

@@ -17,6 +17,10 @@ pub enum DataError {
     /// The database was created by a newer build than this one understands;
     /// opening (and writing) it would risk data loss, so it is refused.
     SchemaTooNew { found: i64, supported: i64 },
+    /// A write was refused because a field exceeded its documented bound — the
+    /// write-side counterpart to [`DataError::Corrupt`]'s read-side check. Carries
+    /// only the field name and its limit, never the oversized value itself.
+    TooLarge(String),
 }
 
 impl fmt::Display for DataError {
@@ -30,6 +34,7 @@ impl fmt::Display for DataError {
                 f,
                 "database schema v{found} is newer than this build supports (v{supported})"
             ),
+            DataError::TooLarge(s) => write!(f, "value too large: {s}"),
         }
     }
 }

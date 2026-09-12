@@ -374,6 +374,13 @@ STUB = r"""
     return JSON.parse(JSON.stringify(P));
   };
   window.__pp = P; // exposed so the driver can flip cloud_status / notes_provider / quota
+  // Sermon-note draft persistence mock (86akgqdv0; FR-123 "editable" half). A single-slot store —
+  // this harness only ever has one active transcript fixture, mirroring the backend's "one
+  // editable draft per transcript" shape. `null` = nothing persisted yet (the real state before
+  // any Generate has ever succeeded, or after `load_sermon_note_draft` finds nothing).
+  var SN_TRANSCRIPT_ID = 42;
+  var SN = { draft: null };
+  window.__sn = SN; // exposed so the driver can inspect persisted state directly
   window.__TAURI__ = { core: { invoke: function(cmd, args){
     window.__calls.push({cmd:cmd, args:args});
     if (cmd === "builtin_themes") return Promise.resolve([{name:"Classic", theme:JSON.parse(JSON.stringify(T))}]);
@@ -726,14 +733,8 @@ STUB = r"""
       if (!P.cloud_notes_consent)
         return Promise.resolve({ok:false, error:"consent_required", message:"cloud notes consent is off"});
       var g = window.__ppGen || "not_configured";
-      if (g === "ok") return Promise.resolve({
-        ok:true, degraded:false, provider:"OpenAI",
-        // FR-123/128: a model draft is labelled and carries the fabrication warning. `disclosure`
-        // is non-null exactly when `ai_generated`, mirroring the backend.
-        ai_generated:true, ai_label:"AI-generated draft",
-        disclosure:"AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.",
-        degraded_notice:null,
-        draft:{title:"Grace That Feeds", summary:"A sermon on provision and grace.",
+      if (g === "ok") {
+        var snOkDraft = {title:"Grace That Feeds", summary:"A sermon on provision and grace.",
           sections:[
             // FR-122: an outline section carries `points` with nested sub_points and NO items.
             {heading:"Main points", items:[], points:[
@@ -743,23 +744,85 @@ STUB = r"""
             // A flat section carries `items` and NO points.
             {heading:"Prayer points", items:["Thank God for provision","Pray for the hungry"], points:[]}
           ],
-          scriptures:["Isaiah 61:5","John 6:35"]},
-        quota:null   // no metering in Phase 1 — the backend returns null even on success
-      });
-      if (g === "degraded") return Promise.resolve({
-        ok:true, degraded:true, provider:"Local (offline)",
-        // The offline scaffold is NOT a model: no AI label, no fabrication warning — but it does
-        // carry its own notice, because the operator asked for AI notes and did not get them.
-        ai_generated:false, ai_label:"AI-generated draft", disclosure:null,
-        degraded_notice:"The AI provider could not be reached, so this is an offline outline built from your transcript — not AI-generated notes. The headings are placeholders for you to fill in. Try again when you are back online.",
-        draft:{title:"Offline outline", summary:null,
-          sections:[{heading:"Outline", items:["point one"], points:[]}], scriptures:[]},
-        quota:null
-      });
+          scriptures:["Isaiah 61:5","John 6:35"]};
+        var snOkAiLabel = "AI-generated draft";
+        var snOkDisclosure = "AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.";
+        // 86akgqdv0: save-on-generate — the real backend persists best-effort against the source
+        // transcript's row id; mirrored here so `load_sermon_note_draft`/`update_sermon_note_draft`
+        // below have something real to read/edit, exactly like the real SQLite-backed store would.
+        SN.draft = { transcript_id: SN_TRANSCRIPT_ID, draft: snOkDraft, ai_generated:true,
+          ai_label: snOkAiLabel, disclosure: snOkDisclosure, provider:"OpenAI" };
+        return Promise.resolve({
+          ok:true, degraded:false, provider:"OpenAI",
+          // FR-123/128: a model draft is labelled and carries the fabrication warning. `disclosure`
+          // is non-null exactly when `ai_generated`, mirroring the backend.
+          ai_generated:true, ai_label:snOkAiLabel, disclosure:snOkDisclosure,
+          degraded_notice:null,
+          draft: snOkDraft,
+          transcript_id: SN_TRANSCRIPT_ID, // null in the real backend only when persistence failed
+          quota:null   // no metering in Phase 1 — the backend returns null even on success
+        });
+      }
+      if (g === "degraded") {
+        var snDegDraft = {title:"Offline outline", summary:null,
+          sections:[{heading:"Outline", items:["point one"], points:[]}], scriptures:[]};
+        // A degraded (offline-fallback) draft is STILL persisted by the real backend — FR-123
+        // "editable" applies to it too, it is just not labelled AI-generated (see below).
+        SN.draft = { transcript_id: SN_TRANSCRIPT_ID, draft: snDegDraft, ai_generated:false,
+          ai_label:"AI-generated draft", disclosure:null, provider:"Local (offline)" };
+        return Promise.resolve({
+          ok:true, degraded:true, provider:"Local (offline)",
+          // The offline scaffold is NOT a model: no AI label, no fabrication warning — but it does
+          // carry its own notice, because the operator asked for AI notes and did not get them.
+          ai_generated:false, ai_label:"AI-generated draft", disclosure:null,
+          degraded_notice:"The AI provider could not be reached, so this is an offline outline built from your transcript — not AI-generated notes. The headings are placeholders for you to fill in. Try again when you are back online.",
+          draft: snDegDraft,
+          transcript_id: SN_TRANSCRIPT_ID,
+          quota:null
+        });
+      }
       if (g === "quota_exceeded") return Promise.resolve({ok:false, error:"quota_exceeded", message:"monthly limit reached"});
       if (g === "transport") return Promise.reject("network down"); // invoke rejects → onGenerate .catch → transport
       if (g === "malformed") return Promise.resolve({ok:false, error:"malformed", message:"bad response"});
       return Promise.resolve({ok:false, error:"not_configured", message:"the SelahCue cloud service is not configured"});
+    }
+    // --- 86akgqdv0: sermon-note draft persistence + editing (FR-123 "editable" half) ---------
+    if (cmd === "load_sermon_note_draft") {
+      if (!SN.draft) return Promise.resolve({ok:false}); // no persistence connection / nothing saved
+      return Promise.resolve({
+        ok:true, transcript_id:SN.draft.transcript_id,
+        ai_generated:SN.draft.ai_generated, ai_label:SN.draft.ai_label,
+        disclosure:SN.draft.disclosure, provider:SN.draft.provider, draft:SN.draft.draft
+      });
+    }
+    if (cmd === "update_sermon_note_draft") {
+      // One-shot rejection hooks: let the driver exercise the backend's own refusal paths — an
+      // edit for a transcript with no saved draft, and an oversized field rejected by the bound
+      // check — WITHOUT the mock silently accepting everything the way `Promise.resolve(null)`
+      // would for an unhandled command.
+      if (window.__snRejectNotFound) { window.__snRejectNotFound = false;
+        return Promise.resolve({ok:false, error:"not_found", message:"No saved draft exists for this transcript."}); }
+      if (window.__snRejectTooLarge) { window.__snRejectTooLarge = false;
+        return Promise.resolve({ok:false, error:"too_large", message:"sermon_note.title exceeds 300 characters"}); }
+      if (!SN.draft || SN.draft.transcript_id !== args.transcriptId)
+        return Promise.resolve({ok:false, error:"not_found", message:"No saved draft exists for this transcript."});
+      // `ai_generated`/`disclosure`/`provider` are NOT accepted as arguments at all (mirrors the
+      // real `sermon_note_repo::update`, which cannot touch those columns) — only ever re-read
+      // from what was already persisted, never from `args`.
+      var snUpdated = {
+        title: args.title,
+        summary: args.summary,
+        sections: (args.sections || []).map(function(s){
+          return { heading: s.heading, items: s.items || [], points: s.points || [] };
+        }),
+        scriptures: args.scriptures || []
+      };
+      SN.draft.draft = snUpdated;
+      return Promise.resolve({
+        ok:true, transcript_id:SN.draft.transcript_id,
+        ai_generated:SN.draft.ai_generated, ai_label:SN.draft.ai_label,
+        disclosure:SN.draft.disclosure, provider:SN.draft.provider, draft:snUpdated
+      });
     }
     return Promise.resolve(null);
   } },
@@ -5151,6 +5214,176 @@ DRIVER = r"""
       ok(gD.getAttribute("role")==="status",
          "PP C-005 (L1): a success after an error is announced as role=status, not a lingering alert");
       window.__ppGen = "ok"; // restore for any later reads
+
+      // === 86akgqdv0: sermon-note draft persistence + editing (FR-123 "editable" half) ========
+      // Verification expectation from the ticket: assert COMPUTED STYLE for the edit UI, never
+      // just the `.hidden` attribute — this codebase's known WKWebView trap (a class `display`
+      // rule can defeat `hidden`; the Blink engine driving this harness would not catch that on
+      // its own, see CLAUDE.md / the operator-webview-wkwebview-layout-traps note).
+      window.__ppGen = "ok"; await ppGenerateAndConfirm(80); // a known-fresh "ok" draft to start from
+      var snView = el("pp-gen-result");
+
+      // SN-1: a successful (persisted) generate offers an Edit affordance, visibly.
+      var snEditBtn = el("pp-gen-edit");
+      ok(!!snEditBtn && getComputedStyle(snEditBtn).display !== "none" && snEditBtn.textContent === "Edit",
+         "PP SN-1: a persisted draft (transcript_id present) renders a visible Edit button (computed display)");
+      ok(ppLast("generate_sermon_notes") && ppLast("generate_sermon_notes").args, // sanity: a call really happened
+         "PP SN-1 (sanity): generate_sermon_notes was actually called for this fixture");
+
+      // SN-2: the persisted-draft WIRE CONTRACT — what a fresh app process would fetch on restart
+      // via load_sermon_note_draft — carries the label/disclosure/title untouched. This is called
+      // directly (bypassing settings.js's own in-memory `currentDraft`, which this one continuous
+      // page session never naturally clears) because it is the IPC boundary, not the client cache,
+      // that "the draft is still there after a restart" actually rests on — the deeper SQLite
+      // restart-survival property itself is proven in selahcue-data's own
+      // `a_draft_survives_a_fresh_database_open_of_the_same_file` test.
+      var snLoaded = await window.__TAURI__.core.invoke("load_sermon_note_draft");
+      ok(!!snLoaded && snLoaded.ok === true && snLoaded.transcript_id === 42,
+         "PP SN-2: load_sermon_note_draft returns the persisted draft, keyed to its transcript id");
+      ok(snLoaded.draft && snLoaded.draft.title === "Grace That Feeds",
+         "PP SN-2: the restored draft's title matches what was generated");
+      ok(snLoaded.ai_generated === true && /invent/i.test(snLoaded.disclosure || ""),
+         "PP SN-2 (FR-123/128): the label and disclosure travel with the draft through a restart, not just an edit");
+
+      // SN-3: opening Edit shows the edit form (computed style) and HIDES the read-only view's own
+      // Edit button, while the AI label + disclosure remain visibly rendered THROUGHOUT — editing
+      // must never even transiently drop the FR-123/FR-128 warning.
+      snEditBtn.click();
+      var snForm = document.querySelector(".pp-gen-edit-form");
+      ok(!!snForm && getComputedStyle(snForm).display !== "none",
+         "PP SN-3: clicking Edit reveals the edit form (computed display, not just an absent .hidden attribute)");
+      ok(!document.getElementById("pp-gen-edit"),
+         "PP SN-3: the read-only Edit button is gone while editing (view and edit are not both on screen)");
+      var snEditAiLabel = snView.querySelector(".pp-gen-ai-label");
+      ok(!!snEditAiLabel && getComputedStyle(snEditAiLabel).display !== "none",
+         "PP SN-3 (FR-123): the AI-generated label is STILL visibly rendered while the edit form is open");
+      var snEditDisc = snView.querySelector(".pp-gen-disclosure");
+      ok(!!snEditDisc && getComputedStyle(snEditDisc).display !== "none",
+         "PP SN-3 (FR-128): the fabrication disclosure is STILL visibly rendered while the edit form is open");
+
+      // SN-4: the form is pre-filled from the CURRENT draft — title, summary, a flat section's
+      // item, an outline point's text, and its sub-point — proving both shapes (FR-122) round-trip
+      // into editable fields, not just one of them.
+      var snTitleInput = document.getElementById("pp-edit-title");
+      var snSummaryInput = document.getElementById("pp-edit-summary");
+      ok(!!snTitleInput && snTitleInput.value === "Grace That Feeds",
+         "PP SN-4: the title field is pre-filled from the current draft");
+      ok(!!snSummaryInput && snSummaryInput.value === "A sermon on provision and grace.",
+         "PP SN-4: the summary field is pre-filled from the current draft");
+      var snItemInput = snForm.querySelector('.pp-edit-item-text[data-si="1"][data-ii="0"]');
+      ok(!!snItemInput && snItemInput.value === "Thank God for provision",
+         "PP SN-4: a flat section's item is pre-filled in its own editable field");
+      var snPointInput = snForm.querySelector('.pp-edit-point-text[data-si="0"][data-pi="0"]');
+      ok(!!snPointInput && snPointInput.value === "The crowd came back for the wrong reason",
+         "PP SN-4: an outline section's point text is pre-filled in its own editable field");
+      var snSubInput = snForm.querySelector('.pp-edit-subpoint-text[data-si="0"][data-pi="0"][data-spi="0"]');
+      ok(!!snSubInput && snSubInput.value === "They ate of the loaves",
+         "PP SN-4: a sub-point is pre-filled in its own editable field, nested under its parent point");
+
+      // SN-5: editing the title and a point's wording, then Save — persists via
+      // update_sermon_note_draft with the edited values (and the UNCHANGED sub-point, proving a
+      // partial edit does not clobber fields the operator did not touch), returns to view mode, and
+      // the label/disclosure are STILL present afterward (re-read from the backend's own response,
+      // never assumed).
+      var snBeforeSave = ppCall("update_sermon_note_draft").length;
+      snTitleInput.value = "Grace That Feeds (edited)";
+      snPointInput.value = "The crowd came back hungry again";
+      el("pp-gen-save").click();
+      await sleep(60);
+      ok(ppCall("update_sermon_note_draft").length === snBeforeSave + 1,
+         "PP SN-5: Save calls update_sermon_note_draft exactly once");
+      var snSaveArgs = ppLast("update_sermon_note_draft").args;
+      ok(snSaveArgs.transcriptId === 42 && snSaveArgs.title === "Grace That Feeds (edited)",
+         "PP SN-5: the edited title is sent, keyed to the SAME transcript id the draft was loaded against");
+      ok(snSaveArgs.sections[0].points[0].text === "The crowd came back hungry again",
+         "PP SN-5: the edited point's wording is sent");
+      ok(snSaveArgs.sections[0].points[0].sub_points[0] === "They ate of the loaves" &&
+         snSaveArgs.sections[0].points[0].sub_points[1] === "A full church is not a fed one",
+         "PP SN-5: sub-points the operator did NOT touch are sent UNCHANGED, not dropped");
+      ok(!("ai_generated" in snSaveArgs) && !("disclosure" in snSaveArgs) && !("provider" in snSaveArgs),
+         "PP SN-5: the edit request itself carries no ai_generated/disclosure/provider field — the label cannot be touched from the client because there is nowhere on the wire to put a change to it");
+      var snAfterSave = el("pp-gen-result");
+      ok(!document.querySelector(".pp-gen-edit-form"),
+         "PP SN-5: after Save the form is gone (back to view mode)");
+      ok(/Grace That Feeds \(edited\)/.test(snAfterSave.textContent),
+         "PP SN-5: the view now shows the SAVED title, not the pre-edit one");
+      var snPostSaveLabel = snAfterSave.querySelector(".pp-gen-ai-label");
+      var snPostSaveDisc = snAfterSave.querySelector(".pp-gen-disclosure");
+      ok(!!snPostSaveLabel && getComputedStyle(snPostSaveLabel).display !== "none",
+         "PP SN-5 (FR-123): the AI-generated label is still visibly rendered AFTER a save, re-read from the backend response");
+      ok(!!snPostSaveDisc && getComputedStyle(snPostSaveDisc).display !== "none",
+         "PP SN-5 (FR-128): the fabrication disclosure is still visibly rendered AFTER a save");
+
+      // SN-6: Cancel discards in-progress edits and restores the view showing the PRIOR (saved)
+      // content, never the abandoned draft edit.
+      el("pp-gen-edit").click();
+      document.getElementById("pp-edit-title").value = "An edit that will be abandoned";
+      el("pp-gen-edit-cancel").click();
+      ok(!document.querySelector(".pp-gen-edit-form"), "PP SN-6: Cancel closes the edit form");
+      ok(/Grace That Feeds \(edited\)/.test(el("pp-gen-result").textContent) &&
+         !/abandoned/.test(el("pp-gen-result").textContent),
+         "PP SN-6: Cancel discards the in-progress edit — the view still shows the last SAVED title, not the abandoned one");
+
+      // SN-9 (86akgqdv0, Quinn's QA review of PR #33): the CLIENT-SIDE restart-render path —
+      // loadPersistedDraft() actually making a restored draft REAPPEAR ON SCREEN after a real
+      // app restart, with no click required — was previously provable only by (a) a DB-level
+      // test, (b) a wire-contract test (SN-2 above), and (c) a manual code trace, since this
+      // harness is one continuous page session that never naturally clears settings.js's own
+      // in-memory `currentDraft`. `window.__resetSermonNoteDraftForTest()` (the test-only hook
+      // settings.js exposes for exactly this) simulates that clean-slate restart; clearing the
+      // DOM by hand first proves what follows is really painted BY the restore, not leftover
+      // markup from the fixture above. Deliberately placed HERE, right after SN-6 and before
+      // SN-7/SN-8 — SN-7's rejected save and SN-8's own generate calls each persist a DIFFERENT
+      // draft to the mock's single-slot store, so "the last SAVED title" this check names is
+      // only still `Grace That Feeds (edited)` (SN-5's save) at THIS point in the sequence; run
+      // any later, it asserts a title that generation has since overwritten, not a restart bug.
+      el("pp-gen-result").textContent = "";
+      el("pp-gen-result").removeAttribute("role");
+      window.__resetSermonNoteDraftForTest();
+      ok(el("pp-gen-result").textContent === "" && !el("pp-gen-edit"),
+         "PP SN-9 (setup): the page genuinely shows nothing before the simulated restart");
+      window.settingsActivate();
+      await sleep(60);
+      var snRestored = el("pp-gen-result");
+      ok(/Grace That Feeds \(edited\)/.test(snRestored.textContent),
+         "PP SN-9: after a simulated restart, settingsActivate() alone (no click) restores the \
+last SAVED draft's title, via the real loadPersistedDraft() render path");
+      var snRestoredEditBtn = el("pp-gen-edit");
+      ok(!!snRestoredEditBtn && getComputedStyle(snRestoredEditBtn).display !== "none",
+         "PP SN-9: the restored draft offers Edit again (computed display), same as the first \
+persisted view in SN-1");
+      var snRestoredLabel = snRestored.querySelector(".pp-gen-ai-label");
+      var snRestoredDisc = snRestored.querySelector(".pp-gen-disclosure");
+      ok(!!snRestoredLabel && getComputedStyle(snRestoredLabel).display !== "none",
+         "PP SN-9 (FR-123): the AI-generated label renders on the restored draft too, not just \
+right after a generate/save");
+      ok(!!snRestoredDisc && getComputedStyle(snRestoredDisc).display !== "none",
+         "PP SN-9 (FR-128): the fabrication disclosure renders on the restored draft too");
+
+      // SN-7: a backend refusal (oversized field) on Save surfaces an error (role=alert), not a
+      // silent no-op — the operator must be told the edit did not take.
+      el("pp-gen-edit").click();
+      window.__snRejectTooLarge = true;
+      el("pp-gen-save").click();
+      await sleep(60);
+      var snTooLarge = el("pp-gen-result");
+      ok(snTooLarge.getAttribute("role") === "alert" && /exceeds 300 characters/.test(snTooLarge.textContent),
+         "PP SN-7: an oversized-field refusal from the backend surfaces as an alert naming the reason, not a silent failure");
+
+      // SN-8: a degraded (offline-fallback) draft is STILL persisted and editable — FR-123
+      // "editable" is not conditional on ai_generated — but its Edit view carries no AI label or
+      // disclosure to preserve, since it never had one (86akgqdv0 does not invent a false claim on
+      // the one draft type that is honestly not AI-generated).
+      window.__ppGen = "degraded"; await ppGenerateAndConfirm(80);
+      var snDegView = el("pp-gen-result");
+      var snDegEditBtn = el("pp-gen-edit");
+      ok(!!snDegEditBtn && getComputedStyle(snDegEditBtn).display !== "none",
+         "PP SN-8: a degraded (offline-fallback) draft is ALSO persisted and offers Edit — FR-123 editability is not gated on ai_generated");
+      snDegEditBtn.click();
+      ok(!!document.querySelector(".pp-gen-edit-form") && !el("pp-gen-result").querySelector(".pp-gen-ai-label"),
+         "PP SN-8: a degraded draft's edit view carries no AI-generated label to preserve — it never had one");
+      el("pp-gen-edit-cancel").click();
+      window.__ppGen = "ok"; await ppGenerateAndConfirm(80); // restore a clean "ok" fixture for later reads
 
       // === (F-5 / PERF-3) The review-and-confirm step is real, and an empty/below-minimum
       // transcript is refused before any network call — 86akby7d8 ============================

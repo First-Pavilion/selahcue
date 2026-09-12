@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use rusqlite::params;
 use selahcue_core::plan::ServicePlan;
 use selahcue_core::transcript::{MAX_SEGMENT_TEXT_LEN, MAX_TRANSCRIPT_SEGMENTS};
+use selahcue_data::sermon_note_repo::{self, NewSermonNote};
 use selahcue_data::transcript_repo::{self, NewTranscript, RetentionSettings};
 use selahcue_data::{plan_repo, Database};
 
@@ -363,6 +364,32 @@ fn transcript_segment_has_exactly_one_index_from_its_unique_constraint() {
         1,
         "expected exactly one index on transcript_segment (the UNIQUE constraint's own \
          autoindex); found {names:?}"
+    );
+}
+
+#[test]
+fn sermon_note_has_exactly_one_index_from_its_unique_constraint() {
+    // Same pattern as `transcript_segment_has_exactly_one_index_from_its_unique_constraint`
+    // above, for `sermon_note.transcript_id UNIQUE` (PR #33 review, Vera F1): the migration
+    // used to also `CREATE INDEX idx_sermon_note_transcript`, a byte-identical second B-tree
+    // on the same column the UNIQUE constraint's own autoindex already covers — confirmed by
+    // `EXPLAIN QUERY PLAN` never choosing it for any statement this crate issues. Pinning the
+    // count so a future re-added duplicate is caught even if it happens not to change a plan.
+    let db = db();
+    let mut stmt = db
+        .conn()
+        .prepare("PRAGMA index_list('sermon_note')")
+        .unwrap();
+    let names: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        names.len(),
+        1,
+        "expected exactly one index on sermon_note (the UNIQUE constraint's own autoindex); \
+         found {names:?}"
     );
 }
 
@@ -852,6 +879,91 @@ fn listing_returns_label_provider_timing_and_segment_count() {
     assert_eq!(rows[1].segment_count, 2);
 }
 
+// --- most_recent_id (86akgqdv0; PR #33 review, Vera F2 / Cody Low) -----------------
+
+#[test]
+fn most_recent_id_is_none_for_an_empty_store() {
+    let db = db();
+    assert_eq!(transcript_repo::most_recent_id(&db).unwrap(), None);
+}
+
+#[test]
+fn most_recent_id_matches_lists_own_first_row_regardless_of_creation_order() {
+    // Positive control against `list()`'s own ordering (`ORDER BY started_at DESC, id
+    // DESC`) — created out of started_at order, so this cannot pass merely by picking
+    // whichever row was inserted last.
+    let db = db();
+    // Inserted FIRST (lower id) but with the LATER started_at — creation order and
+    // started_at order deliberately disagree, so this test cannot pass by accident via
+    // either "highest id" or "insertion order".
+    let started_later = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "Started later".into(),
+            provider: "whisper".into(),
+            plan_id: None,
+            started_at_ms: 5_000,
+        },
+    )
+    .unwrap();
+    let started_earlier = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "Started earlier".into(),
+            provider: "whisper".into(),
+            plan_id: None,
+            started_at_ms: 1_000,
+        },
+    )
+    .unwrap();
+    let _ = started_earlier;
+
+    let expected = transcript_repo::list(&db).unwrap().first().unwrap().id;
+    assert_eq!(
+        transcript_repo::most_recent_id(&db).unwrap(),
+        Some(expected)
+    );
+    assert_eq!(
+        expected, started_later,
+        "sanity: `list()` really does order by started_at, not insertion order"
+    );
+}
+
+#[test]
+fn most_recent_id_uses_the_index_for_ordering_with_no_separate_sort_step() {
+    // The whole point of this function over `list(db).first()` (Vera F2): SQLite plans
+    // `ORDER BY started_at DESC, id DESC LIMIT 1` as an in-order walk of
+    // idx_transcript_started_at that STOPS after the first row (EXPLAIN QUERY PLAN reports
+    // this as "SCAN ... USING COVERING INDEX" — "SCAN" here names an in-order index walk,
+    // not a full-table read; LIMIT 1 makes it read exactly one row regardless of table
+    // size). What actually distinguishes this from the O(total segments) `list()` path is
+    // the ABSENCE of a "USE TEMP B-TREE FOR ORDER BY" step: that step is what would mean
+    // SQLite materialised and sorted every row before taking the first one. Also confirmed
+    // by `most_recent_id_matches_lists_own_first_row_regardless_of_creation_order` actually
+    // resolving the right row, and by Vera's own PR #33 review measurement (0.04–0.036 ms
+    // versus 0.8–10.5 ms for `list()`, load-independent VDBE-step evidence).
+    let db = db();
+    let mut stmt = db
+        .conn()
+        .prepare("EXPLAIN QUERY PLAN SELECT id FROM transcript ORDER BY started_at DESC, id DESC LIMIT 1")
+        .unwrap();
+    let plan: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|p| p.contains("USING COVERING INDEX idx_transcript_started_at")),
+        "expected the index-ordered walk, got: {plan:?}"
+    );
+    assert!(
+        !plan.iter().any(|p| p.contains("TEMP B-TREE")),
+        "a temp-b-tree sort step means every row was materialised and sorted before taking \
+         the first one — exactly the O(n) cost this function exists to avoid: {plan:?}"
+    );
+}
+
 // --- Retention settings (configurable, not hardcoded; FR-153/FR-137) ---------------
 
 #[test]
@@ -863,7 +975,310 @@ fn empty_store_loads_the_safe_placeholder_retention_defaults() {
         settings.retention_days, None,
         "kept indefinitely by default (FR-153)"
     );
-    assert!(!settings.delete_cascade_to_notes);
+    // 86akgqdv0: the notes-cascade default flipped to `true` (PROPOSED, pending
+    // product sign-off — see `RetentionSettings::delete_cascade_to_notes`'s doc
+    // comment). This assertion intentionally diverges from 86ajtxzrn's original
+    // `false` placeholder now that a `sermon_note` table exists for the flag to
+    // govern.
+    assert!(settings.delete_cascade_to_notes);
+}
+
+// --- Notes cascade-on-delete (86akgqdv0; PROPOSED default, see the field doc) -----
+
+fn sample_note(transcript_id: i64) -> NewSermonNote {
+    NewSermonNote {
+        transcript_id,
+        title: "Sunday Sermon".into(),
+        summary: Some("A short summary.".into()),
+        sections_json: r#"[{"heading":"Points","items":["one"],"points":[]}]"#.into(),
+        scriptures_json: r#"["John 3:16"]"#.into(),
+        ai_generated: true,
+        disclosure: Some("AI-generated. Check every reference.".into()),
+        provider: "SelahCue AI".into(),
+        model: None,
+        created_at_ms: 1_000,
+    }
+}
+
+/// The `sermon_note` row count for `id` — 0 or 1. Used by the cascade-ON tests below so
+/// they assert the ENTITY (the row itself) rather than `find_by_transcript`'s filtered
+/// view, which the schema's own `ON DELETE SET NULL` floor satisfies on its own (`NULL`
+/// makes it unfindable) even with the cascade `DELETE` removed entirely from
+/// `delete()`/`purge_expired()` — a mutation Sana proved leaves the OLD assertion green,
+/// 30/30 (PR #33 review, F2). Mirrors the cascade-OFF test's own discipline (it already
+/// reads `transcript_id` back by raw SQL rather than trusting `find_by_transcript`).
+fn sermon_note_row_count(db: &Database, id: i64) -> i64 {
+    db.conn()
+        .query_row(
+            "SELECT COUNT(*) FROM sermon_note WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn deleting_a_transcript_cascade_deletes_its_note_when_the_setting_is_on() {
+    let db = db();
+    // Default is cascade-on (see above) — exercise it without an explicit save, so
+    // the test also pins the default itself, not just the explicit-opt-in path.
+    let transcript_id = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "svc".into(),
+            provider: "manual".into(),
+            plan_id: None,
+            started_at_ms: 1_000,
+        },
+    )
+    .unwrap();
+    let note_id = sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+    assert_eq!(
+        sermon_note_row_count(&db, note_id),
+        1,
+        "positive control: the note row must actually be persisted before delete"
+    );
+
+    transcript_repo::delete(&db, transcript_id).unwrap();
+
+    // Assert the ENTITY (the row itself), not `find_by_transcript`'s filtered view — the
+    // schema's `ON DELETE SET NULL` floor alone would already satisfy a `find_by_transcript`
+    // check by making the row unfindable via its (now-NULL) transcript_id, without the
+    // cascade DELETE having run at all (F2).
+    assert_eq!(
+        sermon_note_row_count(&db, note_id),
+        0,
+        "cascade is ON by default: the note ROW must be gone, not merely detached"
+    );
+}
+
+#[test]
+fn deleting_a_transcript_only_detaches_its_note_when_cascade_is_off() {
+    let db = db();
+    transcript_repo::save_retention_settings(
+        &db,
+        &RetentionSettings {
+            retention_days: None,
+            delete_cascade_to_notes: false,
+        },
+    )
+    .unwrap();
+    let transcript_id = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "svc".into(),
+            provider: "manual".into(),
+            plan_id: None,
+            started_at_ms: 1_000,
+        },
+    )
+    .unwrap();
+    let note_id = sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+
+    transcript_repo::delete(&db, transcript_id).unwrap();
+
+    // The note row must still exist (not deleted) but its transcript_id must have
+    // gone to NULL (the schema's `ON DELETE SET NULL` floor) so `find_by_transcript`
+    // can no longer find it via the now-gone transcript id.
+    assert!(
+        sermon_note_repo::find_by_transcript(&db, transcript_id)
+            .unwrap()
+            .is_none(),
+        "find_by_transcript is keyed on transcript_id, which is now NULL"
+    );
+    let transcript_id_col: Option<i64> = db
+        .conn()
+        .query_row(
+            "SELECT transcript_id FROM sermon_note WHERE id = ?1",
+            params![note_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        transcript_id_col, None,
+        "cascade OFF: the note row must survive, detached (transcript_id = NULL), not be deleted"
+    );
+}
+
+#[test]
+fn purge_expired_cascade_deletes_notes_for_every_purged_transcript() {
+    let db = db();
+    const DAY_MS: i64 = 86_400_000;
+    let now = 100 * DAY_MS;
+    let transcript_id = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "old".into(),
+            provider: "manual".into(),
+            plan_id: None,
+            started_at_ms: now - 10 * DAY_MS,
+        },
+    )
+    .unwrap();
+    transcript_repo::end(&db, transcript_id, now - 9 * DAY_MS).unwrap();
+    // The note's OWN created_at/edited_at must be RECENT (well inside the 7-day retention
+    // window below), not `sample_note`'s default epoch-adjacent `1_000` (PR #33 review, Cody
+    // + Sana N4 — Medium: with the default, the note is old enough that purge_expired's
+    // SEPARATE detached-note sweep (Sana F3) would delete it anyway even if the explicit
+    // cascade DELETE inside purge_expired's own loop were removed entirely, masking the
+    // branch this test exists to prove. Verified: disabling only that cascade block leaves
+    // this test green with the old timestamp; with a recent one, only the cascade branch can
+    // produce row count 0 — see the mutation note below.)
+    let mut note = sample_note(transcript_id);
+    note.created_at_ms = now - DAY_MS;
+    let note_id = sermon_note_repo::create(&db, &note).unwrap();
+    assert_eq!(
+        sermon_note_row_count(&db, note_id),
+        1,
+        "positive control: the note row must actually be persisted before purge"
+    );
+    // Default (cascade true) + a short retention window so the fixture is eligible.
+    transcript_repo::save_retention_settings(
+        &db,
+        &RetentionSettings {
+            retention_days: Some(7),
+            delete_cascade_to_notes: true,
+        },
+    )
+    .unwrap();
+
+    let purged = transcript_repo::purge_expired(&db, now).unwrap();
+    assert_eq!(purged, vec![transcript_id]);
+    // Assert the ENTITY (the row), not `find_by_transcript` — see `sermon_note_row_count`'s
+    // doc comment: the SET NULL floor alone would satisfy the old, filtered-view assertion
+    // even with the cascade DELETE removed from `purge_expired` entirely (F2).
+    assert_eq!(
+        sermon_note_row_count(&db, note_id),
+        0,
+        "purge_expired must apply the same cascade decision as delete(): the note ROW must \
+         be gone, not merely detached"
+    );
+}
+
+#[test]
+fn purge_expired_also_purges_detached_notes_past_the_retention_window() {
+    // FR-153 (PR #33 review, Sana F3): a note detached by a non-cascading delete is
+    // unreachable through find_by_transcript/update/delete_for_transcript forever unless
+    // retention can reach it too. This proves purge_expired's detached-note sweep does so
+    // — using the note's OWN edited_at, since a detached note has no transcript row left
+    // to derive a cutoff from.
+    let db = db();
+    const DAY_MS: i64 = 86_400_000;
+    let now = 100 * DAY_MS;
+
+    transcript_repo::save_retention_settings(
+        &db,
+        &RetentionSettings {
+            retention_days: None,
+            delete_cascade_to_notes: false,
+        },
+    )
+    .unwrap();
+    let transcript_id = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "old".into(),
+            provider: "manual".into(),
+            plan_id: None,
+            started_at_ms: now - 20 * DAY_MS,
+        },
+    )
+    .unwrap();
+    let mut note = sample_note(transcript_id);
+    note.created_at_ms = now - 20 * DAY_MS;
+    let note_id = sermon_note_repo::create(&db, &note).unwrap();
+
+    // Detach it: cascade is off, so the transcript delete leaves the note behind with
+    // transcript_id = NULL (the schema's ON DELETE SET NULL floor).
+    transcript_repo::delete(&db, transcript_id).unwrap();
+    let detached_transcript_id: Option<i64> = db
+        .conn()
+        .query_row(
+            "SELECT transcript_id FROM sermon_note WHERE id = ?1",
+            params![note_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        detached_transcript_id, None,
+        "positive control: the note must actually be detached (not deleted) before purge"
+    );
+    // `edited_at` is stamped at create time here (no edit happened) — old enough to be
+    // past a 7-day window measured from `now`.
+    assert_eq!(sermon_note_row_count(&db, note_id), 1);
+
+    // Now turn retention on with a short window and purge — no transcripts are eligible
+    // (there are none left), but the detached note is.
+    transcript_repo::save_retention_settings(
+        &db,
+        &RetentionSettings {
+            retention_days: Some(7),
+            delete_cascade_to_notes: false,
+        },
+    )
+    .unwrap();
+    let purged = transcript_repo::purge_expired(&db, now).unwrap();
+    assert_eq!(
+        purged,
+        Vec::<i64>::new(),
+        "no transcript rows remain to purge — only the detached note"
+    );
+    assert_eq!(
+        sermon_note_row_count(&db, note_id),
+        0,
+        "a detached note past its own retention window must be purged, or it is undeletable \
+         forever (FR-153)"
+    );
+}
+
+#[test]
+fn purge_expired_leaves_a_detached_note_inside_its_retention_window_alone() {
+    // Positive control for the test above: a RECENT detached note must survive purge —
+    // otherwise `purge_expired_also_purges_detached_notes_past_the_retention_window`
+    // could be vacuously true (e.g. a mutation that purges every detached note
+    // unconditionally would still pass it).
+    let db = db();
+    const DAY_MS: i64 = 86_400_000;
+    let now = 100 * DAY_MS;
+
+    transcript_repo::save_retention_settings(
+        &db,
+        &RetentionSettings {
+            retention_days: None,
+            delete_cascade_to_notes: false,
+        },
+    )
+    .unwrap();
+    let transcript_id = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "recent".into(),
+            provider: "manual".into(),
+            plan_id: None,
+            started_at_ms: now - DAY_MS,
+        },
+    )
+    .unwrap();
+    let mut note = sample_note(transcript_id);
+    note.created_at_ms = now - DAY_MS;
+    let note_id = sermon_note_repo::create(&db, &note).unwrap();
+    transcript_repo::delete(&db, transcript_id).unwrap();
+
+    transcript_repo::save_retention_settings(
+        &db,
+        &RetentionSettings {
+            retention_days: Some(7),
+            delete_cascade_to_notes: false,
+        },
+    )
+    .unwrap();
+    transcript_repo::purge_expired(&db, now).unwrap();
+
+    assert_eq!(
+        sermon_note_row_count(&db, note_id),
+        1,
+        "a detached note still inside its retention window must survive purge"
+    );
 }
 
 #[test]
@@ -912,6 +1327,52 @@ fn malformed_retention_days_is_reported_corrupt_not_silently_kept_forever() {
     assert!(
         matches!(err, selahcue_data::DataError::Corrupt(_)),
         "expected DataError::Corrupt for an unparseable retention_days, got {err:?}"
+    );
+}
+
+#[test]
+fn deleting_a_transcript_succeeds_despite_a_malformed_retention_days_value() {
+    // PR #33 review, Vera F4: `delete()` used to route through `load_retention_settings`
+    // (the SAME fail-closed path `purge_expired` correctly uses for ITS OWN need of the
+    // retention window), which meant a garbage `retention_days` value blocked every MANUAL
+    // transcript deletion too — even though `delete()` never reads that field. Deleting is
+    // the privacy action; refusing it over an unrelated corrupt setting is not "failing
+    // closed", it is failing the deletion request. `delete()` now reads only the cascade
+    // flag (`load_cascade_setting`), so a malformed `retention_days` cannot block it.
+    let db = db();
+    db.conn()
+        .execute(
+            "INSERT INTO transcript_setting (key, value) VALUES ('retention_days', 'not-a-number')",
+            [],
+        )
+        .unwrap();
+    // Sanity: the malformed value really is present and really does still fail
+    // `load_retention_settings` (purge_expired's path is UNCHANGED and must stay fail-closed).
+    assert!(matches!(
+        transcript_repo::load_retention_settings(&db).unwrap_err(),
+        selahcue_data::DataError::Corrupt(_)
+    ));
+
+    let transcript_id = transcript_repo::create(
+        &db,
+        &NewTranscript {
+            label: "svc".into(),
+            provider: "manual".into(),
+            plan_id: None,
+            started_at_ms: 1_000,
+        },
+    )
+    .unwrap();
+    let note_id = sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+
+    // Must succeed — and must still apply the (default-true) cascade correctly, proving
+    // `load_cascade_setting` reads the REAL flag, not just "always true because it gave up".
+    transcript_repo::delete(&db, transcript_id).unwrap();
+    assert_eq!(
+        sermon_note_row_count(&db, note_id),
+        0,
+        "the cascade default (true) must still apply correctly despite the unrelated \
+         malformed retention_days value"
     );
 }
 
