@@ -116,8 +116,26 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # operator's own real 1520px default) with a REALISTIC mixed-length transcript, reproducing
 # Vera's measured failure (blank scroll frames, an unreachable last segment) and its fix
 # (measured-height calibration, diff-and-patch + hysteresis). See the "=== TR realistic-width
-# regression control" block below; mutation-verified against the pre-fix transcripts.js.)
-EXPECTED_MIN_CHECKS = 1243
+# regression control" block below; mutation-verified against the pre-fix transcripts.js.
+# 1243 -> 1246: code review (Cody) and performance review (Vera V-7) independently found that
+# NONE of the checks above actually verify DOM-node identity across a diff-and-patch render —
+# they assert render count, visual coverage, or reachability, all of which stay green even if
+# the clear+rebuild anti-pattern this PR fixed were silently reintroduced (Vera confirmed by
+# mutation: disabling only the diff-and-patch branch survives both committed suites at 0 FAIL).
+# The 3 new "TR identity" checks tag mounted rows with a test-owned marker, force a real
+# hysteresis-crossing window move, and assert every row still in the overlap between the old and
+# new window kept ITS OWN marker (same DOM node), not a fresh one a rebuild would create. See the
+# "=== TR DOM-node identity" block below; mutation-verified against a forced clear+rebuild.
+# 1246 -> 1250: performance re-review (Vera V-6, blocking) found the scroll-anchor compensation
+# fix itself has NO regression test either: the "TR realistic" fixture interleaves segment
+# lengths evenly, so it happens to stay near the calibration ratio everywhere and never triggers
+# the fully-blank-frame regression a fresh scrollbar-drag/jump into a DIFFERENT length regime
+# produces (confirmed by mutation: disabling the V-6 compensation entirely leaves every check
+# above, including "TR realistic", at 0 FAIL). The 4 new "TR regime-change" checks add a PHASED
+# fixture (short/long/medium thirds, not interleaved) and jump straight into it fresh before each
+# check, mutation-verified against the same compensation-disabled mutant. See the "=== TR
+# regime-change fresh-open jump control" block below.
+EXPECTED_MIN_CHECKS = 1250
 
 
 def find_chrome():
@@ -695,6 +713,38 @@ STUB = r"""
       var realStart = 1728700000000, realEnd = realStart + TR_REALISTIC_COUNT * 3000;
       TR.detail[4] = {id:4, label:"Realistic Long Service — Oct 12", provider:"manual", started_at_ms:realStart, ended_at_ms:realEnd, notes_generated:false, segments:realSegs};
       TR.list.push({id:4, label:"Realistic Long Service — Oct 12", provider:"manual", started_at_ms:realStart, ended_at_ms:realEnd, segment_count:TR_REALISTIC_COUNT});
+    }
+    // A PHASED (segment-length REGIME CHANGE) transcript — performance review, Vera V-6 — seeded
+    // only on request (window.__trSeedPhased), same reasoning as __trSeedRealistic above. The
+    // fixture above interleaves short/medium/long segments EVENLY throughout, which is why it
+    // never caught V-6: a fresh jump anywhere in it lands in roughly the SAME average length
+    // regime the calibration ratio already learned near the top, so the ratio-driven spacer math
+    // stays close to right by chance. This fixture instead runs three back-to-back BLOCKS of one
+    // length each (short, then long, then medium thirds) — Vera's own reproduction shape — so a
+    // fresh jump into the long or medium block lands somewhere the ratio learned from the OTHER
+    // block(s) systematically mis-estimates, which is exactly the regime V-6 needs a fresh-open
+    // jump/drag INTO to ever show a blank frame.
+    if (window.__trSeedPhased && !window.__trPhasedSeeded) {
+      window.__trPhasedSeeded = true;
+      var TR_PFILLER = "the quick brown fox jumps over the lazy dog near the riverbank at dawn while the choir softly hums an old familiar hymn before the sermon begins ";
+      var trPhasedText = function (n, len) {
+        var s = "Segment " + n + ": ";
+        while (s.length < len) s += TR_PFILLER;
+        return s.slice(0, len);
+      };
+      var phasedSegs = [];
+      var TR_PHASED_COUNT = 3000;
+      var pThird = Math.floor(TR_PHASED_COUNT / 3);
+      for (var pi = 0; pi < TR_PHASED_COUNT; pi++) {
+        var plen;
+        if (pi < pThird) plen = 8 + (pi % 23);                 // first third: short 8-30 chars
+        else if (pi < 2 * pThird) plen = 260 + (pi % 161);      // middle third: long 260-420 chars
+        else plen = 40 + (pi % 101);                            // last third: medium 40-140 chars
+        phasedSegs.push({id: 20000 + pi, start_ms: pi * 3000, end_ms: pi * 3000 + 2500, text: trPhasedText(pi, plen)});
+      }
+      var phasedStart = 1730000000000, phasedEnd = phasedStart + TR_PHASED_COUNT * 3000;
+      TR.detail[5] = {id:5, label:"Regime Change Service — Nov 2", provider:"manual", started_at_ms:phasedStart, ended_at_ms:phasedEnd, notes_generated:false, segments:phasedSegs};
+      TR.list.push({id:5, label:"Regime Change Service — Nov 2", provider:"manual", started_at_ms:phasedStart, ended_at_ms:phasedEnd, segment_count:TR_PHASED_COUNT});
     }
     if (cmd === "transcript_list") {
       if (window.__trListFailOnce) { window.__trListFailOnce = false; return Promise.reject("simulated host rejection"); }
@@ -2866,6 +2916,73 @@ DRIVER = r"""
       ok((trRenderCountAfter - trRenderCountBefore) < 20,
          "TR realistic: 40 real 60px wheel-sized steps trigger well under 40 re-renders (got " +
          (trRenderCountAfter - trRenderCountBefore) + ") — hysteresis is real, not decorative");
+
+      // === TR DOM-node identity across a diff-and-patch render (code review Cody; independently
+      // found by Vera as V-7): every check above asserts render COUNT, visual COVERAGE, or
+      // reachability — none of that distinguishes a genuine diff-and-patch from a silent
+      // clear+rebuild regression, because both can produce the same right-segments-visible end
+      // state. Cody proved the gap with his own DOM-node-identity probe; Vera independently
+      // confirmed it by mutation (disabling only the diff-and-patch branch survives both
+      // committed suites at 0 FAIL). Tag every row currently mounted in the window with a marker
+      // THIS TEST owns (transcripts.js never touches it), force a real window move with genuine
+      // overlap between the old and new window, then assert every row still in that overlap kept
+      // ITS OWN marker — i.e. is the same DOM node the previous render mounted, not a fresh one a
+      // clear+rebuild would have created bearing no marker at all.
+      window.__trScrollToFraction(0.5);
+      var trIdBefore = window.__trWindowBounds();
+      for (var trTagI = trIdBefore.start; trTagI < trIdBefore.end; trTagI++) {
+        var trTagRow = window.__trRowFor(10000 + trTagI);
+        if (trTagRow) trTagRow.setAttribute("data-tr-identity-probe", "1");
+      }
+      var trIdAfter = trIdBefore;
+      for (var trStep = 0; trStep < 60 && trIdAfter.start === trIdBefore.start && trIdAfter.end === trIdBefore.end; trStep++) {
+        window.__trScrollBy(60);
+        trIdAfter = window.__trWindowBounds();
+      }
+      ok(trIdAfter.start !== trIdBefore.start || trIdAfter.end !== trIdBefore.end,
+         "TR identity (setup): scrolling past the hysteresis margin actually moved the mounted window");
+      var trOverlapStart = Math.max(trIdBefore.start, trIdAfter.start);
+      var trOverlapEnd = Math.min(trIdBefore.end, trIdAfter.end);
+      ok(trOverlapStart < trOverlapEnd,
+         "TR identity (setup): the window move left a real overlap to check identity against (not a full jump)");
+      var trOverlapCount = 0, trSameNodeCount = 0;
+      for (var trOi = trOverlapStart; trOi < trOverlapEnd; trOi++) {
+        var trORow = window.__trRowFor(10000 + trOi);
+        trOverlapCount++;
+        if (trORow && trORow.getAttribute("data-tr-identity-probe") === "1") trSameNodeCount++;
+      }
+      ok(trOverlapCount > 0 && trSameNodeCount === trOverlapCount,
+         "TR identity: every row still in the overlap between the old and new window (" + trOverlapCount +
+         ") is the SAME DOM node the previous render mounted, not a freshly created one (" +
+         trSameNodeCount + "/" + trOverlapCount + " kept their marker) — proves renderWindow() diffs " +
+         "in place and does not silently clear+rebuild");
+
+      // === TR regime-change fresh-open jump control (performance review, Vera V-6) ==============
+      // The fixture above interleaves short/medium/long segments EVENLY, so a fresh jump anywhere
+      // in it lands in roughly the average regime the calibration ratio already learned near the
+      // top — which is exactly why it never caught V-6 (confirmed by mutation: disabling the
+      // scroll-anchor compensation entirely leaves every check above at 0 FAIL). The PHASED
+      // fixture instead runs three back-to-back length regimes; jumping straight into the long or
+      // medium block puts the spacer math against a ratio calibrated on a DIFFERENT regime, which
+      // without compensation can put the mounted window somewhere that does not overlap the
+      // viewport at all (a fully blank frame). Re-opens the transcript FRESH before EACH jump — a
+      // real scrollbar drag starts from a cold window every time the user first grabs the thumb,
+      // not from wherever a previous scroll left off.
+      window.__trSeedPhased = true;
+      el("tr-retry").click();
+      await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 5; });
+      var trPhasedFractions = [0.4, 0.5, 0.6, 0.8];
+      for (var trPfi = 0; trPfi < trPhasedFractions.length; trPfi++) {
+        el('tr-list').querySelector('.tr-card[data-id="5"] .tr-card-open').click();
+        await waitFor(function(){ return !el("tr-detail-view").hidden && el("tr-detail-title").textContent.indexOf("Regime Change Service") === 0; });
+        await waitFor(function(){ return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+        window.__trScrollToFraction(trPhasedFractions[trPfi]);
+        var trPhasedVis = window.__trVisibleSegIds ? window.__trVisibleSegIds() : [];
+        ok(trPhasedVis.length > 0,
+           "TR regime-change: a FRESH-OPEN jump straight to fraction " + trPhasedFractions[trPfi] +
+           " (a length regime the calibration ratio has not seen yet) shows at least one real row — not a blank frame (Vera V-6)");
+        el("tr-detail-back").click();
+      }
 
       trDetailViewEl.style.width = trSavedWidth;
       trDetailViewEl.style.maxWidth = trSavedMaxWidth;

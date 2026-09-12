@@ -220,6 +220,32 @@
     row.appendChild(el("span", "tr-line-txt", s.text));
     return row;
   }
+  // Scroll-anchor compensation (performance review, Vera V-6, verified fix "P2"): a calibration
+  // update moves EVERYTHING below `start` (topSpacer = offsets[start] * avgRatio), and dropping a
+  // row off the mounted window's edge loses its real measured height in favour of the estimate —
+  // but `scrollTop` itself never moves, and `.tr-log { overflow-anchor: none }` (needed so the
+  // browser's OWN scroll anchoring stops fighting the diff-and-patch rewrite above) removes the
+  // browser's own compensation for this too. Left uncorrected this produced fully blank
+  // viewports and multi-hundred-pixel visual jumps on a transcript whose segment lengths change
+  // regime partway through (measured: up to 2,563px on a 30,000-segment fixture). Find the
+  // topmost row, among those that will still be mounted after this render (the overlap of the
+  // old and new window), whose box currently touches or is below the top of the visible log —
+  // i.e. the row the user is actually looking at right now that survives the diff — and return
+  // its live on-screen top. Called BEFORE any DOM write in `renderWindow`.
+  function findTopVisibleSurvivor(overlapStart, overlapEnd) {
+    var hostTop = logEl.getBoundingClientRect().top;
+    var idx = winStart;
+    var node = rowsHost.firstChild;
+    while (node) {
+      if (idx >= overlapStart && idx < overlapEnd) {
+        var r = node.getBoundingClientRect();
+        if (r.bottom > hostTop) return { node: node, top: r.top };
+      }
+      idx++;
+      node = node.nextSibling;
+    }
+    return null;
+  }
   // Read the just-mounted nodes' REAL rendered heights (one forced layout after all the DOM
   // writes in this render, never interleaved with them) and roll them into the running
   // measured/estimated ratio. `newRows` is [{node, est}] — the estimate captured at creation
@@ -252,7 +278,7 @@
   // unmount/remount, no re-announcement); only rows that actually left or entered the window are
   // removed/added. This also collapses the per-render DOM-node churn from up to WINDOW_ROWS
   // (~450 elements incl. children) to just the delta, which is V-2's fix.
-  function renderWindow(start, end) {
+  function renderWindow(start, end, pinned) {
     start = Math.max(0, Math.min(start, segs.length));
     end = Math.max(start, Math.min(end, segs.length));
     renderCount++;
@@ -261,6 +287,19 @@
     var overlapStart = Math.max(start, winStart);
     var overlapEnd = Math.min(end, winEnd);
     var hasOverlap = overlapStart < overlapEnd && rowsHost.children.length > 0;
+
+    // Capture the scroll-anchor BEFORE any DOM write below (V-6 fix) — with no overlap (a
+    // scrollbar drag/big jump has nothing in common with what's mounted to anchor to) there is
+    // no survivor to track, and the compensation below falls back to the ratio-only term. `pinned`
+    // (the tail-pin caller, below) is exempt entirely: that path already deliberately holds
+    // `scrollTop` at the real end regardless of estimate error, `bottomSpacer` is always 0 there
+    // (nothing follows the true last segment), and the browser auto-clamps `scrollTop` to the new
+    // `scrollHeight` on its own — compensating on top of that would pull the view back OFF the
+    // true end the pin exists to guarantee (confirmed by running the committed end-reachability
+    // checks: applying either term here regressed "TR realistic: ... actually VISIBLE at
+    // scroll-to-end" before this guard was added).
+    var anchor = !pinned && hasOverlap ? findTopVisibleSurvivor(overlapStart, overlapEnd) : null;
+    var ratioBefore = avgRatio;
 
     if (!hasOverlap) {
       // No overlap with what's currently mounted (first render, or a big jump) — nothing to
@@ -296,6 +335,19 @@
     foldMeasurements(newRows);
     topSpacer.style.height = scaledOffset(start) + "px";
     bottomSpacer.style.height = Math.max(0, scaledOffset(segs.length) - scaledOffset(end)) + "px";
+
+    // Compensate (V-6 fix): move scrollTop by exactly the on-screen displacement the spacer/DOM
+    // changes above just caused, so whatever the user was looking at does not jump. The anchor
+    // term (same DOM node, real re-measured position) captures BOTH halves of the shift — the
+    // ratio change AND the local estimate-vs-real error from rows dropping off the mounted
+    // edge — because it reads the actual rendered position rather than recomputing from offsets.
+    // With no anchor (no overlap to survive the diff), fall back to compensating for the ratio
+    // change alone against this render's own top offset.
+    if (anchor) {
+      logEl.scrollTop += anchor.node.getBoundingClientRect().top - anchor.top;
+    } else if (!pinned && avgRatio !== ratioBefore) {
+      logEl.scrollTop += offsets[start] * (avgRatio - ratioBefore);
+    }
   }
   function recomputeWindow() {
     rafPending = false;
@@ -310,7 +362,7 @@
     if (scrollTop >= maxScroll - END_PIN_EPSILON_PX) {
       if (winEnd !== segs.length) {
         var pinnedEnd = segs.length;
-        renderWindow(Math.max(0, pinnedEnd - WINDOW_ROWS), pinnedEnd);
+        renderWindow(Math.max(0, pinnedEnd - WINDOW_ROWS), pinnedEnd, true);
       }
       return;
     }
@@ -331,6 +383,28 @@
     window.requestAnimationFrame(recomputeWindow);
   }
   logEl.addEventListener("scroll", onScroll);
+  // Home/End: jump straight there ourselves, rather than let the browser's own default action
+  // drive it (V-6 fix follow-up, found while verifying the fix against the real WebKit gate
+  // below, not part of the original finding). WebKit runs a genuine multi-frame animation for a
+  // native Home/End keyboard scroll (confirmed by tracing scrollTop across ~13 intermediate
+  // frames over ~300ms — `docs/delivery` evidence for this ticket has the full trace), and ANY
+  // script write to `scrollTop` — including this render's own anchor/ratio compensation above,
+  // required for the wheel/drag fix — cancels that animation outright, the same way any other
+  // programmatic scroll would. Left alone, the very first hysteresis-crossing render fired mid
+  // -animation stops it a few hundred rows short of the true end, regressing the already-shipped,
+  // four-reviewer-verified "End reaches the last segment" guarantee (NFR-019) purely as a side
+  // effect of fixing V-6. A real mouse wheel or scrollbar drag never hits this: both re-assert
+  // their own position on the very next native input event regardless of what we write, so they
+  // do not depend on an uninterrupted engine-driven animation the way Home/End's default action
+  // does. Handling the two jump keys ourselves — the same instant jump `__trScrollToFraction`
+  // already performs for the committed Blink gate — sidesteps the race entirely instead of
+  // trying to out-guess when a native animation might be in flight.
+  logEl.addEventListener("keydown", function (ev) {
+    if (ev.key !== "Home" && ev.key !== "End") return;
+    ev.preventDefault();
+    logEl.scrollTop = ev.key === "End" ? Math.max(0, logEl.scrollHeight - logEl.clientHeight) : 0;
+    recomputeWindow();
+  });
 
   // Test hooks (CLAUDE.md bounded-memory discipline): a per-key Option-returning accessor, never a
   // global counter — a caller must name the segment it expects, so one assertion's hit can never
