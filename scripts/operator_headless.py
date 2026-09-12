@@ -145,7 +145,35 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # 60px-per-tick displacement — a bound only the anchor term (reading that row's own live position)
 # can hit. See the "=== TR V-13" block below; mutation-verified against the anchor-forced-null
 # mutant (the assertion goes red; the two setup preconditions above it stay green).
-EXPECTED_MIN_CHECKS = 1254
+# (drifted 1254 -> 1290 across intervening rounds without this constant being kept in step — the
+# floor's own contract says "never lower it to hide a lost one", not "never let it fall behind the
+# real count either", but a floor that drifts this far behind stops doing useful work. Round 6
+# re-tightens it to the REAL observed count at HEAD before this round's own additions, then adds
+# this round's own: 1290 -> 1297, the 7 new "TR wheel-race" checks (QA finding — Quinn, High: a
+# real wheel tick landing 0-4ms before a keyboard jump is not defended by `expectedScrollTop`
+# echo-suppression alone on Chromium/Blink). See the "=== TR wheel/jump race guard" block below —
+# mutation-verified against three independent mutants: removing the `armJumpGuard()` call in
+# `jumpScrollTop` turns the "corrected back to Home's true target" assertion red (the corruption
+# this round fixes reappears); separately removing just the `wheelEventSeq` genuine-new-wheel bail
+# turns the negative-control assertion red (the guard starts fighting real scrolling instead of
+# only stale residue); separately removing `openTranscript`'s own `jumpGuardGen++` (own hardening,
+# this round — a guard must not outlive the transcript it was armed for) turns the reopen check
+# red ONLY when the reopened transcript is comparably long to the one the guard was armed for —
+# the first version of this control reopened a short fixture instead and passed even with that
+# invalidation removed, because a short transcript's own small `scrollHeight` reclamps ANY stale
+# target down near 0 by coincidence (the same reclamp this round added for the legitimate resize
+# case), so the control was rewritten to reopen the SAME long fixture instead, which does not
+# benefit from that coincidence. All three verified with the whole suite running, not `--exact`.
+# This same round
+# also fixes `PL AC-53`'s two-check flake (Quinn, bisected to `0876d6c`, confirmed live on this
+# PR's own CI run): a fixed `await sleep(20)` after a synchronous state-changing call raced an
+# unrelated timing-margin change from THIS round's own `TR V-13` block added earlier in the same
+# script execution. Replaced with `waitFor` polling the actual DOM condition, and `rowNode`'s
+# capture for the adjacent "rebuilds nothing" control now happens only once that condition has
+# verifiably settled — closing what had looked like a second, independent failure but was a
+# knock-on effect of the same race. No check COUNT change from that fix (same two assertions,
+# reworded trigger).)
+EXPECTED_MIN_CHECKS = 1297
 
 
 def find_chrome():
@@ -3045,6 +3073,93 @@ DRIVER = r"""
          "position after " + trV13Ticks + " real 60px steps crossing a render (error " +
          trV13Error.toFixed(2) + "px) — the ratio-only fallback alone cannot hit this bound " +
          "(Vera measured 300-1,257px hops under that mutant)");
+
+      // === TR wheel/jump race guard (QA finding, round 6 — Quinn, High): a REAL wheel tick
+      // landing 0-4ms before a keyboard jump (Home/End/PageUp/PageDown/Space) is not defended by
+      // `expectedScrollTop` echo-suppression alone — Chromium/Blink can apply a wheel tick's
+      // scroll effect on a LATER turn than the one that dispatched it (confirmed absent on
+      // WebKit), so a still-pending commit from a wheel tick that preceded the jump can land
+      // AFTER the jump's own synchronous write and corrupt it. No existing check (this file's or
+      // the WebKit smoke's) can see this class of bug: this file only ever drives synthetic
+      // `dispatchEvent` calls, which never engage Chromium's real threaded-scrolling commit path
+      // in the first place, and the WebKit smoke drives an engine confirmed NOT to exhibit it —
+      // so the actual browser-engine race is untestable deterministically in CI either way. What
+      // IS testable, deterministically and engine-independently, is the JS-level DEFENSE this
+      // round adds (`armJumpGuard`/`wheelEventSeq` in transcripts.js): its whole job is to tell
+      // "a scroll event with no accompanying new 'wheel' event" (which is exactly what a stale,
+      // late-landing commit looks like from the DOM's own perspective, regardless of what
+      // engine-internal timing produced it) apart from "a genuine new wheel scroll" — so this
+      // synthesizes exactly that DOM-observable signature directly, rather than gambling on
+      // reproducing Chromium's internal scheduling under `--virtual-time-budget` (which this
+      // round's PL AC-53 fix, elsewhere in this file, already establishes is not a sound thing to
+      // gamble on).
+      el('tr-list').querySelector('.tr-card[data-id="5"] .tr-card-open').click();
+      await waitFor(function(){ return !el("tr-detail-view").hidden && window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      window.__trScrollToFraction(0.5); // start deep in the transcript, same as TR V-13 above
+      el("tr-detail-log").dispatchEvent(new KeyboardEvent("keydown", {key:"Home", bubbles:true}));
+      ok(el("tr-detail-log").scrollTop === 0,
+         "TR wheel-race (setup): a plain Home keypress with no wheel in flight lands at 0, as before");
+      // Simulate a STALE commit from a wheel tick that was already in flight before the jump:
+      // scrollTop drifts and a 'scroll' event fires, but — critically — no NEW 'wheel' event
+      // precedes it. This is the exact DOM signature Quinn's finding describes.
+      el("tr-detail-log").scrollTop = 400;
+      el("tr-detail-log").dispatchEvent(new Event("scroll"));
+      var trWrTargetAfterHome = el("tr-detail-log").scrollTop;
+      await waitFor(function(){ return el("tr-detail-log").scrollTop === 0; });
+      ok(el("tr-detail-log").scrollTop === 0,
+         "TR wheel-race: a stale scroll commit with NO accompanying new wheel event (target was " +
+         trWrTargetAfterHome + "px right after it landed) is corrected back to Home's true target " +
+         "(0) within the guard's frame budget — the corruption Quinn found stays fixed");
+      var trWrVisAfterGuard = window.__trVisibleSegIds ? window.__trVisibleSegIds() : [];
+      // The PHASED fixture's segment ids start at 20000 (see phasedSegs.push above) — same base
+      // TR V-13 uses just above this block.
+      ok(trWrVisAfterGuard.indexOf(String(20000)) !== -1,
+         "TR wheel-race: ...and the window is re-settled to match — the TRUE first segment is " +
+         "actually visible again, not just scrollTop reading 0 with stale content mounted");
+      // Negative control (own verification, this round): a GENUINE new wheel event arriving after
+      // the jump must NOT be fought — proves the guard tells stale residue apart from real input
+      // rather than simply reasserting the jump target no matter what happens next, which would
+      // just trade one bug (corruption) for another (the log freezing against real scrolling for
+      // a few frames after every keyboard jump).
+      window.__trScrollToFraction(0.5);
+      el("tr-detail-log").dispatchEvent(new KeyboardEvent("keydown", {key:"Home", bubbles:true}));
+      ok(el("tr-detail-log").scrollTop === 0, "TR wheel-race (control setup): Home lands at 0 again");
+      el("tr-detail-log").dispatchEvent(new WheelEvent("wheel", {deltaY: 60, bubbles:true}));
+      el("tr-detail-log").scrollTop = 500;
+      el("tr-detail-log").dispatchEvent(new Event("scroll"));
+      // Not a "wait for condition" — scrollTop is already 500 synchronously above. This waits out
+      // the guard's own bounded correction window (6 setTimeout ticks at ~16ms; several sleep(20)
+      // cycles is generous margin) so a wrongly-overreaching guard has every chance to reveal
+      // itself before the assertion below reads the settled value.
+      for (var trWrSettle = 0; trWrSettle < 10; trWrSettle++) { await sleep(20); }
+      ok(el("tr-detail-log").scrollTop === 500,
+         "TR wheel-race (control): a GENUINE new wheel event arriving after the jump is left " +
+         "alone, not forced back to the jump's target — the guard defends against stale residue, " +
+         "it does not freeze the log against real scrolling (got " + el("tr-detail-log").scrollTop + ")");
+      // Own hardening (this round): a guard armed by a jump must not outlive the transcript it was
+      // armed for. Arm one, then IMMEDIATELY (before its ~6-tick window can elapse) leave and
+      // RE-open the same (long) transcript fresh — deliberately the SAME long fixture, not a
+      // short one: reopening something short would make the guard's own current-max reclamp
+      // (added for the legitimate resize case) coincidentally clamp any stale drag-back down to
+      // ~0 anyway, masking whether the dedicated reopen-invalidation below is doing anything.
+      // Reopening the SAME long transcript keeps `scrollHeight` comparable to before, so a
+      // still-live guard has every opportunity to drag the fresh scrollTop back toward the old
+      // target — which is worse than the bug this round fixes (it would corrupt a transcript the
+      // stale guard was never armed for).
+      window.__trScrollToFraction(0.5);
+      el("tr-detail-log").dispatchEvent(new KeyboardEvent("keydown", {key:"End", bubbles:true}));
+      var trWrEndTargetBeforeReopen = el("tr-detail-log").scrollTop;
+      ok(trWrEndTargetBeforeReopen > 1000,
+         "TR wheel-race (reopen setup): End lands somewhere far from 0, so a stale drag-back would be obvious");
+      el("tr-detail-back").click();
+      el('tr-list').querySelector('.tr-card[data-id="5"] .tr-card-open').click();
+      await waitFor(function(){ return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      for (var trWrReopenWait = 0; trWrReopenWait < 10; trWrReopenWait++) { await sleep(20); }
+      ok(el("tr-detail-log").scrollTop === 0,
+         "TR wheel-race (reopen): a guard armed just before leaving does not reach into a FRESH " +
+         "open of the SAME (comparably long) transcript and drag its scrollTop back to the old " +
+         "target (" + trWrEndTargetBeforeReopen + "px) — got " + el("tr-detail-log").scrollTop);
+      el("tr-detail-back").click();
       el("tr-detail-back").click();
 
       trDetailViewEl.style.width = trSavedWidth;
@@ -5272,10 +5387,26 @@ DRIVER = r"""
       planRenderBuilder(demoteBase);
       ok(!el("plan-viewonly") && !!document.querySelector("#plan-b-list .plan-b-up"),
          "PL AC-53 (setup): the operator may edit, so there is no View only badge and the row reorder controls are built");
+      // QA regression (round 6 — Quinn, bisected to 0876d6c): this block's two state-CHANGE
+      // assertions used a fixed `await sleep(20)` between triggering the rebuild and reading the
+      // DOM, on the assumption that `planSyncViewerFromPoll` — a plain synchronous function — is
+      // always fully applied well within that budget. Adding an unrelated, purely-synchronous
+      // block of work earlier in this same script (the TR V-13 checks above — confirmed by Quinn
+      // bisecting to `0876d6c` and reproducing on both her machine and this PR's own CI run) was
+      // enough to push this fixed budget past its margin under `--virtual-time-budget`, failing
+      // this check AND the "rebuilds nothing" control right after it (which captures `rowNode`
+      // from whatever the DOM happened to be at that moment — a premature read here left it
+      // capturing a stale/pre-rebuild node, so the control failed as a knock-on effect of the
+      // same race, not a second independent bug). `waitFor` polls the actual condition instead of
+      // gambling on a fixed duration, so this no longer races machine load or a neighbouring
+      // check's timing footprint — and `rowNode` below is now captured only once that condition
+      // has verifiably settled, closing the knock-on failure at its source.
       var demoted = JSON.parse(JSON.stringify(demoteBase));
       demoted.viewer = { role: "viewer", can_edit: false };
       planSyncViewerFromPoll(demoted);
-      await sleep(20);
+      await waitFor(function(){
+        return !!el("plan-viewonly") && !document.querySelector("#plan-b-list .plan-b-up");
+      });
       ok(!!el("plan-viewonly") && !document.querySelector("#plan-b-list .plan-b-up"),
          "PL AC-53 (Quinn): a DEMOTION arriving on the poll takes the edit controls away — the chrome alone was not enough, because the per-row ↑/↓ controls are built by planRenderBuilder and a View only badge over live reorder buttons is worse than either state");
       // ...and it must not rebuild on every poll, for the same reason the publish one must not.
@@ -5285,7 +5416,9 @@ DRIVER = r"""
          "PL AC-53 (control): an unchanged poll rebuilds NOTHING — a surface rebuilt every second would eat the clicks landing on it");
       // ...and a PROMOTION travels the same path, so the mechanism is not one-directional.
       planSyncViewerFromPoll(demoteBase);
-      await sleep(20);
+      await waitFor(function(){
+        return !el("plan-viewonly") && !!document.querySelector("#plan-b-list .plan-b-up");
+      });
       ok(!el("plan-viewonly") && !!document.querySelector("#plan-b-list .plan-b-up"),
          "PL AC-53 (control): a promotion arriving on the poll gives the controls BACK — the check above measures the verdict, not a one-way latch");
 

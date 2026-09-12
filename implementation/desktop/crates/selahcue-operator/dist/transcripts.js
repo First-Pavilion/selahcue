@@ -191,10 +191,22 @@
   var winStart = 0, winEnd = 0;
   var rafPending = false;
   var renderCount = 0; // how many times the mounted window actually moved (test hook, V-2)
-  // Echo-suppression state for the scroll-position race (QA finding, this round): see `onScroll`
+  // Echo-suppression state for the scroll-position race (QA finding, round 5): see `onScroll`
   // below for the full mechanism. Written ONLY by `recomputeWindow`, at the very end of every
   // call, after every synchronous scrollTop write that pass could have made.
   var expectedScrollTop = null;
+
+  // Wheel/jump race defense (QA finding, round 6 — Quinn): see `armJumpGuard` below, next to
+  // `jumpScrollTop`, for the full mechanism. `wheelEventSeq` is a monotonic count of every real
+  // 'wheel' event this element has observed — the ONE signal that can tell "a stale commit from
+  // an EARLIER wheel tick, landing late" apart from "the user genuinely wheeled again just now",
+  // which `expectedScrollTop`'s plain value comparison structurally cannot: both look like "a
+  // scrollTop that isn't the value I last intended". `jumpGuardGen` is bumped by every keyboard
+  // jump so an older guard's own pending checks can recognize a newer jump superseded them and
+  // stop cleanly, rather than two guards fighting over the same correction.
+  var wheelEventSeq = 0;
+  var jumpGuardGen = 0;
+  logEl.addEventListener("wheel", function () { wheelEventSeq++; }, { passive: true });
 
   // Measured-height writeback + calibration (Vera V-1 fix direction (a)+(b)): once a row is
   // mounted, its real `offsetHeight` is folded into a running measured-vs-estimated ratio, and
@@ -503,10 +515,81 @@
   // the bug. Shift+Space is the one exception: it is not a selection gesture, it is itself the
   // standard "page up" pairing (plain Space pages down), so it is handled below rather than
   // bailing out on `ev.shiftKey` the way the other four keys do.
+  // Wheel/jump race defense (QA finding, round 6 — Quinn, High): a REAL wheel tick landing
+  // immediately (0-4ms) before one of these five keys is not defended by echo-suppression alone.
+  // `jumpScrollTop`'s write and `recomputeWindow`'s own compensation both happen SYNCHRONOUSLY, in
+  // the same turn as the keypress — but on Blink/Chromium a real wheel tick's scroll effect can be
+  // applied to `scrollTop` on a LATER turn (measured directly: `scrollTop` is unchanged immediately
+  // after `mouse.wheel()` returns, only catching up later — a genuine compositor-thread scheduling
+  // behaviour, confirmed ABSENT on WebKit, where the wheel's `scrollTop` write is synchronous).
+  // When that deferred commit lands AFTER the jump's own write, it does not overwrite the jump —
+  // it applies its pending delta ON TOP of it, permanently corrupting the landing position (Home
+  // lands at the wheel's delta instead of 0, PageDown/PageUp/Space land at step +/- wheel-delta).
+  // `expectedScrollTop`'s echo-suppression cannot see this: the corrupting write carries no
+  // "this is my own old write" marker, and a same-VALUE comparison cannot distinguish "an old
+  // wheel's commit settling late" from "the user genuinely scrolled again" — both are simply "a
+  // scrollTop that isn't the value I last intended". The two states differ on a DIFFERENT axis:
+  // whether a NEW 'wheel' event has actually fired since the jump. `wheelEventSeq` names that
+  // axis directly, so the guard below can tell them apart without guessing at timing.
+  //
+  // Mechanism: every keyboard jump snapshots (its own generation, the wheel-event count at that
+  // instant, and the fully-settled target `recomputeWindow` just committed to `expectedScrollTop`)
+  // and polls a handful of times shortly afterward — enough real ticks to comfortably clear
+  // Quinn's measured <=4ms unsafe window with margin, without gambling on a single fixed-duration
+  // sleep (the same "poll, don't guess a duration" reasoning as this ticket's `PL AC-53` fix).
+  // Scheduled via `setTimeout`, deliberately NOT `requestAnimationFrame`: verified directly (a
+  // standalone probe run under this project's own committed headless-Chrome harness) that an rAF
+  // chain does not reliably complete more than 1-2 ticks under `--dump-dom --virtual-time-budget`
+  // (no continuous compositor is driving repaints in that one-shot render-and-exit mode) — the
+  // very harness this fix needs a deterministic committed check in — while a `setTimeout` chain
+  // completes every tick there without exception. rAF's usual advantage (aligning with the real
+  // paint cycle) buys this correctness guard nothing; portability across execution contexts does.
+  // On each tick: if a NEWER jump has since been armed (`jumpGuardGen` moved on), this chain is
+  // stale — stop, cleanly, so two guards never fight over the same correction. If a genuinely NEW
+  // wheel event fired since THIS jump (`wheelEventSeq` moved on), the drift is the user's own next
+  // input, not residue — stop guarding and let the ordinary `onScroll` path own it, same as any
+  // other real scroll. Otherwise, if `scrollTop` no longer matches the target (re-clamped against
+  // the CURRENT max, so a legitimate resize-forced clamp during the guard window is never mistaken
+  // for corruption and fought), the only remaining explanation is a stale commit from the wheel
+  // tick that preceded this jump — restore the target and re-settle the window at it.
+  var JUMP_GUARD_TICKS = 6;      // ticks of margin above Quinn's measured <=4ms unsafe window
+  var JUMP_GUARD_TICK_MS = 16;   // ~one frame interval at 60Hz — not load-bearing precision, just cadence
+  function armJumpGuard() {
+    jumpGuardGen++;
+    var gen = jumpGuardGen;
+    var wheelSeqAtJump = wheelEventSeq;
+    var target = expectedScrollTop;
+    var ticksLeft = JUMP_GUARD_TICKS;
+    function tick() {
+      if (gen !== jumpGuardGen || ticksLeft <= 0) return;
+      ticksLeft--;
+      window.setTimeout(function () {
+        if (gen !== jumpGuardGen) return; // superseded by a newer jump
+        if (wheelEventSeq !== wheelSeqAtJump) return; // a genuine new wheel fired — not stale residue
+        var curMax = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
+        var restoreTo = Math.max(0, Math.min(curMax, target));
+        if (logEl.scrollTop !== restoreTo) {
+          // Always suppress compensation on the RESTORE write, regardless of whether the
+          // original jump suppressed it: `target` already IS the fully-settled, correct answer
+          // (captured from `expectedScrollTop` right after the original jump's own recompute —
+          // compensation included, if that jump used it). This call's job is only to re-render
+          // the window to match a scrollTop we are forcibly re-asserting, not to calculate a new
+          // position — running compensation here would layer a SECOND, unwanted shift on top of
+          // an already-correct absolute value.
+          logEl.scrollTop = restoreTo;
+          recomputeWindow(true);
+          expectedScrollTop = logEl.scrollTop;
+        }
+        tick();
+      }, JUMP_GUARD_TICK_MS);
+    }
+    tick();
+  }
   function jumpScrollTop(target, suppressCompensation) {
     var max = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
     logEl.scrollTop = Math.max(0, Math.min(max, target));
     recomputeWindow(suppressCompensation);
+    armJumpGuard();
   }
   logEl.addEventListener("keydown", function (ev) {
     if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
@@ -592,6 +675,13 @@
     detailMeta.textContent = "";
     notesBadge.textContent = "";
     segs = []; offsets = [0]; winStart = 0; winEnd = 0;
+    // Invalidate any jump guard still pending from whatever was on screen before (own
+    // verification, this round): its remembered target belongs to a scroll position that no
+    // longer means anything once the log is about to be rebuilt for a (possibly different)
+    // transcript — without this, a guard armed just before a fast Back-then-reopen could fire
+    // AFTER this transcript's own fresh scrollTop=0 is set below and forcibly drag it back to a
+    // stale pixel value from whatever was open previously.
+    jumpGuardGen++;
     // Fresh calibration per transcript (Vera V-1 fix): a ratio learned from one transcript's
     // real row heights has no bearing on another's (different text, but more importantly a
     // stale measuredIds set would make foldMeasurements silently skip every row of a new
