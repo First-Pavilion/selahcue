@@ -15,8 +15,12 @@
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86akgqdv0
 - Created: 2026-09-11
-- Updated: 2026-09-12 (Iteration 4: four-reviewer-gate findings remediated,
-  `make ci` re-verified green, head `cd92ddf1101deeed2dddb663cdf0b4fd4e44f848`)
+- Updated: 2026-09-12 (Iteration 5: second four-reviewer-gate round's findings
+  remediated — LAN frame cap vs. data-layer draft cap (Vera F5/Sana N1, High),
+  disclosure/ai_generated pairing + no-downgrade enforcement (Sana N2, Medium),
+  provider/disclosure/model bounds (Sana N3, Low), masked `purge_expired` test
+  (Cody/Sana N4, Medium/Low), `sermon_note` encryption marker (Sana N5, Low) —
+  `make ci` re-verified green)
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -164,7 +168,7 @@ the operator has no existing channel to a transcript's row id.
 | C-006 | yes | Cascade-on-delete proposal implemented + explicitly flagged as needing sign-off | code comments + `transcript_repo` tests (cascade true deletes note; false detaches note) + PR/ClickUp comment | pass + comment posted | 3 new tests pass; PR description + PR comment + ClickUp comment all posted | PASS |
 | C-007 | yes | Oversized/malformed edit rejected, storage stays bounded; mutation-verified | `cargo test -p selahcue-data` bounded-memory test, manual mutation (guard removed → RED, restored → GREEN, whole file w/ siblings) | RED then GREEN observed | RED then GREEN observed | PASS |
 | C-008 | yes | `make ci` passes | `make ci` | exit 0 | `MAKE_CI_EXIT_CODE=0`, "ALL GREEN" | PASS |
-| C-009 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) | review round | all blocking findings resolved | Ran once already (PR #33 comments against `4a44df4`): Sana filed one High (F1) + two Medium (F2/F3); Vera filed two Low (F1/F2) + routed one correctness defect (F3) + one behaviour note (F4); Cody approved with one Low; Quinn passed all ACs with one Low/Medium gap. All remediated this iteration — see Iteration 4 below. The four reviewers have not yet re-verified THIS remediated diff (`0bc9ebe`). | PENDING |
+| C-009 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) | review round | all blocking findings resolved | Ran TWICE now. Round 1 (PR #33 comments against `4a44df4`): Sana filed one High (F1) + two Medium (F2/F3); Vera filed two Low (F1/F2) + routed one correctness defect (F3) + one behaviour note (F4); Cody approved with one Low; Quinn passed all ACs with one Low/Medium gap — all remediated in Iteration 4 (`cd92ddf`). Round 2, against that remediation (`d7d89f9`): Vera filed one NEW High (F5, LAN frame cap) and confirmed F1-F4 fixed; Sana filed one NEW High (N1, same LAN-cap class), one NEW Medium (N2, disclosure/ai_generated pairing), two NEW Low (N3 bounds, N4 masked test) and confirmed F1 fixed; Cody filed one NEW Medium (masked `purge_expired` test, independently matching Sana N4) and confirmed everything else fixed; Quinn re-verified all ACs PASS with no new finding. All Round-2 findings remediated in Iteration 5 below. The four reviewers have not yet re-verified THIS remediation. | PENDING |
 
 ## Verification plan
 
@@ -340,13 +344,171 @@ the operator has no existing channel to a transcript's row id.
   state: `GATE_REVIEW` — independent re-verification of THIS remediation by
   the four reviewers has not yet happened and is not this role's to claim.
 
+### Iteration 5
+
+- Target criterion: C-009 (four-reviewer gate remediation, round 2), re-verify
+  C-001..C-008 against this remediation.
+- Hypothesis: Round 2 of the four-reviewer gate, run against Iteration 4's
+  `d7d89f9`, named a second closed, fixable set of findings — the SAME
+  underlying bug class independently found by Vera (F5, High) and Sana (N1,
+  High), plus Sana N2 (Medium), N3/N4/N5 (Low), and Cody's independently-found
+  Medium (matching Sana N4) — and addressing all of them restores a green
+  `make ci` without re-litigating the cascade-on-delete decision or the five
+  86ajtxzrn open questions.
+- Findings addressed:
+  - **Vera F5 / Sana N1 (High) — LAN frame cap vs. data-layer draft cap.**
+    Both reviewers independently reproduced the identical failure: a
+    save/update above ~64.8 KB caused `request_loop`
+    (`selahcue-lan/src/server.rs`) to turn tungstenite's over-cap-frame error
+    into a DROPPED TCP CONNECTION, and `selahcue-operator` never re-dials — a
+    single oversized sermon-note save could silently kill GO LIVE/Next/
+    Blackout/Clear until the console restarts. Fixed with the two-part
+    approach both reviewers suggested, choosing the NARROWER cap-reconciliation
+    direction over raising the shared transport cap (reasoning below):
+    1. `selahcue_lan::MAX_MESSAGE_BYTES` made `pub` and re-exported — the
+       single source of truth for the frame cap.
+    2. `sermon_note_repo::MAX_SECTIONS_JSON_BYTES` shrunk `200_000` ->
+       `15_000`, `MAX_SCRIPTURES_JSON_BYTES` shrunk `20_000` -> `3_500` — sized
+       so a REALISTIC draft at every declared maximum fits ~5.4 KB (8%) under
+       the 64 KiB transport cap even under the worst-case per-field JSON
+       escaping (worked example in the PR description).
+    3. `RemoteOperator::would_exceed_wire_cap` (new, `selahcue-app/src/
+       operator.rs`) measures the EXACT serialized `Request` envelope before
+       every `SaveSermonNoteDraft`/`UpdateSermonNoteDraft` send and refuses to
+       send (returns `Ok(None)`, the same fail-soft shape as a host `Denied`)
+       anything that would still exceed the cap — the backstop for hostile
+       content whose JSON escaping inflates far past the reconciled caps
+       (verified: a payload built entirely of JSON control characters at the
+       SAME declared maxima still overflows ~111 KB, so the guard — not
+       merely the shrunk caps — is what keeps the connection alive for that
+       case).
+    Real-wire regression tests added in
+    `selahcue-app/tests/test_sermon_note_remote.rs`:
+    `a_draft_at_every_data_layer_maximum_with_realistic_content_persists_over_the_real_wire`
+    (positive control — a realistic draft at the new maxima persists cleanly)
+    and
+    `a_draft_whose_escaped_wire_size_exceeds_the_frame_cap_is_refused_without_dropping_the_connection`
+    (the regression proper — a hostile draft is refused with `Ok(None)`, the
+    link survives, and a normal save on the SAME connection afterward still
+    works). Both run over a REAL on-disk SQLite file and a REAL `ControlServer`/
+    `RemoteOperator` TLS round trip.
+  - **Sana N2 (Medium) — no server-side enforcement of the disclosure/
+    ai_generated pairing.** `LiveController::apply`'s `SaveSermonNoteDraft`
+    handler (`selahcue-app/src/controller.rs`) now enforces, before ever
+    calling the store: (1) `SermonNoteDraftInput::disclosure_pairing_is_consistent`
+    (new method, `selahcue-lan/src/protocol.rs`) — a non-empty disclosure must
+    be present EXACTLY WHEN `ai_generated` is true, refused otherwise; (2) an
+    existing draft's `ai_generated` can never be flipped from `true` to
+    `false` by a later save — "once AI-generated, always AI-generated." Also
+    narrowed `SaveSermonNoteDraft`'s RBAC tier from `Transcribe` to a new,
+    Operator-only `Permission::SaveSermonNotes` (see the PR comment for the
+    full reasoning on this judgment call). New tests in
+    `selahcue-app/tests/test_sermon_note_durability.rs` (both pairing
+    directions, the no-downgrade rule, and two positive controls) and
+    `selahcue-lan/tests/test_rbac.rs`
+    (`save_sermon_note_draft_requires_operator_not_merely_transcribe`).
+  - **Sana N3 (Low) — provider/disclosure/model unbounded at the data
+    layer.** Added `MAX_PROVIDER_CHARS`/`MAX_DISCLOSURE_CHARS`/
+    `MAX_MODEL_CHARS` (`sermon_note_repo.rs`), enforced in a new
+    `check_create_only_bounds` (these three fields are set only at `create`
+    time — `DraftEdit`/`update` cannot touch them). Four new tests in
+    `test_sermon_note_repo.rs` (three oversized-refused, one positive control
+    at all three bounds simultaneously).
+  - **Cody + Sana N4 (Medium/Low) — masked `purge_expired` cascade test,
+    found independently by both reviewers.**
+    `purge_expired_cascade_deletes_notes_for_every_purged_transcript`
+    (`test_transcript_repo.rs`) didn't prove the explicit cascade-delete
+    branch inside `purge_expired` fires — the fixture note's `created_at_ms`
+    (`sample_note`'s default `1_000`) was old enough that the SEPARATE
+    detached-note retention sweep (Sana F3, Iteration 4) deleted it anyway
+    even with the cascade branch disabled. Fixed: the fixture note's
+    `created_at_ms` is now `now - 1 day` (well inside the test's 7-day
+    retention window), so only the cascade branch can produce the expected
+    row count.
+  - **Sana N5 (Low, carried from the original round) — no `sermon_note`
+    marker in `test_encryption.rs`.** Added
+    `encrypted_sermon_note_round_trips_and_leaves_no_plaintext_on_disk`,
+    mirroring the existing `encrypted_transcript_...` test's pattern,
+    exercising every text-bearing column (title/summary/sections/disclosure).
+- Mutation-verified by hand, whole file with siblings (not `--exact`), every
+  new/fixed test:
+  - `would_exceed_wire_cap`'s guard removed from `save_sermon_note_draft`:
+    the escaped-wire-size regression test went RED with the EXACT symptom
+    Vera/Sana described (`Ws(Io(... ConnectionReset ...))`), not merely a
+    changed return value.
+  - Data caps reverted to their pre-fix values (`200_000`/`20_000`) with the
+    guard still in place: the POSITIVE-CONTROL test
+    (`a_draft_at_every_data_layer_maximum_...`) went RED — proving the cap
+    reconciliation (not merely the guard) is load-bearing for the feature to
+    remain USEFUL for realistic content, not merely safe.
+  - `disclosure_pairing_is_consistent` check removed: both pairing-direction
+    tests went RED; the no-downgrade test and positive controls stayed GREEN.
+  - The no-downgrade check removed: `..._cannot_flip_an_existing_ai_generated_draft_to_false`
+    went RED; its positive control
+    (`..._can_be_resaved_ai_generated_when_no_draft_exists_yet`) stayed GREEN.
+  - `check_create_only_bounds` call removed from `create`: all three new
+    oversized-field tests went RED; the positive control stayed GREEN.
+  - The explicit cascade `DELETE` inside `purge_expired`'s loop disabled
+    (line-641-class mutation, matching Sana's own M6c/N4 probe): the fixed
+    test went RED (`left: 1, right: 0`); all 36 sibling tests in the file
+    stayed GREEN.
+  All mutations reverted; `git diff` confirmed empty before moving on from
+  each.
+- Decision on the LAN-cap fix direction (per the PR's own request to state
+  reasoning): reconciled the data-layer caps DOWN to fit under the existing
+  64 KiB `MAX_MESSAGE_BYTES`, rather than raising the shared transport cap.
+  `MAX_MESSAGE_BYTES` bounds EVERY command on this LAN protocol, not just
+  sermon notes (it exists specifically to bound pre-auth buffering against a
+  slowloris-class attack); raising it would weaken that bound for every other
+  command to accommodate one feature's content size, and a hosted sermon-note
+  draft realistically needs 3-10 KB (Vera's own measurement of real provider
+  output), so the shrunk caps (15 KB / 3.5 KB) remain generous for genuine use
+  while closing the gap. The pre-send guard is the belt-and-suspenders
+  backstop for content that defeats that budget's escaping assumptions.
+- Decision on RBAC narrowing (per the PR's own request to use judgment and
+  document reasoning either way): narrowed `SaveSermonNoteDraft` to a new
+  Operator-only permission. The pairing/no-downgrade invariants close the
+  SPECIFIC label-stripping/relabeling exploits Sana proved, but they cannot
+  stop a Producer-tier device from submitting an internally-consistent but
+  entirely FABRICATED "AI-generated" draft (a false `ai_generated: true` with
+  its own matching disclosure), or from wholesale-replacing the operator's
+  already-edited draft (`create` is an upsert). The operator console's own
+  `generate_sermon_notes` flow is the only legitimate caller of Save today;
+  `LoadSermonNoteDraft`/`UpdateSermonNoteDraft` stay at `Transcribe` since
+  Load is read-only and Update is structurally incapable of touching
+  provenance. See the PR comment for the full reasoning, including the
+  counter-argument considered and why Save specifically (not Load/Update)
+  warranted the narrower tier.
+- Verifier executed: `cargo fmt --check` (clean); `cargo clippy --all-targets
+  -D warnings` for `selahcue-lan --features server`, `selahcue-data --features
+  encryption`, `selahcue-app --features server`, and `selahcue-operator`
+  (both default features and via its own manifest) — clean; targeted `cargo
+  test` runs for every touched crate/feature combination, all green, before a
+  full `make ci`: **ALL GREEN** (`== local Rust/Flutter gate: ALL GREEN ==`,
+  exit 0; grepped the full log for `error`/`FAILED`/`panicked` — zero matches
+  outside expected test-name substrings); `python3 scripts/operator_headless.py`
+  — 1232 checks, 0 FAIL (unchanged from Iteration 4 — this round touched no
+  UI-visible behaviour); `python3 scripts/check_launch_reachability.py` — OK.
+- Result: PASS on C-001..C-008 (re-verified against this diff); C-009 PENDING
+  — every Round-2 finding is remediated, but the four reviewers have not yet
+  independently re-verified THIS diff.
+- Decision: commit, push, leave PR in Draft, post a new PR remediation comment
+  + ClickUp evidence comment. Terminal state: `GATE_REVIEW` — a SECOND
+  independent re-verification by the four reviewers has not yet happened and
+  is not this role's to claim.
+
 ## Risks and rollback
 
 - Risks: the "most recent transcript" resolution heuristic (see Assumptions) is
   the one genuinely new architectural judgment call in this ticket — flagged
   explicitly for reviewer scrutiny. Flipping `delete_cascade_to_notes`'s default
   changes already-merged, already-reviewed behaviour from 86ajtxzrn and needs
-  product sign-off before merge.
+  product sign-off before merge. Narrowing `SaveSermonNoteDraft` to a new
+  Operator-only permission (Iteration 5) is this role's own judgment call, not
+  product/architecture-confirmed — flagged prominently in the PR comment for
+  scrutiny, since it is a real RBAC-surface change (though additive: it only
+  narrows one already-untested-in-production command, and the mobile
+  controller never sends it, per the cross-language fixture check).
 - Rollback: revert the branch; migration is additive/forward-only and touches no
   existing table, so no data-loss risk from reverting pre-merge.
 
@@ -363,33 +525,33 @@ the operator has no existing channel to a transcript's row id.
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86akgqdv0.md`
 - Validator result: structural OK (run before iteration 1); not re-run
   `--completion` this iteration (see note below).
-- Independent verification result: the four-reviewer gate (Sana, Vera, Cody,
-  Quinn) DID run, against `4a44df4`, and posted findings (PR #33 comments +
-  ClickUp comments from Vera/Cody/Quinn; Sana's mirror comment on ClickUp did
-  not land — her session reported no ClickUp MCP tools were exposed to it and
-  handed the mirror to a dispatcher that this session found no record of
-  completing; her finding is fully recorded in the PR comment instead). Every
-  blocking (Sana F1 High) and routed (Sana F2/F3 Medium; Vera F1/F2 Low; Vera
-  F3 correctness; Vera F4) finding is remediated in Iteration 4 above. This
-  session did not re-dispatch the four reviewers against the remediated diff —
-  that re-verification is the reviewers' own next step, not fabricated here.
+- Independent verification result: the four-reviewer gate ran TWICE. Round 1
+  (Sana, Vera, Cody, Quinn, against `4a44df4`) is fully remediated in
+  Iteration 4. Round 2 (the same four, against `d7d89f9`) posted: Vera F5
+  (High, LAN cap) + confirmation F1-F4 fixed; Sana N1 (High, same class as
+  Vera F5) + N2 (Medium, pairing) + N3/N4 (Low) + confirmation F1 fixed; Cody
+  a Medium (masked test, independently matching Sana N4) + confirmation
+  everything else fixed; Quinn re-verified all ACs PASS with no new finding.
+  Every Round-2 finding is remediated in Iteration 5 above. This session did
+  not re-dispatch the four reviewers against this remediation — that
+  re-verification is the reviewers' own next step, not fabricated here.
 - Terminal state: **GATE_REVIEW**. C-001..C-008 PASS by this role's own
-  re-verification of the remediated diff (`make ci` ALL GREEN, mutation checks
-  on the fixed tests, a real end-to-end transcript-id test replacing the
-  hardcoded `42`). C-009 is PENDING: the four-reviewer gate mechanism already
-  ran once (against `4a44df4`) and every finding it raised is remediated, but
-  the reviewers have not yet independently re-verified THIS diff (`0bc9ebe`) —
-  that gap is what keeps this GATE_REVIEW rather than VERIFIED_COMPLETE, per
-  the Operating Contract's review-pipeline section.
+  re-verification of this diff (`make ci` ALL GREEN, mutation checks on every
+  new/fixed test, two real end-to-end wire-cap tests against a real
+  `ControlServer`/`RemoteOperator`). C-009 is PENDING: the four-reviewer gate
+  mechanism has now run twice and every finding either round raised is
+  remediated, but the reviewers have not yet independently re-verified THIS
+  diff (`124cb8b13a8a4296d18e8d0548c967713c92cc99`) — that gap is what keeps this GATE_REVIEW rather than
+  VERIFIED_COMPLETE, per the Operating Contract's review-pipeline section.
 - Remaining failed or blocked criteria: none FAILED, none BLOCKED. C-009
-  PENDING only — a second reviewer pass over a diff that has changed since
-  their first pass, not a new decision or dependency.
-- ClickUp final evidence comment: Iteration 3 comment id `90130319846390`;
-  Iteration 4's own evidence comment is posted after this file's commit (see
+  PENDING only — a third reviewer pass over a diff that has changed since
+  their second pass, not a new decision or dependency.
+- ClickUp final evidence comment: Iteration 4's comment id `90130320019781`
+  ("Review remediation complete — PR #33 now at commit 0bc9ebe"); this
+  iteration's own evidence comment is posted after this file's commit (see
   the ClickUp task for the current comment). Task status: `code review`
   (unchanged).
 - PR: https://github.com/First-Pavilion/selahcue/pull/33 (Draft, base `main`) —
-  Iteration 3 head `81a24744a5df352a69d21bdddfcf10284c2c31ea`; Iteration 4
-  head `cd92ddf1101deeed2dddb663cdf0b4fd4e44f848` (this commit's parent — the
-  code fix; this Goal Contract update follows as its own commit, matching
-  Iteration 3's own `81a2474` + `4a44df4` split).
+  Iteration 4 head `d7d89f91adfa8fb8db9c491a67bb380d9c1e45f9`; Iteration 5 head
+  `124cb8b13a8a4296d18e8d0548c967713c92cc99` (this commit's parent — the code fix; this Goal Contract update
+  follows as its own commit, matching every prior iteration's own split).
