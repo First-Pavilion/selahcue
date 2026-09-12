@@ -6,6 +6,7 @@
 //! **Live** output. `Clear`/`Blackout` act on Live.
 
 use crate::operator::{ItemView, OperatorView};
+use crate::sermon_note_store::{NullSermonNoteStore, SermonNoteStore};
 use crate::transcript_sink::{NullTranscriptSink, TranscriptSink};
 use selahcue_core::detection::TranscriptEngine;
 use selahcue_core::plan::{ItemId, ServicePlan};
@@ -280,6 +281,16 @@ pub struct LiveController {
     /// [`ingest_transcript`](Self::ingest_transcript), never told which
     /// [`TranscriptProvider`](selahcue_core::transcript::TranscriptProvider) produced them.
     transcript_sink: Box<dyn TranscriptSink>,
+    /// The durable sermon-note draft store (86akgqdv0; PR #33 review, Sana F1
+    /// remediation) — a sibling seam to `transcript_sink` above, for the identical
+    /// reason: `selahcue-app` must not depend on `selahcue-data`, so the operator's LAN
+    /// commands (`GetActiveTranscriptId`/`LoadSermonNoteDraft`/`SaveSermonNoteDraft`/
+    /// `UpdateSermonNoteDraft`) execute against whatever store the HOST process wires
+    /// in here, never a connection the operator opens itself. Defaults to
+    /// [`NullSermonNoteStore`], matching `transcript_sink`'s own no-op default; a
+    /// caller with a real store (the desktop binary) wires one in via
+    /// [`set_sermon_note_store`](Self::set_sermon_note_store).
+    sermon_notes: Box<dyn SermonNoteStore>,
 }
 
 /// How many recent transcript segments the fuzzy quote matcher looks back over, so a
@@ -878,6 +889,7 @@ impl LiveController {
             recent_texts: std::collections::VecDeque::new(),
             partial: None,
             transcript_sink: Box::new(NullTranscriptSink),
+            sermon_notes: Box::new(NullSermonNoteStore),
         }
     }
 
@@ -887,6 +899,13 @@ impl LiveController {
     /// [`start_transcript_session`](Self::start_transcript_session) for that).
     pub fn set_transcript_sink(&mut self, sink: Box<dyn TranscriptSink>) {
         self.transcript_sink = sink;
+    }
+
+    /// Wire a real durable [`SermonNoteStore`] (86akgqdv0) — e.g. one backed by
+    /// `selahcue_data::sermon_note_repo` — in place of the default no-op. Replaces whatever
+    /// store was previously set.
+    pub fn set_sermon_note_store(&mut self, store: Box<dyn SermonNoteStore>) {
+        self.sermon_notes = store;
     }
 
     /// Open a new durable transcript session (86akcfftu) — the counterpart of
@@ -2456,6 +2475,13 @@ impl LiveController {
             | Command::IngestTranscript { .. }
             | Command::StartTranscript { .. }
             | Command::EndTranscript
+            // Sermon-note draft persistence (86akgqdv0) reads/writes a SEPARATE store
+            // (`sermon_notes`), never `ControllerSnapshot` or the live/preview state — the
+            // same reasoning as the transcript commands directly above.
+            | Command::GetActiveTranscriptId
+            | Command::LoadSermonNoteDraft { .. }
+            | Command::SaveSermonNoteDraft { .. }
+            | Command::UpdateSermonNoteDraft { .. }
             | Command::DismissDetection { .. } => {}
             _ => {
                 self.state_dirty = true;
@@ -3098,6 +3124,55 @@ impl LiveController {
                 self.end_transcript_session();
                 ControllerReply::Ack
             }
+            // --- Sermon-note draft persistence (86akgqdv0; FR-123 "editable" half; PR #33
+            // review, Sana F1 remediation). Delegated straight to the injected
+            // `SermonNoteStore` (a no-op unless a real store is wired in) — the operator never
+            // opens `selahcue-data`'s file itself for this feature, mirroring how the transcript
+            // commands just above delegate to `TranscriptSink`. ---
+            Command::GetActiveTranscriptId => match self.sermon_notes.active_transcript_id() {
+                Ok(transcript_id) => {
+                    ControllerReply::Message(ServerMessage::ActiveTranscriptId { transcript_id })
+                }
+                Err(_) => ControllerReply::Message(ServerMessage::ActiveTranscriptId {
+                    transcript_id: None,
+                }),
+            },
+            Command::LoadSermonNoteDraft { transcript_id } => {
+                match self.sermon_notes.load_draft(*transcript_id) {
+                    Ok(draft) => ControllerReply::Message(ServerMessage::SermonNoteDraft {
+                        transcript_id: *transcript_id,
+                        draft,
+                    }),
+                    // An absent draft and a storage failure both read the same way to the
+                    // caller here (no draft to show) — `load_sermon_note_draft` is documented
+                    // as "never an error" at the wire layer; a real storage problem still
+                    // reaches stderr from the store implementation itself.
+                    Err(_) => ControllerReply::Message(ServerMessage::SermonNoteDraft {
+                        transcript_id: *transcript_id,
+                        draft: None,
+                    }),
+                }
+            }
+            Command::SaveSermonNoteDraft {
+                transcript_id,
+                draft,
+            } => match self.sermon_notes.save_draft(*transcript_id, draft) {
+                Ok(saved) => ControllerReply::Message(ServerMessage::SermonNoteDraft {
+                    transcript_id: *transcript_id,
+                    draft: Some(saved),
+                }),
+                Err(_) => ControllerReply::Deny(DenyReason::BadRequest),
+            },
+            Command::UpdateSermonNoteDraft {
+                transcript_id,
+                edit,
+            } => match self.sermon_notes.update_draft(*transcript_id, edit) {
+                Ok(updated) => ControllerReply::Message(ServerMessage::SermonNoteDraft {
+                    transcript_id: *transcript_id,
+                    draft: Some(updated),
+                }),
+                Err(_) => ControllerReply::Deny(DenyReason::BadRequest),
+            },
             Command::ApproveDetection { detection_id } => {
                 // Approving stages the detected verse in Preview (never auto-live,
                 // FR-115) exactly as a manual StageScripture would, then drops it from

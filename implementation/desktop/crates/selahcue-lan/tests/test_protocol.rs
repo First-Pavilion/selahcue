@@ -384,6 +384,47 @@ fn every_command_round_trips() {
             theme_json: "{}".into(),
             next_slide_json: Some(r#"{"id":2}"#.into()),
         },
+        // Sermon-note draft persistence (86akgqdv0; PR #33 review, Sana F1 remediation) — the
+        // operator↔desktop LAN commands replacing the operator's former direct (and
+        // wrong-file) `sermon_note_repo` access.
+        Command::GetActiveTranscriptId,
+        Command::LoadSermonNoteDraft { transcript_id: 7 },
+        Command::SaveSermonNoteDraft {
+            transcript_id: 7,
+            draft: selahcue_lan::protocol::SermonNoteDraftInput {
+                title: "Faith that Endures".into(),
+                summary: Some("A short summary.".into()),
+                sections_json: r#"[{"heading":"Points","items":["one"],"points":[]}]"#.into(),
+                scriptures_json: r#"["Romans 8:28"]"#.into(),
+                ai_generated: true,
+                disclosure: Some("AI-generated. Check every reference.".into()),
+                provider: "SelahCue AI".into(),
+                model: None,
+            },
+        },
+        // The clear/absent-optional-fields form still round-trips (skip-if-none fields).
+        Command::SaveSermonNoteDraft {
+            transcript_id: 7,
+            draft: selahcue_lan::protocol::SermonNoteDraftInput {
+                title: "Faith that Endures".into(),
+                summary: None,
+                sections_json: "[]".into(),
+                scriptures_json: "[]".into(),
+                ai_generated: false,
+                disclosure: None,
+                provider: "Local (offline)".into(),
+                model: None,
+            },
+        },
+        Command::UpdateSermonNoteDraft {
+            transcript_id: 7,
+            edit: selahcue_lan::protocol::SermonNoteEditInput {
+                title: "Faith that Endures (edited)".into(),
+                summary: None,
+                sections_json: r#"[{"heading":"Points","items":["one","two"],"points":[]}]"#.into(),
+                scriptures_json: r#"["Romans 8:28"]"#.into(),
+            },
+        },
     ];
     for c in cmds {
         let json = to_json(&c).unwrap();
@@ -437,6 +478,103 @@ fn every_command_round_trips() {
     assert_eq!(
         to_json(&Command::EndTranscript).unwrap(),
         r#"{"cmd":"end_transcript"}"#
+    );
+    // Sermon-note draft persistence (86akgqdv0): new, additive commands — pinned so their wire
+    // shape cannot drift silently, and so optional fields are proven skip-if-none on the wire.
+    assert_eq!(
+        to_json(&Command::GetActiveTranscriptId).unwrap(),
+        r#"{"cmd":"get_active_transcript_id"}"#
+    );
+    assert_eq!(
+        to_json(&Command::LoadSermonNoteDraft { transcript_id: 7 }).unwrap(),
+        r#"{"cmd":"load_sermon_note_draft","transcript_id":7}"#
+    );
+    assert_eq!(
+        to_json(&Command::SaveSermonNoteDraft {
+            transcript_id: 7,
+            draft: selahcue_lan::protocol::SermonNoteDraftInput {
+                title: "Faith that Endures".into(),
+                summary: None,
+                sections_json: "[]".into(),
+                scriptures_json: "[]".into(),
+                ai_generated: true,
+                disclosure: None,
+                provider: "SelahCue AI".into(),
+                model: None,
+            },
+        })
+        .unwrap(),
+        r#"{"cmd":"save_sermon_note_draft","transcript_id":7,"draft":{"title":"Faith that Endures","sections_json":"[]","scriptures_json":"[]","ai_generated":true,"provider":"SelahCue AI"}}"#
+    );
+    assert_eq!(
+        to_json(&Command::UpdateSermonNoteDraft {
+            transcript_id: 7,
+            edit: selahcue_lan::protocol::SermonNoteEditInput {
+                title: "Faith that Endures".into(),
+                summary: None,
+                sections_json: "[]".into(),
+                scriptures_json: "[]".into(),
+            },
+        })
+        .unwrap(),
+        r#"{"cmd":"update_sermon_note_draft","transcript_id":7,"edit":{"title":"Faith that Endures","sections_json":"[]","scriptures_json":"[]"}}"#
+    );
+}
+
+/// The sermon-note draft persistence replies (86akgqdv0) round-trip and skip-if-none their
+/// optional fields, mirroring `every_command_round_trips`'s discipline for the request side.
+#[test]
+fn sermon_note_server_messages_round_trip() {
+    use selahcue_lan::protocol::{SermonNoteDraftView, ServerMessage};
+
+    let msgs = [
+        ServerMessage::ActiveTranscriptId {
+            transcript_id: Some(7),
+        },
+        ServerMessage::ActiveTranscriptId {
+            transcript_id: None,
+        },
+        ServerMessage::SermonNoteDraft {
+            transcript_id: 7,
+            draft: None,
+        },
+        ServerMessage::SermonNoteDraft {
+            transcript_id: 7,
+            draft: Some(SermonNoteDraftView {
+                title: "Faith that Endures".into(),
+                summary: Some("A short summary.".into()),
+                sections_json: r#"[{"heading":"Points","items":["one"],"points":[]}]"#.into(),
+                scriptures_json: r#"["Romans 8:28"]"#.into(),
+                ai_generated: true,
+                disclosure: Some("AI-generated. Check every reference.".into()),
+                provider: "SelahCue AI".into(),
+                model: None,
+                created_at_ms: 1_000,
+                edited_at_ms: 1_000,
+            }),
+        },
+    ];
+    for m in msgs {
+        let json = to_json(&m).unwrap();
+        let back: ServerMessage = from_json(&json).unwrap();
+        assert_eq!(back, m, "round-trip failed for {json}");
+    }
+    // `transcript_id: None` skip-serializes (additive, lean peers).
+    assert_eq!(
+        to_json(&ServerMessage::ActiveTranscriptId {
+            transcript_id: None
+        })
+        .unwrap(),
+        r#"{"event":"active_transcript_id"}"#
+    );
+    // `draft: None` skip-serializes too.
+    assert_eq!(
+        to_json(&ServerMessage::SermonNoteDraft {
+            transcript_id: 7,
+            draft: None,
+        })
+        .unwrap(),
+        r#"{"event":"sermon_note_draft","transcript_id":7}"#
     );
 }
 

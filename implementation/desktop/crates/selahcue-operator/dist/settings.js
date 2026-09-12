@@ -690,6 +690,20 @@
   var currentDraft = null;
   var editingDraft = false;
 
+  // Test-only hook (86akgqdv0, Quinn's QA review of PR #33): resets in-page draft state so a
+  // headless check can simulate "the operator just restarted the app" — a real restart clears
+  // this module's closure state entirely, which a single continuous headless page session
+  // otherwise never naturally does. Mirrors `window.__resetDeckPreviewKey` in app.js (the same
+  // pattern already used elsewhere in this codebase for a driver-only reset hook). Calling
+  // `window.settingsActivate()` after this exercises `loadPersistedDraft()`'s real fetch-and-
+  // render path exactly as a genuine restart would, closing the gap the review flagged: this
+  // path used to be provable only by a DB-level test, a wire-contract test, and a manual code
+  // trace — never a machine-checked render.
+  window.__resetSermonNoteDraftForTest = function () {
+    currentDraft = null;
+    editingDraft = false;
+  };
+
   function showGenResult(res) {
     if (!res || res.ok !== true) {
       var err = res || {};

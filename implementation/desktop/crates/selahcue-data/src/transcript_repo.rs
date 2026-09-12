@@ -287,6 +287,31 @@ pub fn list(db: &Database) -> Result<Vec<TranscriptSummary>> {
         .map_err(Into::into)
 }
 
+/// The id of the MOST RECENTLY STARTED transcript, if any — a dedicated `LIMIT 1` seek on
+/// `idx_transcript_started_at`, not [`list`]'s full materialisation of every row (PR #33
+/// review, Vera F2 / Cody Low: `list(db).first()` used to be the only way to answer this,
+/// costing an O(total segments) scan — a correlated `segment_count` subquery per row — just
+/// to keep the first one; measured 3.6–10.5 ms at ~208k segment rows versus ~0.04 ms here).
+///
+/// This is also the query the desktop answers the LAN `GetActiveTranscriptId` command with
+/// (86akgqdv0, `selahcue-lan`'s protocol — this crate does not depend on it, so no intra-doc
+/// link here): "the transcript new AI-derived content should attach to right now" is, for a
+/// single-active-session desktop app, the same question as "which transcript started most
+/// recently" — whether it is still open or has already ended.
+pub fn most_recent_id(db: &Database) -> Result<Option<i64>> {
+    db.conn()
+        .query_row(
+            "SELECT id FROM transcript ORDER BY started_at DESC, id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other.into()),
+        })
+}
+
 /// Read one transcript back in full: identity, raw segments in original order,
 /// corrections, and detections. `NotFound` if no such transcript.
 pub fn load(db: &Database, transcript_id: i64) -> Result<TranscriptDetail> {
@@ -405,18 +430,47 @@ pub fn load(db: &Database, transcript_id: i64) -> Result<TranscriptDetail> {
     })
 }
 
+/// Read ONLY the notes-cascade flag (`delete_cascade_to_notes`), never `retention_days`.
+///
+/// [`delete`] needs just this one bit to decide whether to cascade — not the whole
+/// [`RetentionSettings`] set. Routing it through [`load_retention_settings`] anyway used
+/// to mean a malformed `retention_days` (a value only `purge_expired` actually reads)
+/// blocked every MANUAL transcript deletion too, via the SAME `DataError::Corrupt` fail-
+/// closed path that is correct for the automated purge sweep (PR #30 review, Sana F5) but
+/// wrong here: deleting IS the privacy action, and refusing it over a field this call
+/// never consults is not "failing closed", it is failing the deletion request itself
+/// (PR #33 review, Vera F4). This function cannot return `Corrupt` for that reason — it
+/// never inspects `retention_days` — so [`delete`] now always applies the (deliberately
+/// fail-open, matching the row's absence) cascade default even when the stored
+/// `retention_days` value is garbage. `purge_expired` is unaffected: it still calls
+/// [`load_retention_settings`] directly and still fails closed on a malformed
+/// `retention_days`, because THAT function genuinely needs the window to compute a
+/// cutoff.
+fn load_cascade_setting(db: &Database) -> Result<bool> {
+    let conn = db.conn();
+    let mut stmt = conn.prepare("SELECT value FROM transcript_setting WHERE key = ?1")?;
+    let mut rows = stmt.query_map(params![KEY_DELETE_CASCADE_TO_NOTES], |r| {
+        r.get::<_, String>(0)
+    })?;
+    match rows.next() {
+        Some(value) => Ok(value? == "true"),
+        None => Ok(RetentionSettings::default().delete_cascade_to_notes),
+    }
+}
+
 /// Delete a transcript and everything derived from it — segments, corrections, and
 /// detections — together, in one statement (FK `ON DELETE CASCADE`, FR-153).
 /// `NotFound` if no such transcript.
 ///
 /// Whether this also deletes the transcript's generated sermon-note draft (added by
-/// 86akgqdv0) is read from [`RetentionSettings::delete_cascade_to_notes`]: when
-/// `true` (the current PROPOSED default — see that field's doc comment), the
-/// `sermon_note` row is deleted explicitly, inside the same transaction as the
-/// transcript delete and BEFORE it, so the schema's own `ON DELETE SET NULL` floor
-/// (detach, don't delete) never gets a chance to apply. When `false`, nothing extra
-/// happens here and that floor is exactly what fires: the note survives with
-/// `transcript_id = NULL`.
+/// 86akgqdv0) is read from [`RetentionSettings::delete_cascade_to_notes`] — via
+/// [`load_cascade_setting`], NOT [`load_retention_settings`]; see that function's doc
+/// comment for why (PR #33 review, Vera F4). When the flag is `true` (the current
+/// PROPOSED default — see that field's doc comment), the `sermon_note` row is deleted
+/// explicitly, inside the same transaction as the transcript delete and BEFORE it, so
+/// the schema's own `ON DELETE SET NULL` floor (detach, don't delete) never gets a
+/// chance to apply. When `false`, nothing extra happens here and that floor is exactly
+/// what fires: the note survives with `transcript_id = NULL`.
 ///
 /// The `DELETE FROM sermon_note` below is deliberately inline raw SQL rather than a
 /// call into `sermon_note_repo` — that module's functions take `&Database` (they
@@ -425,9 +479,9 @@ pub fn load(db: &Database, transcript_id: i64) -> Result<TranscriptDetail> {
 /// cannot participate in. `sermon_note_repo::delete_for_transcript` remains the
 /// canonical row-level API for every other caller.
 pub fn delete(db: &Database, transcript_id: i64) -> Result<()> {
-    let settings = load_retention_settings(db)?;
+    let cascade_to_notes = load_cascade_setting(db)?;
     let tx = db.conn().unchecked_transaction()?;
-    if settings.delete_cascade_to_notes {
+    if cascade_to_notes {
         tx.execute(
             "DELETE FROM sermon_note WHERE transcript_id = ?1",
             params![transcript_id],
@@ -529,7 +583,18 @@ pub fn save_retention_settings(db: &Database, settings: &RetentionSettings) -> R
 /// out from under it (86ajtxzrn Sana F2 / this ticket's own FR-075 crash-path note).
 const ORPHAN_GRACE_MS: i64 = 86_400_000; // 24h
 
-/// Delete every transcript whose retention window has elapsed as of `now_ms`.
+/// Delete every transcript whose retention window has elapsed as of `now_ms`, AND every
+/// DETACHED sermon-note draft (`transcript_id IS NULL` — a non-cascading transcript
+/// delete's leftover, [`sermon_note_repo::list_detached`]) whose own `edited_at` has
+/// elapsed the same window (PR #33 review, Sana F3): without this, a detached note is
+/// unreachable through every other function in this crate and survives forever
+/// regardless of retention, which is an FR-153 "reliable deletion" gap for exactly the
+/// content this ticket's `sermon_note` table introduced. Applied unconditionally
+/// (regardless of the CURRENT `delete_cascade_to_notes` setting) so a note detached
+/// under a past cascade-off period is still reachable by retention after the setting is
+/// later flipped back on — the setting governs what a FUTURE `delete`/`purge_expired`
+/// call does to a transcript that still exists, not whether an already-orphaned note
+/// stays invisible forever.
 ///
 /// A normally-ended transcript expires `retention_days` days after `ended_at`. A
 /// transcript that was never `end()`ed — a crash mid-service, which FR-075 treats as
@@ -543,9 +608,10 @@ const ORPHAN_GRACE_MS: i64 = 86_400_000; // 24h
 /// weeks ago and never stopped is, past the grace period, indistinguishable from an
 /// abandoned crash artifact and is evaluated against the same retention window using
 /// `started_at`. Cascades to segments/corrections/detections exactly like [`delete`].
-/// A `None` `retention_days` (the default) purges nothing at all, orphans included —
-/// retention stays opt-in until the FR-153 default is finalized. Returns the deleted
-/// ids.
+/// A `None` `retention_days` (the default) purges nothing at all, orphans OR detached
+/// notes included — retention stays opt-in until the FR-153 default is finalized.
+/// Returns the deleted TRANSCRIPT ids (detached-note ids are not transcript ids and are
+/// not included — nothing today consumes this return value for that purpose).
 pub fn purge_expired(db: &Database, now_ms: i64) -> Result<Vec<i64>> {
     let settings = load_retention_settings(db)?;
     let Some(days) = settings.retention_days else {
@@ -581,7 +647,19 @@ pub fn purge_expired(db: &Database, now_ms: i64) -> Result<Vec<i64>> {
         tx.execute("DELETE FROM transcript WHERE id = ?1", params![id])?;
     }
     tx.commit()?;
-    if !ids.is_empty() {
+    // Detached notes are a SEPARATE concern from the transcript purge above — they have
+    // no surviving transcript row to be transactionally atomic with (that is what
+    // "detached" means), so this runs as its own step, through the public repo API
+    // rather than inline SQL inside `tx` (Sana F3's fix is deliberately NOT coupled to
+    // the cascade-delete transaction above).
+    let mut detached_purged = false;
+    for note in crate::sermon_note_repo::list_detached(db)? {
+        if note.edited_at_ms <= cutoff {
+            crate::sermon_note_repo::delete_by_id(db, note.id)?;
+            detached_purged = true;
+        }
+    }
+    if !ids.is_empty() || detached_purged {
         // Same best-effort WAL truncate as `delete` (FR-153; Sana F6) — only worth
         // attempting when something was actually removed.
         db.try_checkpoint_truncate();

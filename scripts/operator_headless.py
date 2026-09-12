@@ -5324,6 +5324,42 @@ DRIVER = r"""
          !/abandoned/.test(el("pp-gen-result").textContent),
          "PP SN-6: Cancel discards the in-progress edit — the view still shows the last SAVED title, not the abandoned one");
 
+      // SN-9 (86akgqdv0, Quinn's QA review of PR #33): the CLIENT-SIDE restart-render path —
+      // loadPersistedDraft() actually making a restored draft REAPPEAR ON SCREEN after a real
+      // app restart, with no click required — was previously provable only by (a) a DB-level
+      // test, (b) a wire-contract test (SN-2 above), and (c) a manual code trace, since this
+      // harness is one continuous page session that never naturally clears settings.js's own
+      // in-memory `currentDraft`. `window.__resetSermonNoteDraftForTest()` (the test-only hook
+      // settings.js exposes for exactly this) simulates that clean-slate restart; clearing the
+      // DOM by hand first proves what follows is really painted BY the restore, not leftover
+      // markup from the fixture above. Deliberately placed HERE, right after SN-6 and before
+      // SN-7/SN-8 — SN-7's rejected save and SN-8's own generate calls each persist a DIFFERENT
+      // draft to the mock's single-slot store, so "the last SAVED title" this check names is
+      // only still `Grace That Feeds (edited)` (SN-5's save) at THIS point in the sequence; run
+      // any later, it asserts a title that generation has since overwritten, not a restart bug.
+      el("pp-gen-result").textContent = "";
+      el("pp-gen-result").removeAttribute("role");
+      window.__resetSermonNoteDraftForTest();
+      ok(el("pp-gen-result").textContent === "" && !el("pp-gen-edit"),
+         "PP SN-9 (setup): the page genuinely shows nothing before the simulated restart");
+      window.settingsActivate();
+      await sleep(60);
+      var snRestored = el("pp-gen-result");
+      ok(/Grace That Feeds \(edited\)/.test(snRestored.textContent),
+         "PP SN-9: after a simulated restart, settingsActivate() alone (no click) restores the \
+last SAVED draft's title, via the real loadPersistedDraft() render path");
+      var snRestoredEditBtn = el("pp-gen-edit");
+      ok(!!snRestoredEditBtn && getComputedStyle(snRestoredEditBtn).display !== "none",
+         "PP SN-9: the restored draft offers Edit again (computed display), same as the first \
+persisted view in SN-1");
+      var snRestoredLabel = snRestored.querySelector(".pp-gen-ai-label");
+      var snRestoredDisc = snRestored.querySelector(".pp-gen-disclosure");
+      ok(!!snRestoredLabel && getComputedStyle(snRestoredLabel).display !== "none",
+         "PP SN-9 (FR-123): the AI-generated label renders on the restored draft too, not just \
+right after a generate/save");
+      ok(!!snRestoredDisc && getComputedStyle(snRestoredDisc).display !== "none",
+         "PP SN-9 (FR-128): the fabrication disclosure renders on the restored draft too");
+
       // SN-7: a backend refusal (oversized field) on Save surfaces an error (role=alert), not a
       // silent no-op — the operator must be told the edit did not take.
       el("pp-gen-edit").click();

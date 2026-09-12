@@ -337,6 +337,57 @@ fn transcript_session_boundaries_require_the_same_permission_as_ingest() {
 }
 
 #[test]
+fn sermon_note_draft_commands_require_the_same_permission_as_transcribe() {
+    // Sermon-note draft persistence (86akgqdv0; PR #33 review, Sana F1 remediation) reads/writes
+    // AI-derived content generated from congregation speech — the same RBAC tier as
+    // IngestTranscript/StartTranscript/EndTranscript, never a narrower or wider one.
+    let cmds = [
+        Command::GetActiveTranscriptId,
+        Command::LoadSermonNoteDraft { transcript_id: 7 },
+        Command::SaveSermonNoteDraft {
+            transcript_id: 7,
+            draft: selahcue_lan::protocol::SermonNoteDraftInput {
+                title: "Faith that Endures".into(),
+                summary: None,
+                sections_json: "[]".into(),
+                scriptures_json: "[]".into(),
+                ai_generated: true,
+                disclosure: None,
+                provider: "SelahCue AI".into(),
+                model: None,
+            },
+        },
+        Command::UpdateSermonNoteDraft {
+            transcript_id: 7,
+            edit: selahcue_lan::protocol::SermonNoteEditInput {
+                title: "Faith that Endures".into(),
+                summary: None,
+                sections_json: "[]".into(),
+                scriptures_json: "[]".into(),
+            },
+        },
+    ];
+    for cmd in cmds {
+        assert!(authorize(Role::Operator, &cmd), "operator {cmd:?}");
+        assert!(authorize(Role::Producer, &cmd), "producer {cmd:?}");
+        assert!(
+            !authorize(Role::Assistant, &cmd),
+            "assistant must NOT touch a sermon-note draft: {cmd:?}"
+        );
+        assert!(
+            !authorize(Role::Viewer, &cmd),
+            "viewer must NOT touch a sermon-note draft: {cmd:?}"
+        );
+        assert_eq!(
+            required_permission(&cmd),
+            Permission::Transcribe,
+            "sermon-note draft commands must require the SAME permission as IngestTranscript: \
+             {cmd:?}"
+        );
+    }
+}
+
+#[test]
 fn approving_or_dismissing_a_detection_is_scripture_staging_privilege() {
     // Approving stages a scripture candidate; dismissing drops one — both are the
     // SearchScripture privilege (Assistant and up), never GoLive.

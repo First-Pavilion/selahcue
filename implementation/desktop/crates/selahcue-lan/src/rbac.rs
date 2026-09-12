@@ -126,7 +126,14 @@ pub fn required_permission(cmd: &Command) -> Permission {
         Command::ApproveDetection { .. } | Command::DismissDetection { .. } => SearchScripture,
         Command::IngestTranscript { .. }
         | Command::StartTranscript { .. }
-        | Command::EndTranscript => Transcribe,
+        | Command::EndTranscript
+        // Sermon-note draft persistence (86akgqdv0) reads/writes AI-derived content generated
+        // from congregation speech — the same privilege tier as feeding/opening the transcript
+        // stream that content is derived from, never a narrower or wider one.
+        | Command::GetActiveTranscriptId
+        | Command::LoadSermonNoteDraft { .. }
+        | Command::SaveSermonNoteDraft { .. }
+        | Command::UpdateSermonNoteDraft { .. } => Transcribe,
         Command::GetState
         | Command::GetOperatorState
         | Command::GetConsoleThumbnails { .. }

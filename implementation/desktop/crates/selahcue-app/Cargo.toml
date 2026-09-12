@@ -25,6 +25,15 @@ serde_json = "1"
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 futures-util = "0.3"
+# Dev-only: proves the real end-to-end sermon-note-persistence wiring (86akgqdv0) against a
+# REAL SQLite store, the way `selahcue-desktop` wires `SermonNoteStore`/`TranscriptSink` in
+# production — mirrors `selahcue-lan`'s own dev-dependency on this crate for its `demo`
+# example. `selahcue-app`'s own [dependencies] gain no dependency on `selahcue-data` (the
+# crate graph runs the other way; see `sermon_note_store`'s module docs) — this is test-only.
+selahcue-data = { path = "../selahcue-data" }
+# For `test_sermon_note_remote.rs`'s real on-disk SQLite file (a genuine tempdir path, the
+# same shape as the desktop's real `data_dir()/selahcue.db3`).
+tempfile = "3"
 
 [lints]
 workspace = true

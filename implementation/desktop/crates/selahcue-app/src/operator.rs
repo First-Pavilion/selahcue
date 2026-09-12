@@ -627,6 +627,73 @@ impl OperatorShell {
         self.act(&Command::SetStageMessage { text: text.into() })
     }
 
+    /// Resolve the transcript id new AI-derived content (a sermon-note draft) should attach to
+    /// right now (86akgqdv0). `None` if no transcript has ever been recorded, or the sermon-note
+    /// store is unavailable/unconfigured (the Local/demo shell's default).
+    pub fn active_transcript_id(&self) -> Option<i64> {
+        self.with(|c| match c.apply(&Command::GetActiveTranscriptId) {
+            crate::ControllerReply::Message(
+                selahcue_lan::protocol::ServerMessage::ActiveTranscriptId { transcript_id },
+            ) => transcript_id,
+            _ => None,
+        })
+    }
+
+    /// Load the persisted sermon-note draft for `transcript_id`, if any (86akgqdv0).
+    pub fn load_sermon_note_draft(
+        &self,
+        transcript_id: i64,
+    ) -> Option<selahcue_lan::protocol::SermonNoteDraftView> {
+        self.with(
+            |c| match c.apply(&Command::LoadSermonNoteDraft { transcript_id }) {
+                crate::ControllerReply::Message(
+                    selahcue_lan::protocol::ServerMessage::SermonNoteDraft { draft, .. },
+                ) => draft,
+                _ => None,
+            },
+        )
+    }
+
+    /// Persist (upsert) a freshly generated draft against `transcript_id` (86akgqdv0). `None`
+    /// on refusal (e.g. an oversized field, or no store configured).
+    pub fn save_sermon_note_draft(
+        &self,
+        transcript_id: i64,
+        draft: selahcue_lan::protocol::SermonNoteDraftInput,
+    ) -> Option<selahcue_lan::protocol::SermonNoteDraftView> {
+        self.with(|c| {
+            match c.apply(&Command::SaveSermonNoteDraft {
+                transcript_id,
+                draft,
+            }) {
+                crate::ControllerReply::Message(
+                    selahcue_lan::protocol::ServerMessage::SermonNoteDraft { draft, .. },
+                ) => draft,
+                _ => None,
+            }
+        })
+    }
+
+    /// Apply an operator edit to the persisted draft's text for `transcript_id` (86akgqdv0).
+    /// `None` on refusal (no draft exists yet, an oversized field, or no store configured).
+    pub fn update_sermon_note_draft(
+        &self,
+        transcript_id: i64,
+        edit: selahcue_lan::protocol::SermonNoteEditInput,
+    ) -> Option<selahcue_lan::protocol::SermonNoteDraftView> {
+        self.with(|c| {
+            match c.apply(&Command::UpdateSermonNoteDraft {
+                transcript_id,
+                edit,
+            }) {
+                crate::ControllerReply::Message(
+                    selahcue_lan::protocol::ServerMessage::SermonNoteDraft { draft, .. },
+                ) => draft,
+                _ => None,
+            }
+        })
+    }
+
     /// Search scripture: reference parse first, then keyword search over the
     /// bundled translation. Each hit carries its verse text (stage by reference).
     pub fn scripture_search(
@@ -1434,6 +1501,95 @@ impl RemoteOperator {
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::SetStageMessage { text: text.into() })
             .await
+    }
+
+    /// Resolve the transcript id new AI-derived content (a sermon-note draft) should attach to
+    /// right now, on the HOST (86akgqdv0; PR #33 review, Sana F1 remediation — this replaces the
+    /// operator's former local, wrong-file query). `None` if no transcript has ever been
+    /// recorded.
+    pub async fn active_transcript_id(
+        &mut self,
+    ) -> Result<Option<i64>, selahcue_lan::TransportError> {
+        use selahcue_lan::protocol::ServerMessage;
+        match self.client.command(Command::GetActiveTranscriptId).await? {
+            ServerMessage::ActiveTranscriptId { transcript_id } => Ok(transcript_id),
+            other => Err(selahcue_lan::TransportError::Protocol(format!(
+                "expected active_transcript_id, got: {other:?}"
+            ))),
+        }
+    }
+
+    /// Load the persisted sermon-note draft for `transcript_id` on the host, if any
+    /// (86akgqdv0). `Ok(None)` is the common, expected case, not an error.
+    pub async fn load_sermon_note_draft(
+        &mut self,
+        transcript_id: i64,
+    ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, selahcue_lan::TransportError>
+    {
+        use selahcue_lan::protocol::ServerMessage;
+        match self
+            .client
+            .command(Command::LoadSermonNoteDraft { transcript_id })
+            .await?
+        {
+            ServerMessage::SermonNoteDraft { draft, .. } => Ok(draft),
+            other => Err(selahcue_lan::TransportError::Protocol(format!(
+                "expected sermon_note_draft, got: {other:?}"
+            ))),
+        }
+    }
+
+    /// Persist (upsert) a freshly generated draft against `transcript_id` on the host
+    /// (86akgqdv0) — `generate_sermon_notes`'s persist-on-success path. `Ok(Denied)` (not an
+    /// `Err`) when the host refuses it (e.g. an oversized field); an `Err` is a transport/
+    /// protocol failure.
+    pub async fn save_sermon_note_draft(
+        &mut self,
+        transcript_id: i64,
+        draft: selahcue_lan::protocol::SermonNoteDraftInput,
+    ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, selahcue_lan::TransportError>
+    {
+        use selahcue_lan::protocol::ServerMessage;
+        match self
+            .client
+            .command(Command::SaveSermonNoteDraft {
+                transcript_id,
+                draft,
+            })
+            .await?
+        {
+            ServerMessage::SermonNoteDraft { draft, .. } => Ok(draft),
+            ServerMessage::Denied { .. } => Ok(None),
+            other => Err(selahcue_lan::TransportError::Protocol(format!(
+                "expected sermon_note_draft, got: {other:?}"
+            ))),
+        }
+    }
+
+    /// Apply an operator edit to the persisted draft's text for `transcript_id` on the host
+    /// (86akgqdv0). `Ok(None)` when the host refuses it (no draft exists yet, an oversized
+    /// field); an `Err` is a transport/protocol failure.
+    pub async fn update_sermon_note_draft(
+        &mut self,
+        transcript_id: i64,
+        edit: selahcue_lan::protocol::SermonNoteEditInput,
+    ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, selahcue_lan::TransportError>
+    {
+        use selahcue_lan::protocol::ServerMessage;
+        match self
+            .client
+            .command(Command::UpdateSermonNoteDraft {
+                transcript_id,
+                edit,
+            })
+            .await?
+        {
+            ServerMessage::SermonNoteDraft { draft, .. } => Ok(draft),
+            ServerMessage::Denied { .. } => Ok(None),
+            other => Err(selahcue_lan::TransportError::Protocol(format!(
+                "expected sermon_note_draft, got: {other:?}"
+            ))),
+        }
     }
 
     /// Search scripture on the host; returns stageable display references.

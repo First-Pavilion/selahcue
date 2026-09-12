@@ -371,6 +371,14 @@ const MIGRATIONS: &[&str] = &[
     // left open, so the answer can change without a second migration. See
     // `transcript_repo::RetentionSettings::delete_cascade_to_notes`'s doc comment for
     // this ticket's PROPOSED (not yet product-signed-off) default.
+    // `transcript_id UNIQUE` already creates an implicit autoindex on that column
+    // (`sqlite_autoindex_sermon_note_1`) — an explicit `CREATE INDEX` on the same column would
+    // be a byte-identical second B-tree the planner never picks for any statement (the exact
+    // pattern PR #30 already fixed once for `transcript_segment`; see
+    // `transcript_segment_has_exactly_one_index_from_its_unique_constraint` in
+    // `tests/test_transcript_repo.rs`, mirrored here by
+    // `sermon_note_has_exactly_one_index_from_its_unique_constraint`). No explicit index is
+    // added (PR #33 review, Vera F1).
     r#"
     CREATE TABLE sermon_note (
         id            INTEGER PRIMARY KEY,
@@ -386,7 +394,6 @@ const MIGRATIONS: &[&str] = &[
         created_at    INTEGER NOT NULL,
         edited_at     INTEGER NOT NULL
     );
-    CREATE INDEX idx_sermon_note_transcript ON sermon_note(transcript_id);
     "#,
 ];
 

@@ -814,6 +814,72 @@ impl Backend {
             Backend::Local(s) => Ok(s.ingest_transcript(&text, start_ms, end_ms, is_final)),
         }
     }
+    /// Resolve the transcript id new AI-derived content (a sermon-note draft) should attach to
+    /// right now (86akgqdv0; PR #33 review, Sana F1 remediation). Same dispatch shape as
+    /// `ingest_transcript` above — NOT `stt`-gated, because `generate_sermon_notes` (its only
+    /// caller today) is not either: a transcript can be pasted in manually without live STT.
+    async fn active_transcript_id(&self) -> Result<Option<i64>, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .active_transcript_id()
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.active_transcript_id()),
+        }
+    }
+    /// Load the persisted sermon-note draft for `transcript_id`, if any (86akgqdv0).
+    async fn load_sermon_note_draft(
+        &self,
+        transcript_id: i64,
+    ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .load_sermon_note_draft(transcript_id)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.load_sermon_note_draft(transcript_id)),
+        }
+    }
+    /// Persist (upsert) a freshly generated draft against `transcript_id` on the host
+    /// (86akgqdv0) — `generate_sermon_notes`'s persist-on-success path. `Ok(None)` when the
+    /// host refuses it (an oversized field, or no store configured) — never a hard error, so a
+    /// persistence failure never blocks the draft from still being shown to the operator.
+    async fn save_sermon_note_draft(
+        &self,
+        transcript_id: i64,
+        draft: selahcue_lan::protocol::SermonNoteDraftInput,
+    ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .save_sermon_note_draft(transcript_id, draft)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.save_sermon_note_draft(transcript_id, draft)),
+        }
+    }
+    /// Apply an operator edit to the persisted draft's text for `transcript_id` (86akgqdv0).
+    /// `Ok(None)` when the host refuses it (no draft exists yet, an oversized field).
+    async fn update_sermon_note_draft(
+        &self,
+        transcript_id: i64,
+        edit: selahcue_lan::protocol::SermonNoteEditInput,
+    ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .update_sermon_note_draft(transcript_id, edit)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.update_sermon_note_draft(transcript_id, edit)),
+        }
+    }
     /// Open a durable transcript session (86akcfftu) — the session-boundary sibling of
     /// [`ingest_transcript`](Self::ingest_transcript), same dispatch shape. Only called from
     /// the `stt`-gated `listening` module today (there is no webview affordance to open a
@@ -3931,46 +3997,25 @@ fn sections_from_input(input: Vec<NoteSectionInput>) -> Vec<selahcue_core::provi
         .collect()
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-/// The transcript a save-on-generate / load-persisted-draft call should target.
-///
-/// **Working assumption (86akgqdv0, flagged for reviewer scrutiny — see the ticket's
-/// PR description):** the operator has no channel carrying a transcript's row id
-/// today — the LAN control link exposes only the finalized transcript TEXT
-/// (`window.scCompletedTranscript` in `dist/settings.js`, sourced from the host's
-/// `OperatorView.transcript`), never an id. `transcript_id` exists only in
-/// `selahcue-data`/`selahcue-app`/`selahcue-desktop`. So "the transcript this
-/// generate/edit call is about" is resolved as the MOST RECENTLY STARTED row —
-/// correct for a single-active-session desktop app, where the live-confirm-dialog
-/// flow only ever generates from the session currently (or just) being recorded.
-/// A future ticket that lets the operator address a specific transcript id directly
-/// (86akgqdxr's Transcripts viewer, or 86akcffy0's "generate from a selected stored
-/// transcript") can pass one through explicitly instead of relying on this
-/// heuristic.
-fn most_recent_transcript_id(db: &selahcue_data::Database) -> Option<i64> {
-    selahcue_data::transcript_repo::list(db)
-        .ok()?
-        .into_iter()
-        .next()
-        .map(|t| t.id)
-}
-
 /// Build the wire JSON for a persisted draft, in the same shape `generate_sermon_notes`
 /// already returns under `"draft"` — so the JS render path is identical whether the
 /// draft just arrived from a live generation or was loaded back from disk on panel
 /// activation.
-fn sermon_note_json(r: &selahcue_data::sermon_note_repo::SermonNoteRecord) -> serde_json::Value {
+///
+/// Takes the LAN wire view (`selahcue_lan::protocol::SermonNoteDraftView`), not a
+/// `selahcue-data` type: as of PR #33's review remediation (Sana F1 — High), this
+/// operator process no longer opens `selahcue-data`'s file for the sermon-note feature
+/// at all — see `generate_sermon_notes`/`load_sermon_note_draft`/
+/// `update_sermon_note_draft`'s doc comments for why (the operator's OWN copy of that
+/// file, at a DIFFERENT path than the desktop's, could never see a real `transcript`
+/// row in a real launch; persistence now goes through `Backend`'s LAN commands, which
+/// execute against the desktop's authoritative store).
+fn sermon_note_draft_json(v: &selahcue_lan::protocol::SermonNoteDraftView) -> serde_json::Value {
     serde_json::json!({
-        "title": r.title,
-        "summary": r.summary,
-        "sections": parse_json_column(&r.sections_json),
-        "scriptures": parse_json_column(&r.scriptures_json),
+        "title": v.title,
+        "summary": v.summary,
+        "sections": parse_json_column(&v.sections_json),
+        "scriptures": parse_json_column(&v.scriptures_json),
     })
 }
 
@@ -4055,10 +4100,11 @@ mod sermon_note_codec_tests {
     }
 
     #[test]
-    fn sermon_note_json_reads_the_persisted_columns_back_into_the_wire_shape() {
-        let record = selahcue_data::sermon_note_repo::SermonNoteRecord {
-            id: 1,
-            transcript_id: Some(7),
+    fn sermon_note_draft_json_reads_the_wire_view_back_into_the_ui_shape() {
+        // PR #33 review, Sana F1: this now takes the LAN wire view
+        // (`selahcue_lan::protocol::SermonNoteDraftView`), not a `selahcue-data` row — the
+        // operator no longer opens that crate's database file for this feature at all.
+        let view = selahcue_lan::protocol::SermonNoteDraftView {
             title: "A Title".to_string(),
             summary: Some("A summary".to_string()),
             sections_json: r#"[{"heading":"H","items":["i"],"points":[]}]"#.to_string(),
@@ -4070,7 +4116,7 @@ mod sermon_note_codec_tests {
             created_at_ms: 1,
             edited_at_ms: 2,
         };
-        let json = sermon_note_json(&record);
+        let json = sermon_note_draft_json(&view);
         assert_eq!(json["title"], "A Title");
         assert_eq!(json["summary"], "A summary");
         assert_eq!(json["sections"][0]["heading"], "H");
@@ -4197,6 +4243,12 @@ async fn run_note_generation(
 
 /// Generate AI sermon notes from a COMPLETED transcript. Consent-gated end-to-end: with cloud-notes
 /// consent off, nothing is sent (returns `consent_required`). The result is operator-local JSON.
+///
+/// Save-on-generate persistence (86akgqdv0; FR-123 "editable" half) goes through `Backend`'s LAN
+/// commands, never a `selahcue-data` connection this process opens itself — PR #33's review
+/// (Sana F1 — High) found the operator's own connection was to a DIFFERENT file than the
+/// desktop's authoritative store, so the feature was inert outside a test harness. See
+/// `Backend::active_transcript_id`/`save_sermon_note_draft`'s doc comments.
 #[tauri::command]
 async fn generate_sermon_notes(
     transcript: String,
@@ -4212,38 +4264,56 @@ async fn generate_sermon_notes(
     };
     match run_note_generation(cfg, transcript, &state).await {
         Ok(outcome) => {
-            // Save-on-generate (86akgqdv0; FR-123 "editable" half): persist the draft
-            // against its source transcript, best-effort — a persistence failure must
-            // never block returning the draft to the UI, mirroring `with_providers`'s
-            // "Persistence failure never blocks the edit" contract. See
-            // `most_recent_transcript_id`'s doc comment for the transcript-resolution
-            // heuristic this depends on.
-            let transcript_id = state.providers_db.as_ref().and_then(|db| {
-                let db = db.lock().ok()?;
-                let transcript_id = most_recent_transcript_id(&db)?;
-                let note = selahcue_data::sermon_note_repo::NewSermonNote {
-                    transcript_id,
-                    title: outcome.draft.title.clone(),
-                    summary: outcome.draft.summary.clone(),
-                    sections_json: sections_to_json(&outcome.draft.sections),
-                    scriptures_json: scriptures_to_json(&outcome.draft.scriptures),
-                    ai_generated: outcome.ai_generated,
-                    disclosure: outcome.disclosure.map(str::to_string),
-                    provider: outcome.provider_label.clone(),
-                    // No `NoteProvider` implementation exposes a model id through
-                    // `GenerationOutcome` today — see the migration comment for why
-                    // this is honestly `None`, not invented data.
-                    model: None,
-                    created_at_ms: now_ms(),
-                };
-                match selahcue_data::sermon_note_repo::create(&db, &note) {
-                    Ok(_) => Some(transcript_id),
-                    Err(e) => {
-                        eprintln!("selahcue-operator: failed to persist sermon-note draft: {e}");
-                        None
+            // Best-effort, mirroring `with_providers`'s "persistence failure never blocks the
+            // edit" contract: resolve the real transcript id from the HOST (never fabricated),
+            // then persist against it. Either step failing (no store configured, host refusal,
+            // transport error) leaves `transcript_id: null` — the draft is still returned and
+            // shown; only the edit surface stays hidden, exactly the pre-86akgqdv0 behaviour
+            // for "no persistence available".
+            let transcript_id = match state.backend.active_transcript_id().await {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("selahcue-operator: could not resolve the active transcript id: {e}");
+                    None
+                }
+            };
+            let persisted_transcript_id = match transcript_id {
+                Some(transcript_id) => {
+                    let draft = selahcue_lan::protocol::SermonNoteDraftInput {
+                        title: outcome.draft.title.clone(),
+                        summary: outcome.draft.summary.clone(),
+                        sections_json: sections_to_json(&outcome.draft.sections),
+                        scriptures_json: scriptures_to_json(&outcome.draft.scriptures),
+                        ai_generated: outcome.ai_generated,
+                        disclosure: outcome.disclosure.map(str::to_string),
+                        provider: outcome.provider_label.clone(),
+                        // No `NoteProvider` implementation exposes a model id through
+                        // `GenerationOutcome` today — see the migration comment for why
+                        // this is honestly `None`, not invented data.
+                        model: None,
+                    };
+                    match state
+                        .backend
+                        .save_sermon_note_draft(transcript_id, draft)
+                        .await
+                    {
+                        Ok(Some(_)) => Some(transcript_id),
+                        Ok(None) => {
+                            eprintln!(
+                                "selahcue-operator: the host refused to persist the sermon-note draft"
+                            );
+                            None
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "selahcue-operator: failed to persist sermon-note draft: {e}"
+                            );
+                            None
+                        }
                     }
                 }
-            });
+                None => None,
+            };
             Ok(serde_json::json!({
                 "ok": true,
                 "degraded": outcome.degraded,
@@ -4265,7 +4335,7 @@ async fn generate_sermon_notes(
                 // `null` when persistence was unavailable/failed — the edit surface stays
                 // hidden in that case (nothing to key an edit off) but the draft itself is
                 // still shown, exactly like the pre-86akgqdv0 behaviour.
-                "transcript_id": transcript_id,
+                "transcript_id": persisted_transcript_id,
                 "quota": outcome.quota.map(|q| serde_json::json!({
                     "used": q.used, "limit": q.limit, "remaining": q.remaining(), "resets_label": q.resets_label,
                 })),
@@ -4279,32 +4349,31 @@ async fn generate_sermon_notes(
     }
 }
 
-/// Load the most recently persisted sermon-note draft, if any (86akgqdv0). Called on
-/// Settings panel activation so a draft generated in a prior session — or edited and
-/// left unread — reappears after a restart. `{"ok": false}` (not an error) when there
-/// is no persistence connection or no draft — an absent draft is a normal, common
-/// state, not a failure.
+/// Load the persisted sermon-note draft for the currently active transcript, if any
+/// (86akgqdv0). Called on Settings panel activation so a draft generated in a prior
+/// session — or edited and left unread — reappears after a restart. `{"ok": false}`
+/// (not an error) when there is no host connection, no transcript yet, or no draft —
+/// an absent draft is a normal, common state, not a failure.
+///
+/// Goes through `Backend`'s LAN commands — see `generate_sermon_notes`'s doc comment
+/// for why (PR #33 review, Sana F1).
 #[tauri::command]
 async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let Some(db) = state.providers_db.as_ref() else {
+    let Ok(Some(transcript_id)) = state.backend.active_transcript_id().await else {
         return Ok(serde_json::json!({ "ok": false }));
     };
-    let db = db.lock().map_err(|e| format!("providers_db lock: {e}"))?;
-    let Some(transcript_id) = most_recent_transcript_id(&db) else {
-        return Ok(serde_json::json!({ "ok": false }));
-    };
-    match selahcue_data::sermon_note_repo::find_by_transcript(&db, transcript_id) {
-        Ok(Some(record)) => Ok(serde_json::json!({
+    match state.backend.load_sermon_note_draft(transcript_id).await {
+        Ok(Some(view)) => Ok(serde_json::json!({
             "ok": true,
             "transcript_id": transcript_id,
-            "ai_generated": record.ai_generated,
+            "ai_generated": view.ai_generated,
             "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
             // FR-123/FR-128: the label and disclosure travel with the draft through a
             // restart exactly as they did through an edit — read back verbatim from
-            // what `create` persisted, never re-derived here.
-            "disclosure": record.disclosure,
-            "provider": record.provider,
-            "draft": sermon_note_json(&record),
+            // what the host persisted, never re-derived here.
+            "disclosure": view.disclosure,
+            "provider": view.provider,
+            "draft": sermon_note_draft_json(&view),
         })),
         Ok(None) => Ok(serde_json::json!({ "ok": false })),
         Err(e) => {
@@ -4316,16 +4385,19 @@ async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json
 
 /// Apply an operator edit to the persisted draft's title/summary/sections/scriptures
 /// (86akgqdv0). `transcript_id` is the id returned by a prior `generate_sermon_notes`
-/// or `load_sermon_note_draft` call. Touches ONLY the editable columns — the backend
-/// (`sermon_note_repo::update`) structurally cannot see or change `ai_generated`/
-/// `disclosure`/`provider`, so an edit can never silently drop the FR-123 label or
-/// FR-128 disclosure; this command's own response echoes them back unchanged so the
-/// UI never has to assume that rather than see it.
+/// or `load_sermon_note_draft` call. Touches ONLY the editable columns — the wire type
+/// (`SermonNoteEditInput`) structurally cannot carry `ai_generated`/`disclosure`/
+/// `provider`, so an edit can never silently drop the FR-123 label or FR-128
+/// disclosure; this command's own response echoes them back unchanged (re-read from
+/// the host) so the UI never has to assume that rather than see it.
 ///
 /// A malformed `sections`/`points` shape (wrong JSON types) is rejected by Tauri's
-/// own IPC deserialization before this function body ever runs. An oversized field
-/// is rejected by `sermon_note_repo::update`'s bound check, surfaced here as
-/// `"error": "too_large"`.
+/// own IPC deserialization before this function body ever runs. Goes through
+/// `Backend`'s LAN commands — see `generate_sermon_notes`'s doc comment for why (PR #33
+/// review, Sana F1). The host's specific refusal reason (no draft yet vs. an oversized
+/// field) does not currently cross the wire as distinct codes — `DenyReason` is a
+/// small, shared enum with no per-command message field — so both surface here as one
+/// honest `"refused"`, not a silent failure or a fabricated distinction.
 #[tauri::command]
 async fn update_sermon_note_draft(
     transcript_id: i64,
@@ -4335,42 +4407,34 @@ async fn update_sermon_note_draft(
     scriptures: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let Some(db) = state.providers_db.as_ref() else {
-        return Ok(serde_json::json!({ "ok": false, "error": "unavailable",
-            "message": "No local database connection is available." }));
-    };
-    let db = db.lock().map_err(|e| format!("providers_db lock: {e}"))?;
     let sections = sections_from_input(sections);
-    let edit = selahcue_data::sermon_note_repo::DraftEdit {
+    let edit = selahcue_lan::protocol::SermonNoteEditInput {
         title,
         summary,
         sections_json: sections_to_json(&sections),
         scriptures_json: scriptures_to_json(&scriptures),
     };
-    match selahcue_data::sermon_note_repo::update(&db, transcript_id, &edit, now_ms()) {
-        Ok(()) => {
-            let record = selahcue_data::sermon_note_repo::find_by_transcript(&db, transcript_id)
-                .map_err(|e| format!("re-reading updated draft: {e}"))?
-                .ok_or_else(|| "draft vanished immediately after update".to_string())?;
-            Ok(serde_json::json!({
-                "ok": true,
-                "transcript_id": transcript_id,
-                "ai_generated": record.ai_generated,
-                "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
-                "disclosure": record.disclosure,
-                "provider": record.provider,
-                "draft": sermon_note_json(&record),
-            }))
-        }
-        Err(selahcue_data::DataError::NotFound) => Ok(serde_json::json!({
-            "ok": false, "error": "not_found",
-            "message": "No saved draft exists for this transcript.",
+    match state
+        .backend
+        .update_sermon_note_draft(transcript_id, edit)
+        .await
+    {
+        Ok(Some(view)) => Ok(serde_json::json!({
+            "ok": true,
+            "transcript_id": transcript_id,
+            "ai_generated": view.ai_generated,
+            "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
+            "disclosure": view.disclosure,
+            "provider": view.provider,
+            "draft": sermon_note_draft_json(&view),
         })),
-        Err(selahcue_data::DataError::TooLarge(msg)) => Ok(serde_json::json!({
-            "ok": false, "error": "too_large", "message": msg,
+        Ok(None) => Ok(serde_json::json!({
+            "ok": false, "error": "refused",
+            "message": "The host refused this edit: no saved draft exists for this \
+                transcript, or a field was too large.",
         })),
         Err(e) => Ok(serde_json::json!({
-            "ok": false, "error": "storage_error", "message": e.to_string(),
+            "ok": false, "error": "storage_error", "message": e,
         })),
     }
 }

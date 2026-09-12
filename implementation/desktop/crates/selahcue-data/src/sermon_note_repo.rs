@@ -154,6 +154,14 @@ fn check_bounds(
 /// user-editable surface (the edit command, not this one — a freshly generated
 /// draft is provider output the operator already trusted enough to display) is
 /// expected to have already validated them; see [`update`].
+///
+/// Returns the row's own id — correct on BOTH the INSERT and the UPDATE branch of the
+/// upsert, via `RETURNING id` (PR #33 review, Vera F3: `last_insert_rowid()` does
+/// **not** advance on the `DO UPDATE` branch of an `INSERT ... ON CONFLICT`, contrary
+/// to what an earlier version of this function's doc comment claimed — SQLite leaves
+/// it at whatever the connection's last real INSERT was, which on a busy connection
+/// can be an unrelated row's id. `RETURNING` reads the actual row back from the
+/// statement itself, so there is no fallback branch left to reach or forget).
 pub fn create(db: &Database, note: &NewSermonNote) -> Result<i64> {
     check_bounds(
         &note.title,
@@ -161,54 +169,39 @@ pub fn create(db: &Database, note: &NewSermonNote) -> Result<i64> {
         &note.sections_json,
         &note.scriptures_json,
     )?;
-    db.conn().execute(
-        "INSERT INTO sermon_note
-            (transcript_id, title, summary, sections, scriptures, ai_generated,
-             disclosure, provider, model, created_at, edited_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
-         ON CONFLICT(transcript_id) DO UPDATE SET
-            title = excluded.title,
-            summary = excluded.summary,
-            sections = excluded.sections,
-            scriptures = excluded.scriptures,
-            ai_generated = excluded.ai_generated,
-            disclosure = excluded.disclosure,
-            provider = excluded.provider,
-            model = excluded.model,
-            created_at = excluded.created_at,
-            edited_at = excluded.edited_at",
-        params![
-            note.transcript_id,
-            note.title,
-            note.summary,
-            note.sections_json,
-            note.scriptures_json,
-            note.ai_generated,
-            note.disclosure,
-            note.provider,
-            note.model,
-            note.created_at_ms,
-        ],
-    )?;
-    // `last_insert_rowid()` is correct even on the UPDATE branch of an upsert: per
-    // SQLite's own docs, an `INSERT ... ON CONFLICT DO UPDATE` that takes the
-    // UPDATE path still counts as the "most recent successful INSERT" for this
-    // purpose and `last_insert_rowid()` returns the existing row's id, not 0 or a
-    // stale value from a prior statement.
-    let id = db.conn().last_insert_rowid();
-    if id == 0 {
-        // Defensive fallback (should be unreachable per the above) — resolve the
-        // id by its unique key rather than return a bogus 0.
-        return db
-            .conn()
-            .query_row(
-                "SELECT id FROM sermon_note WHERE transcript_id = ?1",
-                params![note.transcript_id],
-                |r| r.get(0),
-            )
-            .map_err(Into::into);
-    }
-    Ok(id)
+    db.conn()
+        .query_row(
+            "INSERT INTO sermon_note
+                (transcript_id, title, summary, sections, scriptures, ai_generated,
+                 disclosure, provider, model, created_at, edited_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+             ON CONFLICT(transcript_id) DO UPDATE SET
+                title = excluded.title,
+                summary = excluded.summary,
+                sections = excluded.sections,
+                scriptures = excluded.scriptures,
+                ai_generated = excluded.ai_generated,
+                disclosure = excluded.disclosure,
+                provider = excluded.provider,
+                model = excluded.model,
+                created_at = excluded.created_at,
+                edited_at = excluded.edited_at
+             RETURNING id",
+            params![
+                note.transcript_id,
+                note.title,
+                note.summary,
+                note.sections_json,
+                note.scriptures_json,
+                note.ai_generated,
+                note.disclosure,
+                note.provider,
+                note.model,
+                note.created_at_ms,
+            ],
+            |r| r.get(0),
+        )
+        .map_err(Into::into)
 }
 
 /// Read the draft for a transcript, if one exists (and has not been detached by a
@@ -299,5 +292,39 @@ pub fn delete_for_transcript(db: &Database, transcript_id: i64) -> Result<()> {
         "DELETE FROM sermon_note WHERE transcript_id = ?1",
         params![transcript_id],
     )?;
+    Ok(())
+}
+
+/// Read every DETACHED note — `transcript_id IS NULL`, the schema's `ON DELETE SET NULL`
+/// floor firing for a transcript deleted with cascade OFF (see the module docs).
+///
+/// Without this, a detached note is unreachable through every OTHER function in this
+/// module: [`find_by_transcript`]/[`update`]/[`delete_for_transcript`] are all keyed on
+/// `transcript_id`, which is exactly the column that is now `NULL`. A detached row still
+/// carries the sermon's title/summary/outline derived from the deleted speech, so leaving
+/// it permanently unlistable is an FR-153 "reliable deletion" gap (PR #33 review, Sana F3)
+/// — this is the read half of giving it a path back into view; [`delete_by_id`] is the
+/// write half.
+pub fn list_detached(db: &Database) -> Result<Vec<SermonNoteRecord>> {
+    let conn = db.conn();
+    let mut stmt = conn.prepare(
+        "SELECT id, transcript_id, title, summary, sections, scriptures, ai_generated,
+                disclosure, provider, model, created_at, edited_at
+         FROM sermon_note WHERE transcript_id IS NULL",
+    )?;
+    let rows = stmt.query_map([], row_to_record)?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+/// Delete one note row by its own id (idempotent — `Ok(())` whether or not it existed),
+/// regardless of whether it is currently attached or detached. The write half of
+/// [`list_detached`]'s read half: together they give a detached note (otherwise
+/// unreachable — see that function's doc) a real deletion path (PR #33 review, Sana F3).
+/// [`transcript_repo::purge_expired`](crate::transcript_repo::purge_expired) calls this to
+/// purge detached notes past the retention window, the same way it purges transcripts.
+pub fn delete_by_id(db: &Database, id: i64) -> Result<()> {
+    db.conn()
+        .execute("DELETE FROM sermon_note WHERE id = ?1", params![id])?;
     Ok(())
 }

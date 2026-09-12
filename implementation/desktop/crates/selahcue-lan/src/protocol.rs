@@ -328,6 +328,50 @@ pub enum Command {
     /// startup sweep over any transcript left with no `ended_at` — not by this command.
     /// Requires the `Transcribe` permission.
     EndTranscript,
+    /// Resolve the transcript id that new AI-derived content (a generated sermon-note draft)
+    /// should be attributed to right now (86akgqdv0; FR-123 "editable" half). Replaces the
+    /// operator's former LOCAL query against its own (differently-located, Tauri
+    /// `app_data_dir()`) database file — which could never see a real transcript id in a real
+    /// launch, because only the desktop process ever creates a `transcript` row (PR #33 review,
+    /// Sana F1). The desktop answers from the store it actually owns: the currently OPEN
+    /// transcript if one is listening, else the most recently started one. `None` if no
+    /// transcript has ever been recorded. A read — never changes state. Reply:
+    /// [`ServerMessage::ActiveTranscriptId`]. Requires `Transcribe` — the same tier that may
+    /// feed/open a transcript session, since this answers a question ABOUT that same stream.
+    GetActiveTranscriptId,
+    /// Load the persisted sermon-note draft for `transcript_id`, if any (86akgqdv0) — sent on
+    /// Settings-panel activation so a draft from a prior session (or an edit left unread)
+    /// reappears after a restart. Reply: [`ServerMessage::SermonNoteDraft`] with `draft: None`
+    /// when nothing is persisted (not a `Denied` — an absent draft is a normal, common state,
+    /// not a refusal). Requires `Transcribe` (see [`Self::GetActiveTranscriptId`]): loading
+    /// AI-derived content generated from congregation speech is the same privilege tier as
+    /// generating or feeding it.
+    LoadSermonNoteDraft { transcript_id: i64 },
+    /// Persist (upsert) a freshly generated sermon-note draft against `transcript_id` —
+    /// `selahcue-operator`'s `generate_sermon_notes` persist-on-success path (86akgqdv0). A
+    /// second call for the same `transcript_id` REPLACES the existing draft wholesale
+    /// (regenerate-with-history is FR-129's separate, not-yet-built territory). Reply:
+    /// [`ServerMessage::SermonNoteDraft`] (the row re-read from the store, the source of truth,
+    /// never an echo of what was sent) on success, [`ServerMessage::Denied`] with
+    /// [`DenyReason::BadRequest`] if the desktop refuses it (e.g. an oversized field). Requires
+    /// `Transcribe` — the operator process that may generate/feed a transcript's derived
+    /// content is the same one trusted to attach a label/disclosure/provider to it; RBAC gates
+    /// the WHOLE command the same way `IngestTranscript` already trusts its caller for the
+    /// transcript text itself, not a narrower one for just these fields.
+    SaveSermonNoteDraft {
+        transcript_id: i64,
+        draft: SermonNoteDraftInput,
+    },
+    /// Apply an operator edit to an existing draft's TEXT only — title/summary/section content
+    /// (86akgqdv0). See [`SermonNoteEditInput`] for why the AI-generated label/disclosure/
+    /// provider cannot be reached from this command: there is no field to carry them. Reply:
+    /// [`ServerMessage::SermonNoteDraft`] on success, [`ServerMessage::Denied`] with
+    /// [`DenyReason::BadRequest`] if no draft exists for `transcript_id` yet or the desktop
+    /// refuses an oversized field. Requires `Transcribe` (see [`Self::SaveSermonNoteDraft`]).
+    UpdateSermonNoteDraft {
+        transcript_id: i64,
+        edit: SermonNoteEditInput,
+    },
     /// Approve a queued scripture detection by id (R4): stage its verse in Preview (the
     /// operator Goes Live when ready — detections never auto-display, FR-115) and remove
     /// it from the queue. Requires `SearchScripture` (stages scripture).
@@ -416,6 +460,75 @@ pub enum Command {
         name: String,
         items: Vec<ImportItemView>,
     },
+}
+
+/// A freshly generated sermon-note draft's content — [`Command::SaveSermonNoteDraft`]'s payload
+/// (86akgqdv0). Carries no timestamps: the desktop stamps `created_at`/`edited_at` from its own
+/// clock when it persists the row (the store's authority, not the operator's), mirroring every
+/// other desktop-owned timestamp on this control link (e.g. a transcript's `started_at`).
+///
+/// `sections_json`/`scriptures_json` are themselves opaque JSON (`selahcue_core::providers::
+/// NoteSection`'s items-XOR-points shape, FR-122) — this crate does not interpret them, the same
+/// "opaque to the wire" precedent as [`Command::SetCustomTheme`]'s `theme_json` and
+/// [`Command::PresentAuthoredSlide`]'s `slide_json`. Only `selahcue-operator` (which already
+/// depends on `serde_json` for the wire to the JS UI) and the desktop's own `sermon_note_repo`
+/// layer parse them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SermonNoteDraftInput {
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub sections_json: String,
+    pub scriptures_json: String,
+    /// FR-123: whether a generative model produced this draft.
+    pub ai_generated: bool,
+    /// FR-128: the fabrication-risk disclosure. `Some` exactly when `ai_generated` — the
+    /// caller's (`GenerationOutcome`'s) invariant to keep; this layer stores whatever it is
+    /// given without re-deriving or checking the pairing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disclosure: Option<String>,
+    /// The serving provider's human-readable label (e.g. `"SelahCue AI"`, `"Local (offline)"`).
+    pub provider: String,
+    /// A model identifier, when the serving provider reports one. Honestly `None` when it
+    /// doesn't — never invented data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// An operator-supplied edit to an existing draft's TEXT only — [`Command::UpdateSermonNoteDraft`]'s
+/// payload (86akgqdv0). Deliberately carries none of `ai_generated`/`disclosure`/`provider`/
+/// `model` — there is no field to smuggle them through, which is what makes "an edit cannot
+/// touch the AI-generated label" a property of the WIRE CONTRACT itself, not a convention the
+/// desktop's handler must remember to enforce.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SermonNoteEditInput {
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub sections_json: String,
+    pub scriptures_json: String,
+}
+
+/// A persisted sermon-note draft read back in full (86akgqdv0) — the desktop's reply to
+/// [`Command::LoadSermonNoteDraft`], and the read-AFTER-write reply to
+/// [`Command::SaveSermonNoteDraft`]/[`Command::UpdateSermonNoteDraft`]: the operator re-reads
+/// the label/disclosure/timestamps from the store rather than trusting its own copy, the same
+/// discipline the pre-LAN-redesign command handlers already followed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SermonNoteDraftView {
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub sections_json: String,
+    pub scriptures_json: String,
+    pub ai_generated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disclosure: Option<String>,
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub created_at_ms: i64,
+    pub edited_at_ms: i64,
 }
 
 /// One row of a [`Command::ImportPlan`] run sheet.
@@ -551,6 +664,23 @@ pub enum ServerMessage {
         /// the operator then shows the code without a fake QR rather than an unscannable one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         uri: Option<String>,
+    },
+    /// Reply to [`Command::GetActiveTranscriptId`] (86akgqdv0): the transcript id new
+    /// AI-derived content should attach to right now, or `None` if no transcript has ever been
+    /// recorded.
+    ActiveTranscriptId {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_id: Option<i64>,
+    },
+    /// Reply to [`Command::LoadSermonNoteDraft`]/[`Command::SaveSermonNoteDraft`]/
+    /// [`Command::UpdateSermonNoteDraft`] (86akgqdv0): the draft as the store actually holds it
+    /// after the operation, keyed to `transcript_id`. `draft: None` means no draft is persisted
+    /// for this transcript yet (a normal state for `LoadSermonNoteDraft` — never for a
+    /// successful Save/Update, which always has something to read back).
+    SermonNoteDraft {
+        transcript_id: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        draft: Option<SermonNoteDraftView>,
     },
     /// A protocol-level or transport-level error not tied to a single request.
     Error { message: String },

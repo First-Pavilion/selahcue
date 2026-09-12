@@ -12,6 +12,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use rusqlite::params;
 use selahcue_data::sermon_note_repo::{self, DraftEdit, NewSermonNote, MAX_SECTIONS_JSON_BYTES};
 use selahcue_data::transcript_repo::{self, NewTranscript};
 use selahcue_data::{DataError, Database};
@@ -103,6 +104,48 @@ fn create_is_scoped_per_transcript() {
     assert!(sermon_note_repo::find_by_transcript(&db, b)
         .unwrap()
         .is_none());
+}
+
+// --- create's returned id (86akgqdv0; PR #33 review, Vera F3) --------------------
+
+#[test]
+fn create_returns_the_correct_id_on_the_update_branch_even_with_an_unrelated_insert_between_calls()
+{
+    // Reproduces Vera's finding exactly: `last_insert_rowid()` does NOT advance on the
+    // `DO UPDATE` branch of `INSERT ... ON CONFLICT`, so it can return a STALE id from
+    // an unrelated statement that happened to run on the same connection afterward. The
+    // old implementation's doc comment claimed otherwise; this test would have failed
+    // against that implementation (id 1 expected, 3 actually returned).
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let first_id = sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+
+    // An unrelated insert on the SAME connection, between the two `create` calls —
+    // advances `last_insert_rowid()` to something that is NOT this note's id.
+    transcript_repo::append_segment(&db, transcript_id, 0, 100, "an unrelated insert").unwrap();
+    transcript_repo::append_segment(&db, transcript_id, 100, 200, "another one").unwrap();
+
+    let mut second = sample_note(transcript_id);
+    second.title = "Regenerated Title".into();
+    let second_id = sermon_note_repo::create(&db, &second).unwrap();
+
+    assert_eq!(
+        second_id, first_id,
+        "the UPDATE branch of the upsert must return the EXISTING row's id, not a stale \
+         last_insert_rowid() from an unrelated intervening insert"
+    );
+    let actual_id: i64 = db
+        .conn()
+        .query_row(
+            "SELECT id FROM sermon_note WHERE transcript_id = ?1",
+            params![transcript_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        second_id, actual_id,
+        "the returned id must match the real row id on disk"
+    );
 }
 
 // --- Regenerate = upsert (FR-129 is out of this ticket's scope) ------------------
@@ -419,4 +462,100 @@ fn delete_for_transcript_with_no_draft_is_a_harmless_no_op() {
     let transcript_id = make_transcript(&db, 1_000);
     sermon_note_repo::delete_for_transcript(&db, transcript_id).unwrap();
     sermon_note_repo::delete_for_transcript(&db, transcript_id).unwrap();
+}
+
+// --- Detached notes are reachable (86akgqdv0; PR #33 review, Sana F3) ------------
+//
+// A note whose transcript was deleted with cascade OFF becomes `transcript_id = NULL`
+// (the schema's `ON DELETE SET NULL` floor) and is invisible to `find_by_transcript`.
+// Without a path back to it, it is undeletable forever — an FR-153 gap. `list_detached`
+// + `delete_by_id` are that path.
+
+fn detach_note(db: &Database, transcript_id: i64, note_id: i64) {
+    // Simulates what a non-cascading `transcript_repo::delete` does to a note's
+    // `transcript_id`, without depending on `transcript_repo` here — this file is
+    // scoped to `sermon_note_repo`'s own public API plus whatever fixture setup it
+    // needs (mirrors `test_transcript_repo.rs`'s own cascade tests, which exercise the
+    // real `transcript_repo::delete` instead; this file exercises `list_detached`/
+    // `delete_by_id` directly against a detached row).
+    db.conn()
+        .execute(
+            "UPDATE sermon_note SET transcript_id = NULL WHERE id = ?1",
+            params![note_id],
+        )
+        .unwrap();
+    let _ = transcript_id;
+}
+
+#[test]
+fn list_detached_finds_a_note_whose_transcript_id_went_null() {
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let note_id = sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+    // Positive control: an ATTACHED note must not appear as detached.
+    assert!(
+        sermon_note_repo::list_detached(&db).unwrap().is_empty(),
+        "an attached note must not be listed as detached"
+    );
+
+    detach_note(&db, transcript_id, note_id);
+
+    let detached = sermon_note_repo::list_detached(&db).unwrap();
+    assert_eq!(detached.len(), 1);
+    assert_eq!(detached[0].id, note_id);
+    assert_eq!(detached[0].transcript_id, None);
+    assert_eq!(detached[0].title, sample_note(transcript_id).title);
+}
+
+#[test]
+fn delete_by_id_removes_a_detached_note_that_is_otherwise_unreachable() {
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let note_id = sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+    detach_note(&db, transcript_id, note_id);
+    assert!(
+        sermon_note_repo::find_by_transcript(&db, transcript_id)
+            .unwrap()
+            .is_none(),
+        "sanity: a detached note is unreachable via find_by_transcript"
+    );
+
+    sermon_note_repo::delete_by_id(&db, note_id).unwrap();
+
+    assert!(
+        sermon_note_repo::list_detached(&db).unwrap().is_empty(),
+        "the detached note must actually be gone"
+    );
+    let row_count: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM sermon_note WHERE id = ?1",
+            params![note_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(row_count, 0);
+}
+
+#[test]
+fn delete_by_id_also_removes_an_attached_note() {
+    // delete_by_id is not detached-only — it deletes by id regardless of attachment
+    // state (its doc comment says so explicitly).
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let note_id = sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+
+    sermon_note_repo::delete_by_id(&db, note_id).unwrap();
+
+    assert_eq!(
+        sermon_note_repo::find_by_transcript(&db, transcript_id).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn delete_by_id_for_an_unknown_id_is_a_harmless_no_op() {
+    let db = db();
+    sermon_note_repo::delete_by_id(&db, 9_999).unwrap();
+    sermon_note_repo::delete_by_id(&db, 9_999).unwrap();
 }
